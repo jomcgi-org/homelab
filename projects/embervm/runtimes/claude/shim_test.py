@@ -167,6 +167,14 @@ for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-promp
     assert flag in sys.argv
 assert sys.argv[sys.argv.index("--tools") + 1] == "read,bash,edit,write"
 assert "End every response with a single line" in sys.argv[sys.argv.index("--system-prompt") + 1]
+if os.environ.get("FAKE_PI_MODE") == "provider-error":
+    print(json.dumps({"type": "session", "id": "pi-session", "version": 3}), flush=True)
+    print(json.dumps({"type": "agent_end", "messages": [{
+        "role": "assistant",
+        "content": [],
+        "errorMessage": "connect ECONNREFUSED inference.inference.svc.cluster.local:8080"
+    }]}), flush=True)
+    sys.exit(0)
 print(json.dumps({"type": "session", "id": "pi-session", "version": 3}), flush=True)
 print(json.dumps({"type": "message_end", "message": {
     "role": "assistant",
@@ -268,6 +276,17 @@ def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
     assert record["session_id"] == "pi-session"
     assert "input_tokens" in record["usage"]
     manager._close_process()
+
+
+def test_pi_textless_terminal_event_surfaces_error_message(tmp_path, monkeypatch):
+    # A provider failure arrives as errorMessage on a textless assistant
+    # message (pi docs/custom-provider.md); it must become a turn ERROR, not
+    # an empty success (live turns persisted blank records, #4252).
+    monkeypatch.setenv("FAKE_PI_MODE", "provider-error")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError) as excinfo:
+        manager.turn("hello", model="qwen")
+    assert "ECONNREFUSED" in str(excinfo.value)
 
 
 def test_pi_resume_uses_session_flag(tmp_path, monkeypatch):
