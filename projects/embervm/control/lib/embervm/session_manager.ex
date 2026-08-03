@@ -3192,32 +3192,35 @@ defmodule Embervm.SessionManager do
   # durable, while the control plane advances the session lifecycle immediately.
   defp retire_session_volume(state, %{volume_node_id: node_id, workload: workload, session_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
-    if persistence_enabled_workload?(session_workload_entry(state, workload)) or session_workload_entry(state, workload) == %{} do
-      req = %RetireVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
-      retire_fun = state.retire_volume_fun
-      channel_fun = state.channel_fun
-      # Dial the INSTANCE owning this lineage on disk, not the bare node name:
-      # the node-name alias is an anchor, not a dial key, and dialing it fails
-      # :unknown_node forever (observed live when the flip armed retirement).
-      dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id)
-      spawn(fn ->
-        result =
-          with {:ok, channel} <- safe_channel(channel_fun, dial_id) do
-            try do
-              retire_fun.(channel, req)
-            rescue
-              error -> {:error, error}
-            catch
-              kind, reason -> {:error, {kind, reason}}
-            end
+    # NOT gated on the workload's CURRENT persistence setting: a lineage volume
+    # exists on disk because it was created once, and turning the feature off
+    # must not strand it. Disarming after a failed rollout did exactly that,
+    # leaving 10 GiB images that filled a node (#4286). Reclamation follows the
+    # artifact, not the flag.
+    req = %RetireVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
+    retire_fun = state.retire_volume_fun
+    channel_fun = state.channel_fun
+    # Dial the INSTANCE owning this lineage on disk, not the bare node name:
+    # the node-name alias is an anchor, not a dial key, and dialing it fails
+    # :unknown_node forever (observed live when the flip armed retirement).
+    dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id)
+    spawn(fn ->
+      result =
+        with {:ok, channel} <- safe_channel(channel_fun, dial_id) do
+          try do
+            retire_fun.(channel, req)
+          rescue
+            error -> {:error, error}
+          catch
+            kind, reason -> {:error, {kind, reason}}
           end
-
-        case result do
-          {:ok, _} -> :ok
-          other -> Logger.warning("embervm session workspace retirement failed", workload: workload, lineage_id: lineage_id, node_id: node_id, reason: inspect(other))
         end
-      end)
-    end
+
+      case result do
+        {:ok, _} -> :ok
+        other -> Logger.warning("embervm session workspace retirement failed", workload: workload, lineage_id: lineage_id, node_id: node_id, reason: inspect(other))
+      end
+    end)
     :ok
   end
 
