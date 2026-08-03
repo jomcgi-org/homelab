@@ -555,8 +555,8 @@ async def monolith_agent_session_destroy(ember_session_id: str) -> dict:
         ember_session_id: The control plane session id (s-...), from
             monolith-agent-session-vms or a session's stored binding.
 
-    Destroying a session an in-flight turn is using makes that turn fail;
-    intended for stale or parked test sessions. Any monolith agent session
+    Destroying a session an in-flight turn is using makes that turn fail,
+    so this is intended for stale or parked test sessions. Any monolith agent session
     bound to the destroyed id has its binding cleared so the next send
     creates a fresh EmberVM session instead of invoking a dead one.
     """
