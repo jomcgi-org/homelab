@@ -165,6 +165,7 @@ assert os.path.isfile(config_path)
 config = open(config_path).read()
 assert 'model_provider = "ember-openai"' in config
 assert 'base_url = "http://chatgpt.com/backend-api/"' in config
+assert 'chatgpt_base_url = "http://chatgpt.com/backend-api/"' in config
 assert "enable_codex_api_key_env = false" in config
 assert 'wire_api = "responses"' in config
 assert "--skip-git-repo-check" in sys.argv
@@ -395,6 +396,7 @@ def test_codex_config_uses_subscription_endpoint_override(tmp_path, monkeypatch)
     manager._write_model_config(child_env["CODEX_HOME"])
     config = (tmp_path / "workspace" / ".codex" / "config.toml").read_text()
     assert 'base_url = "%s"' % endpoint in config
+    assert 'chatgpt_base_url = "%s"' % endpoint in config
     assert "api.openai.com" not in config
     assert 'name = "ember-openai"' in config
     assert 'wire_api = "responses"' in config
