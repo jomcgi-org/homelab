@@ -771,6 +771,7 @@ func (s *Server) DeleteVolume(_ context.Context, req *nodev1.DeleteVolumeRequest
 	}
 	var err error
 	if req.GetLineageId() != "" {
+		_ = s.lineageAttached(workload, req.GetLineageId())
 		err = s.volumes.DeleteSession(workload, req.GetLineageId())
 	} else {
 		err = s.volumes.Delete(workload)
@@ -794,6 +795,10 @@ func (s *Server) ArchiveVolume(ctx context.Context, req *nodev1.ArchiveVolumeReq
 	}
 	if s.volumes == nil {
 		return nil, status.Error(codes.FailedPrecondition, "noded: volume manager not configured")
+	}
+	if s.lineageAttached(req.GetWorkload(), req.GetLineageId()) {
+		s.logger.Warn("noded: skip archive of attached session workspace", "workload", req.GetWorkload(), "lineage_id", req.GetLineageId())
+		return &nodev1.ArchiveVolumeResponse{Skipped: true}, nil
 	}
 	path := s.volumes.SessionVolumePath(req.GetWorkload(), req.GetLineageId())
 	if _, err := os.Stat(path); err != nil {

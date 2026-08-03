@@ -425,6 +425,9 @@ func (s *Server) RetireVolume(_ context.Context, req *nodev1.RetireVolumeRequest
 	if s.volumes == nil {
 		return nil, status.Error(codes.FailedPrecondition, "noded: volume manager not configured")
 	}
+	if s.lineageAttached(req.GetWorkload(), req.GetLineageId()) {
+		return nil, status.Error(codes.FailedPrecondition, "noded: session workspace is attached to a live VM")
+	}
 	path := s.volumes.SessionVolumePath(req.GetWorkload(), req.GetLineageId())
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {

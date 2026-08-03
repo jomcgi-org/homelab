@@ -99,6 +99,7 @@ defmodule Embervm.NodeRegistry do
     ServingSnapshot,
     ServingVm,
     SessionSnapshot,
+    SessionVolume,
     SessionVm,
     StatefulBundle,
     StatefulVm,
@@ -676,6 +677,7 @@ defmodule Embervm.NodeRegistry do
       # them (wire-compatible), which reads as "no session state, no disk pressure".
       session_vms: session_vms_from_status(s),
       session_snapshots: session_snapshots_from_status(s),
+      session_volumes: session_volumes_from_status(s),
       snapshot_disk_free_bytes: s.snapshot_disk_free_bytes,
       snapshot_disk_used_bytes: s.snapshot_disk_used_bytes,
       # Serving facts (R3): the node's LIVE serving VMs (with the daemon's health
@@ -931,6 +933,15 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp session_snapshots_from_status(_s), do: []
+
+  defp session_volumes_from_status(%NodeStatus{session_volumes: volumes}) when is_list(volumes) do
+    for %SessionVolume{} = volume <- volumes do
+      %{workload: volume.workload, lineage_id: volume.lineage_id,
+        size_bytes: volume.size_bytes, allocated_bytes: volume.allocated_bytes}
+    end
+  end
+
+  defp session_volumes_from_status(_s), do: []
 
   # The node's CPUID vendor for restore-on-miss vendor keying (R7, ADR embervm/011).
   # Prefers the richer CpuSku.vendor (field 28) when the daemon reports it, falls

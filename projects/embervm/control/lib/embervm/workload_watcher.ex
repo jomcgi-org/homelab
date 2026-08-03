@@ -822,16 +822,17 @@ defmodule Embervm.WorkloadWatcher do
 
   defp parse_persistence(spec, "session", _workload_name) do
     case Map.get(spec, "persistence") do
-      nil -> %{memory: true, filesystem: %{enabled: false, scope: "solo", retention: 0, size_bytes: 0}}
+      nil -> %{memory: true, filesystem: %{enabled: false, retention: 0, size_bytes: 0, mount_path: "/session"}}
       p when is_map(p) ->
         fs = Map.get(p, "filesystem") || %{}
         size_bytes = Map.get(fs, "sizeBytes") ||
           (Map.get(fs, "sizeGi") && Map.get(fs, "sizeGi") * 1_073_741_824) || 0
         %{memory: Map.get(p, "memory", true), filesystem: %{
-          enabled: Map.get(fs, "enabled", false), scope: Map.get(fs, "scope", "solo"),
-          retention: Map.get(fs, "retention", 0), size_bytes: size_bytes
+          enabled: Map.get(fs, "enabled", false),
+          retention: Map.get(fs, "retention", 0), size_bytes: size_bytes,
+          mount_path: Map.get(fs, "mountPath", "/session")
         }}
-      _ -> %{memory: true, filesystem: %{enabled: false, scope: "solo", retention: 0, size_bytes: 0}}
+      _ -> %{memory: true, filesystem: %{enabled: false, retention: 0, size_bytes: 0, mount_path: "/session"}}
     end
   end
 

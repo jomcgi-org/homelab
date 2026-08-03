@@ -192,6 +192,7 @@ defmodule Embervm.SessionManager do
       quota_config: Keyword.get(opts, :quota_config, Embervm.Metering.quota_config()),
       # Injected for tests; production uses the real claim/prime/channel seams.
       claim_fun: Keyword.get(opts, :claim_fun, &default_claim/3),
+      id_fun: Keyword.get(opts, :id_fun),
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
       # Daemon session verb seams (Bank/Relight/EvictSnapshot). Injected for tests;
@@ -413,6 +414,15 @@ defmodule Embervm.SessionManager do
     end
   end
 
+  def handle_info({:registry_sweep_retry, supervisor, spec, attempts}, state) do
+    case start_child_over_registry_sweep(supervisor, spec, attempts) do
+      {:ok, _pid} -> :ok
+      {:error, reason} -> Logger.warning("embervm session registry retry failed", reason: inspect(reason))
+      _ -> :ok
+    end
+    {:noreply, state}
+  end
+
   # The async bank worker finished: complete the durable transition + failure
   # recovery on this (serialized) process. See finish_bank.
   def handle_info({:bank_done, session_id, node_id, outcome}, state) do
@@ -446,7 +456,7 @@ defmodule Embervm.SessionManager do
                          "ember.principal" => principal
                        }
                      } do
-      minted_lineage_id = Embervm.SessionId.new(state.clock.())
+      minted_lineage_id = mint_lineage_id(state)
       result =
         with {:ok, entry} <- fetch_session_workload(state, workload),
              :ok <- check_session_cap(state, workload, entry),
@@ -572,6 +582,10 @@ defmodule Embervm.SessionManager do
   defp persistence_enabled_workload?(%{persistence: %{memory: false, filesystem: %{enabled: true}}}), do: true
   defp persistence_enabled_workload?(_), do: false
 
+  defp mint_lineage_id(%{id_fun: fun}) when is_function(fun, 0), do: fun.()
+  defp mint_lineage_id(%{id_fun: fun, clock: clock}) when is_function(fun, 1), do: fun.(clock.())
+  defp mint_lineage_id(state), do: Embervm.SessionId.new(state.clock.())
+
   defp prime(state, node_id, snapshot_ref, entry, lineage_id) do
     with {:ok, channel} <- state.channel_fun.(node_id),
          {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
@@ -592,7 +606,7 @@ defmodule Embervm.SessionManager do
       req = %PrimeRequest{
         trace: %Trace{},
         snapshot_ref: snapshot_ref || "",
-        volume_mount: if(enabled, do: "/session", else: ""),
+        volume_mount: if(enabled, do: Map.get(fs, :mount_path, "/session"), else: ""),
         volume_size_bytes: if(enabled, do: Map.get(fs, :size_bytes, 0), else: 0),
         lineage_id: if(enabled, do: lineage_id, else: "")
       }
@@ -688,8 +702,8 @@ defmodule Embervm.SessionManager do
         if Process.alive?(pid) or attempts <= 1 do
           error
         else
-          Process.sleep(10)
-          start_child_over_registry_sweep(supervisor, spec, attempts - 1)
+          Process.send_after(self(), {:registry_sweep_retry, supervisor, spec, attempts - 1}, 10)
+          {:error, :registry_retry_scheduled}
         end
 
       other ->
@@ -1868,6 +1882,7 @@ defmodule Embervm.SessionManager do
       end)
 
     state = evict_orphan_snapshots(state, facts)
+    state = retire_orphan_session_volumes(state, facts, nodes_facts)
 
     # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5),
     # gated: re-drive stuck destroying sessions (Direction 1 completion + alarm) and
@@ -2333,6 +2348,34 @@ defmodule Embervm.SessionManager do
     end
 
     state
+  end
+
+  # Raw session workspaces are node facts, not snapshot warmth. Retire them so
+  # the node exports to S3 before removing the local copy. Use the freshest fact
+  # for each node and require its report to be newer than the row (or older than
+  # the orphan grace when the row is absent), avoiding stale-fact deletion.
+  defp retire_orphan_session_volumes(state, facts, nodes_facts) do
+    for f <- facts, volume <- Map.get(f, :session_volumes, []) || [], reduce: state do
+      acc ->
+        case SessionStore.get(acc.session_store, volume.lineage_id) do
+          {:ok, %{workload: workload, state: session_state}}
+              when workload == volume.workload and session_state not in [:expired, :evicted, :destroyed, :failed] ->
+            acc
+
+          row ->
+            fact_updated = Map.get(Map.get(nodes_facts, f.configured_id, f), :updated_at, 0)
+            row_updated = if match?({:ok, _}, row), do: elem(row, 1).updated_at, else: fact_updated
+            if state.clock.() - row_updated >= state.orphan_grace_ms and
+                 fact_updated >= row_updated do
+              # retire_session_volume spawns fire-and-forget and returns :ok,
+              # never state; the reduce must keep threading acc.
+              _ = retire_session_volume(acc, %{volume_node_id: f.configured_id, workload: volume.workload, session_id: volume.lineage_id})
+              acc
+            else
+              acc
+            end
+        end
+    end
   end
 
   # -- sweep: expiry, banked-TTL GC, disk-pressure eviction (Task 7) ---------
@@ -2983,7 +3026,7 @@ defmodule Embervm.SessionManager do
   # durable, while the control plane advances the session lifecycle immediately.
   defp retire_session_volume(state, %{volume_node_id: node_id, workload: workload, session_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
-    if persistence_enabled_workload?(session_workload_entry(state, workload)) do
+    if persistence_enabled_workload?(session_workload_entry(state, workload)) or session_workload_entry(state, workload) == %{} do
       req = %RetireVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
       retire_fun = state.retire_volume_fun
       channel_fun = state.channel_fun

@@ -58,9 +58,10 @@ type BlessingLease struct {
 type Manager struct {
 	root string
 
-	mu       sync.Mutex
-	attached map[string]attachment
-	leaseMu  sync.Mutex
+	mu              sync.Mutex
+	attached        map[string]attachment
+	lineageAttached map[string]attachment
+	leaseMu         sync.Mutex
 }
 
 // attachment records WHO holds a workload's writable-attach lock. owner is
@@ -75,7 +76,7 @@ type attachment struct {
 // NewManager builds a Manager rooted at root (VolumeRoot). It does not touch
 // disk; callers create the root lazily via Create.
 func NewManager(root string) *Manager {
-	return &Manager{root: root, attached: make(map[string]attachment)}
+	return &Manager{root: root, attached: make(map[string]attachment), lineageAttached: make(map[string]attachment)}
 }
 
 // dir is the per-workload volume directory.
@@ -238,6 +239,48 @@ func (m *Manager) IsAttached(workload string) bool {
 	defer m.mu.Unlock()
 	_, ok := m.attached[workload]
 	return ok
+}
+
+func lineageKey(workload, lineageID string) string { return workload + "\x00" + lineageID }
+
+// AttachLineage records the VM that owns a session workspace. Unlike the
+// stateful workload lock, this key is per lineage so separate sessions never
+// block one another.
+func (m *Manager) AttachLineage(workload, lineageID, vmID string) error {
+	if workload == "" || lineageID == "" || vmID == "" {
+		return fmt.Errorf("volume: workload, lineage and vm required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := lineageKey(workload, lineageID)
+	if _, ok := m.lineageAttached[key]; ok {
+		return fmt.Errorf("volume: lineage %q is already attached", lineageID)
+	}
+	m.lineageAttached[key] = attachment{owner: vmID, since: time.Now()}
+	return nil
+}
+
+func (m *Manager) DetachLineage(workload, lineageID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.lineageAttached, lineageKey(workload, lineageID))
+}
+
+// IsLineageAttached ignores records whose VM is not in liveVMIDs. This makes
+// teardown crash-tolerant: a daemon restart or an already-reaped VM cannot
+// strand a workspace forever.
+func (m *Manager) IsLineageAttached(workload, lineageID string, liveVMIDs map[string]struct{}) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.lineageAttached[lineageKey(workload, lineageID)]
+	if !ok {
+		return false
+	}
+	if _, live := liveVMIDs[a.owner]; !live {
+		delete(m.lineageAttached, lineageKey(workload, lineageID))
+		return false
+	}
+	return true
 }
 
 // BumpGeneration increments a workload's generation ledger and returns the new
@@ -610,6 +653,12 @@ func (m *Manager) DeleteSession(workload, lineageID string) error {
 	if m.IsAttached(workload) {
 		return fmt.Errorf("volume: workload %q volume is attached; detach before deleting", workload)
 	}
+	m.mu.Lock()
+	_, attached := m.lineageAttached[lineageKey(workload, lineageID)]
+	m.mu.Unlock()
+	if attached {
+		return fmt.Errorf("volume: lineage %q is attached; detach before deleting", lineageID)
+	}
 	return os.RemoveAll(filepath.Join(m.root, "session", workload, lineageID))
 }
 
@@ -639,6 +688,13 @@ type Inventory struct {
 	AllocatedBytes    uint64
 	Attached          bool
 	GenerationBlessed bool
+}
+
+type SessionInventory struct {
+	Workload       string
+	LineageID      string
+	SizeBytes      uint64
+	AllocatedBytes uint64
 }
 
 // Scan walks VolumeRoot for every workload's volume directory and returns its
@@ -691,4 +747,55 @@ func (m *Manager) Scan() ([]Inventory, error) {
 		})
 	}
 	return out, nil
+}
+
+// ScanSessions reports durable per-lineage workspace files. It deliberately
+// does not require a control-plane row: that is the fact needed to reap leaks
+// created before a session passed the readiness gate.
+func (m *Manager) ScanSessions() ([]SessionInventory, error) {
+	root := filepath.Join(m.root, "session")
+	workloads, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("volume: scan sessions %q: %w", root, err)
+	}
+	var out []SessionInventory
+	for _, w := range workloads {
+		if !w.IsDir() {
+			continue
+		}
+		lineages, err := os.ReadDir(filepath.Join(root, w.Name()))
+		if err != nil {
+			continue
+		}
+		for _, l := range lineages {
+			if !l.IsDir() {
+				continue
+			}
+			path := m.SessionVolumePath(w.Name(), l.Name())
+			fi, err := os.Stat(path)
+			if err != nil || !fi.Mode().IsRegular() {
+				continue
+			}
+			alloc, err := m.sessionAllocatedBytes(path)
+			if err != nil {
+				continue
+			}
+			out = append(out, SessionInventory{Workload: w.Name(), LineageID: l.Name(), SizeBytes: uint64(fi.Size()), AllocatedBytes: alloc})
+		}
+	}
+	return out, nil
+}
+
+func (m *Manager) sessionAllocatedBytes(path string) (uint64, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	if blocks, ok := statBlocks(fi); ok {
+		return uint64(blocks) * 512, nil
+	}
+	return uint64(fi.Size()), nil
 }

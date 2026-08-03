@@ -1520,6 +1520,13 @@ message SessionSnapshot {
   bool exported = 6;
 }
 
+message SessionVolume {
+  string workload = 1;
+  string lineage_id = 2;
+  uint64 size_bytes = 3;
+  uint64 allocated_bytes = 4;
+}
+
 // ServingVm is one LIVE serving VM the node currently holds, reported so a
 // restarted control plane adopts rather than orphans it and so the control
 // plane can consume the daemon's health-probe fact. healthy and
@@ -1945,6 +1952,7 @@ message NodeStatus {
   // session_snapshots is the banked-snapshot inventory scanned from the sessions
   // snapshot dir on disk. The source of truth for what banked sessions survive.
   repeated SessionSnapshot session_snapshots = 10;
+  repeated SessionVolume session_volumes = 38;
   // snapshot_disk_free_bytes / snapshot_disk_used_bytes report the sessions
   // snapshot dir's filesystem usage so the control plane's LRU eviction can fire
   // on a low-watermark crossing and the watermark alert can trip.

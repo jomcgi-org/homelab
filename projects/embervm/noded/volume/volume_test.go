@@ -52,6 +52,28 @@ func TestRetirementIntentIsDurableAndSeparateFromWorkspace(t *testing.T) {
 	}
 }
 
+func TestLineageAttachLifecycleAndStaleSafety(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.CreateSession("wl", "lineage", 4096); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AttachLineage("wl", "lineage", "vm-live"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteSession("wl", "lineage"); err == nil {
+		t.Fatal("delete should refuse while attached")
+	}
+	if !m.IsLineageAttached("wl", "lineage", map[string]struct{}{"vm-live": {}}) {
+		t.Fatal("live attach missing")
+	}
+	if m.IsLineageAttached("wl", "lineage", map[string]struct{}{}) {
+		t.Fatal("stale attach should be ignored")
+	}
+	if err := m.DeleteSession("wl", "lineage"); err != nil {
+		t.Fatalf("delete after stale attach: %v", err)
+	}
+}
+
 func TestCreateSparseAndGenerationInit(t *testing.T) {
 	dir := t.TempDir()
 	m := NewManager(dir)

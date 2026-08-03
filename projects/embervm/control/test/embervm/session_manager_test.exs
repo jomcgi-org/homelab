@@ -769,6 +769,72 @@ defmodule Embervm.SessionManagerTest do
     assert session.state == :running
   end
 
+  test "orphan session volume with no row is retired after grace" do
+    parent = self()
+    ctx = start_stack(
+      orphan_grace_ms: 0,
+      retire_volume_fun: fn _ch, req -> send(parent, {:retired, req.lineage_id}); {:ok, %{}} end
+    )
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      workloads: %{},
+      session_vms: [],
+      session_snapshots: [],
+      session_volumes: [%{workload: "wl-ghost", lineage_id: "s-orphan-lineage", size_bytes: 1}],
+      live_vms: 0,
+      max_live_vms: 8,
+      draining: false,
+      updated_at: 5_000_000
+    })
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:retired, "s-orphan-lineage"}, 1_000
+  end
+
+  test "parked session's reported volume is not retired" do
+    parent = self()
+    ctx = start_stack(
+      orphan_grace_ms: 0,
+      prime_fun: fake_prime_fun("vm-volfact"),
+      channel_fun: fake_channel_fun(),
+      retire_volume_fun: fn _ch, req -> send(parent, {:retired, req.lineage_id}); {:ok, %{}} end
+    )
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+    sid = created.session_id
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+    NodeCapacity.put(ctx.cap_table, "node-4", Map.put(fact, :session_volumes, [
+      %{workload: "wl-persist", lineage_id: sid, size_bytes: 1}
+    ]))
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+    refute_receive {:retired, ^sid}, 300
+  end
+
+  test "orphan session volume inside the grace window is left alone" do
+    parent = self()
+    ctx = start_stack(
+      orphan_grace_ms: 60_000_000,
+      retire_volume_fun: fn _ch, req -> send(parent, {:retired, req.lineage_id}); {:ok, %{}} end
+    )
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      workloads: %{},
+      session_vms: [],
+      session_snapshots: [],
+      session_volumes: [%{workload: "wl-ghost", lineage_id: "s-young-lineage", size_bytes: 1}],
+      live_vms: 0,
+      max_live_vms: 8,
+      draining: false,
+      updated_at: 5_000_000
+    })
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+    refute_receive {:retired, _}, 300
+  end
+
   test "parked_session_expires_on_ttl" do
     ctx = start_stack(prime_fun: fake_prime_fun("vm-expire"), channel_fun: fake_channel_fun())
     created = create_persistence_session(ctx, max_lifetime_seconds: -1)
