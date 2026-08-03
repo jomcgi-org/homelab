@@ -25,6 +25,24 @@ from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 
+
+def _status_error_detail(exc: httpx.HTTPStatusError) -> str:
+    """The status line PLUS a bounded slice of the response body.
+
+    The guest shim reports WHY a turn failed in the error response body
+    (e.g. pi's provider errorMessage); persisting only the httpx status
+    line hid every root cause behind a bare 422 (#4252).
+    """
+    detail = str(exc)
+    try:
+        body = exc.response.text.strip()
+    except Exception:  # noqa: BLE001 - body read must never mask the error
+        body = ""
+    if body:
+        detail += "\nresponse body: " + body[:1500]
+    return detail
+
+
 # The control plane base URL, set on the monolith deployment (chart
 # templates/deployment.yaml). Read at import exactly like
 # faas/embervm_client.py does, so both clients resolve it the same way. The
@@ -150,7 +168,7 @@ class EmberVmShimTransport:
             raise EmberVMTimeout(str(exc)) from exc
         except httpx.HTTPStatusError as exc:
             logger.warning("embervm session creation failed: %s", exc)
-            raise EmberVMTransportError(str(exc)) from exc
+            raise EmberVMTransportError(_status_error_detail(exc)) from exc
         except httpx.TransportError as exc:
             logger.warning("embervm session creation transport error: %s", exc)
             raise EmberVMTransportError(str(exc)) from exc
@@ -243,9 +261,13 @@ class EmberVmShimTransport:
             return await invoke(ember, cli_session_id), ember
         except httpx.HTTPStatusError as exc:
             if created or exc.response.status_code not in (403, 410):
-                raise EmberVMTransportError(str(exc)) from exc
+                raise EmberVMTransportError(_status_error_detail(exc)) from exc
             ember = await self.create_session()
             try:
                 return await invoke(ember, None), ember
             except (httpx.HTTPStatusError, EmberVMTransportError) as retry_exc:
+                if isinstance(retry_exc, httpx.HTTPStatusError):
+                    raise EmberSessionGone(
+                        _status_error_detail(retry_exc)
+                    ) from retry_exc
                 raise EmberSessionGone(str(retry_exc)) from retry_exc
