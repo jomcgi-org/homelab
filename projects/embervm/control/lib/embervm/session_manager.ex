@@ -1411,10 +1411,10 @@ defmodule Embervm.SessionManager do
                                "ember.principal" => session.principal,
                                "ember.volume_node_id" => volume_node_id
                              }} do
-              with {:ok, vm_id} <- perform_rejoin_prime(state, volume_node_id, session.workload, session_id) do
+              with {:ok, vm_id, dial_id} <- perform_rejoin_prime(state, volume_node_id, session.workload, session_id) do
                 # noded's auto-destroy timer covers PrimeAssign after delivery starts.
                 # The CP destroys a successfully primed VM when delivery never starts.
-                {:ok, volume_node_id, vm_id, 0, volume_node_id}
+                {:ok, volume_node_id, vm_id, 0, dial_id}
               else
                 {:error, reason} -> {:error, reason}
                 other -> {:error, other}
@@ -1446,7 +1446,9 @@ defmodule Embervm.SessionManager do
          :ok <- restore_session_workspace(state, dial_id, workload, lineage_id),
          snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
          {:ok, vm_id} <- prime(state, dial_id, snapshot_ref, entry, lineage_id) do
-      {:ok, vm_id}
+      # Return dial_id because this is the third distinct bare-anchor dial site.
+      # The previous fix resolved it correctly, then stopped one hop short by discarding it.
+      {:ok, vm_id, dial_id}
     else
       {:error, reason} -> {:error, reason}
       other -> {:error, other}
