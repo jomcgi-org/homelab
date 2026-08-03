@@ -986,14 +986,20 @@ class CodexProcess:
             CODEX_SUBSCRIPTION_BASE_URL_ENV, DEFAULT_CODEX_SUBSCRIPTION_BASE_URL
         )
         # Subscription backend endpoint over cleartext injection lane (token injection happens at sidecar).
+        # chatgpt_base_url must be set too: the CLI's connector client (rmcp
+        # transport) builds its URL from chatgpt_base_url, not from the model
+        # provider base_url. Left at the https default it bypasses the sidecar's
+        # injection lane, presents the guest's placeholder JWT, gets a 401, and
+        # the CLI's resulting token refresh attempt aborts the turn (issue #4298).
         config = """model_provider = "ember-openai"
 enable_codex_api_key_env = false
+chatgpt_base_url = %s
 
 [model_providers.ember-openai]
 name = "ember-openai"
 base_url = %s
 wire_api = "responses"
-""" % json.dumps(base_url)
+""" % (json.dumps(base_url), json.dumps(base_url))
         with open(os.path.join(codex_home, "config.toml"), "w") as stream:
             stream.write(config)
 
