@@ -39,6 +39,7 @@ multirun(
         "//projects/embervm/runtimes/postgres:image.push",
         "//projects/embervm/runtimes/python:image.push",
         "//projects/embervm/scratch-prep:image.push",
+        "//projects/embervm/tokenbroker/image:image.push",
         "//projects/embervm/xds/image:image.push",
         "//projects/firecracker/git-mirror/chart:chart.push",
         "//projects/firecracker/git-mirror:image.push",
