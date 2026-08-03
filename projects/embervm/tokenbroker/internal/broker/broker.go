@@ -109,8 +109,16 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 	}
 	s, _ := b.state(grantName)
 	s.mu.Lock()
+	// The in-memory stash is authoritative ONLY while it is ahead of the
+	// durable store (a rotation whose save is still retrying). Once the store
+	// has caught up, clear it: preferring a stale stash would replay an
+	// already-consumed refresh token forever and pin the reuse alarm high.
 	if s.authoritative != nil {
-		grant = *s.authoritative
+		if s.authoritative.LastRefresh.After(grant.LastRefresh) {
+			grant = *s.authoritative
+		} else {
+			s.authoritative = nil
+		}
 	}
 	s.mu.Unlock()
 	if grant.ProviderName == "" {
