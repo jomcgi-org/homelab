@@ -24,6 +24,15 @@ spec:
     - fromEntities:
         - host
         - health
+    # The monolith's agent surface proxies the device-code login flow
+    # (/grants/<name>/login/*) so a login can be kicked off from a chat and
+    # the code surfaced in the tool response (ADR 048, #4250 PR 2).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monolith
+            app.kubernetes.io/name: monolith
+            app.kubernetes.io/component: app
+      toPorts: [{ ports: [{ port: "8080", protocol: TCP }] }]
   egress:
     # Cilium's toFQDNs proxy only learns rotating provider IPs when DNS is
     # allowed with the L7 dns rule. Keep this rule ahead of the FQDN rule.

@@ -3,11 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import platform
+import re
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
+
+import httpx
 
 import agent.api as agent_api
 from agent_sessions import store, voice
@@ -520,3 +524,70 @@ async def monolith_agent_detail(session_id: int, turn: int | None = None) -> dic
         "model": selected.model,
         "activities": _activities(selected),
     }
+
+
+# -- token broker login (ADR 048, #4250 PR 2) --------------------------------
+
+BROKER_URL_ENV = "EMBER_TOKENBROKER_URL"
+_DEFAULT_GRANT = "codex-cluster"
+_GRANT_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _broker_url() -> str:
+    url = os.environ.get(BROKER_URL_ENV, "")
+    if not url:
+        raise ValueError("token broker is not configured")
+    return url.rstrip("/")
+
+
+def _grant_or_raise(grant: str) -> str:
+    # The grant rides a URL path and names a Kubernetes Secret suffix.
+    if not _GRANT_NAME_RE.fullmatch(grant):
+        raise ValueError(f"invalid grant name {grant!r}")
+    return grant
+
+
+async def _broker_request(method: str, path: str) -> dict:
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.request(method, _broker_url() + path)
+        resp.raise_for_status()
+        return resp.json()
+
+
+@mcp.tool
+async def monolith_codex_broker_login_start(grant: str = _DEFAULT_GRANT) -> dict:
+    """Begin the token broker device-code login for an OAuth grant.
+
+    Returns the verification URL and one-time user code to approve in any
+    browser. The broker polls until the grant is approved and persists the
+    token bundle durably. Never share a device code with anyone.
+
+    Args:
+        grant: Grant name registered in the broker. Defaults to codex-cluster.
+    """
+    grant = _grant_or_raise(grant)
+    data = await _broker_request("POST", f"/grants/{grant}/login/start")
+    await agent_api.notify(
+        "codex broker login pending for grant %s. Approve code %s at %s"
+        % (grant, data.get("user_code", "?"), data.get("verification_url", "?")),
+        level="warn",
+    )
+    return data
+
+
+@mcp.tool
+async def monolith_codex_broker_login_status(grant: str = _DEFAULT_GRANT) -> dict:
+    """Report the token broker login state for an OAuth grant.
+
+    Args:
+        grant: Grant name registered in the broker. Defaults to codex-cluster.
+    """
+    grant = _grant_or_raise(grant)
+    data = await _broker_request("GET", f"/grants/{grant}/login/status")
+    if data.get("state") == "granted":
+        await agent_api.notify(
+            "codex broker grant %s is active. The lane refreshes itself from here."
+            % grant,
+            level="info",
+        )
+    return data

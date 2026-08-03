@@ -95,6 +95,12 @@ spec:
             - name: EMBER_SYNTHETIC_BASE_URL
               value: {{ .Values.emberSynthetic.baseUrl | quote }}
             {{- end }}
+            {{- if .Values.tokenBroker.url }}
+            # OAuth token broker (ADR 048): the agent surface proxies its
+            # device-code login flow so a login can run from a chat.
+            - name: EMBER_TOKENBROKER_URL
+              value: {{ .Values.tokenBroker.url | quote }}
+            {{- end }}
             {{- if .Values.faas }}
             # FaaS zip-lane function registry (ADR 045 / embervm R1). The read
             # base is the in-cluster SeaweedFS S3 host noded GETs archives from;

@@ -750,6 +750,12 @@ jobs:
 emberSynthetic:
   baseUrl: "https://jomcgi.dev"
 
+# OAuth token broker (ADR 048). The agent surface proxies its device-code
+# login endpoints so a grant login can be kicked off from a chat with the
+# code surfaced in the tool response. Empty disables the tools.
+tokenBroker:
+  url: "http://embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080"
+
 frontend:
   otelCollectorUrl: ""
   image:
