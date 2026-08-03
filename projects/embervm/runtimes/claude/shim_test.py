@@ -79,6 +79,30 @@ for line in sys.stdin:
 """
 
 
+def test_ensure_persistence_mountpoint_writable(tmp_path, monkeypatch):
+    if os.geteuid() != 0:
+        pytest.skip("chown test requires root")
+
+    mountpoint = tmp_path / "session"
+    mountpoint.mkdir()
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 0)
+    monkeypatch.setenv(shim.CLI_UID_ENV, str(shim.DEFAULT_CLI_UID))
+    monkeypatch.setenv(shim.CLI_GID_ENV, str(shim.DEFAULT_CLI_GID))
+
+    os.chown(mountpoint, 0, 0)
+    shim._ensure_persistence_mountpoint_writable(str(mountpoint))
+    ownership = os.stat(mountpoint)
+    assert ownership.st_uid == shim.DEFAULT_CLI_UID
+    assert ownership.st_gid == shim.DEFAULT_CLI_GID
+
+    shim._ensure_persistence_mountpoint_writable(str(mountpoint))
+    ownership = os.stat(mountpoint)
+    assert ownership.st_uid == shim.DEFAULT_CLI_UID
+    assert ownership.st_gid == shim.DEFAULT_CLI_GID
+
+    shim._ensure_persistence_mountpoint_writable(str(tmp_path / "missing"))
+
+
 FAKE_CLI_INIT_AFTER_INPUT = r"""#!/usr/bin/env python3
 import json
 import os
