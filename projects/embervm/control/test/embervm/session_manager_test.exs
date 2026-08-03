@@ -461,7 +461,9 @@ defmodule Embervm.SessionManagerTest do
     ctx = start_stack(claim_fun: fn _d, _n, _w -> :miss end, prime_fun: fn _ch, _req -> {:error, :boom} end)
     put_session_workload(ctx, "wl-miss")
 
-    assert {:error, {:denied, :no_capacity}} = SessionManager.create(ctx.mgr, "wl-miss", "p1")
+    # The denial now CARRIES the prime failure instead of flattening it to a
+    # capacity lie; the live persistence flip cost a debugging cycle to that.
+    assert {:error, {:denied, {:prime_failed, _}}} = SessionManager.create(ctx.mgr, "wl-miss", "p1")
   end
 
   test "create quota fail-closed denies a principal over budget" do
@@ -708,7 +710,8 @@ defmodule Embervm.SessionManagerTest do
     created = create_persistence_session(ctx)
     park_session(ctx, created)
 
-    assert {:error, {:relight_failed, :no_capacity}} =
+    # The rejoin failure carries the prime reason through now.
+    assert {:error, {:relight_failed, {:prime_failed, _}}} =
              SessionManager.invoke(ctx.mgr, created.session_id, %{body: "retry"})
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)

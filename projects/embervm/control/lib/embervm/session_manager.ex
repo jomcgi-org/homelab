@@ -585,12 +585,30 @@ defmodule Embervm.SessionManager do
   defp mint_lineage_id(state), do: Embervm.SessionId.new(state.clock.())
 
   defp prime(state, node_id, snapshot_ref, entry, lineage_id) do
-    with {:ok, channel} <- state.channel_fun.(node_id),
-         {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
-           safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
-      {:ok, vm_id}
-    else
-      _ -> {:error, :no_capacity}
+    # A prime failure is NOT a capacity problem, and reporting it as one cost a
+    # whole debugging cycle: the persistence flip denied every create with
+    # :no_capacity while the real reason (a rejected Prime) never left this
+    # function. Carry the reason out and log it; the caller still denies.
+    case state.channel_fun.(node_id) do
+      {:ok, channel} ->
+        case safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
+          {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" ->
+            {:ok, vm_id}
+
+          other ->
+            Logger.warning("embervm prime failed",
+              node_id: node_id,
+              snapshot_ref: snapshot_ref,
+              lineage_id: lineage_id,
+              reason: inspect(other)
+            )
+
+            {:error, {:prime_failed, other}}
+        end
+
+      other ->
+        Logger.warning("embervm prime dial failed", node_id: node_id, reason: inspect(other))
+        {:error, {:prime_dial_failed, other}}
     end
   end
 
@@ -2934,7 +2952,12 @@ defmodule Embervm.SessionManager do
     metering_reason =
       case reason do
         :quota -> :quota
-        other -> other
+        {:prime_failed, _} -> :prime_failed
+        {:prime_dial_failed, _} -> :prime_dial_failed
+        other when is_atom(other) -> other
+        # The metering reason space is atoms; a structured reason keeps its
+        # detail in the log line prime/5 already emitted.
+        _ -> :denied
       end
 
     Embervm.Metering.record_denial(principal, workload, metering_reason)
@@ -3058,9 +3081,13 @@ defmodule Embervm.SessionManager do
       req = %RetireVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
       retire_fun = state.retire_volume_fun
       channel_fun = state.channel_fun
+      # Dial the INSTANCE owning this lineage on disk, not the bare node name:
+      # the node-name alias is an anchor, not a dial key, and dialing it fails
+      # :unknown_node forever (observed live when the flip armed retirement).
+      dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id)
       spawn(fn ->
         result =
-          with {:ok, channel} <- safe_channel(channel_fun, node_id) do
+          with {:ok, channel} <- safe_channel(channel_fun, dial_id) do
             try do
               retire_fun.(channel, req)
             rescue
