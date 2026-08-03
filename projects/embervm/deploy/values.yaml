@@ -325,7 +325,9 @@ egress:
 # session at all. Sizing and the node disk arithmetic are in chart/values.yaml.
 claudeRuntimeWorkload:
   enabled: true
-  # Armed on the session cold-boot init fix (#4282): a lineage prime emitted no
-  # init= on the kernel command line, so the guest dropped to /bin/sh and never
-  # served readiness. That was the root cause under six earlier arms.
-  persistenceEnabled: true
+  # OFF, urgently: seven arms of testing left 10 GiB lineage workspace images on
+  # node scratch (retirement could not dial its owning instance until #4283, so
+  # nothing reclaimed them) and a node now reports "No space left on device",
+  # which is failing stateful checkpoints cluster-wide. Do not re-arm until the
+  # leaked volumes are reclaimed and node disk headroom is verified.
+  persistenceEnabled: false
