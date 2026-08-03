@@ -453,7 +453,7 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 			p.logger.Warn("egress swap: return response", "dest", host, "err", err)
 			return
 		}
-		p.logger.Info("egress injected", "dest", host, "header", sec.Header, "injected", injected, "path", req.URL.Path)
+		p.logger.Info("egress injected", "dest", host, "header", sec.Header, "injected", injected, "path", req.URL.Path, "status", resp.StatusCode)
 		// Honour the guest's Connection: close rather than blocking on a request it
 		// has already told us will not come; the caller's defer closes both sides.
 		if closeAfter {
