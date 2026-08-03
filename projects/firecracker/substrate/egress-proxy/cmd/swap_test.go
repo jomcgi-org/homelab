@@ -122,7 +122,10 @@ func TestInjectRequestHandlesEveryAuthorizationValue(t *testing.T) {
 
 func TestInjectClaimHeaderSetsValueFromToken(t *testing.T) {
 	sec := &secretEntry{
-		Header:      "Authorization",
+		Header: "Authorization",
+		// Mirrors the live catalog entry: the claim path is the real one, dots and
+		// all, and the prefix is what production actually sends.
+		ValuePrefix: "Bearer ",
 		ClaimHeader: "chatgpt-account-id",
 		ClaimPath:   "https://api.openai.com/auth.chatgpt_account_id",
 		value:       testJWT(`{"https://api.openai.com/auth":{"chatgpt_account_id":"account-123"}}`),
@@ -142,7 +145,7 @@ func TestInjectClaimHeaderSetsValueFromToken(t *testing.T) {
 	// The credential MUST still be injected on the claim path. An earlier draft of
 	// this branch set only the account id, silently dropping the token, and a test
 	// that asserted the new header alone was happy to let that through.
-	if got := req.Header.Get("Authorization"); got != "Bearer "+sec.value {
+	if got := req.Header.Get("Authorization"); got != sec.ValuePrefix+sec.value {
 		t.Errorf("Authorization = %q, want the injected credential, not the guest value", got)
 	}
 }
