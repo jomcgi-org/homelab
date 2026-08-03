@@ -329,10 +329,9 @@ claudeRuntimeWorkload:
   # hardening gate merged: sessions ride per-lineage workspace volumes with
   # park/rejoin instead of memory-snapshot banking, S3 archival at retirement,
   # and restore-first rejoin. Raw files in S3 replace multi-GiB snapshots.
-  # OFF. Three live attempts, each exposing the next layer: :no_capacity (a
-  # flattened reason), then a 10s gRPC cancel mid cold boot (#4268 fixed it),
-  # and now the structural one: do_create runs the prime INLINE on the
-  # SessionManager, so a cold boot cannot finish inside the router's 5s
-  # GenServer.call and blocks every other session while it tries. Persistence
-  # cannot arm until create is asynchronous (#4270).
-  persistenceEnabled: false
+  # Armed with all three causes of the earlier failures closed: prime failures
+  # carry their real reason (#4266), a lineage-carrying Prime gets a cold-boot
+  # deadline instead of the 10s default (#4268), and create no longer primes on
+  # the SessionManager process (#4271/#4273), which is what made a cold-boot
+  # create impossible inside the router call.
+  persistenceEnabled: true
