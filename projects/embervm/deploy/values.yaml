@@ -329,10 +329,8 @@ claudeRuntimeWorkload:
   # hardening gate merged: sessions ride per-lineage workspace volumes with
   # park/rejoin instead of memory-snapshot banking, S3 archival at retirement,
   # and restore-first rejoin. Raw files in S3 replace multi-GiB snapshots.
-  # OFF. Four live attempts. Three causes found and FIXED (#4266 honest prime
-  # reasons, #4268 cold-boot Prime deadline, #4273 create off the manager), but
-  # the Prime still dies with the server CANCELLING the stream
-  # (server_closed_request) even with a 120s client deadline and noded's 60s
-  # BootReadyTimeout, so the abort is inside noded's lineage-volume Prime path
-  # and needs node-side investigation (#4271). Do not re-arm without it.
-  persistenceEnabled: false
+  # Armed with noded panics now legible (#4276): a panicking handler used to
+  # reach the caller as a bare stream cancel, which is why four arms could not
+  # localize the fault. Plus the three fixed causes (#4266 honest prime
+  # reasons, #4268 cold-boot deadline, #4273 async create).
+  persistenceEnabled: true
