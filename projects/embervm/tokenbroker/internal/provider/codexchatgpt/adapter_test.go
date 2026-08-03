@@ -19,7 +19,7 @@ func TestDeviceFlowAndExchange(t *testing.T) {
 	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/accounts/deviceauth/usercode":
-			json.NewEncoder(w).Encode(map[string]any{"device_auth_id": "id", "user_code": "code", "interval": 1, "expires_in": 900})
+			json.NewEncoder(w).Encode(map[string]any{"device_auth_id": "id", "user_code": "code", "interval": "1", "expires_in": "900"})
 		case "/api/accounts/deviceauth/token":
 			polls++
 			if polls < 2 {
