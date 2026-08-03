@@ -2,6 +2,7 @@
 """HTTP over vsock shim for a long-lived Claude Code CLI session."""
 
 import http.server
+import base64
 import collections
 import json
 import math
@@ -40,6 +41,9 @@ CLAUDE_MODELS = {
     "fable": "claude-fable-5",
 }
 DEFAULT_CODEX_MODEL = "luna"
+CODEX_SUBSCRIPTION_BASE_URL_ENV = "CODEX_SUBSCRIPTION_BASE_URL"
+DEFAULT_CODEX_SUBSCRIPTION_BASE_URL = "http://chatgpt.com/backend-api/"
+CODEX_DUMMY_ACCOUNT_ID = "guest-subscription-account"
 PI_MODELS = {
     # Must match the vLLM --served-model-name (projects/inference/deploy/
     # values.yaml); a wrong name 404s at the provider ("The model does not
@@ -868,10 +872,13 @@ class CodexProcess:
         codex_home = os.path.join(self.workspace, ".codex")
         _ensure_cli_dir(codex_home)
         child_env = os.environ.copy()
+        # Subscription auth is carried by the inert auth.json below. An API
+        # key is not part of ChatGPT subscription mode and must not confuse
+        # the CLI or the egress sidecar.
+        child_env.pop("OPENAI_API_KEY", None)
         child_env.update(
             {
                 "CODEX_HOME": codex_home,
-                "OPENAI_API_KEY": "ember-guest-login-gate-dummy-not-a-credential",
                 "HTTPS_PROXY": proxy_url,
                 "HTTP_PROXY": proxy_url,
                 "NO_PROXY": "127.0.0.1,localhost",
@@ -880,15 +887,65 @@ class CodexProcess:
         return child_env
 
     @staticmethod
+    def _dummy_jwt():
+        """A syntactically valid, far-future JWT carrying no real credential.
+
+        The CLI decodes these tokens locally (expiry, account id), so a bare
+        placeholder string fails to parse and the CLI decides it is logged
+        out. The signature is nonsense on purpose: nothing verifies it here,
+        and the sidecar replaces the header with the broker's real token
+        before the request leaves the guest.
+        """
+        header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=")
+        payload = base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "exp": 4102444800,  # 2100-01-01, so the CLI never self-refreshes
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": CODEX_DUMMY_ACCOUNT_ID
+                    },
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).rstrip(b"=")
+        return b".".join([header, payload, b"ember"]).decode("ascii")
+
+    @staticmethod
+    def _write_auth_json(codex_home):
+        # Shape mirrors a real subscription auth.json (auth_mode, a null API key,
+        # JWT-shaped tokens): the CLI parses these, so a placeholder string reads
+        # as logged out. The broker owns refresh; a guest refresh would consume
+        # the rotating token and lock out the fleet (ADR 048 invariant), which is
+        # why last_refresh sits in the future and the tokens never expire.
+        token = CodexProcess._dummy_jwt()
+        auth = {
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": None,
+            "tokens": {
+                "id_token": token,
+                "access_token": token,
+                "refresh_token": token,
+                "account_id": CODEX_DUMMY_ACCOUNT_ID,
+            },
+            "last_refresh": "2099-12-31T23:59:59Z",
+        }
+        with open(os.path.join(codex_home, "auth.json"), "w") as stream:
+            json.dump(auth, stream)
+
+    @staticmethod
     def _write_model_config(codex_home):
+        base_url = os.environ.get(
+            CODEX_SUBSCRIPTION_BASE_URL_ENV, DEFAULT_CODEX_SUBSCRIPTION_BASE_URL
+        )
+        # Subscription backend endpoint over cleartext injection lane (token injection happens at sidecar).
         config = """model_provider = "ember-openai"
+enable_codex_api_key_env = false
 
 [model_providers.ember-openai]
 name = "ember-openai"
-base_url = "http://api.openai.com/v1"
-env_key = "OPENAI_API_KEY"
+base_url = %s
 wire_api = "responses"
-"""
+""" % json.dumps(base_url)
         with open(os.path.join(codex_home, "config.toml"), "w") as stream:
             stream.write(config)
 
@@ -896,6 +953,7 @@ wire_api = "responses"
         if not os.path.isdir(self.workspace):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         child_env = self._child_env()
+        self._write_auth_json(child_env["CODEX_HOME"])
         self._write_model_config(child_env["CODEX_HOME"])
         model_name, effort = CODEX_MODELS.get(model, CODEX_MODELS[DEFAULT_CODEX_MODEL])
         if session_id:
