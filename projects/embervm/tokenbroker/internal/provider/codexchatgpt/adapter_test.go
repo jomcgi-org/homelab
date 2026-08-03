@@ -3,15 +3,20 @@ package codexchatgpt
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
 
 func TestDeviceFlowAndExchange(t *testing.T) {
 	polls := 0
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Forward-declared so the handler closure can reference the server's own
+	// URL (the exchange body embeds it as the redirect_uri).
+	var ts *httptest.Server
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/accounts/deviceauth/usercode":
 			json.NewEncoder(w).Encode(map[string]any{"device_auth_id": "id", "user_code": "code", "interval": 1, "expires_in": 900})
@@ -23,13 +28,22 @@ func TestDeviceFlowAndExchange(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(map[string]string{"authorization_code": "auth", "code_verifier": "verifier"})
 		case "/oauth/token":
-			if err := r.ParseForm(); err != nil {
+			body, _ := io.ReadAll(r.Body)
+			want := "grant_type=authorization_code&code=auth&redirect_uri=" + url.QueryEscape(ts.URL+"/deviceauth/callback") + "&client_id=" + ClientID + "&code_verifier=verifier"
+			if string(body) != want {
+				t.Fatalf("exchange body = %q, want %q", body, want)
+			}
+			form, err := url.ParseQuery(string(body))
+			if err != nil {
 				t.Fatal(err)
 			}
-			if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("code_verifier") != "verifier" {
-				t.Fatalf("bad exchange form: %v", r.Form)
+			if form.Get("grant_type") != "authorization_code" || form.Get("code_verifier") != "verifier" {
+				t.Fatalf("bad exchange form: %v", form)
 			}
-			json.NewEncoder(w).Encode(map[string]string{"id_token": "id-token", "access_token": "access", "refresh_token": "refresh"})
+			if form.Get("redirect_uri") != ts.URL+"/deviceauth/callback" || form.Get("code_challenge_method") != "" {
+				t.Fatalf("bad device exchange form: %v", form)
+			}
+			json.NewEncoder(w).Encode(map[string]string{"id_token": "id-token", "access_token": "e.eyJleHAiOjQxMDI0NDQ4MDAwfQ.s", "refresh_token": "refresh"})
 		}
 	}))
 	defer ts.Close()

@@ -17,12 +17,22 @@ spec:
         {{- include "embervm.tokenBroker.labels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "embervm.tokenBroker.serviceAccountName" . }}
-      securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
       containers:
         - name: tokenbroker
           image: "{{ .Values.tokenBroker.image.repository }}:{{ .Values.tokenBroker.image.tag }}@{{ .Values.tokenBroker.image.digest }}"
           imagePullPolicy: {{ .Values.tokenBroker.image.pullPolicy }}
-          ports: [{ name: http, containerPort: 8080 }]
+          ports: [{ name: http, containerPort: 8080 }, { name: metrics, containerPort: 9090 }]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
           env:
             - { name: KUBERNETES_NAMESPACE, value: {{ .Release.Namespace | quote }} }
             - { name: TOKENBROKER_GRANTS, value: {{ toJson .Values.tokenBroker.grants | quote }} }
