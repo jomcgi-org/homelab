@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -155,10 +156,20 @@ func mountVolumeDevice(logger *slog.Logger, dev, mountPath string) error {
 		return fmt.Errorf("probe volume device %s: %w", dev, err)
 	}
 	if blank {
+		// Lazy init keeps a first boot off the readiness cliff: a plain mkfs of
+		// a 10 GiB volume writes every inode table and the journal up front,
+		// inside the guest, ON the boot path, which blows the readiness budget
+		// and the guest never serves /shim/ready (observed live: the VM boots,
+		// both drives attach, then silence until the deadline). With lazy
+		// itable/journal init the kernel finishes that work in the background
+		// after mount, and discard skips trimming a freshly sparse file.
+		start := time.Now()
 		logger.Info("session volume: no filesystem signature, formatting ext4", "device", dev)
-		if out, err := exec.Command("mkfs.ext4", "-q", dev).CombinedOutput(); err != nil {
+		args := []string{"-q", "-E", "lazy_itable_init=1,lazy_journal_init=1,nodiscard", dev}
+		if out, err := exec.Command("mkfs.ext4", args...).CombinedOutput(); err != nil {
 			return fmt.Errorf("mkfs.ext4 %s: %w: %s", dev, err, string(out))
 		}
+		logger.Info("session volume: formatted", "device", dev, "took", time.Since(start).String())
 	}
 	if err := mkdirAllFn(mountPath, 0o755); err != nil {
 		return fmt.Errorf("mkdir volume mount path %s: %w", mountPath, err)
