@@ -5,8 +5,8 @@ Do not edit manually — changes will be overwritten.
 """
 
 SEMGREP_DIGESTS = {
-    "engine_amd64": "sha256:294848a6bbaf85ef7453c2b2d00a29ac9753da1083ac4b7386dcf63ecf7c0372",
-    "engine_arm64": "sha256:8ee95cdd1c063a93aba0f6ad527aa45cc84a5f656bf8e7a33b7fc60360e01767",
-    "engine_osx_arm64": "sha256:d7dc040eb1bd301c7f553988e3abaec87cf4b7c1e981bbb1df8d8dfa26f0ee03",
-    "engine_osx_x86_64": "sha256:3adcf5bce210381eef9cf16855f307a3c97605be010bfaa15cf2896409b6db53",
+    "engine_amd64": "sha256:44852bc38e073c95bdf1a637d271e2cf59d0148a618519a2f8cc8f74f283f7b8",
+    "engine_arm64": "sha256:9f9a3732aecd350cbafd6ccc5d64ebdec5fb8a1101e4f21aa993fa32261a7a0c",
+    "engine_osx_arm64": "sha256:9bb5cdf607aa86237a25bba0490b189333527997df14999aca5d44c0697129c4",
+    "engine_osx_x86_64": "sha256:1890019513f0dbcb86a460e7df6183db58255a6bcf9f1e2cbce7d8402f0a55f1",
 }
