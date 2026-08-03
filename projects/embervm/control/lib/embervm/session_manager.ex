@@ -1438,9 +1438,14 @@ defmodule Embervm.SessionManager do
            key: workload, need_mib: Map.get(entry, :mem_mib) || 512,
            base: {:ready, :snapshot_ref}
          }),
-         :ok <- restore_session_workspace(state, volume_node_id, workload, lineage_id),
+         # Both the restore and the prime must reach the INSTANCE that owns this
+         # lineage on disk. volume_node_id is a bare node name (an anchor), and
+         # dialing it fails :unknown_node, which is exactly how the first live
+         # rejoin died after create and park both worked.
+         dial_id <- Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, volume_node_id, lineage_id),
+         :ok <- restore_session_workspace(state, dial_id, workload, lineage_id),
          snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
-         {:ok, vm_id} <- prime(state, volume_node_id, snapshot_ref, entry, lineage_id) do
+         {:ok, vm_id} <- prime(state, dial_id, snapshot_ref, entry, lineage_id) do
       {:ok, vm_id}
     else
       {:error, reason} -> {:error, reason}
