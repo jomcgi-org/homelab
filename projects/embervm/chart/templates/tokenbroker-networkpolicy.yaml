@@ -54,6 +54,18 @@ spec:
     - toFQDNs: [{ matchName: {{ .fqdn | quote }} }]
       toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
     {{- end }}
-    - toEntities: [kube-apiserver]
+    # Persisting an approved grant writes a Secret through the apiserver, so this
+    # rule is what makes a login durable rather than merely successful.
+    #
+    # `kube-apiserver` alone is NOT enough here. The broker dials the kubernetes
+    # ClusterIP (10.43.0.1), which Cilium load-balances to one of the three
+    # masters' host IPs. When it picks the master the broker itself is scheduled
+    # on, the traffic is classified as `host`, and when it picks either other
+    # master it is `remote-node`; neither is the `kube-apiserver` identity. So
+    # the rule matched only sometimes, and the symptom was a silent dial timeout
+    # (packets dropped, not refused) rather than a 403. It cost a consumed
+    # single-use device code to find, because the flow completes and only the
+    # final Secret write fails (#4250).
+    - toEntities: [kube-apiserver, host, remote-node]
       toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
 {{- end }}
