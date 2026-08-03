@@ -327,6 +327,18 @@ defmodule Embervm.WakeInstance do
   # instance fact, or the row not re-reported yet). The shared core of the
   # instance-key dial resolution: every stateful/serving live-VM and bundle dial
   # routes through here so they cannot drift on the fail-open contract.
+  @doc """
+  The channel key of the instance on `node_id` currently holding the session
+  workspace volume for `lineage_id` (its `session_volumes` report it), or the
+  bare `node_id` when none is found. Volume retire/archive/delete must land on
+  the instance that owns the lineage directory on disk; dialing the node-name
+  alias fails with `:unknown_node` (observed live when the persistence flip
+  armed retirement). Same fail-open contract as `dial_for_vm/3`.
+  """
+  @spec dial_for_session_volume(atom(), String.t(), String.t()) :: String.t()
+  def dial_for_session_volume(table \\ NodeCapacity.table(), node_id, lineage_id),
+    do: dial_owning(table, node_id, :session_volumes, :lineage_id, lineage_id)
+
   defp dial_owning(table, node_id, key, field, ref)
        when is_binary(node_id) and is_binary(ref) and ref != "" do
     table
