@@ -845,6 +845,8 @@ class CodexProcess:
         self.session_id = None
         self.turn_lock = threading.Lock()
         self.process_lock = threading.Lock()
+        self.stderr_lines = collections.deque(maxlen=5)
+        self._stderr_thread = None
 
     def ready(self):
         with self.process_lock:
@@ -926,12 +928,26 @@ wire_api = "responses"
         threading.Thread(
             target=self._pump_codex_stdout, args=(process, output_queue), daemon=True
         ).start()
-        threading.Thread(
+        self.stderr_lines = collections.deque(maxlen=5)
+        self._stderr_thread = threading.Thread(
             target=ClaudeProcess._pump_stderr,
-            args=(self, process, collections.deque(maxlen=5)),
+            args=(self, process, self.stderr_lines),
             daemon=True,
-        ).start()
+        )
+        self._stderr_thread.start()
         return process, output_queue
+
+    def _empty_stream_error(self, process):
+        code = process.poll()
+        if code is None:
+            code = process.wait()
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=1)
+        error_msg = "codex exited before turn.completed, exit code %s" % code
+        stderr = _truncate_ring_for_error(self.stderr_lines)
+        if stderr:
+            error_msg += "\nCLI stderr:\n%s" % stderr
+        return RuntimeError(error_msg)
 
     @staticmethod
     def _pump_codex_stdout(process, output_queue):
@@ -963,8 +979,7 @@ wire_api = "responses"
                         % TURN_READ_TIMEOUT
                     ) from exc
                 if raw is None:
-                    code = process.poll()
-                    raise RuntimeError("codex crashed during turn, exit code %s" % code)
+                    raise self._empty_stream_error(process)
                 try:
                     event = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1023,6 +1038,8 @@ class PiProcess:
         self.session_id = None
         self.turn_lock = threading.Lock()
         self.process_lock = threading.Lock()
+        self.stderr_lines = collections.deque(maxlen=5)
+        self._stderr_thread = None
 
     def ready(self):
         with self.process_lock:
@@ -1116,12 +1133,26 @@ class PiProcess:
             args=(process, output_queue),
             daemon=True,
         ).start()
-        threading.Thread(
+        self.stderr_lines = collections.deque(maxlen=5)
+        self._stderr_thread = threading.Thread(
             target=ClaudeProcess._pump_stderr,
-            args=(self, process, collections.deque(maxlen=5)),
+            args=(self, process, self.stderr_lines),
             daemon=True,
-        ).start()
+        )
+        self._stderr_thread.start()
         return process, output_queue
+
+    def _empty_stream_error(self, process):
+        code = process.poll()
+        if code is None:
+            code = process.wait()
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=1)
+        error_msg = "pi exited before agent_end, exit code %s" % code
+        stderr = _truncate_ring_for_error(self.stderr_lines)
+        if stderr:
+            error_msg += "\nCLI stderr:\n%s" % stderr
+        return RuntimeError(error_msg)
 
     def turn(self, message, session_id=None, model=DEFAULT_PI_MODEL):
         with self.turn_lock:
@@ -1146,8 +1177,7 @@ class PiProcess:
                         % TURN_READ_TIMEOUT
                     ) from exc
                 if raw is None:
-                    code = process.poll()
-                    raise RuntimeError("pi crashed during turn, exit code %s" % code)
+                    raise self._empty_stream_error(process)
                 try:
                     event = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:

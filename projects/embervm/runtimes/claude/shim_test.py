@@ -178,6 +178,20 @@ print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
 """
 
 
+FAKE_EMPTY_CODEX_CLI = r"""#!/usr/bin/env python3
+import sys
+
+print("codex empty event stream", file=sys.stderr, flush=True)
+"""
+
+
+FAKE_EMPTY_PI_CLI = r"""#!/usr/bin/env python3
+import sys
+
+print("pi empty event stream", file=sys.stderr, flush=True)
+"""
+
+
 def test_fake_cli_fixture_syntax_is_valid():
     """Verify the FAKE_CLI embedded script is valid Python."""
     ast.parse(FAKE_CLI)
@@ -217,6 +231,34 @@ def _pi_manager(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_ARGS", str(tmp_path / "pi-args.jsonl"))
     monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     return shim.PiProcess(str(workspace), str(executable))
+
+
+def _manager_with_empty_cli(tmp_path, monkeypatch, cli, process_type):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "empty-cli"
+    executable.write_text(cli)
+    os.chmod(executable, 0o755)
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    return process_type(str(workspace), str(executable))
+
+
+def test_pi_empty_event_stream_raises_error(tmp_path, monkeypatch):
+    manager = _manager_with_empty_cli(
+        tmp_path, monkeypatch, FAKE_EMPTY_PI_CLI, shim.PiProcess
+    )
+    with pytest.raises(RuntimeError, match="pi empty event stream") as exc_info:
+        manager.turn("hello", model="qwen")
+    assert "exit code 0" in str(exc_info.value)
+
+
+def test_codex_empty_event_stream_raises_error(tmp_path, monkeypatch):
+    manager = _manager_with_empty_cli(
+        tmp_path, monkeypatch, FAKE_EMPTY_CODEX_CLI, shim.CodexProcess
+    )
+    with pytest.raises(RuntimeError, match="codex empty event stream") as exc_info:
+        manager.turn("hello", model="luna")
+    assert "exit code 0" in str(exc_info.value)
 
 
 def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
