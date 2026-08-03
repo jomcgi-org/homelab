@@ -295,7 +295,7 @@ spec:
                             the GC bookkeeping (each generation needs its own
                             liveness check rather than one is-this-latest test),
                             so it is a declared bounded scalar and never
-                            "keep everything". solo scope only.
+                            "keep everything".
                           minimum: 0
                           default: 0
                         sizeGi:

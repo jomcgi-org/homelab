@@ -2173,6 +2173,12 @@ func (s *Server) lineageAttached(workload, lineageID string) bool {
 	return s.volumes != nil && s.volumes.IsLineageAttached(workload, lineageID, ids)
 }
 
+// PruneStaleAttach makes the load-bearing IsLineageAttached cleanup explicit for
+// destructive volume operations. The returned status is intentionally ignored.
+func (s *Server) PruneStaleAttach(workload, lineageID string) {
+	_ = s.lineageAttached(workload, lineageID)
+}
+
 // workloadCapacities merges the primed vm_ids with base build state per
 // workload. Every workload that has a base OR primed VMs gets one entry.
 // free_primed_slots is the count of the primed ids so the two never disagree.

@@ -90,6 +90,10 @@ defmodule Embervm.SessionManager do
   # that cannot bank must not squat live capacity forever.
   @bank_fail_limit 3
 
+  # NodeCapacity.updated_at is stamped from a monotonic clock. Keep its freshness
+  # gate in that domain instead of comparing it with session row wall-clock times.
+  @fleet_freshness_window_ms 120_000
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -188,6 +192,7 @@ defmodule Embervm.SessionManager do
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
       clock: Keyword.get(opts, :clock, &default_clock/0),
+      monotonic_clock: Keyword.get(opts, :monotonic_clock, fn -> System.monotonic_time(:millisecond) end),
       quota_table: Keyword.get(opts, :quota_table, Embervm.Metering.table()),
       quota_config: Keyword.get(opts, :quota_config, Embervm.Metering.quota_config()),
       # Injected for tests; production uses the real claim/prime/channel seams.
@@ -274,6 +279,8 @@ defmodule Embervm.SessionManager do
       # only bite under the node_confirmed_destroy gate.
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
+      fleet_freshness_window_ms: Keyword.get(opts, :fleet_freshness_window_ms, @fleet_freshness_window_ms),
+      orphan_volume_first_seen: %{},
       # Ids already alarmed for being stuck in destroying, so the error logs once
       # per stuck id rather than every reconcile tick (pruned as ids terminalize).
       destroying_alarmed: MapSet.new(),
@@ -412,15 +419,6 @@ defmodule Embervm.SessionManager do
         {:noreply, state}
       _ -> {:noreply, state}
     end
-  end
-
-  def handle_info({:registry_sweep_retry, supervisor, spec, attempts}, state) do
-    case start_child_over_registry_sweep(supervisor, spec, attempts) do
-      {:ok, _pid} -> :ok
-      {:error, reason} -> Logger.warning("embervm session registry retry failed", reason: inspect(reason))
-      _ -> :ok
-    end
-    {:noreply, state}
   end
 
   # The async bank worker finished: complete the durable transition + failure
@@ -696,14 +694,15 @@ defmodule Embervm.SessionManager do
   # bank->relight (or adoption restart) can land here while a DEAD pid still holds
   # the key and spuriously fail the session. Retry over that window for a dead
   # holder only; a LIVE holder is a genuine double start and is surfaced as-is.
+  # The async variant was reverted because it lost the continuation that starts the session.
   defp start_child_over_registry_sweep(supervisor, spec, attempts \\ 10) do
     case DynamicSupervisor.start_child(supervisor, spec) do
       {:error, {:already_started, pid}} = error ->
         if Process.alive?(pid) or attempts <= 1 do
           error
         else
-          Process.send_after(self(), {:registry_sweep_retry, supervisor, spec, attempts - 1}, 10)
-          {:error, :registry_retry_scheduled}
+          Process.sleep(10)
+          start_child_over_registry_sweep(supervisor, spec, attempts - 1)
         end
 
       other ->
@@ -2351,31 +2350,56 @@ defmodule Embervm.SessionManager do
   end
 
   # Raw session workspaces are node facts, not snapshot warmth. Retire them so
-  # the node exports to S3 before removing the local copy. Use the freshest fact
-  # for each node and require its report to be newer than the row (or older than
-  # the orphan grace when the row is absent), avoiding stale-fact deletion.
+  # the node exports to S3 before removing the local copy. NodeCapacity freshness
+  # and row age use their respective clock domains; first-seen grace protects
+  # create-in-flight windows when the row is absent.
   defp retire_orphan_session_volumes(state, facts, nodes_facts) do
-    for f <- facts, volume <- Map.get(f, :session_volumes, []) || [], reduce: state do
-      acc ->
-        case SessionStore.get(acc.session_store, volume.lineage_id) do
+    monotonic_now = state.monotonic_clock.()
+    wall_now = state.clock.()
+
+    reported =
+      for f <- facts, volume <- Map.get(f, :session_volumes, []) || [], into: MapSet.new() do
+        {f.configured_id, volume.lineage_id}
+      end
+
+    first_seen =
+      state.orphan_volume_first_seen
+      |> Enum.filter(fn {key, _} -> MapSet.member?(reported, key) end)
+      |> Map.new()
+
+    state = %{state | orphan_volume_first_seen: first_seen}
+
+    Enum.reduce(facts, state, fn f, acc ->
+      fact = Map.get(nodes_facts, f.configured_id, f)
+      fact_updated = Map.get(fact, :updated_at, 0)
+      fact_current = monotonic_now - fact_updated <= acc.fleet_freshness_window_ms
+
+      Enum.reduce(Map.get(f, :session_volumes, []) || [], acc, fn volume, inner ->
+        key = {f.configured_id, volume.lineage_id}
+
+        case SessionStore.get(inner.session_store, volume.lineage_id) do
           {:ok, %{workload: workload, state: session_state}}
               when workload == volume.workload and session_state not in [:expired, :evicted, :destroyed, :failed] ->
-            acc
+            %{inner | orphan_volume_first_seen: Map.delete(inner.orphan_volume_first_seen, key)}
 
-          row ->
-            fact_updated = Map.get(Map.get(nodes_facts, f.configured_id, f), :updated_at, 0)
-            row_updated = if match?({:ok, _}, row), do: elem(row, 1).updated_at, else: fact_updated
-            if state.clock.() - row_updated >= state.orphan_grace_ms and
-                 fact_updated >= row_updated do
-              # retire_session_volume spawns fire-and-forget and returns :ok,
-              # never state; the reduce must keep threading acc.
-              _ = retire_session_volume(acc, %{volume_node_id: f.configured_id, workload: volume.workload, session_id: volume.lineage_id})
-              acc
-            else
-              acc
+          {:ok, %{state: session_state, updated_at: row_updated}}
+              when session_state in [:expired, :evicted, :destroyed, :failed] ->
+            inner = %{inner | orphan_volume_first_seen: Map.delete(inner.orphan_volume_first_seen, key)}
+            if fact_current and wall_now - row_updated >= inner.orphan_grace_ms do
+              _ = retire_session_volume(inner, %{volume_node_id: f.configured_id, workload: volume.workload, session_id: volume.lineage_id})
             end
+            inner
+
+          _ ->
+            seen = Map.get(inner.orphan_volume_first_seen, key, monotonic_now)
+            inner = %{inner | orphan_volume_first_seen: Map.put(inner.orphan_volume_first_seen, key, seen)}
+            if fact_current and monotonic_now - seen >= inner.orphan_grace_ms do
+              _ = retire_session_volume(inner, %{volume_node_id: f.configured_id, workload: volume.workload, session_id: volume.lineage_id})
+            end
+            inner
         end
-    end
+      end)
+    end)
   end
 
   # -- sweep: expiry, banked-TTL GC, disk-pressure eviction (Task 7) ---------
@@ -3004,6 +3028,10 @@ defmodule Embervm.SessionManager do
         end
 
       case result do
+        {:ok, %{skipped: true}} ->
+          Logger.warning("embervm drain archive skipped, lineage still attached",
+            workload: workload, lineage_id: lineage_id, node_id: node_id)
+          {:error, :archive_skipped}
         {:ok, _} -> :ok
         other ->
           Logger.warning("embervm session workspace archive failed; keeping volume",

@@ -101,7 +101,7 @@ defmodule Embervm.S3WarmthGc do
 
   # The ONLY prefixes this GC may ever touch. Each rule is explicit: base/,
   # session/, serving/, and volume/ remain hard-excluded.
-  @allowlist ["stateful/", "group_set/", "session-workspace/"]
+  @allowlist ["stateful/", "group_set/"]
 
   # -- Client API --------------------------------------------------------------
 

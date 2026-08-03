@@ -1020,7 +1020,9 @@ message DeleteVolumeRequest {
   string lineage_id = 3;
 }
 
-message DeleteVolumeResponse {}
+message DeleteVolumeResponse {
+  string lineage_id = 1;
+}
 
 message ArchiveVolumeRequest {
   Trace trace = 1;
