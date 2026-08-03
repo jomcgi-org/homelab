@@ -96,7 +96,8 @@ defmodule Embervm.SessionManagerTest do
         registry: registry,
         capacity_table: cap_table,
         catalog_table: cat_table,
-        clock: fn -> 5_000_000 end,
+        clock: Keyword.get(opts, :clock, fn -> 5_000_000 end),
+        monotonic_clock: Keyword.get(opts, :monotonic_clock, fn -> -800_000 end),
         channel_fun: Keyword.get(opts, :channel_fun, fake_channel_fun()),
         claim_fun: Keyword.get(opts, :claim_fun, fn _d, _n, _w -> {:ok, "vm-primed-#{suffix}"} end),
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
@@ -769,10 +770,12 @@ defmodule Embervm.SessionManagerTest do
     assert session.state == :running
   end
 
-  test "orphan session volume with no row is retired after grace" do
+  test "orphan session volume with no row gets first-seen grace" do
     parent = self()
+    {:ok, mono} = Agent.start_link(fn -> -800_000 end)
     ctx = start_stack(
-      orphan_grace_ms: 0,
+      orphan_grace_ms: 60_000,
+      monotonic_clock: fn -> Agent.get(mono, & &1) end,
       retire_volume_fun: fn _ch, req -> send(parent, {:retired, req.lineage_id}); {:ok, %{}} end
     )
     NodeCapacity.put(ctx.cap_table, "node-4", %{
@@ -785,11 +788,36 @@ defmodule Embervm.SessionManagerTest do
       live_vms: 0,
       max_live_vms: 8,
       draining: false,
-      updated_at: 5_000_000
+      updated_at: -800_000
     })
 
     :ok = SessionManager.reconcile(ctx.mgr)
+    refute_receive {:retired, "s-orphan-lineage"}, 300
+    Agent.update(mono, &(&1 + 60_001))
+    :ok = SessionManager.reconcile(ctx.mgr)
     assert_receive {:retired, "s-orphan-lineage"}, 1_000
+  end
+
+  test "terminal orphan session volume retires on wall-clock row age" do
+    parent = self()
+    ctx = start_stack(
+      orphan_grace_ms: 60_000,
+      store_clock: fn -> 4_000_000 end,
+      retire_volume_fun: fn _ch, req -> send(parent, {:retired, req.lineage_id}); {:ok, %{}} end
+    )
+    {:ok, session} = SessionStore.create(ctx.store, %{
+      tenant: "homelab", principal: "p1", workload: "wl-failed", node_id: "node-4",
+      vm_id: "vm-failed", base_snapshot_ref: "base", base_digest: "digest", expires_at: 9_999_999
+    })
+    assert {:ok, _} = SessionStore.transition(ctx.store, session.session_id, :fail, :session_failed, %{}, %{})
+    NodeCapacity.put(ctx.cap_table, "node-4", %{
+      node_id: "node-4", configured_id: "node-4", workloads: %{}, session_vms: [], session_snapshots: [],
+      session_volumes: [%{workload: "wl-failed", lineage_id: session.session_id, size_bytes: 1}],
+      live_vms: 0, max_live_vms: 8, draining: false, updated_at: -800_000
+    })
+    :ok = SessionManager.reconcile(ctx.mgr)
+    session_id = session.session_id
+    assert_receive {:retired, ^session_id}, 1_000
   end
 
   test "parked session's reported volume is not retired" do

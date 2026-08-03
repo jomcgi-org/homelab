@@ -771,7 +771,9 @@ func (s *Server) DeleteVolume(_ context.Context, req *nodev1.DeleteVolumeRequest
 	}
 	var err error
 	if req.GetLineageId() != "" {
-		_ = s.lineageAttached(workload, req.GetLineageId())
+		// Deliberately prune stale attachment records before DeleteSession. Removing
+		// this call strands crashed lineages forever.
+		s.PruneStaleAttach(workload, req.GetLineageId())
 		err = s.volumes.DeleteSession(workload, req.GetLineageId())
 	} else {
 		err = s.volumes.Delete(workload)

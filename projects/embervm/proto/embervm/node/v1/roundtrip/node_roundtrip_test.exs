@@ -85,7 +85,7 @@ defmodule Embervm.NodeRoundtripTest do
       volume_size_bytes: 10_737_418_240,
       lineage_id: "lineage-1"
     })
-    assert pr.vm_id == "vm:snapX"
+    assert pr.vm_id == "vm:lineage-1:/workspace"
 
     {:ok, asg} =
       NodeService.Stub.assign(ch, %AssignRequest{
@@ -104,6 +104,7 @@ defmodule Embervm.NodeRoundtripTest do
     {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
     assert ns.node_id == "node-4"
     assert ns.max_live_vms == 10
+    assert [%{workload: "sandbox-session", lineage_id: "s-sess3", size_bytes: 1024, allocated_bytes: 512}] = ns.session_volumes
   end
 
   test "session verbs round-trip across the wire (R2 additive contract)", %{channel: ch} do
@@ -334,8 +335,8 @@ defmodule Embervm.NodeRoundtripTest do
     assert aborted.generation == 0
     assert aborted.size_bytes == 0
 
-    # DeleteVolume: idempotent, returns an empty response.
-    assert {:ok, _} =
+    # DeleteVolume: idempotent, and echoes the lineage that was deleted.
+    assert {:ok, %Embervm.Node.V1.DeleteVolumeResponse{lineage_id: "lineage-1"}} =
              NodeService.Stub.delete_volume(ch, %DeleteVolumeRequest{workload: "scratch-postgres", lineage_id: "lineage-1"})
   end
 

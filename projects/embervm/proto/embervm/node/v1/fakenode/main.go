@@ -58,7 +58,7 @@ func (*fakeServer) BuildBase(_ context.Context, req *nodev1.BuildBaseRequest) (*
 }
 
 func (*fakeServer) Prime(_ context.Context, req *nodev1.PrimeRequest) (*nodev1.PrimeResponse, error) {
-	return &nodev1.PrimeResponse{VmId: "vm:" + req.GetSnapshotRef()}, nil
+	return &nodev1.PrimeResponse{VmId: "vm:" + req.GetLineageId() + ":" + req.GetVolumeMount()}, nil
 }
 
 func (*fakeServer) Assign(_ context.Context, req *nodev1.AssignRequest) (*nodev1.AssignResponse, error) {
@@ -234,9 +234,9 @@ func (*fakeServer) ResolveStateful(_ context.Context, req *nodev1.ResolveStatefu
 	return &nodev1.ResolveStatefulResponse{}, nil
 }
 
-// DeleteVolume is idempotent and returns an empty response for any workload.
-func (*fakeServer) DeleteVolume(_ context.Context, _ *nodev1.DeleteVolumeRequest) (*nodev1.DeleteVolumeResponse, error) {
-	return &nodev1.DeleteVolumeResponse{}, nil
+// DeleteVolume is idempotent and echoes the lineage for round-trip coverage.
+func (*fakeServer) DeleteVolume(_ context.Context, req *nodev1.DeleteVolumeRequest) (*nodev1.DeleteVolumeResponse, error) {
+	return &nodev1.DeleteVolumeResponse{LineageId: req.GetLineageId()}, nil
 }
 
 func (*fakeServer) ArchiveVolume(_ context.Context, _ *nodev1.ArchiveVolumeRequest) (*nodev1.ArchiveVolumeResponse, error) {
@@ -413,6 +413,9 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 				SizeBytes:       4096,
 				CreatedAtUnixMs: 1_700_000_000_000,
 			},
+		},
+		SessionVolumes: []*nodev1.SessionVolume{
+			{Workload: "sandbox-session", LineageId: "s-sess3", SizeBytes: 1024, AllocatedBytes: 512},
 		},
 		SnapshotDiskFreeBytes: 9_000_000_000,
 		SnapshotDiskUsedBytes: 1_000_000_000,
