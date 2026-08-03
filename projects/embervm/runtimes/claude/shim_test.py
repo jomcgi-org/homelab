@@ -403,6 +403,21 @@ def test_codex_config_uses_subscription_endpoint_override(tmp_path, monkeypatch)
     assert "enable_codex_api_key_env = false" in config
 
 
+def test_codex_config_appends_codex_to_no_slash_endpoint(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    endpoint = "http://broker.test/backend-api"
+    monkeypatch.setenv(shim.CODEX_SUBSCRIPTION_BASE_URL_ENV, endpoint)
+    child_env = manager._child_env()
+    manager._write_model_config(child_env["CODEX_HOME"])
+    config = (tmp_path / "workspace" / ".codex" / "config.toml").read_text()
+    assert 'base_url = "http://broker.test/backend-api/codex/"' in config
+    assert 'chatgpt_base_url = "%s"' % endpoint in config
+    assert "api.openai.com" not in config
+    assert 'name = "ember-openai"' in config
+    assert 'wire_api = "responses"' in config
+    assert "enable_codex_api_key_env = false" in config
+
+
 def test_codex_child_env_drops_openai_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-codex")
     manager = _codex_manager(tmp_path, monkeypatch)
