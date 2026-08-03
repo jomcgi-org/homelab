@@ -307,12 +307,11 @@ egress:
     # loop (deferred).
     - header: "Authorization"
       valuePrefix: "Bearer "
-      env: "EMBER_OPENAI_API_KEY"
       egressTo:
         - "api.openai.com"
-      secretRef:
-        name: "embervm-embervm-egress"
-        key: "OPENAI_API_KEY"
+      # The subscription grant supplies short-lived tokens. If the broker is
+      # absent or unavailable, the sidecar fails closed and denies this host.
+      brokerGrant: "codex-cluster"
   # Shared with the monolith gardener, which reads the same item. Read-only sync,
   # so two consumers is fine; the field label CLAUDE_AUTH_TOKEN becomes the key.
   onepassword:

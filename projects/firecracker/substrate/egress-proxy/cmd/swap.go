@@ -29,11 +29,90 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 )
+
+const brokerRefreshMargin = 60 * time.Second
+
+type brokerTokenResponse struct {
+	AccessToken string    `json:"access_token"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+type brokerGrantState struct {
+	mu        sync.Mutex
+	token     string
+	expiresAt time.Time
+}
+
+type tokenBroker struct {
+	baseURL string
+	client  *http.Client
+	mu      sync.Mutex
+	grants  map[string]*brokerGrantState
+}
+
+func newTokenBroker(rawURL string) *tokenBroker {
+	if rawURL == "" {
+		return &tokenBroker{grants: make(map[string]*brokerGrantState)}
+	}
+	if !strings.Contains(rawURL, "://") {
+		rawURL = "http://" + rawURL
+	}
+	return &tokenBroker{
+		baseURL: strings.TrimRight(rawURL, "/"),
+		client:  &http.Client{Timeout: 10 * time.Second},
+		grants:  make(map[string]*brokerGrantState),
+	}
+}
+
+func (b *tokenBroker) state(grant string) *brokerGrantState {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if s, ok := b.grants[grant]; ok {
+		return s
+	}
+	s := &brokerGrantState{}
+	b.grants[grant] = s
+	return s
+}
+
+func (b *tokenBroker) token(grant string) (string, time.Time, error) {
+	state := b.state(grant)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.token != "" && time.Now().Before(state.expiresAt.Add(-brokerRefreshMargin)) {
+		return state.token, state.expiresAt, nil
+	}
+	if b.baseURL == "" {
+		return "", time.Time{}, fmt.Errorf("token broker URL is empty")
+	}
+	endpoint := b.baseURL + "/grants/" + url.PathEscape(grant) + "/token"
+	resp, err := b.client.Get(endpoint)
+	if err != nil {
+		state.token, state.expiresAt = "", time.Time{}
+		return "", time.Time{}, fmt.Errorf("get grant %q: %w", grant, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		state.token, state.expiresAt = "", time.Time{}
+		return "", time.Time{}, fmt.Errorf("get grant %q: broker returned %s", grant, resp.Status)
+	}
+	var result brokerTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.AccessToken == "" || result.ExpiresAt.IsZero() {
+		state.token, state.expiresAt = "", time.Time{}
+		if err == nil {
+			err = fmt.Errorf("missing access_token or expires_at")
+		}
+		return "", time.Time{}, fmt.Errorf("decode grant %q: %w", grant, err)
+	}
+	state.token, state.expiresAt = result.AccessToken, result.ExpiresAt
+	return state.token, state.expiresAt, nil
+}
 
 // secretEntry is one catalog entry: on a connection to a host in EgressTo, the
 // sidecar sets Header to ValuePrefix+value, where value is resolved from the
@@ -52,8 +131,12 @@ type secretEntry struct {
 	// ValuePrefix is prepended to the resolved value, e.g. "Bearer ".
 	ValuePrefix string   `json:"valuePrefix"`
 	Env         string   `json:"env"`
+	BrokerGrant string   `json:"brokerGrant"`
 	EgressTo    []string `json:"egressTo"`
 	value       string   // resolved real value; never serialized, never logged
+	expiresAt   time.Time
+	broker      *tokenBroker
+	mu          *sync.RWMutex
 }
 
 // live reports whether this entry can actually inject. A catalog entry whose
@@ -61,7 +144,53 @@ type secretEntry struct {
 // dropping it would make secretFor miss, and a guest on the cleartext lane would
 // then fall through to the blind tunnel and send its prompt over the public
 // internet unencrypted.
-func (e *secretEntry) live() bool { return e.value != "" }
+func (e *secretEntry) live() bool {
+	if e.mu != nil {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+	}
+	return e.value != ""
+}
+
+func (e *secretEntry) resolve() error {
+	if e.BrokerGrant == "" {
+		return nil
+	}
+	if e.broker == nil {
+		if e.mu == nil {
+			e.mu = &sync.RWMutex{}
+		}
+		e.mu.Lock()
+		e.value, e.expiresAt = "", time.Time{}
+		e.mu.Unlock()
+		return fmt.Errorf("token broker is not configured")
+	}
+	token, expiresAt, err := e.broker.token(e.BrokerGrant)
+	if err != nil {
+		if e.mu == nil {
+			e.mu = &sync.RWMutex{}
+		}
+		e.mu.Lock()
+		e.value, e.expiresAt = "", time.Time{}
+		e.mu.Unlock()
+		return err
+	}
+	if e.mu == nil {
+		e.mu = &sync.RWMutex{}
+	}
+	e.mu.Lock()
+	e.value, e.expiresAt = token, expiresAt
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *secretEntry) resolvedValue() string {
+	if e.mu != nil {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+	}
+	return e.value
+}
 
 // loadSecrets parses EGRESS_SECRETS (a JSON catalog) and resolves each real value
 // from the sidecar env.
@@ -76,6 +205,10 @@ func (e *secretEntry) live() bool { return e.value != "" }
 //     crash-loop the sidecar and take down all guest egress on the node over one
 //     unresolved credential.
 func loadSecrets(logger *slog.Logger) []secretEntry {
+	return loadSecretsWithBroker(logger, os.Getenv("EGRESS_TOKEN_BROKER_URL"))
+}
+
+func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry {
 	raw := os.Getenv("EGRESS_SECRETS")
 	if strings.TrimSpace(raw) == "" {
 		return nil
@@ -86,14 +219,24 @@ func loadSecrets(logger *slog.Logger) []secretEntry {
 		exitFn(1)
 		return nil
 	}
+	broker := newTokenBroker(brokerURL)
 	out := make([]secretEntry, 0, len(entries))
 	for _, e := range entries {
-		if e.Header == "" || e.Env == "" || len(e.EgressTo) == 0 {
-			logger.Error("incomplete secret catalog entry (needs header, env, egressTo); refusing to start", "env", e.Env)
+		hasSecret := (e.Env != "") != (e.BrokerGrant != "")
+		if e.Header == "" || len(e.EgressTo) == 0 || !hasSecret {
+			logger.Error("invalid secret catalog entry (needs exactly one of env or brokerGrant, plus header and egressTo); refusing to start", "env", e.Env, "brokerGrant", e.BrokerGrant)
 			exitFn(1)
 			return nil
 		}
-		e.value = os.Getenv(e.Env)
+		if e.BrokerGrant != "" {
+			e.broker = broker
+			e.mu = &sync.RWMutex{}
+			if err := e.resolve(); err != nil {
+				logger.Error("broker token empty; its egressTo hosts will be DENIED", "grant", e.BrokerGrant, "egressTo", e.EgressTo, "err", err)
+			}
+		} else {
+			e.value = os.Getenv(e.Env)
+		}
 		if !e.live() {
 			// Secret-backed environment variables are fixed for the lifetime of a
 			// container. A pod restart is required after the secret resolves.
@@ -353,6 +496,6 @@ func injectRequest(req *http.Request, sec *secretEntry) bool {
 	if !requested {
 		return false
 	}
-	req.Header.Set(sec.Header, sec.ValuePrefix+sec.value)
+	req.Header.Set(sec.Header, sec.ValuePrefix+sec.resolvedValue())
 	return true
 }

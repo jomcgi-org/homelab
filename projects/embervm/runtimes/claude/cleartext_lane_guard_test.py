@@ -81,12 +81,23 @@ def test_cleartext_base_url_has_a_credential_entry() -> None:
     )
 
 
-def test_credentials_arrive_only_by_secret_ref() -> None:
-    """No entry may carry an inline value; that is how one gets committed."""
+def test_credentials_arrive_only_by_managed_source() -> None:
+    """No entry may carry an inline value; that is how one gets committed.
+
+    Exactly one managed source per entry: a secretRef (a Kubernetes Secret,
+     1Password-synced) or a brokerGrant (a short-lived access token fetched
+    from the token broker, ADR 048). Both name a credential the sidecar
+    resolves at runtime; neither puts one in git. An entry naming both is
+    ambiguous and an entry naming neither can never inject, so both are
+    rejected here as well as in the chart.
+    """
     for entry in _egress_secrets():
-        assert entry.get("secretRef"), (
-            f"egress secret {entry.get('env')!r} has no secretRef. Credentials "
-            "must come from a Secret, never from a literal in values.yaml."
+        sources = [k for k in ("secretRef", "brokerGrant") if entry.get(k)]
+        assert len(sources) == 1, (
+            f"egress entry {entry.get('env') or entry.get('brokerGrant')!r} names "
+            f"{sources or 'no'} credential source. Exactly one of secretRef or "
+            "brokerGrant is required; a credential must never be a literal in "
+            "values.yaml."
         )
         assert "value" not in entry, (
             f"egress secret {entry.get('env')!r} carries an inline value."

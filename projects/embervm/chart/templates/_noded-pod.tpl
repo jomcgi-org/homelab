@@ -372,10 +372,27 @@ containers:
       # render into the pod spec.
       {{- $catalog := list }}
       {{- range $s := $ctx.Values.egress.secrets }}
+      {{- $hasSecretRef := and (hasKey $s "secretRef") (not (empty $s.secretRef)) }}
+      {{- $hasBrokerGrant := and (hasKey $s "brokerGrant") (not (empty $s.brokerGrant)) }}
+      {{- if or (and $hasSecretRef $hasBrokerGrant) (not (or $hasSecretRef $hasBrokerGrant)) (and $hasSecretRef (empty $s.env)) }}
+      {{- fail (printf "egress.secrets entry for %v must set exactly one of secretRef or brokerGrant, and secretRef entries need env" $s.egressTo) }}
+      {{- end }}
+      {{- if $hasBrokerGrant }}
+      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "brokerGrant" $s.brokerGrant "egressTo" $s.egressTo) }}
+      {{- else }}
       {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "env" $s.env "egressTo" $s.egressTo) }}
+      {{- end }}
       {{- end }}
       - name: EGRESS_SECRETS
         value: {{ $catalog | toJson | quote }}
+      {{- $hasBroker := false }}
+      {{- range $s := $ctx.Values.egress.secrets }}
+      {{- if and (hasKey $s "brokerGrant") (not (empty $s.brokerGrant)) }}{{- $hasBroker = true }}{{- end }}
+      {{- end }}
+      {{- if $hasBroker }}
+      - name: EGRESS_TOKEN_BROKER_URL
+        value: {{ printf "%s.%s.svc.cluster.local:8080" (include "embervm.tokenBroker.fullname" $ctx) $ctx.Release.Namespace | quote }}
+      {{- end }}
       {{- if $ctx.Values.egress.ca.enabled }}
       # Optional TLS-MITM lane, for a guest that speaks https:// to the sidecar and
       # already trusts this CA. The claude runtime does NOT: it speaks cleartext
@@ -388,6 +405,7 @@ containers:
         value: /etc/egress-ca/tls.key
       {{- end }}
       {{- range $s := $ctx.Values.egress.secrets }}
+      {{- if and (hasKey $s "secretRef") (not (empty $s.secretRef)) }}
       # secretRef ONLY. There is deliberately no literal-value branch: a chart that
       # accepts an inline credential is a chart someone eventually commits one to.
       # optional: a catalog entry whose secret FIELD does not exist yet is the
@@ -400,6 +418,7 @@ containers:
             name: {{ $s.secretRef.name }}
             key: {{ $s.secretRef.key }}
             optional: true
+      {{- end }}
       {{- end }}
       {{- end }}
     {{- if $ctx.Values.egress.ca.enabled }}
