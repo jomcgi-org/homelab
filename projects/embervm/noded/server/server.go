@@ -958,6 +958,12 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	}
 	volumeDiskPath := req.GetVolumeDiskPath()
 	if req.GetLineageId() != "" {
+		// Guard like every other volume RPC does: a nil manager here would be a
+		// nil-pointer panic inside the handler, which reaches the caller as an
+		// unexplained stream cancel rather than a diagnosis.
+		if s.volumes == nil {
+			return nil, status.Error(codes.FailedPrecondition, "noded: volume manager not configured; session persistence unavailable on this node")
+		}
 		volumeDiskPath = s.volumes.SessionVolumePath(base.workload, req.GetLineageId())
 		if err := s.volumes.CreateSession(base.workload, req.GetLineageId(), req.GetVolumeSizeBytes()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)

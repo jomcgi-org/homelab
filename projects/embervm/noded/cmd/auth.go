@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -35,12 +38,28 @@ func checkBearer(ctx context.Context, token string) error {
 	return nil
 }
 
-// unaryAuthInterceptor gates every unary RPC on the bearer token.
+// unaryAuthInterceptor gates every unary RPC on the bearer token, and converts
+// a handler panic into an Internal status carrying the panic and its stack.
+//
+// Without this a panicking handler kills the stream and the caller sees only
+// a bare CANCEL (%Mint.HTTPError{reason: {:server_closed_request, :cancel}}),
+// which is indistinguishable from a client-side deadline and cost a full
+// debugging cycle on the session-persistence rollout. A crash should name
+// itself.
 func unaryAuthInterceptor(token string) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if err := checkBearer(ctx, token); err != nil {
-			return nil, err
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		if berr := checkBearer(ctx, token); berr != nil {
+			return nil, berr
 		}
+		defer func() {
+			if r := recover(); r != nil {
+				stack := string(debug.Stack())
+				slog.Error("noded: rpc handler panicked",
+					"method", info.FullMethod, "panic", fmt.Sprint(r), "stack", stack)
+				resp = nil
+				err = status.Errorf(codes.Internal, "noded: %s panicked: %v", info.FullMethod, r)
+			}
+		}()
 		return handler(ctx, req)
 	}
 }
