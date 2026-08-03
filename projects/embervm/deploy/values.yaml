@@ -325,14 +325,7 @@ egress:
 # session at all. Sizing and the node disk arithmetic are in chart/values.yaml.
 claudeRuntimeWorkload:
   enabled: true
-  # The ADR 027 memory:false/filesystem:true quadrant, armed after the #4241
-  # hardening gate merged: sessions ride per-lineage workspace volumes with
-  # park/rejoin instead of memory-snapshot banking, S3 archival at retirement,
-  # and restore-first rejoin. Raw files in S3 replace multi-GiB snapshots.
-  # OFF. Six arms. The guest never runs its init on a lineage COLD BOOT: the
-  # kernel boots and mounts the rootfs read-only, then the console goes silent
-  # and guest-init logs nothing at all (not even the volume-format line it
-  # would emit first), so readiness never arrives. Next step is the full guest
-  # console for one failing VM plus the cold-boot kernel cmdline (init=), per
-  # #4271. Everything CP-side and the drive attach are proven working.
-  persistenceEnabled: false
+  # Armed on the session cold-boot init fix (#4282): a lineage prime emitted no
+  # init= on the kernel command line, so the guest dropped to /bin/sh and never
+  # served readiness. That was the root cause under six earlier arms.
+  persistenceEnabled: true
