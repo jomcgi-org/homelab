@@ -25,6 +25,7 @@ from agent_sessions.transport import (
 )
 from core.db import get_engine
 from core.mcp_app import mcp
+from faas.embervm_client import EmberVMTransportError
 from framework import log_task_exception
 
 _transport = EmberVmShimTransport()
@@ -68,6 +69,11 @@ def _persist_ember_session(session_id: int, ember: EmberSession) -> None:
             ember.session_token,
             ember.expires_at,
         )
+
+
+def _clear_ember_bindings_for(ember_id: str) -> list[int]:
+    with Session(get_engine()) as db_session:
+        return store.clear_ember_bindings_by_ember_id(db_session, ember_id)
 
 
 def _persist_pending_message(
@@ -524,6 +530,43 @@ async def monolith_agent_detail(session_id: int, turn: int | None = None) -> dic
         "model": selected.model,
         "activities": _activities(selected),
     }
+
+
+@mcp.tool
+async def monolith_agent_session_vms(limit: int = 50, offset: int = 0) -> dict:
+    """List the EmberVM session VMs holding claude-runtime workload slots.
+
+    The workload cap counts parked sessions as live, so stale test sessions
+    can deny every new create with a workload_cap 429. This lists the slot
+    holders (state, timestamps, expiry) so the stale ones can be destroyed
+    with monolith-agent-session-destroy.
+    """
+    try:
+        return await _transport.list_sessions(limit=limit, offset=offset)
+    except EmberVMTransportError as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool
+async def monolith_agent_session_destroy(ember_session_id: str) -> dict:
+    """Destroy one EmberVM session VM, freeing its workload cap slot.
+
+    Args:
+        ember_session_id: The control plane session id (s-...), from
+            monolith-agent-session-vms or a session's stored binding.
+
+    Destroying a session an in-flight turn is using makes that turn fail;
+    intended for stale or parked test sessions. Any monolith agent session
+    bound to the destroyed id has its binding cleared so the next send
+    creates a fresh EmberVM session instead of invoking a dead one.
+    """
+    try:
+        result = await _transport.destroy_session(ember_session_id)
+    except EmberVMTransportError as exc:
+        return {"error": str(exc)}
+    cleared = await asyncio.to_thread(_clear_ember_bindings_for, ember_session_id)
+    result["cleared_bindings"] = cleared
+    return result
 
 
 # -- token broker login (ADR 048, #4250 PR 2) --------------------------------

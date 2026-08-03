@@ -173,6 +173,95 @@ class EmberVmShimTransport:
             logger.warning("embervm session creation transport error: %s", exc)
             raise EmberVMTransportError(str(exc)) from exc
 
+    # The operator surface for the workload cap: parked sessions count as live
+    # slot holders, so a stale test session denies every new create until it
+    # is listed here and destroyed. Both calls use management auth, not a
+    # session bearer token, so they act on any session in the workload.
+
+    async def list_sessions(self, limit: int = 50, offset: int = 0) -> dict:
+        """List the control plane's sessions for this workload (management auth).
+
+        Args:
+            limit: Maximum sessions to return (clamped 1-500 server side).
+            offset: Offset into the workload's session list.
+
+        Returns:
+            The control plane's paginated session listing.
+
+        Raises:
+            EmberVMTransportError: If the listing request fails.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+
+        url = f"{EMBERVM_URL}/v1/workloads/{self.workload}/sessions"
+        headers = auth_headers()
+        timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(
+                    url, params={"limit": limit, "offset": offset}, headers=headers
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.TimeoutException as exc:
+            logger.warning("embervm session listing timed out: %s", exc)
+            raise EmberVMTimeout(str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.warning("embervm session listing failed: %s", exc)
+            raise EmberVMTransportError(_status_error_detail(exc)) from exc
+        except httpx.TransportError as exc:
+            logger.warning("embervm session listing transport error: %s", exc)
+            raise EmberVMTransportError(str(exc)) from exc
+
+    async def destroy_session(self, ember_session_id: str) -> dict:
+        """Destroy one control plane session by its EmberVM session id (management auth).
+
+        Args:
+            ember_session_id: The control plane session id (s-...) to destroy.
+
+        Returns:
+            The control plane's destroy response.
+
+        Raises:
+            EmberVMTransportError: If the destroy request fails, including a
+                404 for a session that is already gone.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+
+        url = f"{EMBERVM_URL}/v1/sessions/{ember_session_id}"
+        headers = auth_headers()
+        timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.delete(url, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "embervm session destroy timed out for session %s: %s",
+                ember_session_id,
+                exc,
+            )
+            raise EmberVMTimeout(str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "embervm session destroy failed for session %s: %s",
+                ember_session_id,
+                exc,
+            )
+            raise EmberVMTransportError(_status_error_detail(exc)) from exc
+        except httpx.TransportError as exc:
+            logger.warning(
+                "embervm session destroy transport error for session %s: %s",
+                ember_session_id,
+                exc,
+            )
+            raise EmberVMTransportError(str(exc)) from exc
+
     async def deliver(
         self,
         ember: EmberSession | None,
