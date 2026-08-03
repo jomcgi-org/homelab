@@ -328,4 +328,9 @@ claudeRuntimeWorkload:
   # hardening gate merged: sessions ride per-lineage workspace volumes with
   # park/rejoin instead of memory-snapshot banking, S3 archival at retirement,
   # and restore-first rejoin. Raw files in S3 replace multi-GiB snapshots.
-  persistenceEnabled: true
+  # DISARMED 2026-08-03 after the live flip: enabling persistence made every
+  # claude-runtime session create deny with :no_capacity (all model families,
+  # since they share this workload), so the flip is reverted while #4262 finds
+  # why placement refuses a lineage-volume create. The hardening gate (#4241)
+  # and the archive/rejoin machinery stay merged and dormant.
+  persistenceEnabled: false
