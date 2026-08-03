@@ -329,9 +329,8 @@ claudeRuntimeWorkload:
   # hardening gate merged: sessions ride per-lineage workspace volumes with
   # park/rejoin instead of memory-snapshot banking, S3 archival at retirement,
   # and restore-first rejoin. Raw files in S3 replace multi-GiB snapshots.
-  # OFF. Five arms. Fault is now localized to the GUEST: on a lineage cold
-  # boot noded logs "vsock prime ... context deadline exceeded", i.e. the guest
-  # never serves /shim/ready, so this is guest-init failing to come up with the
-  # workspace volume (suspect the ember.volume_dev boot-arg contract and the
-  # mount), not the CP. See #4271.
-  persistenceEnabled: false
+  # Armed on the first-boot format fix (#4279): mkfs of the fresh 10 GiB
+  # workspace ran synchronously on the guest's boot path, which is why the
+  # guest never served /shim/ready. Lazy itable/journal init moves it off that
+  # path, and the format is timed in the guest log either way.
+  persistenceEnabled: true
