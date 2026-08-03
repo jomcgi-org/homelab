@@ -802,6 +802,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		nic:            spec.NIC,
 		volumeDiskPath: spec.VolumeDiskPath,
 		volumeMount:    spec.VolumeMount,
+		harnessInit:    spec.ColdBootHarnessInit,
 	})
 }
 

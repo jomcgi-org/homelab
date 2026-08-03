@@ -989,6 +989,19 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 			}
 			return ""
 		}(),
+		// A lineage prime cold boots, so it must carry the guest entrypoint the
+		// way the serving cold boot does. Resolve it from the workload's image
+		// with the node default as fallback; without init= the kernel drops to
+		// /bin/sh and the guest never serves readiness.
+		ColdBootHarnessInit: func() string {
+			if req.GetLineageId() == "" {
+				return ""
+			}
+			if img, ok := s.resolveImage(base.workload, ""); ok && img.HarnessInit != "" {
+				return img.HarnessInit
+			}
+			return s.cfg.HarnessInit
+		}(),
 	}
 	h, err := s.driver.Claim(ctx, spec)
 	if err != nil {
