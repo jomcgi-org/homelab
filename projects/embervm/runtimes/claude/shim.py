@@ -41,7 +41,10 @@ CLAUDE_MODELS = {
 }
 DEFAULT_CODEX_MODEL = "luna"
 PI_MODELS = {
-    "qwen": "qwen-plus",  # vLLM endpoint serves OpenAI Chat Completions API
+    # Must match the vLLM --served-model-name (projects/inference/deploy/
+    # values.yaml); a wrong name 404s at the provider ("The model does not
+    # exist"), proven live in #4252.
+    "qwen": "qwen3.6-27b",
 }
 DEFAULT_PI_MODEL = "qwen"
 MAX_REQUEST_BODY_BYTES = 1 << 20
