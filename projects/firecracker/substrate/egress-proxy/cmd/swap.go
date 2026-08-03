@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -133,6 +134,8 @@ type secretEntry struct {
 	Env         string   `json:"env"`
 	BrokerGrant string   `json:"brokerGrant"`
 	EgressTo    []string `json:"egressTo"`
+	ClaimHeader string   `json:"claimHeader"`
+	ClaimPath   string   `json:"claimPath"`
 	value       string   // resolved real value; never serialized, never logged
 	expiresAt   time.Time
 	broker      *tokenBroker
@@ -412,6 +415,10 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 			return
 		}
 		injected := injectRequest(req, sec)
+		if sec.ClaimHeader != "" && !injected {
+			p.logger.Warn("egress swap: claim injection failed; request denied", "dest", host, "header", sec.ClaimHeader, "status", "denied")
+			return
+		}
 		// A guest on the plaintext lane addresses us as a proxy, so its request line
 		// is absolute-form ("POST http://host/path"). Clearing RequestURI and the
 		// URL's scheme/host makes req.Write emit origin-form with a Host header,
@@ -489,6 +496,29 @@ func rejectSwapRequest(req *http.Request) bool {
 // the point: the guest's value is uncoupled config, and a prompt-injected guest
 // cannot authenticate as a different account by supplying its own token.
 func injectRequest(req *http.Request, sec *secretEntry) bool {
+	if sec.ClaimHeader != "" {
+		requested := len(req.Header.Values(sec.Header)) > 0
+		// Both guest values go before either decision, so a prompt-injected guest
+		// cannot keep its own account id by making the credential lookup fail.
+		req.Header.Del(sec.Header)
+		req.Header.Del(sec.ClaimHeader)
+		if !requested || sec.ClaimPath == "" {
+			return false
+		}
+		claim, ok := jwtClaim(sec.resolvedValue(), sec.ClaimPath)
+		if !ok {
+			return false
+		}
+		// BOTH headers, always together. The credential and the account id come
+		// from the same token by construction, which is the point of sourcing the
+		// claim here rather than trusting the guest: they cannot drift, and a
+		// valid token paired with a stale account id is exactly the failure this
+		// fixes (the provider rejects the pair and calls it token_expired).
+		req.Header.Set(sec.Header, sec.ValuePrefix+sec.resolvedValue())
+		req.Header.Set(sec.ClaimHeader, claim)
+		return true
+	}
+
 	requested := len(req.Header.Values(sec.Header)) > 0
 	// Delete every guest value, including duplicate and empty values, before
 	// deciding whether the guest requested credential injection.
@@ -498,4 +528,54 @@ func injectRequest(req *http.Request, sec *secretEntry) bool {
 	}
 	req.Header.Set(sec.Header, sec.ValuePrefix+sec.resolvedValue())
 	return true
+}
+
+func jwtClaim(token, path string) (string, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", false
+	}
+	payload, err := decodeJWTPart(parts[1])
+	if err != nil {
+		return "", false
+	}
+	var claims map[string]any
+	if json.Unmarshal(payload, &claims) != nil {
+		return "", false
+	}
+	value, ok := findClaim(claims, path)
+	if !ok {
+		return "", false
+	}
+	claim, ok := value.(string)
+	return claim, ok && claim != ""
+}
+
+func decodeJWTPart(part string) ([]byte, error) {
+	if payload, err := base64.RawURLEncoding.DecodeString(part); err == nil {
+		return payload, nil
+	}
+	return base64.URLEncoding.DecodeString(part)
+}
+
+func findClaim(value any, path string) (any, bool) {
+	if path == "" {
+		return value, true
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	if exact, ok := object[path]; ok {
+		return exact, true
+	}
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] != '.' {
+			continue
+		}
+		if prefix, ok := object[path[:i]]; ok {
+			return findClaim(prefix, path[i+1:])
+		}
+	}
+	return nil, false
 }

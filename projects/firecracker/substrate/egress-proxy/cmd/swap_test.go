@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -117,6 +118,108 @@ func TestInjectRequestHandlesEveryAuthorizationValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInjectClaimHeaderSetsValueFromToken(t *testing.T) {
+	sec := &secretEntry{
+		Header:      "Authorization",
+		ClaimHeader: "chatgpt-account-id",
+		ClaimPath:   "https://api.openai.com/auth.chatgpt_account_id",
+		value:       testJWT(`{"https://api.openai.com/auth":{"chatgpt_account_id":"account-123"}}`),
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/backend-api", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer guest-token")
+
+	if !injectRequest(req, sec) {
+		t.Fatal("injectRequest denied a valid JWT claim")
+	}
+	if got := req.Header.Get("chatgpt-account-id"); got != "account-123" {
+		t.Errorf("chatgpt-account-id = %q, want the extracted account ID", got)
+	}
+	// The credential MUST still be injected on the claim path. An earlier draft of
+	// this branch set only the account id, silently dropping the token, and a test
+	// that asserted the new header alone was happy to let that through.
+	if got := req.Header.Get("Authorization"); got != "Bearer "+sec.value {
+		t.Errorf("Authorization = %q, want the injected credential, not the guest value", got)
+	}
+}
+
+func TestInjectClaimHeaderDeletesGuestValue(t *testing.T) {
+	sec := &secretEntry{
+		Header:      "Authorization",
+		ClaimHeader: "chatgpt-account-id",
+		ClaimPath:   "account_id",
+		value:       testJWT(`{"account_id":"real-account"}`),
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/backend-api", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer guest-token")
+	req.Header.Set("chatgpt-account-id", "guest-account")
+
+	if !injectRequest(req, sec) {
+		t.Fatal("injectRequest denied a valid JWT claim")
+	}
+	if got := req.Header.Get("chatgpt-account-id"); got != "real-account" {
+		t.Errorf("chatgpt-account-id = %q, want the guest value discarded", got)
+	}
+}
+
+func TestInjectClaimHeaderDeniesOnMissingClaim(t *testing.T) {
+	sec := &secretEntry{Header: "Authorization", ClaimHeader: "chatgpt-account-id", ClaimPath: "account_id", value: testJWT(`{"other":"value"}`)}
+	req, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/backend-api", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer guest-token")
+	req.Header.Set("chatgpt-account-id", "guest-account")
+
+	if injectRequest(req, sec) {
+		t.Fatal("injectRequest allowed a request with a missing claim")
+	}
+	if got := req.Header.Get("chatgpt-account-id"); got != "" {
+		t.Errorf("chatgpt-account-id = %q, want the header deleted on denial", got)
+	}
+}
+
+func TestInjectClaimHeaderDeniesOnInvalidJWT(t *testing.T) {
+	sec := &secretEntry{Header: "Authorization", ClaimHeader: "chatgpt-account-id", ClaimPath: "account_id", value: "not-a-jwt"}
+	req, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/backend-api", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer guest-token")
+
+	if injectRequest(req, sec) {
+		t.Fatal("injectRequest allowed an invalid JWT")
+	}
+}
+
+func TestInjectRequestBackwardCompatible(t *testing.T) {
+	sec := &secretEntry{Header: "Authorization", ValuePrefix: "Bearer ", value: "real-token"}
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "guest-token")
+
+	if !injectRequest(req, sec) {
+		t.Fatal("injectRequest denied a legacy catalog entry")
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer real-token" {
+		t.Errorf("Authorization = %q, want legacy credential injection", got)
+	}
+}
+
+func testJWT(payload string) string {
+	encode := func(value string) string {
+		return base64.RawURLEncoding.EncodeToString([]byte(value))
+	}
+	return encode(`{"alg":"none"}`) + "." + encode(payload) + ".signature"
 }
 
 func TestSwapPumpRejectsUnsupportedRequestModes(t *testing.T) {
