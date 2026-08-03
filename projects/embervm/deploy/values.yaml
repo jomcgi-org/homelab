@@ -329,10 +329,7 @@ claudeRuntimeWorkload:
   # hardening gate merged: sessions ride per-lineage workspace volumes with
   # park/rejoin instead of memory-snapshot banking, S3 archival at retirement,
   # and restore-first rejoin. Raw files in S3 replace multi-GiB snapshots.
-  # OFF while the cold-boot Prime deadline fix in this PR deploys. The probe
-  # proved the real cause: a persistence Prime cold boots with a fresh 10 GiB
-  # volume and blew elixir-grpc's 10s default deadline, so the CP cancelled
-  # mid-boot ("server_closed_request") and denied the create, while noded
-  # logged "vsock prime did not complete ... context canceled". Re-arm once
-  # this ships.
-  persistenceEnabled: false
+  # Armed on top of the cold-boot Prime deadline fix (#4268). The two earlier
+  # attempts died on elixir-grpc's 10s default cancelling a Prime mid cold
+  # boot; a lineage-carrying Prime now gets 120s.
+  persistenceEnabled: true
