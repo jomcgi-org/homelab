@@ -287,18 +287,6 @@ spec:
                         enabled:
                           type: boolean
                           description: Keep a durable filesystem artifact for this lineage.
-                        scope:
-                          type: string
-                          enum:
-                            - solo
-                            - shared
-                          default: solo
-                          description: >-
-                            `solo` is owned by one lineage. `shared` is readable
-                            by other workloads, which is only coherent BECAUSE
-                            the filesystem tier pins nothing; the memory tier
-                            could never offer it without smuggling placement
-                            constraints into a supposedly opaque blob.
                         retention:
                           type: integer
                           description: >-
@@ -322,8 +310,15 @@ spec:
                         sizeBytes:
                           type: integer
                           format: int64
-                          description: Sparse per-lineage size cap in bytes.
+                          description: >-
+                            Sparse per-lineage size cap in bytes. When both
+                            sizeBytes and sizeGi are set, sizeBytes takes
+                            precedence; they must not describe different caps.
                           minimum: 1
+                        mountPath:
+                          type: string
+                          default: /session
+                          description: Guest mount path for the durable workspace.
                 session:
                   type: object
                   description: >-

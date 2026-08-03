@@ -35,9 +35,9 @@ spec:
     memory: false
     filesystem:
       enabled: true
-      scope: solo
       retention: 1
       sizeBytes: {{ .Values.claudeRuntimeWorkload.workspaceSizeBytes }}
+      mountPath: /session
   {{- end }}
   source:
     image:

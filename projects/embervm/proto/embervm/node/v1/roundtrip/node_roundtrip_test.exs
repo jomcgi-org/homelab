@@ -78,7 +78,13 @@ defmodule Embervm.NodeRoundtripTest do
     assert bb.base_size_bytes == 512 * 1024 * 1024
     assert bb.arch == "amd64"
 
-    {:ok, pr} = NodeService.Stub.prime(ch, %PrimeRequest{snapshot_ref: "snapX"})
+    {:ok, pr} = NodeService.Stub.prime(ch, %PrimeRequest{
+      snapshot_ref: "snapX",
+      volume_disk_path: "/var/lib/ember/session/w/workspace.img",
+      volume_mount: "/workspace",
+      volume_size_bytes: 10_737_418_240,
+      lineage_id: "lineage-1"
+    })
     assert pr.vm_id == "vm:snapX"
 
     {:ok, asg} =
@@ -330,7 +336,7 @@ defmodule Embervm.NodeRoundtripTest do
 
     # DeleteVolume: idempotent, returns an empty response.
     assert {:ok, _} =
-             NodeService.Stub.delete_volume(ch, %DeleteVolumeRequest{workload: "scratch-postgres"})
+             NodeService.Stub.delete_volume(ch, %DeleteVolumeRequest{workload: "scratch-postgres", lineage_id: "lineage-1"})
   end
 
   test "StartStateful honors blessed_generation and volume_device (R7 additive fields)", %{

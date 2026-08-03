@@ -1015,10 +1015,17 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	}
 	rtCancel()
 
+	if req.GetLineageId() != "" {
+		if err := s.volumes.AttachLineage(base.workload, req.GetLineageId(), h.ID); err != nil {
+			s.reap(h, func() {})
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: attach session volume: %v", err)
+		}
+	}
 	s.vms.add(&vmEntry{
 		id:           h.ID,
 		workload:     base.workload,
 		snapshotRef:  ref,
+		lineageID:    req.GetLineageId(),
 		handle:       h,
 		egressCancel: s.startEgress(uds, h.ID, base.workload),
 		state:        vmPrimed,
@@ -1055,6 +1062,9 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 	// is never Released twice.
 	defer func() {
 		if removed := s.vms.remove(vmID); removed != nil {
+			if removed.lineageID != "" {
+				s.volumes.DetachLineage(removed.workload, removed.lineageID)
+			}
 			s.reap(removed.handle, removed.egressCancel)
 		}
 		s.signalChange()
@@ -1131,6 +1141,9 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 // not happen (ADR embervm/014 decision 5).
 func (s *Server) Destroy(_ context.Context, req *nodev1.DestroyRequest) (*nodev1.DestroyResponse, error) {
 	if e := s.vms.remove(req.GetVmId()); e != nil {
+		if e.lineageID != "" {
+			s.volumes.DetachLineage(e.workload, e.lineageID)
+		}
 		if err := s.reap(e.handle, e.egressCancel); err != nil {
 			return nil, status.Errorf(codes.Internal, "noded: reap vm %q: %v", req.GetVmId(), err)
 		}
@@ -1140,6 +1153,9 @@ func (s *Server) Destroy(_ context.Context, req *nodev1.DestroyRequest) (*nodev1
 	// A session VM destroyed out of band (e.g. the control plane tearing down a
 	// suspect or terminal session) lives in the distinct session registry.
 	if e := s.sessionVMs.remove(req.GetVmId()); e != nil {
+		if e.lineageID != "" {
+			s.volumes.DetachLineage(e.workload, e.lineageID)
+		}
 		if err := s.reap(e.handle, e.egressCancel); err != nil {
 			return nil, status.Errorf(codes.Internal, "noded: reap session vm %q: %v", req.GetVmId(), err)
 		}
@@ -1199,6 +1215,7 @@ func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionE
 		vmID:        ve.id,
 		sessionID:   sessionID,
 		workload:    workload,
+		lineageID:   ve.lineageID,
 		snapshotRef: ve.snapshotRef,
 		handle:      ve.handle,
 		// Inherit the forwarder Prime opened for this physical VM. Only the
@@ -1341,6 +1358,9 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	}
 	// Destroy the VM: the session releases its live capacity and holds only disk.
 	if removed := s.sessionVMs.remove(vmID); removed != nil {
+		if removed.lineageID != "" {
+			s.volumes.DetachLineage(removed.workload, removed.lineageID)
+		}
 		s.reap(removed.handle, removed.egressCancel)
 	}
 	s.sessionSnap.add(sessionSnapshotEntry{
@@ -1726,6 +1746,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		BuildError:            s.bases.firstBuildError(),
 		SessionVms:            sessionVMs,
 		SessionSnapshots:      snaps,
+		SessionVolumes:        s.sessionVolumesStatus(),
 		SnapshotDiskFreeBytes: freeBytes,
 		SnapshotDiskUsedBytes: usedBytes,
 		ServingVms:            servingVMs,
@@ -2126,6 +2147,30 @@ func (s *Server) sessionSnapshotsStatus() []*nodev1.SessionSnapshot {
 		})
 	}
 	return out
+}
+
+func (s *Server) sessionVolumesStatus() []*nodev1.SessionVolume {
+	if s.volumes == nil {
+		return nil
+	}
+	inventory, err := s.volumes.ScanSessions()
+	if err != nil {
+		s.logger.Warn("noded: scan session volumes", "err", err)
+		return nil
+	}
+	out := make([]*nodev1.SessionVolume, 0, len(inventory))
+	for _, v := range inventory {
+		out = append(out, &nodev1.SessionVolume{Workload: v.Workload, LineageId: v.LineageID, SizeBytes: v.SizeBytes, AllocatedBytes: v.AllocatedBytes})
+	}
+	return out
+}
+
+func (s *Server) lineageAttached(workload, lineageID string) bool {
+	ids := s.vms.lineageVMIDs()
+	for _, e := range s.sessionVMs.snapshot() {
+		ids[e.vmID] = struct{}{}
+	}
+	return s.volumes != nil && s.volumes.IsLineageAttached(workload, lineageID, ids)
 }
 
 // workloadCapacities merges the primed vm_ids with base build state per

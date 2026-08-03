@@ -99,9 +99,9 @@ defmodule Embervm.S3WarmthGc do
   # (4-segment) key layout.
   @vendors ["amd", "intel"]
 
-  # The ONLY prefixes this GC may ever touch. base/ (base retention owns it),
-  # session/, serving/, and volume/ are hard-excluded by not being here.
-  @allowlist ["stateful/", "group_set/"]
+  # The ONLY prefixes this GC may ever touch. Each rule is explicit: base/,
+  # session/, serving/, and volume/ remain hard-excluded.
+  @allowlist ["stateful/", "group_set/", "session-workspace/"]
 
   # -- Client API --------------------------------------------------------------
 

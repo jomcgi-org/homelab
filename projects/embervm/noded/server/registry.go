@@ -28,6 +28,7 @@ type vmEntry struct {
 	id           string
 	workload     string
 	snapshotRef  string
+	lineageID    string
 	handle       substrate.Handle
 	egressCancel func()
 
@@ -137,6 +138,18 @@ func (r *vmRegistry) capacity() (primedPerWorkload map[string][]string, live int
 	return primedPerWorkload, len(r.vms)
 }
 
+func (r *vmRegistry) lineageVMIDs() map[string]struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]struct{})
+	for _, e := range r.vms {
+		if e.lineageID != "" {
+			out[e.id] = struct{}{}
+		}
+	}
+	return out
+}
+
 // liveCount is the current number of supervised VMs, for the node-level backstop
 // cap check in Prime.
 func (r *vmRegistry) liveCount() int {
@@ -180,6 +193,7 @@ type sessionEntry struct {
 	vmID        string
 	sessionID   string
 	workload    string
+	lineageID   string
 	snapshotRef string // the base ref it was relit/primed from (for correlation)
 	handle      substrate.Handle
 	// egressCancel stops this VM's egress forwarder (ADR 023 phase 6a). Never
