@@ -308,7 +308,9 @@ egress:
     - header: "Authorization"
       valuePrefix: "Bearer "
       egressTo:
-        - "api.openai.com"
+        # The subscription backend, not api.openai.com: codex in ChatGPT mode
+        # talks to chatgpt.com/backend-api (verified against rust-v0.146.0).
+        - "chatgpt.com"
       # The subscription grant supplies short-lived tokens. If the broker is
       # absent or unavailable, the sidecar fails closed and denies this host.
       brokerGrant: "codex-cluster"

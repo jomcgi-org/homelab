@@ -2,6 +2,7 @@
 
 import json
 import ast
+import datetime
 import os
 import signal
 import socket
@@ -109,6 +110,7 @@ for line in sys.stdin:
 
 
 FAKE_CODEX_CLI = r"""#!/usr/bin/env python3
+import datetime
 import json
 import os
 import sys
@@ -124,12 +126,23 @@ if args_path:
 # when the dir does not exist.
 assert os.environ.get("CODEX_HOME", "") == os.path.join(os.getcwd(), ".codex")
 assert os.path.isdir(os.environ["CODEX_HOME"])
-assert os.environ.get("OPENAI_API_KEY", "")
+assert "OPENAI_API_KEY" not in os.environ
+auth_path = os.path.join(os.environ["CODEX_HOME"], "auth.json")
+assert os.path.isfile(auth_path)
+auth = json.load(open(auth_path))
+assert set(auth) == {"auth_mode", "OPENAI_API_KEY", "tokens", "last_refresh"}
+assert auth["auth_mode"] == "chatgpt"
+assert auth["OPENAI_API_KEY"] is None
+assert set(auth["tokens"]) == {"id_token", "access_token", "refresh_token", "account_id"}
+assert len(auth["tokens"]["access_token"].split(".")) == 3
+assert datetime.datetime.fromisoformat(auth["last_refresh"].replace("Z", "+00:00")).year >= 2099
 config_path = os.path.join(os.environ["CODEX_HOME"], "config.toml")
 assert os.path.isfile(config_path)
 config = open(config_path).read()
 assert 'model_provider = "ember-openai"' in config
-assert 'base_url = "http://api.openai.com/v1"' in config
+assert 'base_url = "http://chatgpt.com/backend-api/"' in config
+assert "enable_codex_api_key_env = false" in config
+assert 'wire_api = "responses"' in config
 assert "--skip-git-repo-check" in sys.argv
 assert "--model" in sys.argv
 assert "--config" in sys.argv
@@ -325,6 +338,49 @@ def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
         "activity": [],
     }
     manager._close_process()
+
+
+def test_codex_auth_json_has_inert_subscription_schema(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    child_env = manager._child_env()
+    manager._write_auth_json(child_env["CODEX_HOME"])
+    auth = json.loads((tmp_path / "workspace" / ".codex" / "auth.json").read_text())
+    assert set(auth) == {"auth_mode", "OPENAI_API_KEY", "tokens", "last_refresh"}
+    assert auth["auth_mode"] == "chatgpt"
+    assert auth["OPENAI_API_KEY"] is None
+    assert set(auth["tokens"]) == {
+        "id_token",
+        "access_token",
+        "refresh_token",
+        "account_id",
+    }
+    assert all(auth["tokens"].values())
+    assert (
+        datetime.datetime.fromisoformat(
+            auth["last_refresh"].replace("Z", "+00:00")
+        ).year
+        >= 2099
+    )
+
+
+def test_codex_config_uses_subscription_endpoint_override(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    endpoint = "http://broker.test/backend-api/"
+    monkeypatch.setenv(shim.CODEX_SUBSCRIPTION_BASE_URL_ENV, endpoint)
+    child_env = manager._child_env()
+    manager._write_model_config(child_env["CODEX_HOME"])
+    config = (tmp_path / "workspace" / ".codex" / "config.toml").read_text()
+    assert 'base_url = "%s"' % endpoint in config
+    assert "api.openai.com" not in config
+    assert 'name = "ember-openai"' in config
+    assert 'wire_api = "responses"' in config
+    assert "enable_codex_api_key_env = false" in config
+
+
+def test_codex_child_env_drops_openai_api_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-codex")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    assert "OPENAI_API_KEY" not in manager._child_env()
 
 
 def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypatch):
@@ -1241,3 +1297,23 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     assert "--tools" in argv
     assert argv[argv.index("--tools") + 1] == "read,bash,edit,write"
     manager._close_process()
+
+
+def test_codex_auth_json_is_parseable_and_inert(tmp_path, monkeypatch):
+    """The CLI parses these tokens, so shape matters more than content."""
+    import base64 as _b64
+
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="luna")
+    auth_path = os.path.join(str(tmp_path / "workspace"), ".codex", "auth.json")
+    auth = json.loads(open(auth_path).read())
+    assert auth["auth_mode"] == "chatgpt"
+    assert auth["OPENAI_API_KEY"] is None
+    token = auth["tokens"]["access_token"]
+    parts = token.split(".")
+    assert len(parts) == 3, "tokens must be JWT-shaped or the CLI reads as logged out"
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    claims = json.loads(_b64.urlsafe_b64decode(padded))
+    assert claims["exp"] > 4_000_000_000, (
+        "expiry must be far future so the guest never self-refreshes"
+    )
