@@ -6,9 +6,9 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/broker",
     visibility = ["//projects/embervm/tokenbroker:__subpackages__"],
     deps = [
-        "//projects/embervm/tokenbroker/internal/metrics:metrics",
-        "//projects/embervm/tokenbroker/internal/provider:provider",
-        "//projects/embervm/tokenbroker/internal/store:store",
+        "//projects/embervm/tokenbroker/internal/metrics",
+        "//projects/embervm/tokenbroker/internal/provider",
+        "//projects/embervm/tokenbroker/internal/store",
     ],
 )
 
@@ -16,5 +16,8 @@ go_test(
     name = "broker_test",
     srcs = ["broker_test.go"],
     embed = [":broker"],
-    deps = ["//projects/embervm/tokenbroker/internal/provider:provider", "//projects/embervm/tokenbroker/internal/store:store"],
+    deps = [
+        "//projects/embervm/tokenbroker/internal/provider",
+        "//projects/embervm/tokenbroker/internal/store",
+    ],
 )

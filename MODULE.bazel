@@ -558,7 +558,7 @@ apko.translate_lock(
     name = "embervm_runtime_claude_lock",
     lock = "//projects/embervm/runtimes/claude:apko.lock.json",
 )
-use_repo(apko, "embervm_lock", "embervm_tokenbroker_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_xds_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock", "whatsapp_lock")
+use_repo(apko, "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "git_mirror_lock", "grimoire_frontend_lock", "harness_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock", "whatsapp_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
