@@ -253,6 +253,7 @@ defmodule Embervm.SessionManagerTest do
           primed_vm_ids: []
         }
       },
+      session_volumes: Keyword.get(opts, :session_volumes, []),
       live_vms: 0,
       max_live_vms: 8,
       draining: false,
@@ -675,6 +676,37 @@ defmodule Embervm.SessionManagerTest do
     assert session.volume_node_id == parked.volume_node_id
     assert session.node_id == parked.volume_node_id
     assert session.vm_id == "vm-rejoined"
+  end
+
+  test "rejoin propagates the qualified volume dial to the first invoke" do
+    {:ok, dials} = Agent.start_link(fn -> [] end)
+    dial_fun = fn dial_id ->
+      Agent.update(dials, &[dial_id | &1])
+      {:ok, :fake_channel}
+    end
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rejoined-qualified"),
+        channel_fun: dial_fun,
+        session_channel_fun: dial_fun
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    put_brick(ctx, "wl-persist", "volume", session_volumes: [%{lineage_id: created.session_id}])
+    Agent.update(dials, fn _ -> [] end)
+
+    assert {:ok, %{status_code: 200}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
+
+    rejoin_dials = Agent.get(dials, & &1)
+    assert "node-4/volume" in rejoin_dials
+    refute "node-4" in rejoin_dials
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.node_id == "node-4"
+    assert session.volume_node_id == "node-4"
   end
 
   test "rejoin delivery failure destroys the primed VM and leaves session parked" do
