@@ -85,6 +85,7 @@ defmodule Embervm.SessionManager do
   # lever; excess relights get 429 WITHOUT touching the node.
   @default_wake_max 30
   @default_wake_window_ms 60_000
+  @create_worker_timeout_ms 200_000
 
   # Three consecutive bank failures fail the session and destroy its VM: a session
   # that cannot bank must not squat live capacity forever.
@@ -113,7 +114,9 @@ defmodule Embervm.SessionManager do
   """
   @spec create(GenServer.server(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def create(server \\ __MODULE__, workload, principal) do
-    GenServer.call(server, {:create, workload, principal})
+    # Cold-boot persistence creates can legitimately take tens of seconds while
+    # the manager remains responsive to other calls.
+    GenServer.call(server, {:create, workload, principal}, 180_000)
   end
 
   @doc """
@@ -239,6 +242,11 @@ defmodule Embervm.SessionManager do
       # session_id -> %{node_id: n} for banks currently running async, so a mid-bank
       # invoke can park (relighting ledger) and be relit once the bank completes.
       banking: %{},
+      # create_ref -> {from, lineage_id, workload, principal, entry, node_id,
+      # snapshot_ref, dial_id}; claim/prime runs outside this process.
+      create_inflight: %{},
+      create_next_ref: 0,
+      create_workers: %{},
       # session_id -> consecutive bank-failure count. Lives HERE (not in the session
       # process, which stops on admission) so three strikes across bank attempts fails
       # the session. Cleared on a successful bank or a successful invoke-driven relight.
@@ -327,8 +335,31 @@ defmodule Embervm.SessionManager do
   end
 
   @impl true
-  def handle_call({:create, workload, principal}, _from, state) do
-    {:reply, do_create(state, workload, principal), state}
+  def handle_call({:create, workload, principal}, from, state) do
+    case do_create_inline(state, workload, principal) do
+      {:ok,
+       %{entry: entry, node_id: node_id, dial_id: dial_id, snapshot_ref: snapshot_ref, lineage_id: lineage_id}} ->
+        ref = state.create_next_ref
+
+        state =
+          put_in(
+            state.create_inflight[ref],
+            {from, lineage_id, workload, principal, entry, node_id, snapshot_ref, dial_id}
+          )
+
+        state = %{state | create_next_ref: ref + 1}
+        {state, worker} =
+          spawn_create_worker(state, ref, dial_id, workload, snapshot_ref, entry, lineage_id)
+
+        {:noreply, put_in(state.create_workers[ref], worker)}
+
+      {:error, {:denied, reason}} = error_result ->
+        # Bind the FULL {:error, {:denied, _}} tuple: binding the inner term
+        # replied {:denied, reason} and every denial test failed on the shape.
+        audit_denial(state, principal, workload, reason)
+        log_create_result(error_result, workload, principal)
+        {:reply, error_result, state}
+    end
   end
 
   def handle_call({:route_invoke, session_id, req}, from, state) do
@@ -427,6 +458,29 @@ defmodule Embervm.SessionManager do
     {:noreply, finish_bank(state, session_id, node_id, outcome)}
   end
 
+  def handle_info({:create_done, ref, result}, state) do
+    {:noreply, finish_create(state, ref, result)}
+  end
+
+  def handle_info({:create_timeout, ref}, state) do
+    case Map.get(state.create_workers, ref) do
+      {pid, _monitor_ref, _timer_ref} ->
+        Process.exit(pid, :kill)
+        {:noreply, finish_create(state, ref, {:error, :create_timeout})}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, state) do
+    case Enum.find(state.create_workers, fn {_ref, {_pid, mref, _timer_ref}} -> mref == monitor_ref end) do
+      {ref, _worker} ->
+        {:noreply, finish_create(state, ref, {:error, {:create_worker_crashed, reason}})}
+      nil -> {:noreply, state}
+    end
+  end
+
   def handle_info(:reconcile, state) do
     state = do_reconcile(state)
     schedule(:reconcile, state.reconcile_interval_ms)
@@ -443,10 +497,9 @@ defmodule Embervm.SessionManager do
 
   # -- create ----------------------------------------------------------------
 
-  defp do_create(state, workload, principal) do
-    # The create span (Task 9): a lifecycle span carrying `ember.pool_hit` (warm
-    # claim vs prime miss), set from within claim_or_prime. Root span (create is
-    # management-auth API-driven, no guest caller trace to nest under).
+  defp do_create_inline(state, workload, principal) do
+    # The management create span covers the manager-owned fast path. The
+    # claim/prime portion runs in a worker, so its pool-hit attributes are split.
     Tracer.with_span "embervm.session.create",
                      %{
                        attributes: %{
@@ -454,28 +507,76 @@ defmodule Embervm.SessionManager do
                          "ember.principal" => principal
                        }
                      } do
-      minted_lineage_id = mint_lineage_id(state)
-      result =
-        with {:ok, entry} <- fetch_session_workload(state, workload),
-             :ok <- check_session_cap(state, workload, entry),
-             :ok <- check_workload_cap(state, workload, entry),
-             :ok <- check_quota(state, principal),
-             {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry),
-             lineage_id <- if(persistence_enabled_workload?(entry), do: minted_lineage_id, else: nil),
-             {:ok, vm_id} <- claim_or_prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
-          # Store the brick's configured_id in the session row and use its instance_id
-          # only as the dial key. These fields have different registration provenance.
-          register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id)
-        else
-          {:error, reason} ->
-            audit_denial(state, principal, workload, reason)
-            {:error, {:denied, reason}}
-        end
-
-      log_create_result(result, workload, principal)
-      result
+      with {:ok, entry} <- fetch_session_workload(state, workload),
+           :ok <- check_session_cap(state, workload, entry),
+           :ok <- check_workload_cap(state, workload, entry),
+           :ok <- check_quota(state, principal),
+           {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry) do
+        {:ok,
+         %{
+           entry: entry,
+           node_id: node_id,
+           dial_id: dial_id,
+           snapshot_ref: snapshot_ref,
+           lineage_id: if(persistence_enabled_workload?(entry), do: mint_lineage_id(state), else: nil)
+         }}
+      else
+        {:error, reason} -> {:error, {:denied, reason}}
+      end
     end
   end
+
+  defp spawn_create_worker(state, ref, node_id, workload, snapshot_ref, entry, lineage_id) do
+    owner = self()
+    timeout_ref = Process.send_after(owner, {:create_timeout, ref}, @create_worker_timeout_ms)
+
+    {pid, monitor_ref} = spawn_monitor(fn ->
+      result =
+        try do
+          claim_or_prime(state, node_id, workload, snapshot_ref, entry, lineage_id)
+        rescue
+          exception -> {:error, {:create_worker_crashed, exception}}
+        catch
+          kind, reason -> {:error, {:create_worker_crashed, {kind, reason}}}
+        end
+
+      send(owner, {:create_done, ref, result})
+    end)
+
+    {state, {pid, monitor_ref, timeout_ref}}
+  end
+
+  defp finish_create(state, ref, outcome) do
+    case Map.pop(state.create_inflight, ref) do
+      {nil, _} ->
+        state
+
+      {{from, lineage_id, workload, principal, entry, node_id, _snapshot_ref, dial_id}, inflight} ->
+        cleanup_create_worker(Map.get(state.create_workers, ref))
+        state = %{state | create_inflight: inflight, create_workers: Map.delete(state.create_workers, ref)}
+
+        result =
+          case outcome do
+            {:ok, vm_id} ->
+              register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id)
+            {:error, reason} ->
+              audit_denial(state, principal, workload, reason)
+              {:error, {:denied, reason}}
+          end
+
+        GenServer.reply(from, result)
+        log_create_result(result, workload, principal)
+        state
+    end
+  end
+
+  defp cleanup_create_worker({pid, monitor_ref, timeout_ref}) do
+    Process.cancel_timer(timeout_ref)
+    Process.demonitor(monitor_ref, [:flush])
+    if Process.alive?(pid), do: Process.exit(pid, :kill)
+  end
+
+  defp cleanup_create_worker(_), do: :ok
 
   # Structured create log (Task 9): success at info, denial at warn, both keyed
   # with session_id (when minted)/workload/principal for consistent lifecycle logs.

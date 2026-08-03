@@ -703,6 +703,8 @@ defmodule Embervm.Router do
   defp handle_create_session(conn, workload) do
     principal = conn.assigns.principal
 
+    # Cold-boot persistence creates legitimately take tens of seconds; the
+    # SessionManager call must not cut the claim/prime RPC at the old 5-second limit.
     case session_manager().create(session_manager_server(), workload, principal) do
       {:ok, created} ->
         send_json(conn, 201, %{

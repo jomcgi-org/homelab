@@ -466,6 +466,40 @@ defmodule Embervm.SessionManagerTest do
     assert {:error, {:denied, {:prime_failed, _}}} = SessionManager.create(ctx.mgr, "wl-miss", "p1")
   end
 
+  test "create async completes slower claim/prime without blocking" do
+    parent = self()
+    prime_fun = fn _channel, _req ->
+      send(parent, :prime_started)
+      Process.sleep(200)
+      {:ok, %PrimeResponse{vm_id: "vm-cold"}}
+    end
+
+    ctx = start_stack(prime_fun: prime_fun)
+    put_session_workload(ctx, "wl-cold", persistence_workload_opts([]))
+
+    task = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-cold", "p1") end)
+    assert_receive :prime_started, 1_000
+    assert :ok == SessionManager.reconcile(ctx.mgr)
+    assert {:ok, session} = Task.await(task, 2_000)
+    assert session.session_id
+  end
+
+  test "create worker crash replies error" do
+    ctx = start_stack(claim_fun: fn _d, _n, _w -> raise "claim crashed" end)
+    put_session_workload(ctx, "wl-crash")
+
+    assert {:error, {:denied, {:create_worker_crashed, %RuntimeError{}}}} =
+             SessionManager.create(ctx.mgr, "wl-crash", "p1")
+  end
+
+  test "create prime failure returns error" do
+    ctx = start_stack(prime_fun: fn _channel, _req -> {:error, :prime_failed} end)
+    put_session_workload(ctx, "wl-prime-failed", persistence_workload_opts([]))
+
+    assert {:error, {:denied, {:prime_failed, {:error, :prime_failed}}}} =
+             SessionManager.create(ctx.mgr, "wl-prime-failed", "p1")
+  end
+
   test "create quota fail-closed denies a principal over budget" do
     quota_table = :"squota_#{System.unique_integer([:positive])}"
     :ets.new(quota_table, [:set, :public, :named_table])
