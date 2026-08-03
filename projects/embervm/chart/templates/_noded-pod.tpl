@@ -378,9 +378,9 @@ containers:
       {{- fail (printf "egress.secrets entry for %v must set exactly one of secretRef or brokerGrant, and secretRef entries need env" $s.egressTo) }}
       {{- end }}
       {{- if $hasBrokerGrant }}
-      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "brokerGrant" $s.brokerGrant "egressTo" $s.egressTo) }}
+      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "brokerGrant" $s.brokerGrant "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "")) }}
       {{- else }}
-      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "env" $s.env "egressTo" $s.egressTo) }}
+      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "env" $s.env "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "")) }}
       {{- end }}
       {{- end }}
       - name: EGRESS_SECRETS
