@@ -70,11 +70,6 @@ func main() {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/grants/", s.grants)
 	addr := env("BROKER_LISTEN_ADDR", ":8080")
-	go func() {
-		if metricsErr := http.ListenAndServe(":9090", promhttp.Handler()); metricsErr != nil {
-			logger.Error("metrics server stopped", "err", metricsErr)
-		}
-	}()
 	logger.Info("token broker listening", "addr", addr)
 	if err = http.ListenAndServe(addr, mux); err != nil {
 		logger.Error("server stopped", "err", err)

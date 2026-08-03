@@ -13,6 +13,13 @@ spec:
       {{- include "embervm.tokenBroker.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # The k8s-infra prometheus scraper auto-discovers pods by these
+        # annotations; /metrics is served on the main listener, and the node
+        # host entity (allowed for kubelet probes) covers the scrape path.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
       labels:
         {{- include "embervm.tokenBroker.labels" . | nindent 8 }}
     spec:

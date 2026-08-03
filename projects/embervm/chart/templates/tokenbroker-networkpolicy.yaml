@@ -17,11 +17,22 @@ spec:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
             app.kubernetes.io/component: noded-brick
       toPorts: [{ ports: [{ port: "8080", protocol: TCP }] }]
+    # Kubelet liveness/readiness probes (and the host-network SigNoz scrape
+    # agent) originate from the node host; once ingress is default-deny they
+    # must be allowed explicitly or the pod never goes Ready. Mirrors
+    # monolith-public's cilium policy.
+    - fromEntities:
+        - host
+        - health
   egress:
     # Cilium's toFQDNs proxy only learns rotating provider IPs when DNS is
     # allowed with the L7 dns rule. Keep this rule ahead of the FQDN rule.
     - toEndpoints:
+        # Namespaced policies scope endpoint selectors to their OWN namespace
+        # unless the namespace key is explicit; CoreDNS lives in kube-system,
+        # so without it this matches nothing and DNS stays default-denied.
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
             k8s:k8s-app: kube-dns
       toPorts:
         - ports:
