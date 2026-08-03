@@ -329,7 +329,10 @@ claudeRuntimeWorkload:
   # hardening gate merged: sessions ride per-lineage workspace volumes with
   # park/rejoin instead of memory-snapshot banking, S3 archival at retirement,
   # and restore-first rejoin. Raw files in S3 replace multi-GiB snapshots.
-  # Armed on top of the cold-boot Prime deadline fix (#4268). The two earlier
-  # attempts died on elixir-grpc's 10s default cancelling a Prime mid cold
-  # boot; a lineage-carrying Prime now gets 120s.
-  persistenceEnabled: true
+  # OFF. Three live attempts, each exposing the next layer: :no_capacity (a
+  # flattened reason), then a 10s gRPC cancel mid cold boot (#4268 fixed it),
+  # and now the structural one: do_create runs the prime INLINE on the
+  # SessionManager, so a cold boot cannot finish inside the router's 5s
+  # GenServer.call and blocks every other session while it tries. Persistence
+  # cannot arm until create is asynchronous (#4270).
+  persistenceEnabled: false
