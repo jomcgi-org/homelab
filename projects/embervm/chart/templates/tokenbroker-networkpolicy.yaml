@@ -57,15 +57,28 @@ spec:
     # Persisting an approved grant writes a Secret through the apiserver, so this
     # rule is what makes a login durable rather than merely successful.
     #
-    # `kube-apiserver` alone is NOT enough here. The broker dials the kubernetes
-    # ClusterIP (10.43.0.1), which Cilium load-balances to one of the three
-    # masters' host IPs. When it picks the master the broker itself is scheduled
-    # on, the traffic is classified as `host`, and when it picks either other
-    # master it is `remote-node`; neither is the `kube-apiserver` identity. So
-    # the rule matched only sometimes, and the symptom was a silent dial timeout
-    # (packets dropped, not refused) rather than a 403. It cost a consumed
-    # single-use device code to find, because the flow completes and only the
-    # final Secret write fails (#4250).
+    # 6443 is the load-bearing port here, NOT 443. The broker dials the
+    # kubernetes ClusterIP 10.43.0.1:443, but Cilium enforces egress policy
+    # AFTER service translation, so what the datapath actually evaluates is the
+    # master's real endpoint, 192.168.1.x:6443 on k3s. A rule allowing only 443
+    # therefore denies every apiserver call while looking correct. Confirmed
+    # from the datapath rather than inferred:
+    #
+    #   xx drop (Policy denied) ... identity 49286->kube-apiserver:
+    #       10.42.3.116:38576 -> 192.168.1.119:6443 tcp SYN
+    #
+    # That trace also shows the peer identity resolving as `kube-apiserver`,
+    # so the entity was never the problem. `host` and `remote-node` are kept
+    # only because a master can serve its own node's traffic under that
+    # identity; they are not what fixed this.
+    #
+    # The symptom is a silent dial timeout, not a 403, so it reads as an
+    # apiserver outage. It costs a single-use device code per reproduction:
+    # the whole OAuth flow succeeds and only the final Secret write fails
+    # (#4250).
     - toEntities: [kube-apiserver, host, remote-node]
-      toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }
+            - { port: "6443", protocol: TCP }
 {{- end }}
