@@ -102,12 +102,15 @@ defmodule Embervm.S3WarmthGcTest do
     table
   end
 
-  defp put_node_fact(table, node_id, stateful_bundles, group_bundle_sets, updated_at \\ @mono) do
+  defp put_node_fact(table, node_id, stateful_bundles, group_bundle_sets, updated_at \\ @mono, opts \\ []) do
     NodeCapacity.put(table, {node_id, "pod"}, %{
       node_id: node_id,
       instance_id: "#{node_id}/pod",
       stateful_bundles: stateful_bundles,
       group_bundle_sets: group_bundle_sets,
+      session_snapshots: Keyword.get(opts, :session_snapshots, []),
+      serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
+      session_volumes: Keyword.get(opts, :session_volumes, []),
       updated_at: updated_at
     })
   end
@@ -120,8 +123,9 @@ defmodule Embervm.S3WarmthGcTest do
     %{instance_id: instance_id, workload: "web", state: state, set_id: set_id, node_id: "node-4"}
   end
 
-  defp session_row(state, workload, lineage_id, snapshot_ref) do
+  defp session_row(state, workload, lineage_id, snapshot_ref, opts \\ []) do
     %{session_id: "session-#{snapshot_ref}", workload: workload, lineage_id: lineage_id, snapshot_ref: snapshot_ref, state: state}
+    |> Map.put(:expires_at, Keyword.get(opts, :expires_at))
   end
 
   defp serving_row(state, workload, snapshot_ref) do
@@ -230,8 +234,8 @@ defmodule Embervm.S3WarmthGcTest do
           capacity_table: table,
           stateful_store: start_store([stateful_row(:destroyed, "wl", "old")]),
           group_store: start_store([group_row(:destroyed, "group", "old")]),
-          session_store: start_store([]),
-          serving_store: start_store([]),
+          session_store: start_store([session_row(:destroyed, "other", "other", nil)]),
+          serving_store: start_store([serving_row(:destroyed, "other", "other")]),
           volume_fun: fn _ -> nil end
         )
 
@@ -266,7 +270,7 @@ defmodule Embervm.S3WarmthGcTest do
       assert deleted(agent) == [prefix <> "/meta.json", prefix <> "/memfile"]
     end
 
-    test "parked session and banked serving artifacts are eligible after the TTL" do
+    test "banked session and banked serving artifacts are eligible after the TTL" do
       session_prefix = "session/amd/wl/session-live"
       serving_prefix = "serving/amd/wl/serving-live"
 
@@ -294,6 +298,127 @@ defmodule Embervm.S3WarmthGcTest do
       assert Enum.any?(result.plan, &(&1.prefix == session_prefix))
       assert Enum.any?(result.plan, &(&1.prefix == serving_prefix))
       assert length(deleted(agent)) == 4
+    end
+
+    test "parked session with a future expiry is held, and a past expiry is deleted" do
+      prefix = "session/amd/wl/session-expiry"
+      objects = artifact(prefix, @wall - 8 * @day)
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      opts = [
+        enabled: true,
+        capacity_table: table,
+        stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+        group_store: start_store([]),
+        serving_store: start_store([]),
+        volume_fun: fn _ -> nil end
+      ]
+
+      gc = start_gc(s3, opts ++ [session_store: start_store([session_row(:parked, "wl", "lineage", "session-expiry", expires_at: @wall + @day)])])
+      assert {:ok, %{plan: [], held: [%{prefix: ^prefix, reason: "session_not_expired"}], deleted: []}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+
+      {agent, s3} = new_s3(objects)
+      gc = start_gc(s3, opts ++ [session_store: start_store([session_row(:parked, "wl", "lineage", "session-expiry", expires_at: @wall - 1)])])
+      assert {:ok, %{plan: [%{prefix: ^prefix}], deleted: [^prefix]}} = S3WarmthGc.sweep_now(gc)
+      assert length(deleted(agent)) == 2
+    end
+
+    test "parked workspace lineage is held until expiry, then deleted" do
+      prefix = "session-workspace/wl/lineage-expiry"
+      objects = artifact(prefix, @wall - 8 * @day)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      common = [
+        enabled: true,
+        capacity_table: table,
+        stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+        group_store: start_store([]),
+        serving_store: start_store([]),
+        volume_fun: fn _ -> nil end
+      ]
+
+      {agent, s3} = new_s3(objects)
+      gc = start_gc(s3, common ++ [session_store: start_store([session_row(:parked, "wl", "lineage-expiry", nil, expires_at: @wall + @day)])])
+      assert {:ok, %{plan: [], held: [%{prefix: ^prefix, reason: "session_not_expired"}], deleted: []}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+
+      {agent, s3} = new_s3(objects)
+      gc = start_gc(s3, common ++ [session_store: start_store([session_row(:parked, "wl", "lineage-expiry", nil, expires_at: @wall - 1)])])
+      assert {:ok, %{plan: [%{prefix: ^prefix}], deleted: [^prefix]}} = S3WarmthGc.sweep_now(gc)
+      assert length(deleted(agent)) == 2
+    end
+
+    test "actively live session and serving refs are held" do
+      session_prefix = "session/amd/wl/session-live-ref"
+      serving_prefix = "serving/amd/wl/serving-live-ref"
+      {agent, s3} = new_s3(artifact(session_prefix, @wall - 8 * @day) |> Map.merge(artifact(serving_prefix, @wall - 8 * @day)))
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc = start_gc(s3,
+        enabled: true,
+        capacity_table: table,
+        stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+        group_store: start_store([]),
+        session_store: start_store([session_row(:running, "wl", "lineage", "session-live-ref")]),
+        serving_store: start_store([serving_row(:published, "wl", "serving-live-ref")]),
+        volume_fun: fn _ -> nil end
+      )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert Enum.all?([session_prefix, serving_prefix], fn prefix -> Enum.any?(result.held, &(&1.prefix == prefix and &1.reason == "referenced_ref")) end)
+      assert result.plan == []
+      assert deleted(agent) == []
+    end
+
+    test "actively live session lineage is held" do
+      prefix = "session-workspace/wl/lineage-live"
+      {agent, s3} = new_s3(artifact(prefix, @wall - 8 * @day))
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc = start_gc(s3,
+        enabled: true,
+        capacity_table: table,
+        stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+        group_store: start_store([]),
+        session_store: start_store([session_row(:running, "wl", "lineage-live", nil)]),
+        serving_store: start_store([]),
+        volume_fun: fn _ -> nil end
+      )
+
+      assert {:ok, %{plan: [], held: [%{prefix: ^prefix, reason: "lineage_referenced"}], deleted: []}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
+    test "node-reported session, serving, and workspace refs are held" do
+      refs = %{session: "session-reported", serving: "serving-reported", lineage: "lineage-reported"}
+      objects =
+        artifact("session/amd/wl/" <> refs.session, @wall - 8 * @day)
+        |> Map.merge(artifact("serving/amd/wl/" <> refs.serving, @wall - 8 * @day))
+        |> Map.merge(artifact("session-workspace/wl/" <> refs.lineage, @wall - 8 * @day))
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [], @mono, session_snapshots: [%{snapshot_ref: refs.session}], serving_snapshots: [%{snapshot_ref: refs.serving}], session_volumes: [%{lineage_id: refs.lineage}])
+
+      gc = start_gc(s3,
+        enabled: true,
+        capacity_table: table,
+        stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+        group_store: start_store([]),
+        session_store: start_store([session_row(:destroyed, "wl", "other", nil)]),
+        serving_store: start_store([serving_row(:destroyed, "wl", "other")]),
+        volume_fun: fn _ -> nil end
+      )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert Enum.all?(result.held, &(&1.reason == "node_reported"))
+      assert length(result.held) == 3
+      assert result.plan == []
+      assert deleted(agent) == []
     end
 
     test "a desired (non-terminal) ref is held, not deleted" do
@@ -412,6 +537,27 @@ defmodule Embervm.S3WarmthGcTest do
 
       assert deleted(agent) == []
     end
+
+    test "a five-segment workspace key is ambiguous and does not crash the sweep" do
+      key = "session-workspace/amd/wl/lineage-ambig/meta.json"
+      {agent, s3} = new_s3(%{key => {100, @wall - 30 * @day, "x"}})
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+          group_store: start_store([]),
+          session_store: start_store([session_row(:destroyed, "wl", "none", nil)]),
+          serving_store: start_store([]),
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, %{plan: [], deleted: [], ambiguous: [^key], held: []}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
   end
 
   # -- sweep-level aborts ------------------------------------------------------
@@ -448,6 +594,30 @@ defmodule Embervm.S3WarmthGcTest do
       opts = Keyword.put(base_opts, :stateful_store, start_store([]))
 
       gc = start_gc(s3, opts ++ [enabled: true])
+      assert {:error, :empty_cp_state} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
+    test "empty session, serving, and workspace CP stores abort when S3 has those kinds" do
+      objects =
+        artifact("session/amd/wl/session-empty", @wall - 8 * @day)
+        |> Map.merge(artifact("serving/amd/wl/serving-empty", @wall - 8 * @day))
+        |> Map.merge(artifact("session-workspace/wl/lineage-empty", @wall - 8 * @day))
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+          group_store: start_store([]),
+          session_store: start_store([]),
+          serving_store: start_store([]),
+          volume_fun: fn _ -> nil end
+        )
+
       assert {:error, :empty_cp_state} = S3WarmthGc.sweep_now(gc)
       assert deleted(agent) == []
     end

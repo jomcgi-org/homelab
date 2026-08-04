@@ -231,7 +231,7 @@ defmodule Embervm.S3WarmthGc do
          {:ok, workspace_keys} <- list_or_abort(state, "session-workspace/"),
          {:ok, group_keys} <- list_or_abort(state, "group_set/"),
          {:ok, snapshot} <- cp_snapshot(state),
-         :ok <- check_empty_cp_state(snapshot, stateful_keys, group_keys) do
+         :ok <- check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys) do
       {candidates, ambiguous} = parse_candidates(state, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys)
       {eligible, held} = build_plan(state, snapshot, candidates)
       plan = apply_caps(state, eligible)
@@ -370,6 +370,8 @@ defmodule Embervm.S3WarmthGc do
     snapshot = %{
       stateful_count: length(stateful_rows),
       group_count: length(group_rows),
+      session_count: length(session_rows),
+      serving_count: length(serving_rows),
       desired_refs:
         for(%{snapshot_ref: ref} <- non_terminal_stateful, is_binary(ref), ref != "", into: MapSet.new(), do: ref),
       live_workloads: MapSet.new(non_terminal_stateful, & &1.workload),
@@ -425,13 +427,19 @@ defmodule Embervm.S3WarmthGc do
   # AT ALL (not merely nothing non-terminal: terminal history counts as "the
   # store has rebuilt"), the CP state is suspect (mid-rebuild, wrong op-log,
   # fresh install against an old bucket). Never treat empty as all-orphaned.
-  defp check_empty_cp_state(snapshot, stateful_keys, group_keys) do
+  defp check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys) do
     cond do
       stateful_keys != [] and snapshot.stateful_count == 0 ->
         abort(:empty_cp_state, "S3 holds stateful/ objects but StatefulStore tracks no instances at all")
 
       group_keys != [] and snapshot.group_count == 0 ->
         abort(:empty_cp_state, "S3 holds group_set/ objects but GroupStore tracks no instances at all")
+
+      (session_keys != [] or workspace_keys != []) and snapshot.session_count == 0 ->
+        abort(:empty_cp_state, "S3 holds session/ or session-workspace/ objects but SessionStore tracks no rows at all")
+
+      serving_keys != [] and snapshot.serving_count == 0 ->
+        abort(:empty_cp_state, "S3 holds serving/ objects but ServingStore tracks no rows at all")
 
       true ->
         :ok
@@ -490,6 +498,9 @@ defmodule Embervm.S3WarmthGc do
       ["session-workspace", workload, lineage, file] when file != "" ->
         {:ok, prefix_meta(kind, "", workload, lineage)}
 
+      ["session-workspace", _vendor, _workload, _lineage, file] when file != "" ->
+        :ambiguous
+
       # Vendored: <kind>/<vendor>/<owner>/<ref>/<file>
       [^kind, vendor, owner, ref, file] when file != "" ->
         if vendor in state.vendors and owner not in state.vendors do
@@ -525,6 +536,7 @@ defmodule Embervm.S3WarmthGc do
   defp prefix_meta("session", vendor, workload, ref), do: %{kind: :session, vendor: vendor, workload: workload, ref: ref, prefix: join_prefix("session", vendor, workload, ref)}
   defp prefix_meta("serving", vendor, workload, ref), do: %{kind: :serving, vendor: vendor, workload: workload, ref: ref, prefix: join_prefix("serving", vendor, workload, ref)}
   defp prefix_meta("session-workspace", "", workload, lineage), do: %{kind: :session_workspace, vendor: "", workload: workload, ref: lineage, lineage: lineage, prefix: join_prefix("session-workspace", "", workload, lineage)}
+  defp prefix_meta("session-workspace", _vendor, _workload, _lineage), do: nil
 
   defp join_prefix(kind, "", owner, ref), do: "#{kind}/#{owner}/#{ref}"
   defp join_prefix(kind, vendor, owner, ref), do: "#{kind}/#{vendor}/#{owner}/#{ref}"
