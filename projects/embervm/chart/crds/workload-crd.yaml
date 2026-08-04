@@ -984,13 +984,16 @@ spec:
                       description: Sessions currently holding a live VM.
                     banked:
                       type: integer
-                      description: Sessions suspended to a node snapshot.
+                      description: >-
+                        Sessions holding disk instead of a VM: a memory snapshot
+                        (banked) or a parked workspace volume.
                 sessionsSummary:
                   type: string
                   description: >-
-                    Human-readable "live/banked" rendering of `sessions`, for the
-                    SESSIONS printer column (a printer column cannot format an
-                    object). Written by the control plane alongside `sessions`.
+                    Human-readable "live/banked" rendering of `sessions` (banked
+                    includes parked), for the SESSIONS printer column (a printer
+                    column cannot format an object). Written by the control plane
+                    alongside `sessions`.
                 serving:
                   type: object
                   description: >-

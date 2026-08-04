@@ -173,6 +173,16 @@ defmodule Embervm.SessionStoreTest do
              SessionStore.transition(store, session.session_id, :park_complete, :session_parked, %{}, %{})
 
     assert SessionStore.counts(store, "wl-parked") == %{live: 0, banked: 1}
+
+    # :parked -> mark :relight -> :relighting: the wake attempt claims a VM
+    # again, so it crosses back out of the disk bucket into live.
+    assert {:ok, _} = SessionStore.mark(store, session.session_id, :relight)
+    assert SessionStore.counts(store, "wl-parked") == %{live: 1, banked: 0}
+
+    # :relighting -> mark :parked_abort -> :parked: a failed relight recovers
+    # to parked (no VM claimed), so it crosses back into the disk bucket.
+    assert {:ok, _} = SessionStore.mark(store, session.session_id, :parked_abort)
+    assert SessionStore.counts(store, "wl-parked") == %{live: 0, banked: 1}
   end
 
   test "park transition persists the volume node id", %{path: path} do
