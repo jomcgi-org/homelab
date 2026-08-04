@@ -40,6 +40,24 @@ describe("branches proxy", () => {
     expect(callUrl).toContain("my-repo");
   });
 
+  test("forwards upstream status and error body on failure", async () => {
+    global.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "not found" }), {
+          ok: false,
+          status: 503,
+        }),
+    );
+
+    const response = await getBranches({
+      params: { owner: "owner", repo: "repo" },
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.error).toBe("not found");
+  });
+
   test("handles API timeout", async () => {
     global.fetch = vi.fn(() => {
       throw new Error("timeout");

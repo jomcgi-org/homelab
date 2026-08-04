@@ -29,6 +29,8 @@
   let branches = $state([]);
   let repoLoading = $state(false);
   let branchLoading = $state(false);
+  let reposLoaded = $state(false);
+  let branchLoadSequence = 0;
   let newSession = $state({
     prompt: "",
     model: "",
@@ -194,6 +196,7 @@
       errorMessage = error.message;
     } finally {
       repoLoading = false;
+      reposLoaded = true;
     }
   }
 
@@ -203,6 +206,7 @@
       return;
     }
     branchLoading = true;
+    const generation = ++branchLoadSequence;
     const [owner, repo] = repoId.split("/");
     try {
       const response = await fetch(
@@ -210,13 +214,25 @@
       );
       if (!response.ok) throw new Error("Unable to load branches");
       const body = await response.json();
-      branches = body.branches ?? [];
-      newSession.branch = body.default_branch ?? "main";
+      if (generation === branchLoadSequence) {
+        branches = body.branches ?? [];
+        newSession.branch = body.default_branch ?? "main";
+        if (
+          branches.length > 0 &&
+          !branches.some((b) => b.name === newSession.branch)
+        ) {
+          newSession.branch = branches[0].name;
+        }
+      }
     } catch (error) {
-      branches = [];
-      newSession.branch = "main";
+      if (generation === branchLoadSequence) {
+        branches = [];
+        newSession.branch = "main";
+      }
     } finally {
-      branchLoading = false;
+      if (generation === branchLoadSequence) {
+        branchLoading = false;
+      }
     }
   }
 
@@ -330,9 +346,6 @@
       if (newSession.repo) {
         requestBody.repo = newSession.repo;
         requestBody.branch = newSession.branch;
-      } else {
-        requestBody.workspace = newSession.workspace?.trim() || "";
-        requestBody.branch = newSession.branch?.trim() || "";
       }
       const response = await fetch("/agents/sessions", {
         method: "POST",
@@ -396,7 +409,7 @@
   });
 
   $effect(() => {
-    if (showNewPanel && repos.length === 0) {
+    if (showNewPanel && !reposLoaded && !repoLoading) {
       loadRepos();
     }
   });
@@ -558,6 +571,7 @@
             if (
               (e.metaKey || e.ctrlKey) &&
               e.key === "Enter" &&
+              !e.isComposing &&
               !sending &&
               prompt.trim()
             ) {
@@ -601,6 +615,7 @@
               if (
                 (e.metaKey || e.ctrlKey) &&
                 e.key === "Enter" &&
+                !e.isComposing &&
                 !creating &&
                 newSession.prompt.trim()
               ) {
@@ -620,17 +635,22 @@
           >repo<select
             class="mono"
             bind:value={newSession.repo}
+            disabled={repoLoading}
             onchange={() => {
               newSession.branch = "";
               loadBranches(newSession.repo);
             }}
           >
-            <option value="">none (bare workspace)</option>
-            {#each repos as repo}
-              <option value={repo.id} title={repo.description || ""}>
-                {repo.id}
-              </option>
-            {/each}
+            {#if repoLoading}
+              <option value="">loading repos</option>
+            {:else}
+              <option value="">none (bare workspace)</option>
+              {#each repos as repo}
+                <option value={repo.id} title={repo.description || ""}>
+                  {repo.id}
+                </option>
+              {/each}
+            {/if}
           </select></label
         >
         <label>
@@ -642,7 +662,7 @@
             {#if branchLoading}
               <option value="">loading branches</option>
             {:else if branches.length === 0}
-              <option value="">main</option>
+              <option value="main">main</option>
             {:else}
               {#each branches as branch}
                 <option value={branch.name}>{branch.name}</option>
@@ -687,8 +707,9 @@
       ><span class="session-name">{displayName(session)}</span><span
         class="row-sub mono"
       >
-        {#if session.repo}{session.repo}@{session.branch ||
-            "main"}{:else}{session.model || "luna"} · {relativeTime(
+        {#if session.repo}{session.repo}@{session.branch || "main"} · {relativeTime(
+            session.last_turn_at || session.created_at,
+          )}{:else}{session.model || "luna"} · {relativeTime(
             session.last_turn_at || session.created_at,
           )}{/if}
       </span></span
