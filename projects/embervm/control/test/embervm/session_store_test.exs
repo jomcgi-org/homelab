@@ -96,6 +96,72 @@ defmodule Embervm.SessionStoreTest do
     assert SessionStore.counts(store, "wl-x") == %{live: 1, banked: 0}
   end
 
+  # -- lineage_id (#4306 slice 1) ---------------------------------------------
+
+  test "create mints lineage_id equal to session_id (no adoption path exists yet)", %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    {:ok, created} = create(store)
+    {:ok, session} = SessionStore.get(store, created.session_id)
+
+    assert session.lineage_id == session.session_id
+  end
+
+  test "get_latest_by_lineage returns the session by its lineage_id, or :error", %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    {:ok, created} = create(store)
+
+    # lineage_id == session_id this slice, so the session's own id IS its lineage.
+    assert {:ok, session} = SessionStore.get_latest_by_lineage(store, created.session_id)
+    assert session.session_id == created.session_id
+
+    assert SessionStore.get_latest_by_lineage(store, "no-such-lineage") == :error
+  end
+
+  test "get_latest_by_lineage sees a terminal session too (the orphan-reconcile needs this)",
+       %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    {:ok, created} = create(store)
+
+    {:ok, _} =
+      SessionStore.transition(store, created.session_id, :fail, :session_failed, %{reason: :failed}, %{})
+
+    assert {:ok, session} = SessionStore.get_latest_by_lineage(store, created.session_id)
+    assert session.state == :failed
+  end
+
+  test "an old-style session_created op with no lineage_id in its payload projects with lineage_id defaulted to session_id",
+       %{path: path} do
+    {op_log, _store} = start_pair(path)
+
+    # Simulates an op appended before #4306 slice 1 existed: the payload carries
+    # none of the fields introduced since. Constructed directly against the
+    # op-log (bypassing SessionStore.create, which always sends lineage_id now)
+    # to exercise the backward-compat default at the projection layer itself.
+    old_op = %Embervm.OpLog.Op{
+      kind: :session_created,
+      tenant: "homelab",
+      principal: "p1",
+      workload: "wl-old",
+      session_id: "s-legacy-1",
+      ts: 5_000,
+      payload: %{token_sha256: "deadbeef", state: "running"}
+    }
+
+    {:ok, _seq} = SQLite.append(op_log, old_op)
+
+    {:ok, rows} = SQLite.load_sessions(op_log)
+    row = Enum.find(rows, &(&1.session_id == "s-legacy-1"))
+    assert row.lineage_id == "s-legacy-1"
+
+    # And the hot-set rebuild agrees.
+    {:ok, store2} = SessionStore.start_link(op_log: op_log, name: nil)
+    {:ok, session} = SessionStore.get(store2, "s-legacy-1")
+    assert session.lineage_id == "s-legacy-1"
+  end
+
   # -- token capability ------------------------------------------------------
 
   test "verify_token accepts the session's own token and rejects another session's", %{path: path} do
@@ -309,6 +375,13 @@ defmodule Embervm.SessionStoreTest do
     assert sc.state == :failed
     assert sc.terminal_reason == "failed"
     assert sd.state == :parked
+
+    # lineage_id (#4306 slice 1) survives the rebuild too, for every row
+    # regardless of terminal state: it is a plain durable column like any other.
+    assert sa.lineage_id == sa.session_id
+    assert sb.lineage_id == sb.session_id
+    assert sc.lineage_id == sc.session_id
+    assert sd.lineage_id == sd.session_id
 
     # Counts reproduce: two live plus one banked (parked) on wl-a, zero live on
     # wl-b (its one session failed).
