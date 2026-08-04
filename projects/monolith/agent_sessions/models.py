@@ -20,6 +20,12 @@ class AgentSession(SQLModel, table=True):
     )  # Claude CLI session_id for resumption
     ember_session_id: str | None = Field(default=None)
     ember_session_token: str | None = Field(default=None)
+    # The durable workspace handle (#4306 slice 4): a restored session's
+    # ember_session_id is a fresh per-generation id, not a valid restore key
+    # for the NEXT generation (session_id == lineage_id only for a gen-0
+    # create). This is what a later create passes as restore_lineage to
+    # continue the same guest workspace/transcript across an expiry.
+    ember_lineage_id: str | None = Field(default=None)
     # BigInteger, not the default Integer: this is epoch MILLISECONDS from the
     # control plane, which overflows int4. The migration already declares BIGINT,
     # but SQLModel maps a plain int to sqlalchemy Integer and emits an explicit
