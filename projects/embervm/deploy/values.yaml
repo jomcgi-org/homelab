@@ -303,9 +303,10 @@ egress:
     # upload-pack plus receive-pack restricted to refs/agents/** by the mirror's
     # pre-receive hook; no credential exists on this path.
     # monolith.monolith.svc.cluster.local:8091
-    # Progress-ingest listener: write-only single-route for mid-turn visibility (ADR 051).
-    # Port 8091 only; the main API on 8000 stays deny. Token-bearer authorization boundaries
-    # what a prompt-injected guest can write to (its own session's partial_text), not network access.
+    # Monolith progress-ingest (8091): mid-turn visibility, write-only single route
+    # (ADR 051). Port 8091 only; the main API on 8000 stays deny. Token-bearer auth
+    # bounds what a prompt-injected guest can write to (its own session's
+    # partial_text), not network access.
     allowlist:
       - inference.inference.svc.cluster.local:8080
       - git-mirror.monolith.svc.cluster.local:9418
