@@ -434,6 +434,8 @@ def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypat
     ]
     first = calls[0]
     assert "-C" in first
+    assert first[first.index("-C") + 1] == str(tmp_path / "workspace")
+    assert first[-1] == "first"
     resume = calls[1]
     assert resume[:4] == ["exec", "resume", "codex-thread", "second"]
     assert "--sandbox" not in resume
