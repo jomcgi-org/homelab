@@ -34,8 +34,9 @@ tar(
 # Workspace trust pre-seed. Remote Control server mode and the interactive paths
 # refuse an untrusted workspace ("Error: Workspace not trusted") and the dialog is
 # interactive, so a fresh guest with nobody at a keyboard would wedge on first
-# boot. The record is keyed by ABSOLUTE workspace path and must match
-# EMBER_CLAUDE_WORKSPACE in apko.yaml exactly.
+# boot. The record trusts both ABSOLUTE workspace paths: /workspace is the
+# default workspace, while /workspace/src is the checkout path used for
+# hydration.
 #
 # Baked under /usr/share, NOT at its final ~/.claude.json: the rootfs is read-only
 # on every boot, so guest-init bind-mounts a writable HOME over /home/runtime, and
