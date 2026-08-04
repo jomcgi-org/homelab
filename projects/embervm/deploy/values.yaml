@@ -289,16 +289,22 @@ warmthS3Gc:
 egress:
   enabled: true
   internal:
-    # ONE deliberate hole in the split-horizon guardrail: the pi adapter drives
-    # the in-cluster Qwen model, which lives on this exact host:port. Matching is
-    # an exact case-insensitive host compare against BOTH the requested host:port
-    # and the resolved ip:port, so a name and its address are both accepted and
-    # pinning the resolved IP is what defeats SSRF-by-name and DNS rebinding. No
-    # wildcards. internal.default stays deny: this permits the model endpoint and
+    # TWO deliberate holes in the split-horizon guardrail. Matching is an exact
+    # case-insensitive host compare against BOTH the requested host:port and the
+    # resolved ip:port, so a name and its address are both accepted and pinning
+    # the resolved IP is what defeats SSRF-by-name and DNS rebinding. No
+    # wildcards. internal.default stays deny: this permits these endpoints and
     # nothing else, so a prompt-injected guest still cannot pivot into the
     # cluster. Adding an entry here is a security decision, not tuning.
+    #
+    # inference: the pi adapter drives the in-cluster Qwen model on this exact
+    # host:port.
+    # git-mirror: workspace hydration (ADR agents/050). Anonymous read-only
+    # upload-pack plus receive-pack restricted to refs/agents/** by the mirror's
+    # pre-receive hook; no credential exists on this path.
     allowlist:
       - inference.inference.svc.cluster.local:8080
+      - git-mirror.monolith.svc.cluster.local:9418
   # The claude runtime's subscription OAuth token. The sidecar SETS the
   # Authorization header on requests to api.anthropic.com and originates the
   # verified TLS to :443 itself, so the credential never exists inside a guest
