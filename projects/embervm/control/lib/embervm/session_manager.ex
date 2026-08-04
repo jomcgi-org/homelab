@@ -299,6 +299,16 @@ defmodule Embervm.SessionManager do
       create_inflight: %{},
       create_next_ref: 0,
       create_workers: %{},
+      # #4306/#4313 review fix 2 (TOCTOU): the set of restore_lineage values
+      # a restoring create currently has in flight (added synchronously in
+      # handle_call({:create,...}) when accepted, removed in finish_create
+      # regardless of outcome). check_restore_not_inflight/2 consults this
+      # directly instead of reverse-engineering it by scanning
+      # create_inflight's tuples, so a second restoring create for the same
+      # lineage is a plain MapSet.member?/2 check against a value this same
+      # GenServer call wrote synchronously, not an inference over another
+      # structure's shape.
+      inflight_restore_lineages: MapSet.new(),
       # session_id -> consecutive bank-failure count. Lives HERE (not in the session
       # process, which stops on admission) so three strikes across bank attempts fails
       # the session. Cleared on a successful bank or a successful invoke-driven relight.
@@ -398,6 +408,17 @@ defmodule Embervm.SessionManager do
             state.create_inflight[ref],
             {from, lineage_id, workload, principal, entry, node_id, snapshot_ref, dial_id, restore_lineage}
           )
+
+        # #4306/#4313 review fix 2: mark the lineage in flight in the SAME
+        # state update, synchronously, before this handle_call returns (so
+        # the very next {:create,...} this GenServer processes, for any
+        # caller, sees it).
+        state =
+          if restore_lineage do
+            %{state | inflight_restore_lineages: MapSet.put(state.inflight_restore_lineages, restore_lineage)}
+          else
+            state
+          end
 
         state = %{state | create_next_ref: ref + 1}
         {state, worker} =
@@ -626,29 +647,32 @@ defmodule Embervm.SessionManager do
   # deleting a live volume out from under it.
   #
   # do_create_inline runs SYNCHRONOUSLY inside the {:create, ...}
-  # GenServer.call, strictly BEFORE the worker spawns and BEFORE
-  # create_inflight gains an entry for THIS create (that write happens back
-  # in handle_call, after do_create_inline returns). Every other create the
-  # manager is mid-processing is either already in create_inflight (its
-  # worker spawned, still primed/restoring) or blocked behind this same
-  # single-process mailbox waiting its own turn at do_create_inline. So a scan
-  # of create_inflight here can only ever see OTHER creates, never this one,
-  # and no other create can interleave a write between this read and this
-  # create's own create_inflight insert: check-then-proceed is atomic with
-  # respect to a concurrent restore of the same lineage, closing the window
-  # the store-only check leaves open.
+  # GenServer.call, strictly BEFORE this create's own entry is written to
+  # state.inflight_restore_lineages (that write happens back in handle_call,
+  # after do_create_inline returns, in the SAME state update GenServer.call
+  # commits before this handle_call clause returns). Every other create the
+  # manager is mid-processing has therefore either already committed its own
+  # entry to that state (its worker spawned, still primed/restoring) or is
+  # blocked behind this same single-process mailbox waiting its own turn at
+  # do_create_inline. So a MapSet.member?/2 read here can only ever observe
+  # OTHER creates' entries, never this one's, and no other create can
+  # interleave a write between this read and this create's own insert:
+  # check-then-proceed is atomic with respect to a concurrent restore of the
+  # same lineage, closing the window the store-only check leaves open.
+  #
+  # This checks a dedicated MapSet (added/removed in handle_call/finish_create
+  # in lockstep with each restoring create's lifecycle) rather than
+  # reverse-engineering "is a restore of this lineage in flight" by scanning
+  # create_inflight's tuples: the set says exactly what it means, so there is
+  # no dependence on interpreting another structure's shape or write timing.
   defp check_restore_not_inflight(_state, nil), do: :ok
 
   defp check_restore_not_inflight(state, restore_lineage) do
-    in_flight? =
-      state.create_inflight
-      |> Map.values()
-      |> Enum.any?(fn {_from, _lineage_id, _workload, _principal, _entry, _node_id, _snapshot_ref, _dial_id,
-                        inflight_restore_lineage} ->
-        inflight_restore_lineage == restore_lineage
-      end)
-
-    if in_flight?, do: {:error, :lineage_restore_in_flight}, else: :ok
+    if MapSet.member?(state.inflight_restore_lineages, restore_lineage) do
+      {:error, :lineage_restore_in_flight}
+    else
+      :ok
+    end
   end
 
   # The node currently reporting restore_lineage's workspace volume in its
@@ -747,7 +771,19 @@ defmodule Embervm.SessionManager do
 
       {{from, lineage_id, workload, principal, entry, node_id, _snapshot_ref, dial_id, restore_lineage}, inflight} ->
         cleanup_create_worker(Map.get(state.create_workers, ref))
+
         state = %{state | create_inflight: inflight, create_workers: Map.delete(state.create_workers, ref)}
+
+        # #4306/#4313 review fix 2: clear the in-flight mark unconditionally
+        # (success or failure), in this SAME state update, before result is
+        # computed or replied. MapSet.delete/2 on an absent value is a no-op,
+        # so this is safe for a normal (non-restoring) create too.
+        state =
+          if restore_lineage do
+            %{state | inflight_restore_lineages: MapSet.delete(state.inflight_restore_lineages, restore_lineage)}
+          else
+            state
+          end
 
         result =
           case outcome do
