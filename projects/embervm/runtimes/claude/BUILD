@@ -96,6 +96,16 @@ py_test(
     ],
 )
 
+py_test(
+    name = "shim_hydration_test",
+    srcs = ["shim_hydration_test.py"],
+    imports = ["."],
+    deps = [
+        ":shim_lib",
+        "@pip//pytest",
+    ],
+)
+
 platform_transition_filegroup(
     name = "guest_init_amd64_bin",
     srcs = ["//projects/embervm/runtimes/claude/guest-init/cmd"],

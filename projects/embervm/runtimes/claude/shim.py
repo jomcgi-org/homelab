@@ -1432,9 +1432,70 @@ class ProcessManager:
         pi_executable="pi",
     ):
         _ensure_persistence_mountpoint_writable(_persistence_mount_path())
-        self.claude = ClaudeProcess(workspace, claude_executable)
-        self.codex = CodexProcess(workspace, codex_executable)
-        self.pi = PiProcess(workspace, pi_executable)
+        self.workspace = os.path.abspath(
+            workspace or os.environ.get("EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE)
+        )
+        self._hydration_attempted = False
+        self._hydration_error = None
+        self._checkout_dir = None
+        self.claude = ClaudeProcess(self.workspace, claude_executable)
+        self.codex = CodexProcess(self.workspace, codex_executable)
+        self.pi = PiProcess(self.workspace, pi_executable)
+
+    def _hydrate_workspace(self, repo, branch):
+        if self._hydration_attempted:
+            return
+        self._hydration_attempted = True
+        checkout_dir = os.path.join(self.workspace, "src")
+        if os.path.isdir(checkout_dir):
+            self._checkout_dir = checkout_dir
+            self.claude.workspace = checkout_dir
+            self.codex.workspace = checkout_dir
+            self.pi.workspace = checkout_dir
+            return
+        try:
+            os.makedirs(self.workspace, exist_ok=True)
+            clone_command = [
+                "git",
+                "clone",
+                "--branch",
+                branch,
+                "--single-branch",
+                "--filter=blob:none",
+                "git://git-mirror.monolith.svc.cluster.local:9418/%s" % repo,
+                checkout_dir,
+            ]
+            result = subprocess.run(
+                clone_command,
+                capture_output=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", "replace").strip()
+                raise RuntimeError(
+                    "git command failed with exit code %s%s"
+                    % (result.returncode, ": " + stderr if stderr else "")
+                )
+        except subprocess.TimeoutExpired as exc:
+            self._hydration_error = str(exc)
+            sys.stderr.write(
+                "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
+                % (repo, branch, exc)
+            )
+            sys.stderr.flush()
+            return
+        except Exception as exc:
+            self._hydration_error = str(exc)
+            sys.stderr.write(
+                "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
+                % (repo, branch, exc)
+            )
+            sys.stderr.flush()
+            return
+        self._checkout_dir = checkout_dir
+        self.claude.workspace = checkout_dir
+        self.codex.workspace = checkout_dir
+        self.pi.workspace = checkout_dir
 
     def _adapter(self, model):
         if model == "qwen":
@@ -1446,7 +1507,9 @@ class ProcessManager:
     def ready(self):
         return self.claude.ready() and self.codex.ready() and self.pi.ready()
 
-    def turn(self, message, session_id=None, model=None):
+    def turn(self, message, session_id=None, model=None, repo=None, branch=None):
+        if repo is not None and branch is not None:
+            self._hydrate_workspace(repo, branch)
         adapter = self._adapter(model)
         try:
             if adapter is self.pi:
@@ -1538,9 +1601,26 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if not isinstance(message, str) or not message.strip():
             self._send(400, {"error": "message must not be empty"})
             return
+        repo = payload.get("repo")
+        branch = payload.get("branch")
+        if (repo is None) != (branch is None):
+            self._send(400, {"error": "repo and branch must be provided together"})
+            return
+        if repo is not None and (
+            not isinstance(repo, str)
+            or not repo
+            or not isinstance(branch, str)
+            or not branch
+        ):
+            self._send(400, {"error": "repo and branch must be non-empty strings"})
+            return
         try:
             record = self.manager.turn(
-                message, payload.get("session_id"), payload.get("model")
+                message,
+                payload.get("session_id"),
+                payload.get("model"),
+                payload.get("repo"),
+                payload.get("branch"),
             )
         except SessionConflictError as exc:
             self._send(409, {"error": str(exc)})
