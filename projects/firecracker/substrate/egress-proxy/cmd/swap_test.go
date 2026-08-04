@@ -202,6 +202,138 @@ func TestInjectClaimHeaderDeniesOnInvalidJWT(t *testing.T) {
 	}
 }
 
+func TestInjectAlwaysPathInjectsWithoutPresenceOnClaimEntry(t *testing.T) {
+	sec := &secretEntry{
+		Header:            "Authorization",
+		ValuePrefix:       "Bearer ",
+		ClaimHeader:       "chatgpt-account-id",
+		ClaimPath:         "account_id",
+		InjectAlwaysPaths: []string{"/backend-api/ps/mcp"},
+		value:             testJWT(`{"account_id":"real-account"}`),
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/ps/mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No Authorization header at all: the rmcp connector client (issue #4298)
+	// never sends one, so presence cannot signal intent here.
+
+	if !injectRequest(req, sec) {
+		t.Fatal("injectRequest denied a listed path with no Authorization header")
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer "+sec.value {
+		t.Errorf("Authorization = %q, want the injected credential", got)
+	}
+	if got := req.Header.Get("chatgpt-account-id"); got != "real-account" {
+		t.Errorf("chatgpt-account-id = %q, want the extracted account ID", got)
+	}
+}
+
+func TestInjectAlwaysPathDeniesAnUnlistedPathWithoutPresence(t *testing.T) {
+	sec := &secretEntry{
+		Header:            "Authorization",
+		ValuePrefix:       "Bearer ",
+		ClaimHeader:       "chatgpt-account-id",
+		ClaimPath:         "account_id",
+		InjectAlwaysPaths: []string{"/backend-api/ps/mcp"},
+		value:             testJWT(`{"account_id":"real-account"}`),
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same entry as above, but the request is not to a listed path, so it
+	// still needs header presence, exactly like an entry with no list at all.
+
+	if injectRequest(req, sec) {
+		t.Fatal("injectRequest allowed an unlisted path with no Authorization header")
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization = %q, want empty; an unlisted path must stay uncredentialed", got)
+	}
+}
+
+func TestInjectAlwaysPathClaimFailureStillDenies(t *testing.T) {
+	sec := &secretEntry{
+		Header:            "Authorization",
+		ClaimHeader:       "chatgpt-account-id",
+		ClaimPath:         "account_id",
+		InjectAlwaysPaths: []string{"/backend-api/ps/mcp"},
+		value:             "not-a-jwt",
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/ps/mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The path is listed, so the request IS requested, but claim resolution
+	// still fails on a bad token: fail-closed must win regardless of which
+	// signal produced "requested".
+
+	if injectRequest(req, sec) {
+		t.Fatal("injectRequest allowed a listed path whose claim resolution failed")
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization = %q, want empty on claim failure", got)
+	}
+}
+
+func TestInjectAlwaysPathOnNonClaimEntry(t *testing.T) {
+	sec := &secretEntry{
+		Header:            "Authorization",
+		ValuePrefix:       "Bearer ",
+		InjectAlwaysPaths: []string{"/backend-api/ps/mcp"},
+		value:             "real-token",
+	}
+	tests := []struct {
+		name, path string
+		want       bool
+	}{
+		{"listed path, no header", "/backend-api/ps/mcp", true},
+		{"unlisted path, no header", "/backend-api/other", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "https://chatgpt.com"+tt.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := injectRequest(req, sec); got != tt.want {
+				t.Fatalf("injected = %v, want %v", got, tt.want)
+			}
+			if tt.want {
+				if got := req.Header.Get("Authorization"); got != "Bearer real-token" {
+					t.Errorf("Authorization = %q, want the injected credential", got)
+				}
+			} else if got := req.Header.Get("Authorization"); got != "" {
+				t.Errorf("Authorization = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestInjectAlwaysPathDoesNotBreakPresenceOnUnlistedPath(t *testing.T) {
+	// No regression check: an entry with InjectAlwaysPaths configured must
+	// still honour ordinary presence-keyed injection on every other path.
+	sec := &secretEntry{
+		Header:            "Authorization",
+		ValuePrefix:       "Bearer ",
+		InjectAlwaysPaths: []string{"/backend-api/ps/mcp"},
+		value:             "real-token",
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer guest-dummy")
+
+	if !injectRequest(req, sec) {
+		t.Fatal("injectRequest denied a request that sent the header, on an entry with InjectAlwaysPaths configured")
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer real-token" {
+		t.Errorf("Authorization = %q, want the injected credential", got)
+	}
+}
+
 func TestInjectRequestBackwardCompatible(t *testing.T) {
 	sec := &secretEntry{Header: "Authorization", ValuePrefix: "Bearer ", value: "real-token"}
 	req, err := http.NewRequest(http.MethodGet, "https://api.example.com", nil)
