@@ -1393,6 +1393,24 @@ class PiProcess:
         return None
 
 
+def _sync_session_volume():
+    """Flush guest writes to the durable session volume.
+
+    Park tears the VM down with a hard SIGKILL and the drive runs in
+    firecracker's Unsafe cache mode, so a turn's CLI session files sit in the
+    guest page cache until the periodic ext4 commit and are lost on the kill.
+    sync() after each turn pushes them to the device while the session is
+    still live, so a later park -> rejoin finds the conversation intact
+    (issue #4309).
+    """
+    try:
+        os.sync()
+    except OSError as exc:
+        # A sync failure must never fail a turn: log and continue.
+        sys.stderr.write("ember-claude-shim: session volume sync failed: %s\n" % exc)
+        sys.stderr.flush()
+
+
 class ProcessManager:
     """Route Claude-compatible turns to the selected CLI adapter."""
 
@@ -1420,11 +1438,22 @@ class ProcessManager:
 
     def turn(self, message, session_id=None, model=None):
         adapter = self._adapter(model)
-        if adapter is self.pi:
-            return adapter.turn(message, session_id, model or DEFAULT_PI_MODEL)
-        if adapter is self.codex:
-            return adapter.turn(message, session_id, model or DEFAULT_CODEX_MODEL)
-        return adapter.turn(message, session_id, model)
+        try:
+            if adapter is self.pi:
+                return adapter.turn(message, session_id, model or DEFAULT_PI_MODEL)
+            if adapter is self.codex:
+                return adapter.turn(message, session_id, model or DEFAULT_CODEX_MODEL)
+            return adapter.turn(message, session_id, model)
+        finally:
+            # End-of-turn quiescence point: park only happens after a completed
+            # turn plus idle, so flushing here guarantees the device has the
+            # full session file well before any later park SIGKILLs the VM
+            # (#4309). The finally covers every family, and both a normal
+            # return AND a raised turn (a read timeout, a mid-turn CLI death):
+            # the shim process stays alive through the exception, so the sync
+            # is still safe, and a raised turn may still have left durable-
+            # worth CLI state that a later park would otherwise lose.
+            _sync_session_volume()
 
     def interrupt(self):
         # An interrupt has no model in its request, so interrupt both adapters.
