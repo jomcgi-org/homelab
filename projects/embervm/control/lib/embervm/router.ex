@@ -715,6 +715,11 @@ defmodule Embervm.Router do
       {:ok, created} ->
         send_json(conn, 201, %{
           session_id: created.session_id,
+          # #4306 slice 3 review fix (item B): the durable workspace handle,
+          # not the per-generation session_id, is the valid restore_lineage
+          # key for the NEXT generation (session_id != lineage_id after the
+          # first restore). Defaults to session_id for a normal create.
+          lineage_id: Map.get(created, :lineage_id, created.session_id),
           session_token: created.token,
           expires_at: created.expires_at,
           base_digest: created.base_digest,

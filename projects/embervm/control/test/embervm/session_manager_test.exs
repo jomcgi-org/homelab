@@ -895,6 +895,13 @@ defmodule Embervm.SessionManagerTest do
     assert restored.session_id != original.session_id
     assert restored.restored == true
 
+    # #4306 slice 3 review fix (item B): the RESPONSE map (not just the
+    # durable row) must carry the divergence, since a caller chaining
+    # generations restores via lineage_id, never session_id, and only sees
+    # this returned map (the durable row is an implementation detail).
+    assert restored.lineage_id == original.session_id
+    assert restored.session_id != restored.lineage_id
+
     {:ok, row} = SessionStore.get(ctx.store, restored.session_id)
     assert row.session_id == restored.session_id
     assert row.lineage_id == original.session_id
@@ -987,6 +994,10 @@ defmodule Embervm.SessionManagerTest do
     created = create_persistence_session(ctx)
 
     assert created.restored == false
+    # #4306 slice 3 review fix (item B): lineage_id must be in the RESPONSE
+    # map itself, not just the durable row, since Slice 4's monolith chains
+    # generations off what create/4 returns.
+    assert created.lineage_id == created.session_id
 
     {:ok, row} = SessionStore.get(ctx.store, created.session_id)
     assert row.lineage_id == row.session_id
@@ -1047,7 +1058,7 @@ defmodule Embervm.SessionManagerTest do
     # bare node name (the shape a real co-located-instance node reports).
     # session_volumes defaults to [] (put_brick), so no fact locates this
     # lineage anywhere: a genuine cold restore.
-    put_brick(ctx, wl, "inst-a")
+    put_brick(ctx, wl, "inst-a", [])
 
     {:ok, original} = SessionManager.create(ctx.mgr, wl, "p1")
     {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
@@ -1113,7 +1124,14 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, first} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
     {:ok, _} = SessionManager.destroy(ctx.mgr, first.session_id)
 
-    assert {:ok, second} = SessionManager.create(ctx.mgr, "wl-persist", "p1", first.session_id)
+    # Restore keys on LINEAGE, not session_id: first is itself a restoring
+    # create, so first.session_id != first.lineage_id (original.session_id).
+    # get_latest_by_lineage/2 scans session.lineage_id only, so restoring
+    # first.session_id would find no row at all (:unknown_lineage) rather
+    # than exercising the in-flight guard's happy path. original.session_id
+    # is the stable lineage handle the whole chain shares; restoring it again
+    # now finds `first` (the newest holder) terminal and is allowed.
+    assert {:ok, second} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
     assert second.session_id != first.session_id
   end
 
