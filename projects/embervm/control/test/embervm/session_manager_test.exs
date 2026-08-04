@@ -178,7 +178,7 @@ defmodule Embervm.SessionManagerTest do
         Keyword.get(opts, :session, %{
           idle_bank_seconds: 300,
           max_lifetime_seconds: Keyword.get(opts, :max_lifetime_seconds, 3600),
-          banked_ttl_seconds: 3600,
+          banked_ttl_seconds: Keyword.get(opts, :banked_ttl_seconds, 3600),
           max_sessions: Keyword.get(opts, :max_sessions, 16),
           invoke_queue_cap: Keyword.get(opts, :queue_cap, 4)
         }),
@@ -1001,6 +1001,46 @@ defmodule Embervm.SessionManagerTest do
     assert_receive {:retire_failed, ^sid}
     {:ok, session} = SessionStore.get(ctx.store, sid)
     assert session.state == :expired
+  end
+
+  test "banked-TTL GC also reaps a parked session untouched past bankedTtlSeconds (#4305)" do
+    # The manager clock is fixed at 5_000_000 (see start_stack); store_clock: fn
+    # -> 0 end stamps the park_complete row's updated_at at 0, so sweep sees
+    # 5_000_000ms elapsed against a 60s (60_000ms) bankedTtlSeconds, comfortably
+    # past it, the same fixed-clock-vs-store-clock idiom the destroying-alarm
+    # test uses (store_clock: fn -> 0 end).
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-parked-ttl-evicted"),
+        channel_fun: fake_channel_fun(),
+        store_clock: fn -> 0 end
+      )
+
+    created = create_persistence_session(ctx, banked_ttl_seconds: 60)
+    park_session(ctx, created)
+
+    assert :ok = SessionManager.sweep(ctx.mgr)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :evicted
+    assert session.terminal_reason == "idle_ttl"
+  end
+
+  test "a parked session inside bankedTtlSeconds survives the sweep" do
+    # store_clock: fn -> 4_999_000 end stamps park_complete 1s before the fixed
+    # 5_000_000 manager clock, well inside a 60s bankedTtlSeconds.
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-parked-ttl-survives"),
+        channel_fun: fake_channel_fun(),
+        store_clock: fn -> 4_999_000 end
+      )
+
+    created = create_persistence_session(ctx, banked_ttl_seconds: 60)
+    park_session(ctx, created)
+
+    assert :ok = SessionManager.sweep(ctx.mgr)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :parked
   end
 
   test "parked_session_can_be_destroyed" do

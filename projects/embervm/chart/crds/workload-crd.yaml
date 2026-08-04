@@ -332,8 +332,12 @@ spec:
 
                     NOTE: idleBankSeconds describes the `persistence.memory: true`
                     path. Under `memory: false` there is no bank; the same idle
-                    threshold parks instead (VM teardown, the workspace stays on
-                    its volume) and the next invoke rejoins it.
+                    threshold instead triggers whichever `persistence.filesystem`
+                    quadrant applies: with `filesystem.enabled: true` it parks
+                    (VM teardown, the workspace stays on its volume) and the next
+                    invoke rejoins it; with `filesystem.enabled: false` it
+                    destroys the VM outright and the next invoke cold boots
+                    (no volume to preserve, the legacy close behavior).
                   properties:
                     idleBankSeconds:
                       type: integer
