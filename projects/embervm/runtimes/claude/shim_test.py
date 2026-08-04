@@ -473,6 +473,55 @@ def test_manager_routes_only_known_models_to_codex(tmp_path, monkeypatch):
     assert manager._adapter("unknown") is claude
 
 
+def test_manager_turn_syncs_session_volume_for_codex(tmp_path, monkeypatch):
+    # A completed turn is the quiescence point park relies on (#4309): the
+    # sync must fire exactly once per turn, through the Manager chokepoint,
+    # for the codex lane.
+    codex = _codex_manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(codex.workspace, codex.executable, codex.executable)
+    sync_calls = []
+    monkeypatch.setattr(shim.os, "sync", lambda: sync_calls.append(1))
+
+    manager.turn("first", model="luna")
+
+    assert len(sync_calls) == 1
+    manager._close_process()
+
+
+def test_manager_turn_syncs_session_volume_for_claude(tmp_path, monkeypatch):
+    # Same chokepoint, the claude lane: the sync is not adapter-specific.
+    claude = _manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(claude.workspace, claude.executable)
+    monkeypatch.setattr(manager.claude, "_configure_git", lambda: None)
+    sync_calls = []
+    monkeypatch.setattr(shim.os, "sync", lambda: sync_calls.append(1))
+
+    manager.turn("make changes")
+
+    assert len(sync_calls) == 1
+
+
+def test_manager_turn_syncs_session_volume_even_when_adapter_raises(
+    tmp_path, monkeypatch
+):
+    # A raised turn (a read timeout, a mid-turn CLI death) may still have left
+    # durable-worth CLI state; the finally must still fire the sync (#4309).
+    codex = _codex_manager(tmp_path, monkeypatch)
+    manager = shim.ProcessManager(codex.workspace, codex.executable, codex.executable)
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(manager.codex, "turn", _raise)
+    sync_calls = []
+    monkeypatch.setattr(shim.os, "sync", lambda: sync_calls.append(1))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        manager.turn("first", model="luna")
+
+    assert len(sync_calls) == 1
+
+
 def _capture_spawn_kwargs(tmp_path, monkeypatch, geteuid, env=None):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
