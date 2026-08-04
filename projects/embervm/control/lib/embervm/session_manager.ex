@@ -109,16 +109,49 @@ defmodule Embervm.SessionManager do
 
   @doc """
   Creates a session for `workload` on behalf of `principal`. Returns
-  `{:ok, %{session_id, token, expires_at, base_digest}}` (the token is returned
-  ONCE, here), or `{:error, {:denied, reason}}` for a capacity/quota denial
-  (`:session_cap`, `:workload_cap`, `:quota`, `:no_capacity`, `:unknown_workload`,
-  `:not_session_class`) that the router maps to a 429/403.
+  `{:ok, %{session_id, token, expires_at, base_digest, restored}}` (the token
+  is returned ONCE, here), or `{:error, {:denied, reason}}` for a
+  capacity/quota denial (`:session_cap`, `:workload_cap`, `:quota`,
+  `:no_capacity`, `:unknown_workload`, `:not_session_class`) that the router
+  maps to a 429/403. `restored` is always `false` here (no restore requested);
+  see `create/4`.
   """
   @spec create(GenServer.server(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def create(server \\ __MODULE__, workload, principal) do
+    create(server, workload, principal, nil)
+  end
+
+  @doc """
+  Like `create/3`, but `restore_lineage` (nilable, empty treated as absent)
+  makes this a #4306 slice 3 CROSS-GENERATION create: the new session
+  inherits `restore_lineage`'s durable workspace instead of minting a fresh
+  one, so `session_id != lineage_id` for the first time in this codebase
+  (`lineage_id` becomes `restore_lineage`; a fresh `session_id` is still
+  minted). This is deliberately NOT called "adopt": that word already names
+  the unrelated boot-time rebind mechanism in this module (`adopt_state`/
+  adoption reconcile). Restore is a distinct, cross-generation concept and
+  stays a distinct word throughout.
+
+  Validated before anything is placed or primed, each denying with a distinct
+  reason the router maps to a 4xx:
+
+    * `:unknown_lineage` -- no session has ever carried `restore_lineage`.
+    * `:lineage_workload_mismatch` -- the lineage belongs to a different workload.
+    * `:lineage_principal_mismatch` -- the lineage belongs to a different
+      principal (ADR embervm/025's cross-principal prohibition).
+    * `:lineage_live_heir` -- the lineage's newest holder is not terminal yet
+      (exclusivity: at most one live heir per lineage).
+
+  `restored` in the returned map is `true` when the inherited workspace was
+  actually recovered (attached locally or an S3 restore hit), `false` for a
+  genuine blank/miss (tolerated, not an error) or for a normal create.
+  """
+  @spec create(GenServer.server(), String.t(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def create(server, workload, principal, restore_lineage) do
     # Cold-boot persistence creates can legitimately take tens of seconds while
     # the manager remains responsive to other calls.
-    GenServer.call(server, {:create, workload, principal}, 180_000)
+    GenServer.call(server, {:create, workload, principal, normalize_restore_lineage(restore_lineage)}, 180_000)
   end
 
   @doc """
@@ -245,7 +278,8 @@ defmodule Embervm.SessionManager do
       # invoke can park (relighting ledger) and be relit once the bank completes.
       banking: %{},
       # create_ref -> {from, lineage_id, workload, principal, entry, node_id,
-      # snapshot_ref, dial_id}; claim/prime runs outside this process.
+      # snapshot_ref, dial_id, restore_lineage}; claim/prime runs outside this
+      # process. restore_lineage is nil for a normal create (#4306 slice 3).
       create_inflight: %{},
       create_next_ref: 0,
       create_workers: %{},
@@ -337,8 +371,8 @@ defmodule Embervm.SessionManager do
   end
 
   @impl true
-  def handle_call({:create, workload, principal}, from, state) do
-    case do_create_inline(state, workload, principal) do
+  def handle_call({:create, workload, principal, restore_lineage}, from, state) do
+    case do_create_inline(state, workload, principal, restore_lineage) do
       {:ok,
        %{entry: entry, node_id: node_id, dial_id: dial_id, snapshot_ref: snapshot_ref, lineage_id: lineage_id}} ->
         ref = state.create_next_ref
@@ -346,12 +380,12 @@ defmodule Embervm.SessionManager do
         state =
           put_in(
             state.create_inflight[ref],
-            {from, lineage_id, workload, principal, entry, node_id, snapshot_ref, dial_id}
+            {from, lineage_id, workload, principal, entry, node_id, snapshot_ref, dial_id, restore_lineage}
           )
 
         state = %{state | create_next_ref: ref + 1}
         {state, worker} =
-          spawn_create_worker(state, ref, dial_id, workload, snapshot_ref, entry, lineage_id)
+          spawn_create_worker(state, ref, node_id, dial_id, workload, snapshot_ref, entry, lineage_id, restore_lineage)
 
         {:noreply, put_in(state.create_workers[ref], worker)}
 
@@ -499,7 +533,7 @@ defmodule Embervm.SessionManager do
 
   # -- create ----------------------------------------------------------------
 
-  defp do_create_inline(state, workload, principal) do
+  defp do_create_inline(state, workload, principal, restore_lineage) do
     # The management create span covers the manager-owned fast path. The
     # claim/prime portion runs in a worker, so its pool-hit attributes are split.
     Tracer.with_span "embervm.session.create",
@@ -513,14 +547,22 @@ defmodule Embervm.SessionManager do
            :ok <- check_session_cap(state, workload, entry),
            :ok <- check_workload_cap(state, workload, entry),
            :ok <- check_quota(state, principal),
-           {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry) do
+           :ok <- validate_restore_lineage(state, restore_lineage, workload, principal),
+           pin_node_id = restore_lineage_volume_node(state, restore_lineage, workload),
+           {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry, pin_node_id) do
         {:ok,
          %{
            entry: entry,
            node_id: node_id,
            dial_id: dial_id,
            snapshot_ref: snapshot_ref,
-           lineage_id: if(persistence_enabled_workload?(entry), do: mint_lineage_id(state), else: nil)
+           # #4306 slice 3: a restoring create's lineage_id is the INHERITED
+           # restore_lineage, not a freshly minted one (this is the divergence
+           # point where session_id and lineage_id first differ; see
+           # register_and_start). Non-restoring behavior is unchanged.
+           lineage_id:
+             restore_lineage ||
+               if(persistence_enabled_workload?(entry), do: mint_lineage_id(state), else: nil)
          }}
       else
         {:error, reason} -> {:error, {:denied, reason}}
@@ -528,14 +570,66 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp spawn_create_worker(state, ref, node_id, workload, snapshot_ref, entry, lineage_id) do
+  # restore_lineage present but no session has EVER carried it, belongs to a
+  # different workload or principal (ADR embervm/025's cross-principal
+  # prohibition), or its newest holder is not terminal yet (exclusivity: at
+  # most one live heir per lineage). nil/empty restore_lineage is always a
+  # normal create and always validates.
+  defp validate_restore_lineage(_state, nil, _workload, _principal), do: :ok
+
+  defp validate_restore_lineage(state, restore_lineage, workload, principal) do
+    case SessionStore.get_latest_by_lineage(state.session_store, restore_lineage) do
+      :error ->
+        {:error, :unknown_lineage}
+
+      {:ok, %{workload: lineage_workload}} when lineage_workload != workload ->
+        {:error, :lineage_workload_mismatch}
+
+      {:ok, %{principal: lineage_principal}} when lineage_principal != principal ->
+        {:error, :lineage_principal_mismatch}
+
+      {:ok, %{state: session_state}} when session_state not in [:expired, :evicted, :destroyed, :failed] ->
+        {:error, :lineage_live_heir}
+
+      {:ok, _terminal_holder} ->
+        :ok
+    end
+  end
+
+  # The node currently reporting restore_lineage's workspace volume in its
+  # fleet facts (the same session_volumes list retire_orphan_session_volumes
+  # reads), or nil when no node reports it. A cold-restore create (no node
+  # found) places anywhere, same as a normal create; restore_session_workspace
+  # then tries the object store instead of a local attach.
+  defp restore_lineage_volume_node(_state, nil, _workload), do: nil
+
+  defp restore_lineage_volume_node(state, restore_lineage, workload) do
+    state.capacity_table
+    |> NodeCapacity.all()
+    |> Enum.find_value(fn f ->
+      Enum.find_value(Map.get(f, :session_volumes, []) || [], fn volume ->
+        if volume.lineage_id == restore_lineage and volume.workload == workload, do: f.configured_id
+      end)
+    end)
+  end
+
+  defp spawn_create_worker(state, ref, node_id, dial_id, workload, snapshot_ref, entry, lineage_id, restore_lineage \\ nil) do
     owner = self()
     timeout_ref = Process.send_after(owner, {:create_timeout, ref}, @create_worker_timeout_ms)
 
     {pid, monitor_ref} = spawn_monitor(fn ->
       result =
         try do
-          claim_or_prime(state, node_id, workload, snapshot_ref, entry, lineage_id)
+          case restore_lineage do
+            nil ->
+              case claim_or_prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
+                {:ok, vm_id} -> {:ok, vm_id, false}
+                {:error, reason} -> {:error, reason}
+              end
+
+            _ ->
+              restore_then_prime(state, node_id, workload, snapshot_ref, entry, restore_lineage)
+          end
         rescue
           exception -> {:error, {:create_worker_crashed, exception}}
         catch
@@ -548,21 +642,55 @@ defmodule Embervm.SessionManager do
     {state, {pid, monitor_ref, timeout_ref}}
   end
 
+  # Restore-then-prime for a restoring create (#4306 slice 3): the create-path
+  # mirror of perform_rejoin_prime's restore-before-boot ordering. place_create
+  # only PINS the bare node when the fleet facts locate the lineage's volume;
+  # it may still hand back a dial_id for the wrong co-located instance on that
+  # node (multiple instances can share one node_id), so this re-resolves the
+  # dial itself via the same session_volumes fact perform_rejoin_prime uses,
+  # restores the workspace onto it BEFORE prime so the guest boots with data
+  # already in place, then primes with lineage_id = restore_lineage so the
+  # volume attaches under the inherited identity rather than a fresh one.
+  # restore-on-miss is tolerated (see restore_session_workspace/4): a genuine
+  # store miss proceeds with a blank workspace and reports restored: false.
+  defp restore_then_prime(state, node_id, workload, snapshot_ref, entry, restore_lineage) do
+    dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, restore_lineage)
+
+    with {:ok, restored} <- restore_session_workspace(state, dial_id, workload, restore_lineage),
+         {:ok, vm_id} <- prime(state, dial_id, snapshot_ref, entry, restore_lineage) do
+      {:ok, vm_id, restored}
+    end
+  end
+
   defp finish_create(state, ref, outcome) do
     case Map.pop(state.create_inflight, ref) do
       {nil, _} ->
         state
 
-      {{from, lineage_id, workload, principal, entry, node_id, _snapshot_ref, dial_id}, inflight} ->
+      {{from, lineage_id, workload, principal, entry, node_id, _snapshot_ref, dial_id, restore_lineage}, inflight} ->
         cleanup_create_worker(Map.get(state.create_workers, ref))
         state = %{state | create_inflight: inflight, create_workers: Map.delete(state.create_workers, ref)}
 
         result =
           case outcome do
-            {:ok, vm_id} ->
-              register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id)
+            {:ok, vm_id, restored} ->
+              register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored)
+
             {:error, reason} ->
               audit_denial(state, principal, workload, reason)
+
+              # #4306/#4313: noded clears the lineage's retirement intent early
+              # in an adopting Prime, so a RESTORING create that fails after
+              # prime started (this branch only runs once the worker actually
+              # ran, i.e. validate_restore_lineage already passed) can leave
+              # the volume on disk with no retirement intent and no live VM.
+              # Re-drive reclamation so noded's sweep exports then deletes it
+              # instead of orphaning. node_id here is wherever the worker
+              # actually ran, pinned or not, so it is always the right target.
+              if restore_lineage do
+                _ = retire_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: restore_lineage})
+              end
+
               {:error, {:denied, reason}}
           end
 
@@ -638,11 +766,16 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp place_create(state, workload, entry) do
+  # pin_node_id (#4306 slice 3, nil for every pre-existing caller) PINS
+  # placement to a specific node, the same way perform_rejoin_prime pins
+  # volume_node_id for a rejoin: a restoring create whose fleet facts locate
+  # restore_lineage's volume must land where the volume already is.
+  defp place_create(state, workload, entry, pin_node_id \\ nil) do
     case Scheduler.place_with_demand(%Request{
            table: state.capacity_table,
            workload: workload,
            key: workload,
+           node_id: pin_node_id,
            need_mib: Map.get(entry, :mem_mib) || 512,
            base: {:ready, :snapshot_ref}
          }) do
@@ -689,6 +822,12 @@ defmodule Embervm.SessionManager do
   defp mint_lineage_id(%{id_fun: fun}) when is_function(fun, 0), do: fun.()
   defp mint_lineage_id(%{id_fun: fun, clock: clock}) when is_function(fun, 1), do: fun.(clock.())
   defp mint_lineage_id(state), do: Embervm.SessionId.new(state.clock.())
+
+  # #4306 slice 3: absent, empty, or non-string all mean "no restore
+  # requested" (a normal create), the same tolerant contract the router's
+  # own optional_restore_lineage/1 body parse uses.
+  defp normalize_restore_lineage(lineage) when is_binary(lineage) and lineage != "", do: lineage
+  defp normalize_restore_lineage(_other), do: nil
 
   defp prime(state, node_id, snapshot_ref, entry, lineage_id) do
     # A prime failure is NOT a capacity problem, and reporting it as one cost a
@@ -747,25 +886,33 @@ defmodule Embervm.SessionManager do
   # PR-4 rebinds). If the process fails to start, the durable session is orphaned as
   # a live-but-unrouted row; PR-4 adoption rebinds it from NodeStatus, so we surface
   # the create as failed rather than leave the caller a token to a dead process.
-  defp register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id) do
+  defp register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage \\ nil, restored \\ false) do
     attrs = %{
       tenant: state.tenant,
       principal: principal,
       workload: workload,
       node_id: node_id,
       vm_id: vm_id,
-      # session_id: lineage_id is intentional, not a naming slip: a
-      # persistence-enabled workload pre-mints its lineage id (mint_lineage_id/1)
-      # and that SAME value becomes the session's own session_id too (do_create
-      # mints a fresh one only when this is nil, the non-persistence case).
-      # #4306 slice 1 also records it explicitly as lineage_id below, rather
-      # than relying on do_create's session_id-default fallback, so the durable
-      # row's lineage_id traces back to the actual pre-minted value (nil here
-      # for a non-persistence workload, which still falls through to the same
-      # default: Map.get(attrs, :lineage_id) || session_id treats a present-but-
-      # nil key the same as an absent one).
-      session_id: lineage_id,
-      lineage_id: lineage_id,
+      # session_id: lineage_id is intentional for a normal persistence create,
+      # not a naming slip: a persistence-enabled workload pre-mints its
+      # lineage id (mint_lineage_id/1) and that SAME value becomes the
+      # session's own session_id too (do_create mints a fresh one only when
+      # this is nil, the non-persistence case). #4306 slice 1 also records it
+      # explicitly as lineage_id below, rather than relying on do_create's
+      # session_id-default fallback, so the durable row's lineage_id traces
+      # back to the actual pre-minted value (nil here for a non-persistence
+      # workload, which still falls through to the same default:
+      # Map.get(attrs, :lineage_id) || session_id treats a present-but-nil key
+      # the same as an absent one).
+      #
+      # #4306 slice 3 is the one place this diverges: a RESTORING create
+      # inherits restore_lineage as its lineage_id but still needs its OWN
+      # fresh session_id (the first place session_id != lineage_id in this
+      # codebase), so session_id is left nil here for do_create to mint, and
+      # lineage_id is pinned to restore_lineage explicitly rather than falling
+      # through to do_create's session_id default.
+      session_id: if(restore_lineage, do: nil, else: lineage_id),
+      lineage_id: restore_lineage || lineage_id,
       volume_node_id: if(persistence_enabled_workload?(entry), do: node_id, else: nil),
       base_snapshot_ref: Map.get(entry, :image_ref),
       base_digest: base_digest(entry),
@@ -776,7 +923,7 @@ defmodule Embervm.SessionManager do
       {:ok, %{session_id: session_id} = created} ->
         case start_session_process(state, session_id, workload, principal, entry, node_id, vm_id, dial_id) do
           {:ok, _pid} ->
-            {:ok, created}
+            {:ok, Map.put(created, :restored, restored)}
 
           {:error, reason} ->
             Logger.error("embervm session: process start failed for #{session_id}: #{inspect(reason)}")
@@ -1463,7 +1610,7 @@ defmodule Embervm.SessionManager do
          # dialing it fails :unknown_node, which is exactly how the first live
          # rejoin died after create and park both worked.
          dial_id <- Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, volume_node_id, lineage_id),
-         :ok <- restore_session_workspace(state, dial_id, workload, lineage_id),
+         {:ok, _restored} <- restore_session_workspace(state, dial_id, workload, lineage_id),
          snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
          {:ok, vm_id} <- prime(state, dial_id, snapshot_ref, entry, lineage_id) do
       # Return dial_id because this is the third distinct bare-anchor dial site.
@@ -1477,17 +1624,20 @@ defmodule Embervm.SessionManager do
 
   # Always ask noded about the workspace. A genuine store miss is the documented
   # first-boot case; any other restore failure must stop rejoin rather than prime
-  # a blank image over data that may exist remotely.
+  # a blank image over data that may exist remotely. Returns {:ok, true} on an
+  # actual hit, {:ok, false} on a tolerated store miss (#4306 slice 3 needs to
+  # tell these apart to report `restored` on a create; a rejoin's one caller,
+  # perform_rejoin_prime, only cares that it is `:ok`).
   defp restore_session_workspace(state, node_id, workload, lineage_id) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION_WORKSPACE, workload: workload, ref: lineage_id}
 
     case safe_restore_artifact(state, node_id, node_id, ref) do
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_SESSION_WORKSPACE, lineage_id, resp)
-        :ok
+        {:ok, true}
 
       {:error, %GRPC.RPCError{status: 5}} ->
-        :ok
+        {:ok, false}
 
       {:error, reason} ->
         {:error, {:session_workspace_restore_failed, reason}}
