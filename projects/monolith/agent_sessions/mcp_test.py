@@ -388,6 +388,7 @@ def test_clear_ember_session_not_called_when_fresh_binding_persisted(
     """A persisted heir must survive EmberSessionGone handling."""
     row = store.create_session(session, "sid-123", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "hello")
+    pending_seq = pending.seq
     on_create_called = []
 
     async def mock_deliver(
@@ -412,7 +413,7 @@ def test_clear_ember_session_not_called_when_fresh_binding_persisted(
     assert on_create_called == [True]
     assert updated_row.ember_session_id == "heir-id"
     assert updated_row.prior_ember_lineage_id is None
-    assert store.get_pending_message(session, row.id, pending.seq) is None
+    assert store.get_pending_message(session, row.id, pending_seq) is None
 
 
 def test_failed_guest_delivery_does_not_clear_reused_session(monkeypatch, session):
