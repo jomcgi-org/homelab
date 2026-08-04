@@ -23,6 +23,10 @@ seaweedfs:
     # class is 1-replica by design). Revisit "001" only once BOTH servers have
     # free writable slots (raise node-2 maxVolumes with disk headroom, or add a
     # third writable server) and the existing 000 volumes have been re-replicated.
+    # CAUTION: seaweedfs-node4b does NOT satisfy that trigger. It shares
+    # node-4's machine and ssd-01 disk with seaweedfs-node4, and no release
+    # sets volume.rack or dataCenter, so "001" would happily place both copies
+    # on the same physical disk: redundant-looking, not redundant.
     replicationPlacment: "000"
     monitoring:
       enabled: false
