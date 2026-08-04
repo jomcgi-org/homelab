@@ -14,6 +14,8 @@ from core.db import get_engine
 
 logger = logging.getLogger(__name__)
 
+_UNSET = object()
+
 
 def create_session(
     session: Session,
@@ -51,6 +53,8 @@ def set_ember_session(
     ember_token: str,
     ember_expires_at: int | None,
     ember_lineage_id: str | None = None,
+    cli_session_id: str | None | object = _UNSET,
+    is_restored: bool = False,
 ) -> AgentSession:
     row = session.get(AgentSession, session_id)
     if row is None:
@@ -63,12 +67,13 @@ def set_ember_session(
     # can restore from it instead of the (invalid, past generation zero)
     # session_id.
     row.ember_lineage_id = ember_lineage_id
-    # #4306 slice 5: a new LIVE binding supersedes any preserved prior one;
-    # clear it so a stale prior_* never shadows this live binding (see
-    # clear_ember_session/clear_ember_bindings_by_ember_id for where prior_*
-    # gets set).
-    row.prior_ember_lineage_id = None
-    row.prior_cli_session_id = None
+    if cli_session_id is not _UNSET:
+        row.cli_session_id = cli_session_id
+    # A blank fallback must preserve the durable restore handle until the
+    # replacement turn is known good.
+    if is_restored:
+        row.prior_ember_lineage_id = None
+        row.prior_cli_session_id = None
     session.add(row)
     session.commit()
     session.refresh(row)

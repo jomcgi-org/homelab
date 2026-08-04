@@ -382,6 +382,39 @@ def test_failed_delivery_clears_reused_ember_session(monkeypatch, session):
     assert pending_after is None
 
 
+def test_clear_ember_session_not_called_when_fresh_binding_persisted(
+    monkeypatch, session
+):
+    """A persisted heir must survive EmberSessionGone handling."""
+    row = store.create_session(session, "sid-123", "/workspace", "main")
+    pending = store.create_pending_message(session, row.id, "hello")
+    on_create_called = []
+
+    async def mock_deliver(
+        _ember,
+        _cli_session_id,
+        _message,
+        _model=None,
+        restore_from=None,
+        on_create=None,
+    ):
+        heir = EmberSession("heir-id", "heir-token", None)
+        if on_create is not None:
+            await on_create(heir, None)
+            on_create_called.append(True)
+        raise EmberSessionGone("heir invoke failed")
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    session.expire_all()
+    updated_row = store.get_session(session, row.id)
+    assert on_create_called == [True]
+    assert updated_row.ember_session_id == "heir-id"
+    assert updated_row.prior_ember_lineage_id is None
+    assert store.get_pending_message(session, row.id, pending.seq) is None
+
+
 def test_failed_guest_delivery_does_not_clear_reused_session(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
     store.set_ember_session(session, row.id, "ember-1", "token-1", 1754035200000)
@@ -539,7 +572,7 @@ def test_clear_ember_session_does_not_clobber_a_good_prior_with_nil(session):
     assert reloaded.prior_cli_session_id == "cli-1"
 
 
-def test_set_ember_session_clears_prior_on_new_live_binding(session):
+def test_set_ember_session_clears_prior_on_restored_binding(session):
     row = store.create_session(session, "sid-prior-3", "/workspace", "main")
     store.set_ember_session(session, row.id, "ember-1", "token-1", None, "lineage-1")
     row.cli_session_id = "cli-1"
@@ -550,9 +583,16 @@ def test_set_ember_session_clears_prior_on_new_live_binding(session):
     cleared = store.get_session(session, row.id)
     assert cleared.prior_ember_lineage_id == "lineage-1"
 
-    # A NEW live binding (a successful restore or a fresh create) supersedes
-    # the preserved prior; it must not linger and shadow this live one.
-    store.set_ember_session(session, row.id, "ember-2", "token-2", None, "lineage-1")
+    # Only a successful restore supersedes the preserved prior.
+    store.set_ember_session(
+        session,
+        row.id,
+        "ember-2",
+        "token-2",
+        None,
+        "lineage-1",
+        is_restored=True,
+    )
 
     session.expire_all()
     reloaded = store.get_session(session, row.id)

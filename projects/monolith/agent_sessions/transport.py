@@ -125,7 +125,7 @@ class ShimTransport(Protocol):
         message: str,
         model: str | None = None,
         restore_from: str | None = None,
-        on_create: Callable[[EmberSession], Awaitable[None]] | None = None,
+        on_create: Callable[[EmberSession, str | None], Awaitable[None]] | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -341,7 +341,7 @@ class EmberVmShimTransport:
         message: str,
         model: str | None = None,
         restore_from: str | None = None,
-        on_create: Callable[[EmberSession], Awaitable[None]] | None = None,
+        on_create: Callable[[EmberSession, str | None], Awaitable[None]] | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -399,12 +399,13 @@ class EmberVmShimTransport:
                         "restored": bool(ember.restored),
                         "degraded": None,
                     }
-                if on_create is not None:
-                    await on_create(ember)
                 # Only resume the CLI transcript when the workspace was
                 # ACTUALLY recovered; a blank session has nothing for
                 # --resume to find (mirrors the 410 arm's cli gating below).
-                cli_session_id = cli_session_id if ember.restored else None
+                cli_for_binding = cli_session_id if ember.restored else None
+                if on_create is not None:
+                    await on_create(ember, cli_for_binding)
+                cli_session_id = cli_for_binding
             else:
                 ember = await self.create_session()
                 workspace_recovery = {
@@ -413,7 +414,7 @@ class EmberVmShimTransport:
                     "degraded": None,
                 }
                 if on_create is not None:
-                    await on_create(ember)
+                    await on_create(ember, None)
 
         async def invoke(
             current: EmberSession, current_cli_session_id: str | None
@@ -506,8 +507,9 @@ class EmberVmShimTransport:
                 )
                 new_ember = await self.create_session()
 
+            cli_for_binding = cli_session_id if new_ember.restored else None
             if on_create is not None:
-                await on_create(new_ember)
+                await on_create(new_ember, cli_for_binding)
             workspace_recovery = {
                 "created": True,
                 "restored": bool(new_ember.restored),
@@ -517,7 +519,7 @@ class EmberVmShimTransport:
             # Only resume the CLI transcript when the guest workspace was
             # ACTUALLY recovered; a blank workspace has nothing for
             # --resume to find.
-            cli = cli_session_id if new_ember.restored else None
+            cli = cli_for_binding
             try:
                 turn = await _invoke_with_retryable_backoff(
                     lambda: invoke(new_ember, cli)

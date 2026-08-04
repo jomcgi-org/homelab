@@ -42,7 +42,7 @@ def _turn_response(request: httpx.Request, status_code: int = 200):
 def _error_response(request: httpx.Request, status_code: int, retryable: bool):
     return httpx.Response(
         status_code,
-        json={"error": {"retryable": retryable}},
+        json={"error": "error message", "retryable": retryable},
         request=request,
     )
 
@@ -76,6 +76,37 @@ def test_create_session_parses_cp_session_identity(monkeypatch):
 
     assert result == transport.EmberSession("s1", "t1", 1754035200000)
     assert requests[0].headers["Authorization"] == "management"
+
+
+def test_create_session_retryable_backoff_and_restore_payload(monkeypatch):
+    attempts = []
+    sleeps = []
+
+    async def handler(request):
+        attempts.append(request)
+        if len(attempts) < 4:
+            return _error_response(request, 409, True)
+        return httpx.Response(
+            200,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    result = asyncio.run(
+        transport.EmberVmShimTransport().create_session(restore_from="lineage-1")
+    )
+
+    assert len(attempts) == 4
+    assert sleeps == [2, 5, 10]
+    assert [json.loads(request.content) for request in attempts] == [
+        {"restore_lineage": "lineage-1"}
+    ] * 4
+    assert result.session_id == "s1"
 
 
 @pytest.mark.parametrize("field", ["session_id", "session_token"])
@@ -516,8 +547,8 @@ def test_deliver_410_restore_heir_persisted_on_double_failure(monkeypatch):
         events.append("create")
         return heir
 
-    async def on_create(ember):
-        events.append(("persist", ember.session_id))
+    async def on_create(ember, cli_for_binding):
+        events.append(("persist", ember.session_id, cli_for_binding))
 
     _client(monkeypatch, handler)
     client = transport.EmberVmShimTransport()
@@ -532,7 +563,7 @@ def test_deliver_410_restore_heir_persisted_on_double_failure(monkeypatch):
             )
         )
 
-    assert events == ["invoke", "create", ("persist", "heir"), "invoke"]
+    assert events == ["invoke", "create", ("persist", "heir", None), "invoke"]
 
 
 def test_deliver_workspace_recovery_on_normal_create(monkeypatch):
