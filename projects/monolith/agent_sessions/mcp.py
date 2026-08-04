@@ -281,14 +281,26 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             return
         try:
-            # Reuse the session_id from the database (from first turn), or None for new sessions
-            cli_session_id = session_row.cli_session_id
             existing_ember = _ember_session(session_row)
+            if existing_ember is None and session_row.prior_ember_lineage_id:
+                # #4306 slice 5: the active binding is gone (a confirmed-dead
+                # session, EmberSessionGone, or an admin destroy), but a
+                # prior lineage survived the clear. Restore from it and
+                # resume the PRIOR generation's CLI transcript rather than
+                # starting a blank conversation despite the durable
+                # workspace still existing.
+                cli_session_id = session_row.prior_cli_session_id
+                restore_from = session_row.prior_ember_lineage_id
+            else:
+                # Reuse the session_id from the database (from first turn), or None for new sessions
+                cli_session_id = session_row.cli_session_id
+                restore_from = None
             turn, ember = await _transport.deliver(
                 existing_ember,
                 cli_session_id,
                 row.message_text,
                 row.model,
+                restore_from=restore_from,
             )
             # Check if claim was stolen while deliver was running
             if claim_stolen:

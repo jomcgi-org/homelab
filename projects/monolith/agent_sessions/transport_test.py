@@ -439,3 +439,94 @@ def test_deliver_does_not_retry_fresh_session_failure(monkeypatch):
 
     assert len(requests) == 1
     assert create_calls == 1
+
+
+# -- #4306 slice 5: deliver(ember=None, restore_from=...) -------------------
+# The binding-was-cleared path: no ember to reuse, but a PRIOR lineage
+# survived clear_ember_session/clear_ember_bindings_by_ember_id.
+
+
+def test_deliver_with_no_ember_restores_and_keeps_cli_when_recovered(monkeypatch):
+    requests = []
+    restored_session = transport.EmberSession(
+        "s2", "t2", None, lineage_id="lineage-1", restored=True
+    )
+    create_calls = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    async def create_session(restore_from=None):
+        create_calls.append(restore_from)
+        return restored_session
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, used = asyncio.run(
+        client.deliver(None, "cli-prior", "hello", restore_from="lineage-1")
+    )
+
+    assert create_calls == ["lineage-1"]
+    assert used == restored_session
+    # restored=True: the prior CLI transcript is resumed.
+    assert json.loads(requests[0].content)["session_id"] == "cli-prior"
+    assert turn.result == "ok"
+
+
+def test_deliver_with_no_ember_restore_denied_falls_back_to_blank(monkeypatch):
+    requests = []
+    blank = transport.EmberSession("s3", "t3", None)
+    create_calls = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    async def create_session(restore_from=None):
+        create_calls.append(restore_from)
+        if restore_from:
+            raise EmberVMTransportError("404 unknown_lineage")
+        return blank
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, used = asyncio.run(
+        client.deliver(None, "cli-prior", "hello", restore_from="lineage-1")
+    )
+
+    # First call attempted the restore and was denied; second is the blank
+    # fallback (no restore_from), same degrade pattern as the 410 retry arm.
+    assert create_calls == ["lineage-1", None]
+    assert used == blank
+    # A blank session (restored=False) must not carry the prior CLI id forward.
+    assert json.loads(requests[0].content)["session_id"] is None
+    assert turn.result == "ok"
+
+
+def test_deliver_with_no_ember_and_no_restore_from_is_unchanged(monkeypatch):
+    """A normal first send (restore_from=None, the default) behaves exactly
+    as it did before slice 5: no cli gating applied at all."""
+    requests = []
+    fresh = transport.EmberSession("s1", "t1", None)
+    create_calls = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    async def create_session(restore_from=None):
+        create_calls.append(restore_from)
+        return fresh
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, used = asyncio.run(client.deliver(None, "cli-x", "hello"))
+
+    assert create_calls == [None]
+    assert used == fresh
+    assert json.loads(requests[0].content)["session_id"] == "cli-x"
+    assert turn.result == "ok"

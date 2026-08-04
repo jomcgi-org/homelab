@@ -95,6 +95,7 @@ class ShimTransport(Protocol):
         cli_session_id: str | None,
         message: str,
         model: str | None = None,
+        restore_from: str | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -304,13 +305,24 @@ class EmberVmShimTransport:
         cli_session_id: str | None,
         message: str,
         model: str | None = None,
+        restore_from: str | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
         Args:
             ember: Existing EmberVM session identity to reuse, or None to create new.
             cli_session_id: Claude CLI session ID for transcript resumption.
+                When ember is None and restore_from is set, this should be
+                the PRIOR generation's cli_session_id (#4306 slice 5): it is
+                only actually sent once the restore is confirmed to have
+                recovered the workspace (see restore_from below).
             message: User message / prompt to send to Claude.
+            restore_from: A prior LINEAGE handle to inherit the guest
+                workspace from when ember is None (#4306 slice 5: the
+                binding-was-cleared path, e.g. after an EmberSessionGone or
+                an admin destroy, where the active binding is gone but the
+                durable workspace may still exist). Ignored when ember is
+                not None (a live binding is reused as today).
 
         Returns:
             The guest Turn and the EmberVM session identity actually used.
@@ -325,7 +337,26 @@ class EmberVmShimTransport:
 
         created = ember is None
         if ember is None:
-            ember = await self.create_session()
+            if restore_from:
+                try:
+                    ember = await self.create_session(restore_from=restore_from)
+                except EmberVMTransportError as restore_exc:
+                    # Same degrade as the 410/403 arm below: the restore
+                    # create was itself DENIED or timed out, so fall back to
+                    # a BLANK session rather than failing the turn outright.
+                    logger.warning(
+                        "embervm restore create denied for lineage %s, "
+                        "falling back to a blank session: %s",
+                        restore_from,
+                        restore_exc,
+                    )
+                    ember = await self.create_session()
+                # Only resume the CLI transcript when the workspace was
+                # ACTUALLY recovered; a blank session has nothing for
+                # --resume to find (mirrors the 410 arm's cli gating below).
+                cli_session_id = cli_session_id if ember.restored else None
+            else:
+                ember = await self.create_session()
 
         async def invoke(
             current: EmberSession, current_cli_session_id: str | None

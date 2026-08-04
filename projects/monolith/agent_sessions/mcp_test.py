@@ -140,7 +140,9 @@ def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
     delivered_models = []
 
-    async def mock_deliver(_ember, _cli_session_id, message, model=None):
+    async def mock_deliver(
+        _ember, _cli_session_id, message, model=None, restore_from=None
+    ):
         delivered_models.append(model)
         return _completed_delivery(message)
 
@@ -169,7 +171,9 @@ def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
 def test_session_start_returns_immediately(monkeypatch, session):
     started = asyncio.Event()
 
-    async def blocking_deliver(_ember, _cli_session_id, _message, _model=None):
+    async def blocking_deliver(
+        _ember, _cli_session_id, _message, _model=None, restore_from=None
+    ):
         started.set()
         await asyncio.Event().wait()
 
@@ -195,7 +199,9 @@ def test_session_start_returns_immediately(monkeypatch, session):
 def test_session_start_happy_path_persists_result(monkeypatch, session):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
 
-    async def mock_deliver(_ember, _cli_session_id, message, _model=None):
+    async def mock_deliver(
+        _ember, _cli_session_id, message, _model=None, restore_from=None
+    ):
         return _completed_delivery(message)
 
     async def notify(*args, **kwargs):
@@ -228,7 +234,9 @@ def test_session_start_happy_path_persists_result(monkeypatch, session):
 def test_failed_first_turn_does_not_wedge_session(monkeypatch, session):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
 
-    async def failing_deliver(_ember, _cli_session_id, _message, _model=None):
+    async def failing_deliver(
+        _ember, _cli_session_id, _message, _model=None, restore_from=None
+    ):
         raise RuntimeError("first turn failed")
 
     monkeypatch.setattr(mcp._transport, "deliver", failing_deliver)
@@ -251,7 +259,9 @@ def test_concurrent_executors_on_first_turn_run_once(monkeypatch, session):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
     executions: list[str] = []
 
-    async def mock_deliver(_ember, _cli_session_id, message, _model=None):
+    async def mock_deliver(
+        _ember, _cli_session_id, message, _model=None, restore_from=None
+    ):
         executions.append(message)
         await asyncio.sleep(0.01)
         return _completed_delivery(message)
@@ -301,7 +311,9 @@ def _completed_delivery(message: str) -> tuple[Turn, EmberSession]:
 def test_pending_message_executed_in_background(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
 
-    async def mock_deliver(_ember, _cli_session_id, message, _model=None):
+    async def mock_deliver(
+        _ember, _cli_session_id, message, _model=None, restore_from=None
+    ):
         return _completed_delivery(message)
 
     monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
@@ -334,7 +346,9 @@ def test_failed_delivery_clears_reused_ember_session(monkeypatch, session):
     pending = store.create_pending_message(session, row.id, "hello")
     pending_seq = pending.seq
 
-    async def failing_deliver(_ember, _cli_session_id, _message, _model=None):
+    async def failing_deliver(
+        _ember, _cli_session_id, _message, _model=None, restore_from=None
+    ):
         raise EmberSessionGone("terminal invoke failure")
 
     monkeypatch.setattr(mcp._transport, "deliver", failing_deliver)
@@ -361,7 +375,9 @@ def test_failed_guest_delivery_does_not_clear_reused_session(monkeypatch, sessio
     session.commit()
     store.create_pending_message(session, row.id, "hello")
 
-    async def failing_deliver(_ember, _cli_session_id, _message, _model=None):
+    async def failing_deliver(
+        _ember, _cli_session_id, _message, _model=None, restore_from=None
+    ):
         raise EmberVMTransportError("422 Unprocessable Entity")
 
     monkeypatch.setattr(mcp._transport, "deliver", failing_deliver)
@@ -392,7 +408,9 @@ def test_recreated_ember_session_adopts_new_cli_session_id(monkeypatch, session)
         "ember-new", "token-new", 1754035300000, lineage_id="lineage-old", restored=True
     )
 
-    async def succeeding_delivery(_ember, _cli_session_id, _message, _model=None):
+    async def succeeding_delivery(
+        _ember, _cli_session_id, _message, _model=None, restore_from=None
+    ):
         return _completed_turn("hello")._replace(session_id="cli-new"), new_ember
 
     async def notify(*args, **kwargs):
@@ -456,6 +474,192 @@ def test_clear_ember_session_nulls_lineage_id(session):
     assert reloaded.ember_lineage_id is None
 
 
+# -- #4306 slice 5: prior_* preservation across a binding clear -------------
+
+
+def test_clear_ember_session_preserves_prior_lineage_and_cli(session):
+    row = store.create_session(session, "sid-prior-1", "/workspace", "main")
+    store.set_ember_session(session, row.id, "ember-1", "token-1", None, "lineage-1")
+    row.cli_session_id = "cli-1"
+    session.add(row)
+    session.commit()
+
+    store.clear_ember_session(session, row.id)
+
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.ember_session_id is None
+    assert reloaded.ember_lineage_id is None
+    assert reloaded.cli_session_id is None
+    assert reloaded.prior_ember_lineage_id == "lineage-1"
+    assert reloaded.prior_cli_session_id == "cli-1"
+
+
+def test_clear_ember_session_does_not_clobber_a_good_prior_with_nil(session):
+    """A repeated clear on an already-blank binding must not overwrite a
+    good prior_* with the (now nil) active value."""
+    row = store.create_session(session, "sid-prior-2", "/workspace", "main")
+    store.set_ember_session(session, row.id, "ember-1", "token-1", None, "lineage-1")
+    row.cli_session_id = "cli-1"
+    session.add(row)
+    session.commit()
+
+    store.clear_ember_session(session, row.id)
+    # The binding is now blank; clearing it AGAIN must be a no-op on prior_*.
+    store.clear_ember_session(session, row.id)
+
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.prior_ember_lineage_id == "lineage-1"
+    assert reloaded.prior_cli_session_id == "cli-1"
+
+
+def test_set_ember_session_clears_prior_on_new_live_binding(session):
+    row = store.create_session(session, "sid-prior-3", "/workspace", "main")
+    store.set_ember_session(session, row.id, "ember-1", "token-1", None, "lineage-1")
+    row.cli_session_id = "cli-1"
+    session.add(row)
+    session.commit()
+    store.clear_ember_session(session, row.id)
+    session.expire_all()
+    cleared = store.get_session(session, row.id)
+    assert cleared.prior_ember_lineage_id == "lineage-1"
+
+    # A NEW live binding (a successful restore or a fresh create) supersedes
+    # the preserved prior; it must not linger and shadow this live one.
+    store.set_ember_session(session, row.id, "ember-2", "token-2", None, "lineage-1")
+
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.ember_session_id == "ember-2"
+    assert reloaded.prior_ember_lineage_id is None
+    assert reloaded.prior_cli_session_id is None
+
+
+def test_clear_ember_bindings_by_ember_id_preserves_prior_lineage_and_cli(session):
+    row = store.create_session(session, "sid-prior-4", "/workspace", "main")
+    store.set_ember_session(session, row.id, "ember-1", "token-1", None, "lineage-1")
+    row.cli_session_id = "cli-1"
+    session.add(row)
+    session.commit()
+
+    ids = store.clear_ember_bindings_by_ember_id(session, "ember-1")
+
+    assert ids == [row.id]
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.ember_session_id is None
+    assert reloaded.ember_lineage_id is None
+    assert reloaded.cli_session_id is None
+    assert reloaded.prior_ember_lineage_id == "lineage-1"
+    assert reloaded.prior_cli_session_id == "cli-1"
+
+
+def test_send_after_cleared_binding_restores_from_prior_lineage(monkeypatch, session):
+    """#4306 slice 5: no active ember binding, but a prior lineage survived
+    the clear. The next send must restore from it and resume the prior CLI
+    transcript, not start a blank conversation."""
+    row = store.create_session(session, "sid-prior-5", "/workspace", "main")
+    store.set_ember_session(
+        session, row.id, "ember-old", "token-old", None, "lineage-old"
+    )
+    row.cli_session_id = "cli-old"
+    session.add(row)
+    session.commit()
+    store.clear_ember_session(session, row.id)
+    pending = store.create_pending_message(session, row.id, "hello")
+    pending_seq = pending.seq
+
+    deliver_calls = []
+    restored_ember = EmberSession(
+        "ember-new", "token-new", None, lineage_id="lineage-old", restored=True
+    )
+
+    async def mock_deliver(
+        ember, cli_session_id, message, model=None, restore_from=None
+    ):
+        deliver_calls.append(
+            {
+                "ember": ember,
+                "cli_session_id": cli_session_id,
+                "restore_from": restore_from,
+            }
+        )
+        return _completed_turn(message)._replace(session_id="cli-new"), restored_ember
+
+    async def notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    assert len(deliver_calls) == 1
+    call = deliver_calls[0]
+    assert call["ember"] is None
+    assert call["cli_session_id"] == "cli-old"
+    assert call["restore_from"] == "lineage-old"
+
+    session.expire_all()
+    updated = store.get_session(session, row.id)
+    assert updated.ember_session_id == "ember-new"
+    assert updated.ember_lineage_id == "lineage-old"
+    assert updated.cli_session_id == "cli-new"
+    # The new live binding superseded the preserved prior.
+    assert updated.prior_ember_lineage_id is None
+    assert store.get_pending_message(session, row.id, pending_seq) is None
+
+
+def test_send_with_live_binding_ignores_prior_lineage(monkeypatch, session):
+    """A live binding always wins: prior_* (however it got set) must never
+    override an ACTIVE binding's own ember/cli_session_id."""
+    row = store.create_session(session, "sid-prior-6", "/workspace", "main")
+    store.set_ember_session(
+        session, row.id, "ember-live", "token-live", None, "lineage-live"
+    )
+    row.cli_session_id = "cli-live"
+    # Simulate a stray prior_* despite a live binding (should not happen via
+    # the normal set_ember_session path, which clears it, but the deliver
+    # call site must not depend on that invariant holding).
+    row.prior_ember_lineage_id = "lineage-stale"
+    row.prior_cli_session_id = "cli-stale"
+    session.add(row)
+    session.commit()
+    pending = store.create_pending_message(session, row.id, "hello")
+    pending_seq = pending.seq
+
+    deliver_calls = []
+
+    async def mock_deliver(
+        ember, cli_session_id, message, model=None, restore_from=None
+    ):
+        deliver_calls.append(
+            {
+                "ember": ember,
+                "cli_session_id": cli_session_id,
+                "restore_from": restore_from,
+            }
+        )
+        return _completed_delivery(message)
+
+    async def notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    assert len(deliver_calls) == 1
+    call = deliver_calls[0]
+    assert call["ember"] is not None
+    assert call["ember"].session_id == "ember-live"
+    assert call["cli_session_id"] == "cli-live"
+    assert call["restore_from"] is None
+    assert store.get_pending_message(session, row.id, pending_seq) is None
+
+
 def test_startup_sweep_lists_orphaned_messages(session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
     store.create_pending_message(session, row.id, "orphaned message")
@@ -470,7 +674,9 @@ def test_two_sends_are_serialized(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
     execution_order = []
 
-    async def fake_deliver(_ember, _cli_session_id, message, _model=None):
+    async def fake_deliver(
+        _ember, _cli_session_id, message, _model=None, restore_from=None
+    ):
         execution_order.append(message)
         await asyncio.sleep(0.01)
         return _completed_delivery(message)
@@ -508,7 +714,9 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
     )  # capture before expire_all(); the row is deleted on completion
     executions: list[str] = []
 
-    async def fake_deliver(_ember, _cli_session_id, message, _model=None):
+    async def fake_deliver(
+        _ember, _cli_session_id, message, _model=None, restore_from=None
+    ):
         executions.append(message)
         await asyncio.sleep(0.01)
         return _completed_delivery(message)
