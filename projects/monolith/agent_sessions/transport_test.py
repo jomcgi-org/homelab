@@ -39,6 +39,14 @@ def _turn_response(request: httpx.Request, status_code: int = 200):
     )
 
 
+def _error_response(request: httpx.Request, status_code: int, retryable: bool):
+    return httpx.Response(
+        status_code,
+        json={"error": {"retryable": retryable}},
+        request=request,
+    )
+
+
 def _client(monkeypatch, handler):
     FakeAsyncClient.handler = staticmethod(handler)
     monkeypatch.setattr(transport.httpx, "AsyncClient", FakeAsyncClient)
@@ -439,6 +447,170 @@ def test_deliver_does_not_retry_fresh_session_failure(monkeypatch):
 
     assert len(requests) == 1
     assert create_calls == 1
+
+
+def test_deliver_fresh_session_retryable_then_fails(monkeypatch):
+    attempts = []
+    sleeps = []
+
+    async def handler(request):
+        attempts.append(request)
+        if len(attempts) < 4:
+            return _error_response(request, 409, True)
+        return _turn_response(request)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    client = transport.EmberVmShimTransport()
+    fresh = transport.EmberSession("s1", "t1", None)
+
+    async def create_session(restore_from=None):
+        return fresh
+
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, _ = asyncio.run(client.deliver(None, "cli-1", "hello"))
+
+    assert turn.result == "ok"
+    assert len(attempts) == 4
+    assert sleeps == [2, 5, 10]
+
+
+def test_deliver_retryable_exhaustion(monkeypatch):
+    attempts = []
+    sleeps = []
+
+    async def handler(request):
+        attempts.append(request)
+        return _error_response(request, 429, True)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    async def create_session(restore_from=None):
+        return transport.EmberSession("s1", "t1", None)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    with pytest.raises(EmberVMTransportError):
+        asyncio.run(client.deliver(None, "cli-1", "hello"))
+
+    assert len(attempts) == 4
+    assert sleeps == [2, 5, 10]
+
+
+def test_deliver_410_restore_heir_persisted_on_double_failure(monkeypatch):
+    events = []
+    responses = [410, 410]
+    heir = transport.EmberSession("heir", "token", None)
+
+    async def handler(request):
+        events.append("invoke")
+        return _error_response(request, responses.pop(0), False)
+
+    async def create_session(restore_from=None):
+        events.append("create")
+        return heir
+
+    async def on_create(ember):
+        events.append(("persist", ember.session_id))
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    with pytest.raises(transport.EmberSessionGone):
+        asyncio.run(
+            client.deliver(
+                transport.EmberSession("old", "old-token", None),
+                "cli-1",
+                "hello",
+                on_create=on_create,
+            )
+        )
+
+    assert events == ["invoke", "create", ("persist", "heir"), "invoke"]
+
+
+def test_deliver_workspace_recovery_on_normal_create(monkeypatch):
+    async def handler(request):
+        return _turn_response(request)
+
+    async def create_session(restore_from=None):
+        return transport.EmberSession("s1", "t1", None)
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, _ = asyncio.run(client.deliver(None, None, "hello"))
+
+    assert turn.workspace_recovery == {
+        "created": True,
+        "restored": False,
+        "degraded": None,
+    }
+
+
+def test_deliver_workspace_recovery_on_restore_success(monkeypatch):
+    async def handler(request):
+        return _turn_response(request)
+
+    async def create_session(restore_from=None):
+        return transport.EmberSession(
+            "s2", "t2", None, lineage_id="lineage-1", restored=True
+        )
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, _ = asyncio.run(
+        client.deliver(None, "cli-1", "hello", restore_from="lineage-1")
+    )
+
+    assert turn.workspace_recovery == {
+        "created": True,
+        "restored": True,
+        "degraded": None,
+    }
+
+
+def test_deliver_workspace_recovery_on_restore_denial_fallback(monkeypatch):
+    async def handler(request):
+        return _turn_response(request)
+
+    async def create_session(restore_from=None):
+        if restore_from:
+            raise EmberVMTransportError("restore denied")
+        return transport.EmberSession("s3", "t3", None)
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, _ = asyncio.run(
+        client.deliver(None, "cli-1", "hello", restore_from="lineage-1")
+    )
+
+    assert turn.workspace_recovery == {
+        "created": True,
+        "restored": False,
+        "degraded": "restore_denied",
+    }
+
+
+def test_deliver_workspace_recovery_absent_on_reuse(monkeypatch):
+    async def handler(request):
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    ember = transport.EmberSession("s1", "t1", None)
+    turn, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(ember, None, "hello")
+    )
+
+    assert turn.workspace_recovery is None
 
 
 # -- #4306 slice 5: deliver(ember=None, restore_from=...) -------------------

@@ -282,6 +282,13 @@ async def _execute_pending_message(session_id: int) -> None:
             return
         try:
             existing_ember = _ember_session(session_row)
+            fresh_binding_persisted = False
+
+            async def persist_callback(ember: EmberSession) -> None:
+                nonlocal fresh_binding_persisted
+                await asyncio.to_thread(_persist_ember_session, session_id, ember)
+                fresh_binding_persisted = True
+
             if existing_ember is None and session_row.prior_ember_lineage_id:
                 # #4306 slice 5: the active binding is gone (a confirmed-dead
                 # session, EmberSessionGone, or an admin destroy), but a
@@ -301,6 +308,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 row.message_text,
                 row.model,
                 restore_from=restore_from,
+                on_create=persist_callback,
             )
             # Check if claim was stolen while deliver was running
             if claim_stolen:
@@ -314,7 +322,8 @@ async def _execute_pending_message(session_id: int) -> None:
                 await asyncio.to_thread(_persist_ember_session, session_id, ember)
         except EmberSessionGone as exc:
             # Session confirmed dead by CP; clear the binding and CLI id together.
-            await asyncio.to_thread(_clear_ember_session_sync, session_id)
+            if not fresh_binding_persisted:
+                await asyncio.to_thread(_clear_ember_session_sync, session_id)
             await asyncio.to_thread(
                 _mark_turn_error_sync, session_id, claimed_seq, str(exc)
             )
