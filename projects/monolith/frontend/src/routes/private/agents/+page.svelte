@@ -25,10 +25,14 @@
   let sending = $state(false);
   let creating = $state(false);
   let showNewPanel = $state(false);
+  let repos = $state([]);
+  let branches = $state([]);
+  let repoLoading = $state(false);
+  let branchLoading = $state(false);
   let newSession = $state({
     prompt: "",
     model: "",
-    workspace: "",
+    repo: "",
     branch: "",
   });
   let errorMessage = $state(
@@ -98,6 +102,11 @@
       session?.local_session_id ||
       `${session?.workspace || "workspace"}/${session?.branch || "branch"}`
     );
+  }
+
+  function formatRepoContext(session) {
+    if (session?.repo) return `${session.repo}@${session.branch || "main"}`;
+    return `${session?.workspace || "workspace"} / ${session?.branch || "branch"}`;
   }
 
   function cost(value) {
@@ -171,6 +180,43 @@
       }
     } catch (error) {
       errorMessage = error.message;
+    }
+  }
+
+  async function loadRepos() {
+    repoLoading = true;
+    try {
+      const response = await fetch("/agents/repos");
+      if (!response.ok) throw new Error("Unable to load repos");
+      const body = await response.json();
+      repos = body.repos ?? [];
+    } catch (error) {
+      errorMessage = error.message;
+    } finally {
+      repoLoading = false;
+    }
+  }
+
+  async function loadBranches(repoId) {
+    if (!repoId) {
+      branches = [];
+      return;
+    }
+    branchLoading = true;
+    const [owner, repo] = repoId.split("/");
+    try {
+      const response = await fetch(
+        `/agents/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`,
+      );
+      if (!response.ok) throw new Error("Unable to load branches");
+      const body = await response.json();
+      branches = body.branches ?? [];
+      newSession.branch = body.default_branch ?? "main";
+    } catch (error) {
+      branches = [];
+      newSession.branch = "main";
+    } finally {
+      branchLoading = false;
     }
   }
 
@@ -279,10 +325,15 @@
     try {
       const requestBody = {
         prompt: newSession.prompt.trim(),
-        workspace: newSession.workspace.trim(),
-        branch: newSession.branch.trim(),
       };
       if (newSession.model) requestBody.model = newSession.model;
+      if (newSession.repo) {
+        requestBody.repo = newSession.repo;
+        requestBody.branch = newSession.branch;
+      } else {
+        requestBody.workspace = newSession.workspace?.trim() || "";
+        requestBody.branch = newSession.branch?.trim() || "";
+      }
       const response = await fetch("/agents/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -293,7 +344,8 @@
         throw new Error(body.error || "Session was not created");
       creating = false;
       showNewPanel = false;
-      newSession = { prompt: "", model: "", workspace: "", branch: "" };
+      newSession = { prompt: "", model: "", repo: "", branch: "" };
+      branches = [];
       await loadSessions();
       selectSession(body.session_id);
     } catch (error) {
@@ -341,6 +393,12 @@
       hasActiveSessions ? 2000 : 15000,
     );
     return () => clearInterval(interval);
+  });
+
+  $effect(() => {
+    if (showNewPanel && repos.length === 0) {
+      loadRepos();
+    }
   });
 
   $effect(() => () => {
@@ -428,7 +486,7 @@
         <div>
           <div class="eyebrow mono">{displayName(selectedSession)}</div>
           <div class="session-context mono">
-            {selectedSession.workspace} / {selectedSession.branch}
+            {formatRepoContext(selectedSession)}
           </div>
         </div>
         <div class="head-actions">
@@ -495,7 +553,18 @@
         <textarea
           bind:value={prompt}
           placeholder="send a prompt to this session"
-          rows="3"></textarea>
+          rows="3"
+          onkeydown={(e) => {
+            if (
+              (e.metaKey || e.ctrlKey) &&
+              e.key === "Enter" &&
+              !sending &&
+              prompt.trim()
+            ) {
+              e.preventDefault();
+              sendPrompt();
+            }
+          }}></textarea>
         <div class="composer-actions">
           <select class="mono" bind:value={composerModel} aria-label="Model">
             <option value="">session default</option>
@@ -527,7 +596,18 @@
           >prompt<textarea
             bind:value={newSession.prompt}
             rows="7"
-            placeholder="what should the agent do?"></textarea></label
+            placeholder="what should the agent do?"
+            onkeydown={(e) => {
+              if (
+                (e.metaKey || e.ctrlKey) &&
+                e.key === "Enter" &&
+                !creating &&
+                newSession.prompt.trim()
+              ) {
+                e.preventDefault();
+                createSession();
+              }
+            }}></textarea></label
         >
         <label
           >model<select class="mono" bind:value={newSession.model}
@@ -537,19 +617,39 @@
           ></label
         >
         <label
-          >workspace<input
+          >repo<select
             class="mono"
-            bind:value={newSession.workspace}
-            placeholder="workspace"
-          /></label
+            bind:value={newSession.repo}
+            onchange={() => {
+              newSession.branch = "";
+              loadBranches(newSession.repo);
+            }}
+          >
+            <option value="">none (bare workspace)</option>
+            {#each repos as repo}
+              <option value={repo.id} title={repo.description || ""}>
+                {repo.id}
+              </option>
+            {/each}
+          </select></label
         >
-        <label
-          >branch<input
+        <label>
+          branch<select
             class="mono"
             bind:value={newSession.branch}
-            placeholder="branch"
-          /></label
-        >
+            disabled={!newSession.repo || branchLoading}
+          >
+            {#if branchLoading}
+              <option value="">loading branches</option>
+            {:else if branches.length === 0}
+              <option value="">main</option>
+            {:else}
+              {#each branches as branch}
+                <option value={branch.name}>{branch.name}</option>
+              {/each}
+            {/if}
+          </select>
+        </label>
         <div class="new-actions">
           <button
             type="button"
@@ -586,10 +686,12 @@
     <span class="row-main"
       ><span class="session-name">{displayName(session)}</span><span
         class="row-sub mono"
-        >{session.model || "luna"} · {relativeTime(
-          session.last_turn_at || session.created_at,
-        )}</span
-      ></span
+      >
+        {#if session.repo}{session.repo}@{session.branch ||
+            "main"}{:else}{session.model || "luna"} · {relativeTime(
+            session.last_turn_at || session.created_at,
+          )}{/if}
+      </span></span
     >
     <span class="row-cost mono">{cost(session.total_cost_usd)}</span>
   </button>
@@ -868,6 +970,9 @@
   .session-context {
     margin-top: 4px;
     font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .session-state {
     color: #625e56;

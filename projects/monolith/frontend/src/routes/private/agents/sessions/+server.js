@@ -9,6 +9,7 @@ export async function POST({ request }) {
       body: JSON.stringify({
         prompt: body.prompt,
         ...(body.model ? { model: body.model } : {}),
+        ...(body.repo ? { repo: body.repo } : {}),
         ...(body.workspace ? { workspace: body.workspace } : {}),
         ...(body.branch ? { branch: body.branch } : {}),
       }),
