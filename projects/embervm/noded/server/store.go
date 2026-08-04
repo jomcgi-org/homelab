@@ -1139,6 +1139,21 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 			return
 		}
 	}
+	// #4306 slice 2: never export a SESSION_WORKSPACE while its lineage is
+	// attached to a live VM. A live guest is the single writer to this image
+	// (no generation ledger the way a VOLUME has), so exporting it mid-write
+	// would produce a torn snapshot, and a subsequent completeRetirement could
+	// then delete the live copy out from under the attached generation. Mirrors
+	// RetireVolume's own attached-lineage guard (server.go's lineageAttached),
+	// the same predicate, so the two cannot drift. Skip, not fail: the defer
+	// above still clears the dedupe key, so the next reconcile or retirement
+	// sweep pass re-enqueues this job once the lineage detaches.
+	if job.ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE &&
+		s.lineageAttached(job.ref.GetWorkload(), job.ref.GetRef()) {
+		s.logger.Info("noded: export skipped, lineage attached to a live VM (will retry on reconcile)",
+			"artifact", job.key, "workload", job.ref.GetWorkload(), "lineage_id", job.ref.GetRef())
+		return
+	}
 	localDir := s.artifactLocalDir(job.ref)
 	if localDir == "" {
 		return
