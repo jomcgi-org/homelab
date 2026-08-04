@@ -1253,3 +1253,74 @@ def test_broker_login_rejects_bad_grant_and_unset_url(monkeypatch):
     monkeypatch.delenv("EMBER_TOKENBROKER_URL")
     with pytest.raises(ValueError):
         asyncio.run(mcp.monolith_codex_broker_login_status())
+
+
+def _run_turn_capturing_notifies(monkeypatch, session, *, mark_ui: bool) -> list:
+    """Drive one turn through the executor and return its Discord notify calls."""
+    row = store.create_session(session, "sid-ui-notify", "/workspace", "main")
+    pending = store.create_pending_message(session, row.id, "hello")
+    notify_calls = []
+
+    async def mock_deliver(*args, **_kwargs):
+        return _completed_delivery(args[2])
+
+    async def mock_notify(*args, **_kwargs):
+        notify_calls.append(args)
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+    if mark_ui:
+        mcp._mark_ui_originated(row.id, pending.seq)
+    asyncio.run(mcp._execute_pending_message(row.id))
+    return notify_calls
+
+
+def test_ui_originated_turn_does_not_notify_discord(monkeypatch, session):
+    """A turn queued from the /agents UI must not echo its result to Discord.
+
+    Someone driving the UI is already looking at the result, so the channel
+    post is noise. Only MCP-originated turns notify.
+    """
+    mcp._ui_originated.clear()
+    calls = _run_turn_capturing_notifies(monkeypatch, session, mark_ui=True)
+    assert calls == []
+
+
+def test_mcp_originated_turn_still_notifies_discord(monkeypatch, session):
+    """The unmarked path is the MCP path, and it must keep notifying."""
+    mcp._ui_originated.clear()
+    calls = _run_turn_capturing_notifies(monkeypatch, session, mark_ui=False)
+    assert len(calls) == 1
+
+
+def test_ui_mark_is_consumed_so_it_cannot_suppress_a_later_turn():
+    """The mark is one-shot, cleared at claim time.
+
+    If it survived the turn, a re-used (session, seq) pair would go on
+    suppressing notifies forever.
+    """
+    mcp._ui_originated.clear()
+    mcp._mark_ui_originated(7, 1)
+    assert mcp._consume_ui_originated(7, 1) is True
+    assert mcp._consume_ui_originated(7, 1) is False
+
+
+def test_unmarked_message_reads_as_not_ui_originated():
+    mcp._ui_originated.clear()
+    assert mcp._consume_ui_originated(99, 1) is False
+
+
+def test_ui_mark_store_is_bounded():
+    """Entries only clear when THIS replica claims the message, so a mark whose
+    message ran elsewhere leaks. The cap keeps that leak from growing without
+    bound; evicting the oldest fails open, which is the benign direction.
+    """
+    mcp._ui_originated.clear()
+    for seq in range(mcp._UI_ORIGINATED_CAP + 50):
+        mcp._mark_ui_originated(1, seq)
+    assert len(mcp._ui_originated) == mcp._UI_ORIGINATED_CAP
+    # The oldest went first, the newest survived.
+    assert mcp._consume_ui_originated(1, 0) is False
+    assert mcp._consume_ui_originated(1, mcp._UI_ORIGINATED_CAP + 49) is True
+    mcp._ui_originated.clear()

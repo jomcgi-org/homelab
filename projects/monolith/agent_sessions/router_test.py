@@ -415,3 +415,51 @@ def test_mcp_tools_still_work(session, monkeypatch):
     body = asyncio.run(mcp.monolith_agent_session_start("hello"))
     assert body["accepted"] is True
     assert body["turn"] == 1
+
+
+def test_start_session_marks_message_ui_originated(client, session, monkeypatch):
+    """A session started from the UI must not echo its turn to Discord."""
+    mcp._ui_originated.clear()
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_session",
+        lambda local, workspace, branch, model, repo: store.create_session(
+            session, local, workspace, branch, model, repo
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
+
+    body = client.post("/api/agents/sessions", json={"prompt": "Hello"}).json()
+    assert mcp._consume_ui_originated(body["session_id"], body["turn"]) is True
+    mcp._ui_originated.clear()
+
+
+def test_send_message_marks_message_ui_originated(client, session, monkeypatch):
+    """A follow-up sent from the UI must not echo its turn to Discord."""
+    mcp._ui_originated.clear()
+    row = _session(session, "send-ui", status="completed")
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._set_session_status",
+        lambda session_id, status: store.update_session_status(
+            session, session_id, status
+        ),
+    )
+    monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
+
+    body = client.post(
+        f"/api/agents/sessions/{row.id}/messages", json={"prompt": "follow up"}
+    ).json()
+    assert mcp._consume_ui_originated(row.id, body["turn"]) is True
+    mcp._ui_originated.clear()
