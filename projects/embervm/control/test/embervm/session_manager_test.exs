@@ -1082,11 +1082,29 @@ defmodule Embervm.SessionManagerTest do
   # call while the first worker is still mid-flight.
   test "a second restoring create of the same in-flight lineage is denied :lineage_restore_in_flight" do
     parent = self()
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
 
+    # Only prime calls AFTER the first block/signal. The FIRST prime call is
+    # create_persistence_session's own (normal, non-restoring) create of
+    # `original` below -- "wl-persist" is persistence-enabled, so that create
+    # ALSO goes through this same injected prime_fun. Without this counter, a
+    # plain unconditional blocking prime_fun sends its :restore_prime_started
+    # signal (and sleeps) during THAT create too, leaving a stale message in
+    # this process's mailbox that assert_receive below would consume instead
+    # of the real signal from the racing restore under test, letting the
+    # actual race (both SessionManager.create calls reaching the manager
+    # before either had provably registered) decide the outcome instead of
+    # the guard: this is what CI caught, not a fix-2 logic bug.
     prime_fun = fn _ch, _req ->
-      send(parent, :restore_prime_started)
-      Process.sleep(200)
-      {:ok, %PrimeResponse{vm_id: "vm-inflight-winner"}}
+      n = Agent.get_and_update(counter, fn c -> {c, c + 1} end)
+
+      if n == 0 do
+        {:ok, %PrimeResponse{vm_id: "vm-original"}}
+      else
+        send(parent, :restore_prime_started)
+        Process.sleep(200)
+        {:ok, %PrimeResponse{vm_id: "vm-inflight-winner"}}
+      end
     end
 
     ctx = start_stack(prime_fun: prime_fun, channel_fun: fake_channel_fun())
@@ -1100,16 +1118,27 @@ defmodule Embervm.SessionManagerTest do
 
     assert_receive :restore_prime_started, 1_000
 
-    # The first restoring create's worker is blocked in prime_fun (async, off
-    # the manager process): its create_inflight entry is already written, and
-    # the manager itself is free to process this SECOND call synchronously,
-    # exactly like reconcile does in the mirrored test above.
+    # do_create_inline runs SYNCHRONOUSLY inside first's {:create,...}
+    # handle_call, strictly BEFORE the worker spawns and calls prime_fun (see
+    # spawn_create_worker): by the time this message arrives, first's entry
+    # is unconditionally already in inflight_restore_lineages. Confirms the
+    # dedicated set (not an inference over create_inflight's shape) is
+    # actually populated, not just that the eventual denial happens to match.
+    assert MapSet.member?(:sys.get_state(ctx.mgr).inflight_restore_lineages, original.session_id)
+
+    # The manager processes messages one at a time from its own mailbox:
+    # first's {:create,...} has already been fully handled (its handle_call
+    # returned, per the assert above), so this SECOND call, whichever process
+    # sends it, is necessarily processed after and must see the guard.
     assert {:error, {:denied, :lineage_restore_in_flight}} =
              SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
 
     assert {:ok, winner} = Task.await(first, 2_000)
     assert winner.restored == false
     assert winner.session_id != original.session_id
+
+    # finish_create clears the mark once the winner settles.
+    refute MapSet.member?(:sys.get_state(ctx.mgr).inflight_restore_lineages, original.session_id)
   end
 
   test "a restoring create is allowed once no restore of that lineage is in flight" do
@@ -1118,10 +1147,11 @@ defmodule Embervm.SessionManagerTest do
     {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
 
     # Completes synchronously (no gate): by the time create/4 returns,
-    # finish_create has already popped this ref out of create_inflight, so a
-    # SUBSEQUENT restore of the now-terminal result must not be falsely
-    # denied as still in flight.
+    # finish_create has already cleared original.session_id from
+    # inflight_restore_lineages, so a SUBSEQUENT restore of the now-terminal
+    # result must not be falsely denied as still in flight.
     assert {:ok, first} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
+    refute MapSet.member?(:sys.get_state(ctx.mgr).inflight_restore_lineages, original.session_id)
     {:ok, _} = SessionManager.destroy(ctx.mgr, first.session_id)
 
     # Restore keys on LINEAGE, not session_id: first is itself a restoring
