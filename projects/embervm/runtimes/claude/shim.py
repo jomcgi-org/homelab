@@ -131,20 +131,34 @@ EGRESS_PORT_ENV = "EMBER_EGRESS_PORT"
 DEFAULT_EGRESS_PORT = 1024
 
 
-def _pump(source, destination):
+def _pump_stdin_to_socket(source, sock):
     try:
         while True:
             data = source.read(65536)
             if not data:
                 break
-            destination.sendall(data)
-    except (BrokenPipeError, ConnectionResetError, OSError):
+            sock.sendall(data)
+    except OSError:
         pass
     finally:
+        # Half-close: tell the server the request stream is done while the
+        # response direction keeps flowing.
         try:
-            destination.shutdown(socket.SHUT_WR)
+            sock.shutdown(socket.SHUT_WR)
         except OSError:
             pass
+
+
+def _pump_socket_to_stdout(sock, destination):
+    try:
+        while True:
+            data = sock.recv(65536)
+            if not data:
+                break
+            destination.write(data)
+            destination.flush()
+    except OSError:
+        pass
 
 
 def main():
@@ -165,10 +179,13 @@ def main():
                 return 1
         if not response.startswith(b"HTTP/1.1 200"):
             return 1
-        upstream = sock.makefile("rwb", buffering=0)
         threads = [
-            threading.Thread(target=_pump, args=(sys.stdin.buffer, upstream)),
-            threading.Thread(target=_pump, args=(upstream, sys.stdout.buffer)),
+            threading.Thread(
+                target=_pump_stdin_to_socket, args=(sys.stdin.buffer, sock)
+            ),
+            threading.Thread(
+                target=_pump_socket_to_stdout, args=(sock, sys.stdout.buffer)
+            ),
         ]
         for thread in threads:
             thread.start()
