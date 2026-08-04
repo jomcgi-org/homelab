@@ -256,6 +256,13 @@ warmthRetention:
 # sweep (dry-run included) aborts.
 warmthS3Gc:
   allowEmptyKinds: "group"
+  # ARMED (Joe 2026-08-04) after reading dry-run manifest
+  # gc-manifests/1785867400387.json: plan 200 prefixes / ~98 GiB (198
+  # stateful, 1 session orphan, 1 group_set), 4410 stateful refs / ~2.19 TiB
+  # eligible beyond caps, holds proving the guards (3 tier2_protected_newest,
+  # 1 desired_ref, 69 younger_than_age_floor). Rollback: set enabled back to
+  # "" and bump the chart.
+  enabled: "1"
   maxPrefixes: "200"
   maxBytes: "107374182400"
   expectedNodes:
