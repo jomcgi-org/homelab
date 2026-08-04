@@ -34,7 +34,6 @@ defmodule Embervm.SessionBankRelightTest do
   alias Embervm.Node.V1.{
     BankResponse,
     GuestResponse,
-    PrimeResponse,
     RelightResponse,
     SessionAssignResponse,
     UsageStats
@@ -98,17 +97,10 @@ defmodule Embervm.SessionBankRelightTest do
         clock: clock,
         channel_fun: fn _node -> {:ok, :ch} end,
         claim_fun: fn _d, _n, _w -> {:ok, "vm-#{suffix}-#{System.unique_integer([:positive])}"} end,
-        # Every other test in this file creates against a non-persistence
-        # workload, which claims from the primed pool via claim_fun above and
-        # never reaches prime_fun, so the default here staying a failure is
-        # harmless. A persistence-enabled (parked) workload's create bypasses
-        # claim_fun entirely (claim_or_prime/6 primes directly for it), so a
-        # test that creates against one MUST pass a working prime_fun.
-        prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
+        prime_fun: fn _ch, _req -> {:error, :no_prime} end,
         bank_fun: Keyword.get(opts, :bank_fun, &default_bank/2),
         relight_fun: Keyword.get(opts, :relight_fun, &default_relight/2),
         evict_fun: Keyword.get(opts, :evict_fun, fn _ch, req -> send(test_pid, {:evicted, req.snapshot_ref}) && {:ok, %{}} end),
-        retire_volume_fun: Keyword.get(opts, :retire_volume_fun, fn _ch, req -> send(test_pid, {:retired, req.lineage_id}) && {:ok, %{}} end),
         session_opts: session_opts,
         # Timers off by default: tests drive reconcile/1 + sweep/1 explicitly.
         reconcile_interval_ms: 0,
@@ -156,11 +148,6 @@ defmodule Embervm.SessionBankRelightTest do
     {:ok, %RelightResponse{vm_id: "vm-relit-#{System.unique_integer([:positive])}"}}
   end
 
-  # A working prime_fun, for the tests that create against a persistence-
-  # enabled workload (claim_or_prime/6 primes directly for those, never
-  # touching claim_fun).
-  defp prime_ok(vm_id), do: fn _ch, _req -> {:ok, %PrimeResponse{vm_id: vm_id}} end
-
   defp put_workload(ctx, wl, opts \\ []) do
     NodeCapacity.put(ctx.cap_table, "node-4", node_fact(wl, opts))
 
@@ -179,8 +166,7 @@ defmodule Embervm.SessionBankRelightTest do
         banked_ttl_seconds: Keyword.get(opts, :banked_ttl_seconds, 3600),
         max_sessions: Keyword.get(opts, :max_sessions, 16),
         invoke_queue_cap: Keyword.get(opts, :queue_cap, 4)
-      },
-      persistence: Keyword.get(opts, :persistence)
+      }
     })
   end
 
@@ -215,16 +201,6 @@ defmodule Embervm.SessionBankRelightTest do
     [{pid, _}] = Registry.lookup(ctx.registry, session_id)
     send(pid, :maybe_bank)
     wait_state(ctx, session_id, :banked)
-  end
-
-  # Same idle timer, a persistence-enabled workload (memory: false, filesystem:
-  # true) routes it through park instead of bank (do_bank's
-  # persistence_enabled_workload? branch), so the session lands on :parked with
-  # its VM torn down rather than :banked with a snapshot.
-  defp force_idle_park(ctx, session_id) do
-    [{pid, _}] = Registry.lookup(ctx.registry, session_id)
-    send(pid, :maybe_bank)
-    wait_state(ctx, session_id, :parked)
   end
 
   defp wait_state(ctx, session_id, expected, tries \\ 100) do
@@ -673,51 +649,6 @@ defmodule Embervm.SessionBankRelightTest do
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :evicted
     assert session.terminal_reason == "idle_ttl"
-  end
-
-  test "banked-TTL GC also reaps a parked session untouched past bankedTtlSeconds (#4305)" do
-    ctx = start_stack(prime_fun: prime_ok("vm-parked-ttl-evicted"))
-
-    put_workload(ctx, "wl",
-      max_lifetime_seconds: 100_000,
-      banked_ttl_seconds: 5,
-      persistence: %{memory: false, filesystem: %{enabled: true, size_bytes: 1_000_000}}
-    )
-
-    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
-    :ok = force_idle_park(ctx, created.session_id)
-
-    advance(ctx.clock_pid, 10_000)
-    :ok = SessionManager.sweep(ctx.mgr)
-
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
-    assert session.state == :evicted
-    assert session.terminal_reason == "idle_ttl"
-    # evict_parked retires the workspace volume instead of EvictSnapshot (a parked
-    # session has no snapshot to evict); retirement is a spawned RPC, so
-    # assert_receive (waits) rather than assert_received (checks the mailbox now).
-    assert_receive {:retired, lineage_id}, 1_000
-    assert lineage_id == created.session_id
-  end
-
-  test "a parked session inside bankedTtlSeconds survives the sweep" do
-    ctx = start_stack(prime_fun: prime_ok("vm-parked-ttl-survives"))
-
-    put_workload(ctx, "wl",
-      max_lifetime_seconds: 100_000,
-      banked_ttl_seconds: 5,
-      persistence: %{memory: false, filesystem: %{enabled: true, size_bytes: 1_000_000}}
-    )
-
-    {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
-    :ok = force_idle_park(ctx, created.session_id)
-
-    advance(ctx.clock_pid, 3_000)
-    :ok = SessionManager.sweep(ctx.mgr)
-
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
-    assert session.state == :parked
-    refute_received {:retired, _}
   end
 
   test "a banked-TTL eviction ALSO issues EvictArtifact(remote) for the session bundle" do
