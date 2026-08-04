@@ -4,6 +4,10 @@
   const MODELS = ["opus", "fable", "sonnet", "luna", "terra", "sol", "qwen"];
 
   let selectedId = $state(null);
+  let sidebarCollapsed = $state(
+    typeof window !== "undefined" &&
+      window.localStorage.getItem("agents-sidebar-collapsed") === "true",
+  );
   let sessions = $state(data.sessions ?? []);
   let detail = $state(null);
   let searchQuery = $state("");
@@ -39,7 +43,6 @@
     sessions.filter((session) => !isActive(session)).sort(compareSessions),
   );
   const visibleSearchResults = $derived(searchResults ?? []);
-  const selectedIsPending = $derived((selectedSession?.pending_count ?? 0) > 0);
   const hasActiveSessions = $derived(
     sessions.some((session) => isActive(session)) ||
       Number(
@@ -95,10 +98,20 @@
   }
 
   function statusClass(session) {
-    if (isActive(session)) return "working";
-    if (["error", "failed", "failure"].includes(session?.status))
-      return "error";
-    return "idle";
+    if (session?.status === "running") {
+      return Number(session?.pending_count) > 0 ? "working" : "running";
+    }
+    if (session?.status === "warn") return "warn";
+    if (session?.status === "needs_input") return "needs-input";
+    return "completed";
+  }
+
+  function statusLabel(session) {
+    if (session?.status === "needs_input") return "needs input";
+    if (session?.status === "running") return "working";
+    if (session?.status === "completed") return "completed";
+    if (session?.status === "warn") return "warn";
+    return session?.status || "completed";
   }
 
   function activityLabel(activity) {
@@ -309,6 +322,13 @@
     return () => clearInterval(interval);
   });
 
+  $effect(() => {
+    window.localStorage.setItem(
+      "agents-sidebar-collapsed",
+      String(sidebarCollapsed),
+    );
+  });
+
   $effect(() => () => {
     clearTimeout(searchTimer);
     searchController?.abort();
@@ -317,10 +337,21 @@
 
 <svelte:head><title>Agents</title></svelte:head>
 
-<main class="console">
-  <aside class="sidebar">
+<main class:sidebar-collapsed={sidebarCollapsed} class="console">
+  <aside class="sidebar" aria-label="Agent sessions">
     <div class="side-head">
       <div class="eyebrow">agent sessions</div>
+      <button
+        class="collapse-button"
+        type="button"
+        aria-label={sidebarCollapsed
+          ? "Expand session sidebar"
+          : "Collapse session sidebar"}
+        aria-expanded={!sidebarCollapsed}
+        title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
+        >{sidebarCollapsed ? "→" : "←"}</button
+      >
       <button
         class="new-button"
         type="button"
@@ -347,12 +378,12 @@
             type="button"
             onclick={() => selectSession(result.session_id)}
           >
-            <span class="result-id"
+            <span class="result-id mono"
               >{result.local_session_id ||
                 `${result.workspace}/${result.seq}`}</span
             >
             <span class="snippet">{result.snippet}</span>
-            <span class="result-meta"
+            <span class="result-meta mono"
               >turn {result.seq} · {relativeTime(result.created_at)}</span
             >
           </button>
@@ -380,14 +411,14 @@
     {#if selectedSession}
       <header class="transcript-head">
         <div>
-          <div class="eyebrow">{displayName(selectedSession)}</div>
-          <div class="session-context">
+          <div class="eyebrow mono">{displayName(selectedSession)}</div>
+          <div class="session-context mono">
             {selectedSession.workspace} / {selectedSession.branch}
           </div>
         </div>
         <div class="head-actions">
-          <span class:working={selectedIsPending} class="session-state"
-            >{selectedSession.status}</span
+          <span class={`session-state ${statusClass(selectedSession)}`}
+            >{statusLabel(selectedSession)}</span
           >
           <button class="destroy-button" type="button" onclick={destroySession}
             >destroy</button
@@ -397,7 +428,7 @@
       <div class="turns">
         {#each detail?.turns ?? [] as turn (turn.seq)}
           <article class="turn">
-            <div class="turn-bar">
+            <div class="turn-bar mono">
               <span>#{turn.seq}</span><span
                 >{turn.model || selectedSession.model || "luna"}</span
               ><span>{cost(turn.cost_usd)}</span><span
@@ -423,19 +454,21 @@
           <div class="queue-title">pending queue</div>
           {#each detail.pending_queue as entry (entry.seq)}
             <div class="queue-entry">
-              <span class="queue-seq">#{entry.seq}</span>
+              <span class="queue-seq mono">#{entry.seq}</span>
               <span class="queue-prompt">{entry.prompt}</span>
               <span class:claimed={entry.claimed_by_replica} class="claim"
                 >{entry.claimed_by_replica ? "claimed" : "waiting"}</span
               >
-              <span class="muted">{relativeTime(entry.created_at)}</span>
+              <span class="muted mono">{relativeTime(entry.created_at)}</span>
             </div>
           {/each}
         {/if}
       </div>
 
-      {#if selectedIsPending}<div class="working-line">
-          <span class="dot working"></span> worker is processing the queue
+      {#if detail?.pending_queue?.length}<div class="working-line shimmer">
+          <span class="dot working"></span>
+          {#if detail.pending_queue.some((entry) => entry.claimed_by_replica)}running{:else}waking…{/if}
+          <span class="muted">{detail.pending_queue.length} queued</span>
         </div>{/if}
       <form
         class="composer"
@@ -449,7 +482,7 @@
           placeholder="send a prompt to this session"
           rows="3"></textarea>
         <div class="composer-actions">
-          <select bind:value={composerModel} aria-label="Model">
+          <select class="mono" bind:value={composerModel} aria-label="Model">
             <option value="">session default</option>
             {#each MODELS as model}<option value={model}>{model}</option>{/each}
           </select>
@@ -482,7 +515,7 @@
             placeholder="what should the agent do?"></textarea></label
         >
         <label
-          >model<select bind:value={newSession.model}
+          >model<select class="mono" bind:value={newSession.model}
             ><option value="">session default</option
             >{#each MODELS as model}<option value={model}>{model}</option
               >{/each}</select
@@ -490,12 +523,14 @@
         >
         <label
           >workspace<input
+            class="mono"
             bind:value={newSession.workspace}
             placeholder="workspace"
           /></label
         >
         <label
           >branch<input
+            class="mono"
             bind:value={newSession.branch}
             placeholder="branch"
           /></label
@@ -530,17 +565,18 @@
   >
     <span
       class={`dot ${statusClass(session)}`}
-      aria-label={statusClass(session)}
+      aria-label={statusLabel(session)}
+      title={`${displayName(session)}: ${statusLabel(session)}`}
     ></span>
     <span class="row-main"
       ><span class="session-name">{displayName(session)}</span><span
-        class="row-sub"
+        class="row-sub mono"
         >{session.model || "luna"} · {relativeTime(
           session.last_turn_at || session.created_at,
         )}</span
       ></span
     >
-    <span class="row-cost">{cost(session.total_cost_usd)}</span>
+    <span class="row-cost mono">{cost(session.total_cost_usd)}</span>
   </button>
 {/snippet}
 
@@ -550,29 +586,71 @@
   }
   :global(body) {
     margin: 0;
-    background: #101214;
-    color: #d7dbd8;
-    font-family:
-      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   }
-  :global(button),
-  :global(input),
-  :global(textarea),
-  :global(select) {
-    font: inherit;
-  }
-  :global(button) {
-    cursor: pointer;
-  }
+
   .console {
+    --font-ui:
+      system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --size-meta: 11px;
+    --size-body-mono: 12.5px;
+    --size-body: 13.5px;
+    --size-section: 15px;
+    --page-bg: #f5f2ec;
+    --panel-bg: #fffdfa;
+    --text: #252521;
+    --muted: #827c72;
+    --line: #d8d2c7;
+    color-scheme: light;
     min-height: 100vh;
     display: grid;
     grid-template-columns: 300px minmax(0, 1fr);
-    background: #101214;
+    background: var(--page-bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: var(--size-body);
+    line-height: 1.4;
+  }
+  .console * {
+    font-family: var(--font-ui);
+  }
+  .console .mono,
+  .console code,
+  .console pre,
+  .console input.mono,
+  .console select.mono {
+    font-family: var(--font-mono);
+  }
+  .mono,
+  code,
+  pre {
+    font-size: var(--size-body-mono);
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+  button {
+    cursor: pointer;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    border-radius: 3px;
+  }
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 2px solid #8aa9c2;
+    outline-offset: 1px;
   }
   .sidebar {
-    border-right: 1px solid #2a2e30;
-    padding: 24px 14px;
+    border-right: 1px solid #d8d2c7;
+    padding: 16px 12px;
     overflow: auto;
   }
   .side-head,
@@ -583,35 +661,53 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
   }
   .eyebrow,
   .group-title,
   .queue-title {
-    color: #929a96;
-    font-size: 11px;
+    color: #77736b;
+    font-size: var(--size-meta);
+    line-height: 1.2;
     letter-spacing: 0.13em;
     text-transform: uppercase;
   }
+  .collapse-button,
+  .new-button,
+  .destroy-button,
+  .quiet-button,
+  .send-button {
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid #c9c2b7;
+    border-radius: 3px;
+    font-size: var(--size-meta);
+    line-height: 1;
+  }
+  .collapse-button,
   .new-button,
   .destroy-button,
   .quiet-button {
-    color: #aeb6b2;
+    color: #4e4a43;
     background: transparent;
-    border: 1px solid #3a403e;
-    padding: 5px 8px;
-    font-size: 11px;
+  }
+  .collapse-button {
+    width: 30px;
+    padding: 0;
   }
   .new-button:hover,
   .destroy-button:hover,
-  .quiet-button:hover {
-    color: #e0e5e1;
-    border-color: #737b76;
+  .quiet-button:hover,
+  .collapse-button:hover,
+  .session-row:hover,
+  .session-row.chosen,
+  .search-result:hover {
+    background: #ebe7df;
   }
   .search-label {
     position: relative;
     display: block;
-    margin: 22px 0 20px;
+    margin: 16px 0;
   }
   .search-label input,
   .new-panel input,
@@ -619,31 +715,47 @@
   .composer textarea,
   select {
     width: 100%;
-    color: #d7dbd8;
-    background: #171a1c;
-    border: 1px solid #343a38;
-    border-radius: 2px;
-    padding: 9px 10px;
+    color: #252521;
+    background: #fffdfa;
+    border: 1px solid #c9c2b7;
+    border-radius: 3px;
+    padding: 0 9px;
     outline: none;
+  }
+  .search-label input,
+  .new-panel input,
+  select {
+    height: 30px;
+  }
+  .new-panel textarea,
+  .composer textarea {
+    padding: 7px 9px;
   }
   input:focus,
   textarea:focus,
   select:focus {
-    border-color: #88918b;
+    border-color: #7794a8;
+  }
+  select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m2.5 4.5 3.5 3 3.5-3' fill='none' stroke='%236b665d' stroke-width='1.25'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 27px;
   }
   .search-pulse {
     position: absolute;
-    top: 8px;
+    top: 5px;
     right: 9px;
-    color: #737c77;
+    color: #8b857b;
   }
   .group-title {
     display: flex;
     justify-content: space-between;
-    margin: 14px 5px 7px;
+    margin: 12px 4px 6px;
   }
   .history-title {
-    margin-top: 28px;
+    margin-top: 20px;
   }
   .session-list {
     display: grid;
@@ -656,65 +768,66 @@
     color: inherit;
     background: transparent;
     border: 1px solid transparent;
-    padding: 9px 7px;
+    padding: 7px 6px;
     display: flex;
-    gap: 9px;
+    gap: 8px;
     align-items: flex-start;
     min-width: 0;
-  }
-  .session-row:hover,
-  .session-row.chosen,
-  .search-result:hover {
-    background: #1b1f20;
-    border-color: #2d3331;
   }
   .dot {
     flex: 0 0 7px;
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #747b77;
+    background: #979188;
     margin-top: 5px;
   }
-  .dot.working {
-    background: #a9b5ae;
+  .dot.running {
+    background: #4c9660;
   }
-  .dot.error {
-    background: #b87171;
+  .dot.working {
+    background: #4c9660;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  .dot.warn {
+    background: #b47b2c;
+  }
+  .dot.needs-input {
+    background: #4a83ad;
   }
   .row-main {
     min-width: 0;
     flex: 1;
     display: grid;
-    gap: 4px;
+    gap: 2px;
   }
   .session-name,
   .result-id {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #d7dbd8;
-    font-size: 12px;
+    color: #302e29;
+    font-size: var(--size-body-mono);
   }
   .row-sub,
   .row-cost,
   .result-meta,
   .muted,
   .session-context {
-    color: #7d8681;
-    font-size: 10px;
+    color: #827c72;
+    font-size: var(--size-meta);
   }
   .row-cost {
     white-space: nowrap;
   }
   .search-result {
     display: grid;
-    gap: 5px;
+    gap: 4px;
   }
   .snippet {
-    color: #aeb6b2;
-    font-size: 11px;
-    line-height: 1.4;
+    color: #625e56;
+    font-size: var(--size-body);
+    line-height: 1.35;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
@@ -727,88 +840,87 @@
     min-height: 100vh;
   }
   .transcript-head {
-    padding: 24px 30px 18px;
-    border-bottom: 1px solid #2a2e30;
+    padding: 16px 24px 12px;
+    border-bottom: 1px solid #d8d2c7;
   }
   .session-context {
-    margin-top: 7px;
+    margin-top: 4px;
+    font-family: var(--font-mono);
   }
   .session-state {
-    color: #8d9691;
-    border: 1px solid #303634;
-    padding: 4px 7px;
-    font-size: 10px;
+    color: #625e56;
+    border: 1px solid #c9c2b7;
+    padding: 5px 8px;
+    font-size: var(--size-meta);
+    text-transform: lowercase;
   }
   .turns {
     flex: 1;
-    padding: 18px 30px;
+    padding: 16px 24px;
     overflow: auto;
   }
   .turn {
-    border: 1px solid #2b302e;
-    margin-bottom: 14px;
-    background: #141719;
+    border: 1px solid var(--line);
+    margin-bottom: 12px;
+    background: var(--panel-bg);
   }
   .turn-bar {
     display: flex;
-    gap: 14px;
-    padding: 8px 11px;
-    border-bottom: 1px solid #292e2c;
-    color: #818a85;
-    font-size: 10px;
+    gap: 12px;
+    padding: 7px 10px;
+    border-bottom: 1px solid #e2ddd4;
+    color: #827c72;
+    font-size: var(--size-meta);
   }
   .turn-bar span:nth-last-child(2) {
     margin-left: auto;
   }
   .prompt {
-    padding: 13px 13px 9px;
-    color: #d7dbd8;
+    padding: 10px 12px 8px;
+    color: #302e29;
     white-space: pre-wrap;
-    line-height: 1.5;
-    font-size: 13px;
+    line-height: 1.45;
+    font-size: var(--size-body);
   }
   .role {
-    color: #8c9891;
-    margin-right: 10px;
-    font-size: 10px;
+    color: #827c72;
+    margin-right: 8px;
+    font-size: var(--size-meta);
     text-transform: uppercase;
   }
   .activities {
     display: flex;
     flex-wrap: wrap;
-    gap: 5px;
-    padding: 0 13px 12px;
+    gap: 4px;
+    padding: 0 12px 10px;
   }
   code {
-    color: #aab4ad;
-    border: 1px solid #303735;
-    background: #191d1e;
+    color: #625e56;
+    border: 1px solid #d8d2c7;
+    background: #f5f2ec;
     padding: 3px 5px;
-    font-size: 10px;
     white-space: pre-wrap;
   }
   .result {
     margin: 0;
-    padding: 13px;
-    border-top: 1px solid #292e2c;
-    color: #bfc7c2;
+    padding: 12px;
+    border-top: 1px solid #e2ddd4;
+    color: #4d4942;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    font: inherit;
-    font-size: 12px;
-    line-height: 1.6;
+    line-height: 1.5;
   }
   .queue-title {
-    margin: 26px 0 8px;
+    margin: 20px 0 6px;
   }
   .queue-entry {
     display: grid;
     grid-template-columns: 38px minmax(0, 1fr) auto auto;
     align-items: center;
-    gap: 10px;
-    border-top: 1px solid #252a28;
-    padding: 10px 3px;
-    font-size: 11px;
+    gap: 8px;
+    border-top: 1px solid #e2ddd4;
+    padding: 8px 3px;
+    font-size: var(--size-body-mono);
   }
   .queue-prompt {
     overflow: hidden;
@@ -817,42 +929,47 @@
   }
   .queue-seq,
   .claim {
-    color: #818a85;
+    color: #827c72;
   }
   .claim.claimed {
-    color: #b7c0ba;
+    color: #4c9660;
   }
   .working-line {
-    border-top: 1px solid #2a2e30;
-    padding: 10px 30px;
-    color: #89938d;
-    font-size: 11px;
+    border-top: 1px solid #d8d2c7;
+    padding: 8px 24px;
+    color: #625e56;
+    font-size: var(--size-meta);
+  }
+  .working-line.shimmer {
+    background: linear-gradient(90deg, transparent, #ebe7df, transparent);
+    background-size: 200% 100%;
+    animation: shimmer 1.8s linear infinite;
   }
   .working-line .dot {
     display: inline-block;
-    margin: 0 8px 1px 0;
+    margin: 0 7px 1px 0;
+  }
+  .working-line .muted {
+    margin-left: 6px;
   }
   .composer {
-    border-top: 1px solid #2a2e30;
-    padding: 16px 30px 22px;
+    border-top: 1px solid #d8d2c7;
+    padding: 12px 24px 16px;
     display: grid;
-    gap: 9px;
+    gap: 8px;
   }
   .composer textarea {
     resize: vertical;
     min-height: 70px;
   }
-  select {
+  .composer select {
     width: auto;
     min-width: 110px;
-    padding: 7px 9px;
   }
   .send-button {
-    color: #151817;
-    background: #b6c0b9;
-    border: 1px solid #b6c0b9;
-    padding: 7px 12px;
-    font-size: 11px;
+    color: #fffdfa;
+    background: #4d6757;
+    border-color: #4d6757;
   }
   .send-button:disabled {
     cursor: not-allowed;
@@ -865,21 +982,21 @@
     right: 0;
     width: min(350px, 100vw);
     height: 100vh;
-    background: #171a1c;
-    border-left: 1px solid #3a403e;
-    padding: 28px 22px;
-    box-shadow: -12px 0 30px #0005;
+    background: #f5f2ec;
+    border-left: 1px solid #c9c2b7;
+    padding: 20px;
+    box-shadow: -1px 0 2px #4b463d1a;
   }
   .new-panel form {
     display: grid;
-    gap: 15px;
-    margin-top: 24px;
+    gap: 12px;
+    margin-top: 16px;
   }
   .new-panel label {
     display: grid;
-    gap: 7px;
-    color: #929a96;
-    font-size: 10px;
+    gap: 5px;
+    color: #77736b;
+    font-size: var(--size-meta);
     text-transform: uppercase;
     letter-spacing: 0.08em;
   }
@@ -888,36 +1005,71 @@
   }
   .new-actions {
     justify-content: flex-end;
-    margin-top: 8px;
+    margin-top: 4px;
   }
   .empty {
-    padding: 12px 5px;
-    color: #68716c;
-    font-size: 11px;
+    padding: 10px 4px;
+    color: #938d83;
+    font-size: var(--size-meta);
   }
   .blank-state {
     margin: auto;
   }
   .transcript-empty {
-    padding: 30px 0;
+    padding: 24px 0;
   }
   .error-banner {
     position: fixed;
-    right: 18px;
-    bottom: 18px;
+    right: 16px;
+    bottom: 16px;
     max-width: 420px;
-    padding: 10px 12px;
-    border: 1px solid #805858;
-    color: #d3aaa7;
-    background: #241a1b;
-    font-size: 11px;
+    padding: 9px 11px;
+    border: 1px solid #c58c88;
+    color: #874b46;
+    background: #fff1ef;
+    font-size: var(--size-meta);
   }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
+  .sidebar-collapsed {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .sidebar-collapsed .sidebar {
+    padding: 12px 7px;
+  }
+  .sidebar-collapsed .side-head {
+    justify-content: center;
+  }
+  .sidebar-collapsed .eyebrow,
+  .sidebar-collapsed .new-button,
+  .sidebar-collapsed .search-label,
+  .sidebar-collapsed .group-title,
+  .sidebar-collapsed .row-main,
+  .sidebar-collapsed .row-cost,
+  .sidebar-collapsed .search-result,
+  .sidebar-collapsed .empty {
+    display: none;
+  }
+  .sidebar-collapsed .session-list {
+    gap: 6px;
+  }
+  .sidebar-collapsed .session-row {
+    justify-content: center;
+    padding: 7px 0;
+  }
+  .sidebar-collapsed .dot {
+    margin-top: 5px;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
   }
   @media (max-width: 760px) {
     .console {
@@ -926,7 +1078,14 @@
     .sidebar {
       max-height: 42vh;
       border-right: 0;
-      border-bottom: 1px solid #2a2e30;
+      border-bottom: 1px solid #d8d2c7;
+    }
+    .sidebar-collapsed {
+      grid-template-columns: 1fr;
+    }
+    .sidebar-collapsed .sidebar {
+      max-height: none;
+      border-bottom: 0;
     }
     .transcript-head,
     .turns,
@@ -935,5 +1094,12 @@
       padding-left: 16px;
       padding-right: 16px;
     }
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
   }
 </style>
