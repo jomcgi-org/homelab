@@ -630,6 +630,30 @@ defmodule Embervm.S3WarmthGcTest do
       assert deleted(agent) != []
     end
 
+    test "the group allowance leaves the other empty-store branches at full strength" do
+      # allow_empty_kinds [:group] must weaken ONLY the group branch: an empty
+      # StatefulStore with stateful keys present still aborts.
+      prefix = "stateful/amd/dead-wl/state-orphan"
+      {agent, s3} = new_s3(artifact(prefix, @wall - 30 * @day))
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([]),
+          group_store: start_store([]),
+          session_store: start_store([]),
+          serving_store: start_store([]),
+          allow_empty_kinds: [:group],
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:error, :empty_cp_state} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
     test "empty GroupStore still aborts without allow_empty_kinds" do
       prefix = "group_set/wl/group-old"
       {agent, s3} = new_s3(artifact(prefix, @wall - 8 * @day, 18 * 1024 * 1024 * 1024))

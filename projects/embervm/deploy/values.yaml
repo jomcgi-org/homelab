@@ -243,17 +243,19 @@ warmthRetention:
 # (warmthS3Gc.enabled) is deliberately NOT set here; flipping it to "1" is a
 # separate, supervised deploy step after the dry-run manifests
 # (gc-manifests/<ts>.json in the embervm bucket) have been read and verified.
+# Until 2026-08-04 no manifest had ever been written: the sweep aborted
+# empty_cp_state on every run because group_set/ holds leftovers of the
+# retired scratch-k8s demo while GroupStore legitimately tracks zero
+# instances. allowEmptyKinds is the operator statement that group is retired,
+# which lets the sweep finally COMPLETE in dry-run and produce manifests.
+# The caps are pre-staged for the drain the census predicts (~2.29 TiB /
+# 4611 stateful refs past the 8h TTL): at the 10-prefix/20GiB defaults that
+# backlog would take ~19 days of hourly sweeps, at 200/100GiB about a day.
 # expectedNodes names the real fleet for the fleet-freshness abort: every
 # listed node must be present and fresh in the CP's capacity facts or the
 # sweep (dry-run included) aborts.
 warmthS3Gc:
-  # S3 GC arming (Joe 2026-08-04): allowEmptyKinds escape for retired scratch-k8s
-  # composite demo (8 orphaned group_set refs / 18 GiB backlog). Dry-run sweep
-  # measured ~2.29 TiB / 4611 stateful refs past the 8h TTL. Caps tuned for
-  # ~1-day backlog drain at hourly sweep rate. Rollback: set enabled to ""
-  # and bump the chart.
   allowEmptyKinds: "group"
-  enabled: "1"
   maxPrefixes: "200"
   maxBytes: "107374182400"
   expectedNodes:

@@ -395,6 +395,15 @@ spec:
               value: {{ .Values.warmthS3Gc.maxPrefixes | quote }}
             {{- end }}
             {{- if .Values.warmthS3Gc.allowEmptyKinds }}
+            {{- /* Validate at render time so a typo is an ArgoCD render error,
+                   never a control-plane crash loop. The app also drops unknown
+                   tokens defensively. */}}
+            {{- range splitList "," .Values.warmthS3Gc.allowEmptyKinds }}
+            {{- $token := trim . }}
+            {{- if and $token (not (has $token (list "stateful" "group" "session" "serving"))) }}
+            {{- fail (printf "warmthS3Gc.allowEmptyKinds: invalid kind %q (valid: stateful, group, session, serving)" $token) }}
+            {{- end }}
+            {{- end }}
             - name: EMBERVM_WARMTH_S3_GC_ALLOW_EMPTY_KINDS
               value: {{ .Values.warmthS3Gc.allowEmptyKinds | quote }}
             {{- end }}

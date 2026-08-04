@@ -111,4 +111,21 @@ defmodule Embervm.ApplicationTest do
       assert source =~ "Keyword.get(opts, :op_log, op_log_mod)"
     end
   end
+
+  describe "parse_allow_empty_kinds/1" do
+    # Runs at children-construction time (same contract as configured_nodes/0
+    # above), so it must NEVER raise: an unknown token is dropped, leaving the
+    # empty-store guard at full strength, instead of crash-looping the CP.
+    test "empty string yields no allowances" do
+      assert App.parse_allow_empty_kinds("") == []
+    end
+
+    test "parses a comma list with whitespace" do
+      assert App.parse_allow_empty_kinds("group, session") == [:group, :session]
+    end
+
+    test "drops unknown tokens instead of raising" do
+      assert App.parse_allow_empty_kinds("group,groups,Group") == [:group]
+    end
+  end
 end
