@@ -75,6 +75,23 @@ def _persist_ember_session(session_id: int, ember: EmberSession) -> None:
             ember.session_token,
             ember.expires_at,
             ember.lineage_id,
+            is_restored=ember.restored,
+        )
+
+
+def _persist_ember_session_and_cli(
+    session_id: int, ember: EmberSession, cli_session_id: str | None
+) -> None:
+    with Session(get_engine()) as db_session:
+        store.set_ember_session(
+            db_session,
+            session_id,
+            ember.session_id,
+            ember.session_token,
+            ember.expires_at,
+            ember.lineage_id,
+            cli_session_id=cli_session_id,
+            is_restored=ember.restored,
         )
 
 
@@ -284,9 +301,16 @@ async def _execute_pending_message(session_id: int) -> None:
             existing_ember = _ember_session(session_row)
             fresh_binding_persisted = False
 
-            async def persist_callback(ember: EmberSession) -> None:
+            async def persist_callback(
+                ember: EmberSession, cli_for_binding: str | None
+            ) -> None:
                 nonlocal fresh_binding_persisted
-                await asyncio.to_thread(_persist_ember_session, session_id, ember)
+                await asyncio.to_thread(
+                    _persist_ember_session_and_cli,
+                    session_id,
+                    ember,
+                    cli_for_binding,
+                )
                 fresh_binding_persisted = True
 
             if existing_ember is None and session_row.prior_ember_lineage_id:
@@ -319,6 +343,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 )
                 return
             if ember != existing_ember:
+                # Safety: re-persist for transports without on_create support
                 await asyncio.to_thread(_persist_ember_session, session_id, ember)
         except EmberSessionGone as exc:
             # Session confirmed dead by CP; clear the binding and CLI id together.
