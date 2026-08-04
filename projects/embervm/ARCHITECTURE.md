@@ -604,6 +604,7 @@ possibly-not-rebuilt; `warmthS3Gc.allowEmptyKinds` is the operator statement
 that a class is retired (its store is legitimately empty), which exempts that
 kind's branch. Unknown tokens fail the chart render and are dropped by the
 app, so the guard can only be weakened deliberately.
+
 The S3 warmth GC is dry-run by default and may delete only the explicit
 allowlist of warmth prefixes. Its 8-hour stateful TTL keeps the newest one
 reference per vendor and workload for live workloads (any non-terminal
