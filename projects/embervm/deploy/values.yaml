@@ -239,10 +239,10 @@ baseRetention:
 warmthRetention:
   sweepEnabled: "1"
 
-# S3-direct warmth GC (task #39): dry-run ONLY at this point. The gate
-# (warmthS3Gc.enabled) is deliberately NOT set here; flipping it to "1" is a
-# separate, supervised deploy step after the dry-run manifests
-# (gc-manifests/<ts>.json in the embervm bucket) have been read and verified.
+# S3-direct warmth GC (task #39): ARMED 2026-08-04 (the enabled flag below)
+# as the supervised second step, after the dry-run manifest
+# (gc-manifests/<ts>.json in the embervm bucket) was read and verified.
+# Rollback: set enabled back to "" and bump the chart.
 # Until 2026-08-04 no manifest had ever been written: the sweep aborted
 # empty_cp_state on every run because group_set/ holds leftovers of the
 # retired scratch-k8s demo while GroupStore legitimately tracks zero
