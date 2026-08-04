@@ -3,6 +3,7 @@
 import json
 import ast
 import datetime
+import io
 import os
 import signal
 import socket
@@ -62,7 +63,8 @@ for line in sys.stdin:
             "reason": "requires_approval"
         }]
         terminal_reason = "completed"
-    print(json.dumps({"type": "assistant", "message": {"content": [
+    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "Assistant progress."},
         {"type": "tool_use", "name": "Read", "input": {"file_path": "a.txt"}},
         {"type": "tool_use", "name": "Edit", "input": {"file_path": "b.txt"}},
         {"type": "tool_use", "name": "Write", "input": {"file_path": "c.txt"}},
@@ -647,6 +649,135 @@ def test_turn_extracts_voice_activity_and_tolerates_malformed_json(
     ]
     assert manager.ready()
     manager._close_process(kill=True)
+
+
+def test_assistant_message_triggers_progress_push(tmp_path, monkeypatch):
+    requests = []
+
+    class _Response:
+        def close(self):
+            pass
+
+    class _Opener:
+        def open(self, request, timeout):
+            requests.append((request, timeout))
+            return _Response()
+
+    monkeypatch.setattr(shim.urllib.request, "build_opener", lambda _handler: _Opener())
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes", progress_token="abc123")
+    manager._close_process(kill=True)
+
+    assert len(requests) == 1
+    request, timeout = requests[0]
+    assert request.full_url == (
+        "http://monolith.monolith.svc.cluster.local:8091/ingest/progress"
+    )
+    assert request.method == "POST"
+    assert request.get_header("Authorization") == "Bearer abc123"
+    assert json.loads(request.data) == {"partial_text": "Assistant progress."}
+    assert timeout == 2
+
+
+def test_no_progress_push_without_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        shim.urllib.request,
+        "build_opener",
+        lambda _handler: pytest.fail("progress push should be disabled"),
+    )
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes")
+    manager._close_process(kill=True)
+
+
+def test_progress_pusher_uses_egress_proxy_and_swallows_errors(monkeypatch):
+    handlers = []
+
+    def proxy_handler(proxies):
+        handlers.append(proxies)
+        return object()
+
+    class _Opener:
+        def open(self, _request, timeout):
+            assert timeout == 2
+            raise ConnectionRefusedError("egress unavailable")
+
+    monkeypatch.setattr(shim.urllib.request, "ProxyHandler", proxy_handler)
+    monkeypatch.setattr(shim.urllib.request, "build_opener", lambda _handler: _Opener())
+    pusher = shim._ProgressPusher("abc123")
+    pusher.push("text")
+    pusher.stop()
+    assert handlers == [
+        {"http": "http://%s:%s" % (shim.EGRESS_LOCALHOST, shim.DEFAULT_EGRESS_PORT)}
+    ]
+
+
+def test_progress_pusher_collapses_rapid_events_to_latest():
+    started = threading.Event()
+    release = threading.Event()
+    pushed = []
+    pusher = shim._ProgressPusher("abc123")
+
+    def delayed_push():
+        started.set()
+        release.wait(timeout=1)
+        pushed.append(pusher.latest_text)
+
+    pusher._do_push = delayed_push
+    pusher.push("first")
+    assert started.wait(timeout=1)
+    pusher.push("second")
+    release.set()
+    pusher.stop()
+
+    assert pushed == ["second"]
+
+
+def test_progress_token_validation_and_threading():
+    class _Headers:
+        def __init__(self, length):
+            self.length = length
+
+        def get(self, name, default=None):
+            return str(self.length) if name == "Content-Length" else default
+
+    class _Manager:
+        def __init__(self):
+            self.calls = []
+
+        def turn(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return {"result": "ok"}
+
+    def post(payload, manager):
+        handler = object.__new__(shim.RequestHandler)
+        raw = json.dumps(payload).encode("utf-8")
+        handler.path = shim.TURN_PATH
+        handler.headers = _Headers(len(raw))
+        handler.rfile = io.BytesIO(raw)
+        responses = []
+        handler._send = lambda status, value: responses.append((status, value))
+        handler.manager = manager
+        shim.RequestHandler.do_POST(handler)
+        return responses
+
+    manager = _Manager()
+    assert post({"message": "hello", "progress_token": "abc123"}, manager) == [
+        (200, {"result": "ok"})
+    ]
+    assert manager.calls[0][1] == {"progress_token": "abc123"}
+
+    manager = _Manager()
+    assert post({"message": "hello"}, manager) == [(200, {"result": "ok"})]
+    assert manager.calls[0][1] == {}
+
+    for token in ("", 123):
+        manager = _Manager()
+        responses = post({"message": "hello", "progress_token": token}, manager)
+        assert responses == [
+            (400, {"error": "progress_token must be a non-empty string"})
+        ]
+        assert manager.calls == []
 
 
 def test_claude_model_argv_and_mid_session_switch_resumes(tmp_path, monkeypatch):

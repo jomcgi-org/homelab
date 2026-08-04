@@ -289,7 +289,7 @@ warmthS3Gc:
 egress:
   enabled: true
   internal:
-    # TWO deliberate holes in the split-horizon guardrail. Matching is an exact
+    # THREE deliberate holes in the split-horizon guardrail. Matching is an exact
     # case-insensitive host compare against BOTH the requested host:port and the
     # resolved ip:port, so a name and its address are both accepted and pinning
     # the resolved IP is what defeats SSRF-by-name and DNS rebinding. No
@@ -302,9 +302,14 @@ egress:
     # git-mirror: workspace hydration (ADR agents/050). Anonymous read-only
     # upload-pack plus receive-pack restricted to refs/agents/** by the mirror's
     # pre-receive hook; no credential exists on this path.
+    # monolith.monolith.svc.cluster.local:8091
+    # Progress-ingest listener: write-only single-route for mid-turn visibility (ADR 051).
+    # Port 8091 only; the main API on 8000 stays deny. Token-bearer authorization boundaries
+    # what a prompt-injected guest can write to (its own session's partial_text), not network access.
     allowlist:
       - inference.inference.svc.cluster.local:8080
       - git-mirror.monolith.svc.cluster.local:9418
+      - monolith.monolith.svc.cluster.local:8091
   # The claude runtime's subscription OAuth token. The sidecar SETS the
   # Authorization header on requests to api.anthropic.com and originates the
   # verified TLS to :443 itself, so the credential never exists inside a guest
