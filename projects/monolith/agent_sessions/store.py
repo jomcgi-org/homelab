@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, update
+from sqlalchemy import func, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -217,6 +217,39 @@ def get_turn(session: Session, session_id: int, turn_seq: int) -> AgentTurn | No
             AgentTurn.session_id == session_id, AgentTurn.seq == turn_seq
         )
     ).first()
+
+
+def lexical_search(session: Session, query_text: str, limit: int = 20) -> list[dict]:
+    """Search agent turns and return ranked session/turn result dictionaries."""
+    if not query_text or not query_text.strip():
+        return []
+
+    sql = text(
+        "WITH q AS (SELECT websearch_to_tsquery('english', :q) AS q) "
+        "SELECT t.session_id, s.local_session_id, s.workspace, t.seq, "
+        "t.created_at, ts_rank_cd(t.fts_vector, q.q) AS rank, "
+        "ts_headline('english', t.prompt || ' ' || t.result_text, q.q, "
+        "'MaxWords=20,MinWords=3,ShortWord=0') AS snippet "
+        "FROM agent_sessions.agent_turns t "
+        "JOIN agent_sessions.agent_sessions s ON t.session_id = s.id, q "
+        "WHERE t.fts_vector @@ q.q "
+        "ORDER BY rank DESC, t.created_at DESC LIMIT :limit"
+    )
+    result = session.exec(sql, params={"q": query_text, "limit": limit})
+    keys = (
+        "session_id",
+        "local_session_id",
+        "workspace",
+        "seq",
+        "created_at",
+        "rank",
+        "snippet",
+    )
+    rows: list[dict] = []
+    for row in result:
+        mapping = getattr(row, "_mapping", None)
+        rows.append(dict(mapping) if mapping is not None else dict(zip(keys, row)))
+    return rows
 
 
 def create_pending_message(

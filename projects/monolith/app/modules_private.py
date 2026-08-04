@@ -48,6 +48,7 @@ ALL_MODULES: tuple[Module, ...] = (
     trips.module.MODULE,
     dr_jobs.module.MODULE,
     campsites.module.MODULE,
+    agent_sessions.module.MODULE,
     worldcup.module.MODULE,
     artifact.module.MODULE,
     faas.module.MODULE,
@@ -58,7 +59,6 @@ ALL_MODULES: tuple[Module, ...] = (
     # app/main.py import order (knowledge, agent, cluster, semgrep_scan,
     # sandbox); route order is unaffected because these mount no routes.
     agent.module.MODULE,
-    agent_sessions.module.MODULE,
     cluster.module.MODULE,
     # GitHub PR webhook -> fc-invoke scan -> Semgrep App relay. Registers
     # POST /webhooks/github/semgrep; HMAC-verified, no cf-access on that path.
