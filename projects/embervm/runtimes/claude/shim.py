@@ -1125,6 +1125,15 @@ wire_api = "responses"
                 model_name,
                 "--config",
                 "model_reasoning_effort=%s" % effort,
+                # Network must ride --config, not a flag, and must sit OUTSIDE
+                # the `if not session_id` block below. workspace-write denies
+                # network by default, and resume rejects --sandbox, so a
+                # flag-shaped fix would give the first turn of a session
+                # network and silently drop it on every resumed turn. Verified
+                # against rust-v0.146.0: a resume carrying only this --config
+                # reports "workspace-write (network access enabled)".
+                "--config",
+                "sandbox_workspace_write.network_access=true",
             ]
         )
         command.append("--skip-git-repo-check")

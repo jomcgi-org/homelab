@@ -50,7 +50,10 @@ SPEC
 Rules:
 
 1. **Prefer Luna.** Do not default to Terra or Sol to "be safe."
-2. **One worktree per worker.** No commit/push/network in the sandbox.
+2. **One worktree per worker.** The sandbox blocks writes outside the worktree.
+   It does NOT block network (workers need to fetch deps and read upstream
+   docs), so "no commit, no push" is enforced by the spec guardrails the
+   wrapper appends, not by the sandbox.
 3. **Full spec up front** (files, acceptance, patterns to imitate).
 4. **Fan out in parallel** for independent tasks.
 5. **Opus reviews** the diff, runs **`ci`** (or `ci lint` + `ci test`), then

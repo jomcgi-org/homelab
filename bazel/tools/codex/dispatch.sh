@@ -18,8 +18,15 @@
 #   *   codex exec's own failure code, passed through
 #
 # Guardrails baked in:
-#   - workspace-write sandbox scoped to <workdir>: no network, no writes
-#     outside the worktree, so the worker cannot push or commit upstream
+#   - workspace-write sandbox scoped to <workdir>: no writes outside the
+#     worktree
+#   - network IS enabled in the sandbox. workspace-write denies it by default,
+#     which silently broke any worker that needed to fetch a dependency or read
+#     an upstream doc: the turn still connects and bills (the sandbox governs
+#     model-run shell commands, not codex's own API calls), so the only symptom
+#     is DNS failures buried in the transcript. With network on, "cannot push
+#     upstream" is enforced by the spec guardrails below rather than by the
+#     sandbox, so keep that line in GUARDRAILS.
 #   - repo guardrails appended to every spec (no local tests, no commits,
 #     apko not Dockerfiles, non-root, conventional repo patterns)
 set -euo pipefail
@@ -61,7 +68,9 @@ GUARDRAILS='
 - Do NOT run pytest/go test/npm test/bazel test on the Mac. The orchestrator
   runs `ci` (bb remote Linux Test) after reviewing your diff.
 - Do NOT run git commit, git push, or any git state-changing command. The
-  orchestrator reviews and commits your diff.
+  orchestrator reviews and commits your diff. The sandbox has network access,
+  so this is on you to respect: nothing stops a push at the sandbox layer.
+- You DO have network access for reads (fetching deps, reading upstream docs).
 - Never use em-dashes in anything you write.
 - Containers: apko only (no Dockerfiles), non-root uid 65532.
 - Never hardcode .svc.cluster.local URLs or @sha256: image digests.
@@ -74,6 +83,7 @@ set +e
 codex exec \
 	--model "$MODEL" \
 	--config model_reasoning_effort="$EFFORT" \
+	--config sandbox_workspace_write.network_access=true \
 	--sandbox workspace-write \
 	--skip-git-repo-check \
 	-C "$WORKDIR" \
