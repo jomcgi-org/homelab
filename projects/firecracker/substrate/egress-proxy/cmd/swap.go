@@ -136,10 +136,31 @@ type secretEntry struct {
 	EgressTo    []string `json:"egressTo"`
 	ClaimHeader string   `json:"claimHeader"`
 	ClaimPath   string   `json:"claimPath"`
-	value       string   // resolved real value; never serialized, never logged
-	expiresAt   time.Time
-	broker      *tokenBroker
-	mu          *sync.RWMutex
+	// InjectAlwaysPaths is the explicit substitute signal for a client that
+	// sends NO credential header at all, so presence cannot signal intent for
+	// it (issue #4298: the codex CLI's rmcp connector client POSTs with no
+	// Authorization header). An exact match of the request's URL path against
+	// this list stands in for header presence, and only for that. Everything
+	// else about the entry stays fail-closed: an unlisted path with no header
+	// still denies, and a claim-configured entry that cannot resolve its claim
+	// still denies even on a listed path.
+	InjectAlwaysPaths []string `json:"injectAlwaysPaths"`
+	value             string   // resolved real value; never serialized, never logged
+	expiresAt         time.Time
+	broker            *tokenBroker
+	mu                *sync.RWMutex
+}
+
+// injectAlwaysPath reports whether path is one of this entry's
+// InjectAlwaysPaths (issue #4298's operator opt-in for a header-free
+// connector client), an exact match against req.URL.Path.
+func (e *secretEntry) injectAlwaysPath(path string) bool {
+	for _, p := range e.InjectAlwaysPaths {
+		if p == path {
+			return true
+		}
+	}
+	return false
 }
 
 // live reports whether this entry can actually inject. A catalog entry whose
@@ -492,12 +513,21 @@ func rejectSwapRequest(req *http.Request) bool {
 // injection by sending an empty value. Query, path and
 // every other header are left alone, which is the leak the substring swap had.
 //
+// A connector-style client can send no credential header at all (issue #4298:
+// the codex CLI's rmcp connector client POSTs with no Authorization header on
+// either rust-v0.146.0 or 0.147.0-alpha.6), so presence can never signal intent
+// for it. sec.InjectAlwaysPaths is the operator's explicit substitute signal for
+// exactly that case: an exact match of the request path stands in for presence,
+// and only for that request. Every other path on the same entry, and every
+// request on an entry with no InjectAlwaysPaths, still keys on presence exactly
+// as before.
+//
 // Whatever the guest put in the header is DISCARDED rather than matched. That is
 // the point: the guest's value is uncoupled config, and a prompt-injected guest
 // cannot authenticate as a different account by supplying its own token.
 func injectRequest(req *http.Request, sec *secretEntry) bool {
 	if sec.ClaimHeader != "" {
-		requested := len(req.Header.Values(sec.Header)) > 0
+		requested := len(req.Header.Values(sec.Header)) > 0 || sec.injectAlwaysPath(req.URL.Path)
 		// Both guest values go before either decision, so a prompt-injected guest
 		// cannot keep its own account id by making the credential lookup fail.
 		req.Header.Del(sec.Header)
@@ -519,7 +549,7 @@ func injectRequest(req *http.Request, sec *secretEntry) bool {
 		return true
 	}
 
-	requested := len(req.Header.Values(sec.Header)) > 0
+	requested := len(req.Header.Values(sec.Header)) > 0 || sec.injectAlwaysPath(req.URL.Path)
 	// Delete every guest value, including duplicate and empty values, before
 	// deciding whether the guest requested credential injection.
 	req.Header.Del(sec.Header)

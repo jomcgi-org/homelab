@@ -316,6 +316,12 @@ egress:
       brokerGrant: "codex-cluster"
       claimHeader: "chatgpt-account-id"
       claimPath: "https://api.openai.com/auth.chatgpt_account_id"
+      # The CLI's rmcp connector client sends no Authorization header at all
+      # (verified against rust-v0.146.0 and the 0.147.0-alpha line), so
+      # presence-keying can never admit it: this exact path is the explicit
+      # opt-in, and claim-resolution failure still denies (issue #4298).
+      injectAlwaysPaths:
+        - /backend-api/ps/mcp
   # Shared with the monolith gardener, which reads the same item. Read-only sync,
   # so two consumers is fine; the field label CLAUDE_AUTH_TOKEN becomes the key.
   onepassword:
