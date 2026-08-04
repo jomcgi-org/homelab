@@ -115,6 +115,78 @@ def _cli_privilege_kwargs():
     }
 
 
+GIT_PROXY_PATH = "/tmp/ember-git-proxy"
+
+
+def _write_git_proxy_helper():
+    """Install the stdlib-only git proxy used by session guests."""
+    proxy = r"""#!/usr/bin/python3
+import os
+import socket
+import sys
+import threading
+
+EGRESS_LOCALHOST = "127.0.0.1"
+EGRESS_PORT_ENV = "EMBER_EGRESS_PORT"
+DEFAULT_EGRESS_PORT = 1024
+
+
+def _pump(source, destination):
+    try:
+        while True:
+            data = source.read(65536)
+            if not data:
+                break
+            destination.sendall(data)
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        pass
+    finally:
+        try:
+            destination.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+def main():
+    if len(sys.argv) != 3:
+        return 2
+    host, port = sys.argv[1:]
+    try:
+        egress_port = int(os.environ.get(EGRESS_PORT_ENV, DEFAULT_EGRESS_PORT))
+        sock = socket.create_connection((EGRESS_LOCALHOST, egress_port))
+        sock.sendall(("CONNECT %s:%s HTTP/1.1\r\n\r\n" % (host, port)).encode())
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return 1
+            response += chunk
+            if len(response) > 65536:
+                return 1
+        if not response.startswith(b"HTTP/1.1 200"):
+            return 1
+        upstream = sock.makefile("rwb", buffering=0)
+        threads = [
+            threading.Thread(target=_pump, args=(sys.stdin.buffer, upstream)),
+            threading.Thread(target=_pump, args=(upstream, sys.stdout.buffer)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        return 0
+    except (OSError, ValueError):
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""
+    with open(GIT_PROXY_PATH, "w") as stream:
+        stream.write(proxy)
+    os.chmod(GIT_PROXY_PATH, 0o755)
+
+
 def _ensure_cli_dir(path):
     """Create a CLI state dir the CLI PROCESS can write into.
 
@@ -1438,17 +1510,26 @@ class ProcessManager:
         self._hydration_attempted = False
         self._hydration_error = None
         self._checkout_dir = None
+        self._hydration_status = None
+        _write_git_proxy_helper()
         self.claude = ClaudeProcess(self.workspace, claude_executable)
         self.codex = CodexProcess(self.workspace, codex_executable)
         self.pi = PiProcess(self.workspace, pi_executable)
 
     def _hydrate_workspace(self, repo, branch):
         if self._hydration_attempted:
+            if self._checkout_dir and os.path.isdir(self._checkout_dir):
+                self._hydration_status = "skipped_existing"
             return
         self._hydration_attempted = True
         checkout_dir = os.path.join(self.workspace, "src")
+        # Idempotency gate: restored/rejoined volumes reuse existing checkout.
+        # This deliberately ignores repo/branch changes on restored volumes; per-session
+        # volumes make that unreachable in practice (repo fixed at session create).
         if os.path.isdir(checkout_dir):
             self._checkout_dir = checkout_dir
+            self._hydration_status = "skipped_existing"
+            # Resume slugs are safe: session cwd never changes mid-lineage (repo fixed at create).
             self.claude.workspace = checkout_dir
             self.codex.workspace = checkout_dir
             self.pi.workspace = checkout_dir
@@ -1457,6 +1538,8 @@ class ProcessManager:
             os.makedirs(self.workspace, exist_ok=True)
             clone_command = [
                 "git",
+                "-c",
+                "core.gitProxy=%s" % GIT_PROXY_PATH,
                 "clone",
                 "--branch",
                 branch,
@@ -1469,9 +1552,13 @@ class ProcessManager:
                 clone_command,
                 capture_output=True,
                 timeout=120,
+                **_cli_privilege_kwargs(),
             )
             if result.returncode != 0:
-                stderr = result.stderr.decode("utf-8", "replace").strip()
+                stderr = result.stderr
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", "replace")
+                stderr = (stderr or "").strip()
                 raise RuntimeError(
                     "git command failed with exit code %s%s"
                     % (result.returncode, ": " + stderr if stderr else "")
@@ -1492,7 +1579,12 @@ class ProcessManager:
             )
             sys.stderr.flush()
             return
+        exclude_file = os.path.join(checkout_dir, ".git/info/exclude")
+        os.makedirs(os.path.dirname(exclude_file), exist_ok=True)
+        with open(exclude_file, "a") as stream:
+            stream.write(".codex/\n.pi/\n")
         self._checkout_dir = checkout_dir
+        self._hydration_status = "ok"
         self.claude.workspace = checkout_dir
         self.codex.workspace = checkout_dir
         self.pi.workspace = checkout_dir
@@ -1513,10 +1605,17 @@ class ProcessManager:
         adapter = self._adapter(model)
         try:
             if adapter is self.pi:
-                return adapter.turn(message, session_id, model or DEFAULT_PI_MODEL)
-            if adapter is self.codex:
-                return adapter.turn(message, session_id, model or DEFAULT_CODEX_MODEL)
-            return adapter.turn(message, session_id, model)
+                record = adapter.turn(message, session_id, model or DEFAULT_PI_MODEL)
+            elif adapter is self.codex:
+                record = adapter.turn(message, session_id, model or DEFAULT_CODEX_MODEL)
+            else:
+                record = adapter.turn(message, session_id, model)
+            if repo is not None and isinstance(record, dict):
+                if self._hydration_error:
+                    record["workspace_hydration"] = {"failed": self._hydration_error}
+                elif self._hydration_status:
+                    record["workspace_hydration"] = self._hydration_status
+            return record
         finally:
             # End-of-turn quiescence point: park only happens after a completed
             # turn plus idle, so flushing here guarantees the device has the
@@ -1615,13 +1714,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send(400, {"error": "repo and branch must be non-empty strings"})
             return
         try:
+            hydration = {"repo": repo, "branch": branch} if repo is not None else {}
             record = self.manager.turn(
-                message,
-                payload.get("session_id"),
-                payload.get("model"),
-                payload.get("repo"),
-                payload.get("branch"),
+                message, payload.get("session_id"), payload.get("model"), **hydration
             )
+            if repo is not None and isinstance(record, dict):
+                if getattr(self.manager, "_hydration_error", None):
+                    record["workspace_hydration"] = {
+                        "failed": self.manager._hydration_error
+                    }
+                elif getattr(self.manager, "_hydration_status", None):
+                    record["workspace_hydration"] = self.manager._hydration_status
         except SessionConflictError as exc:
             self._send(409, {"error": str(exc)})
         except StartupError as exc:

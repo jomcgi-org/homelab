@@ -5,6 +5,12 @@
       "hasTrustDialogAccepted": true,
       "hasCompletedProjectOnboarding": true,
       "projectOnboardingSeenCount": 1
+    },
+    "/workspace/src": {
+      "allowedTools": [],
+      "hasTrustDialogAccepted": true,
+      "hasCompletedProjectOnboarding": true,
+      "projectOnboardingSeenCount": 1
     }
   }
 }
