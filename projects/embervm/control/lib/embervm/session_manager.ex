@@ -172,10 +172,10 @@ defmodule Embervm.SessionManager do
 
   @doc """
   Runs one capacity/TTL sweep synchronously: expires sessions past `expires_at`
-  (live -> destroy VM, banked -> EvictSnapshot), GCs banked sessions untouched past
-  `bankedTtlSeconds`, and evicts banked sessions LRU while any node is below its
-  snapshot-disk low watermark. Tests drive it deterministically; production fires
-  it on the sweeper timer.
+  (live -> destroy VM, banked/parked -> EvictSnapshot), GCs banked or parked
+  sessions untouched past `bankedTtlSeconds` (#4305), and evicts banked sessions
+  LRU while any node is below its snapshot-disk low watermark. Tests drive it
+  deterministically; production fires it on the sweeper timer.
   """
   @spec sweep(GenServer.server()) :: :ok
   def sweep(server \\ __MODULE__) do
@@ -2638,12 +2638,18 @@ defmodule Embervm.SessionManager do
     state
   end
 
-  # Banked-TTL GC: a banked session untouched (last_invoke_at, or banked-at via
-  # updated_at) for longer than its workload's bankedTtlSeconds is evicted
-  # (session_evicted, reason idle_ttl).
+  # Banked/parked-TTL GC (#4305): a banked or parked session untouched
+  # (last_invoke_at, or banked/parked-at via updated_at) for longer than its
+  # workload's bankedTtlSeconds is evicted (session_evicted, reason idle_ttl).
+  # A banked session's snapshot is released via EvictSnapshot (evict_banked); a
+  # parked session holds no snapshot, so it retires its workspace volume
+  # instead (evict_parked), the same disk it would surrender on max-lifetime
+  # expiry (expire_session's parked arm). Without this, an abandoned parked
+  # session sat only behind maxLifetimeSeconds (hours) and could squat a
+  # session.maxSessions slot for the whole window.
   defp sweep_banked_ttl(state, now) do
     SessionStore.all(state.session_store)
-    |> Enum.filter(&(&1.state == :banked))
+    |> Enum.filter(&(&1.state in [:banked, :parked]))
     |> Enum.reduce(state, fn session, acc ->
       case fetch_session_workload(acc, session.workload) do
         {:ok, entry} ->
@@ -2651,7 +2657,10 @@ defmodule Embervm.SessionManager do
           last = session.last_invoke_at || session.updated_at || 0
 
           if now - last >= ttl_ms do
-            evict_banked(acc, session, :idle_ttl)
+            case session.state do
+              :banked -> evict_banked(acc, session, :idle_ttl)
+              :parked -> evict_parked(acc, session, :idle_ttl)
+            end
           else
             acc
           end
@@ -2712,6 +2721,36 @@ defmodule Embervm.SessionManager do
   # the reason. The session becomes terminal (evicted -> next invoke 410s).
   defp evict_banked(state, session, reason) do
     _ = evict_snapshot(state, session)
+
+    _ =
+      SessionStore.transition(
+        state.session_store,
+        session.session_id,
+        :evict,
+        :session_evicted,
+        %{reason: reason},
+        %{}
+      )
+
+    Logger.warning("embervm session evicted",
+      session_id: session.session_id,
+      workload: session.workload,
+      principal: session.principal,
+      reason: reason
+    )
+
+    state
+  end
+
+  # Evict a parked session: skips stop_session_process (park already tore down
+  # the VM), evict_snapshot is a no-op (a parked session has no node_id/
+  # snapshot_ref, see evict_snapshot/2's fallback clause), and
+  # retire_session_volume releases the workspace volume it holds instead,
+  # mirroring expire_session's parked arm. Appends session_evicted with the
+  # reason, same as evict_banked.
+  defp evict_parked(state, session, reason) do
+    _ = evict_snapshot(state, session)
+    retire_session_volume(state, session)
 
     _ =
       SessionStore.transition(

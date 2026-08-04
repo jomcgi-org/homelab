@@ -332,8 +332,8 @@ spec:
 
                     NOTE: idleBankSeconds describes the `persistence.memory: true`
                     path. Under `memory: false` there is no bank; the same idle
-                    threshold triggers a close (capture the filesystem artifact,
-                    destroy the VM) and the next invoke cold boots.
+                    threshold parks instead (VM teardown, the workspace stays on
+                    its volume) and the next invoke rejoins it.
                   properties:
                     idleBankSeconds:
                       type: integer
@@ -354,10 +354,11 @@ spec:
                     bankedTtlSeconds:
                       type: integer
                       description: >-
-                        GC a banked snapshot untouched this long. Defaults to
-                        maxLifetimeSeconds when unset (the watcher applies that
-                        default; the schema leaves it absent so the watcher can
-                        see it was omitted).
+                        GC a banked snapshot, or reap an idle parked session
+                        (its workspace volume), untouched this long. Defaults
+                        to maxLifetimeSeconds when unset (the watcher applies
+                        that default; the schema leaves it absent so the
+                        watcher can see it was omitted).
                       minimum: 60
                     maxSessions:
                       type: integer

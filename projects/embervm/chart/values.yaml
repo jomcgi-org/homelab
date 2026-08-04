@@ -1221,10 +1221,14 @@ claudeRuntimeWorkload:
   floor: 0
   cap: 3
   session:
-    # Bank an idle session after 5 minutes. Longer than the sandbox tier's 2: a
-    # voice-driven conversation has human-length gaps between turns, and a bank
-    # plus relight inside one conversation is wasted work.
-    idleBankSeconds: 300
+    # 20s, not 5 minutes: that figure was priced for memory banking (a
+    # multi-GiB snapshot write per bank), but this quadrant parks instead (VM
+    # teardown, workspace stays on its volume). Rejoin is a ~250ms cold spawn
+    # plus volume attach against a 1-5s model API leg, and a parked session
+    # holds no concurrency.cap slot (ADR embervm/029), so a short grace window
+    # only needs to keep rapid back-and-forth exchanges live; 20s does that
+    # while abandoned sessions park almost immediately.
+    idleBankSeconds: 20
     # A session rides its birth base until this expires, then the next invoke
     # 410s onto the current base.
     maxLifetimeSeconds: 21600
@@ -1232,7 +1236,12 @@ claudeRuntimeWorkload:
     # leaves a banked zombie counting against maxSessions, and at the old 6h
     # TTL a handful of validation retries saturated the cap (live :session_cap
     # denials, 2026-08-02). An hour keeps resume convenient without letting
-    # dead sessions squat 4 GiB snapshots and cap slots all day.
+    # dead sessions squat 4 GiB snapshots and cap slots all day. This sweep now
+    # also reaps idle PARKED sessions the same way (#4305): before, a parked
+    # session was reaped only by maxLifetimeSeconds (6h) or explicit destroy,
+    # so an abandoned one could squat a maxSessions slot for hours; the same
+    # TTL now applies to both, so a dead session stops squatting maxSessions
+    # within the hour.
     bankedTtlSeconds: 3600
     # Live + banked. 8 x ~4 GiB snapshots = 32 GiB worst case on the snapshot
     # dir, but the 1h banked TTL keeps the steady state far below it.

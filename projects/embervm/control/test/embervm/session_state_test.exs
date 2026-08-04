@@ -30,6 +30,7 @@ defmodule Embervm.SessionStateTest do
     {:running, :expire} => :expired,
     {:banked, :expire} => :expired,
     {:banked, :evict} => :evicted,
+    {:parked, :evict} => :evicted,
     {:creating, :destroy} => :destroyed,
     {:running, :destroy} => :destroyed,
     {:banking, :destroy} => :destroyed,
@@ -50,7 +51,7 @@ defmodule Embervm.SessionStateTest do
   }
 
   test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
-    assert map_size(@legal) == 33
+    assert map_size(@legal) == 34
     assert length(SessionState.events()) == 16
     assert length(SessionState.states()) == 12
 
@@ -74,10 +75,11 @@ defmodule Embervm.SessionStateTest do
     end
   end
 
-  test "parked transitions to relighting, expired, and destroyed" do
+  test "parked transitions to relighting, expired, destroyed, and evicted" do
     assert SessionState.transition(:parked, :relight) == {:ok, :relighting}
     assert SessionState.transition(:parked, :expire) == {:ok, :expired}
     assert SessionState.transition(:parked, :destroy) == {:ok, :destroyed}
+    assert SessionState.transition(:parked, :evict) == {:ok, :evicted}
   end
 
   test "only running can park" do

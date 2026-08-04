@@ -26,8 +26,10 @@ defmodule Embervm.SessionState do
       creating (a create that could not bring the VM up).
     * `expired` (max-lifetime TTL): reachable from running and banked (a live or
       banked session past `expires_at`).
-    * `evicted` (banked-TTL GC or disk-pressure eviction): reachable only from
-      `banked` (only a banked session holds an evictable snapshot).
+    * `evicted` (banked-TTL GC or disk-pressure eviction): reachable from
+      `banked` (a banked session holds an evictable snapshot) and from `parked`
+      (idle-TTL GC of a parked session reclaims its workspace volume rather
+      than a snapshot).
 
   `bank`/`relight` (the PR-4 idle-bank and relight-on-invoke events) are enumerated
   here so the transition table is COMPLETE for the whole rung even though PR-3 only
@@ -112,8 +114,10 @@ defmodule Embervm.SessionState do
     # Max-lifetime expiry: a live or banked session past its deadline.
     {:running, :expire} => :expired,
     {:banked, :expire} => :expired,
-    # Banked-TTL GC / disk-pressure eviction: only a banked session.
+    # Banked-TTL GC / disk-pressure eviction: a banked session (snapshot) or a
+    # parked session past the same idle TTL (workspace volume).
     {:banked, :evict} => :evicted,
+    {:parked, :evict} => :evicted,
     # Destroy (DELETE). Two shapes, selected by the EMBERVM_NODE_CONFIRMED_DESTROY
     # gate in the manager:
     #   * gate off (today's behaviour): the direct `:destroy` edge records
