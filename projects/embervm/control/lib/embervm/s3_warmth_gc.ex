@@ -487,7 +487,8 @@ defmodule Embervm.S3WarmthGc do
   defp split_parsed(state, entries, kind) do
     Enum.reduce(entries, {[], []}, fn entry, {parsed, ambiguous} ->
       case parse_key(state, entry.key, kind) do
-        {:ok, meta} -> {[{meta, entry} | parsed], ambiguous}
+        {:ok, %{} = meta} -> {[{meta, entry} | parsed], ambiguous}
+        {:ok, nil} -> {parsed, [entry.key | ambiguous]}
         :ambiguous -> {parsed, [entry.key | ambiguous]}
       end
     end)
