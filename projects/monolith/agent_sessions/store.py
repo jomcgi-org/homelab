@@ -400,6 +400,8 @@ def persist_turn_from_pending_sync(
         if not sess_row:
             raise ValueError(f"Session {session_id} not found")
         usage = {**turn.usage, "activities": turn.activities}
+        if turn.workspace_recovery is not None:
+            usage["workspace_recovery"] = turn.workspace_recovery
         row = create_turn(
             session,
             session_id,

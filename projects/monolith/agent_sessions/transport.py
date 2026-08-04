@@ -9,10 +9,11 @@ EMBERVM_URL, auth headers, error types, timeout shape).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-from typing import NamedTuple, Protocol
+from typing import Awaitable, Callable, NamedTuple, Protocol
 
 import httpx
 
@@ -24,6 +25,33 @@ from faas.embervm_client import (
 from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
+
+
+def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
+    try:
+        body = exc.response.json()
+        error = body.get("error") if isinstance(body, dict) else None
+        if isinstance(error, dict):
+            return error.get("retryable") is True
+        return isinstance(body, dict) and body.get("retryable") is True
+    except Exception:
+        return False
+
+
+async def _invoke_with_retryable_backoff(
+    invoke_fn: Callable[[], Awaitable["Turn"]],
+    max_attempts: int = 4,
+) -> "Turn":
+    """Call invoke_fn with exponential backoff on retryable errors."""
+    backoff_seconds = [2, 5, 10]
+    for attempt in range(max_attempts):
+        try:
+            return await invoke_fn()
+        except httpx.HTTPStatusError as exc:
+            if attempt == max_attempts - 1 or not _retryable_from_response(exc):
+                raise
+            await asyncio.sleep(backoff_seconds[attempt])
+    raise AssertionError("retry loop did not return or raise")
 
 
 def _status_error_detail(exc: httpx.HTTPStatusError) -> str:
@@ -70,6 +98,7 @@ class Turn(NamedTuple):
     total_cost_usd: float | None
     duration_ms: int | None
     activities: list[dict]
+    workspace_recovery: dict | None = None
 
 
 class EmberSession(NamedTuple):
@@ -96,6 +125,7 @@ class ShimTransport(Protocol):
         message: str,
         model: str | None = None,
         restore_from: str | None = None,
+        on_create: Callable[[EmberSession], Awaitable[None]] | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -138,7 +168,9 @@ class EmberVmShimTransport:
         self.workload = workload
         self.read_timeout = read_timeout
 
-    async def create_session(self, restore_from: str | None = None) -> EmberSession:
+    async def create_session(
+        self, restore_from: str | None = None, _attempt: int = 0
+    ) -> EmberSession:
         """Create a new session on the guest and return the session ID.
 
         Args:
@@ -205,6 +237,9 @@ class EmberVmShimTransport:
             raise EmberVMTimeout(str(exc)) from exc
         except httpx.HTTPStatusError as exc:
             logger.warning("embervm session creation failed: %s", exc)
+            if _attempt < 3 and _retryable_from_response(exc):
+                await asyncio.sleep((2, 5, 10)[_attempt])
+                return await self.create_session(restore_from, _attempt + 1)
             raise EmberVMTransportError(_status_error_detail(exc)) from exc
         except httpx.TransportError as exc:
             logger.warning("embervm session creation transport error: %s", exc)
@@ -306,6 +341,7 @@ class EmberVmShimTransport:
         message: str,
         model: str | None = None,
         restore_from: str | None = None,
+        on_create: Callable[[EmberSession], Awaitable[None]] | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -336,6 +372,7 @@ class EmberVmShimTransport:
         timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
 
         created = ember is None
+        workspace_recovery = None
         if ember is None:
             if restore_from:
                 try:
@@ -351,12 +388,32 @@ class EmberVmShimTransport:
                         restore_exc,
                     )
                     ember = await self.create_session()
+                    workspace_recovery = {
+                        "created": True,
+                        "restored": False,
+                        "degraded": "restore_denied",
+                    }
+                else:
+                    workspace_recovery = {
+                        "created": True,
+                        "restored": bool(ember.restored),
+                        "degraded": None,
+                    }
+                if on_create is not None:
+                    await on_create(ember)
                 # Only resume the CLI transcript when the workspace was
                 # ACTUALLY recovered; a blank session has nothing for
                 # --resume to find (mirrors the 410 arm's cli gating below).
                 cli_session_id = cli_session_id if ember.restored else None
             else:
                 ember = await self.create_session()
+                workspace_recovery = {
+                    "created": True,
+                    "restored": False,
+                    "degraded": None,
+                }
+                if on_create is not None:
+                    await on_create(ember)
 
         async def invoke(
             current: EmberSession, current_cli_session_id: str | None
@@ -414,7 +471,12 @@ class EmberVmShimTransport:
                 raise EmberVMTransportError(str(exc)) from exc
 
         try:
-            return await invoke(ember, cli_session_id), ember
+            turn = await _invoke_with_retryable_backoff(
+                lambda: invoke(ember, cli_session_id)
+            )
+            if workspace_recovery is not None:
+                turn = turn._replace(workspace_recovery=workspace_recovery)
+            return turn, ember
         except httpx.HTTPStatusError as exc:
             if created or exc.response.status_code not in (403, 410):
                 raise EmberVMTransportError(_status_error_detail(exc)) from exc
@@ -444,12 +506,23 @@ class EmberVmShimTransport:
                 )
                 new_ember = await self.create_session()
 
+            if on_create is not None:
+                await on_create(new_ember)
+            workspace_recovery = {
+                "created": True,
+                "restored": bool(new_ember.restored),
+                "degraded": None if new_ember.restored else "restore_fallback",
+            }
+
             # Only resume the CLI transcript when the guest workspace was
             # ACTUALLY recovered; a blank workspace has nothing for
             # --resume to find.
             cli = cli_session_id if new_ember.restored else None
             try:
-                return await invoke(new_ember, cli), new_ember
+                turn = await _invoke_with_retryable_backoff(
+                    lambda: invoke(new_ember, cli)
+                )
+                return turn._replace(workspace_recovery=workspace_recovery), new_ember
             except (httpx.HTTPStatusError, EmberVMTransportError) as retry_exc:
                 if isinstance(retry_exc, httpx.HTTPStatusError):
                     raise EmberSessionGone(
