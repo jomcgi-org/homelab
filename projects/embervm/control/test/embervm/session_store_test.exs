@@ -158,13 +158,21 @@ defmodule Embervm.SessionStoreTest do
     assert parked.state == :parked
   end
 
-  test "parked sessions count as live", %{path: path} do
+  test "parked sessions count in the disk bucket once park completes", %{path: path} do
     {_op_log, store} = start_pair(path)
     {:ok, session} = create(store, workload: "wl-parked")
 
+    # running -> mark :park -> :parking (transient): still holds the VM, still live.
     assert {:ok, _} = SessionStore.mark(store, session.session_id, :park)
-    # Both :parking (transient) and :parked (after completion) count as live
     assert SessionStore.counts(store, "wl-parked") == %{live: 1, banked: 0}
+
+    # :parking -> transition :park_complete -> :parked: the VM is torn down
+    # (session_manager.ex park_session nulls node_id/vm_id), leaving only the
+    # workspace volume, so a parked session buckets with banked, not live.
+    assert {:ok, _} =
+             SessionStore.transition(store, session.session_id, :park_complete, :session_parked, %{}, %{})
+
+    assert SessionStore.counts(store, "wl-parked") == %{live: 0, banked: 1}
   end
 
   test "park transition persists the volume node id", %{path: path} do
@@ -266,9 +274,17 @@ defmodule Embervm.SessionStoreTest do
     {:ok, a} = create(store, workload: "wl-a", vm_id: "vm-a")
     {:ok, b} = create(store, workload: "wl-a", vm_id: "vm-b")
     {:ok, c} = create(store, workload: "wl-b", vm_id: "vm-c")
+    {:ok, d} = create(store, workload: "wl-a", vm_id: "vm-d")
 
     # Take one to a terminal state so the rebuild must reproduce a terminal row too.
     {:ok, _} = SessionStore.transition(store, c.session_id, :fail, :session_failed, %{reason: :failed}, %{})
+
+    # Take another all the way to :parked so the rebuild must reproduce it into
+    # the disk (banked) bucket, not live.
+    {:ok, _} = SessionStore.mark(store, d.session_id, :park)
+
+    {:ok, _} =
+      SessionStore.transition(store, d.session_id, :park_complete, :session_parked, %{}, %{})
 
     # A new store against the SAME op-log rebuilds from the projection alone.
     {:ok, store2} = SessionStore.start_link(op_log: op_log, name: nil)
@@ -276,14 +292,17 @@ defmodule Embervm.SessionStoreTest do
     {:ok, sa} = SessionStore.get(store2, a.session_id)
     {:ok, sb} = SessionStore.get(store2, b.session_id)
     {:ok, sc} = SessionStore.get(store2, c.session_id)
+    {:ok, sd} = SessionStore.get(store2, d.session_id)
 
     assert sa.state == :running
     assert sb.state == :running
     assert sc.state == :failed
     assert sc.terminal_reason == "failed"
+    assert sd.state == :parked
 
-    # Counts reproduce: two live on wl-a, zero live on wl-b (its one session failed).
-    assert SessionStore.counts(store2, "wl-a") == %{live: 2, banked: 0}
+    # Counts reproduce: two live plus one banked (parked) on wl-a, zero live on
+    # wl-b (its one session failed).
+    assert SessionStore.counts(store2, "wl-a") == %{live: 2, banked: 1}
     assert SessionStore.counts(store2, "wl-b") == %{live: 0, banked: 0}
 
     # Token hashes survive the rebuild (so a token minted pre-restart still verifies).

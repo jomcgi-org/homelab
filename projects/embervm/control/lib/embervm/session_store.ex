@@ -44,11 +44,16 @@ defmodule Embervm.SessionStore do
   @sessions_table :embervm_sessions
   @residency_table :embervm_session_residency
 
-  # The live (non-terminal) session states, for the per-workload counts and the
-  # capacity gate. `banked` is counted separately because it holds disk, not a VM.
-  # `destroying` still holds a live VM (teardown RPC in flight, ADR embervm/014
-  # decision 5): it stays routable/dialable and counts against capacity until the
-  # node confirms teardown and the terminal destroyed op fires.
+  # The live (non-terminal) session states, for residency and other non-terminal
+  # checks; the per-workload COUNTS bucket a subset of these into `:banked`
+  # instead (see `bucket_of/1`). `banked` is counted separately because it holds
+  # disk, not a VM. `parked` also counts with banked: park tears the VM down and
+  # nulls node_id/vm_id (session_manager.ex park_session), so a parked session
+  # holds only its workspace volume, same as banked. It stays in `@live_states`
+  # because it is still non-terminal and dialable through rejoin/relight, just not
+  # a VM holder. `destroying` still holds a live VM (teardown RPC in flight, ADR
+  # embervm/014 decision 5): it stays routable/dialable and counts against
+  # capacity until the node confirms teardown and the terminal destroyed op fires.
   @live_states [:creating, :running, :banking, :parking, :relighting, :destroying, :parked]
 
   # -- Client API ------------------------------------------------------------
@@ -165,8 +170,10 @@ defmodule Embervm.SessionStore do
 
   @doc """
   Live and banked counts for `workload` (`%{live, banked}`), the O(1) create-time
-  capacity read. Live is any non-terminal, non-banked session; banked is the
-  `banked` state. Reads the maintained per-workload counter, never a scan.
+  capacity read. Live is any non-terminal session that can hold a VM (excludes
+  banked and parked); banked is the disk bucket, `banked` plus `parked` sessions,
+  since both hold only a workspace volume and no VM. Reads the maintained
+  per-workload counter, never a scan.
   """
   @spec counts(GenServer.server(), String.t()) :: %{live: non_neg_integer(), banked: non_neg_integer()}
   def counts(store \\ __MODULE__, workload) do
@@ -801,6 +808,7 @@ defmodule Embervm.SessionStore do
 
   defp bucket_of(nil), do: nil
   defp bucket_of(:banked), do: :banked
+  defp bucket_of(:parked), do: :banked
   defp bucket_of(state) when state in @live_states, do: :live
   defp bucket_of(_terminal), do: nil
 

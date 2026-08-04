@@ -137,9 +137,9 @@ paths:
         "404": { description: Unknown workload. }
         "429":
           description: >-
-            Create denied: session cap (live+banked >= maxSessions), workload cap
-            (live >= concurrency.cap), daily quota exhausted, or no ready capacity.
-            The reason field distinguishes them.
+            Create denied: session cap (live+banked+parked >= maxSessions), workload
+            cap (live, VM-holding, >= concurrency.cap), daily quota exhausted, or no
+            ready capacity. The reason field distinguishes them.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
