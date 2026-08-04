@@ -1,0 +1,15 @@
+apiVersion: v2
+name: seaweedfs-node4b
+description: Third SeaweedFS volume server, second on node-4 (capacity relief for incident #4317)
+type: application
+version: 1.0.0
+appVersion: "3.73"
+
+dependencies:
+  - name: seaweedfs
+    version: "4.0.0"
+    repository: https://seaweedfs.github.io/seaweedfs/helm
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"

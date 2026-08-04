@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: seaweedfs-node4b
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shared-infrastructure
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi/homelab.git
+    path: projects/platform/seaweedfs-node4b
+    targetRevision: HEAD
+    helm:
+      releaseName: seaweedfs-node4b
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: seaweedfs
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
