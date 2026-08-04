@@ -62,11 +62,12 @@ seaweedfs:
         size: "1Ti"
         storageClass: "longhorn-node4-ssd"
         # Explicit slot count (1GB volumes): 900 slots nominal ~879Gi inside
-        # a 1Ti PVC keeps the slot ceiling below the disk floor (the volume
-        # server flips read-only at 7% min free, ~952Gi usable) with ~70Gi
-        # slack for compaction churn. Never let the ceiling exceed the disk:
-        # that is how the base release wedged (see the maxVolumes note in
-        # ../seaweedfs/values.yaml).
+        # a 1Ti PVC keeps the slot ceiling below the disk floor. The 7%
+        # min-free flip is computed against statfs blocks, which excludes
+        # ext4 metadata (~17Gi at this size), so the real read-only floor is
+        # ~935Gi used: ~52Gi slack over the ceiling for compaction churn.
+        # Never let the ceiling exceed the disk: that is how the base release
+        # wedged (see the maxVolumes note in ../seaweedfs/values.yaml).
         maxVolumes: 900
     idx:
       type: "emptyDir"
@@ -111,8 +112,11 @@ seaweedfs:
       requests:
         cpu: 100m
         memory: 128Mi
-      # 1Gi, not the 512Mi of the smaller servers: needle indexes are held in
-      # memory and this server carries up to 900 volumes.
+      # 2Gi, not the 512Mi of the smaller servers: the needle map is held in
+      # RAM (no -index override anywhere) and scales with needle COUNT, not
+      # volume count. 900 slots handed to a small-object collection (chat
+      # blobs at ~10KB are ~100k needles per volume) would blow a tighter
+      # limit and OOM-loop the only server with writable slots.
       limits:
         cpu: 500m
-        memory: 1Gi
+        memory: 2Gi

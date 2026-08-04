@@ -12,10 +12,12 @@ allowVolumeExpansion: true
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
 parameters:
-  # Single Longhorn replica: data on this class gets its durability from the
-  # SeaweedFS replication layer (defaultReplication 001 pairs every new S3
-  # volume across the node-2 and node-4 volume servers), so a second
-  # block-layer copy would just be a third physical copy of the same bytes.
+  # Single Longhorn replica. NOTE: the cluster runs SeaweedFS replication
+  # "000" (single copy) per the 2026-07-21 decision in
+  # ../seaweedfs/values.yaml, so data on this class is single-copy at BOTH
+  # layers. That is the accepted floor: offsite backups are the durability
+  # path, and a second block-layer replica of a multi-hundred-GiB store would
+  # double its disk footprint.
   numberOfReplicas: "1"
 
   # Pin to node-4 via diskSelector alone. Longhorn's `nodeSelector` parameter takes
