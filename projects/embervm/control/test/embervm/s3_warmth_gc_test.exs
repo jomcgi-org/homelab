@@ -622,6 +622,27 @@ defmodule Embervm.S3WarmthGcTest do
       assert deleted(agent) == []
     end
 
+    test "an empty serving store aborts independently of the session branch" do
+      objects = artifact("serving/amd/wl/serving-only", @wall - 8 * @day)
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+          group_store: start_store([]),
+          session_store: start_store([session_row(:destroyed, "wl", "lineage", "some-ref")]),
+          serving_store: start_store([]),
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:error, :empty_cp_state} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
     test "insufficient CP uptime aborts (stores may still be rebuilding)" do
       %{agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
       gc = start_gc(s3, base_opts ++ [enabled: true, min_uptime_ms: 60_000])
