@@ -751,6 +751,7 @@ warmthRetention:
 # defaults hourly. The CP's store endpoint/bucket are rendered from
 # noded.store above (one source of truth).
 warmthS3Gc:
+  allowEmptyKinds: "" # Retired workload classes whose empty stores may have S3 leftovers reclaimed.
   enabled: ""
   expectedNodes: []
   maxPrefixes: ""
