@@ -1,7 +1,7 @@
 <script>
   let { data } = $props();
 
-  const MODELS = ["opus", "fable", "luna", "terra", "sol", "qwen"];
+  const MODELS = ["opus", "fable", "sonnet", "luna", "terra", "sol", "qwen"];
 
   let selectedId = $state(null);
   let sessions = $state(data.sessions ?? []);
@@ -10,12 +10,13 @@
   let searchResults = $state(null);
   let searchLoading = $state(false);
   let prompt = $state("");
-  let composerModel = $state("luna");
+  let composerModel = $state("");
   let sending = $state(false);
   let creating = $state(false);
+  let showNewPanel = $state(false);
   let newSession = $state({
     prompt: "",
-    model: "luna",
+    model: "",
     workspace: "",
     branch: "",
   });
@@ -113,15 +114,30 @@
     return tool;
   }
 
-  async function loadDetail(id, sequence = requestSequence) {
+  async function loadDetail(
+    id,
+    sequence = requestSequence,
+    incremental = false,
+  ) {
     if (id == null) return;
     try {
-      const response = await fetch(`/agents/session/${encodeURIComponent(id)}`);
+      const maxSeq = incremental
+        ? Math.max(0, ...(detail?.turns ?? []).map((turn) => turn.seq))
+        : 0;
+      const suffix = incremental ? `?after_seq=${maxSeq}` : "";
+      const response = await fetch(
+        `/agents/session/${encodeURIComponent(id)}${suffix}`,
+      );
       if (!response.ok) throw new Error("Unable to load session");
       const body = await response.json();
       if (sequence === requestSequence && String(selectedId) === String(id)) {
-        detail = body;
-        if (body.session?.model) composerModel = body.session.model;
+        detail = incremental
+          ? {
+              session: body.session,
+              turns: [...(detail?.turns ?? []), ...(body.turns ?? [])],
+              pending_queue: body.pending_queue,
+            }
+          : body;
       }
     } catch (error) {
       if (sequence === requestSequence) errorMessage = error.message;
@@ -156,7 +172,7 @@
     searchResults = null;
     loadDetail(id, requestSequence);
     const session = sessions.find((item) => String(item.id) === String(id));
-    composerModel = session?.model || "luna";
+    composerModel = session?.model || "";
   }
 
   async function runSearch() {
@@ -192,22 +208,19 @@
     }
   }
 
-  function onSearchInput() {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(runSearch, 200);
-  }
-
   async function sendPrompt() {
     if (!selectedId || !prompt.trim() || sending) return;
     sending = true;
     errorMessage = null;
     try {
+      const requestBody = { prompt: prompt.trim() };
+      if (composerModel) requestBody.model = composerModel;
       const response = await fetch(
         `/agents/session/${encodeURIComponent(selectedId)}/messages`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: prompt.trim(), model: composerModel }),
+          body: JSON.stringify(requestBody),
         },
       );
       const body = await response.json();
@@ -216,7 +229,7 @@
       prompt = "";
       await Promise.all([
         loadSessions(),
-        loadDetail(selectedId, requestSequence),
+        loadDetail(selectedId, requestSequence, true),
       ]);
     } catch (error) {
       errorMessage = error.message;
@@ -230,21 +243,23 @@
     creating = true;
     errorMessage = null;
     try {
+      const requestBody = {
+        prompt: newSession.prompt.trim(),
+        workspace: newSession.workspace.trim(),
+        branch: newSession.branch.trim(),
+      };
+      if (newSession.model) requestBody.model = newSession.model;
       const response = await fetch("/agents/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: newSession.prompt.trim(),
-          model: newSession.model,
-          workspace: newSession.workspace.trim(),
-          branch: newSession.branch.trim(),
-        }),
+        body: JSON.stringify(requestBody),
       });
       const body = await response.json();
       if (!response.ok || body.accepted === false)
         throw new Error(body.error || "Session was not created");
       creating = false;
-      newSession = { prompt: "", model: "luna", workspace: "", branch: "" };
+      showNewPanel = false;
+      newSession = { prompt: "", model: "", workspace: "", branch: "" };
       await loadSessions();
       selectSession(body.session_id);
     } catch (error) {
@@ -264,7 +279,6 @@
       selectedId = null;
       detail = null;
       await loadSessions();
-      if (sessions[0]) selectSession(sessions[0]);
     } catch (error) {
       errorMessage = error.message;
     }
@@ -287,7 +301,8 @@
     const interval = setInterval(
       async () => {
         await loadSessions();
-        if (selectedId != null) await loadDetail(selectedId, requestSequence);
+        if (selectedId != null)
+          await loadDetail(selectedId, requestSequence, true);
       },
       hasActiveSessions ? 2000 : 15000,
     );
@@ -309,7 +324,7 @@
       <button
         class="new-button"
         type="button"
-        onclick={() => (creating = !creating)}>+ new</button
+        onclick={() => (showNewPanel = !showNewPanel)}>+ new</button
       >
     </div>
 
@@ -317,7 +332,6 @@
       <span class="sr-only">Search sessions</span>
       <input
         bind:value={searchQuery}
-        oninput={onSearchInput}
         placeholder="search transcript"
         autocomplete="off"
       />
@@ -436,6 +450,7 @@
           rows="3"></textarea>
         <div class="composer-actions">
           <select bind:value={composerModel} aria-label="Model">
+            <option value="">session default</option>
             {#each MODELS as model}<option value={model}>{model}</option>{/each}
           </select>
           <button
@@ -451,7 +466,7 @@
     {/if}
   </section>
 
-  {#if creating}
+  {#if showNewPanel}
     <section class="new-panel">
       <div class="eyebrow">new session</div>
       <form
@@ -468,6 +483,7 @@
         >
         <label
           >model<select bind:value={newSession.model}
+            ><option value="">session default</option
             >{#each MODELS as model}<option value={model}>{model}</option
               >{/each}</select
           ></label
@@ -488,12 +504,12 @@
           <button
             type="button"
             class="quiet-button"
-            onclick={() => (creating = false)}>cancel</button
+            onclick={() => (showNewPanel = false)}>cancel</button
           ><button
             class="send-button"
             type="submit"
-            disabled={creating && !newSession.prompt.trim()}
-            >{creating ? "create" : "create"}</button
+            disabled={creating || !newSession.prompt.trim()}
+            >{creating ? "creating" : "create"}</button
           >
         </div>
       </form>

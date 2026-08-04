@@ -140,6 +140,16 @@ def test_get_session_detail(client, session):
     assert body["turns"][1]["usage"] == {"activities": ["shell"]}
     assert body["pending_queue"][0]["prompt"] == "next"
 
+    newer = client.get(f"/api/agents/sessions/{row.id}?after_seq=1").json()
+    assert [turn["seq"] for turn in newer["turns"]] == [2]
+    assert newer["session"]["id"] == row.id
+    assert newer["pending_queue"][0]["prompt"] == "next"
+
+
+def test_get_session_detail_rejects_negative_after_seq(client, session):
+    row = _session(session, "after-seq")
+    assert client.get(f"/api/agents/sessions/{row.id}?after_seq=-1").status_code == 422
+
 
 def test_get_session_not_found(client):
     assert client.get("/api/agents/sessions/999").status_code == 404
@@ -218,12 +228,29 @@ def test_send_message_session_not_found(client, monkeypatch):
 
 def test_delete_session(client, session, monkeypatch):
     row = _session(session, "delete", ember_session_id="ember-1")
+    destroyed = []
+
+    async def fake_destroy(ember_session_id):
+        destroyed.append(ember_session_id)
+        return {"session_id": ember_session_id, "state": "destroyed"}
+
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
     monkeypatch.setattr(
-        "agent_sessions.router._clear_ember_bindings_for_session",
-        lambda session_id: store.clear_ember_session(session, session_id),
+        "agent_sessions.router._transport.destroy_session", fake_destroy
     )
-    assert client.delete(f"/api/agents/sessions/{row.id}").json() == {}
+    monkeypatch.setattr(
+        "agent_sessions.router._clear_ember_bindings_for",
+        lambda ember_id: store.clear_ember_bindings_by_ember_id(session, ember_id),
+    )
+    body = client.delete(f"/api/agents/sessions/{row.id}").json()
+    assert destroyed == ["ember-1"]
+    assert body["cleared_bindings"] == [row.id]
     assert session.get(AgentSession, row.id).ember_session_id is None
+
+
+def test_delete_session_not_found(client, monkeypatch):
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: None)
+    assert client.delete("/api/agents/sessions/999").status_code == 404
 
 
 def test_search_empty_query(client):

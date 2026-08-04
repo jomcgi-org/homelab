@@ -83,11 +83,6 @@ def _clear_ember_bindings_for(ember_id: str) -> list[int]:
         return store.clear_ember_bindings_by_ember_id(db_session, ember_id)
 
 
-def _clear_ember_bindings_for_session(session_id: int) -> None:
-    with Session(get_engine()) as db_session:
-        store.clear_ember_session(db_session, session_id)
-
-
 def _persist_pending_message(
     session_id: int, message_text: str, model: str | None
 ) -> int:
