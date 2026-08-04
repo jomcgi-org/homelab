@@ -370,6 +370,7 @@ async def _execute_pending_message(session_id: int) -> None:
             deliver_kwargs = {
                 "restore_from": restore_from,
                 "on_create": persist_callback,
+                "progress_token": session_row.progress_token,
             }
             if session_row.repo is not None:
                 deliver_kwargs["repo"] = session_row.repo

@@ -29,6 +29,7 @@ helm_chart(
         "backend.image": "//projects/monolith:image.info",
         "frontend.image": "//projects/monolith/frontend:image.info",
         "jobs.image": "//projects/monolith:jobs_image.info",
+        "progress.image": "//projects/monolith:progress_image.info",
         "whatsapp.image": "//projects/monolith/whatsapp:image.info",
     },
     lint = False,

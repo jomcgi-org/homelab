@@ -130,7 +130,12 @@ def test_get_session_detail(client, session):
                 usage_json='{"activities": ["shell"]}',
             ),
             AgentTurn(session_id=row.id, seq=1, prompt="one", result_text="result"),
-            PendingMessage(session_id=row.id, seq=3, message_text="next"),
+            PendingMessage(
+                session_id=row.id,
+                seq=3,
+                message_text="next",
+                partial_text="in progress",
+            ),
         ]
     )
     session.commit()
@@ -140,6 +145,7 @@ def test_get_session_detail(client, session):
     assert [turn["seq"] for turn in body["turns"]] == [1, 2]
     assert body["turns"][1]["usage"] == {"activities": ["shell"]}
     assert body["pending_queue"][0]["prompt"] == "next"
+    assert body["pending_queue"][0]["partial_text"] == "in progress"
 
     newer = client.get(f"/api/agents/sessions/{row.id}?after_seq=1").json()
     assert [turn["seq"] for turn in newer["turns"]] == [2]

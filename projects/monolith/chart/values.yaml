@@ -43,6 +43,17 @@ backend:
 #
 # jobs.image is injected (digest-pinned) at build time by helm_images_values
 # (see chart/BUILD images "jobs.image"); do not set it here.
+# progress.image is injected (digest-pinned) at build time by
+# helm_images_values (see chart/BUILD images "progress.image"); only the
+# non-injected keys live here. The listener is ADR agents/051's dedicated
+# progress-ingest port.
+progress:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/monolith/progress
+    tag: main
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    pullPolicy: IfNotPresent
+
 jobs:
   workflowNamespace: monolith-workflows
   # Secret in workflowNamespace (Kyverno-cloned from monolith-pg-app) supplying

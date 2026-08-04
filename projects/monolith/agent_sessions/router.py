@@ -190,6 +190,7 @@ def get_session_detail(
             {
                 "seq": message.seq,
                 "prompt": message.message_text,
+                "partial_text": message.partial_text,
                 "claimed_by_replica": message.claimed_by_replica,
                 "claimed_at": _iso(message.claimed_at),
                 "created_at": _iso(message.created_at),
