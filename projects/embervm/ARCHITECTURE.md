@@ -601,9 +601,11 @@ planned-drain contract).
 
 The S3 warmth GC is dry-run by default and may delete only the explicit
 allowlist of warmth prefixes. Its 8-hour stateful TTL keeps the newest one
-reference per vendor and workload unconditionally; older superseded refs are
-eligible after the grace window. `base/` remains excluded, so current base plus
-newest stateful ref is preserved by construction.
+reference per vendor and workload for live workloads (any non-terminal
+instance or volume row); older superseded refs are eligible after the grace
+window. Dead workloads' namespaces, including their newest ref, are evicted
+after the TTL. `base/` remains excluded, so current base plus the newest
+stateful ref for live workloads is preserved by construction.
 
 Session and serving refs, plus session-workspace lineages, have no history
 retention guard. They are protected while the corresponding instance is
