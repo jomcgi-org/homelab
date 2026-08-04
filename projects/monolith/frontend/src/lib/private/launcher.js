@@ -12,6 +12,7 @@ export const launcher = [
   { label: "SigNoz", desc: "logs, traces, metrics", href: "/app/signoz" },
   { label: "Longhorn", desc: "cluster storage", href: "/app/longhorn" },
   { label: "Perf", desc: "semgrep scan perf", href: "/perf" },
+  { label: "Agents", desc: "agent sessions", href: "/agents" },
   {
     label: "BuildBuddy",
     desc: "CI",
