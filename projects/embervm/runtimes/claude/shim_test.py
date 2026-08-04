@@ -442,6 +442,12 @@ def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypat
     assert "-C" not in resume
     assert resume[resume.index("--model") + 1] == "gpt-5.6-terra"
     assert resume[resume.index("--config") + 1] == "model_reasoning_effort=high"
+    # Sandbox network rides --config on BOTH turns. workspace-write denies
+    # network by default and resume rejects --sandbox, so a flag-shaped fix
+    # would give turn one network and silently drop it on every turn after.
+    network = "sandbox_workspace_write.network_access=true"
+    assert network in first
+    assert network in resume
     manager._close_process()
 
 
