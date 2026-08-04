@@ -76,13 +76,16 @@ def test_list_sessions_with_status_filter(client, session):
 
 
 def test_list_sessions_ordering(client, session):
+    # A NULL last_turn_at is unrepresentable: the column is NOT NULL DEFAULT
+    # NOW() in Postgres, and the model's default_factory backfills an explicit
+    # None at INSERT time, so only the DESC ordering is observable.
     now = datetime.now(timezone.utc)
-    _session(session, "empty", last_turn_at=None)
+    _session(session, "oldest", last_turn_at=now - timedelta(minutes=5))
     _session(session, "old", last_turn_at=now - timedelta(minutes=1))
     _session(session, "new", last_turn_at=now)
 
     body = client.get("/api/agents/sessions").json()
-    assert [item["local_session_id"] for item in body] == ["new", "old", "empty"]
+    assert [item["local_session_id"] for item in body] == ["new", "old", "oldest"]
 
 
 def test_list_sessions_aggregates(client, session):
