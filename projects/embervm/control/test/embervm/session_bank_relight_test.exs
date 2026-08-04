@@ -34,6 +34,7 @@ defmodule Embervm.SessionBankRelightTest do
   alias Embervm.Node.V1.{
     BankResponse,
     GuestResponse,
+    PrimeResponse,
     RelightResponse,
     SessionAssignResponse,
     UsageStats
@@ -97,7 +98,13 @@ defmodule Embervm.SessionBankRelightTest do
         clock: clock,
         channel_fun: fn _node -> {:ok, :ch} end,
         claim_fun: fn _d, _n, _w -> {:ok, "vm-#{suffix}-#{System.unique_integer([:positive])}"} end,
-        prime_fun: fn _ch, _req -> {:error, :no_prime} end,
+        # Every other test in this file creates against a non-persistence
+        # workload, which claims from the primed pool via claim_fun above and
+        # never reaches prime_fun, so the default here staying a failure is
+        # harmless. A persistence-enabled (parked) workload's create bypasses
+        # claim_fun entirely (claim_or_prime/6 primes directly for it), so a
+        # test that creates against one MUST pass a working prime_fun.
+        prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
         bank_fun: Keyword.get(opts, :bank_fun, &default_bank/2),
         relight_fun: Keyword.get(opts, :relight_fun, &default_relight/2),
         evict_fun: Keyword.get(opts, :evict_fun, fn _ch, req -> send(test_pid, {:evicted, req.snapshot_ref}) && {:ok, %{}} end),
@@ -148,6 +155,11 @@ defmodule Embervm.SessionBankRelightTest do
   defp default_relight(_ch, _req) do
     {:ok, %RelightResponse{vm_id: "vm-relit-#{System.unique_integer([:positive])}"}}
   end
+
+  # A working prime_fun, for the tests that create against a persistence-
+  # enabled workload (claim_or_prime/6 primes directly for those, never
+  # touching claim_fun).
+  defp prime_ok(vm_id), do: fn _ch, _req -> {:ok, %PrimeResponse{vm_id: vm_id}} end
 
   defp put_workload(ctx, wl, opts \\ []) do
     NodeCapacity.put(ctx.cap_table, "node-4", node_fact(wl, opts))
@@ -664,7 +676,7 @@ defmodule Embervm.SessionBankRelightTest do
   end
 
   test "banked-TTL GC also reaps a parked session untouched past bankedTtlSeconds (#4305)" do
-    ctx = start_stack()
+    ctx = start_stack(prime_fun: prime_ok("vm-parked-ttl-evicted"))
 
     put_workload(ctx, "wl",
       max_lifetime_seconds: 100_000,
@@ -689,7 +701,7 @@ defmodule Embervm.SessionBankRelightTest do
   end
 
   test "a parked session inside bankedTtlSeconds survives the sweep" do
-    ctx = start_stack()
+    ctx = start_stack(prime_fun: prime_ok("vm-parked-ttl-survives"))
 
     put_workload(ctx, "wl",
       max_lifetime_seconds: 100_000,
