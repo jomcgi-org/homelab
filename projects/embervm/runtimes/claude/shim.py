@@ -1035,10 +1035,13 @@ wire_api = "responses"
                 "model_reasoning_effort=%s" % effort,
             ]
         )
+        command.append("--skip-git-repo-check")
         if not session_id:
-            command.extend(["--sandbox", "workspace-write"])
-        command.extend(["--skip-git-repo-check", "-C", self.workspace])
-        if not session_id:
+            # exec resume rejects both --sandbox and -C on the pinned CLI
+            # (rust-v0.146.0); resume reuses the session's recorded cwd, and
+            # a fresh exec still lands in the workspace because Popen below
+            # sets cwd there regardless.
+            command.extend(["--sandbox", "workspace-write", "-C", self.workspace])
             command.append(message)
         process = subprocess.Popen(
             command,

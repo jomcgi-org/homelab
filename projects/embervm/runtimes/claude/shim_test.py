@@ -432,9 +432,12 @@ def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypat
         json.loads(line)
         for line in (tmp_path / "codex-args.jsonl").read_text().splitlines()
     ]
+    first = calls[0]
+    assert "-C" in first
     resume = calls[1]
     assert resume[:4] == ["exec", "resume", "codex-thread", "second"]
     assert "--sandbox" not in resume
+    assert "-C" not in resume
     assert resume[resume.index("--model") + 1] == "gpt-5.6-terra"
     assert resume[resume.index("--config") + 1] == "model_reasoning_effort=high"
     manager._close_process()
