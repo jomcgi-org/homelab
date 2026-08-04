@@ -570,6 +570,47 @@ def test_spawn_honors_cli_identity_environment_overrides(tmp_path, monkeypatch):
     assert kwargs["group"] == 2345
 
 
+def test_spawn_keeps_claude_stdin_as_a_pipe(tmp_path, monkeypatch):
+    # claude's stdin IS its turn channel (--input-format stream-json); pin
+    # this so a future stdin.DEVNULL change elsewhere never lands here too
+    # (#4303).
+    kwargs = _capture_spawn_kwargs(tmp_path, monkeypatch, geteuid=1000)
+    assert kwargs["stdin"] is subprocess.PIPE
+
+
+def test_spawn_closes_codex_stdin(tmp_path, monkeypatch):
+    # codex's message rides argv on both a fresh exec and exec resume, never
+    # stdin, so the shim closes it rather than inherit its own never-EOF
+    # stdin (#4303: otherwise a fresh exec prints "Reading additional input
+    # from stdin..." and could block on a guest that hands it a live stdin).
+    codex = _codex_manager(tmp_path, monkeypatch)
+    captured = {}
+
+    def fake_popen(*args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after capturing Popen kwargs")
+
+    monkeypatch.setattr(shim.subprocess, "Popen", fake_popen)
+    with pytest.raises(RuntimeError, match="stop after capturing"):
+        codex._spawn("hello", None, "luna")
+    assert captured["stdin"] is subprocess.DEVNULL
+
+
+def test_spawn_closes_pi_stdin(tmp_path, monkeypatch):
+    # pi's message is argv too; same rationale as codex (#4303).
+    pi = _pi_manager(tmp_path, monkeypatch)
+    captured = {}
+
+    def fake_popen(*args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after capturing Popen kwargs")
+
+    monkeypatch.setattr(shim.subprocess, "Popen", fake_popen)
+    with pytest.raises(RuntimeError, match="stop after capturing"):
+        pi._spawn("hello", None, "qwen")
+    assert captured["stdin"] is subprocess.DEVNULL
+
+
 def _manager(tmp_path, monkeypatch, api_key="none"):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
