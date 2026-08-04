@@ -26,6 +26,14 @@ class AgentSession(SQLModel, table=True):
     # create). This is what a later create passes as restore_lineage to
     # continue the same guest workspace/transcript across an expiry.
     ember_lineage_id: str | None = Field(default=None)
+    # #4306 slice 5: the LAST live binding's lineage/CLI transcript, copied
+    # here when the active binding is cleared (a confirmed-dead session or an
+    # admin destroy), so the next send can still restore the durable
+    # workspace even through the double-failure/destroy path that today
+    # drops the lineage handle entirely. Cleared whenever a new LIVE binding
+    # is established (set_ember_session), so a stale prior never shadows one.
+    prior_ember_lineage_id: str | None = Field(default=None)
+    prior_cli_session_id: str | None = Field(default=None)
     # BigInteger, not the default Integer: this is epoch MILLISECONDS from the
     # control plane, which overflows int4. The migration already declares BIGINT,
     # but SQLModel maps a plain int to sqlalchemy Integer and emits an explicit

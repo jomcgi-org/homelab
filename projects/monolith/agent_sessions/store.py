@@ -63,6 +63,12 @@ def set_ember_session(
     # can restore from it instead of the (invalid, past generation zero)
     # session_id.
     row.ember_lineage_id = ember_lineage_id
+    # #4306 slice 5: a new LIVE binding supersedes any preserved prior one;
+    # clear it so a stale prior_* never shadows this live binding (see
+    # clear_ember_session/clear_ember_bindings_by_ember_id for where prior_*
+    # gets set).
+    row.prior_ember_lineage_id = None
+    row.prior_cli_session_id = None
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -74,10 +80,24 @@ def clear_ember_session(session: Session, session_id: int) -> AgentSession:
 
     The VM and its CLI transcript are one unit of state; both must be cleared
     or neither, else the next turn attempts --resume on a fresh VM (503).
+
+    #4306 slice 5: before nulling, the ACTIVE lineage/CLI transcript are
+    copied to prior_ember_lineage_id/prior_cli_session_id, so the next send
+    can still restore the durable workspace even through this
+    confirmed-dead-binding path (EmberSessionGone: a 410/403 AND its retry
+    also failed), which otherwise drops the lineage handle entirely and
+    starts a blank conversation despite the S3 workspace still existing.
+    Only overwrites prior_* when the ACTIVE value is non-nil: a repeated
+    clear on an already-blank binding must not wipe out a good prior with a
+    nil.
     """
     row = session.get(AgentSession, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
+    if row.ember_lineage_id:
+        row.prior_ember_lineage_id = row.ember_lineage_id
+    if row.cli_session_id:
+        row.prior_cli_session_id = row.cli_session_id
     row.ember_session_id = None
     row.ember_session_token = None
     row.ember_session_expires_at = None
@@ -98,11 +118,15 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     via exec/select and mutated in place, then committed once; nothing is
     session.add-ed in a loop.
 
-    Deliberately does NOT null ember_lineage_id or cli_session_id (#4306
-    slice 4): destroying this specific VM/generation does not necessarily
-    destroy its durable workspace volume, so a future create can still
-    restore from the lineage and pick the transcript back up. Only
-    clear_ember_session (a confirmed-dead binding) clears the lineage too.
+    #4306 slice 5: mirrors clear_ember_session's prior_* preservation (see
+    there for the non-nil-guard rationale), so an admin destroy ALSO
+    survives as a restorable lineage. This supersedes Slice 4's original
+    carve-out here (which left ember_lineage_id/cli_session_id untouched,
+    reasoning the destroyed VM's volume might still be restorable from the
+    still-live ember_lineage_id): mcp.py's restore check now looks at
+    prior_ember_lineage_id uniformly for BOTH failure paths, so leaving this
+    one still populating the ACTIVE (not prior) field would make it
+    invisible to that check.
 
     Returns the ids of the affected AgentSession rows.
     """
@@ -111,9 +135,15 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     ).all()
     ids: list[int] = []
     for row in rows:
+        if row.ember_lineage_id:
+            row.prior_ember_lineage_id = row.ember_lineage_id
+        if row.cli_session_id:
+            row.prior_cli_session_id = row.cli_session_id
         row.ember_session_id = None
         row.ember_session_token = None
         row.ember_session_expires_at = None
+        row.ember_lineage_id = None
+        row.cli_session_id = None
         ids.append(row.id)
     session.commit()
     return ids
