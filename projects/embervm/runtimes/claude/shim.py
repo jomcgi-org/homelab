@@ -614,19 +614,26 @@ class _ProgressPusher:
     def __init__(self, progress_token):
         self.progress_token = progress_token
         self.latest_text = ""
-        self.last_push_time = 0
+        self.last_push_time = -1.0
         self.thread = None
-        self.stop_event = threading.Event()
 
     def push(self, text):
         """Update the latest text and trigger a push if throttle allows."""
-        self.latest_text = text
-        now = time.time()
-        if now - self.last_push_time >= 1.0:
-            self.last_push_time = now
-            if self.thread is None or not self.thread.is_alive():
-                self.thread = threading.Thread(target=self._do_push, daemon=True)
-                self.thread.start()
+        try:
+            self.latest_text = text
+            now = time.monotonic()
+            if now - self.last_push_time >= 1.0:  # At most 1 push/sec
+                self.last_push_time = now
+                if self.thread is None or not self.thread.is_alive():
+                    self.thread = threading.Thread(
+                        target=self._do_push,
+                        daemon=True,
+                    )
+                    self.thread.start()
+        except Exception:
+            # Fire-and-forget: even thread startup failures never fail the turn
+            # (ADR 051 decision 6).
+            pass
 
     def _do_push(self):
         """Push in a background thread; all exceptions swallowed."""
@@ -637,7 +644,12 @@ class _ProgressPusher:
             )
             opener = urllib.request.build_opener(proxy_handler)
             url = "http://monolith.monolith.svc.cluster.local:8091/ingest/progress"
-            data = json.dumps({"partial_text": self.latest_text}).encode("utf-8")
+            text = (
+                self.latest_text[-65536:]
+                if len(self.latest_text) > 65536
+                else self.latest_text
+            )
+            data = json.dumps({"partial_text": text}).encode("utf-8")
             request = urllib.request.Request(
                 url,
                 data=data,
@@ -654,9 +666,9 @@ class _ProgressPusher:
             pass
 
     def stop(self):
-        """Drain and stop. Called at turn end."""
+        """Drain and stop. Waits up to 3 seconds for in-flight push to complete."""
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1)
+            self.thread.join(timeout=3.0)
 
 
 class ClaudeProcess:
@@ -1000,11 +1012,21 @@ class ClaudeProcess:
                         continue
                     events.append(event)
                     if event.get("type") == "assistant":
-                        message_event = event.get("message", {})
-                        if message_event.get("role") == "assistant":
-                            for content_block in message_event.get("content", []):
-                                if content_block.get("type") == "text":
-                                    accumulated_text += content_block.get("text", "")
+                        message_event = event.get("message")
+                        if (
+                            isinstance(message_event, dict)
+                            and message_event.get("role") == "assistant"
+                        ):
+                            content = message_event.get("content")
+                            if isinstance(content, list):
+                                for block in content:
+                                    if (
+                                        isinstance(block, dict)
+                                        and block.get("type") == "text"
+                                    ):
+                                        text = block.get("text")
+                                        if isinstance(text, str):
+                                            accumulated_text += text
                             if pusher:
                                 pusher.push(accumulated_text)
                     if event.get("type") == "result":
@@ -1834,7 +1856,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return
         try:
             hydration = {"repo": repo, "branch": branch} if repo is not None else {}
-            progress = {"progress_token": progress_token} if progress_token else {}
+            progress = (
+                {"progress_token": progress_token.strip()} if progress_token else {}
+            )
             record = self.manager.turn(
                 message,
                 payload.get("session_id"),

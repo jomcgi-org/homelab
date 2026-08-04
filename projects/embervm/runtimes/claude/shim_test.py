@@ -54,6 +54,28 @@ for line in sys.stdin:
         result = "First sentence. Second sentence."
     else:
         result = "Done <voice>Changed the files and need review.</voice>"
+    if os.environ.get("FAKE_MALFORMED"):
+        malformed = [
+            {"type": "assistant", "message": None},
+            {"type": "assistant", "message": "not an object"},
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": None},
+            },
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": "text"},
+            },
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [None]},
+            },
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": None}
+            ]}},
+        ]
+        for event in malformed:
+            print(json.dumps(event), flush=True)
     permission_denials = []
     terminal_reason = "end_turn"
     if text == "permission denied":
@@ -679,6 +701,15 @@ def test_assistant_message_triggers_progress_push(tmp_path, monkeypatch):
     assert timeout == 2
 
 
+def test_malformed_assistant_events_are_skipped(tmp_path, monkeypatch):
+    """Malformed assistant shapes do not abort the turn or poison the stream."""
+    monkeypatch.setenv("FAKE_MALFORMED", "1")
+    manager = _manager(tmp_path, monkeypatch)
+    record = manager.turn("make changes", progress_token="abc123")
+    assert record["terminal_reason"] == "end_turn"
+    manager._close_process(kill=True)
+
+
 def test_no_progress_push_without_token(tmp_path, monkeypatch):
     monkeypatch.setattr(
         shim.urllib.request,
@@ -733,7 +764,7 @@ def test_progress_pusher_collapses_rapid_events_to_latest():
     assert pushed == ["second"]
 
 
-def test_progress_token_validation_and_threading():
+def test_progress_token_validation():
     class _Headers:
         def __init__(self, length):
             self.length = length
@@ -762,7 +793,7 @@ def test_progress_token_validation_and_threading():
         return responses
 
     manager = _Manager()
-    assert post({"message": "hello", "progress_token": "abc123"}, manager) == [
+    assert post({"message": "hello", "progress_token": "  abc123  "}, manager) == [
         (200, {"result": "ok"})
     ]
     assert manager.calls[0][1] == {"progress_token": "abc123"}
@@ -778,6 +809,177 @@ def test_progress_token_validation_and_threading():
             (400, {"error": "progress_token must be a non-empty string"})
         ]
         assert manager.calls == []
+
+
+def test_progress_token_forwarded_to_claude_adapter(monkeypatch):
+    """ProcessManager.turn forwards progress_token only when supplied."""
+    manager = object.__new__(shim.ProcessManager)
+    manager._hydration_error = None
+    manager._hydration_status = None
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+    calls = []
+
+    class FakeAdapter:
+        def turn(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {"result": "ok"}
+
+    manager.claude = FakeAdapter()
+    manager.codex = FakeAdapter()
+    manager.pi = FakeAdapter()
+
+    manager.turn("msg", session_id="s1", model=None, progress_token="token123")
+    assert len(calls) == 1
+    assert calls[0][1].get("progress_token") == "token123"
+
+    calls.clear()
+    manager.turn("msg", session_id="s1", model=None)
+    assert len(calls) == 1
+    assert "progress_token" not in calls[0][1]
+
+
+def test_throttle_allows_push_after_1_second(monkeypatch):
+    """After 1+ second, the next push fires."""
+    current_time = [0.0]
+    monkeypatch.setattr(shim.time, "monotonic", lambda: current_time[0])
+    requests = []
+
+    def fake_opener_open(request, timeout):
+        requests.append(request)
+
+        class FakeResp:
+            def close(self):
+                pass
+
+        return FakeResp()
+
+    class FakeOpener:
+        open = staticmethod(fake_opener_open)
+
+    monkeypatch.setattr(
+        shim.urllib.request, "build_opener", lambda _handler: FakeOpener()
+    )
+    pusher = shim._ProgressPusher("token")
+    pusher.push("text1")
+    pusher.stop()
+    assert len(requests) == 1
+
+    current_time[0] = 1.1
+    pusher.push("text2")
+    pusher.stop()
+    assert len(requests) == 2
+
+
+def test_throttle_blocks_push_within_1_second(monkeypatch):
+    """Within 1 second of the last push, the next push does not fire."""
+    current_time = [0.0]
+    monkeypatch.setattr(shim.time, "monotonic", lambda: current_time[0])
+    requests = []
+
+    def fake_opener_open(request, timeout):
+        requests.append(request)
+
+        class FakeResp:
+            def close(self):
+                pass
+
+        return FakeResp()
+
+    class FakeOpener:
+        open = staticmethod(fake_opener_open)
+
+    monkeypatch.setattr(
+        shim.urllib.request, "build_opener", lambda _handler: FakeOpener()
+    )
+    pusher = shim._ProgressPusher("token")
+    pusher.push("text1")
+    pusher.stop()
+    assert len(requests) == 1
+
+    current_time[0] = 0.2
+    pusher.push("text2")
+    pusher.stop()
+    assert len(requests) == 1
+
+
+def test_push_thread_creation_failure_swallowed(monkeypatch):
+    """Thread startup failure is swallowed; the turn can continue."""
+
+    def fake_thread_init(*args, **kwargs):
+        raise RuntimeError("thread creation failed")
+
+    monkeypatch.setattr(shim.threading, "Thread", fake_thread_init)
+    shim._ProgressPusher("token").push("text")
+
+
+def test_large_accumulation_capped_to_tail(monkeypatch):
+    """Text larger than 65536 bytes is capped to its tail in the payload."""
+    captured_payloads = []
+
+    def fake_opener_open(request, timeout):
+        captured_payloads.append(request.data)
+
+        class FakeResp:
+            def close(self):
+                pass
+
+        return FakeResp()
+
+    class FakeOpener:
+        open = staticmethod(fake_opener_open)
+
+    monkeypatch.setattr(
+        shim.urllib.request, "build_opener", lambda _handler: FakeOpener()
+    )
+    pusher = shim._ProgressPusher("token")
+    large_text = "x" * 100000
+    pusher.push(large_text)
+    pusher.stop()
+
+    assert len(captured_payloads) == 1
+    payload = json.loads(captured_payloads[0].decode())
+    assert payload["partial_text"] == large_text[-65536:]
+    assert len(payload["partial_text"]) == 65536
+
+
+def test_accumulation_order_preserves_assistant_text(monkeypatch):
+    """Sequential pushes preserve the accumulated assistant text order."""
+    current_time = [0.0]
+    monkeypatch.setattr(shim.time, "monotonic", lambda: current_time[0])
+    payloads = []
+
+    def fake_opener_open(request, timeout):
+        payloads.append(json.loads(request.data.decode())["partial_text"])
+
+        class FakeResp:
+            def close(self):
+                pass
+
+        return FakeResp()
+
+    class FakeOpener:
+        open = staticmethod(fake_opener_open)
+
+    class ImmediateThread:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(
+        shim.urllib.request, "build_opener", lambda _handler: FakeOpener()
+    )
+    monkeypatch.setattr(shim.threading, "Thread", ImmediateThread)
+    pusher = shim._ProgressPusher("token")
+    for text in ("block1", "block1block2", "block1block2block3"):
+        pusher.push(text)
+        current_time[0] += 1.0
+
+    assert payloads == ["block1", "block1block2", "block1block2block3"]
 
 
 def test_claude_model_argv_and_mid_session_switch_resumes(tmp_path, monkeypatch):
