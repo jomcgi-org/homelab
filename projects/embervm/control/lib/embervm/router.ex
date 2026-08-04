@@ -816,6 +816,19 @@ defmodule Embervm.Router do
           retryable: false
         })
 
+      # #4306/#4313 review fix 2: also 409 (a state conflict on the lineage),
+      # but retryable: true, unlike lineage_live_heir. A committed heir never
+      # goes away on its own, so a live-heir denial is not worth retrying; an
+      # in-flight restore is transient and settles (to success or failure)
+      # within the create worker timeout, so the client may simply retry.
+      :lineage_restore_in_flight ->
+        send_json(conn, 409, %{
+          error: "another restore of this lineage is already in flight",
+          reason: "lineage_restore_in_flight",
+          workload: workload,
+          retryable: true
+        })
+
       # Brick capacity (PR-3): no brick of the workload's size class has room and
       # the class is flagged fleet-full (desired outran registered past the dwell),
       # so placement is TERMINALLY denied rather than parked. 503 (not the 429 the

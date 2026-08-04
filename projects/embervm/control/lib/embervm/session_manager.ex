@@ -141,6 +141,12 @@ defmodule Embervm.SessionManager do
       principal (ADR embervm/025's cross-principal prohibition).
     * `:lineage_live_heir` -- the lineage's newest holder is not terminal yet
       (exclusivity: at most one live heir per lineage).
+    * `:lineage_restore_in_flight` -- another restoring create for this SAME
+      lineage is already mid-flight (TOCTOU guard: the durable heir row this
+      validates against does not exist until that create finishes, tens of
+      seconds later for a cold restore, so a client retry must be denied
+      rather than raced). Retryable once the in-flight restore settles,
+      unlike `:lineage_live_heir`, which is a committed heir.
 
   `restored` in the returned map is `true` when the inherited workspace was
   actually recovered (attached locally or an S3 restore hit), `false` for a
@@ -548,6 +554,7 @@ defmodule Embervm.SessionManager do
            :ok <- check_workload_cap(state, workload, entry),
            :ok <- check_quota(state, principal),
            :ok <- validate_restore_lineage(state, restore_lineage, workload, principal),
+           :ok <- check_restore_not_inflight(state, restore_lineage),
            pin_node_id = restore_lineage_volume_node(state, restore_lineage, workload),
            {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry, pin_node_id) do
         {:ok,
@@ -596,6 +603,44 @@ defmodule Embervm.SessionManager do
     end
   end
 
+  # #4306/#4313 review fix 2 (TOCTOU): validate_restore_lineage/4 only
+  # consults the durable store, but the heir row it looks for is written
+  # asynchronously (finish_create -> register_and_start), tens of seconds
+  # later for a cold-boot restore. A second restoring create of the SAME
+  # lineage (a client retrying a slow restore) would re-validate against the
+  # store, still see only the terminal predecessor, pass, and both would then
+  # prime and register_and_start with lineage_id = restore_lineage: two live
+  # heirs writing one volume concurrently. Worse, the LOSER's failure-branch
+  # reclaim (finish_create, keyed only by workload+lineage_id) would then
+  # re-arm retirement of the lineage the WINNER is live on, exporting then
+  # deleting a live volume out from under it.
+  #
+  # do_create_inline runs SYNCHRONOUSLY inside the {:create, ...}
+  # GenServer.call, strictly BEFORE the worker spawns and BEFORE
+  # create_inflight gains an entry for THIS create (that write happens back
+  # in handle_call, after do_create_inline returns). Every other create the
+  # manager is mid-processing is either already in create_inflight (its
+  # worker spawned, still primed/restoring) or blocked behind this same
+  # single-process mailbox waiting its own turn at do_create_inline. So a scan
+  # of create_inflight here can only ever see OTHER creates, never this one,
+  # and no other create can interleave a write between this read and this
+  # create's own create_inflight insert: check-then-proceed is atomic with
+  # respect to a concurrent restore of the same lineage, closing the window
+  # the store-only check leaves open.
+  defp check_restore_not_inflight(_state, nil), do: :ok
+
+  defp check_restore_not_inflight(state, restore_lineage) do
+    in_flight? =
+      state.create_inflight
+      |> Map.values()
+      |> Enum.any?(fn {_from, _lineage_id, _workload, _principal, _entry, _node_id, _snapshot_ref, _dial_id,
+                        inflight_restore_lineage} ->
+        inflight_restore_lineage == restore_lineage
+      end)
+
+    if in_flight?, do: {:error, :lineage_restore_in_flight}, else: :ok
+  end
+
   # The node currently reporting restore_lineage's workspace volume in its
   # fleet facts (the same session_volumes list retire_orphan_session_volumes
   # reads), or nil when no node reports it. A cold-restore create (no node
@@ -628,7 +673,7 @@ defmodule Embervm.SessionManager do
               end
 
             _ ->
-              restore_then_prime(state, node_id, workload, snapshot_ref, entry, restore_lineage)
+              restore_then_prime(state, node_id, workload, snapshot_ref, entry, restore_lineage, dial_id)
           end
         rescue
           exception -> {:error, {:create_worker_crashed, exception}}
@@ -653,8 +698,31 @@ defmodule Embervm.SessionManager do
   # volume attaches under the inherited identity rather than a fresh one.
   # restore-on-miss is tolerated (see restore_session_workspace/4): a genuine
   # store miss proceeds with a blank workspace and reports restored: false.
-  defp restore_then_prime(state, node_id, workload, snapshot_ref, entry, restore_lineage) do
-    dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, restore_lineage)
+  #
+  # placed_dial_id is place_create's OWN resolved brick instance dial (the
+  # same one the non-restore path dials via claim_or_prime), threaded through
+  # from spawn_create_worker's call site as the COLD-restore fallback. A warm
+  # restore (a session_volumes fact reports this lineage on node_id) still
+  # prefers the volume-owning instance. But dial_for_session_volume fails
+  # OPEN, not nil, on a miss: it returns the bare node_id itself when no
+  # instance reports the lineage, which is exactly the after-eviction
+  # S3-restore case (nothing local yet). Dialing that bare node name fails
+  # :unknown_node on the real fleet (channel_fun only ever accepts an
+  # instance dial, never the node-name alias; the node name is an anchor,
+  # not a dial key, same lesson perform_rejoin_prime's own comment
+  # documents), which turned a recoverable S3 restore into a hard 500 rather
+  # than the blank-workspace degrade this path is supposed to tolerate. So a
+  # plain `||` cannot detect the miss (the fallthrough value is truthy); this
+  # explicitly compares the resolved dial against the bare node_id instead,
+  # and falls back to placed_dial_id (always a real, dialable instance)
+  # whenever dial_for_session_volume did not actually find an owning
+  # instance.
+  defp restore_then_prime(state, node_id, workload, snapshot_ref, entry, restore_lineage, placed_dial_id) do
+    dial_id =
+      case Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, restore_lineage) do
+        ^node_id -> placed_dial_id
+        resolved -> resolved
+      end
 
     with {:ok, restored} <- restore_session_workspace(state, dial_id, workload, restore_lineage),
          {:ok, vm_id} <- prime(state, dial_id, snapshot_ref, entry, restore_lineage) do
