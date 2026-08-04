@@ -226,6 +226,56 @@ def test_deliver_includes_model_when_present(monkeypatch):
     }
 
 
+def test_deliver_includes_repo_and_branch_when_present(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None),
+            "cli-1",
+            "hello",
+            repo="jomcgi/homelab",
+            branch="develop",
+        )
+    )
+    assert json.loads(requests[0].content)["repo"] == "jomcgi/homelab"
+    assert json.loads(requests[0].content)["branch"] == "develop"
+
+
+def test_deliver_defaults_repo_branch_and_omits_repo_without_repo(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    asyncio.run(
+        client.deliver(
+            transport.EmberSession("s1", "t1", None),
+            "cli-1",
+            "hello",
+            repo="jomcgi/homelab",
+            branch=None,
+        )
+    )
+    assert json.loads(requests[0].content)["branch"] == "main"
+    requests.clear()
+    asyncio.run(
+        client.deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello", branch="dev"
+        )
+    )
+    assert "repo" not in json.loads(requests[0].content)
+    assert "branch" not in json.loads(requests[0].content)
+
+
 def test_deliver_recreates_reused_stale_session_once(monkeypatch):
     requests = []
     responses = [410, 200]

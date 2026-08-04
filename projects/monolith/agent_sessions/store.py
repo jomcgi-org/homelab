@@ -23,11 +23,13 @@ def create_session(
     workspace: str,
     branch: str,
     model: str | None = None,
+    repo: str | None = None,
 ) -> AgentSession:
     row = AgentSession(
         local_session_id=local_session_id,
         workspace=workspace,
         branch=branch,
+        repo=repo,
         model=model,
     )
     session.add(row)

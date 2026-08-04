@@ -126,6 +126,8 @@ class ShimTransport(Protocol):
         model: str | None = None,
         restore_from: str | None = None,
         on_create: Callable[[EmberSession, str | None], Awaitable[None]] | None = None,
+        repo: str | None = None,
+        branch: str | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -342,6 +344,8 @@ class EmberVmShimTransport:
         model: str | None = None,
         restore_from: str | None = None,
         on_create: Callable[[EmberSession, str | None], Awaitable[None]] | None = None,
+        repo: str | None = None,
+        branch: str | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -422,6 +426,9 @@ class EmberVmShimTransport:
             payload = {"message": message, "session_id": current_cli_session_id}
             if model is not None:
                 payload["model"] = model
+            if repo is not None:
+                payload["repo"] = repo
+                payload["branch"] = branch or "main"
             body = json.dumps(payload)
             url = f"{EMBERVM_URL}/v1/sessions/{current.session_id}/invoke"
             headers = {

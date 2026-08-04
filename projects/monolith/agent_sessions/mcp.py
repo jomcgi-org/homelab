@@ -110,11 +110,15 @@ def _persist_pending_message(
 
 
 def _persist_session(
-    local_session_id: str, workspace: str, branch: str, model: str | None
+    local_session_id: str,
+    workspace: str,
+    branch: str,
+    model: str | None,
+    repo: str | None = None,
 ) -> AgentSession:
     with Session(get_engine()) as db_session:
         return store.create_session(
-            db_session, local_session_id, workspace, branch, model
+            db_session, local_session_id, workspace, branch, model, repo
         )
 
 
@@ -326,13 +330,19 @@ async def _execute_pending_message(session_id: int) -> None:
                 # Reuse the session_id from the database (from first turn), or None for new sessions
                 cli_session_id = session_row.cli_session_id
                 restore_from = None
+            deliver_kwargs = {
+                "restore_from": restore_from,
+                "on_create": persist_callback,
+            }
+            if session_row.repo is not None:
+                deliver_kwargs["repo"] = session_row.repo
+                deliver_kwargs["branch"] = session_row.branch
             turn, ember = await _transport.deliver(
                 existing_ember,
                 cli_session_id,
                 row.message_text,
                 row.model,
-                restore_from=restore_from,
-                on_create=persist_callback,
+                **deliver_kwargs,
             )
             # Check if claim was stolen while deliver was running
             if claim_stolen:
@@ -375,7 +385,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 turn.session_id,  # Store for resumption
                 row.model,
             )
-        except IntegrityError as e:
+        except IntegrityError:
             # Turn already exists (duplicate seq), likely from a retry of a completed turn.
             # Delete the pending row to prevent infinite retry.
             logger.warning(
@@ -494,7 +504,7 @@ async def monolith_agent_session_start(prompt: str, model: str | None = None) ->
     local_session_id = str(uuid4())
     workspace = "<guest>"  # Workspace is in the guest, not the pod
     row = await asyncio.to_thread(
-        _persist_session, local_session_id, workspace, "main", model
+        _persist_session, local_session_id, workspace, "main", model, None
     )
     turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     _schedule_next_message(row.id)
