@@ -650,16 +650,36 @@ defmodule Embervm.Application do
   end
 
   defp warmth_s3_gc_allow_empty_kinds do
+    parse_allow_empty_kinds(trimmed_env("EMBERVM_WARMTH_S3_GC_ALLOW_EMPTY_KINDS"))
+  end
+
+  # Public for tests. Unknown tokens are LOGGED AND DROPPED, never raised:
+  # a dropped token leaves the empty-store guard at full strength (the abort
+  # still fires), while a raise here runs during the supervisor child-spec
+  # build and would crash-loop the whole control plane on a values typo (the
+  # EMBERVM_BRICK_CLASSES convention: a bad value leaves the feature inert,
+  # never the control plane down). The chart also fail()s on unknown tokens
+  # at render time, so a GitOps typo is caught before it ever deploys.
+  @doc false
+  def parse_allow_empty_kinds(value) do
     allowed = %{"stateful" => :stateful, "group" => :group, "session" => :session, "serving" => :serving}
 
-    trimmed_env("EMBERVM_WARMTH_S3_GC_ALLOW_EMPTY_KINDS")
+    value
     |> String.split(",", trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
-    |> Enum.map(fn token ->
+    |> Enum.flat_map(fn token ->
       case Map.fetch(allowed, token) do
-        {:ok, kind} -> kind
-        :error -> raise ArgumentError, "invalid EMBERVM_WARMTH_S3_GC_ALLOW_EMPTY_KINDS kind: #{inspect(token)}"
+        {:ok, kind} ->
+          [kind]
+
+        :error ->
+          Logger.warning(
+            "embervm s3 warmth gc: ignoring unknown allow-empty kind #{inspect(token)} " <>
+              "(valid: stateful, group, session, serving); the empty-store guard stays armed"
+          )
+
+          []
       end
     end)
   end

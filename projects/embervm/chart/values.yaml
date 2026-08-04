@@ -750,8 +750,13 @@ warmthRetention:
 # (module defaults 10 / 20GiB, the supervised-first-run caps); intervalMs
 # defaults hourly. The CP's store endpoint/bucket are rendered from
 # noded.store above (one source of truth).
+# allowEmptyKinds: comma-separated retired workload classes whose empty CP
+# stores may have S3 leftovers reclaimed (valid tokens: stateful, group,
+# session, serving; the template fail()s on anything else at render time).
+# Without a listing, an empty store of a kind with S3 keys aborts the sweep
+# as possibly-not-rebuilt.
 warmthS3Gc:
-  allowEmptyKinds: "" # Retired workload classes whose empty stores may have S3 leftovers reclaimed.
+  allowEmptyKinds: ""
   enabled: ""
   expectedNodes: []
   maxPrefixes: ""
