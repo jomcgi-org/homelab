@@ -120,6 +120,14 @@ defmodule Embervm.S3WarmthGcTest do
     %{instance_id: instance_id, workload: "web", state: state, set_id: set_id, node_id: "node-4"}
   end
 
+  defp session_row(state, workload, lineage_id, snapshot_ref) do
+    %{session_id: "session-#{snapshot_ref}", workload: workload, lineage_id: lineage_id, snapshot_ref: snapshot_ref, state: state}
+  end
+
+  defp serving_row(state, workload, snapshot_ref) do
+    %{instance_id: "serving-#{snapshot_ref}", workload: workload, snapshot_ref: snapshot_ref, state: state}
+  end
+
   defp start_gc(s3_funs, opts) do
     {:ok, pid} =
       S3WarmthGc.start_link(
@@ -130,6 +138,8 @@ defmodule Embervm.S3WarmthGcTest do
             sweep_interval_ms: 0,
             min_uptime_ms: 0,
             expected_nodes: ["node-4"],
+            session_store: start_store([]),
+            serving_store: start_store([]),
             clock: fn -> @mono end,
             wall_clock: fn -> @wall end
           ],
@@ -181,17 +191,111 @@ defmodule Embervm.S3WarmthGcTest do
       assert %{"mode" => "armed", "plan" => [%{"prefix" => ^prefix}]} = :json.decode(manifest_body)
     end
 
-    test "only lists the two allowlisted prefixes, never base/ session/ serving/ volume/" do
+    test "only lists the five allowlisted prefixes, never base/ or volume/" do
       %{agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
       gc = start_gc(s3, base_opts ++ [enabled: true])
       assert {:ok, _} = S3WarmthGc.sweep_now(gc)
-      assert Agent.get(agent, & &1.listed) == ["stateful/", "group_set/"]
+      assert Agent.get(agent, & &1.listed) == ["stateful/", "session/", "serving/", "session-workspace/", "group_set/"]
     end
   end
 
   # -- each predicate condition independently blocks ---------------------------
 
   describe "fail-closed predicate" do
+    test "uses the eight-hour stateful TTL while session and serving use seven days" do
+      old_stateful = "stateful/amd/wl/state-9h"
+      old_session = "session/amd/wl/session-8d"
+      old_serving = "serving/amd/wl/serving-8d"
+      young_session = "session/amd/young/session-2d"
+      young_serving = "serving/amd/young/serving-2d"
+      old_workspace = "session-workspace/wl/lineage-old"
+      old_group = "group_set/wl/group-8d"
+
+      objects =
+        artifact(old_stateful, @wall - 9 * 60 * 60 * 1000)
+        |> Map.merge(artifact(old_session, @wall - 8 * @day))
+        |> Map.merge(artifact(old_serving, @wall - 8 * @day))
+        |> Map.merge(artifact(young_session, @wall - 2 * @day))
+        |> Map.merge(artifact(young_serving, @wall - 2 * @day))
+        |> Map.merge(artifact(old_workspace, @wall - 8 * @day))
+        |> Map.merge(artifact(old_group, @wall - 8 * @day))
+
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc =
+        start_gc(s3,
+          enabled: false,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "old")]),
+          group_store: start_store([group_row(:destroyed, "group", "old")]),
+          session_store: start_store([]),
+          serving_store: start_store([]),
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert Enum.any?(result.plan, &(&1.prefix == old_stateful))
+      assert Enum.any?(result.plan, &(&1.prefix == old_workspace))
+      assert Enum.any?(result.plan, &(&1.prefix == old_session))
+      assert Enum.any?(result.plan, &(&1.prefix == old_serving))
+      assert Enum.any?(result.held, &(&1.prefix == young_session and &1.reason == "younger_than_age_floor"))
+      assert Enum.any?(result.held, &(&1.prefix == young_serving and &1.reason == "younger_than_age_floor"))
+      assert deleted(agent) == []
+    end
+
+    test "a parked session workspace lineage is eligible after the TTL" do
+      prefix = "session-workspace/wl/lineage-parked"
+      {agent, s3} = new_s3(artifact(prefix, @wall - 8 * @day))
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+          group_store: start_store([]),
+          session_store: start_store([session_row(:parked, "wl", "lineage-parked", nil)]),
+          serving_store: start_store([]),
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, %{plan: [%{prefix: ^prefix}], held: []}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == [prefix <> "/meta.json", prefix <> "/memfile"]
+    end
+
+    test "parked session and banked serving artifacts are eligible after the TTL" do
+      session_prefix = "session/amd/wl/session-live"
+      serving_prefix = "serving/amd/wl/serving-live"
+
+      {agent, s3} =
+        new_s3(
+          artifact(session_prefix, @wall - 8 * @day)
+          |> Map.merge(artifact(serving_prefix, @wall - 8 * @day))
+        )
+
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+          group_store: start_store([]),
+          session_store: start_store([session_row(:banked, "wl", "lineage", "session-live")]),
+          serving_store: start_store([serving_row(:banked, "wl", "serving-live")]),
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert Enum.any?(result.plan, &(&1.prefix == session_prefix))
+      assert Enum.any?(result.plan, &(&1.prefix == serving_prefix))
+      assert length(deleted(agent)) == 4
+    end
+
     test "a desired (non-terminal) ref is held, not deleted" do
       %{prefix: prefix, agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
       # Same ref, but the CP still tracks a non-terminal (banked) instance on it.
@@ -216,7 +320,9 @@ defmodule Embervm.S3WarmthGcTest do
 
     test "a prefix younger than the age floor is held" do
       prefix = "stateful/amd/dead-wl/state-young"
-      {agent, s3} = new_s3(artifact(prefix, @wall - 2 * @day))
+      # 2 hours old: inside the stateful 8h TTL (the old fixture's 2 days was
+      # "young" only against the retired 7-day floor).
+      {agent, s3} = new_s3(artifact(prefix, @wall - 2 * 60 * 60 * 1000))
       table = new_cap_table()
       put_node_fact(table, "node-4", [], [])
       stateful = start_store([stateful_row(:destroyed, "dead-wl", "state-young")])
@@ -234,7 +340,7 @@ defmodule Embervm.S3WarmthGcTest do
       assert deleted(agent) == []
     end
 
-    test "Tier 2: a live workload keeps its 2 newest refs, only older predecessors trim" do
+    test "Tier 2: a live workload keeps its newest ref, older predecessors trim" do
       objects =
         Map.merge(
           artifact("stateful/amd/live-wl/state-old", @wall - 40 * @day),
@@ -260,21 +366,19 @@ defmodule Embervm.S3WarmthGcTest do
         )
 
       assert {:ok, result} = S3WarmthGc.sweep_now(gc)
-      # Only the strictly-oldest predecessor is eligible; the 2 newest are held.
-      assert result.deleted == ["stateful/amd/live-wl/state-old"]
-      assert [entry] = result.plan
-      assert entry.tier == 2
+      # Only the newest ref is held; both older predecessors are eligible.
+      assert result.deleted == ["stateful/amd/live-wl/state-old", "stateful/amd/live-wl/state-mid"]
+      assert Enum.map(result.plan, & &1.tier) == [2, 2]
 
       held_reasons = Enum.map(result.held, & &1.reason) |> Enum.sort()
-      assert held_reasons == ["tier2_protected_newest", "tier2_protected_newest"]
-      refute Enum.any?(deleted(agent), &String.contains?(&1, "state-mid"))
+      assert held_reasons == ["tier2_protected_newest"]
       refute Enum.any?(deleted(agent), &String.contains?(&1, "state-new"))
     end
 
     test "a volume row alone makes the workload live (Tier 2 protection, not Tier 1 reclaim)" do
       %{agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
       # No non-terminal instance, but the volume ledger holds a row: the sole
-      # prefix in the namespace lands inside the newest-2 protection.
+      # prefix in the namespace lands inside the newest-1 protection.
       opts = Keyword.put(base_opts, :volume_fun, fn "dead-wl" -> %{workload: "dead-wl"} end)
 
       gc = start_gc(s3, opts ++ [enabled: true])

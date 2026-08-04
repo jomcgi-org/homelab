@@ -398,6 +398,26 @@ spec:
             - name: EMBERVM_WARMTH_S3_GC_MAX_BYTES
               value: {{ .Values.warmthS3Gc.maxBytes | quote }}
             {{- end }}
+            {{- if .Values.warmthS3Gc.statefulTtlMs }}
+            - name: EMBERVM_WARMTH_S3_GC_STATEFUL_TTL_MS
+              value: {{ .Values.warmthS3Gc.statefulTtlMs | quote }}
+            {{- end }}
+            {{- if .Values.warmthS3Gc.sessionTtlMs }}
+            - name: EMBERVM_WARMTH_S3_GC_SESSION_TTL_MS
+              value: {{ .Values.warmthS3Gc.sessionTtlMs | quote }}
+            {{- end }}
+            {{- if .Values.warmthS3Gc.servingTtlMs }}
+            - name: EMBERVM_WARMTH_S3_GC_SERVING_TTL_MS
+              value: {{ .Values.warmthS3Gc.servingTtlMs | quote }}
+            {{- end }}
+            {{- if .Values.warmthS3Gc.sessionWorkspaceTtlMs }}
+            - name: EMBERVM_WARMTH_S3_GC_SESSION_WORKSPACE_TTL_MS
+              value: {{ .Values.warmthS3Gc.sessionWorkspaceTtlMs | quote }}
+            {{- end }}
+            {{- if .Values.warmthS3Gc.groupSetTtlMs }}
+            - name: EMBERVM_WARMTH_S3_GC_GROUP_SET_TTL_MS
+              value: {{ .Values.warmthS3Gc.groupSetTtlMs | quote }}
+            {{- end }}
             {{- if .Values.warmthS3Gc.intervalMs }}
             - name: EMBERVM_WARMTH_S3_GC_INTERVAL_MS
               value: {{ .Values.warmthS3Gc.intervalMs | quote }}

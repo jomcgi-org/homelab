@@ -252,6 +252,11 @@ warmthS3Gc:
     - node-2
     - node-3
     - node-4
+  statefulTtlMs: ""
+  sessionTtlMs: ""
+  servingTtlMs: ""
+  sessionWorkspaceTtlMs: ""
+  groupSetTtlMs: ""
 
 # Guest egress lane (ADR 023 phase 6a, issue #4071). Turns on the egress-proxy
 # sidecar and tells noded to serve the vsock egress port for each guest. The

@@ -599,11 +599,24 @@ defmodule Embervm.Application do
       expected_nodes: warmth_s3_gc_expected_nodes(),
       max_prefixes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_PREFIXES"),
       max_bytes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_BYTES"),
+      ttls: warmth_s3_gc_ttls(),
       sweep_interval_ms: int_env_or_nil("EMBERVM_WARMTH_S3_GC_INTERVAL_MS"),
       freshness_window_ms: int_env_or_nil("EMBERVM_WARMTH_S3_GC_FRESHNESS_MS"),
       min_uptime_ms: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MIN_UPTIME_MS")
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp warmth_s3_gc_ttls do
+    %{
+      stateful: int_env_or_nil("EMBERVM_WARMTH_S3_GC_STATEFUL_TTL_MS"),
+      session: int_env_or_nil("EMBERVM_WARMTH_S3_GC_SESSION_TTL_MS"),
+      serving: int_env_or_nil("EMBERVM_WARMTH_S3_GC_SERVING_TTL_MS"),
+      session_workspace: int_env_or_nil("EMBERVM_WARMTH_S3_GC_SESSION_WORKSPACE_TTL_MS"),
+      group: int_env_or_nil("EMBERVM_WARMTH_S3_GC_GROUP_SET_TTL_MS")
+    }
+    |> Enum.reject(fn {_kind, ttl} -> is_nil(ttl) end)
+    |> Map.new()
   end
 
   defp store_bucket do

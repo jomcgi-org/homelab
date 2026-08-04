@@ -254,16 +254,19 @@ ongoing.
 | ---- | ------ | -------- | ------- |
 | Live | 8h continuous ceiling | running VM | node-resident |
 | Warm bank | 7 days from last bank | memory snapshot in S3 | CPU-vendor + base-generation |
-| Durable workspace | 30 days from last use | zstd content-addressed file set | none |
+| Durable workspace | 7 days from last use | zstd content-addressed file set | none |
 
 Resume is one interface with four verbs: cold boot; base-snapshot restore;
 warm (memory) restore; base + workspace hydration. The CP picks the cheapest
 unexpired artifact. A relight starts a fresh 8h window, so a lineage spans
-weeks of shorter runs. "Instant for 8h, restorable for 30 days" is strictly
+weeks of shorter runs. "Instant for 8h, restorable for 7 days" is strictly
 more than the AWS Lambda MicroVMs offer being copied. ADR 027 amends this
 ladder: capture may decouple from bank (close-triggered for
 no-memory-snapshot workloads), retention becomes `latest + N`, and the
 workspace size cap becomes a declared soft budget.
+
+The S3 artifact GC uses an 8-hour TTL for stateful warmth and 7-day TTLs for
+session memory, serving snapshots, session workspaces, and group sets.
 
 ---
 
@@ -593,6 +596,24 @@ The availability contract is spot semantics: a routine roll gives every
 workload up to two minutes of drain notice; state durability is the hard
 guarantee, connection continuity is not (narrowed for stateful by ADR 025's
 planned-drain contract).
+
+### S3 warmth GC retention
+
+The S3 warmth GC is dry-run by default and may delete only the explicit
+allowlist of warmth prefixes. Its 8-hour stateful TTL keeps the newest one
+reference per vendor and workload unconditionally; older superseded refs are
+eligible after the grace window. `base/` remains excluded, so current base plus
+newest stateful ref is preserved by construction.
+
+Session and serving refs, plus session-workspace lineages, have no history
+retention guard. They are protected while the corresponding instance is
+actively live, including attached and in-flight transition states. Banked and
+parked states are not actively live, and their warmth is eligible after the
+configured TTL once a parked session's CP `expires_at` has passed. This ensures
+a later resume follows the existing session-expiry 410 path rather than
+reattaching an empty workspace. Terminal states are expired, evicted,
+destroyed, or failed for sessions and evicted, destroyed, or failed for
+serving.
 
 ---
 
