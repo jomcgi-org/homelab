@@ -725,7 +725,7 @@ multiarch_http_file(
 # Pinned, not floating: the shim's adapter depends on observed behaviour
 # (thread.started/thread_id, item.completed agent_message, turn.completed usage,
 # and the `exec resume <id> <prompt>` argument order, which differs from plain
-# `exec` in that it rejects --sandbox). A silent upgrade could change those.
+# `exec` in that it rejects --sandbox and -C). A silent upgrade could change those.
 multiarch_http_file(
     name = "codex_cli",
     amd64_sha256 = "5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a",
