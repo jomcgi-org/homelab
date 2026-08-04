@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import os
@@ -32,6 +33,40 @@ _transport = EmberVmShimTransport()
 _sweep_task: asyncio.Task | None = None
 _REPLICA_ID = platform.node()
 logger = logging.getLogger(__name__)
+
+# Messages queued by the /agents UI, so their terminal Discord post can be
+# suppressed: someone watching the UI is already looking at the result and does
+# not need it echoed to a channel. Only MCP-originated turns notify.
+#
+# Deliberately process-local rather than a column on pending_messages. That
+# makes it BEST EFFORT: a message the sweep hands to another replica, or one
+# outliving a restart, loses its mark and notifies anyway. That direction is
+# fail-open, which for a notification is the benign one (a stray post, never a
+# missed one). Move the flag onto the row if the strays become annoying.
+#
+# Bounded because an entry is only consumed when THIS replica claims the
+# message; eviction of the oldest is the same benign fail-open.
+_UI_ORIGINATED_CAP = 1024
+_ui_originated: collections.OrderedDict[tuple[int, int], bool] = (
+    collections.OrderedDict()
+)
+
+
+def _mark_ui_originated(session_id: int, seq: int) -> None:
+    """Flag a queued message as UI-originated so its turn skips the notify."""
+    _ui_originated[(session_id, seq)] = True
+    while len(_ui_originated) > _UI_ORIGINATED_CAP:
+        _ui_originated.popitem(last=False)
+
+
+def _consume_ui_originated(session_id: int, seq: int) -> bool:
+    """Read and clear the UI mark for a message.
+
+    Called once, at claim time rather than at notify time, because the turn has
+    several early-return paths and this way the entry clears on all of them
+    instead of leaking on the ones that never reach the notify.
+    """
+    return _ui_originated.pop((session_id, seq), False)
 
 
 def _load_session(session_id: int) -> tuple[AgentSession | None, list[AgentTurn]]:
@@ -254,6 +289,8 @@ async def _execute_pending_message(session_id: int) -> None:
     if claimed_seq is None:
         return
 
+    ui_originated = _consume_ui_originated(session_id, claimed_seq)
+
     # Set once the claim is lost to another replica; checked before starting and
     # again after deliver, so a stolen claim never persists a duplicate turn.
     claim_stolen = False
@@ -405,7 +442,8 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             return
         await asyncio.to_thread(_delete_pending_message_sync, session_id, claimed_seq)
-        await _notify_terminal(turn, summary, status)
+        if not ui_originated:
+            await _notify_terminal(turn, summary, status)
         # This session's next message could not be claimed while this one was
         # outstanding, so nudge the queue now that it is not. Without this the
         # follow-up waits for the sweep, which is correct but adds its interval

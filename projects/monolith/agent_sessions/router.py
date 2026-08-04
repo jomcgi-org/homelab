@@ -18,6 +18,7 @@ from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
     _clear_ember_bindings_for,
     _load_session_row,
+    _mark_ui_originated,
     _persist_pending_message,
     _persist_session,
     _schedule_next_message,
@@ -222,6 +223,8 @@ async def start_session(request: StartRequest) -> dict:
     turn = await asyncio.to_thread(
         _persist_pending_message, row.id, request.prompt, request.model
     )
+    # Queued from the UI, so its result does not get echoed to Discord.
+    _mark_ui_originated(row.id, turn)
     _schedule_next_message(row.id)
     return {"accepted": True, "session_id": row.id, "turn": turn}
 
@@ -344,6 +347,8 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
     turn = await asyncio.to_thread(
         _persist_pending_message, session_id, request.prompt, effective_model
     )
+    # Queued from the UI, so its result does not get echoed to Discord.
+    _mark_ui_originated(session_id, turn)
     await asyncio.to_thread(_set_session_status, session_id, "running")
     _schedule_next_message(session_id)
     return {"accepted": True, "session_id": session_id, "turn": turn}
