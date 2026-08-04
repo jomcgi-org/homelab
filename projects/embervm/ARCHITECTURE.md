@@ -665,6 +665,7 @@ since been amended for fail-open metering.
 | [026](../../docs/decisions/embervm/026-template-composition-gitops-registration.md) | Templates not stamps; GitOps without per-workload CRs; desired-set registration | Draft |
 | [027](../../docs/decisions/embervm/027-snapshot-modes-workload-property.md) | Snapshot modes as a declared workload property (persistence flags, shared keyspace) | Draft |
 | [028](../../docs/decisions/embervm/028-demand-loaded-rootfs-oci-chunk-store.md) | Demand-loaded rootfs: OCI ref as the interface, EROFS + content-defined chunk store, ublk presentation | Draft; supersedes 005 decision 3 (Pattern A) |
+| [031](../../docs/decisions/embervm/031-health-signals-classified-by-time-to-impact.md) | Health signals classified by time-to-impact: immediate latch for platform-impact-now signals (sustained artifact export failures), >24h-sustained latch for maintenance-debt signals (S3 warmth GC sweep stall); both end in the health surface, not alert-only | Accepted; decided direction, detector implementation tracked in #4338, not yet built |
 
 Operational entry points: ArgoCD and SigNoz at `private.jomcgi.dev/app/*`,
 `kubectl get workloads` for definition status, `/v1/usage` for metering,
