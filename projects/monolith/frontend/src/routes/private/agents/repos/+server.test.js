@@ -22,6 +22,22 @@ describe("repos proxy", () => {
     );
   });
 
+  test("forwards upstream status and error body on failure", async () => {
+    global.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "service unavailable" }), {
+          ok: false,
+          status: 503,
+        }),
+    );
+
+    const response = await getRepos();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.error).toBe("service unavailable");
+  });
+
   test("handles API timeout", async () => {
     global.fetch = vi.fn(() => {
       throw new Error("timeout");
