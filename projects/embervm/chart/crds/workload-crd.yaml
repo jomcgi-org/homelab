@@ -235,9 +235,10 @@ spec:
                       description: >-
                         Hard max in-flight. Must be >= floor. For the task class,
                         max in-flight tasks; for the session class, max LIVE
-                        session VMs (banked sessions hold only disk, not a live
-                        VM, and do not count against the cap). For the serving
-                        class, cap is an alias for spec.serving.maxInstances and
+                        session VMs (banked and parked sessions hold only disk,
+                        not a live VM, and do not count against the cap). For
+                        the serving class, cap is an alias for
+                        spec.serving.maxInstances and
                         MUST agree with it when both are set (the watcher rejects
                         a mismatch with a status condition); floor is unused for
                         serving, minInstances is the floor concept there.
@@ -360,7 +361,7 @@ spec:
                       minimum: 60
                     maxSessions:
                       type: integer
-                      description: Max sessions (live + banked) for this workload.
+                      description: Max sessions (live + banked + parked) for this workload.
                       minimum: 1
                       default: 16
                     invokeQueueCap:

@@ -12,8 +12,10 @@ defmodule Embervm.SessionManager do
 
     1. reserve CAPACITY, fail-closed and in order (this GenServer serializes
        creates so two concurrent creates cannot both slip past `maxSessions`):
-       the per-workload live+banked count against `session.maxSessions`, the live
-       count against `concurrency.cap`, and the principal's daily quota;
+       the per-workload live+disk count (banked and parked both hold a resource,
+       a workspace volume, not a VM) against `session.maxSessions`, the live
+       count (VM holders only) against `concurrency.cap`, and the principal's
+       daily quota;
     2. place the session on an ordered, memory-eligible brick;
     3. CLAIM a primed pristine VM from the dispatcher's inventory for the workload
        (principal-bound at claim, the task-class assignment moment), or `Prime` one
@@ -607,7 +609,8 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # live + banked < session.maxSessions (both hold a resource: a VM or disk).
+  # live + disk-held (banked or parked) < session.maxSessions (both hold a
+  # resource: a VM or disk).
   defp check_session_cap(state, workload, %{session: session}) do
     counts = SessionStore.counts(state.session_store, workload)
 
@@ -618,7 +621,9 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # live session VMs < concurrency.cap (banked sessions do not hold a live VM).
+  # live session VMs < concurrency.cap (banked and parked sessions hold disk,
+  # not a VM). Wake asymmetry: rejoin and relight admit on placement memory
+  # headroom, not on cap, so cap is a create-time governor only.
   defp check_workload_cap(state, workload, %{cap: cap}) do
     counts = SessionStore.counts(state.session_store, workload)
 

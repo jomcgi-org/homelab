@@ -440,6 +440,32 @@ defmodule Embervm.SessionManagerTest do
     assert {:error, {:denied, :session_cap}} = SessionManager.create(ctx.mgr, "wl-cap", "p1")
   end
 
+  test "create denies at the workload cap" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-vmcap", cap: 1, max_sessions: 8)
+
+    {:ok, _} = SessionManager.create(ctx.mgr, "wl-vmcap", "p1")
+    assert {:error, {:denied, :workload_cap}} = SessionManager.create(ctx.mgr, "wl-vmcap", "p1")
+  end
+
+  test "parked sessions do not hold workload cap slots" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-vmcap-park"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx, workload: "wl-vmcap-park", cap: 1, max_sessions: 8)
+
+    park_session(ctx, created)
+
+    assert {:ok, _} = SessionManager.create(ctx.mgr, "wl-vmcap-park", "p1")
+  end
+
+  test "parked sessions still count toward maxSessions" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-parked-cap"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx, workload: "wl-parked-cap", cap: 8, max_sessions: 1)
+
+    park_session(ctx, created)
+
+    assert {:error, {:denied, :session_cap}} = SessionManager.create(ctx.mgr, "wl-parked-cap", "p1")
+  end
+
   test "create denies when no node has ready capacity" do
     ctx = start_stack()
     # Catalog present but no capacity facts: pick_node returns :no_capacity.

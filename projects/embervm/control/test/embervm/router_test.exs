@@ -30,6 +30,7 @@ defmodule Embervm.RouterTest do
       do: {:ok, %{session_id: "s-live", token: "sess-token-live", expires_at: 9_000_000, base_digest: "sha256:x", state: :running}}
 
     def create(_srv, "wl-cap", _principal), do: {:error, {:denied, :session_cap}}
+    def create(_srv, "wl-vmcap", _principal), do: {:error, {:denied, :workload_cap}}
     def create(_srv, "wl-task", _principal), do: {:error, {:denied, :not_session_class}}
     def create(_srv, _wl, _principal), do: {:error, {:denied, :unknown_workload}}
 
@@ -659,6 +660,10 @@ defmodule Embervm.RouterTest do
     cap = req(:post, "/v1/workloads/wl-cap/sessions", auth("good"))
     assert cap.status == 429
     assert json(cap.body)["reason"] == "session_cap"
+
+    vmcap = req(:post, "/v1/workloads/wl-vmcap/sessions", auth("good"))
+    assert vmcap.status == 429
+    assert json(vmcap.body)["reason"] == "workload_cap"
 
     task = req(:post, "/v1/workloads/wl-task/sessions", auth("good"))
     assert task.status == 403
