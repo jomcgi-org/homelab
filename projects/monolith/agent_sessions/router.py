@@ -26,12 +26,13 @@ from agent_sessions.mcp import (
 )
 from core.db import get_session
 from faas.embervm_client import EmberVMTransportError
-from goosecracker.repo_catalog import REPO_CATALOG
+from goosecracker.api import REPO_CATALOG
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 _DEFAULT_BRANCH_CACHE: dict[str, tuple[float, str | None]] = {}
 _REPO_CACHE_TTL = 300.0
+_REPO_CACHE_FAILURE_TTL = 30.0
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -239,20 +240,35 @@ async def _github_get(url: str) -> httpx.Response:
 @router.get("/repos")
 async def list_repos() -> dict:
     now = time.monotonic()
+    uncached = []
+    for repo_id in REPO_CATALOG:
+        cached = _DEFAULT_BRANCH_CACHE.get(repo_id)
+        if cached is None or cached[0] <= now:
+            uncached.append(repo_id)
+
+    async def fetch_default_branch(repo_id: str) -> None:
+        try:
+            response = await _github_get(f"https://api.github.com/repos/{repo_id}")
+            default_branch = response.json().get("default_branch")
+            if not isinstance(default_branch, str):
+                default_branch = None
+        except Exception:
+            _DEFAULT_BRANCH_CACHE[repo_id] = (
+                time.monotonic() + _REPO_CACHE_FAILURE_TTL,
+                None,
+            )
+            return
+        _DEFAULT_BRANCH_CACHE[repo_id] = (
+            time.monotonic() + _REPO_CACHE_TTL,
+            default_branch,
+        )
+
+    await asyncio.gather(*(fetch_default_branch(repo_id) for repo_id in uncached))
+
     repos = []
     for repo_id, entry in REPO_CATALOG.items():
         cached = _DEFAULT_BRANCH_CACHE.get(repo_id)
-        if cached is not None and cached[0] > now:
-            default_branch = cached[1]
-        else:
-            try:
-                response = await _github_get(f"https://api.github.com/repos/{repo_id}")
-                default_branch = response.json().get("default_branch")
-                if not isinstance(default_branch, str):
-                    default_branch = None
-            except Exception:
-                default_branch = None
-            _DEFAULT_BRANCH_CACHE[repo_id] = (now + _REPO_CACHE_TTL, default_branch)
+        default_branch = cached[1] if cached is not None else None
         repos.append(
             {
                 "id": repo_id,
@@ -278,15 +294,25 @@ async def list_repo_branches(owner: str, repo: str) -> dict:
         default_branch = repo_response.json().get("default_branch")
         if not isinstance(default_branch, str):
             default_branch = None
-        branches_response = await _github_get(
-            f"https://api.github.com/repos/{repo_id}/branches?per_page=100"
-        )
-        branches = [
-            {"name": branch["name"]}
-            for branch in branches_response.json()
-            if isinstance(branch, dict) and isinstance(branch.get("name"), str)
-        ]
-    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        branches = []
+        branches_url = f"https://api.github.com/repos/{repo_id}/branches?per_page=100"
+        for _ in range(10):
+            branches_response = await _github_get(branches_url)
+            page = branches_response.json()
+            if not isinstance(page, list):
+                raise HTTPException(
+                    status_code=502, detail="GitHub branches response was not a list"
+                )
+            branches.extend(
+                {"name": branch["name"]}
+                for branch in page
+                if isinstance(branch, dict) and isinstance(branch.get("name"), str)
+            )
+            next_link = branches_response.links.get("next")
+            if not next_link:
+                break
+            branches_url = next_link["url"]
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
         raise HTTPException(
             status_code=502, detail=f"GitHub API request failed: {exc}"
         ) from exc

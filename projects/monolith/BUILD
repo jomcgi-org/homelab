@@ -1487,13 +1487,6 @@ py_library(
 )
 
 py_library(
-    name = "pkg_repo_catalog",
-    srcs = ["goosecracker/repo_catalog.py"],
-    imports = ["."],
-    visibility = ["//:__subpackages__"],
-)
-
-py_library(
     name = "pkg_agent_sessions",
     srcs = glob(
         [
@@ -1512,7 +1505,6 @@ py_library(
         ":pkg_cyclegroup",
         ":pkg_faas",
         ":pkg_framework",
-        ":pkg_repo_catalog",
         ":pkg_shared",
         "@pip//astral",
         "@pip//beautifulsoup4",

@@ -141,7 +141,14 @@ def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
     delivered_models = []
 
     async def mock_deliver(
-        _ember, _cli_session_id, message, model=None, restore_from=None, on_create=None
+        _ember,
+        _cli_session_id,
+        message,
+        model=None,
+        restore_from=None,
+        on_create=None,
+        repo=None,
+        branch=None,
     ):
         delivered_models.append(model)
         return _completed_delivery(message)
@@ -178,6 +185,8 @@ def test_session_start_returns_immediately(monkeypatch, session):
         _model=None,
         restore_from=None,
         on_create=None,
+        repo=None,
+        branch=None,
     ):
         started.set()
         await asyncio.Event().wait()
@@ -205,7 +214,14 @@ def test_session_start_happy_path_persists_result(monkeypatch, session):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
 
     async def mock_deliver(
-        _ember, _cli_session_id, message, _model=None, restore_from=None, on_create=None
+        _ember,
+        _cli_session_id,
+        message,
+        _model=None,
+        restore_from=None,
+        on_create=None,
+        repo=None,
+        branch=None,
     ):
         return _completed_delivery(message)
 
@@ -270,7 +286,14 @@ def test_concurrent_executors_on_first_turn_run_once(monkeypatch, session):
     executions: list[str] = []
 
     async def mock_deliver(
-        _ember, _cli_session_id, message, _model=None, restore_from=None, on_create=None
+        _ember,
+        _cli_session_id,
+        message,
+        _model=None,
+        restore_from=None,
+        on_create=None,
+        repo=None,
+        branch=None,
     ):
         executions.append(message)
         await asyncio.sleep(0.01)
@@ -318,11 +341,53 @@ def _completed_delivery(message: str) -> tuple[Turn, EmberSession]:
     return _completed_turn(message), EmberSession("ember-1", "token-1", None)
 
 
+@pytest.mark.parametrize("repo", ["jomcgi/homelab", None])
+def test_executor_passes_session_repo_to_transport(monkeypatch, session, repo):
+    row = store.create_session(session, "sid-repo", "/workspace", "main", repo=repo)
+    store.create_pending_message(session, row.id, "hello")
+    deliver_kwargs = []
+
+    async def mock_deliver(
+        _ember,
+        _cli_session_id,
+        message,
+        _model=None,
+        restore_from=None,
+        on_create=None,
+        **kwargs,
+    ):
+        deliver_kwargs.append(kwargs)
+        return _completed_delivery(message)
+
+    async def notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    assert len(deliver_kwargs) == 1
+    if repo is None:
+        assert "repo" not in deliver_kwargs[0]
+        assert "branch" not in deliver_kwargs[0]
+    else:
+        assert deliver_kwargs[0]["repo"] == repo
+        assert deliver_kwargs[0]["branch"] == "main"
+
+
 def test_pending_message_executed_in_background(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
 
     async def mock_deliver(
-        _ember, _cli_session_id, message, _model=None, restore_from=None, on_create=None
+        _ember,
+        _cli_session_id,
+        message,
+        _model=None,
+        restore_from=None,
+        on_create=None,
+        repo=None,
+        branch=None,
     ):
         return _completed_delivery(message)
 
@@ -363,6 +428,8 @@ def test_failed_delivery_clears_reused_ember_session(monkeypatch, session):
         _model=None,
         restore_from=None,
         on_create=None,
+        repo=None,
+        branch=None,
     ):
         raise EmberSessionGone("terminal invoke failure")
 
@@ -398,6 +465,8 @@ def test_clear_ember_session_not_called_when_fresh_binding_persisted(
         _model=None,
         restore_from=None,
         on_create=None,
+        repo=None,
+        branch=None,
     ):
         heir = EmberSession("heir-id", "heir-token", None)
         if on_create is not None:
@@ -642,7 +711,14 @@ def test_send_after_cleared_binding_restores_from_prior_lineage(monkeypatch, ses
     )
 
     async def mock_deliver(
-        ember, cli_session_id, message, model=None, restore_from=None, on_create=None
+        ember,
+        cli_session_id,
+        message,
+        model=None,
+        restore_from=None,
+        on_create=None,
+        repo=None,
+        branch=None,
     ):
         deliver_calls.append(
             {
@@ -698,7 +774,14 @@ def test_send_with_live_binding_ignores_prior_lineage(monkeypatch, session):
     deliver_calls = []
 
     async def mock_deliver(
-        ember, cli_session_id, message, model=None, restore_from=None, on_create=None
+        ember,
+        cli_session_id,
+        message,
+        model=None,
+        restore_from=None,
+        on_create=None,
+        repo=None,
+        branch=None,
     ):
         deliver_calls.append(
             {
@@ -741,7 +824,14 @@ def test_two_sends_are_serialized(monkeypatch, session):
     execution_order = []
 
     async def fake_deliver(
-        _ember, _cli_session_id, message, _model=None, restore_from=None, on_create=None
+        _ember,
+        _cli_session_id,
+        message,
+        _model=None,
+        restore_from=None,
+        on_create=None,
+        repo=None,
+        branch=None,
     ):
         execution_order.append(message)
         await asyncio.sleep(0.01)
@@ -781,7 +871,14 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
     executions: list[str] = []
 
     async def fake_deliver(
-        _ember, _cli_session_id, message, _model=None, restore_from=None, on_create=None
+        _ember,
+        _cli_session_id,
+        message,
+        _model=None,
+        restore_from=None,
+        on_create=None,
+        repo=None,
+        branch=None,
     ):
         executions.append(message)
         await asyncio.sleep(0.01)

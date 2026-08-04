@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -224,6 +225,82 @@ def test_list_repos_degrades_when_github_is_down(client, monkeypatch):
         "scotscottmca/parkedlikea",
     ]
     assert all(repo["default_branch"] is None for repo in response.json()["repos"])
+
+
+def test_list_repos_success_cache_hit_and_expiry(client, monkeypatch):
+    repo_ids = [
+        "jomcgi/homelab",
+        "weave-hand/loom",
+        "colincee/homelab",
+        "scotscottmca/parkedlikea",
+    ]
+    calls = []
+    now = 1000.0
+
+    async def github_get(url):
+        calls.append(url)
+        repo_id = url.rsplit("/", 1)[-1]
+        return httpx.Response(200, json={"default_branch": f"branch-{repo_id}"})
+
+    monkeypatch.setattr("agent_sessions.router._DEFAULT_BRANCH_CACHE", {})
+    monkeypatch.setattr("agent_sessions.router.time.monotonic", lambda: now)
+    monkeypatch.setattr("agent_sessions.router._github_get", github_get)
+
+    first = client.get("/api/agents/repos")
+    assert first.status_code == 200
+    assert len(calls) == len(repo_ids)
+    assert [repo["id"] for repo in first.json()["repos"]] == repo_ids
+
+    async def github_failed(url):
+        raise AssertionError(f"unexpected cache miss: {url}")
+
+    monkeypatch.setattr("agent_sessions.router._github_get", github_failed)
+    second = client.get("/api/agents/repos")
+    assert second.json() == first.json()
+    assert len(calls) == len(repo_ids)
+
+    monkeypatch.setattr("agent_sessions.router.time.monotonic", lambda: now + 301)
+    monkeypatch.setattr("agent_sessions.router._github_get", github_get)
+    third = client.get("/api/agents/repos")
+    assert third.json() == first.json()
+    assert len(calls) == len(repo_ids) * 2
+
+
+def test_list_repo_branches_success_with_pagination(client, monkeypatch):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "test-token")
+    page_one = [{"name": f"branch-{index:03d}"} for index in range(100)]
+    page_two = [{"name": "main"}] + [
+        {"name": f"branch-{index:03d}"} for index in range(100, 120)
+    ]
+    calls = []
+
+    async def github_get(url):
+        calls.append(url)
+        if url.endswith("/jomcgi/homelab"):
+            return httpx.Response(200, json={"default_branch": "main"})
+        if "page=2" in url:
+            return httpx.Response(200, json=page_two)
+        return httpx.Response(
+            200,
+            json=page_one,
+            headers={
+                "Link": '<https://api.github.com/repos/jomcgi/homelab/branches?per_page=100&page=2>; rel="next"'
+            },
+        )
+
+    monkeypatch.setattr("agent_sessions.router._github_get", github_get)
+
+    response = client.get("/api/agents/repos/jomcgi/homelab/branches")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["branches"]) == 121
+    assert body["branches"][0] == {"name": "main"}
+    assert body["branches"][1:] == sorted(
+        body["branches"][1:], key=lambda item: item["name"]
+    )
+    assert len(calls) == 3
+    assert "page=2" in calls[-1]
 
 
 def test_list_repo_branches_requires_catalog_and_token(client, monkeypatch):
