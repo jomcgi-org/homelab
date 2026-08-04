@@ -15,6 +15,10 @@ spec:
       port: {{ .Values.service.apiPort }}
       targetPort: api
       protocol: TCP
+    - name: progress
+      port: 8091
+      targetPort: progress
+      protocol: TCP
   selector:
     {{- include "monolith.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: app

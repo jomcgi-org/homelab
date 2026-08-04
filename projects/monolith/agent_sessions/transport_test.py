@@ -226,6 +226,41 @@ def test_deliver_includes_model_when_present(monkeypatch):
     }
 
 
+def test_deliver_includes_progress_token_when_present(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None),
+            "cli-1",
+            "hello",
+            progress_token="progress-1",
+        )
+    )
+    assert json.loads(requests[0].content)["progress_token"] == "progress-1"
+
+
+def test_deliver_omits_progress_token_when_none(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+        )
+    )
+    assert "progress_token" not in json.loads(requests[0].content)
+
+
 def test_deliver_includes_repo_and_branch_when_present(monkeypatch):
     requests = []
 

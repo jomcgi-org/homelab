@@ -61,6 +61,7 @@ multirun(
         "//projects/monolith:image.push",
         "//projects/monolith:image_public.push",
         "//projects/monolith:jobs_image.push",
+        "//projects/monolith:progress_image.push",
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
         "//projects/operators/oci-model-cache:image.push",
         "//projects/platform/signoz-addons/dashboard-sidecar/cmd:image.push",

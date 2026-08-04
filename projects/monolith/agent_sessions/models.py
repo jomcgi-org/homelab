@@ -35,6 +35,7 @@ class AgentSession(SQLModel, table=True):
     # is established (set_ember_session), so a stale prior never shadows one.
     prior_ember_lineage_id: str | None = Field(default=None)
     prior_cli_session_id: str | None = Field(default=None)
+    progress_token: str | None = Field(default=None)
     # BigInteger, not the default Integer: this is epoch MILLISECONDS from the
     # control plane, which overflows int4. The migration already declares BIGINT,
     # but SQLModel maps a plain int to sqlalchemy Integer and emits an explicit
@@ -80,6 +81,7 @@ class PendingMessage(SQLModel, table=True):
     session_id: int = Field(foreign_key="agent_sessions.agent_sessions.id", index=True)
     seq: int
     message_text: str
+    partial_text: str | None = Field(default=None)
     model: str | None = Field(default=None)
     claimed_by_replica: str | None = Field(default=None)
     claimed_at: datetime | None = Field(default=None)  # For lease expiry detection

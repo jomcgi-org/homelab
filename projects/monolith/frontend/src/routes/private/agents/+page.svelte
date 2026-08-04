@@ -547,6 +547,8 @@
               >
               <span class="muted mono">{relativeTime(entry.created_at)}</span>
             </div>
+            {#if entry.partial_text}<pre
+                class="result">{entry.partial_text}</pre>{/if}
           {/each}
         {/if}
       </div>

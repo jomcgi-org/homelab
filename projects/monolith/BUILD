@@ -191,6 +191,21 @@ py_venv_binary(
     ],  # keep
 )
 
+# Progress-ingest entrypoint (ADR agents/051): same source closure as :main,
+# launching app/progress_main.py, a single-route FastAPI listener on :8091.
+# Its own binary/image (mirroring :jobs) because the EmberVM egress allowlist
+# is host:port granular: this port must expose exactly one write-only route,
+# so it cannot share the main API's process or port. No data files: the
+# listener touches only agent_sessions store/models and core.db.
+py_venv_binary(
+    name = "progress",
+    srcs = _BACKEND_SRCS,  # keep
+    imports = ["."],  # keep
+    main = "app/progress_main.py",
+    visibility = ["//:__subpackages__"],
+    deps = [":monolith_backend"],  # keep
+)
+
 # Phase-1 vault-mutation script: walk a vault and inject `visibility:` lines
 # into note frontmatter that lacks the key. Run via `bazel run`:
 #   bazel run //projects/monolith:add_visibility_field -- \
@@ -1821,6 +1836,21 @@ py3_image(
     main = "app/jobs_main.py",
     multiarch_tars = ["@claude_code//:tar"],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/jobs",
+)
+
+# Progress-ingest image (ADR agents/051): identical base/deps to :image,
+# launching app/progress_main.py. Runs as a second container in the API pod on
+# its own port 8091 so the EmberVM egress allowlist entry exposes exactly one
+# write-only route. No claude CLI tar and no SSL cert env: the listener makes
+# no outbound calls at all, it only accepts pushes and writes one column.
+py3_image(
+    name = "progress_image",
+    binary = "//projects/monolith:progress",
+    env = {
+        "PYTHONPATH": "/projects/monolith/progress.runfiles/_main:/projects/monolith/progress.runfiles/_main/projects/monolith",
+    },
+    main = "app/progress_main.py",
+    repository = "ghcr.io/jomcgi/homelab/projects/monolith/progress",
 )
 
 # ---------------------------------------------------------------------------
@@ -4333,6 +4363,30 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         ":pkg_core",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_store_test",
+    srcs = ["agent_sessions/store_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_progress_ingest_test",
+    srcs = ["agent_sessions/progress_ingest_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",

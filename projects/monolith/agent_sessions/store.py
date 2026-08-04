@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, text, update
@@ -31,6 +32,7 @@ def create_session(
         branch=branch,
         repo=repo,
         model=model,
+        progress_token=secrets.token_urlsafe(32),
     )
     session.add(row)
     session.commit()
@@ -327,6 +329,38 @@ def get_pending_message_sync(session_id: int, turn_seq: int) -> PendingMessage |
     """Fetch one pending message using a fresh synchronous database session."""
     with Session(get_engine()) as session:
         return get_pending_message(session, session_id, turn_seq)
+
+
+def write_progress_sync(progress_token: str, partial_text: str) -> bool:
+    """Write guest progress to the active pending message for a session."""
+    with Session(get_engine()) as session:
+        session_row = session.exec(
+            select(AgentSession).where(AgentSession.progress_token == progress_token)
+        ).first()
+        if session_row is None:
+            return False
+
+        row = session.exec(
+            select(PendingMessage)
+            .where(
+                PendingMessage.session_id == session_row.id,
+                PendingMessage.claimed_by_replica.isnot(None),
+            )
+            .order_by(PendingMessage.seq)
+        ).first()
+        if row is None:
+            row = session.exec(
+                select(PendingMessage)
+                .where(PendingMessage.session_id == session_row.id)
+                .order_by(PendingMessage.seq)
+            ).first()
+        if row is None:
+            return False
+
+        row.partial_text = partial_text
+        session.add(row)
+        session.commit()
+        return True
 
 
 def claim_pending_message_for_session_sync(
