@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
@@ -23,9 +26,12 @@ from agent_sessions.mcp import (
 )
 from core.db import get_session
 from faas.embervm_client import EmberVMTransportError
+from goosecracker.repo_catalog import REPO_CATALOG
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["agents"])
+_DEFAULT_BRANCH_CACHE: dict[str, tuple[float, str | None]] = {}
+_REPO_CACHE_TTL = 300.0
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -93,6 +99,7 @@ def _session_payload(
         "local_session_id": row.local_session_id,
         "workspace": row.workspace,
         "branch": row.branch,
+        "repo": row.repo,
         "model": row.model,
         "status": row.status,
         "created_at": _iso(row.created_at),
@@ -120,6 +127,7 @@ class StartRequest(BaseModel):
     model: str | None = None
     workspace: str = "<guest>"
     branch: str = "main"
+    repo: str | None = None
 
 
 class MessageRequest(BaseModel):
@@ -191,6 +199,13 @@ def get_session_detail(
 
 @router.post("/sessions")
 async def start_session(request: StartRequest) -> dict:
+    if request.repo is not None and request.repo not in REPO_CATALOG:
+        return {
+            "accepted": False,
+            "error": (
+                f"unknown repo {request.repo}; catalog: {', '.join(REPO_CATALOG)}"
+            ),
+        }
     try:
         model_family(request.model)
     except ValueError as exc:
@@ -201,12 +216,82 @@ async def start_session(request: StartRequest) -> dict:
         request.workspace,
         request.branch,
         request.model,
+        request.repo,
     )
     turn = await asyncio.to_thread(
         _persist_pending_message, row.id, request.prompt, request.model
     )
     _schedule_next_message(row.id)
     return {"accepted": True, "session_id": row.id, "turn": turn}
+
+
+async def _github_get(url: str) -> httpx.Response:
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return response
+
+
+@router.get("/repos")
+async def list_repos() -> dict:
+    now = time.monotonic()
+    repos = []
+    for repo_id, entry in REPO_CATALOG.items():
+        cached = _DEFAULT_BRANCH_CACHE.get(repo_id)
+        if cached is not None and cached[0] > now:
+            default_branch = cached[1]
+        else:
+            try:
+                response = await _github_get(f"https://api.github.com/repos/{repo_id}")
+                default_branch = response.json().get("default_branch")
+                if not isinstance(default_branch, str):
+                    default_branch = None
+            except Exception:
+                default_branch = None
+            _DEFAULT_BRANCH_CACHE[repo_id] = (now + _REPO_CACHE_TTL, default_branch)
+        repos.append(
+            {
+                "id": repo_id,
+                "description": entry.description,
+                "default_branch": default_branch,
+            }
+        )
+    return {"repos": repos}
+
+
+@router.get("/repos/{owner}/{repo}/branches")
+async def list_repo_branches(owner: str, repo: str) -> dict:
+    repo_id = f"{owner}/{repo}"
+    if repo_id not in REPO_CATALOG:
+        raise HTTPException(status_code=404, detail="Repository not in catalog")
+    if not os.environ.get("GITHUB_API_TOKEN"):
+        raise HTTPException(
+            status_code=503,
+            detail="GITHUB_API_TOKEN is not set",
+        )
+    try:
+        repo_response = await _github_get(f"https://api.github.com/repos/{repo_id}")
+        default_branch = repo_response.json().get("default_branch")
+        if not isinstance(default_branch, str):
+            default_branch = None
+        branches_response = await _github_get(
+            f"https://api.github.com/repos/{repo_id}/branches?per_page=100"
+        )
+        branches = [
+            {"name": branch["name"]}
+            for branch in branches_response.json()
+            if isinstance(branch, dict) and isinstance(branch.get("name"), str)
+        ]
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(
+            status_code=502, detail=f"GitHub API request failed: {exc}"
+        ) from exc
+    branches.sort(key=lambda branch: (branch["name"] != default_branch, branch["name"]))
+    return {"branches": branches, "default_branch": default_branch}
 
 
 @router.post("/sessions/{session_id}/messages")

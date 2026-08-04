@@ -14,6 +14,7 @@ class AgentSession(SQLModel, table=True):
     local_session_id: str = Field(unique=True)
     workspace: str
     branch: str
+    repo: str | None = None
     model: str | None = Field(default=None)
     cli_session_id: str | None = Field(
         default=None

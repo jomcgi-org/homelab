@@ -158,8 +158,8 @@ def test_get_session_not_found(client):
 def test_start_session_happy_path(client, session, monkeypatch):
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model: store.create_session(
-            session, local, workspace, branch, model
+        lambda local, workspace, branch, model, repo: store.create_session(
+            session, local, workspace, branch, model, repo
         ),
     )
     monkeypatch.setattr(
@@ -173,6 +173,67 @@ def test_start_session_happy_path(client, session, monkeypatch):
     body = client.post("/api/agents/sessions", json={"prompt": "Hello"}).json()
     assert body["accepted"] is True
     assert body["turn"] == 1
+
+
+def test_start_session_persists_repo(client, session, monkeypatch):
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_session",
+        lambda local, workspace, branch, model, repo: store.create_session(
+            session, local, workspace, branch, model, repo
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
+
+    body = client.post(
+        "/api/agents/sessions",
+        json={"prompt": "Hello", "repo": "jomcgi/homelab"},
+    ).json()
+    row = session.get(AgentSession, body["session_id"])
+    assert body["accepted"] is True
+    assert row.repo == "jomcgi/homelab"
+    assert client.get("/api/agents/sessions").json()[0]["repo"] == "jomcgi/homelab"
+
+
+def test_start_session_rejects_unknown_repo(client):
+    body = client.post(
+        "/api/agents/sessions", json={"prompt": "Hello", "repo": "bad/repo"}
+    ).json()
+    assert body["accepted"] is False
+    assert body["error"].startswith("unknown repo bad/repo; catalog:")
+
+
+def test_list_repos_degrades_when_github_is_down(client, monkeypatch):
+    async def github_down(url):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr("agent_sessions.router._github_get", github_down)
+    monkeypatch.setattr("agent_sessions.router._DEFAULT_BRANCH_CACHE", {})
+
+    response = client.get("/api/agents/repos")
+    assert response.status_code == 200
+    assert [repo["id"] for repo in response.json()["repos"]] == [
+        "jomcgi/homelab",
+        "weave-hand/loom",
+        "colincee/homelab",
+        "scotscottmca/parkedlikea",
+    ]
+    assert all(repo["default_branch"] is None for repo in response.json()["repos"])
+
+
+def test_list_repo_branches_requires_catalog_and_token(client, monkeypatch):
+    assert (
+        client.get("/api/agents/repos/not-cataloged/repo/branches").status_code == 404
+    )
+    monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
+    response = client.get("/api/agents/repos/jomcgi/homelab/branches")
+    assert response.status_code == 503
+    assert "GITHUB_API_TOKEN" in response.json()["detail"]
 
 
 def test_start_session_model_validation(client):
@@ -261,8 +322,8 @@ def test_mcp_tools_still_work(session, monkeypatch):
     monkeypatch.setattr(
         mcp,
         "_persist_session",
-        lambda local, workspace, branch, model: store.create_session(
-            session, local, workspace, branch, model
+        lambda local, workspace, branch, model, repo=None: store.create_session(
+            session, local, workspace, branch, model, repo
         ),
     )
     monkeypatch.setattr(
