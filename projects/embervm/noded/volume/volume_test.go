@@ -52,6 +52,23 @@ func TestRetirementIntentIsDurableAndSeparateFromWorkspace(t *testing.T) {
 	}
 }
 
+func TestClearRetirementIntentNoOpWhenAbsent(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.CreateSession("wl", "lineage", 4096); err != nil {
+		t.Fatal(err)
+	}
+	// No WriteRetirementIntent call: clearing an intent that was never written
+	// must be a no-op, not an error (#4306 slice 2's adopting Prime calls this
+	// unconditionally on every lineage Prime, adopting or a plain first create,
+	// so the no-intent case must never fail the RPC).
+	if err := m.ClearRetirementIntent("wl", "lineage"); err != nil {
+		t.Fatalf("ClearRetirementIntent with no pending intent: %v", err)
+	}
+	if m.HasRetirementIntent("wl", "lineage") {
+		t.Fatal("clearing an absent intent must not create one")
+	}
+}
+
 func TestLineageAttachLifecycleAndStaleSafety(t *testing.T) {
 	m := NewManager(t.TempDir())
 	if err := m.CreateSession("wl", "lineage", 4096); err != nil {

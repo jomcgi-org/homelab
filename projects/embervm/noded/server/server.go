@@ -968,6 +968,18 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		if err := s.volumes.CreateSession(base.workload, req.GetLineageId(), req.GetVolumeSizeBytes()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)
 		}
+		// #4306 slice 2: cancel any pending node-owned retirement for this lineage
+		// BEFORE the attach (AttachLineage below, after boot) completes. Expiry may
+		// already have enqueued export-then-delete for this lineage (RetireVolume);
+		// a generation adopting it here must cancel that intent early, before the
+		// boot/readiness window below gives the retirement retry sweep a chance to
+		// race it, not just before AttachLineage itself. Called unconditionally: a
+		// first-generation create has no intent to clear, and ClearRetirementIntent
+		// is a no-op in that case (os.IsNotExist), so there is no need to special-
+		// case "adopting" vs "fresh" here.
+		if err := s.volumes.ClearRetirementIntent(base.workload, req.GetLineageId()); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: clear retirement intent: %v", err)
+		}
 	}
 	readyTimeout := primeReadyTimeout(s.cfg, volumeDiskPath)
 

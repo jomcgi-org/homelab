@@ -1794,6 +1794,71 @@ func TestRetireVolumeFastACKDeletesOnlyAfterDurableExport(t *testing.T) {
 	}
 }
 
+// TestPrimeClearsPendingRetirementIntentOnAdopt is #4306 slice 2's groundwork
+// for a future adopting prime (Slice 3): expiry may have already enqueued
+// retirement (RetireVolume writes the intent, then export-then-delete) for a
+// lineage before a new generation primes onto it. The prime must cancel that
+// intent so the retirement retry sweep does not delete the volume out from
+// under the live heir. No CP/proto change and no adoption logic exists yet
+// (nothing drives this path live until Slice 3), so this proves the guard in
+// isolation: pre-arm an intent as if RetireVolume had already run, then prime
+// the same lineage and confirm the intent is gone.
+func TestPrimeClearsPendingRetirementIntentOnAdopt(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	if err := s.volumes.CreateSession("sbx", "lineage-adopt", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.volumes.WriteRetirementIntent("sbx", "lineage-adopt"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.volumes.HasRetirementIntent("sbx", "lineage-adopt") {
+		t.Fatal("retirement intent should be armed before the adopting prime")
+	}
+
+	seedBase(s, "sbx__deadbeef01", "sbx")
+	resp, err := s.Prime(context.Background(), &nodev1.PrimeRequest{
+		SnapshotRef:     "sbx__deadbeef01",
+		LineageId:       "lineage-adopt",
+		VolumeMount:     "/session",
+		VolumeSizeBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("Prime (adopting): %v", err)
+	}
+	if resp.GetVmId() == "" {
+		t.Fatal("Prime returned empty vm_id")
+	}
+	if s.volumes.HasRetirementIntent("sbx", "lineage-adopt") {
+		t.Fatal("adopting prime should have cleared the pending retirement intent")
+	}
+}
+
+// TestPrimeClearRetirementIntentIsANoOpWithoutOne proves the unconditional call
+// on every lineage prime (adopting or a plain first create) is harmless: no
+// intent existed, so nothing must be cleared, and Prime must still succeed.
+func TestPrimeClearRetirementIntentIsANoOpWithoutOne(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+
+	seedBase(s, "sbx__deadbeef02", "sbx")
+	resp, err := s.Prime(context.Background(), &nodev1.PrimeRequest{
+		SnapshotRef:     "sbx__deadbeef02",
+		LineageId:       "lineage-fresh",
+		VolumeMount:     "/session",
+		VolumeSizeBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("Prime (fresh lineage, no pending intent): %v", err)
+	}
+	if resp.GetVmId() == "" {
+		t.Fatal("Prime returned empty vm_id")
+	}
+	if s.volumes.HasRetirementIntent("sbx", "lineage-fresh") {
+		t.Fatal("a fresh lineage prime must not create a retirement intent")
+	}
+}
+
 // TestArtifactPrefixRefusesEmptyVendorForVendorBoundKind proves a vendor-bound
 // kind composes NO prefix when the caller passes an empty vendor, so a caller
 // that forgot to resolve one can never compose an ambiguous (ex-vendor) key.
@@ -2008,5 +2073,67 @@ func TestRunExportJobVolumeExportsWhenBlessed(t *testing.T) {
 
 	if !fs.has("volume/demo-postgres") {
 		t.Fatal("a blessed volume must reach the store via the async queue")
+	}
+}
+
+// TestRunExportJobSkipsAttachedSessionWorkspace is #4306 slice 2's other half:
+// the export worker must never export a SESSION_WORKSPACE whose lineage is
+// currently attached to a live VM. A live guest is the single writer to this
+// image (no generation ledger the way a VOLUME has), so exporting mid-write
+// would produce a torn snapshot. Mirrors RetireVolume's own attached-lineage
+// refusal (store.go's lineageAttached guard) via the same predicate, so the
+// two cannot drift.
+func TestRunExportJobSkipsAttachedSessionWorkspace(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+
+	seedBase(s, "sbx__deadbeef03", "sbx")
+	resp, err := s.Prime(ctx, &nodev1.PrimeRequest{
+		SnapshotRef:     "sbx__deadbeef03",
+		LineageId:       "lineage-live",
+		VolumeMount:     "/session",
+		VolumeSizeBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if resp.GetVmId() == "" {
+		t.Fatal("Prime returned empty vm_id")
+	}
+	if !s.lineageAttached("sbx", "lineage-live") {
+		t.Fatal("precondition: the primed lineage must read as attached")
+	}
+
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-live"}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	s.runExportJob(ctx, exportJob{ref: ref, key: key})
+
+	if fs.has(key) {
+		t.Fatal("export must be skipped while the lineage is attached to a live VM")
+	}
+}
+
+// TestRunExportJobExportsDetachedSessionWorkspace is the paired positive: once
+// a lineage is not attached, the same job proceeds normally, so the guard
+// above cannot pass by refusing every SESSION_WORKSPACE export.
+func TestRunExportJobExportsDetachedSessionWorkspace(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ctx := context.Background()
+
+	if err := s.volumes.CreateSession("sbx", "lineage-detached", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if s.lineageAttached("sbx", "lineage-detached") {
+		t.Fatal("precondition: a never-attached lineage must not read as attached")
+	}
+
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-detached"}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	s.runExportJob(ctx, exportJob{ref: ref, key: key})
+
+	if !fs.has(key) {
+		t.Fatal("a detached lineage's workspace export must proceed")
 	}
 }
