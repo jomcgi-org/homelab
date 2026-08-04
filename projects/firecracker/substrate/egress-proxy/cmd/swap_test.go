@@ -279,9 +279,12 @@ func TestInjectAlwaysPathClaimFailureStillDenies(t *testing.T) {
 
 func TestInjectAlwaysPathOnNonClaimEntry(t *testing.T) {
 	sec := &secretEntry{
-		Header:            "Authorization",
-		ValuePrefix:       "Bearer ",
-		InjectAlwaysPaths: []string{"/backend-api/ps/mcp"},
+		Header:      "Authorization",
+		ValuePrefix: "Bearer ",
+		// The trailing "" pins the fail-open guard: an empty entry (a config
+		// typo, a bare "-" list item rendering as null -> "") must never match,
+		// or it would act as a wildcard for any path-less request.
+		InjectAlwaysPaths: []string{"/backend-api/ps/mcp", ""},
 		value:             "real-token",
 	}
 	tests := []struct {
@@ -290,6 +293,14 @@ func TestInjectAlwaysPathOnNonClaimEntry(t *testing.T) {
 	}{
 		{"listed path, no header", "/backend-api/ps/mcp", true},
 		{"unlisted path, no header", "/backend-api/other", false},
+		// Matching is on req.URL.Path, which excludes the query string, so a
+		// query on an otherwise-listed path must not change the outcome.
+		{"listed path with query string, no header", "/backend-api/ps/mcp?session_id=x", true},
+		// Exact match only: a trailing slash is a different path.
+		{"trailing slash variant, no header", "/backend-api/ps/mcp/", false},
+		// A path-less request (URL.Path == "") must not match the empty entry
+		// in InjectAlwaysPaths above.
+		{"path-less request, no header", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
