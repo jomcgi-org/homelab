@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from goosecracker.dispatch import status  # re-exported
 from goosecracker.recipe_catalog import CATALOG, enabled_enum  # re-exported
-from goosecracker.repo_catalog import describe_repos  # re-exported
+from goosecracker.repo_catalog import REPO_CATALOG, describe_repos  # re-exported
 from goosecracker.router_render import (  # re-exported
     render_plan_file,
     render_router,
@@ -20,6 +20,7 @@ from goosecracker.tiers import features_for_tier, tier_allows  # re-exported
 
 __all__ = [
     "CATALOG",
+    "REPO_CATALOG",
     "describe_repos",
     "enabled_enum",
     "features_for_tier",
