@@ -189,8 +189,11 @@ def _truncate_ring_for_error(ring, max_len=1500):
 def _probe_cli_startup(executable):
     """Run CLI --version as a startup probe, log result, never fail."""
     try:
+        # A version probe reads nothing; close stdin rather than inherit the
+        # shim's, so a never-EOF stdin cannot block it.
         proc = subprocess.run(
             [executable, "--version"],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=CLI_PROBE_TIMEOUT,
@@ -1043,9 +1046,13 @@ wire_api = "responses"
             # sets cwd there regardless.
             command.extend(["--sandbox", "workspace-write", "-C", self.workspace])
             command.append(message)
+        # The turn message rides argv (command above), on both a fresh exec
+        # and exec resume; codex never reads it from stdin, so close it
+        # rather than inherit the shim's never-EOF stdin.
         process = subprocess.Popen(
             command,
             cwd=self.workspace,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=child_env,
@@ -1246,9 +1253,12 @@ class PiProcess:
         if session_id:
             command.extend(["--session", session_id])
         command.append(message)
+        # The turn message rides argv (command above); pi never reads it from
+        # stdin, so close it rather than inherit the shim's never-EOF stdin.
         process = subprocess.Popen(
             command,
             cwd=self.workspace,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=child_env,
