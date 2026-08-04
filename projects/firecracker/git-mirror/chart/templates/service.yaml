@@ -6,11 +6,12 @@ metadata:
     {{- include "git-mirror.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
-  # Node-local traffic policy: Firecracker guests are on node-4 and reach the
-  # mirror via the egress-proxy sidecar on the same node. This ensures git://
-  # connections are served by the co-located pod, not forwarded to a remote
-  # endpoint (which would be unavailable anyway since we pin to a single node).
-  internalTrafficPolicy: Local
+  # Cluster-wide ClusterIP (ADR agents/050). This was internalTrafficPolicy:
+  # Local while the only consumer was a node-4-local guest; claude-runtime
+  # session guests schedule across every firecracker-labeled node, so the
+  # Service must route from any node. What it exposes is anonymous read-only
+  # upload-pack plus receive-pack gated to refs/agents/** by the pre-receive
+  # hook; the hook, not the network boundary, is the write boundary.
   selector:
     {{- include "git-mirror.selectorLabels" . | nindent 4 }}
   ports:
