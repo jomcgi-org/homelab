@@ -536,10 +536,12 @@ async def monolith_agent_detail(session_id: int, turn: int | None = None) -> dic
 async def monolith_agent_session_vms(limit: int = 50, offset: int = 0) -> dict:
     """List the EmberVM session VMs holding claude-runtime workload slots.
 
-    The workload cap counts parked sessions as live, so stale test sessions
-    can deny every new create with a workload_cap 429. This lists the slot
-    holders (state, timestamps, expiry) so the stale ones can be destroyed
-    with monolith-agent-session-destroy.
+    Parked sessions count with banked toward session.maxSessions (the disk
+    bucket) and no longer hold a concurrency.cap slot. Stale parked sessions
+    can still exhaust maxSessions and deny every new create with a
+    session_cap 429. This lists the slot holders (state, timestamps, expiry)
+    either way, so the stale ones can be destroyed with
+    monolith-agent-session-destroy.
     """
     try:
         return await _transport.list_sessions(limit=limit, offset=offset)

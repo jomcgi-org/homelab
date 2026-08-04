@@ -1182,12 +1182,16 @@ egress:
 #
 # Node disk arithmetic, documented so it is bounded rather than discovered (ADR
 # embervm/002 rule 4). memMib is 4096, so a banked session's memory snapshot is
-# worst-case ~4 GiB. maxSessions 4 (live + banked combined) caps the snapshot dir
-# at 4 x 4 GiB = 16 GiB. cap 3 bounds concurrently RUNNING VMs only (parked
-# sessions ride workspace volumes and do not count against it): 3 x 4 GiB = 12
-# GiB worst-case live RAM on the 16gi brick, with placement memory admission as
-# the per-node backstop and room left for the task pools it shares node-4
-# scratch with.
+# worst-case ~4 GiB. maxSessions 8 (live + banked combined; banked also counts
+# parked) caps the snapshot dir at up to 8 x 4 GiB = 32 GiB worst case, less
+# whenever some of that count is parked, since a parked session holds a
+# workspace volume, not a memory snapshot.
+# cap 3 bounds NEW session VMs at create time only (3 x 4 GiB = 12 GiB from
+# creates); it is not a worst-case live RAM figure, because rejoin admits a
+# parked session on placement memory headroom, not on cap, so a wake burst can
+# transiently exceed it. Placement admission is the per-node RAM gate for that
+# burst, worst case bounded by maxSessions (8 x 4 GiB = 32 GiB) on the 16gi
+# brick, with room left for the task pools it shares node-4 scratch with.
 # Raised from cap 1 / maxSessions 2 once the lane earned its keep (a turn reached
 # the API end to end, #4071): one concurrent sandbox and two total sessions meant
 # a single abandoned session locked the workload out, which is how the 429s during

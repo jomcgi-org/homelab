@@ -59,6 +59,7 @@ Baseline: [docs/security.md](../../security.md). No trust boundary changes; this
 | A wake burst of many parked sessions on one workload exceeds `cap` transiently, since rejoin does not re-check it | Medium | Low | Accepted by design (see Rationale for the asymmetry); RAM safety comes from placement's memory-eligible-brick admission on the volume's node, and the per-principal wake-rate limit bounds burst size independently of `cap` |
 | A future consumer wants `live` vs `banked` vs `parked` distinguished in `status.sessions` and finds the merged `banked` number insufficient | Low | Low | Recorded as a named follow-up (see Alternatives); no schema change needed to add the split later since the underlying `SessionStore` counts already track the transition that would feed it |
 | `cap: 3` is itself not a measured ceiling, just a re-derivation of what 2 should have been absent the accounting bug | Low | Low | Same review cadence as any other capacity number in `deploy/values.yaml`; revisit if claude-runtime's real concurrent-VM demand exceeds 3 |
+| The banked TTL sweep (`bankedTtlSeconds`) filters on `:banked` only, so parked sessions are reaped only by `maxLifetimeSeconds` (6h) or explicit destroy | Medium | Medium | Up to `maxSessions` abandoned parked sessions can therefore deny creates with `session_cap` for hours, the same lockout shape this ADR fixes, at a higher threshold; tracked as a follow-up issue (#4305) |
 
 ## Open Questions
 

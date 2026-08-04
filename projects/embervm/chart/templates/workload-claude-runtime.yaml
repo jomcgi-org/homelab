@@ -53,8 +53,8 @@ spec:
     memMib: {{ .Values.claudeRuntimeWorkload.memMib }}
   concurrency:
     # floor is the pristine pool kept warm for fast create (0 here: see values),
-    # cap is the max number of LIVE session VMs. Banked sessions hold only disk
-    # and are bounded separately by session.maxSessions.
+    # cap is the max number of LIVE session VMs. Banked and parked sessions
+    # both hold only disk and are bounded separately by session.maxSessions.
     floor: {{ .Values.claudeRuntimeWorkload.floor }}
     cap: {{ .Values.claudeRuntimeWorkload.cap }}
   session:
