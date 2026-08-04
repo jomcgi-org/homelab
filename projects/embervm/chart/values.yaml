@@ -755,6 +755,11 @@ warmthS3Gc:
   expectedNodes: []
   maxPrefixes: ""
   maxBytes: ""
+  statefulTtlMs: ""
+  sessionTtlMs: ""
+  servingTtlMs: ""
+  sessionWorkspaceTtlMs: ""
+  groupSetTtlMs: ""
   intervalMs: ""
 
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
