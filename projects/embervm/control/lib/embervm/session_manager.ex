@@ -109,12 +109,13 @@ defmodule Embervm.SessionManager do
 
   @doc """
   Creates a session for `workload` on behalf of `principal`. Returns
-  `{:ok, %{session_id, token, expires_at, base_digest, restored}}` (the token
-  is returned ONCE, here), or `{:error, {:denied, reason}}` for a
-  capacity/quota denial (`:session_cap`, `:workload_cap`, `:quota`,
-  `:no_capacity`, `:unknown_workload`, `:not_session_class`) that the router
-  maps to a 429/403. `restored` is always `false` here (no restore requested);
-  see `create/4`.
+  `{:ok, %{session_id, lineage_id, token, expires_at, base_digest, restored}}`
+  (the token is returned ONCE, here; `lineage_id` equals `session_id` for a
+  normal create), or `{:error, {:denied, reason}}` for a capacity/quota denial
+  (`:session_cap`, `:workload_cap`, `:quota`, `:no_capacity`,
+  `:unknown_workload`, `:not_session_class`) that the router maps to a
+  429/403. `restored` is always `false` here (no restore requested); see
+  `create/4`.
   """
   @spec create(GenServer.server(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def create(server \\ __MODULE__, workload, principal) do
@@ -151,6 +152,15 @@ defmodule Embervm.SessionManager do
   `restored` in the returned map is `true` when the inherited workspace was
   actually recovered (attached locally or an S3 restore hit), `false` for a
   genuine blank/miss (tolerated, not an error) or for a normal create.
+
+  The returned map also carries `lineage_id`: the durable workspace handle a
+  caller passes as `restore_lineage` to restore THIS session's generation in
+  a future create. For a normal create it equals `session_id`; for a
+  restoring create it equals the inherited `restore_lineage` (session_id
+  diverges from it instead, per above). A caller chaining generations must
+  track `lineage_id`, not `session_id`: restoring a non-first generation's own
+  `session_id` finds no lineage at all (`:unknown_lineage`), since
+  `get_latest_by_lineage/2` keys strictly on `lineage_id`.
   """
   @spec create(GenServer.server(), String.t(), String.t(), String.t() | nil) ::
           {:ok, map()} | {:error, term()}
@@ -658,7 +668,7 @@ defmodule Embervm.SessionManager do
     end)
   end
 
-  defp spawn_create_worker(state, ref, node_id, dial_id, workload, snapshot_ref, entry, lineage_id, restore_lineage \\ nil) do
+  defp spawn_create_worker(state, ref, node_id, dial_id, workload, snapshot_ref, entry, lineage_id, restore_lineage) do
     owner = self()
     timeout_ref = Process.send_after(owner, {:create_timeout, ref}, @create_worker_timeout_ms)
 
@@ -838,7 +848,7 @@ defmodule Embervm.SessionManager do
   # placement to a specific node, the same way perform_rejoin_prime pins
   # volume_node_id for a rejoin: a restoring create whose fleet facts locate
   # restore_lineage's volume must land where the volume already is.
-  defp place_create(state, workload, entry, pin_node_id \\ nil) do
+  defp place_create(state, workload, entry, pin_node_id) do
     case Scheduler.place_with_demand(%Request{
            table: state.capacity_table,
            workload: workload,
@@ -954,7 +964,7 @@ defmodule Embervm.SessionManager do
   # PR-4 rebinds). If the process fails to start, the durable session is orphaned as
   # a live-but-unrouted row; PR-4 adoption rebinds it from NodeStatus, so we surface
   # the create as failed rather than leave the caller a token to a dead process.
-  defp register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage \\ nil, restored \\ false) do
+  defp register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored) do
     attrs = %{
       tenant: state.tenant,
       principal: principal,

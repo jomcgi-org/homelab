@@ -70,10 +70,13 @@ defmodule Embervm.SessionStore do
   Creates a new session, minting its id and capability token. `attrs` is
   `%{tenant, principal, workload, node_id, vm_id, base_snapshot_ref, base_digest,
   expires_at, lineage_id}`. `lineage_id` is optional and defaults to the minted
-  `session_id` (#4306 slice 1: no adoption path exists yet to pass an existing
-  one, so today the two are always equal). Appends `session_created`
-  (write-through), inserts the ETS hot-set row in `:running` (the create claimed
-  a live VM), records the residency fact, and returns `{:ok, %{session_id,
+  `session_id`; a normal create leaves it absent (the two stay equal). A
+  restoring create (#4306 slice 3, `session_manager.ex`'s `register_and_start`)
+  passes an EXISTING lineage_id explicitly and `session_id` absent, so a fresh
+  session_id is minted while lineage_id stays pinned to the inherited value,
+  the one place the two diverge. Appends `session_created` (write-through),
+  inserts the ETS hot-set row in `:running` (the create claimed a live VM),
+  records the residency fact, and returns `{:ok, %{session_id, lineage_id,
   token, expires_at, base_digest, ...}}`. The plaintext token is returned ONLY
   here and never stored.
   """
@@ -610,6 +613,12 @@ defmodule Embervm.SessionStore do
 
     reply = %{
       session_id: session_id,
+      # #4306 slice 3 review fix (item B): the durable workspace handle a
+      # caller restores via for the NEXT generation. == session_id for a
+      # normal create; == the inherited restore_lineage for a restoring one
+      # (session_manager.ex's register_and_start, the only caller that ever
+      # diverges the two).
+      lineage_id: lineage_id,
       token: token,
       expires_at: session.expires_at,
       base_digest: session.base_digest,

@@ -29,7 +29,15 @@ defmodule Embervm.RouterTest do
     def create(_srv, "wl-ok", _principal, _restore_lineage),
       do:
         {:ok,
-         %{session_id: "s-live", token: "sess-token-live", expires_at: 9_000_000, base_digest: "sha256:x", state: :running, restored: false}}
+         %{
+           session_id: "s-live",
+           lineage_id: "s-live",
+           token: "sess-token-live",
+           expires_at: 9_000_000,
+           base_digest: "sha256:x",
+           state: :running,
+           restored: false
+         }}
 
     def create(_srv, "wl-cap", _principal, _restore_lineage), do: {:error, {:denied, :session_cap}}
     def create(_srv, "wl-vmcap", _principal, _restore_lineage), do: {:error, {:denied, :workload_cap}}
@@ -38,11 +46,21 @@ defmodule Embervm.RouterTest do
     # #4306 slice 3: restore_lineage-carrying creates. wl-restore-ok only
     # returns restored: true when it actually RECEIVED restore_lineage (a
     # binary), so the test proves the router threads the body field through
-    # rather than the fake just always answering true.
+    # rather than the fake just always answering true. lineage_id echoes the
+    # RECEIVED restore_lineage (item B): the response must expose the same
+    # inherited lineage handle the caller sent, not the fresh session_id.
     def create(_srv, "wl-restore-ok", _principal, restore_lineage) when is_binary(restore_lineage) and restore_lineage != "",
       do:
         {:ok,
-         %{session_id: "s-restored", token: "sess-token-restored", expires_at: 9_000_000, base_digest: "sha256:x", state: :running, restored: true}}
+         %{
+           session_id: "s-restored",
+           lineage_id: restore_lineage,
+           token: "sess-token-restored",
+           expires_at: 9_000_000,
+           base_digest: "sha256:x",
+           state: :running,
+           restored: true
+         }}
 
     def create(_srv, "wl-unknown-lineage", _principal, _restore_lineage), do: {:error, {:denied, :unknown_lineage}}
     def create(_srv, "wl-lineage-workload-mismatch", _principal, _restore_lineage), do: {:error, {:denied, :lineage_workload_mismatch}}
@@ -666,6 +684,10 @@ defmodule Embervm.RouterTest do
     assert resp.status == 201
     body = json(resp.body)
     assert body["session_id"] == "s-live"
+    # #4306 slice 3 review fix (item B): a normal create's lineage_id equals
+    # its session_id, and the RESPONSE (not just the internal created map)
+    # must expose it, since Slice 4 restores off this field.
+    assert body["lineage_id"] == "s-live"
     assert body["session_token"] == "sess-token-live"
     assert body["state"] == "running"
   end
@@ -706,6 +728,11 @@ defmodule Embervm.RouterTest do
     body = json(resp.body)
     assert body["session_id"] == "s-restored"
     assert body["restored"] == true
+    # #4306 slice 3 review fix (item B): the response's lineage_id is the
+    # INHERITED lineage handle, not the fresh session_id -- the divergence a
+    # Slice 4 caller chaining generations must see to restore again.
+    assert body["lineage_id"] == "lineage-abc"
+    assert body["session_id"] != body["lineage_id"]
   end
 
   test "a normal create (no restore_lineage body) reports restored: false" do
