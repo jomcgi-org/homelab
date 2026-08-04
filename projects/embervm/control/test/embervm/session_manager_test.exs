@@ -992,6 +992,131 @@ defmodule Embervm.SessionManagerTest do
     assert row.lineage_id == row.session_id
   end
 
+  # Review fix 1 (HIGH, PR #4313 hard review): a COLD restore (no
+  # session_volumes fact anywhere reports the lineage, the exact
+  # after-eviction S3-only case) must NOT dial the bare node name.
+  # dial_for_session_volume fails OPEN to the bare node_id on a miss, and the
+  # real fleet's channel_fun rejects a bare node dial with :unknown_node (the
+  # node name is an anchor, not a dial key), which turned a recoverable S3
+  # restore into a hard denial. A permissive channel_fun (like fake_channel_fun,
+  # used everywhere else in this file) accepts ANY string and hides this bug
+  # entirely, so this test uses a STRICT stub that only accepts the resolved
+  # INSTANCE dial place_create actually placed on.
+  test "cold restore dials the placed INSTANCE, never the bare node name" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+
+    strict_channel_fun = fn node ->
+      Agent.update(dialed, &[node | &1])
+
+      case node do
+        "node-4/inst-a" -> {:ok, :fake_channel}
+        "node-4" -> {:error, :unknown_node}
+        other -> {:error, {:unexpected_dial, other}}
+      end
+    end
+
+    ctx =
+      start_stack(
+        channel_fun: strict_channel_fun,
+        prime_fun: fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-cold-restore"}} end,
+        restore_artifact_fun: fn _ch, _req -> {:ok, %{}} end
+      )
+
+    wl = "wl-restore-cold"
+
+    WorkloadCatalog.upsert(ctx.cat_table, wl, %{
+      name: wl,
+      namespace: "embervm",
+      class: "session",
+      image_ref: "img@sha256:abc",
+      invoke_path: "/",
+      timeout_ms: 90_000,
+      cap: 8,
+      floor: 1,
+      session: %{
+        idle_bank_seconds: 300,
+        max_lifetime_seconds: 3600,
+        banked_ttl_seconds: 3600,
+        max_sessions: 16,
+        invoke_queue_cap: 4
+      },
+      persistence: %{memory: false, filesystem: %{enabled: true, size_bytes: 1_000_000}}
+    })
+
+    # ONE brick for this workload, with a real instance_id distinct from the
+    # bare node name (the shape a real co-located-instance node reports).
+    # session_volumes defaults to [] (put_brick), so no fact locates this
+    # lineage anywhere: a genuine cold restore.
+    put_brick(ctx, wl, "inst-a")
+
+    {:ok, original} = SessionManager.create(ctx.mgr, wl, "p1")
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    Agent.update(dialed, fn _ -> [] end)
+
+    assert {:ok, restored} = SessionManager.create(ctx.mgr, wl, "p1", original.session_id)
+    assert restored.restored == true
+
+    dials = Agent.get(dialed, & &1)
+    assert "node-4/inst-a" in dials
+    refute "node-4" in dials
+  end
+
+  # Review fix 2 (HIGH, PR #4313 hard review): a TOCTOU window. Two restoring
+  # creates for the SAME lineage racing (a client retrying a slow cold-boot
+  # restore) must not both proceed: validate_restore_lineage only sees the
+  # durable heir row, which does not exist until the WINNER's finish_create
+  # runs, tens of seconds later. Mirrors "create async completes slower
+  # claim/prime without blocking" above: a blocking prime_fun run under
+  # Task.async proves the manager stays responsive to a SECOND synchronous
+  # call while the first worker is still mid-flight.
+  test "a second restoring create of the same in-flight lineage is denied :lineage_restore_in_flight" do
+    parent = self()
+
+    prime_fun = fn _ch, _req ->
+      send(parent, :restore_prime_started)
+      Process.sleep(200)
+      {:ok, %PrimeResponse{vm_id: "vm-inflight-winner"}}
+    end
+
+    ctx = start_stack(prime_fun: prime_fun, channel_fun: fake_channel_fun())
+    original = create_persistence_session(ctx)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+
+    first =
+      Task.async(fn ->
+        SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
+      end)
+
+    assert_receive :restore_prime_started, 1_000
+
+    # The first restoring create's worker is blocked in prime_fun (async, off
+    # the manager process): its create_inflight entry is already written, and
+    # the manager itself is free to process this SECOND call synchronously,
+    # exactly like reconcile does in the mirrored test above.
+    assert {:error, {:denied, :lineage_restore_in_flight}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
+
+    assert {:ok, winner} = Task.await(first, 2_000)
+    assert winner.restored == false
+    assert winner.session_id != original.session_id
+  end
+
+  test "a restoring create is allowed once no restore of that lineage is in flight" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-inflight-cleared"), channel_fun: fake_channel_fun())
+    original = create_persistence_session(ctx)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+
+    # Completes synchronously (no gate): by the time create/4 returns,
+    # finish_create has already popped this ref out of create_inflight, so a
+    # SUBSEQUENT restore of the now-terminal result must not be falsely
+    # denied as still in flight.
+    assert {:ok, first} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, first.session_id)
+
+    assert {:ok, second} = SessionManager.create(ctx.mgr, "wl-persist", "p1", first.session_id)
+    assert second.session_id != first.session_id
+  end
+
   test "orphan session volume with no row gets first-seen grace" do
     parent = self()
     {:ok, mono} = Agent.start_link(fn -> -800_000 end)

@@ -48,6 +48,11 @@ defmodule Embervm.RouterTest do
     def create(_srv, "wl-lineage-workload-mismatch", _principal, _restore_lineage), do: {:error, {:denied, :lineage_workload_mismatch}}
     def create(_srv, "wl-lineage-principal-mismatch", _principal, _restore_lineage), do: {:error, {:denied, :lineage_principal_mismatch}}
     def create(_srv, "wl-lineage-live-heir", _principal, _restore_lineage), do: {:error, {:denied, :lineage_live_heir}}
+
+    # #4306/#4313 review fix 2: TOCTOU guard denial.
+    def create(_srv, "wl-lineage-restore-in-flight", _principal, _restore_lineage),
+      do: {:error, {:denied, :lineage_restore_in_flight}}
+
     def create(_srv, _wl, _principal, _restore_lineage), do: {:error, {:denied, :unknown_workload}}
 
     def invoke(_srv, "s-live", _req), do: {:ok, %{status_code: 200, headers: %{"content-type" => "text/plain"}, body: "echoed"}}
@@ -742,6 +747,21 @@ defmodule Embervm.RouterTest do
     live_heir = req(:post, "/v1/workloads/wl-lineage-live-heir/sessions", auth("good"), body)
     assert live_heir.status == 409
     assert json(live_heir.body)["reason"] == "lineage_live_heir"
+    assert json(live_heir.body)["retryable"] == false
+  end
+
+  test "restore_lineage in-flight guard denial is 409 and retryable (#4306/#4313 review fix 2)" do
+    with_session_fakes()
+
+    resp =
+      req(:post, "/v1/workloads/wl-lineage-restore-in-flight/sessions", auth("good"), ~s({"restore_lineage": "lineage-x"}))
+
+    assert resp.status == 409
+    body = json(resp.body)
+    assert body["reason"] == "lineage_restore_in_flight"
+    # Unlike lineage_live_heir (a committed heir, not worth retrying), an
+    # in-flight restore is transient: the client may simply retry.
+    assert body["retryable"] == true
   end
 
   test "invoke is gated on the SESSION token: a management token alone is rejected 403" do
