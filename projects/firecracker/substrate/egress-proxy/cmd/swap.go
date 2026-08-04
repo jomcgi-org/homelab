@@ -156,6 +156,12 @@ type secretEntry struct {
 // connector client), an exact match against req.URL.Path.
 func (e *secretEntry) injectAlwaysPath(path string) bool {
 	for _, p := range e.InjectAlwaysPaths {
+		// An empty entry (a bare "-" list item rendering as null -> "") is a
+		// config error, not a wildcard: skip it so it cannot match a path-less
+		// (e.g. CONNECT) request and inject the credential.
+		if p == "" {
+			continue
+		}
 		if p == path {
 			return true
 		}
