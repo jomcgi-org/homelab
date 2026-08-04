@@ -180,6 +180,10 @@ defmodule Embervm.S3WarmthGc do
       ttls: Map.merge(@default_ttls, Keyword.get(opts, :ttls, %{})),
       max_prefixes: Keyword.get(opts, :max_prefixes, @max_prefixes),
       max_bytes: Keyword.get(opts, :max_bytes, @max_bytes),
+      # Explicit operator statement that a workload class is retired (its
+      # store is legitimately empty) and its S3 leftovers are reapable;
+      # without it an empty store is treated as not-yet-rebuilt and aborts.
+      allow_empty_kinds: MapSet.new(Keyword.get(opts, :allow_empty_kinds, [])),
       vendors: Keyword.get(opts, :vendors, @vendors),
       sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, @sweep_interval_ms),
       # Monotonic clock (NodeCapacity.updated_at is monotonic ms) + wall clock
@@ -231,7 +235,7 @@ defmodule Embervm.S3WarmthGc do
          {:ok, workspace_keys} <- list_or_abort(state, "session-workspace/"),
          {:ok, group_keys} <- list_or_abort(state, "group_set/"),
          {:ok, snapshot} <- cp_snapshot(state),
-         :ok <- check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys) do
+         :ok <- check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys, state.allow_empty_kinds) do
       {candidates, ambiguous} = parse_candidates(state, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys)
       {eligible, held} = build_plan(state, snapshot, candidates)
       plan = apply_caps(state, eligible)
@@ -427,18 +431,18 @@ defmodule Embervm.S3WarmthGc do
   # AT ALL (not merely nothing non-terminal: terminal history counts as "the
   # store has rebuilt"), the CP state is suspect (mid-rebuild, wrong op-log,
   # fresh install against an old bucket). Never treat empty as all-orphaned.
-  defp check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys) do
+  defp check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys, allow_empty_kinds) do
     cond do
-      stateful_keys != [] and snapshot.stateful_count == 0 ->
+      stateful_keys != [] and snapshot.stateful_count == 0 and not MapSet.member?(allow_empty_kinds, :stateful) ->
         abort(:empty_cp_state, "S3 holds stateful/ objects but StatefulStore tracks no instances at all")
 
-      group_keys != [] and snapshot.group_count == 0 ->
+      group_keys != [] and snapshot.group_count == 0 and not MapSet.member?(allow_empty_kinds, :group) ->
         abort(:empty_cp_state, "S3 holds group_set/ objects but GroupStore tracks no instances at all")
 
-      (session_keys != [] or workspace_keys != []) and snapshot.session_count == 0 ->
+      (session_keys != [] or workspace_keys != []) and snapshot.session_count == 0 and not MapSet.member?(allow_empty_kinds, :session) ->
         abort(:empty_cp_state, "S3 holds session/ or session-workspace/ objects but SessionStore tracks no rows at all")
 
-      serving_keys != [] and snapshot.serving_count == 0 ->
+      serving_keys != [] and snapshot.serving_count == 0 and not MapSet.member?(allow_empty_kinds, :serving) ->
         abort(:empty_cp_state, "S3 holds serving/ objects but ServingStore tracks no rows at all")
 
       true ->

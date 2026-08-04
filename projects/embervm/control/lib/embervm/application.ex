@@ -597,6 +597,7 @@ defmodule Embervm.Application do
       endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
       bucket: store_bucket(),
       expected_nodes: warmth_s3_gc_expected_nodes(),
+      allow_empty_kinds: warmth_s3_gc_allow_empty_kinds(),
       max_prefixes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_PREFIXES"),
       max_bytes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_BYTES"),
       ttls: warmth_s3_gc_ttls(),
@@ -646,6 +647,21 @@ defmodule Embervm.Application do
     |> String.split(",", trim: true)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
+  end
+
+  defp warmth_s3_gc_allow_empty_kinds do
+    allowed = %{"stateful" => :stateful, "group" => :group, "session" => :session, "serving" => :serving}
+
+    trimmed_env("EMBERVM_WARMTH_S3_GC_ALLOW_EMPTY_KINDS")
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(fn token ->
+      case Map.fetch(allowed, token) do
+        {:ok, kind} -> kind
+        :error -> raise ArgumentError, "invalid EMBERVM_WARMTH_S3_GC_ALLOW_EMPTY_KINDS kind: #{inspect(token)}"
+      end
+    end)
   end
 
   # Dispatcher tuning from the chart (values -> env). The share fraction, when

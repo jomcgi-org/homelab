@@ -394,6 +394,10 @@ spec:
             - name: EMBERVM_WARMTH_S3_GC_MAX_PREFIXES
               value: {{ .Values.warmthS3Gc.maxPrefixes | quote }}
             {{- end }}
+            {{- if .Values.warmthS3Gc.allowEmptyKinds }}
+            - name: EMBERVM_WARMTH_S3_GC_ALLOW_EMPTY_KINDS
+              value: {{ .Values.warmthS3Gc.allowEmptyKinds | quote }}
+            {{- end }}
             {{- if .Values.warmthS3Gc.maxBytes }}
             - name: EMBERVM_WARMTH_S3_GC_MAX_BYTES
               value: {{ .Values.warmthS3Gc.maxBytes | quote }}

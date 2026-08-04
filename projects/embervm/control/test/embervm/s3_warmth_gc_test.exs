@@ -598,6 +598,59 @@ defmodule Embervm.S3WarmthGcTest do
       assert deleted(agent) == []
     end
 
+    test "allow_empty_kinds permits retired empty GroupStore and reclaims old group prefixes" do
+      group_prefixes = for ref <- 1..8, do: "group_set/wl/group-old-#{ref}"
+
+      objects =
+        Enum.reduce(group_prefixes, %{}, fn prefix, acc ->
+          Map.merge(acc, artifact(prefix, @wall - 8 * @day, div(18 * 1024 * 1024 * 1024, 8)))
+        end)
+
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+          group_store: start_store([]),
+          session_store: start_store([]),
+          serving_store: start_store([]),
+          allow_empty_kinds: [:group],
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      # All eight tie on created-at, so deletion order among them is
+      # arbitrary: assert the full set, not the order.
+      assert Enum.sort(Enum.map(result.plan, & &1.prefix)) == group_prefixes
+      assert Enum.sort(result.deleted) == group_prefixes
+      assert deleted(agent) != []
+    end
+
+    test "empty GroupStore still aborts without allow_empty_kinds" do
+      prefix = "group_set/wl/group-old"
+      {agent, s3} = new_s3(artifact(prefix, @wall - 8 * @day, 18 * 1024 * 1024 * 1024))
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+          group_store: start_store([]),
+          session_store: start_store([]),
+          serving_store: start_store([]),
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:error, :empty_cp_state} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
     test "empty session, serving, and workspace CP stores abort when S3 has those kinds" do
       objects =
         artifact("session/amd/wl/session-empty", @wall - 8 * @day)

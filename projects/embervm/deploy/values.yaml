@@ -247,6 +247,15 @@ warmthRetention:
 # listed node must be present and fresh in the CP's capacity facts or the
 # sweep (dry-run included) aborts.
 warmthS3Gc:
+  # S3 GC arming (Joe 2026-08-04): allowEmptyKinds escape for retired scratch-k8s
+  # composite demo (8 orphaned group_set refs / 18 GiB backlog). Dry-run sweep
+  # measured ~2.29 TiB / 4611 stateful refs past the 8h TTL. Caps tuned for
+  # ~1-day backlog drain at hourly sweep rate. Rollback: set enabled to ""
+  # and bump the chart.
+  allowEmptyKinds: "group"
+  enabled: "1"
+  maxPrefixes: "200"
+  maxBytes: "107374182400"
   expectedNodes:
     - node-1
     - node-2
