@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
@@ -14,7 +14,6 @@ from agent_sessions import model_family, store
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
     _clear_ember_bindings_for,
-    _clear_ember_bindings_for_session,
     _load_session_row,
     _persist_pending_message,
     _persist_session,
@@ -79,7 +78,7 @@ def _aggregate_statement(status: str | None = None):
         )
         .outerjoin(turns, turns.c.session_id == AgentSession.id)
         .outerjoin(pending, pending.c.session_id == AgentSession.id)
-        .order_by(AgentSession.last_turn_at.desc().nullslast())
+        .order_by(AgentSession.last_turn_at.desc())
     )
     if status is not None:
         statement = statement.where(AgentSession.status == status)
@@ -139,21 +138,20 @@ def list_sessions(
 
 @router.get("/sessions/{session_id}")
 def get_session_detail(
-    session_id: int, session: Session = Depends(get_session)
+    session_id: int,
+    after_seq: int | None = Query(default=None, ge=0),
+    session: Session = Depends(get_session),
 ) -> dict:
     result = session.exec(
         _aggregate_statement().where(AgentSession.id == session_id)
     ).first()
     if result is None:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="Agent session not found")
     row, turn_count, total_cost_usd, pending_count = result
-    turns = session.exec(
-        select(AgentTurn)
-        .where(AgentTurn.session_id == session_id)
-        .order_by(AgentTurn.seq)
-    ).all()
+    turns_statement = select(AgentTurn).where(AgentTurn.session_id == session_id)
+    if after_seq is not None:
+        turns_statement = turns_statement.where(AgentTurn.seq > after_seq)
+    turns = session.exec(turns_statement.order_by(AgentTurn.seq)).all()
     pending = session.exec(
         select(PendingMessage)
         .where(PendingMessage.session_id == session_id)
@@ -195,20 +193,20 @@ def get_session_detail(
 async def start_session(request: StartRequest) -> dict:
     try:
         model_family(request.model)
-        row = await asyncio.to_thread(
-            _persist_session,
-            str(uuid4()),
-            request.workspace,
-            request.branch,
-            request.model,
-        )
-        turn = await asyncio.to_thread(
-            _persist_pending_message, row.id, request.prompt, request.model
-        )
-        _schedule_next_message(row.id)
-        return {"accepted": True, "session_id": row.id, "turn": turn}
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
+    row = await asyncio.to_thread(
+        _persist_session,
+        str(uuid4()),
+        request.workspace,
+        request.branch,
+        request.model,
+    )
+    turn = await asyncio.to_thread(
+        _persist_pending_message, row.id, request.prompt, request.model
+    )
+    _schedule_next_message(row.id)
+    return {"accepted": True, "session_id": row.id, "turn": turn}
 
 
 @router.post("/sessions/{session_id}/messages")
@@ -241,16 +239,18 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: int, ember_session_id: str | None = None) -> dict:
+async def delete_session(session_id: int) -> dict:
     try:
-        if ember_session_id is not None:
-            result = await _transport.destroy_session(ember_session_id)
-            result["cleared_bindings"] = await asyncio.to_thread(
-                _clear_ember_bindings_for, ember_session_id
-            )
-            return result
-        await asyncio.to_thread(_clear_ember_bindings_for_session, session_id)
-        return {}
+        row = await asyncio.to_thread(_load_session_row, session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Agent session not found")
+        if row.ember_session_id is None:
+            return {}
+        result = await _transport.destroy_session(row.ember_session_id)
+        result["cleared_bindings"] = await asyncio.to_thread(
+            _clear_ember_bindings_for, row.ember_session_id
+        )
+        return result
     except EmberVMTransportError as exc:
         return {"error": str(exc)}
 

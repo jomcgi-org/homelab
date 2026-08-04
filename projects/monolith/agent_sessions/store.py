@@ -226,14 +226,19 @@ def lexical_search(session: Session, query_text: str, limit: int = 20) -> list[d
 
     sql = text(
         "WITH q AS (SELECT websearch_to_tsquery('english', :q) AS q) "
+        "SELECT ranked.session_id, ranked.local_session_id, ranked.workspace, "
+        "ranked.seq, ranked.created_at, ranked.rank, "
+        "ts_headline('english', ranked.prompt || ' ' || ranked.result_text, "
+        "ranked.query, 'MaxWords=20,MinWords=3,ShortWord=0,StartSel=,StopSel=') "
+        "AS snippet FROM ("
         "SELECT t.session_id, s.local_session_id, s.workspace, t.seq, "
-        "t.created_at, ts_rank_cd(t.fts_vector, q.q) AS rank, "
-        "ts_headline('english', t.prompt || ' ' || t.result_text, q.q, "
-        "'MaxWords=20,MinWords=3,ShortWord=0') AS snippet "
+        "t.created_at, t.prompt, t.result_text, q.q AS query, "
+        "ts_rank_cd(t.fts_vector, q.q) AS rank "
         "FROM agent_sessions.agent_turns t "
         "JOIN agent_sessions.agent_sessions s ON t.session_id = s.id, q "
         "WHERE t.fts_vector @@ q.q "
         "ORDER BY rank DESC, t.created_at DESC LIMIT :limit"
+        ") AS ranked"
     )
     result = session.exec(sql, params={"q": query_text, "limit": limit})
     keys = (
