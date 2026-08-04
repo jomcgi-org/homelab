@@ -331,36 +331,62 @@ def get_pending_message_sync(session_id: int, turn_seq: int) -> PendingMessage |
         return get_pending_message(session, session_id, turn_seq)
 
 
-def write_progress_sync(progress_token: str, partial_text: str) -> bool:
-    """Write guest progress to the active pending message for a session."""
+def write_progress_sync(progress_token: str, partial_text: str) -> str:
+    """Write guest progress to the active pending message.
+
+    Returns ``ok`` when a row was updated, ``unknown_token`` when the token
+    is not in ``agent_sessions``, and ``no_row`` when no pending row exists.
+    """
     with Session(get_engine()) as session:
         session_row = session.exec(
-            select(AgentSession).where(AgentSession.progress_token == progress_token)
+            select(AgentSession.id).where(AgentSession.progress_token == progress_token)
         ).first()
         if session_row is None:
-            return False
+            return "unknown_token"
+        session_id = session_row
 
-        row = session.exec(
-            select(PendingMessage)
+    with Session(get_engine()) as session:
+        stmt = (
+            update(PendingMessage)
             .where(
-                PendingMessage.session_id == session_row.id,
+                PendingMessage.session_id == session_id,
                 PendingMessage.claimed_by_replica.isnot(None),
             )
+            .values(partial_text=partial_text)
+        )
+        result = session.execute(stmt)
+        session.commit()
+        if result.rowcount > 0:
+            return "ok"
+
+        lowest_seq = session.exec(
+            select(PendingMessage.seq)
+            .where(PendingMessage.session_id == session_id)
             .order_by(PendingMessage.seq)
         ).first()
-        if row is None:
-            row = session.exec(
-                select(PendingMessage)
-                .where(PendingMessage.session_id == session_row.id)
-                .order_by(PendingMessage.seq)
-            ).first()
-        if row is None:
-            return False
-
-        row.partial_text = partial_text
-        session.add(row)
+        if lowest_seq is None:
+            return "no_row"
+        stmt = (
+            update(PendingMessage)
+            .where(
+                PendingMessage.session_id == session_id,
+                PendingMessage.seq == lowest_seq,
+            )
+            .values(partial_text=partial_text)
+        )
+        result = session.execute(stmt)
         session.commit()
-        return True
+        return "ok" if result.rowcount > 0 else "no_row"
+
+
+def _persist_progress_token_sync(session_id: int, progress_token: str) -> None:
+    """Mint and persist a progress token for a pre-migration session."""
+    with Session(get_engine()) as session:
+        row = session.get(AgentSession, session_id)
+        if row is not None and row.progress_token is None:
+            row.progress_token = progress_token
+            session.add(row)
+            session.commit()
 
 
 def claim_pending_message_for_session_sync(

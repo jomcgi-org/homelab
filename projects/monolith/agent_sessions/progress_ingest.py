@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import time
+from threading import Lock
+
 from fastapi import FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from agent_sessions import store
-from agent_sessions.models import AgentSession
-from core.db import get_engine
+
+_token_last_write: dict[str, float] = {}
+_token_lock = Lock()
+_MAX_TRACKED_TOKENS = 10000
 
 
 class ProgressRequest(BaseModel):
@@ -14,6 +19,27 @@ class ProgressRequest(BaseModel):
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+
+class ContentLengthCheckMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # Bodyless methods pass through: kubelet's GET /healthz probes send no
+        # Content-Length, and a 411 here would fail liveness forever.
+        if request.method in ("GET", "HEAD"):
+            return await call_next(request)
+        content_length = request.headers.get("content-length")
+        if content_length is None:
+            return Response(status_code=411)
+        try:
+            length = int(content_length)
+            if length > 262144:
+                return Response(status_code=413)
+        except ValueError:
+            return Response(status_code=411)
+        return await call_next(request)
+
+
+app.add_middleware(ContentLengthCheckMiddleware)
 
 
 @app.get("/healthz")
@@ -33,18 +59,20 @@ def ingest_progress(
     if len(request.partial_text.encode("utf-8")) > 262144:
         raise HTTPException(status_code=413, detail="partial_text is too large")
 
-    with Session(get_engine()) as session:
-        known = session.exec(
-            select(AgentSession.id).where(AgentSession.progress_token == progress_token)
-        ).first()
-    if known is None:
+    with _token_lock:
+        now = time.monotonic()
+        last_write = _token_last_write.get(progress_token)
+        if last_write is not None and (now - last_write) < 0.3:
+            return Response(status_code=204)
+
+        result = store.write_progress_sync(progress_token, request.partial_text)
+
+        _token_last_write[progress_token] = now
+        if len(_token_last_write) > _MAX_TRACKED_TOKENS:
+            oldest_token = min(_token_last_write, key=_token_last_write.get)
+            del _token_last_write[oldest_token]
+
+    if result == "unknown_token":
         raise HTTPException(status_code=401, detail="Invalid bearer token")
 
-    store.write_progress_sync(progress_token, request.partial_text)
     return Response(status_code=204)
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8091)

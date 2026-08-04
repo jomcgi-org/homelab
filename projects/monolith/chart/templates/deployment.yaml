@@ -493,24 +493,26 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-pg-app
                   key: uri
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: progress
-            initialDelaySeconds: 2
-            periodSeconds: 10
+          # No readinessProbe on purpose: pod readiness requires EVERY
+          # container ready, so a slow or hung listener would pull the backend
+          # and frontend out of the Service endpoints with it. Liveness alone
+          # restarts a wedged listener without gating the pod; timeouts mirror
+          # the backend probe's rationale above (default 1s trips on GC or
+          # scheduler hiccups).
           livenessProbe:
             httpGet:
               path: /healthz
               port: progress
             initialDelaySeconds: 5
             periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             requests:
               memory: "64Mi"
               cpu: "20m"
             limits:
-              memory: "128Mi"
+              memory: "256Mi"
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
         - name: frontend

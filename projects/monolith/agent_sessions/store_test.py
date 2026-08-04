@@ -58,7 +58,7 @@ def test_write_progress_sync_updates_claimed_row(monkeypatch):
             )
             session.commit()
 
-        assert store.write_progress_sync("token", "working") is True
+        assert store.write_progress_sync("token", "working") == "ok"
         with Session(engine) as session:
             rows = session.exec(
                 select(PendingMessage).order_by(PendingMessage.seq)
@@ -69,15 +69,15 @@ def test_write_progress_sync_updates_claimed_row(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_write_progress_sync_unknown_token_returns_false(monkeypatch):
+def test_write_progress_sync_unknown_token_returns_unknown_token(monkeypatch):
     engine, schemas = _database(monkeypatch)
     try:
-        assert store.write_progress_sync("missing", "working") is False
+        assert store.write_progress_sync("missing", "working") == "unknown_token"
     finally:
         _restore_schemas(schemas)
 
 
-def test_write_progress_sync_without_pending_row_returns_false(monkeypatch):
+def test_write_progress_sync_without_pending_row_returns_no_row(monkeypatch):
     engine, schemas = _database(monkeypatch)
     try:
         with Session(engine) as session:
@@ -90,6 +90,50 @@ def test_write_progress_sync_without_pending_row_returns_false(monkeypatch):
                 )
             )
             session.commit()
-        assert store.write_progress_sync("token", "working") is False
+        assert store.write_progress_sync("token", "working") == "no_row"
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_write_progress_sync_falls_back_to_unclaimed_row(monkeypatch):
+    """Fallback updates lowest seq unclaimed row when no claimed row exists."""
+    engine, schemas = _database(monkeypatch)
+    try:
+        with Session(engine) as session:
+            agent = AgentSession(
+                local_session_id="local",
+                workspace="workspace",
+                branch="main",
+                progress_token="token",
+            )
+            session.add(agent)
+            session.commit()
+            session.refresh(agent)
+            session.add_all(
+                [
+                    PendingMessage(
+                        session_id=agent.id,
+                        seq=1,
+                        message_text="first",
+                        claimed_by_replica=None,
+                    ),
+                    PendingMessage(
+                        session_id=agent.id,
+                        seq=2,
+                        message_text="second",
+                        claimed_by_replica=None,
+                    ),
+                ]
+            )
+            session.commit()
+
+        result = store.write_progress_sync("token", "working")
+        assert result == "ok"
+        with Session(engine) as session:
+            rows = session.exec(
+                select(PendingMessage).order_by(PendingMessage.seq)
+            ).all()
+            assert rows[0].partial_text == "working"
+            assert rows[1].partial_text is None
     finally:
         _restore_schemas(schemas)
