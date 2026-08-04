@@ -69,10 +69,13 @@ defmodule Embervm.SessionStore do
   @doc """
   Creates a new session, minting its id and capability token. `attrs` is
   `%{tenant, principal, workload, node_id, vm_id, base_snapshot_ref, base_digest,
-  expires_at}`. Appends `session_created` (write-through), inserts the ETS hot-set
-  row in `:running` (the create claimed a live VM), records the residency fact,
-  and returns `{:ok, %{session_id, token, expires_at, base_digest, ...}}`. The
-  plaintext token is returned ONLY here and never stored.
+  expires_at, lineage_id}`. `lineage_id` is optional and defaults to the minted
+  `session_id` (#4306 slice 1: no adoption path exists yet to pass an existing
+  one, so today the two are always equal). Appends `session_created`
+  (write-through), inserts the ETS hot-set row in `:running` (the create claimed
+  a live VM), records the residency fact, and returns `{:ok, %{session_id,
+  token, expires_at, base_digest, ...}}`. The plaintext token is returned ONLY
+  here and never stored.
   """
   @spec create(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
   def create(store \\ __MODULE__, attrs) do
@@ -188,6 +191,24 @@ defmodule Embervm.SessionStore do
   @spec all(GenServer.server()) :: [map()]
   def all(store \\ __MODULE__) do
     GenServer.call(store, :all)
+  end
+
+  @doc """
+  The NEWEST session (by `created_at`, ties broken by `session_id` for a
+  deterministic pick) whose `lineage_id` matches, terminal or not, or `:error`
+  if no session has ever carried this `lineage_id`. #4306 slice 1: implemented
+  as a full ETS scan (mirrors `all/1`'s own scan) rather than a maintained
+  index, because the only caller today (`retire_orphan_session_volumes`, a
+  periodic admin sweep, never the invoke hot path) tolerates it exactly the way
+  `all/1`'s adoption reconcile already does; revisit with a `lineage_id ->
+  [session_id]` ETS index, updated on create/transition, if a hot-path caller
+  ever needs this. Sees TERMINAL sessions on purpose: the orphan-reconcile
+  question this exists for is "is the newest holder of this lineage terminal",
+  which only a read that does not drop terminal rows can answer.
+  """
+  @spec get_latest_by_lineage(GenServer.server(), String.t()) :: {:ok, map()} | :error
+  def get_latest_by_lineage(store \\ __MODULE__, lineage_id) do
+    GenServer.call(store, {:get_latest_by_lineage, lineage_id})
   end
 
   @doc """
@@ -314,6 +335,11 @@ defmodule Embervm.SessionStore do
   defp row_to_session(row) do
     %{
       session_id: row.session_id,
+      # #4306 slice 1: the durable SELECT already COALESCEs lineage_id to
+      # session_id (both backends), so row.lineage_id is never nil on a row that
+      # came from load_sessions/1; the || here is defense against a row built by
+      # some other path that has not been through that COALESCE.
+      lineage_id: row.lineage_id || row.session_id,
       tenant: row.tenant,
       principal: row.principal,
       workload: row.workload,
@@ -416,6 +442,25 @@ defmodule Embervm.SessionStore do
     {:reply, all, state}
   end
 
+  def handle_call({:get_latest_by_lineage, lineage_id}, _from, state) do
+    matches =
+      :ets.foldl(
+        fn {_id, session}, acc ->
+          if session.lineage_id == lineage_id, do: [session | acc], else: acc
+        end,
+        [],
+        state.sessions
+      )
+
+    reply =
+      case Enum.max_by(matches, &{&1.created_at, &1.session_id}, fn -> nil end) do
+        nil -> :error
+        session -> {:ok, session}
+      end
+
+    {:reply, reply, state}
+  end
+
   def handle_call({:backfill_created, session_id}, _from, state) do
     case fetch(state, session_id) do
       {:ok, session} ->
@@ -436,7 +481,8 @@ defmodule Embervm.SessionStore do
             base_digest: session.base_digest,
             token_sha256: session.token_sha256,
             expires_at: session.expires_at,
-            state: to_string(session.state)
+            state: to_string(session.state),
+            lineage_id: session.lineage_id
           }
         }
 
@@ -507,6 +553,13 @@ defmodule Embervm.SessionStore do
   defp do_create(attrs, state) do
     ts = state.clock.()
     session_id = Map.get(attrs, :session_id) || mint_id(state, ts)
+    # #4306 slice 1: lineage_id identifies the session's durable volume/workspace
+    # identity across a park -> rejoin, distinct from session_id (the FSM/token
+    # identity). No adoption path exists yet, so every create today mints a
+    # lineage defaulted to its own session_id; a later slice's adoption path is
+    # what will pass an EXISTING lineage_id here to attach a fresh session_id to
+    # a rejoined volume. Groundwork only: this slice never diverges the two.
+    lineage_id = Map.get(attrs, :lineage_id) || session_id
     {token, token_sha256} = SessionId.mint_token()
 
     payload = %{
@@ -518,7 +571,8 @@ defmodule Embervm.SessionStore do
       expires_at: Map.get(attrs, :expires_at),
       # The durable projection defaults session_created to "running" (the create
       # already claimed a live VM); recorded explicitly for clarity.
-      state: "running"
+      state: "running",
+      lineage_id: lineage_id
     }
 
     op = %Op{
@@ -533,6 +587,7 @@ defmodule Embervm.SessionStore do
 
     session = %{
       session_id: session_id,
+      lineage_id: lineage_id,
       tenant: op.tenant,
       principal: op.principal,
       workload: op.workload,

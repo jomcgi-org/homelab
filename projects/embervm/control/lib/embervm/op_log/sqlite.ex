@@ -193,9 +193,20 @@ defmodule Embervm.OpLog.SQLite do
     # per-session capability token (the plaintext token is never stored). A
     # non-terminal session pins its ops against compaction and is never pruned by
     # retention, exactly like a live task.
+    #
+    # lineage_id (#4306 slice 1) is a DIFFERENT lineage than the base/generation
+    # chain above: it identifies the session's durable volume/workspace identity
+    # across a park -> rejoin, distinct from session_id (the FSM/token identity,
+    # which changes on adoption in a later slice). This slice mints it equal to
+    # session_id and every call site that means "the volume identity" reads it
+    # from here instead of session_id, groundwork only, no behavior change (there
+    # is exactly one session per lineage until adoption ships). Old rows have no
+    # durable lineage_id (added additively, see migrate_sessions_lineage_id/1);
+    # reads COALESCE it to session_id, which is what it always equalled anyway.
     """
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
+      lineage_id TEXT,
       tenant TEXT NOT NULL,
       principal TEXT,
       workload TEXT,
@@ -850,8 +861,9 @@ defmodule Embervm.OpLog.SQLite do
     INSERT OR IGNORE INTO sessions
       (session_id, tenant, principal, workload, state, node_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
-       token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL)
+       token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
+       lineage_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -872,7 +884,11 @@ defmodule Embervm.OpLog.SQLite do
              Map.get(payload, :token_sha256),
              op.ts,
              Map.get(payload, :expires_at),
-             op.ts
+             op.ts,
+             # #4306 slice 1: do_create always sends lineage_id now (= session_id
+             # this slice); the default here is belt-and-suspenders for an op
+             # written by code that predates this field.
+             Map.get(payload, :lineage_id, op.session_id)
            ]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
@@ -2315,7 +2331,8 @@ defmodule Embervm.OpLog.SQLite do
     sql = """
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
-           token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason
+           token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
+           COALESCE(lineage_id, session_id)
     FROM sessions
     """
 
@@ -2347,7 +2364,8 @@ defmodule Embervm.OpLog.SQLite do
          last_invoke_at,
          expires_at,
          updated_at,
-         terminal_reason
+         terminal_reason,
+         lineage_id
        ]} ->
         session = %{
           session_id: session_id,
@@ -2367,7 +2385,8 @@ defmodule Embervm.OpLog.SQLite do
           last_invoke_at: last_invoke_at,
           expires_at: expires_at,
           updated_at: updated_at,
-          terminal_reason: terminal_reason
+          terminal_reason: terminal_reason,
+          lineage_id: lineage_id
         }
 
         collect_sessions(conn, stmt, [session | acc])
@@ -3253,6 +3272,7 @@ defmodule Embervm.OpLog.SQLite do
   defp apply_migrations(conn) do
     with :ok <- migrate_results_headers(conn),
          :ok <- migrate_sessions_volume_node_id(conn),
+         :ok <- migrate_sessions_lineage_id(conn),
          :ok <- migrate_ops_session_id(conn),
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
@@ -3268,6 +3288,21 @@ defmodule Embervm.OpLog.SQLite do
         :ok
       else
         Sqlite3.execute(conn, "ALTER TABLE sessions ADD COLUMN volume_node_id TEXT")
+      end
+    end
+  end
+
+  # #4306 slice 1: the additive nullable sessions.lineage_id column, mirroring
+  # migrate_sessions_volume_node_id/1 exactly. An upgraded DB's existing rows get
+  # lineage_id=NULL from the ALTER (no DEFAULT); do_load_sessions/1's COALESCE
+  # reads those back as session_id, exactly what lineage_id always equalled for
+  # them since there is no adoption yet to make the two diverge.
+  defp migrate_sessions_lineage_id(conn) do
+    with {:ok, cols} <- table_columns(conn, "sessions") do
+      if "lineage_id" in cols do
+        :ok
+      else
+        Sqlite3.execute(conn, "ALTER TABLE sessions ADD COLUMN lineage_id TEXT")
       end
     end
   end

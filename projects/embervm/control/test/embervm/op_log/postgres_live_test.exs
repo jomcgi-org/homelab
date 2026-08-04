@@ -125,7 +125,10 @@ defmodule Embervm.OpLog.PostgresLiveTest do
     append(server, :group_running, 143, group_instance_id: "group-1")
 
     assert {:ok, [%{task_id: "task-1", state: "succeeded", attempt: 0}]} = Postgres.load_tasks(server)
-    assert {:ok, [%{session_id: "session-1", state: "banked", generation: 3, snapshot_ref: "snap"}]} = Postgres.load_sessions(server)
+    # lineage_id (#4306 slice 1): the append above carries none, so the
+    # projection must default it to session_id, exactly like an old-style op.
+    assert {:ok, [%{session_id: "session-1", state: "banked", generation: 3, snapshot_ref: "snap", lineage_id: "session-1"}]} =
+             Postgres.load_sessions(server)
     assert {:ok, [%{instance_id: "serving-1", state: "published", ip: "10.0.0.3", port: 8081}]} = Postgres.load_serving_instances(server)
     assert {:ok, [%{instance_id: "stateful-1", state: "serving", ip: "10.0.0.4", port: 9090}]} = Postgres.load_stateful_instances(server)
     assert {:ok, [%{workload: "wl-stateful", generation: 2, size_bytes: 100, allocated_bytes: 40}]} = Postgres.load_volumes(server)

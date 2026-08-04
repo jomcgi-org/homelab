@@ -140,6 +140,7 @@ defmodule Embervm.OpLog.Postgres do
     """
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
+      lineage_id TEXT,
       tenant TEXT NOT NULL,
       principal TEXT,
       workload TEXT,
@@ -160,6 +161,12 @@ defmodule Embervm.OpLog.Postgres do
     )
     """,
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS volume_node_id TEXT",
+    # #4306 slice 1: additive nullable lineage_id, mirroring
+    # Embervm.OpLog.SQLite.migrate_sessions_lineage_id/1. Existing rows get
+    # lineage_id=NULL from the ALTER (no DEFAULT); do_load_sessions/1's COALESCE
+    # reads those back as session_id, exactly what lineage_id always equalled
+    # for them since there is no adoption yet to make the two diverge.
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lineage_id TEXT",
     """
     CREATE TABLE IF NOT EXISTS serving_instances (
       instance_id TEXT PRIMARY KEY,
@@ -691,8 +698,9 @@ defmodule Embervm.OpLog.Postgres do
     INSERT INTO sessions
       (session_id, tenant, principal, workload, state, node_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
-       token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NULL, NULL, $10, $11, NULL, $12, $13, NULL)
+       token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
+       lineage_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NULL, NULL, $10, $11, NULL, $12, $13, NULL, $14)
     ON CONFLICT (session_id) DO NOTHING
     """
 
@@ -709,7 +717,11 @@ defmodule Embervm.OpLog.Postgres do
       Map.get(payload, :token_sha256),
       op.ts,
       Map.get(payload, :expires_at),
-      op.ts
+      op.ts,
+      # #4306 slice 1: do_create always sends lineage_id now (= session_id this
+      # slice); the default here is belt-and-suspenders for an op written by
+      # code that predates this field.
+      Map.get(payload, :lineage_id, op.session_id)
     ])
   end
 
@@ -1620,7 +1632,8 @@ defmodule Embervm.OpLog.Postgres do
     sql = """
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
-           token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason
+           token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
+           COALESCE(lineage_id, session_id)
     FROM sessions
     """
 
@@ -1648,7 +1661,8 @@ defmodule Embervm.OpLog.Postgres do
          last_invoke_at,
          expires_at,
          updated_at,
-         terminal_reason
+         terminal_reason,
+         lineage_id
        ]) do
     %{
       session_id: session_id,
@@ -1668,7 +1682,8 @@ defmodule Embervm.OpLog.Postgres do
       last_invoke_at: last_invoke_at,
       expires_at: expires_at,
       updated_at: updated_at,
-      terminal_reason: terminal_reason
+      terminal_reason: terminal_reason,
+      lineage_id: lineage_id
     }
   end
 

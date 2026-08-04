@@ -754,7 +754,18 @@ defmodule Embervm.SessionManager do
       workload: workload,
       node_id: node_id,
       vm_id: vm_id,
+      # session_id: lineage_id is intentional, not a naming slip: a
+      # persistence-enabled workload pre-mints its lineage id (mint_lineage_id/1)
+      # and that SAME value becomes the session's own session_id too (do_create
+      # mints a fresh one only when this is nil, the non-persistence case).
+      # #4306 slice 1 also records it explicitly as lineage_id below, rather
+      # than relying on do_create's session_id-default fallback, so the durable
+      # row's lineage_id traces back to the actual pre-minted value (nil here
+      # for a non-persistence workload, which still falls through to the same
+      # default: Map.get(attrs, :lineage_id) || session_id treats a present-but-
+      # nil key the same as an absent one).
       session_id: lineage_id,
+      lineage_id: lineage_id,
       volume_node_id: if(persistence_enabled_workload?(entry), do: node_id, else: nil),
       base_snapshot_ref: Map.get(entry, :image_ref),
       base_digest: base_digest(entry),
@@ -1406,6 +1417,10 @@ defmodule Embervm.SessionManager do
         owner = self()
         volume_node_id = session.volume_node_id
         session_id = session.session_id
+        # #4306 slice 1: the volume identity the prime/restore chain needs is
+        # lineage_id, not session_id (no behavior change this slice, the two are
+        # always equal until adoption ships).
+        lineage_id = session.lineage_id
 
         spawn(fn ->
           outcome =
@@ -1416,7 +1431,7 @@ defmodule Embervm.SessionManager do
                                "ember.principal" => session.principal,
                                "ember.volume_node_id" => volume_node_id
                              }} do
-              with {:ok, vm_id, dial_id} <- perform_rejoin_prime(state, volume_node_id, session.workload, session_id) do
+              with {:ok, vm_id, dial_id} <- perform_rejoin_prime(state, volume_node_id, session.workload, lineage_id) do
                 # noded's auto-destroy timer covers PrimeAssign after delivery starts.
                 # The CP destroys a successfully primed VM when delivery never starts.
                 {:ok, volume_node_id, vm_id, 0, dial_id}
@@ -2508,7 +2523,14 @@ defmodule Embervm.SessionManager do
       Enum.reduce(Map.get(f, :session_volumes, []) || [], acc, fn volume, inner ->
         key = {f.configured_id, volume.lineage_id}
 
-        case SessionStore.get(inner.session_store, volume.lineage_id) do
+        # #4306 slice 1: looked up BY LINEAGE, not by session_id (SessionStore.get/2
+        # would treat volume.lineage_id as a session id, which is only correct
+        # today because the two are always equal). get_latest_by_lineage/2 answers
+        # the real orphan-reconcile question, "is the NEWEST holder of this
+        # lineage terminal", the shape a later adoption slice needs when a lineage
+        # can outlive the session_id that first claimed it. No behavior change
+        # this slice: the newest holder IS the only session IS the id.
+        case SessionStore.get_latest_by_lineage(inner.session_store, volume.lineage_id) do
           {:ok, %{workload: workload, state: session_state}}
               when workload == volume.workload and session_state not in [:expired, :evicted, :destroyed, :failed] ->
             %{inner | orphan_volume_first_seen: Map.delete(inner.orphan_volume_first_seen, key)}
@@ -2517,7 +2539,7 @@ defmodule Embervm.SessionManager do
               when session_state in [:expired, :evicted, :destroyed, :failed] ->
             inner = %{inner | orphan_volume_first_seen: Map.delete(inner.orphan_volume_first_seen, key)}
             if fact_current and wall_now - row_updated >= inner.orphan_grace_ms do
-              _ = retire_session_volume(inner, %{volume_node_id: f.configured_id, workload: volume.workload, session_id: volume.lineage_id})
+              _ = retire_session_volume(inner, %{volume_node_id: f.configured_id, workload: volume.workload, lineage_id: volume.lineage_id})
             end
             inner
 
@@ -2525,7 +2547,7 @@ defmodule Embervm.SessionManager do
             seen = Map.get(inner.orphan_volume_first_seen, key, monotonic_now)
             inner = %{inner | orphan_volume_first_seen: Map.put(inner.orphan_volume_first_seen, key, seen)}
             if fact_current and monotonic_now - seen >= inner.orphan_grace_ms do
-              _ = retire_session_volume(inner, %{volume_node_id: f.configured_id, workload: volume.workload, session_id: volume.lineage_id})
+              _ = retire_session_volume(inner, %{volume_node_id: f.configured_id, workload: volume.workload, lineage_id: volume.lineage_id})
             end
             inner
         end
@@ -3172,7 +3194,7 @@ defmodule Embervm.SessionManager do
     Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req)
   end
 
-  defp delete_session_volume(state, %{volume_node_id: node_id, workload: workload, session_id: lineage_id})
+  defp delete_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
     req = %DeleteVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
     result =
@@ -3195,7 +3217,7 @@ defmodule Embervm.SessionManager do
 
   defp delete_session_volume(_state, _session), do: :ok
 
-  defp archive_session_volume(state, %{volume_node_id: node_id, workload: workload, session_id: lineage_id})
+  defp archive_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
     if persistence_enabled_workload?(session_workload_entry(state, workload)) do
       req = %ArchiveVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
@@ -3236,7 +3258,7 @@ defmodule Embervm.SessionManager do
 
   # Retirement is node-owned: the marker and retry sweep make export failure
   # durable, while the control plane advances the session lifecycle immediately.
-  defp retire_session_volume(state, %{volume_node_id: node_id, workload: workload, session_id: lineage_id})
+  defp retire_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
     # NOT gated on the workload's CURRENT persistence setting: a lineage volume
     # exists on disk because it was created once, and turning the feature off

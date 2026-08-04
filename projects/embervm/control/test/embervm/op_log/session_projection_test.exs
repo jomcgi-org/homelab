@@ -106,6 +106,21 @@ defmodule Embervm.OpLog.SessionProjectionTest do
     assert s.snapshot_size_bytes == 2_147_483_648
     assert s.token_sha256 == "hash-s-1"
     assert s.created_at == 100
+    # lineage_id (#4306 slice 1): created_op/4's payload carries none (the
+    # old-style shape), so the projection defaults it to session_id.
+    assert s.lineage_id == "s-1"
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "a session_created op with an explicit lineage_id in its payload projects it verbatim, not defaulted", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, created_op("s-2", "p1", 100, %{lineage_id: "lin-custom"}))
+
+    s = session_by_id(server)["s-2"]
+    assert s.lineage_id == "lin-custom"
+    refute s.lineage_id == s.session_id
 
     :ok = GenServer.stop(server)
   end
