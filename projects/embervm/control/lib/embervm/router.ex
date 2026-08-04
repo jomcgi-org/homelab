@@ -697,22 +697,29 @@ defmodule Embervm.Router do
   # -- session handlers (R2) -------------------------------------------------
 
   # POST /v1/workloads/:name/sessions (management auth). Delegates to the
-  # SessionManager, which owns capacity/quota/placement/claim. 201 with the token
-  # (returned ONCE), 429 for a capacity/quota denial, 403 for a class mismatch or
-  # unknown workload, 500 for an internal failure.
+  # SessionManager, which owns capacity/quota/placement/claim. Optional JSON
+  # body `{"restore_lineage": "<lineage-id>"}` requests a #4306 slice 3
+  # cross-generation create: the new session inherits that lineage's durable
+  # workspace instead of minting a fresh one (an absent/empty/malformed body
+  # is always a normal create). 201 with the token (returned ONCE) and
+  # `restored` (whether the inherited workspace was actually recovered), 429
+  # for a capacity/quota denial, 403/404/409 for a class, workload, or lineage
+  # mismatch, 500 for an internal failure.
   defp handle_create_session(conn, workload) do
     principal = conn.assigns.principal
+    {restore_lineage, conn} = optional_restore_lineage(conn)
 
     # Cold-boot persistence creates legitimately take tens of seconds; the
     # SessionManager call must not cut the claim/prime RPC at the old 5-second limit.
-    case session_manager().create(session_manager_server(), workload, principal) do
+    case session_manager().create(session_manager_server(), workload, principal, restore_lineage) do
       {:ok, created} ->
         send_json(conn, 201, %{
           session_id: created.session_id,
           session_token: created.token,
           expires_at: created.expires_at,
           base_digest: created.base_digest,
-          state: to_string(Map.get(created, :state, :running))
+          state: to_string(Map.get(created, :state, :running)),
+          restored: Map.get(created, :restored, false)
         })
 
       {:error, {:denied, reason}} ->
@@ -721,6 +728,28 @@ defmodule Embervm.Router do
       {:error, reason} ->
         Logger.error("embervm create session failed: #{inspect(reason)}")
         send_json(conn, 500, %{error: "create session failed", workload: workload, retryable: true})
+    end
+  end
+
+  # Reads the OPTIONAL create body for `restore_lineage` (#4306 slice 3).
+  # Absent, unreadable, malformed, or non-string all mean "no restore
+  # requested" rather than an error: an empty body is the normal, by-far-most-
+  # common case for this route, so this is tolerant by design, matching
+  # decode_registration/safe_decode's own body-parsing idiom elsewhere in this
+  # router.
+  defp optional_restore_lineage(conn) do
+    case read_capped_body(conn) do
+      {:ok, body, conn} ->
+        restore_lineage =
+          case safe_decode(body) do
+            %{"restore_lineage" => lineage} when is_binary(lineage) and lineage != "" -> lineage
+            _ -> nil
+          end
+
+        {restore_lineage, conn}
+
+      {:error, _} ->
+        {nil, conn}
     end
   end
 
@@ -744,6 +773,45 @@ defmodule Embervm.Router do
         send_json(conn, 403, %{
           error: "workload is not class session",
           reason: "not_session_class",
+          workload: workload,
+          retryable: false
+        })
+
+      # #4306 slice 3: restore_lineage validation denials. unknown_lineage
+      # mirrors unknown_workload (404, the referenced thing does not exist);
+      # the mismatch reasons mirror not_session_class (403, the request is
+      # wrong for this identity); lineage_live_heir is a state conflict with
+      # an existing resource (409), the same convention this router uses
+      # elsewhere for "the thing you are trying to act on is not in a state
+      # that allows it".
+      :unknown_lineage ->
+        send_json(conn, 404, %{
+          error: "unknown lineage",
+          reason: "unknown_lineage",
+          workload: workload,
+          retryable: false
+        })
+
+      :lineage_workload_mismatch ->
+        send_json(conn, 403, %{
+          error: "lineage belongs to a different workload",
+          reason: "lineage_workload_mismatch",
+          workload: workload,
+          retryable: false
+        })
+
+      :lineage_principal_mismatch ->
+        send_json(conn, 403, %{
+          error: "lineage belongs to a different principal",
+          reason: "lineage_principal_mismatch",
+          workload: workload,
+          retryable: false
+        })
+
+      :lineage_live_heir ->
+        send_json(conn, 409, %{
+          error: "lineage already has a live heir",
+          reason: "lineage_live_heir",
           workload: workload,
           retryable: false
         })

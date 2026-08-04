@@ -26,13 +26,29 @@ defmodule Embervm.RouterTest do
   # can drive the HTTP surface, and especially the SESSION-TOKEN auth boundary,
   # without a live daemon or the supervised SessionManager.
   defmodule FakeSessionManager do
-    def create(_srv, "wl-ok", _principal),
-      do: {:ok, %{session_id: "s-live", token: "sess-token-live", expires_at: 9_000_000, base_digest: "sha256:x", state: :running}}
+    def create(_srv, "wl-ok", _principal, _restore_lineage),
+      do:
+        {:ok,
+         %{session_id: "s-live", token: "sess-token-live", expires_at: 9_000_000, base_digest: "sha256:x", state: :running, restored: false}}
 
-    def create(_srv, "wl-cap", _principal), do: {:error, {:denied, :session_cap}}
-    def create(_srv, "wl-vmcap", _principal), do: {:error, {:denied, :workload_cap}}
-    def create(_srv, "wl-task", _principal), do: {:error, {:denied, :not_session_class}}
-    def create(_srv, _wl, _principal), do: {:error, {:denied, :unknown_workload}}
+    def create(_srv, "wl-cap", _principal, _restore_lineage), do: {:error, {:denied, :session_cap}}
+    def create(_srv, "wl-vmcap", _principal, _restore_lineage), do: {:error, {:denied, :workload_cap}}
+    def create(_srv, "wl-task", _principal, _restore_lineage), do: {:error, {:denied, :not_session_class}}
+
+    # #4306 slice 3: restore_lineage-carrying creates. wl-restore-ok only
+    # returns restored: true when it actually RECEIVED restore_lineage (a
+    # binary), so the test proves the router threads the body field through
+    # rather than the fake just always answering true.
+    def create(_srv, "wl-restore-ok", _principal, restore_lineage) when is_binary(restore_lineage) and restore_lineage != "",
+      do:
+        {:ok,
+         %{session_id: "s-restored", token: "sess-token-restored", expires_at: 9_000_000, base_digest: "sha256:x", state: :running, restored: true}}
+
+    def create(_srv, "wl-unknown-lineage", _principal, _restore_lineage), do: {:error, {:denied, :unknown_lineage}}
+    def create(_srv, "wl-lineage-workload-mismatch", _principal, _restore_lineage), do: {:error, {:denied, :lineage_workload_mismatch}}
+    def create(_srv, "wl-lineage-principal-mismatch", _principal, _restore_lineage), do: {:error, {:denied, :lineage_principal_mismatch}}
+    def create(_srv, "wl-lineage-live-heir", _principal, _restore_lineage), do: {:error, {:denied, :lineage_live_heir}}
+    def create(_srv, _wl, _principal, _restore_lineage), do: {:error, {:denied, :unknown_workload}}
 
     def invoke(_srv, "s-live", _req), do: {:ok, %{status_code: 200, headers: %{"content-type" => "text/plain"}, body: "echoed"}}
     def invoke(_srv, "s-queue", _req), do: {:error, :queue_full}
@@ -671,6 +687,61 @@ defmodule Embervm.RouterTest do
 
     unknown = req(:post, "/v1/workloads/wl-nope/sessions", auth("good"))
     assert unknown.status == 404
+  end
+
+  # -- restore_lineage (#4306 slice 3) ---------------------------------------
+
+  test "POST .../sessions with a restore_lineage body threads it through and reports restored" do
+    with_session_fakes()
+
+    resp =
+      req(:post, "/v1/workloads/wl-restore-ok/sessions", auth("good"), ~s({"restore_lineage": "lineage-abc"}))
+
+    assert resp.status == 201
+    body = json(resp.body)
+    assert body["session_id"] == "s-restored"
+    assert body["restored"] == true
+  end
+
+  test "a normal create (no restore_lineage body) reports restored: false" do
+    with_session_fakes()
+
+    resp = req(:post, "/v1/workloads/wl-ok/sessions", auth("good"))
+    assert resp.status == 201
+    assert json(resp.body)["restored"] == false
+  end
+
+  test "an empty or malformed restore_lineage body is treated as a normal create, not an error" do
+    with_session_fakes()
+
+    empty_body = req(:post, "/v1/workloads/wl-ok/sessions", auth("good"), ~s({"restore_lineage": ""}))
+    assert empty_body.status == 201
+    assert json(empty_body.body)["restored"] == false
+
+    garbage = req(:post, "/v1/workloads/wl-ok/sessions", auth("good"), "not json")
+    assert garbage.status == 201
+    assert json(garbage.body)["restored"] == false
+  end
+
+  test "restore_lineage validation denials map to distinguishable statuses" do
+    with_session_fakes()
+    body = ~s({"restore_lineage": "lineage-x"})
+
+    unknown = req(:post, "/v1/workloads/wl-unknown-lineage/sessions", auth("good"), body)
+    assert unknown.status == 404
+    assert json(unknown.body)["reason"] == "unknown_lineage"
+
+    wl_mismatch = req(:post, "/v1/workloads/wl-lineage-workload-mismatch/sessions", auth("good"), body)
+    assert wl_mismatch.status == 403
+    assert json(wl_mismatch.body)["reason"] == "lineage_workload_mismatch"
+
+    principal_mismatch = req(:post, "/v1/workloads/wl-lineage-principal-mismatch/sessions", auth("good"), body)
+    assert principal_mismatch.status == 403
+    assert json(principal_mismatch.body)["reason"] == "lineage_principal_mismatch"
+
+    live_heir = req(:post, "/v1/workloads/wl-lineage-live-heir/sessions", auth("good"), body)
+    assert live_heir.status == 409
+    assert json(live_heir.body)["reason"] == "lineage_live_heir"
   end
 
   test "invoke is gated on the SESSION token: a management token alone is rejected 403" do

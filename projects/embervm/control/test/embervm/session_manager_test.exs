@@ -865,6 +865,133 @@ defmodule Embervm.SessionManagerTest do
     assert session.state == :running
   end
 
+  # -- restore_lineage: cross-generation create (#4306 slice 3) -------------
+  #
+  # "restore"/"inherit"/"restore_lineage" throughout, deliberately never
+  # "adopt": that word already names the unrelated boot-time rebind mechanism
+  # exercised by the reconcile/adoption tests elsewhere in this file.
+
+  test "restoring create against a terminal lineage mints a fresh session_id, inherits lineage_id, and pins placement to the volume's node" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-restore-hit"),
+        channel_fun: fake_channel_fun(),
+        restore_artifact_fun: fn _ch, _req -> {:ok, %{}} end
+      )
+
+    original = create_persistence_session(ctx)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+
+    # The fleet still reports the lineage's volume on an instance co-located
+    # with (but distinct from) the base workload brick, modelling the real
+    # "several instances share a node_id" case restore_then_prime must
+    # resolve past rather than trust place_create's own dial pick.
+    put_brick(ctx, "wl-persist", "volume",
+      session_volumes: [%{workload: "wl-persist", lineage_id: original.session_id, size_bytes: 1}]
+    )
+
+    assert {:ok, restored} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
+
+    assert restored.session_id != original.session_id
+    assert restored.restored == true
+
+    {:ok, row} = SessionStore.get(ctx.store, restored.session_id)
+    assert row.session_id == restored.session_id
+    assert row.lineage_id == original.session_id
+    assert row.node_id == "node-4"
+  end
+
+  test "a restore miss degrades to restored: false rather than a denial" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-restore-miss"), channel_fun: fake_channel_fun())
+    # default restore_artifact_fun (see start_stack) is a clean gRPC NOT_FOUND miss.
+
+    original = create_persistence_session(ctx)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+
+    assert {:ok, restored} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
+    assert restored.restored == false
+    assert restored.session_id != original.session_id
+
+    {:ok, row} = SessionStore.get(ctx.store, restored.session_id)
+    assert row.lineage_id == original.session_id
+  end
+
+  test "restore_lineage validation: unknown lineage is denied, not a normal create" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-persist", persistence_workload_opts())
+
+    assert {:error, {:denied, :unknown_lineage}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", "lineage-never-existed")
+  end
+
+  test "restore_lineage validation: a lineage from a different workload is denied" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-restore-source"), channel_fun: fake_channel_fun())
+    original = create_persistence_session(ctx, workload: "wl-persist-a")
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    put_session_workload(ctx, "wl-persist-b", persistence_workload_opts())
+
+    assert {:error, {:denied, :lineage_workload_mismatch}} =
+             SessionManager.create(ctx.mgr, "wl-persist-b", "p1", original.session_id)
+  end
+
+  test "restore_lineage validation: a lineage from a different principal is denied (ADR embervm/025)" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-restore-owner"), channel_fun: fake_channel_fun())
+    original = create_persistence_session(ctx, principal: "p1")
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+
+    assert {:error, {:denied, :lineage_principal_mismatch}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p2", original.session_id)
+  end
+
+  test "restore_lineage validation: a live (non-terminal) heir is denied (exclusivity)" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-restore-live"), channel_fun: fake_channel_fun())
+    live = create_persistence_session(ctx)
+
+    assert {:error, {:denied, :lineage_live_heir}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", live.session_id)
+  end
+
+  test "a restoring create whose prime fails re-drives reclamation for the lineage (#4306/#4313)" do
+    parent = self()
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    prime_fun = fn _ch, _req ->
+      case Agent.get_and_update(counter, fn c -> {c, c + 1} end) do
+        0 -> {:ok, %PrimeResponse{vm_id: "vm-restore-original"}}
+        _ -> {:error, :boom}
+      end
+    end
+
+    ctx =
+      start_stack(
+        prime_fun: prime_fun,
+        channel_fun: fake_channel_fun(),
+        retire_volume_fun: fn _ch, req ->
+          send(parent, {:retired, req.lineage_id})
+          {:ok, %{}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+
+    assert {:error, {:denied, _reason}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
+
+    assert_receive {:retired, lineage_id}, 1_000
+    assert lineage_id == original.session_id
+  end
+
+  test "a normal (non-restoring) create still returns restored: false and session_id == lineage_id" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-normal-create"), channel_fun: fake_channel_fun())
+    created = create_persistence_session(ctx)
+
+    assert created.restored == false
+
+    {:ok, row} = SessionStore.get(ctx.store, created.session_id)
+    assert row.lineage_id == row.session_id
+  end
+
   test "orphan session volume with no row gets first-seen grace" do
     parent = self()
     {:ok, mono} = Agent.start_link(fn -> -800_000 end)
