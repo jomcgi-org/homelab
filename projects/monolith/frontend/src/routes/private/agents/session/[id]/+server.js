@@ -1,11 +1,12 @@
 const API_BASE = process.env.API_BASE;
 
-export async function GET({ params }) {
+export async function GET({ params, url }) {
   try {
-    const res = await fetch(
+    const upstream = new URL(
       `${API_BASE}/api/agents/sessions/${encodeURIComponent(params.id)}`,
-      { signal: AbortSignal.timeout(10000) },
     );
+    upstream.search = url.search;
+    const res = await fetch(upstream, { signal: AbortSignal.timeout(10000) });
     return new Response(res.body, {
       status: res.status,
       headers: { "Content-Type": "application/json" },

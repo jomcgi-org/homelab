@@ -1,13 +1,20 @@
 <script>
+  import { statusClass, statusLabel } from "./status.js";
+
   let { data } = $props();
 
   const MODELS = ["opus", "fable", "sonnet", "luna", "terra", "sol", "qwen"];
 
   let selectedId = $state(null);
-  let sidebarCollapsed = $state(
-    typeof window !== "undefined" &&
-      window.localStorage.getItem("agents-sidebar-collapsed") === "true",
-  );
+  let sidebarCollapsed = $state(false);
+  if (typeof window !== "undefined") {
+    try {
+      sidebarCollapsed =
+        window.localStorage.getItem("agents-sidebar-collapsed") === "true";
+    } catch (e) {
+      // localStorage blocked; continue with expanded
+    }
+  }
   let sessions = $state(data.sessions ?? []);
   let detail = $state(null);
   let searchQuery = $state("");
@@ -97,23 +104,6 @@
     return `$${Number(value || 0).toFixed(4)}`;
   }
 
-  function statusClass(session) {
-    if (session?.status === "running") {
-      return Number(session?.pending_count) > 0 ? "working" : "running";
-    }
-    if (session?.status === "warn") return "warn";
-    if (session?.status === "needs_input") return "needs-input";
-    return "completed";
-  }
-
-  function statusLabel(session) {
-    if (session?.status === "needs_input") return "needs input";
-    if (session?.status === "running") return "working";
-    if (session?.status === "completed") return "completed";
-    if (session?.status === "warn") return "warn";
-    return session?.status || "completed";
-  }
-
   function activityLabel(activity) {
     if (typeof activity === "string") return activity;
     if (!activity || typeof activity !== "object") return "activity";
@@ -147,7 +137,15 @@
         detail = incremental
           ? {
               session: body.session,
-              turns: [...(detail?.turns ?? []), ...(body.turns ?? [])],
+              turns: [
+                ...(detail?.turns ?? []),
+                ...(body.turns ?? []).filter(
+                  (turn) =>
+                    !(detail?.turns ?? []).some(
+                      (existing) => existing.seq === turn.seq,
+                    ),
+                ),
+              ],
               pending_queue: body.pending_queue,
             }
           : body;
@@ -186,6 +184,29 @@
     loadDetail(id, requestSequence);
     const session = sessions.find((item) => String(item.id) === String(id));
     composerModel = session?.model || "";
+  }
+
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+    if (sidebarCollapsed) {
+      searchController?.abort();
+      searchController = null;
+      searchQuery = "";
+      searchResults = null;
+      searchLoading = false;
+    }
+    try {
+      document.documentElement.setAttribute(
+        "data-agents-rail",
+        sidebarCollapsed ? "collapsed" : "expanded",
+      );
+      localStorage.setItem(
+        "agents-sidebar-collapsed",
+        String(sidebarCollapsed),
+      );
+    } catch (e) {
+      // localStorage blocked; keep the in-memory preference
+    }
   }
 
   async function runSearch() {
@@ -322,13 +343,6 @@
     return () => clearInterval(interval);
   });
 
-  $effect(() => {
-    window.localStorage.setItem(
-      "agents-sidebar-collapsed",
-      String(sidebarCollapsed),
-    );
-  });
-
   $effect(() => () => {
     clearTimeout(searchTimer);
     searchController?.abort();
@@ -340,18 +354,19 @@
 <main class:sidebar-collapsed={sidebarCollapsed} class="console">
   <aside class="sidebar" aria-label="Agent sessions">
     <div class="side-head">
-      <div class="eyebrow">agent sessions</div>
-      <button
-        class="collapse-button"
-        type="button"
-        aria-label={sidebarCollapsed
-          ? "Expand session sidebar"
-          : "Collapse session sidebar"}
-        aria-expanded={!sidebarCollapsed}
-        title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-        onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
-        >{sidebarCollapsed ? "→" : "←"}</button
-      >
+      <div class="side-head-left">
+        <div class="eyebrow">agent sessions</div>
+        <button
+          class="collapse-button"
+          type="button"
+          aria-label={sidebarCollapsed
+            ? "Expand session sidebar"
+            : "Collapse session sidebar"}
+          aria-expanded={!sidebarCollapsed}
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          onclick={toggleSidebar}>{sidebarCollapsed ? "→" : "←"}</button
+        >
+      </div>
       <button
         class="new-button"
         type="button"
@@ -561,11 +576,11 @@
     class:chosen={String(selectedId) === String(session.id)}
     class="session-row"
     type="button"
+    aria-label={`${displayName(session)}: ${statusLabel(session)}`}
     onclick={() => selectSession(session)}
   >
     <span
       class={`dot ${statusClass(session)}`}
-      aria-label={statusLabel(session)}
       title={`${displayName(session)}: ${statusLabel(session)}`}
     ></span>
     <span class="row-main"
@@ -595,14 +610,14 @@
     --size-meta: 11px;
     --size-body-mono: 12.5px;
     --size-body: 13.5px;
-    --size-section: 15px;
     --page-bg: #f5f2ec;
     --panel-bg: #fffdfa;
     --text: #252521;
     --muted: #827c72;
     --line: #d8d2c7;
+    --line-strong: #c9c2b7;
     color-scheme: light;
-    min-height: 100vh;
+    height: 100vh;
     display: grid;
     grid-template-columns: 300px minmax(0, 1fr);
     background: var(--page-bg);
@@ -649,9 +664,15 @@
     outline-offset: 1px;
   }
   .sidebar {
-    border-right: 1px solid #d8d2c7;
+    min-height: 0;
+    border-right: 1px solid var(--line);
     padding: 16px 12px;
     overflow: auto;
+  }
+  .side-head-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .side-head,
   .transcript-head,
@@ -679,7 +700,7 @@
   .send-button {
     height: 30px;
     padding: 0 10px;
-    border: 1px solid #c9c2b7;
+    border: 1px solid var(--line-strong);
     border-radius: 3px;
     font-size: var(--size-meta);
     line-height: 1;
@@ -715,9 +736,9 @@
   .composer textarea,
   select {
     width: 100%;
-    color: #252521;
-    background: #fffdfa;
-    border: 1px solid #c9c2b7;
+    color: var(--text);
+    background: var(--panel-bg);
+    border: 1px solid var(--line-strong);
     border-radius: 3px;
     padding: 0 9px;
     outline: none;
@@ -758,6 +779,7 @@
     margin-top: 20px;
   }
   .session-list {
+    min-height: 0;
     display: grid;
     gap: 2px;
   }
@@ -792,7 +814,7 @@
   .dot.warn {
     background: #b47b2c;
   }
-  .dot.needs-input {
+  .dot.needs_input {
     background: #4a83ad;
   }
   .row-main {
@@ -814,7 +836,7 @@
   .result-meta,
   .muted,
   .session-context {
-    color: #827c72;
+    color: var(--muted);
     font-size: var(--size-meta);
   }
   .row-cost {
@@ -837,11 +859,11 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
+    min-height: 0;
   }
   .transcript-head {
     padding: 16px 24px 12px;
-    border-bottom: 1px solid #d8d2c7;
+    border-bottom: 1px solid var(--line);
   }
   .session-context {
     margin-top: 4px;
@@ -849,10 +871,23 @@
   }
   .session-state {
     color: #625e56;
-    border: 1px solid #c9c2b7;
+    border: 1px solid var(--line-strong);
     padding: 5px 8px;
     font-size: var(--size-meta);
     text-transform: lowercase;
+  }
+  .session-state.completed {
+    color: #938d83;
+  }
+  .session-state.warn {
+    color: #c79f4a;
+  }
+  .session-state.needs_input {
+    color: #4a8ec7;
+  }
+  .session-state.running,
+  .session-state.working {
+    color: #4a9f5c;
   }
   .turns {
     flex: 1;
@@ -869,7 +904,7 @@
     gap: 12px;
     padding: 7px 10px;
     border-bottom: 1px solid #e2ddd4;
-    color: #827c72;
+    color: var(--muted);
     font-size: var(--size-meta);
   }
   .turn-bar span:nth-last-child(2) {
@@ -883,7 +918,7 @@
     font-size: var(--size-body);
   }
   .role {
-    color: #827c72;
+    color: var(--muted);
     margin-right: 8px;
     font-size: var(--size-meta);
     text-transform: uppercase;
@@ -896,8 +931,8 @@
   }
   code {
     color: #625e56;
-    border: 1px solid #d8d2c7;
-    background: #f5f2ec;
+    border: 1px solid var(--line);
+    background: var(--page-bg);
     padding: 3px 5px;
     white-space: pre-wrap;
   }
@@ -929,13 +964,13 @@
   }
   .queue-seq,
   .claim {
-    color: #827c72;
+    color: var(--muted);
   }
   .claim.claimed {
     color: #4c9660;
   }
   .working-line {
-    border-top: 1px solid #d8d2c7;
+    border-top: 1px solid var(--line);
     padding: 8px 24px;
     color: #625e56;
     font-size: var(--size-meta);
@@ -953,7 +988,7 @@
     margin-left: 6px;
   }
   .composer {
-    border-top: 1px solid #d8d2c7;
+    border-top: 1px solid var(--line);
     padding: 12px 24px 16px;
     display: grid;
     gap: 8px;
@@ -967,7 +1002,7 @@
     min-width: 110px;
   }
   .send-button {
-    color: #fffdfa;
+    color: var(--panel-bg);
     background: #4d6757;
     border-color: #4d6757;
   }
@@ -982,8 +1017,8 @@
     right: 0;
     width: min(350px, 100vw);
     height: 100vh;
-    background: #f5f2ec;
-    border-left: 1px solid #c9c2b7;
+    background: var(--page-bg);
+    border-left: 1px solid var(--line-strong);
     padding: 20px;
     box-shadow: -1px 0 2px #4b463d1a;
   }
@@ -1032,10 +1067,19 @@
   .sidebar-collapsed {
     grid-template-columns: 44px minmax(0, 1fr);
   }
+  :global(html[data-agents-rail="collapsed"]) .console {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
   .sidebar-collapsed .sidebar {
     padding: 12px 7px;
   }
+  :global(html[data-agents-rail="collapsed"]) .console .sidebar {
+    padding: 12px 7px;
+  }
   .sidebar-collapsed .side-head {
+    justify-content: center;
+  }
+  :global(html[data-agents-rail="collapsed"]) .console .side-head {
     justify-content: center;
   }
   .sidebar-collapsed .eyebrow,
@@ -1048,10 +1092,27 @@
   .sidebar-collapsed .empty {
     display: none;
   }
+  :global(html[data-agents-rail="collapsed"]) .console .eyebrow,
+  :global(html[data-agents-rail="collapsed"]) .console .new-button,
+  :global(html[data-agents-rail="collapsed"]) .console .search-label,
+  :global(html[data-agents-rail="collapsed"]) .console .group-title,
+  :global(html[data-agents-rail="collapsed"]) .console .row-main,
+  :global(html[data-agents-rail="collapsed"]) .console .row-cost,
+  :global(html[data-agents-rail="collapsed"]) .console .search-result,
+  :global(html[data-agents-rail="collapsed"]) .console .empty {
+    display: none;
+  }
   .sidebar-collapsed .session-list {
     gap: 6px;
   }
   .sidebar-collapsed .session-row {
+    justify-content: center;
+    padding: 7px 0;
+  }
+  :global(html[data-agents-rail="collapsed"]) .console .session-list {
+    gap: 6px;
+  }
+  :global(html[data-agents-rail="collapsed"]) .console .session-row {
     justify-content: center;
     padding: 7px 0;
   }
@@ -1078,7 +1139,7 @@
     .sidebar {
       max-height: 42vh;
       border-right: 0;
-      border-bottom: 1px solid #d8d2c7;
+      border-bottom: 1px solid var(--line);
     }
     .sidebar-collapsed {
       grid-template-columns: 1fr;
