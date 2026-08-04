@@ -7,6 +7,7 @@ import logging
 import os
 import platform
 import re
+import secrets
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
@@ -338,6 +339,13 @@ async def _execute_pending_message(session_id: int) -> None:
                 _mark_turn_error_sync, session_id, claimed_seq, "Session not found"
             )
             return
+        if session_row.progress_token is None:
+            session_row.progress_token = secrets.token_urlsafe(32)
+            await asyncio.to_thread(
+                store._persist_progress_token_sync,
+                session_id,
+                session_row.progress_token,
+            )
         try:
             existing_ember = _ember_session(session_row)
             fresh_binding_persisted = False

@@ -149,6 +149,7 @@ def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         delivered_models.append(model)
         return _completed_delivery(message)
@@ -187,6 +188,7 @@ def test_session_start_returns_immediately(monkeypatch, session):
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         started.set()
         await asyncio.Event().wait()
@@ -222,6 +224,7 @@ def test_session_start_happy_path_persists_result(monkeypatch, session):
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         return _completed_delivery(message)
 
@@ -262,6 +265,7 @@ def test_failed_first_turn_does_not_wedge_session(monkeypatch, session):
         _model=None,
         restore_from=None,
         on_create=None,
+        progress_token=None,
     ):
         raise RuntimeError("first turn failed")
 
@@ -294,6 +298,7 @@ def test_concurrent_executors_on_first_turn_run_once(monkeypatch, session):
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         executions.append(message)
         await asyncio.sleep(0.01)
@@ -354,6 +359,7 @@ def test_executor_passes_session_repo_to_transport(monkeypatch, session, repo):
         _model=None,
         restore_from=None,
         on_create=None,
+        progress_token=None,
         **kwargs,
     ):
         deliver_kwargs.append(kwargs)
@@ -388,6 +394,7 @@ def test_pending_message_executed_in_background(monkeypatch, session):
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         return _completed_delivery(message)
 
@@ -430,6 +437,7 @@ def test_failed_delivery_clears_reused_ember_session(monkeypatch, session):
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         raise EmberSessionGone("terminal invoke failure")
 
@@ -467,6 +475,7 @@ def test_clear_ember_session_not_called_when_fresh_binding_persisted(
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         heir = EmberSession("heir-id", "heir-token", None)
         if on_create is not None:
@@ -500,6 +509,7 @@ def test_failed_guest_delivery_does_not_clear_reused_session(monkeypatch, sessio
         _model=None,
         restore_from=None,
         on_create=None,
+        progress_token=None,
     ):
         raise EmberVMTransportError("422 Unprocessable Entity")
 
@@ -538,6 +548,7 @@ def test_recreated_ember_session_adopts_new_cli_session_id(monkeypatch, session)
         _model=None,
         restore_from=None,
         on_create=None,
+        progress_token=None,
     ):
         return _completed_turn("hello")._replace(session_id="cli-new"), new_ember
 
@@ -719,6 +730,7 @@ def test_send_after_cleared_binding_restores_from_prior_lineage(monkeypatch, ses
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         deliver_calls.append(
             {
@@ -782,6 +794,7 @@ def test_send_with_live_binding_ignores_prior_lineage(monkeypatch, session):
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         deliver_calls.append(
             {
@@ -832,6 +845,7 @@ def test_two_sends_are_serialized(monkeypatch, session):
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         execution_order.append(message)
         await asyncio.sleep(0.01)
@@ -879,6 +893,7 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
         on_create=None,
         repo=None,
         branch=None,
+        progress_token=None,
     ):
         executions.append(message)
         await asyncio.sleep(0.01)
