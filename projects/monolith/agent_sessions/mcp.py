@@ -56,6 +56,12 @@ def _ember_session(row: AgentSession) -> EmberSession | None:
             row.ember_session_id,
             row.ember_session_token,
             row.ember_session_expires_at,
+            row.ember_lineage_id,
+            # restored is transient (whether THIS turn's create actually
+            # recovered the workspace, #4306 slice 4): a session loaded
+            # back out of the row is never "just restored", so this is
+            # always False here regardless of how it was created.
+            False,
         )
     return None
 
@@ -68,6 +74,7 @@ def _persist_ember_session(session_id: int, ember: EmberSession) -> None:
             ember.session_id,
             ember.session_token,
             ember.expires_at,
+            ember.lineage_id,
         )
 
 

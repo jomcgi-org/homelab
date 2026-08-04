@@ -76,6 +76,16 @@ class EmberSession(NamedTuple):
     session_id: str
     session_token: str
     expires_at: int | None
+    # #4306 slice 4: lineage_id is the durable workspace handle to pass as
+    # restore_from on a LATER create to continue this same lineage. It
+    # equals session_id for a normal (gen-0) create; a RESTORED session
+    # mints a fresh session_id but inherits the prior lineage_id, so the two
+    # diverge (session_id is NOT a valid restore key past generation zero).
+    # restored is True only when a restore_from create actually recovered
+    # the workspace (never set for a normal create, and never set on a
+    # denied restore, which raises instead of returning a session at all).
+    lineage_id: str | None = None
+    restored: bool = False
 
 
 class ShimTransport(Protocol):
@@ -127,14 +137,31 @@ class EmberVmShimTransport:
         self.workload = workload
         self.read_timeout = read_timeout
 
-    async def create_session(self) -> EmberSession:
+    async def create_session(self, restore_from: str | None = None) -> EmberSession:
         """Create a new session on the guest and return the session ID.
 
+        Args:
+            restore_from: A prior LINEAGE handle (EmberSession.lineage_id,
+                not necessarily session_id past generation zero) to inherit
+                the prior generation's guest workspace from (#4306 slice 4:
+                cross-generation continuity). None (the default) requests a
+                normal, blank create.
+
         Returns:
-            The EmberVM session identity and bearer token.
+            The EmberVM session identity and bearer token. lineage_id is the
+            durable workspace handle to pass as restore_from on a LATER
+            create to continue this same lineage (== session_id for a
+            normal create). restored is True only when restore_from was
+            actually honored (the workspace was recovered); a denied
+            restore raises below like any other create failure, it never
+            returns restored=False for "denied".
 
         Raises:
-            EmberVMTransportError: If session creation fails.
+            EmberVMTransportError: If session creation fails, including a
+                restore denial (unknown lineage, a workload/principal
+                mismatch, a live heir, or a concurrent in-flight restore of
+                the same lineage; see the control plane's create_denial
+                mapping, #4306 slice 3).
         """
         if not EMBERVM_URL:
             raise EmberVMTransportError("EMBERVM_URL is not configured")
@@ -142,10 +169,17 @@ class EmberVmShimTransport:
         url = f"{EMBERVM_URL}/v1/workloads/{self.workload}/sessions"
         headers = auth_headers()
         timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
+        # A normal create posts no body at all: the CP's create route parses
+        # an OPTIONAL JSON body, and an absent one is exactly what it treats
+        # as "no restore requested" (see optional_restore_lineage in the CP
+        # router), so this stays a plain no-body POST unless restoring.
+        post_kwargs = {"headers": headers}
+        if restore_from:
+            post_kwargs["json"] = {"restore_lineage": restore_from}
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url, headers=headers)
+                response = await client.post(url, **post_kwargs)
                 response.raise_for_status()
                 data = response.json()
                 session_id = data.get("session_id")
@@ -162,6 +196,8 @@ class EmberVmShimTransport:
                     session_id=session_id,
                     session_token=session_token,
                     expires_at=data.get("expires_at"),
+                    lineage_id=data.get("lineage_id"),
+                    restored=bool(data.get("restored", False)),
                 )
         except httpx.TimeoutException as exc:
             logger.warning("embervm session creation timed out: %s", exc)
@@ -351,9 +387,38 @@ class EmberVmShimTransport:
         except httpx.HTTPStatusError as exc:
             if created or exc.response.status_code not in (403, 410):
                 raise EmberVMTransportError(_status_error_detail(exc)) from exc
-            ember = await self.create_session()
+
+            # #4306 slice 4: restore keys on the LINEAGE handle, not
+            # session_id (session_id == lineage_id only for a gen-0 create;
+            # a session_id from a PRIOR restore is not a valid restore key,
+            # restoring it 404s as unknown_lineage). Falls back to
+            # session_id for a pre-lineage binding: a row persisted before
+            # slice 3 landed never got a lineage_id back, so ember.lineage_id
+            # is None and session_id is the only handle it ever had.
+            restore_from = ember.lineage_id or ember.session_id
             try:
-                return await invoke(ember, None), ember
+                new_ember = await self.create_session(restore_from=restore_from)
+            except EmberVMTransportError as restore_exc:
+                # The restore create was itself DENIED (unknown_lineage, a
+                # workload/principal mismatch, a live heir, or a concurrent
+                # restore of the same lineage already in flight) or timed
+                # out: the workspace is not recoverable right now. Degrade
+                # to a BLANK session rather than bricking the turn; losing
+                # the transcript/workspace is better than failing outright.
+                logger.warning(
+                    "embervm restore create denied for lineage %s, "
+                    "falling back to a blank session: %s",
+                    restore_from,
+                    restore_exc,
+                )
+                new_ember = await self.create_session()
+
+            # Only resume the CLI transcript when the guest workspace was
+            # ACTUALLY recovered; a blank workspace has nothing for
+            # --resume to find.
+            cli = cli_session_id if new_ember.restored else None
+            try:
+                return await invoke(new_ember, cli), new_ember
             except (httpx.HTTPStatusError, EmberVMTransportError) as retry_exc:
                 if isinstance(retry_exc, httpx.HTTPStatusError):
                     raise EmberSessionGone(

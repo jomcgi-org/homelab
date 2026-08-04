@@ -385,7 +385,12 @@ def test_recreated_ember_session_adopts_new_cli_session_id(monkeypatch, session)
     session.commit()
     pending = store.create_pending_message(session, row.id, "hello")
     pending_seq = pending.seq
-    new_ember = EmberSession("ember-new", "token-new", 1754035300000)
+    # #4306 slice 4: the new ember also carries a lineage_id (the workspace
+    # this restoring create inherited), which must persist alongside the
+    # fresh session_id/token for the NEXT expiry to restore from.
+    new_ember = EmberSession(
+        "ember-new", "token-new", 1754035300000, lineage_id="lineage-old", restored=True
+    )
 
     async def succeeding_delivery(_ember, _cli_session_id, _message, _model=None):
         return _completed_turn("hello")._replace(session_id="cli-new"), new_ember
@@ -403,10 +408,52 @@ def test_recreated_ember_session_adopts_new_cli_session_id(monkeypatch, session)
     assert updated is not None
     assert updated.ember_session_id == "ember-new"
     assert updated.ember_session_token == "token-new"
+    assert updated.ember_lineage_id == "lineage-old"
     assert updated.cli_session_id == "cli-new"
     assert store.get_turn(session, row.id, pending_seq) is not None
     pending_after = store.get_pending_message(session, row.id, pending_seq)
     assert pending_after is None
+
+
+def test_ember_session_loaded_from_row_carries_lineage_id_but_never_restored(session):
+    """#4306 slice 4: lineage_id round-trips through the row, but restored is
+    always False for a session loaded back out of storage -- it is transient
+    (whether THIS turn's create just recovered the workspace), never durable."""
+    row = store.create_session(session, "sid-lineage", "/workspace", "main")
+    store.set_ember_session(session, row.id, "ember-1", "token-1", None, "lineage-1")
+
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    ember = mcp._ember_session(reloaded)
+
+    assert ember is not None
+    assert ember.session_id == "ember-1"
+    assert ember.lineage_id == "lineage-1"
+    assert ember.restored is False
+
+
+def test_persist_ember_session_persists_lineage_id(session):
+    row = store.create_session(session, "sid-lineage-2", "/workspace", "main")
+    new_ember = EmberSession("ember-2", "token-2", None, lineage_id="lineage-2")
+
+    mcp._persist_ember_session(row.id, new_ember)
+
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.ember_session_id == "ember-2"
+    assert reloaded.ember_lineage_id == "lineage-2"
+
+
+def test_clear_ember_session_nulls_lineage_id(session):
+    row = store.create_session(session, "sid-lineage-3", "/workspace", "main")
+    store.set_ember_session(session, row.id, "ember-1", "token-1", None, "lineage-1")
+
+    store.clear_ember_session(session, row.id)
+
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.ember_session_id is None
+    assert reloaded.ember_lineage_id is None
 
 
 def test_startup_sweep_lists_orphaned_messages(session):

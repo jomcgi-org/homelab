@@ -84,6 +84,66 @@ def test_create_session_rejects_missing_or_empty_identity(monkeypatch, field, va
         asyncio.run(transport.EmberVmShimTransport().create_session())
 
 
+def test_create_session_parses_lineage_and_restored(monkeypatch):
+    async def handler(request):
+        return httpx.Response(
+            201,
+            json={
+                "session_id": "s2",
+                "session_token": "t2",
+                "expires_at": 1754035200000,
+                "lineage_id": "s1",
+                "restored": True,
+            },
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    result = asyncio.run(
+        transport.EmberVmShimTransport().create_session(restore_from="s1")
+    )
+
+    assert result.lineage_id == "s1"
+    assert result.restored is True
+
+
+def test_create_session_normal_posts_no_body(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    result = asyncio.run(transport.EmberVmShimTransport().create_session())
+
+    assert not requests[0].content
+    # Absent lineage_id/restored in the CP response degrades to None/False.
+    assert result.lineage_id is None
+    assert result.restored is False
+
+
+def test_create_session_restoring_posts_restore_lineage_body(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={"session_id": "s2", "session_token": "t2", "lineage_id": "s1"},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    asyncio.run(transport.EmberVmShimTransport().create_session(restore_from="s1"))
+
+    assert json.loads(requests[0].content) == {"restore_lineage": "s1"}
+
+
 def test_deliver_uses_ember_identity_and_cli_id_in_body(monkeypatch):
     requests = []
 
@@ -130,16 +190,20 @@ def test_deliver_includes_model_when_present(monkeypatch):
 def test_deliver_recreates_reused_stale_session_once(monkeypatch):
     requests = []
     responses = [410, 200]
+    # restored defaults False: this fresh session is a BLANK create (no
+    # workspace recovered), so the retry invoke must drop the CLI id below.
     fresh = transport.EmberSession("s2", "t2", 1754035200000)
     create_calls = 0
+    seen_restore_from = []
 
     async def handler(request):
         requests.append(request)
         return _turn_response(request, responses.pop(0))
 
-    async def create_session():
+    async def create_session(restore_from=None):
         nonlocal create_calls
         create_calls += 1
+        seen_restore_from.append(restore_from)
         return fresh
 
     _client(monkeypatch, handler)
@@ -151,9 +215,15 @@ def test_deliver_recreates_reused_stale_session_once(monkeypatch):
 
     assert len(requests) == 2
     assert json.loads(requests[0].content)["session_id"] == "cli-1"
+    # restored=False on the retry create means no workspace was recovered,
+    # so the CLI transcript id must NOT be resumed against a blank session.
     assert json.loads(requests[1].content)["session_id"] is None
     assert str(requests[1].url).endswith("/v1/sessions/s2/invoke")
     assert create_calls == 1
+    # #4306 slice 4: the expiring session's lineage_id was never set (a
+    # pre-lineage binding, EmberSession("s1", "t1", None) defaults
+    # lineage_id=None), so the fallback is its session_id.
+    assert seen_restore_from == ["s1"]
     assert turn.result == "ok"
     assert used == fresh
 
@@ -163,26 +233,114 @@ def test_deliver_recreates_reused_session_on_403(monkeypatch):
     responses = [403, 200]
     fresh = transport.EmberSession("s2", "t2", None)
     create_calls = 0
+    seen_restore_from = []
 
     async def handler(request):
         requests.append(request)
         return _turn_response(request, responses.pop(0))
 
-    async def create_session():
+    async def create_session(restore_from=None):
         nonlocal create_calls
         create_calls += 1
+        seen_restore_from.append(restore_from)
         return fresh
 
     _client(monkeypatch, handler)
     client = transport.EmberVmShimTransport()
     monkeypatch.setattr(client, "create_session", create_session)
     asyncio.run(
-        client.deliver(transport.EmberSession("s1", "t1", None), "cli-1", "hello")
+        client.deliver(
+            transport.EmberSession("s1", "t1", None, lineage_id="lineage-1"),
+            "cli-1",
+            "hello",
+        )
     )
 
     assert len(requests) == 2
     assert str(requests[1].url).endswith("/v1/sessions/s2/invoke")
     assert create_calls == 1
+    # The expiring session DID carry a lineage_id: that, not session_id, is
+    # what must be sent as restore_from.
+    assert seen_restore_from == ["lineage-1"]
+
+
+def test_deliver_keeps_cli_session_id_when_restore_recovers_workspace(monkeypatch):
+    """#4306 slice 4: a restore that actually recovers the workspace
+    (restored=True) must let the retry --resume the CLI transcript; only a
+    BLANK fallback drops the CLI id (covered above, restored defaults False)."""
+    requests = []
+    responses = [410, 200]
+    restored_session = transport.EmberSession(
+        "s2", "t2", None, lineage_id="lineage-1", restored=True
+    )
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request, responses.pop(0))
+
+    async def create_session(restore_from=None):
+        return restored_session
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, used = asyncio.run(
+        client.deliver(
+            transport.EmberSession("s1", "t1", None, lineage_id="lineage-1"),
+            "cli-1",
+            "hello",
+        )
+    )
+
+    assert len(requests) == 2
+    # restored=True: the retry resumes the ORIGINAL cli_session_id.
+    assert json.loads(requests[1].content)["session_id"] == "cli-1"
+    assert used == restored_session
+    assert turn.result == "ok"
+
+
+def test_deliver_falls_back_to_blank_session_when_restore_create_is_denied(
+    monkeypatch,
+):
+    """#4306 slice 4: the restore create itself can be DENIED (unknown_lineage,
+    a mismatch, a live heir, or an in-flight restore of the same lineage). This
+    must degrade to a blank session and still complete the turn, never raise
+    EmberSessionGone (the guest workspace being unrecoverable is not the same
+    as the ORIGINAL binding being confirmed dead)."""
+    requests = []
+    responses = [410, 200]
+    blank = transport.EmberSession("s3", "t3", None)
+    create_calls = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request, responses.pop(0))
+
+    async def create_session(restore_from=None):
+        create_calls.append(restore_from)
+        if restore_from:
+            raise EmberVMTransportError("404 unknown_lineage")
+        return blank
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, used = asyncio.run(
+        client.deliver(
+            transport.EmberSession("s1", "t1", None, lineage_id="lineage-1"),
+            "cli-1",
+            "hello",
+        )
+    )
+
+    # First call attempted the restore and was denied; second call is the
+    # blank fallback (no restore_from).
+    assert create_calls == ["lineage-1", None]
+    assert len(requests) == 2
+    # A blank session (restored=False) must not carry the CLI id forward.
+    assert json.loads(requests[1].content)["session_id"] is None
+    assert used == blank
+    assert turn.result == "ok"
 
 
 def test_deliver_reused_session_403_with_failing_retry_raises_session_gone(monkeypatch):
@@ -194,7 +352,7 @@ def test_deliver_reused_session_403_with_failing_retry_raises_session_gone(monke
         requests.append(request)
         return _turn_response(request, responses.pop(0))
 
-    async def create_session():
+    async def create_session(restore_from=None):
         return fresh
 
     _client(monkeypatch, handler)

@@ -50,6 +50,7 @@ def set_ember_session(
     ember_id: str,
     ember_token: str,
     ember_expires_at: int | None,
+    ember_lineage_id: str | None = None,
 ) -> AgentSession:
     row = session.get(AgentSession, session_id)
     if row is None:
@@ -57,6 +58,11 @@ def set_ember_session(
     row.ember_session_id = ember_id
     row.ember_session_token = ember_token
     row.ember_session_expires_at = ember_expires_at
+    # #4306 slice 4: the durable workspace handle, persisted alongside the
+    # per-generation session_id/token so the NEXT create (after an expiry)
+    # can restore from it instead of the (invalid, past generation zero)
+    # session_id.
+    row.ember_lineage_id = ember_lineage_id
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -75,6 +81,7 @@ def clear_ember_session(session: Session, session_id: int) -> AgentSession:
     row.ember_session_id = None
     row.ember_session_token = None
     row.ember_session_expires_at = None
+    row.ember_lineage_id = None
     row.cli_session_id = None
     session.add(row)
     session.commit()
@@ -90,6 +97,12 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     them in one commit rather than assuming a single owner. Rows are loaded
     via exec/select and mutated in place, then committed once; nothing is
     session.add-ed in a loop.
+
+    Deliberately does NOT null ember_lineage_id or cli_session_id (#4306
+    slice 4): destroying this specific VM/generation does not necessarily
+    destroy its durable workspace volume, so a future create can still
+    restore from the lineage and pick the transcript back up. Only
+    clear_ember_session (a confirmed-dead binding) clears the lineage too.
 
     Returns the ids of the affected AgentSession rows.
     """
