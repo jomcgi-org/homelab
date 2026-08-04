@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 
 
 GUEST_HTTP_PORT = 1027
@@ -607,6 +608,57 @@ class VsockEgressForwarder:
                     pass
 
 
+class _ProgressPusher:
+    """Fire-and-forget progress pusher: latest-text slot, throttled, exceptions swallowed."""
+
+    def __init__(self, progress_token):
+        self.progress_token = progress_token
+        self.latest_text = ""
+        self.last_push_time = 0
+        self.thread = None
+        self.stop_event = threading.Event()
+
+    def push(self, text):
+        """Update the latest text and trigger a push if throttle allows."""
+        self.latest_text = text
+        now = time.time()
+        if now - self.last_push_time >= 1.0:
+            self.last_push_time = now
+            if self.thread is None or not self.thread.is_alive():
+                self.thread = threading.Thread(target=self._do_push, daemon=True)
+                self.thread.start()
+
+    def _do_push(self):
+        """Push in a background thread; all exceptions swallowed."""
+        try:
+            egress_port = int(os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT)))
+            proxy_handler = urllib.request.ProxyHandler(
+                {"http": "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)}
+            )
+            opener = urllib.request.build_opener(proxy_handler)
+            url = "http://monolith.monolith.svc.cluster.local:8091/ingest/progress"
+            data = json.dumps({"partial_text": self.latest_text}).encode("utf-8")
+            request = urllib.request.Request(
+                url,
+                data=data,
+                headers={
+                    "Authorization": "Bearer %s" % self.progress_token,
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            response = opener.open(request, timeout=2)
+            response.close()
+        except Exception:
+            # Fire-and-forget: all exceptions swallowed (decision 6, ADR 051).
+            pass
+
+    def stop(self):
+        """Drain and stop. Called at turn end."""
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1)
+
+
 class ClaudeProcess:
     """Own the CLI and serialize turns sent through its JSONL stream."""
 
@@ -873,7 +925,13 @@ class ClaudeProcess:
         _managed_child_pids.discard(process.pid)
         _reap_orphans()
 
-    def turn(self, message, session_id=None, model=None):
+    def turn(
+        self,
+        message,
+        session_id=None,
+        model=None,
+        progress_token=None,
+    ):
         with self.turn_lock:
             with self.process_lock:
                 process = self.process
@@ -917,31 +975,47 @@ class ClaudeProcess:
                 process.stdin.write(_user_message_line(message))
                 process.stdin.flush()
             events = []
-            while True:
-                try:
-                    turn_read_timeout = TURN_READ_TIMEOUT
-                    raw = self._read_output(process, turn_read_timeout)
-                except TimeoutError:
-                    self._timeout_interrupt(process, turn_read_timeout, "turn output")
-                    raise RuntimeError(
-                        "timed out waiting for Claude output after %s seconds"
-                        % turn_read_timeout
-                    )
-                if raw is None:
-                    code = process.poll()
-                    self._close_process(kill=False)
-                    error_msg = "claude crashed during turn, exit code %s" % code
-                    raise RuntimeError(self._assemble_error_with_rings(error_msg))
-                event = self._parse_line(raw)
-                if event is None:
-                    continue
-                events.append(event)
-                if event.get("type") == "result":
-                    self.current_result = event
-                    record = dict(event)
-                    record["voice"] = voice_summary(event.get("result", ""))
-                    record["activity"] = activity_from_events(events)
-                    return record
+            accumulated_text = ""
+            pusher = _ProgressPusher(progress_token) if progress_token else None
+            try:
+                while True:
+                    try:
+                        turn_read_timeout = TURN_READ_TIMEOUT
+                        raw = self._read_output(process, turn_read_timeout)
+                    except TimeoutError:
+                        self._timeout_interrupt(
+                            process, turn_read_timeout, "turn output"
+                        )
+                        raise RuntimeError(
+                            "timed out waiting for Claude output after %s seconds"
+                            % turn_read_timeout
+                        )
+                    if raw is None:
+                        code = process.poll()
+                        self._close_process(kill=False)
+                        error_msg = "claude crashed during turn, exit code %s" % code
+                        raise RuntimeError(self._assemble_error_with_rings(error_msg))
+                    event = self._parse_line(raw)
+                    if event is None:
+                        continue
+                    events.append(event)
+                    if event.get("type") == "assistant":
+                        message_event = event.get("message", {})
+                        if message_event.get("role") == "assistant":
+                            for content_block in message_event.get("content", []):
+                                if content_block.get("type") == "text":
+                                    accumulated_text += content_block.get("text", "")
+                            if pusher:
+                                pusher.push(accumulated_text)
+                    if event.get("type") == "result":
+                        self.current_result = event
+                        record = dict(event)
+                        record["voice"] = voice_summary(event.get("result", ""))
+                        record["activity"] = activity_from_events(events)
+                        return record
+            finally:
+                if pusher:
+                    pusher.stop()
 
     def _timeout_interrupt(self, process, timeout, phase):
         sys.stderr.write(
@@ -1625,7 +1699,15 @@ class ProcessManager:
     def ready(self):
         return self.claude.ready() and self.codex.ready() and self.pi.ready()
 
-    def turn(self, message, session_id=None, model=None, repo=None, branch=None):
+    def turn(
+        self,
+        message,
+        session_id=None,
+        model=None,
+        repo=None,
+        branch=None,
+        progress_token=None,
+    ):
         if repo is not None and branch is not None:
             self._hydrate_workspace(repo, branch)
         adapter = self._adapter(model)
@@ -1635,7 +1717,12 @@ class ProcessManager:
             elif adapter is self.codex:
                 record = adapter.turn(message, session_id, model or DEFAULT_CODEX_MODEL)
             else:
-                record = adapter.turn(message, session_id, model)
+                # Only the claude adapter pushes progress (codex and pi parse
+                # tool-use JSON, not stream-json with assistant messages), and
+                # the kwarg is forwarded only when set so plain turns keep the
+                # pre-progress arity.
+                extra = {"progress_token": progress_token} if progress_token else {}
+                record = adapter.turn(message, session_id, model, **extra)
             if repo is not None and isinstance(record, dict):
                 if self._hydration_error:
                     record["workspace_hydration"] = {"failed": self._hydration_error}
@@ -1739,10 +1826,20 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         ):
             self._send(400, {"error": "repo and branch must be non-empty strings"})
             return
+        progress_token = payload.get("progress_token")
+        if progress_token is not None and (
+            not isinstance(progress_token, str) or not progress_token.strip()
+        ):
+            self._send(400, {"error": "progress_token must be a non-empty string"})
+            return
         try:
             hydration = {"repo": repo, "branch": branch} if repo is not None else {}
+            progress = {"progress_token": progress_token} if progress_token else {}
             record = self.manager.turn(
-                message, payload.get("session_id"), payload.get("model"), **hydration
+                message,
+                payload.get("session_id"),
+                payload.get("model"),
+                **(hydration | progress),
             )
             if repo is not None and isinstance(record, dict):
                 if getattr(self.manager, "_hydration_error", None):
