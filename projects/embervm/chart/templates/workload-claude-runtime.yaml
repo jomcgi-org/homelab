@@ -48,6 +48,16 @@ spec:
       port: {{ .Values.claudeRuntimeWorkload.port }}
       readyPath: {{ .Values.claudeRuntimeWorkload.readyPath | quote }}
       invokePath: {{ .Values.claudeRuntimeWorkload.invokePath | quote }}
+      {{- with .Values.claudeRuntimeWorkload.initEnv }}
+      # Baked guest env, and part of the workload signature (base_builder
+      # signature/1 includes sorted init_env): changing any entry re-keys and
+      # rebuilds this workload's base, and only this one. Deploy values use an
+      # epoch entry here to force a base rebuild when node-side capture
+      # behaviour changes, because noded config is deliberately excluded from
+      # the base key.
+      initEnv:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
   resources:
     vcpus: {{ .Values.claudeRuntimeWorkload.vcpus }}
     memMib: {{ .Values.claudeRuntimeWorkload.memMib }}
