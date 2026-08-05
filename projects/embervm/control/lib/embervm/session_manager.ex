@@ -1719,16 +1719,15 @@ defmodule Embervm.SessionManager do
            key: workload, need_mib: Map.get(entry, :mem_mib) || 512,
            base: {:ready, :snapshot_ref}
          }),
-         # Both the restore and the prime must reach the INSTANCE that owns this
-         # lineage on disk. volume_node_id is a bare node name (an anchor), and
-         # dialing it fails :unknown_node, which is exactly how the first live
-         # rejoin died after create and park both worked.
-         dial_id <- Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, volume_node_id, lineage_id),
+         # The scheduler's brick is the only instance guaranteed to fit the VM's
+         # memory. VolumeRoot is node-shared, so any instance can reach it, but
+         # both restore_session_workspace and prime must use the scheduled brick.
+         # Otherwise registration-order dial resolution can select an undersized
+         # brick and fail prime with pressure:mem forever (#4379).
+         dial_id <- Brick.dial_id(brick),
          {:ok, _restored} <- restore_session_workspace(state, dial_id, workload, lineage_id),
          snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
          {:ok, vm_id} <- prime(state, dial_id, snapshot_ref, entry, lineage_id) do
-      # Return dial_id because this is the third distinct bare-anchor dial site.
-      # The previous fix resolved it correctly, then stopped one hop short by discarding it.
       {:ok, vm_id, dial_id}
     else
       {:error, reason} -> {:error, reason}
