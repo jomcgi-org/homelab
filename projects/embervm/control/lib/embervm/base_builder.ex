@@ -1827,8 +1827,8 @@ defmodule Embervm.BaseBuilder do
 
   # -- reconciled base-retention sweep (base-durability PR-3) ------------------
 
-  # Run one reconciled base-retention sweep and apply it: with the destructive gate
-  # OFF, log the dry-run plan and change nothing; with the gate ON, spawn an
+  # Run one reconciled base-retention sweep and apply it: log the bounded candidate
+  # manifest, then with the destructive gate OFF change nothing; with the gate ON, spawn an
   # EvictArtifact{remote: false} for each superseded local base outside the desired
   # set. Returns the (possibly updated) state. This is the reconciled backstop the
   # event-driven refcount path lacks: it enumerates from the node's REPORTED local
@@ -2440,7 +2440,7 @@ defmodule Embervm.BaseBuilder do
     if is_integer(created) and created > 0 do
       max(System.system_time(:millisecond) - created, 0) |> div(1_000)
     else
-      @retention_min_age_seconds
+      0
     end
   end
 
@@ -2450,15 +2450,17 @@ defmodule Embervm.BaseBuilder do
 
     Enum.map(bases, fn base ->
       created = Map.get(base, :created_at_unix_ms, 0)
-      age = if is_integer(created) and created > 0, do: max(div(now - created, 1_000), 0), else: nil
+      age = if is_integer(created) and created > 0, do: max(div(now - created, 1_000), 0), else: 0
+      snapshot_path = Map.get(base, :snapshot_path)
+      path = if is_binary(snapshot_path) and snapshot_path != "", do: snapshot_path, else: "/var/lib/embervm/scratch/bases/#{base.ref}"
 
       %{
         node: fact[:instance_id],
-        path: "/var/lib/embervm/scratch/bases/#{base.ref}",
+        path: path,
         size_bytes: Map.get(base, :size_bytes, 0) || 0,
         workload: workload,
         vendor: vendor,
-        base_generation: Map.get(base, :base_generation) || workload_generation,
+        base_generation: workload_generation,
         age_seconds: age,
         reason_unreferenced: "not in current, CP snapshot, or active base_refs"
       }
@@ -2467,7 +2469,23 @@ defmodule Embervm.BaseBuilder do
 
   defp log_retention_summary(state, plan) do
     candidates = Enum.flat_map(plan, &Map.get(&1, :candidates, []))
+    manifest = Enum.take(candidates, @retention_max_evictions_per_sweep)
     nodes = state |> capacity_facts_by_node() |> map_size()
+
+    manifest
+    |> Enum.each(fn candidate ->
+      Logger.info("embervm base retention candidate", Map.to_list(candidate))
+    end)
+
+    candidates
+    |> Enum.group_by(& &1.node)
+    |> Enum.each(fn {node, node_candidates} ->
+      Logger.info("embervm base retention node summary",
+        node: node,
+        candidates: length(node_candidates),
+        bytes_reclaimable: Enum.reduce(node_candidates, 0, &(&1.size_bytes + &2))
+      )
+    end)
 
     disk_driven_plan? = Enum.any?(plan, &Map.has_key?(&1, :candidates))
     deletion_enabled? =

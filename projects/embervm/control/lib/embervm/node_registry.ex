@@ -737,7 +737,8 @@ defmodule Embervm.NodeRegistry do
         workload: b.workload,
         size_bytes: b.size_bytes,
         base_state: b.base_state,
-        created_at_unix_ms: b.created_at_unix_ms
+        created_at_unix_ms: b.created_at_unix_ms,
+        snapshot_path: b.snapshot_path
       }
     end
   end

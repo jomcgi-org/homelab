@@ -766,14 +766,28 @@ defmodule Embervm.BaseBuilderTest do
   end
 
   defp ready_base(ref, workload, bytes) do
-    %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_READY}
+    %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_READY,
+      created_at_unix_ms: System.system_time(:millisecond) - 3_601_000,
+      snapshot_path: "/var/lib/embervm/scratch/embervm-noded/snapshots/bases/#{ref}"}
+  end
+
+  test "unknown base age is treated as new and is not a retention candidate" do
+    table = new_cap_table()
+    base = Map.merge(ready_base("deleted__unknown-age", "deleted", 512), %{created_at_unix_ms: 0})
+    put_unknown_local_bases_fact(table, "node-4", "ds", [base])
+    builder = start_builder(capacity_table: table, retention_sweep_enabled: true, retention_disk_driven_enabled: true)
+
+    :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
+    assert BaseBuilder.retention_sweep_now(builder) == []
   end
 
   # An unregistered / .tmp-orphan on-disk base dir: noded reports it with
   # base_state UNSPECIFIED. The sweep must treat it as a candidate (it is neither
   # current nor BUILDING), so the reclaim drains orphans too.
   defp orphan_base(ref, workload, bytes) do
-    %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_UNSPECIFIED}
+    %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_UNSPECIFIED,
+      created_at_unix_ms: System.system_time(:millisecond) - 3_601_000,
+      snapshot_path: "/var/lib/embervm/scratch/embervm-noded/snapshots/bases/#{ref}"}
   end
 
   # Drive one build so the CP has a placed, current snapshot_ref for "w" on node-4.
@@ -1282,22 +1296,35 @@ defmodule Embervm.BaseBuilderTest do
 
   test "retention sweep emits an on-disk manifest and honors the minimum age" do
     agent = start_recorder()
+    test_pid = self()
     table = new_cap_table()
     builder = start_builder(
       capacity_table: table,
       status_writer: recording_status_writer(agent),
-      build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end
+      build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+      evict_fun: fn :fake_channel, workload, ref ->
+        send(test_pid, {:evicted, workload, ref})
+        {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+      end
     )
     build_current(builder, agent, "w__current")
 
     young = Map.put(ready_base("w__young", "w", 10), :created_at_unix_ms, System.system_time(:millisecond) - 100_000)
     old = Map.put(ready_base("w__old", "w", 20), :created_at_unix_ms, System.system_time(:millisecond) - 4_000_000)
-    put_local_bases_fact(table, "w", "w__current", true, [ready_base("w__current", "w", 1), young, old])
+    unknown = Map.put(ready_base("w__unknown", "w", 30), :created_at_unix_ms, 0)
+    put_local_bases_fact(table, "w", "w__current", true, [ready_base("w__current", "w", 1), young, old, unknown])
 
     [entry] = BaseBuilder.retention_sweep_now(builder)
     assert entry.evict_refs == ["w__old"]
-    assert [%{path: "/var/lib/embervm/scratch/bases/w__old", size_bytes: 20, age_seconds: age}] = entry.candidates
-    assert age >= 3_600
+    # Verify the manifest contains the old base with correct path and age
+    assert [candidate] = entry.candidates
+    assert candidate.path == "/var/lib/embervm/scratch/embervm-noded/snapshots/bases/w__old"
+    assert candidate.size_bytes == 20
+    assert candidate.age_seconds >= 3_600
+    # Verify young base is filtered by age and unknown-age base is treated as new (not a candidate)
+    assert candidate.workload == "w"
+    assert Enum.all?(entry.candidates, &(&1.age_seconds > 0))
+    refute Enum.any?(entry.candidates, &(&1.path =~ "w__unknown"))
     refute_receive {:evicted, "w", "w__old"}, 100
   end
 

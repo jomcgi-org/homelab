@@ -1491,8 +1491,12 @@ message BaseInventoryEntry {
   BaseBuildState base_state = 4;
   // created_at_unix_ms is the on-disk directory mtime used by the control-plane
   // retention age rail and dry-run manifest. Zero means the daemon could not
-  // determine it, in which case the control plane treats the base as old.
+  // determine it, in which case the control plane treats the base as age 0 and
+  // never considers it a deletion candidate.
   int64 created_at_unix_ms = 5;
+  // snapshot_path is the daemon's actual on-disk base directory. Older daemons
+  // omit it, so the control plane may reconstruct a fallback path.
+  string snapshot_path = 6;
 }
 
 // SessionVm is one LIVE session VM the node currently holds: the daemon reports
