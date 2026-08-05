@@ -221,15 +221,25 @@ statefulSweeper:
 # local eviction, and hydrate-on-miss restores from S3 on a cold start.
 # Rollback: set back to "" and bump the chart; that stops further eviction.
 baseRetention:
-  # Disarmed pending manifest review for #4290, re-arm in follow-up PR after manifest is read on live fleet.
-  # This gate had been on since 2026-07-27 and was harmless only because the
-  # sweep found nothing. Two reasons it must be off while that changes: the
-  # keep-set lives in control-plane memory and is never rehydrated on boot, so
-  # after a restart a base still pinned by a BANKED session looks unreferenced
-  # and is evictable, which costs that session its remaining warm-bank window;
-  # and nobody has yet read a manifest of what this would delete. Re-arm in a
-  # follow-up PR once #4364 clears, not by editing this back on its own.
-  sweepEnabled: ""
+  # RE-ARMED 2026-08-05 after reading the manifest live (#4290). The sweep named
+  # exactly two candidates, both on node-3, both claude-runtime/intel superseded
+  # bases aged 25h and 48h, 8.59 GB total, and left tonight's fresh base alone
+  # under the 3600s min-age rail. Arming was checked against session state at the
+  # same moment: all 70 claude-runtime sessions were terminal (evicted, destroyed,
+  # failed), with zero live, parked, or banked, so nothing could be pinned to the
+  # candidates.
+  #
+  # The standing risk from #4364 is NOT closed by that: the keep-set lives in
+  # control-plane memory and is never rehydrated on boot, so once real sessions
+  # exist again, a CP restart can make a base pinned by a parked session look
+  # unreferenced. "A base is reconstructible" is the usual defence, and it is why
+  # the remote gate was armed directly, but this cluster has already evicted four
+  # sessions with terminal_reason "snapshot_vanished", so a vanished artifact
+  # kills the session rather than being silently rebuilt. Land #4364's durable
+  # keep-set before session traffic resumes.
+  #
+  # Rollback: set back to "" and bump the chart; that stops further eviction.
+  sweepEnabled: "1"
   # Arm REMOTE base retention (#3947 PR-4, Joe 2026-07-27). Local retention has
   # been reclaiming node disk for a while, but nothing reclaimed the store, so
   # superseded S3 bases accumulated without bound. Armed directly rather than
