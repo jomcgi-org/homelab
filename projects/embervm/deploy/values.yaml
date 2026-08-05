@@ -104,19 +104,23 @@ noded:
   # (docs/runbooks/embervm-node-scratch-setup.md).
   enabled: false
   maxLiveVMs: 16
-  # ARM warm restore with volume on the 16gi class ONLY (issue #4371 one-brick
-  # experiment). The 16gi brick is the only session-capable brick (sessions are
-  # 4096 MiB), so this is where the unproven Firecracker/ext4 fact gets
-  # answered: does a guest restored from a base snapshot, whose volume drive is
-  # then repointed at a different backing file, come up clean. Requires the
-  # claudeRuntimeWorkload.initEnv epoch below in the SAME change: base refs
-  # exclude noded config, so arming without re-keying the base would leave the
-  # brick failing every volume-bearing claim at the drive PATCH against its old
-  # placeholder-less base, with no rebuild ever coming. Expect a short window of
-  # failing session creates between the brick roll and the base rebuild.
-  # Rollback: set back to [] (and drop the epoch); no chart bump needed, the
-  # values git ref alone rolls the brick Deployment env off.
-  warmRestoreWithVolumeClasses: ["16gi"]
+  # ARM warm restore with volume FLEET-WIDE (all brick classes). The #4371
+  # one-brick experiment on the 16gi class validated the whole chain live on
+  # 2026-08-05: 2.5ms load-to-resume, billed turns from a repointed volume, and
+  # park/relight conversation continuity (#4386). Uniform arming is the point,
+  # not just breadth: base refs exclude noded config, so a mixed fleet builds
+  # SAME-REF bases with DIFFERENT device sets (flag-off bricks omit the
+  # placeholder drive) and the bundle records nothing that tells them apart.
+  # S3 export is first-writer-wins, so a placeholder-less twin exported by a
+  # flag-off brick would break session creates on any brick that later
+  # hydrates it, with nothing on disk to explain why. All classes armed means
+  # every base built anywhere carries the placeholder. Task bases keep their
+  # old refs until their guest images next move; volume-less restores of
+  # placeholder-bearing bases reopen the node-stable placeholder file that
+  # every brick ensures at startup.
+  # Rollback: set back to [] (uniformly, never partially); no chart bump
+  # needed, the values git ref alone rolls the brick Deployment envs off.
+  warmRestoreWithVolumeClasses: ["2gi", "4gi", "8gi", "16gi"]
 
 # Node-provisioning contract (ADR embervm/012 storage-tiers amendment; warmth
 # cache-cap retention decisions 2026-07-22): DISABLED. The privileged runtime
@@ -195,6 +199,20 @@ bricks:
       class: 2gi
     - node: node-3
       class: 2gi
+    # Second 16gi brick, PINNED to node-4 (2026-08-05, after #4371 closed). A
+    # floor rather than desiredReplicas 2 because the class Deployment
+    # bin-packs by the fleet-wide FC label and could land the second replica
+    # on a master's 35Gi loop scratch; session volumes and 4Gi VMs belong on
+    # node-4's NVMe. Every node-4 lineage is servable by EITHER brick (the
+    # VolumeRoot is node-shared and rejoin dials the scheduler's brick since
+    # #4380), so this doubles session admission headroom AND keeps one 16gi
+    # brick up through every merge's roll (floors and the class Deployment
+    # are separate Deployments on separate sync waves). First same-class
+    # co-located pair in the fleet: instance addressing is dual-key
+    # (node, pod uid) by design, but watch the first roll. Rollback: delete
+    # this entry; volumes strand nothing (node-shared).
+    - node: node-4
+      class: 16gi
 
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1).
 # DISABLED 2026-08: its only real consumer was the loom deployment (now
