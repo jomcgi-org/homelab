@@ -92,6 +92,10 @@ INIT_READ_TIMEOUT = _read_init_timeout()
 TURN_READ_TIMEOUT = 600.0
 INTERRUPT_TIMEOUT = 30.0
 CLI_PROBE_TIMEOUT = 10.0
+HYDRATION_ATTEMPT_CAP = 3
+# The guest path is proxied over vsock, so it is materially slower than a direct
+# clone. A partial clone of this repo is approximately 67 MB.
+GIT_CLONE_TIMEOUT_SECONDS = 300
 PERMISSION_MODE_ENV = "EMBER_PERMISSION_MODE"
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
 CLI_UID_ENV = "EMBER_CLI_UID"
@@ -2080,7 +2084,7 @@ class ProcessManager:
         self.workspace = os.path.abspath(
             workspace or os.environ.get("EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE)
         )
-        self._hydration_attempted = False
+        self._hydration_attempts = 0
         self._hydration_error = None
         self._checkout_dir = None
         self._hydration_status = None
@@ -2090,11 +2094,27 @@ class ProcessManager:
         self.pi = PiProcess(self.workspace, pi_executable)
 
     def _hydrate_workspace(self, repo, branch):
-        if self._hydration_attempted:
+        if self._hydration_status == "ok":
             if self._checkout_dir and os.path.isdir(self._checkout_dir):
                 self._hydration_status = "skipped_existing"
             return
-        self._hydration_attempted = True
+        if self._hydration_status == "skipped_existing":
+            return
+        if self._hydration_attempts >= HYDRATION_ATTEMPT_CAP:
+            return
+        if self._hydration_attempts:
+            sys.stderr.write(
+                "ember-claude-shim: retrying workspace hydration for %s@%s "
+                "(attempt %s/%s)\n"
+                % (
+                    repo,
+                    branch,
+                    self._hydration_attempts + 1,
+                    HYDRATION_ATTEMPT_CAP,
+                )
+            )
+            sys.stderr.flush()
+        self._hydration_attempts += 1
         checkout_dir = os.path.join(self.workspace, "src")
         # Idempotency gate: restored/rejoined volumes reuse existing checkout.
         # This deliberately ignores repo/branch changes on restored volumes; per-session
@@ -2132,54 +2152,49 @@ class ProcessManager:
             "git://git-mirror.monolith.svc.cluster.local:9418/%s" % repo,
             checkout_dir,
         ]
-        for attempt in range(2):
-            try:
-                result = subprocess.run(
-                    clone_command,
-                    capture_output=True,
-                    timeout=120,
-                    **_cli_privilege_kwargs(),
+        try:
+            result = subprocess.run(
+                clone_command,
+                capture_output=True,
+                timeout=GIT_CLONE_TIMEOUT_SECONDS,
+                **_cli_privilege_kwargs(),
+            )
+            if result.returncode != 0:
+                stderr = result.stderr
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", "replace")
+                stderr = (stderr or "").strip()
+                raise RuntimeError(
+                    "git command failed with exit code %s%s"
+                    % (result.returncode, ": " + stderr if stderr else "")
                 )
-                if result.returncode != 0:
-                    stderr = result.stderr
-                    if isinstance(stderr, bytes):
-                        stderr = stderr.decode("utf-8", "replace")
-                    stderr = (stderr or "").strip()
-                    raise RuntimeError(
-                        "git command failed with exit code %s%s"
-                        % (result.returncode, ": " + stderr if stderr else "")
-                    )
-                validation = subprocess.run(
-                    ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
-                    capture_output=True,
-                    timeout=5,
-                    **_cli_privilege_kwargs(),
-                )
-                if validation.returncode == 0:
-                    break
-                shutil.rmtree(checkout_dir, ignore_errors=True)
-                if attempt == 1:
-                    raise RuntimeError(
-                        "cloned directory validation failed: HEAD not found"
-                    )
-            except subprocess.TimeoutExpired as exc:
-                shutil.rmtree(checkout_dir, ignore_errors=True)
-                self._hydration_error = str(exc)
-                sys.stderr.write(
-                    "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
-                    % (repo, branch, exc)
-                )
-                sys.stderr.flush()
-                return
-            except Exception as exc:
-                shutil.rmtree(checkout_dir, ignore_errors=True)
-                self._hydration_error = str(exc)
-                sys.stderr.write(
-                    "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
-                    % (repo, branch, exc)
-                )
-                sys.stderr.flush()
-                return
+            validation = subprocess.run(
+                ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
+                capture_output=True,
+                timeout=5,
+                **_cli_privilege_kwargs(),
+            )
+            if validation.returncode != 0:
+                raise RuntimeError("cloned directory validation failed: HEAD not found")
+        except subprocess.TimeoutExpired as exc:
+            shutil.rmtree(checkout_dir, ignore_errors=True)
+            self._hydration_error = str(exc)
+            sys.stderr.write(
+                "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
+                % (repo, branch, exc)
+            )
+            sys.stderr.flush()
+            return
+        except Exception as exc:
+            shutil.rmtree(checkout_dir, ignore_errors=True)
+            self._hydration_error = str(exc)
+            sys.stderr.write(
+                "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
+                % (repo, branch, exc)
+            )
+            sys.stderr.flush()
+            return
+        self._hydration_error = None
         exclude_file = os.path.join(checkout_dir, ".git/info/exclude")
         os.makedirs(os.path.dirname(exclude_file), exist_ok=True)
         with open(exclude_file, "a") as stream:
