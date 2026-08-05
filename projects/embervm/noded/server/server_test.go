@@ -1268,30 +1268,37 @@ func TestWorkloadCapacitiesSkipsStaleServingImage(t *testing.T) {
 }
 
 func TestWorkloadCapacitiesAdvertisesNewestReadyBase(t *testing.T) {
+	// oldRef sorts lexically GREATER than newRef on purpose: if either
+	// registration path drops createdAtUnixMs again, the comparison falls to
+	// the lexical tie-break and advertises the stale base, and this test must
+	// catch exactly that (the live 2026-08-05 failure). The old base goes in
+	// through register (the disk-adoption path, which once zeroed the stamp in
+	// its field-by-field copy) and the new one through readyBuild (which once
+	// never stamped at all), so both real paths are exercised, no hand-patching.
 	const (
 		workload = "claude-runtime"
-		oldRef   = "claude-runtime__old"
-		newRef   = "claude-runtime__new"
+		oldRef   = "claude-runtime__zzzstale"
+		newRef   = "claude-runtime__aaafresh"
 		image    = "img@sha256:runtime"
 	)
 
 	for _, tc := range []struct {
 		name string
-		refs []string
+		run  func(s *Server)
 	}{
-		{name: "old then new", refs: []string{oldRef, newRef}},
-		{name: "new then old", refs: []string{newRef, oldRef}},
+		{name: "adopted then built", run: func(s *Server) {
+			s.bases.register(baseEntry{snapshotRef: oldRef, workload: workload, imageDigest: image, readyPath: "/shim/ready", createdAtUnixMs: 1000, state: nodev1.BaseBuildState_BASE_BUILD_STATE_READY})
+			s.bases.readyBuild(newRef, workload, image, "", "/shim/ready", 2048)
+		}},
+		{name: "built then adopted", run: func(s *Server) {
+			s.bases.readyBuild(newRef, workload, image, "", "/shim/ready", 2048)
+			s.bases.register(baseEntry{snapshotRef: oldRef, workload: workload, imageDigest: image, readyPath: "/shim/ready", createdAtUnixMs: 1000, state: nodev1.BaseBuildState_BASE_BUILD_STATE_READY})
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
 			s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: image, RootfsRef: "/rootfs/runtime"}})
-			for _, ref := range tc.refs {
-				s.bases.readyBuild(ref, workload, image, "", "/shim/ready", 2048)
-			}
-			s.bases.mu.Lock()
-			s.bases.bases[oldRef].createdAtUnixMs = 1000
-			s.bases.bases[newRef].createdAtUnixMs = 2000
-			s.bases.mu.Unlock()
+			tc.run(s)
 
 			ns, err := client.GetNodeStatus(context.Background(), &nodev1.GetNodeStatusRequest{})
 			if err != nil {

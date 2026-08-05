@@ -2,6 +2,7 @@ package server
 
 import (
 	"sync"
+	"time"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
@@ -473,7 +474,11 @@ func (b *baseRegistry) readyBuild(ref, workload, imageDigest, rootfsPath, readyP
 		rootfsPath:  rootfsPath,
 		sizeBytes:   sizeBytes,
 		readyPath:   readyPath,
-		state:       nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
+		// Stamped here, not left zero: workloadCapacities picks the workload's
+		// advertised base by newest createdAtUnixMs, and a zero here demotes a
+		// fresh build to the lexical tie-break against adopted bases.
+		createdAtUnixMs: time.Now().UnixMilli(),
+		state:           nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
 	}
 }
 
@@ -506,6 +511,11 @@ func (b *baseRegistry) register(e baseEntry) {
 		sizeBytes:   e.sizeBytes,
 		readyPath:   e.readyPath,
 		state:       e.state,
+		// Carried, not dropped: workloadCapacities picks the advertised base by
+		// newest createdAtUnixMs, and this copy silently zeroing it made every
+		// adopted base tie at 0, so the lexical tie-break advertised whichever
+		// ref sorted greatest, the STALE placeholder-less base live 2026-08-05.
+		createdAtUnixMs: e.createdAtUnixMs,
 		// Carried, not dropped: a base reconciled from disk as NONE explains WHY in
 		// buildErr (a missing backing rootfs), and that reason is the only thing
 		// distinguishing it from a base that was simply never built.
