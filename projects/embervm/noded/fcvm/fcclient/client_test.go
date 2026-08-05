@@ -158,6 +158,28 @@ func TestClientLoadSnapshotResume(t *testing.T) {
 	}
 }
 
+func TestClientPatchDrive(t *testing.T) {
+	fake, sock := startFakeFC(t)
+	c := New(sock)
+	drive := Drive{DriveID: "volume", PathOnHost: "/sessions/s1/workspace.img", IsRootDevice: false, IsReadOnly: false}
+	if err := c.PatchDrive(context.Background(), "volume", drive); err != nil {
+		t.Fatalf("PatchDrive: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(fake.requests))
+	}
+	r := fake.requests[0]
+	if r.Method != http.MethodPatch || r.Path != "/drives/volume" {
+		t.Fatalf("request = %s %s, want PATCH /drives/volume", r.Method, r.Path)
+	}
+	if r.Body["drive_id"] != "volume" || r.Body["path_on_host"] != drive.PathOnHost || r.Body["is_read_only"] != false {
+		t.Fatalf("drive body = %v", r.Body)
+	}
+}
+
 func TestClientPropagatesAPIError(t *testing.T) {
 	fake, sock := startFakeFC(t)
 	fake.failPath = "/actions"

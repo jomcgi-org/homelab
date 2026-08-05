@@ -23,6 +23,7 @@ import (
 type fakeLauncher struct {
 	mu       sync.Mutex
 	launched int
+	requests []string
 }
 
 type fakeProcess struct {
@@ -45,7 +46,13 @@ func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (P
 		return nil, err
 	}
 	mux := http.NewServeMux()
+	record := func(r *http.Request) {
+		l.mu.Lock()
+		l.requests = append(l.requests, r.Method+" "+r.URL.Path)
+		l.mu.Unlock()
+	}
 	mux.HandleFunc("/snapshot/create", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
 		var body map[string]any
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &body)
@@ -58,12 +65,19 @@ func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (P
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
 		w.WriteHeader(http.StatusNoContent)
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	return &fakeProcess{srv: srv}, nil
+}
+
+func (l *fakeLauncher) requestPaths() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.requests...)
 }
 
 // shortTempDir returns a temp dir under /tmp with a short path. The fake
@@ -132,6 +146,118 @@ func TestDriverClaimBootsMicroVM(t *testing.T) {
 	}
 	if d.LiveCount() != 1 {
 		t.Fatalf("LiveCount = %d, want 1", d.LiveCount())
+	}
+}
+
+func TestDriverClaimWithVolumeColdBootsWhenWarmRestoreDisabled(t *testing.T) {
+	launcher := &fakeLauncher{}
+	d := New(Config{
+		KernelImagePath: "/opt/kata/vmlinux",
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    shortTempDir(t),
+		Node:            "node-4",
+		Arch:            "amd64",
+	}, launcher, nil)
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		ThreadID:        "cold-volume",
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "base"},
+		VolumeDiskPath:  "/sessions/s1/workspace.img",
+	})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	paths := launcher.requestPaths()
+	for _, path := range paths {
+		if path == "PUT /snapshot/load" {
+			t.Fatalf("disabled warm restore unexpectedly loaded a snapshot: %v", paths)
+		}
+	}
+	foundVolume := false
+	for _, path := range paths {
+		if path == "PUT /drives/volume" {
+			foundVolume = true
+		}
+	}
+	if !foundVolume {
+		t.Fatalf("cold boot did not attach volume: %v", paths)
+	}
+}
+
+func TestDriverClaimWithVolumeLoadPatchResume(t *testing.T) {
+	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
+	d := New(Config{
+		KernelImagePath:       "/opt/kata/vmlinux",
+		RootfsPath:            "/dev/mapper/thread",
+		SnapshotRoot:          root,
+		Node:                  "node-4",
+		Arch:                  "amd64",
+		WarmRestoreWithVolume: true,
+	}, launcher, nil)
+	if err := os.MkdirAll(d.baseDir("base"), 0o750); err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	if err := os.WriteFile(d.baseSnapfile("base"), []byte("snap"), 0o600); err != nil {
+		t.Fatalf("write snapfile: %v", err)
+	}
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{
+		ThreadID:        "warm-volume",
+		BaseSnapshotRef: substrate.SnapshotRef{ID: "base", Arch: "amd64"},
+		VolumeDiskPath:  "/sessions/s1/workspace.img",
+	})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	if h.ID == "" {
+		t.Fatal("Claim returned empty handle")
+	}
+	paths := launcher.requestPaths()
+	want := []string{"PUT /snapshot/load", "PATCH /drives/volume", "PATCH /vm"}
+	if len(paths) != len(want) {
+		t.Fatalf("request paths = %v, want %v", paths, want)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Fatalf("request path[%d] = %q, want %q", i, paths[i], want[i])
+		}
+	}
+}
+
+func TestDriverWarmRestoreFlagAttachesBasePlaceholderVolume(t *testing.T) {
+	launcher := &fakeLauncher{}
+	root := shortTempDir(t)
+	d := New(Config{
+		KernelImagePath:       "/opt/kata/vmlinux",
+		RootfsPath:            "/dev/mapper/thread",
+		SnapshotRoot:          root,
+		Node:                  "node-4",
+		Arch:                  "amd64",
+		WarmRestoreWithVolume: true,
+	}, launcher, nil)
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "base-build"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	placeholder := filepath.Join(d.threadDir(h.ThreadID), "placeholder-volume.img")
+	info, err := os.Stat(placeholder)
+	if err != nil {
+		t.Fatalf("placeholder volume: %v", err)
+	}
+	if info.Size() != 16*1024*1024 {
+		t.Fatalf("placeholder size = %d, want %d", info.Size(), 16*1024*1024)
+	}
+	paths := launcher.requestPaths()
+	foundVolume := false
+	for _, path := range paths {
+		if path == "PUT /drives/volume" {
+			foundVolume = true
+		}
+	}
+	if !foundVolume {
+		t.Fatalf("warm base cold boot did not attach placeholder volume: %v", paths)
 	}
 }
 

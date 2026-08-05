@@ -122,6 +122,14 @@ func (c *Client) PutDrive(ctx context.Context, d Drive) error {
 	return c.do(ctx, http.MethodPut, "/drives/"+d.DriveID, d)
 }
 
+// PatchDrive updates a drive's path_on_host on a loaded (not-yet-resumed)
+// microVM. Used to repoint the volume drive to a session-specific backing file
+// after LoadSnapshot on the warm-restore path. The drive must already exist in
+// the snapshot's device set.
+func (c *Client) PatchDrive(ctx context.Context, driveID string, d Drive) error {
+	return c.do(ctx, http.MethodPatch, "/drives/"+driveID, d)
+}
+
 // PutVsock attaches a vsock device for the wrapper channel.
 func (c *Client) PutVsock(ctx context.Context, v Vsock) error {
 	return c.do(ctx, http.MethodPut, "/vsock", v)

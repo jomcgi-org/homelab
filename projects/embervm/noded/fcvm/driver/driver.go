@@ -108,6 +108,11 @@ type Config struct {
 	// until that verify step runs on the Alder Lake-S masters, this field only
 	// drives the sku stamp/mismatch/grandfather gate, never the FC API call.
 	Template string
+	// WarmRestoreWithVolume, when true, allows restore from a warm base even when
+	// spec.VolumeDiskPath is set. The base must have been captured with a volume
+	// device attached. Keep this disabled until guest-init defers its volume
+	// mount, so the guest can handle the volume contents changing before resume.
+	WarmRestoreWithVolume bool
 }
 
 func (c Config) withDefaults() Config {
@@ -145,6 +150,7 @@ type fcAPI interface {
 	PutMachineConfig(ctx context.Context, m fcclient.MachineConfig) error
 	PutBootSource(ctx context.Context, b fcclient.BootSource) error
 	PutDrive(ctx context.Context, d fcclient.Drive) error
+	PatchDrive(ctx context.Context, driveID string, d fcclient.Drive) error
 	PutVsock(ctx context.Context, v fcclient.Vsock) error
 	PutNetworkInterface(ctx context.Context, n fcclient.NetworkInterface) error
 	Start(ctx context.Context) error
@@ -728,9 +734,16 @@ func (d *Driver) servingMetafile(ref string) string {
 }
 
 // loadInto launches a fresh Firecracker process for threadID and restores it
-// from the given snapfile + memfile (File backend, resume). Used by both
-// thread-snapshot restore and warm-base restore.
+// from the given snapfile + memfile (File backend, resume). Used by all restore
+// paths that do not need to rebind a snapshot drive.
 func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
+	return d.loadPatchAndResume(ctx, threadID, snapPath, memPath, sockName, "")
+}
+
+// loadPatchAndResume restores a snapshot, optionally repoints its volume drive,
+// and resumes it. Firecracker requires the drive patch while the loaded VM is
+// still paused.
+func (d *Driver) loadPatchAndResume(ctx context.Context, threadID, snapPath, memPath, sockName, volumeDiskPath string) (substrate.Handle, error) {
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -747,12 +760,26 @@ func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sock
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
 	}
 	client := d.newClient(sock)
+	resumeVM := volumeDiskPath == ""
 	if err := client.LoadSnapshot(ctx, fcclient.SnapshotLoad{
 		SnapshotPath: snapPath,
 		MemBackend:   &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
-		ResumeVM:     true,
+		ResumeVM:     resumeVM,
 	}); err != nil {
 		return d.abort(proc, err)
+	}
+	if volumeDiskPath != "" {
+		if err := client.PatchDrive(ctx, "volume", fcclient.Drive{
+			DriveID:      "volume",
+			PathOnHost:   volumeDiskPath,
+			IsRootDevice: false,
+			IsReadOnly:   false,
+		}); err != nil {
+			return d.abort(proc, err)
+		}
+		if err := client.Resume(ctx); err != nil {
+			return d.abort(proc, err)
+		}
 	}
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
 	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: d.cfg.MemMib})
@@ -772,7 +799,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 
 	// Warm-base start: restore the new thread from a base bundle for an instant
 	// ready start, skipping boot + harness init.
-	if spec.BaseSnapshotRef.ID != "" && spec.VolumeDiskPath == "" {
+	if spec.BaseSnapshotRef.ID != "" && (spec.VolumeDiskPath == "" || d.cfg.WarmRestoreWithVolume) {
 		ref := spec.BaseSnapshotRef
 		if ref.Arch != "" && d.cfg.Arch != "" && ref.Arch != d.cfg.Arch {
 			return substrate.Handle{}, fmt.Errorf("driver: base arch mismatch: ref %q != node %q", ref.Arch, d.cfg.Arch)
@@ -786,6 +813,9 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 		snap := d.baseSnapfile(ref.ID)
 		if _, err := os.Stat(snap); err != nil {
 			return substrate.Handle{}, fmt.Errorf("driver: base bundle missing for %q: %w", ref.ID, err)
+		}
+		if spec.VolumeDiskPath != "" {
+			return d.loadPatchAndResume(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock", spec.VolumeDiskPath)
 		}
 		return d.loadInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
 	}
@@ -930,6 +960,15 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 				return err
 			}
 		}
+		if d.cfg.WarmRestoreWithVolume && cb.volumeDiskPath == "" {
+			placeholder, err := d.ensurePlaceholderVolume(dir)
+			if err != nil {
+				return err
+			}
+			if err := client.PutDrive(ctx, fcclient.Drive{DriveID: "volume", PathOnHost: placeholder, IsRootDevice: false, IsReadOnly: false}); err != nil {
+				return err
+			}
+		}
 		// Serving class (R3): attach the tap NIC pre-Start. Task/session claims leave
 		// nic nil and never reach this, so their boot path is byte-unchanged
 		// (vsock-only, no NIC). Firecracker cannot hot-attach a NIC to a resumed
@@ -963,6 +1002,28 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
 	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: cb.memMib})
 	return h, nil
+}
+
+// ensurePlaceholderVolume creates the sparse backing file captured in a warm
+// base's device set. The guest owns filesystem initialization and mounting;
+// this raw image only needs to provide a stable block-device path in the base.
+func (d *Driver) ensurePlaceholderVolume(threadDir string) (string, error) {
+	path := filepath.Join(threadDir, "placeholder-volume.img")
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("driver: stat placeholder volume: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("driver: create placeholder volume: %w", err)
+	}
+	defer f.Close()
+	if err := f.Truncate(16 * 1024 * 1024); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("driver: size placeholder volume: %w", err)
+	}
+	return path, nil
 }
 
 // ClaimServing cold-boots a serving-class microVM from a per-workload rootfs WITH a
