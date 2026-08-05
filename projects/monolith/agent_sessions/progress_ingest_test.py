@@ -1,16 +1,14 @@
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
 
 from agent_sessions import progress_ingest, store
-from agent_sessions.models import AgentSession
+from agent_sessions.models import AgentSession, PendingMessage
 
 
-def _client(monkeypatch, token="token"):
+def _client(monkeypatch, tmp_path, token="token"):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'progress_ingest_test.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -29,6 +27,7 @@ def _client(monkeypatch, token="token"):
         )
         session.commit()
     monkeypatch.setattr(store, "get_engine", lambda: engine)
+    monkeypatch.setattr(progress_ingest, "_token_last_write", {})
     return TestClient(progress_ingest.app), engine, schemas
 
 
@@ -38,8 +37,8 @@ def _restore_schemas(schemas):
             table.schema = schemas[table.name]
 
 
-def test_progress_ingest_valid_request_returns_204(monkeypatch):
-    client, engine, schemas = _client(monkeypatch)
+def test_progress_ingest_valid_request_returns_204(monkeypatch, tmp_path):
+    client, engine, schemas = _client(monkeypatch, tmp_path)
     try:
         response = client.post(
             "/ingest/progress",
@@ -53,8 +52,60 @@ def test_progress_ingest_valid_request_returns_204(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_progress_ingest_missing_or_invalid_auth_returns_401(monkeypatch):
-    client, _, schemas = _client(monkeypatch)
+def test_progress_ingest_accepts_valid_activities(monkeypatch, tmp_path):
+    client, _, schemas = _client(monkeypatch, tmp_path)
+    try:
+        response = client.post(
+            "/ingest/progress",
+            headers={"Authorization": "Bearer token"},
+            json={"partial_text": "working", "activities": [{"type": "tool"}]},
+        )
+        assert response.status_code == 204
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_progress_ingest_rejects_non_list_activities(monkeypatch, tmp_path):
+    client, _, schemas = _client(monkeypatch, tmp_path)
+    try:
+        response = client.post(
+            "/ingest/progress",
+            headers={"Authorization": "Bearer token"},
+            json={"partial_text": "working", "activities": "not a list"},
+        )
+        assert response.status_code == 422
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_progress_ingest_rejects_oversized_activities_list(monkeypatch, tmp_path):
+    client, _, schemas = _client(monkeypatch, tmp_path)
+    try:
+        response = client.post(
+            "/ingest/progress",
+            headers={"Authorization": "Bearer token"},
+            json={"partial_text": "working", "activities": [{}] * 301},
+        )
+        assert response.status_code == 422
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_progress_ingest_rejects_non_dict_activity_items(monkeypatch, tmp_path):
+    client, _, schemas = _client(monkeypatch, tmp_path)
+    try:
+        response = client.post(
+            "/ingest/progress",
+            headers={"Authorization": "Bearer token"},
+            json={"partial_text": "working", "activities": ["tool"]},
+        )
+        assert response.status_code == 422
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_progress_ingest_missing_or_invalid_auth_returns_401(monkeypatch, tmp_path):
+    client, _, schemas = _client(monkeypatch, tmp_path)
     try:
         assert (
             client.post("/ingest/progress", json={"partial_text": "x"}).status_code
@@ -72,8 +123,8 @@ def test_progress_ingest_missing_or_invalid_auth_returns_401(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_progress_ingest_rejects_oversized_text(monkeypatch):
-    client, _, schemas = _client(monkeypatch)
+def test_progress_ingest_rejects_oversized_text(monkeypatch, tmp_path):
+    client, _, schemas = _client(monkeypatch, tmp_path)
     try:
         response = client.post(
             "/ingest/progress",
@@ -85,8 +136,8 @@ def test_progress_ingest_rejects_oversized_text(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_progress_ingest_malformed_json_returns_422(monkeypatch):
-    client, _, schemas = _client(monkeypatch)
+def test_progress_ingest_malformed_json_returns_422(monkeypatch, tmp_path):
+    client, _, schemas = _client(monkeypatch, tmp_path)
     try:
         response = client.post(
             "/ingest/progress",
@@ -101,8 +152,8 @@ def test_progress_ingest_malformed_json_returns_422(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_progress_ingest_valid_token_without_pending_row_is_noop(monkeypatch):
-    client, _, schemas = _client(monkeypatch)
+def test_progress_ingest_valid_token_without_pending_row_is_noop(monkeypatch, tmp_path):
+    client, _, schemas = _client(monkeypatch, tmp_path)
     try:
         assert (
             client.post(
@@ -116,9 +167,9 @@ def test_progress_ingest_valid_token_without_pending_row_is_noop(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_progress_ingest_multibyte_cap(monkeypatch):
+def test_progress_ingest_multibyte_cap(monkeypatch, tmp_path):
     """UTF-8 multibyte characters count toward 262144 byte cap."""
-    client, _, schemas = _client(monkeypatch)
+    client, _, schemas = _client(monkeypatch, tmp_path)
     try:
         oversized = "é" * 200000
         response = client.post(
@@ -131,9 +182,9 @@ def test_progress_ingest_multibyte_cap(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_progress_ingest_boundary_case(monkeypatch):
+def test_progress_ingest_boundary_case(monkeypatch, tmp_path):
     """String content near 262144 bytes (accounting for JSON overhead) is accepted."""
-    client, _, schemas = _client(monkeypatch)
+    client, _, schemas = _client(monkeypatch, tmp_path)
     try:
         # Account for JSON overhead: {"partial_text": "..."} adds ~20 bytes
         content = "x" * 262120
@@ -147,9 +198,11 @@ def test_progress_ingest_boundary_case(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_progress_ingest_middleware_rejects_oversized_content_length(monkeypatch):
+def test_progress_ingest_middleware_rejects_oversized_content_length(
+    monkeypatch, tmp_path
+):
     """Middleware rejects Content-Length > 262144 before handler runs."""
-    client, _, schemas = _client(monkeypatch)
+    client, _, schemas = _client(monkeypatch, tmp_path)
     try:
         response = client.post(
             "/ingest/progress",
@@ -164,10 +217,18 @@ def test_progress_ingest_middleware_rejects_oversized_content_length(monkeypatch
         _restore_schemas(schemas)
 
 
-def test_progress_ingest_rate_limit_drops_second_push(monkeypatch):
-    """Second push within 0.3s for same token returns 204 (dropped)."""
-    client, _, schemas = _client(monkeypatch)
+def test_progress_ingest_rate_limit_drops_second_push(monkeypatch, tmp_path):
+    """Second push within 0.15s for same token returns 204 (dropped)."""
+    client, engine, schemas = _client(monkeypatch, tmp_path)
     try:
+        with Session(engine) as session:
+            agent_session = session.exec(select(AgentSession)).one()
+            session.add(
+                PendingMessage(
+                    session_id=agent_session.id, seq=1, message_text="prompt"
+                )
+            )
+            session.commit()
         response1 = client.post(
             "/ingest/progress",
             headers={"Authorization": "Bearer token"},
@@ -181,28 +242,49 @@ def test_progress_ingest_rate_limit_drops_second_push(monkeypatch):
             json={"partial_text": "second"},
         )
         assert response2.status_code == 204
+        with Session(engine) as session:
+            pending = session.exec(select(PendingMessage)).one()
+            assert pending.partial_text == "first"
     finally:
         _restore_schemas(schemas)
 
 
-def test_progress_ingest_rate_limit_allows_delayed_push(monkeypatch):
-    """Push after 0.3s delay is accepted."""
+def test_progress_ingest_rate_limit_window_150ms(monkeypatch, tmp_path):
+    """Pushes before 150ms are dropped, and pushes after it are accepted."""
     import time
 
-    client, _, schemas = _client(monkeypatch)
+    client, engine, schemas = _client(monkeypatch, tmp_path)
     try:
+        with Session(engine) as session:
+            agent_session = session.exec(select(AgentSession)).one()
+            session.add(
+                PendingMessage(
+                    session_id=agent_session.id, seq=1, message_text="prompt"
+                )
+            )
+            session.commit()
         client.post(
             "/ingest/progress",
             headers={"Authorization": "Bearer token"},
             json={"partial_text": "first"},
         )
-        time.sleep(0.31)
+        time.sleep(0.1)
         response2 = client.post(
             "/ingest/progress",
             headers={"Authorization": "Bearer token"},
             json={"partial_text": "second"},
         )
         assert response2.status_code == 204
+        time.sleep(0.1)
+        response3 = client.post(
+            "/ingest/progress",
+            headers={"Authorization": "Bearer token"},
+            json={"partial_text": "third"},
+        )
+        assert response3.status_code == 204
+        with Session(engine) as session:
+            pending = session.exec(select(PendingMessage)).one()
+            assert pending.partial_text == "third"
     finally:
         _restore_schemas(schemas)
 

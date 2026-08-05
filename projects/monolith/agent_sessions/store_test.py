@@ -1,15 +1,15 @@
+import json
+
 from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
 
 from agent_sessions import store
 from agent_sessions.models import AgentSession, PendingMessage
 
 
-def _database(monkeypatch):
+def _database(monkeypatch, tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'store_test.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -27,8 +27,8 @@ def _restore_schemas(schemas):
             table.schema = schemas[table.name]
 
 
-def test_write_progress_sync_updates_claimed_row(monkeypatch):
-    engine, schemas = _database(monkeypatch)
+def test_write_progress_sync_updates_claimed_row(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
     try:
         with Session(engine) as session:
             agent = AgentSession(
@@ -69,16 +69,48 @@ def test_write_progress_sync_updates_claimed_row(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_write_progress_sync_unknown_token_returns_unknown_token(monkeypatch):
-    engine, schemas = _database(monkeypatch)
+def test_write_progress_sync_stores_activities(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    activities = [{"type": "tool", "name": "shell"}]
+    try:
+        with Session(engine) as session:
+            agent = AgentSession(
+                local_session_id="local",
+                workspace="workspace",
+                branch="main",
+                progress_token="token",
+            )
+            session.add(agent)
+            session.commit()
+            session.refresh(agent)
+            session.add(
+                PendingMessage(
+                    session_id=agent.id,
+                    seq=1,
+                    message_text="first",
+                    claimed_by_replica="replica-a",
+                )
+            )
+            session.commit()
+
+        assert store.write_progress_sync("token", "working", activities) == "ok"
+        with Session(engine) as session:
+            row = session.exec(select(PendingMessage)).one()
+            assert json.loads(row.partial_activities) == activities
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_write_progress_sync_unknown_token_returns_unknown_token(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
     try:
         assert store.write_progress_sync("missing", "working") == "unknown_token"
     finally:
         _restore_schemas(schemas)
 
 
-def test_write_progress_sync_without_pending_row_returns_no_row(monkeypatch):
-    engine, schemas = _database(monkeypatch)
+def test_write_progress_sync_without_pending_row_returns_no_row(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
     try:
         with Session(engine) as session:
             session.add(
@@ -95,9 +127,9 @@ def test_write_progress_sync_without_pending_row_returns_no_row(monkeypatch):
         _restore_schemas(schemas)
 
 
-def test_write_progress_sync_falls_back_to_unclaimed_row(monkeypatch):
+def test_write_progress_sync_falls_back_to_unclaimed_row(monkeypatch, tmp_path):
     """Fallback updates lowest seq unclaimed row when no claimed row exists."""
-    engine, schemas = _database(monkeypatch)
+    engine, schemas = _database(monkeypatch, tmp_path)
     try:
         with Session(engine) as session:
             agent = AgentSession(

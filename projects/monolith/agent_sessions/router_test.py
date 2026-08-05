@@ -8,7 +8,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 from agent_sessions import store
 from agent_sessions import mcp
@@ -18,11 +17,10 @@ from core.db import get_session
 
 
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'router_test.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -120,6 +118,7 @@ def test_list_sessions_aggregates(client, session):
 
 def test_get_session_detail(client, session):
     row = _session(session, "detail")
+    other_row = _session(session, "other")
     session.add_all(
         [
             AgentTurn(
@@ -135,17 +134,32 @@ def test_get_session_detail(client, session):
                 seq=3,
                 message_text="next",
                 partial_text="in progress",
+                partial_activities='[{"type": "tool", "name": "shell"}]',
             ),
+            AgentTurn(
+                session_id=other_row.id,
+                seq=1,
+                prompt="unrelated",
+                result_text="unrelated",
+                cost_usd=9.99,
+            ),
+            PendingMessage(session_id=other_row.id, seq=2, message_text="unrelated"),
         ]
     )
     session.commit()
 
     body = client.get(f"/api/agents/sessions/{row.id}").json()
     assert body["session"]["id"] == row.id
+    assert body["session"]["turn_count"] == 2
+    assert body["session"]["pending_count"] == 1
+    assert body["session"]["total_cost_usd"] == 0
     assert [turn["seq"] for turn in body["turns"]] == [1, 2]
     assert body["turns"][1]["usage"] == {"activities": ["shell"]}
     assert body["pending_queue"][0]["prompt"] == "next"
     assert body["pending_queue"][0]["partial_text"] == "in progress"
+    assert body["pending_queue"][0]["partial_activities"] == [
+        {"type": "tool", "name": "shell"}
+    ]
 
     newer = client.get(f"/api/agents/sessions/{row.id}?after_seq=1").json()
     assert [turn["seq"] for turn in newer["turns"]] == [2]

@@ -59,24 +59,25 @@ def _decode(value: str | None, default):
     return decoded
 
 
-def _aggregate_statement(status: str | None = None):
-    turns = (
-        select(
-            AgentTurn.session_id,
-            func.count(AgentTurn.id).label("turn_count"),
-            func.coalesce(func.sum(AgentTurn.cost_usd), 0).label("total_cost_usd"),
-        )
-        .group_by(AgentTurn.session_id)
-        .subquery()
+def _aggregate_statement(status: str | None = None, session_id: int | None = None):
+    turns_statement = select(
+        AgentTurn.session_id,
+        func.count(AgentTurn.id).label("turn_count"),
+        func.coalesce(func.sum(AgentTurn.cost_usd), 0).label("total_cost_usd"),
     )
-    pending = (
-        select(
-            PendingMessage.session_id,
-            func.count(PendingMessage.id).label("pending_count"),
-        )
-        .group_by(PendingMessage.session_id)
-        .subquery()
+    if session_id is not None:
+        turns_statement = turns_statement.where(AgentTurn.session_id == session_id)
+    turns = turns_statement.group_by(AgentTurn.session_id).subquery()
+
+    pending_statement = select(
+        PendingMessage.session_id,
+        func.count(PendingMessage.id).label("pending_count"),
     )
+    if session_id is not None:
+        pending_statement = pending_statement.where(
+            PendingMessage.session_id == session_id
+        )
+    pending = pending_statement.group_by(PendingMessage.session_id).subquery()
     statement = (
         select(
             AgentSession,
@@ -114,7 +115,7 @@ def _session_payload(
 
 
 def _rows(session: Session, status: str | None = None, limit: int | None = None):
-    statement = _aggregate_statement(status)
+    statement = _aggregate_statement(status, None)
     if limit is not None:
         statement = statement.limit(limit)
     results = session.exec(statement).all()
@@ -153,7 +154,7 @@ def get_session_detail(
     session: Session = Depends(get_session),
 ) -> dict:
     result = session.exec(
-        _aggregate_statement().where(AgentSession.id == session_id)
+        _aggregate_statement(session_id=session_id).where(AgentSession.id == session_id)
     ).first()
     if result is None:
         raise HTTPException(status_code=404, detail="Agent session not found")
@@ -191,6 +192,7 @@ def get_session_detail(
                 "seq": message.seq,
                 "prompt": message.message_text,
                 "partial_text": message.partial_text,
+                "partial_activities": _decode(message.partial_activities, None),
                 "claimed_by_replica": message.claimed_by_replica,
                 "claimed_at": _iso(message.claimed_at),
                 "created_at": _iso(message.created_at),
