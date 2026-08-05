@@ -221,7 +221,7 @@ statefulSweeper:
 # local eviction, and hydrate-on-miss restores from S3 on a cold start.
 # Rollback: set back to "" and bump the chart; that stops further eviction.
 baseRetention:
-  # DISARMED 2026-08-05 pending manifest review (#4290, prerequisites in #4364).
+  # Disarmed pending manifest review for #4290, re-arm in follow-up PR after manifest is read on live fleet.
   # This gate had been on since 2026-07-27 and was harmless only because the
   # sweep found nothing. Two reasons it must be off while that changes: the
   # keep-set lives in control-plane memory and is never rehydrated on boot, so

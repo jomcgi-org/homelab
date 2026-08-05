@@ -1876,6 +1876,7 @@ func (s *Server) localBasesStatus() []*nodev1.BaseInventoryEntry {
 				SizeBytes:       sizeBytes,
 				BaseState:       state,
 				CreatedAtUnixMs: baseCreatedAtUnixMs(filepath.Join(root, ref)),
+				SnapshotPath:    filepath.Join(root, ref),
 			})
 			continue
 		}
@@ -1893,6 +1894,7 @@ func (s *Server) localBasesStatus() []*nodev1.BaseInventoryEntry {
 			SizeBytes:       sizeBytes,
 			BaseState:       state,
 			CreatedAtUnixMs: baseCreatedAtUnixMs(filepath.Join(root, ref)),
+			SnapshotPath:    filepath.Join(root, ref),
 		})
 	}
 	// A BUILDING ref whose dir has not yet materialized on disk (the build just
@@ -1908,6 +1910,7 @@ func (s *Server) localBasesStatus() []*nodev1.BaseInventoryEntry {
 			SizeBytes:       uint64(b.sizeBytes),
 			BaseState:       b.state,
 			CreatedAtUnixMs: baseCreatedAtUnixMs(filepath.Join(root, ref)),
+			SnapshotPath:    filepath.Join(root, ref),
 		})
 	}
 	if len(out) == 0 {
@@ -1957,10 +1960,11 @@ func (s *Server) localBasesFromRegistry() []*nodev1.BaseInventoryEntry {
 			sizeBytes = 0
 		}
 		out = append(out, &nodev1.BaseInventoryEntry{
-			Ref:       b.snapshotRef,
-			Workload:  b.workload,
-			SizeBytes: sizeBytes,
-			BaseState: state,
+			Ref:          b.snapshotRef,
+			Workload:     b.workload,
+			SizeBytes:    sizeBytes,
+			BaseState:    state,
+			SnapshotPath: filepath.Join(s.cfg.SnapshotRoot, "bases", b.snapshotRef),
 		})
 	}
 	return out
