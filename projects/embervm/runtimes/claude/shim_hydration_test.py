@@ -98,11 +98,12 @@ class _GitProcess:
 
 
 def test_hydration_runs_once_per_session(manager, monkeypatch):
-    processes = [_GitProcess()]
+    processes = [_GitProcess(), _GitProcess()]
     commands = []
 
     def fake_run(command, **_kwargs):
-        commands.append(command)
+        if command[1] == "clone":
+            commands.append(command)
         return processes.pop(0)
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
@@ -116,9 +117,8 @@ def test_hydration_runs_once_per_session(manager, monkeypatch):
 def test_hydration_skips_on_restored_volume(manager, monkeypatch):
     checkout_dir = os.path.join(manager.workspace, "src")
     os.makedirs(checkout_dir)
-    monkeypatch.setattr(
-        shim.subprocess, "run", lambda *_a, **_k: pytest.fail("git called")
-    )
+    validation = _GitProcess()
+    monkeypatch.setattr(shim.subprocess, "run", lambda *_a, **_k: validation)
 
     manager.turn("first", repo="owner/repo", branch="main")
 
@@ -153,11 +153,12 @@ def test_hydration_timeout(manager, monkeypatch, capsys):
 
 
 def test_git_command_shape(manager, monkeypatch):
-    processes = [_GitProcess()]
+    processes = [_GitProcess(), _GitProcess()]
     commands = []
 
     def fake_run(command, **_kwargs):
-        commands.append(command)
+        if command[1] == "clone":
+            commands.append(command)
         return processes.pop(0)
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
@@ -167,11 +168,11 @@ def test_git_command_shape(manager, monkeypatch):
     assert commands == [
         [
             "git",
-            "-c",
-            "core.gitProxy=/tmp/ember-git-proxy",
             "clone",
             "--branch",
             "main",
+            "--config",
+            "core.gitProxy=/tmp/ember-git-proxy",
             "--single-branch",
             "--filter=blob:none",
             "git://git-mirror.monolith.svc.cluster.local:9418/owner/repo",
@@ -204,11 +205,12 @@ def test_no_hydration_when_repo_absent(manager, monkeypatch):
 
 def test_hydration_works_for_non_default_branch(manager, monkeypatch):
     """Verify clone works for branches other than the mirror default."""
-    processes = [_GitProcess()]
+    processes = [_GitProcess(), _GitProcess()]
     commands = []
 
     def fake_run(command, **_kwargs):
-        commands.append(command)
+        if command[1] == "clone":
+            commands.append(command)
         return processes.pop(0)
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
@@ -220,11 +222,11 @@ def test_hydration_works_for_non_default_branch(manager, monkeypatch):
     # Verify --branch is in command before clone executes checkout
     assert commands[0] == [
         "git",
-        "-c",
-        "core.gitProxy=/tmp/ember-git-proxy",
         "clone",
         "--branch",
         "develop",
+        "--config",
+        "core.gitProxy=/tmp/ember-git-proxy",
         "--single-branch",
         "--filter=blob:none",
         "git://git-mirror.monolith.svc.cluster.local:9418/owner/repo",
@@ -277,3 +279,36 @@ def test_hydration_status_surfaced_in_turn(manager, monkeypatch):
 
     record = manager.turn("msg3")
     assert "workspace_hydration" not in record
+
+
+def test_failed_clone_leaves_no_directory(manager, monkeypatch):
+    checkout_dir = os.path.join(manager.workspace, "src")
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            os.makedirs(checkout_dir, exist_ok=True)
+            return _GitProcess(returncode=1, stderr_text="clone failed")
+        pytest.fail("unexpected validation command")
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+    manager.turn("first", repo="owner/repo", branch="main")
+    assert not os.path.exists(checkout_dir)
+
+
+def test_poisoned_directory_is_cleaned_and_recloned(manager, monkeypatch):
+    checkout_dir = os.path.join(manager.workspace, "src")
+    os.makedirs(checkout_dir)
+    calls = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if command[1] == "clone":
+            os.makedirs(os.path.join(checkout_dir, ".git"), exist_ok=True)
+            return _GitProcess()
+        if command[1:3] == ["-C", checkout_dir]:
+            return _GitProcess(returncode=1 if len(calls) == 1 else 0)
+        pytest.fail("unexpected git command")
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+    manager.turn("first", repo="owner/repo", branch="main")
+    assert [command[1] for command in calls] == ["-C", "clone", "-C"]
