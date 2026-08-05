@@ -614,15 +614,19 @@ class _ProgressPusher:
     def __init__(self, progress_token):
         self.progress_token = progress_token
         self.latest_text = ""
+        self.latest_activities = []
         self.last_push_time = -1.0
         self.thread = None
+        self.last_sent_text = ""
+        self.last_sent_activities = []
 
-    def push(self, text):
-        """Update the latest text and trigger a push if throttle allows."""
+    def push(self, text, activities=None):
+        """Update the latest slot and trigger a push if throttle allows."""
         try:
             self.latest_text = text
+            self.latest_activities = activities if activities is not None else []
             now = time.monotonic()
-            if now - self.last_push_time >= 1.0:  # At most 1 push/sec
+            if now - self.last_push_time >= 0.2:
                 self.last_push_time = now
                 if self.thread is None or not self.thread.is_alive():
                     self.thread = threading.Thread(
@@ -636,7 +640,7 @@ class _ProgressPusher:
             pass
 
     def _do_push(self):
-        """Push in a background thread; all exceptions swallowed."""
+        """Push in a background thread and drain changes made during the push."""
         try:
             egress_port = int(os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT)))
             proxy_handler = urllib.request.ProxyHandler(
@@ -644,12 +648,12 @@ class _ProgressPusher:
             )
             opener = urllib.request.build_opener(proxy_handler)
             url = "http://monolith.monolith.svc.cluster.local:8091/ingest/progress"
-            text = (
-                self.latest_text[-65536:]
-                if len(self.latest_text) > 65536
-                else self.latest_text
-            )
-            data = json.dumps({"partial_text": text}).encode("utf-8")
+            sent_text = self.latest_text
+            sent_activities = list(self.latest_activities)
+            text = sent_text[-65536:] if len(sent_text) > 65536 else sent_text
+            data = json.dumps(
+                {"partial_text": text, "activities": sent_activities}
+            ).encode("utf-8")
             request = urllib.request.Request(
                 url,
                 data=data,
@@ -661,6 +665,18 @@ class _ProgressPusher:
             )
             response = opener.open(request, timeout=2)
             response.close()
+            self.last_sent_text = sent_text
+            self.last_sent_activities = sent_activities
+            if (
+                self.latest_text != self.last_sent_text
+                or self.latest_activities != self.last_sent_activities
+            ):
+                self.last_push_time = 0.0
+                self.thread = threading.Thread(
+                    target=self._do_push,
+                    daemon=True,
+                )
+                self.thread.start()
         except Exception:
             # Fire-and-forget: all exceptions swallowed (decision 6, ADR 051).
             pass
@@ -743,6 +759,7 @@ class ClaudeProcess:
             "--permission-mode",
             permission_mode,
         ]
+        command.extend(["--include-partial-messages"])
         if model is not None:
             command.extend(["--model", CLAUDE_MODELS.get(model, model)])
         if session_id:
@@ -988,6 +1005,7 @@ class ClaudeProcess:
                 process.stdin.flush()
             events = []
             accumulated_text = ""
+            current_message_buffer = ""
             pusher = _ProgressPusher(progress_token) if progress_token else None
             try:
                 while True:
@@ -1011,7 +1029,27 @@ class ClaudeProcess:
                     if event is None:
                         continue
                     events.append(event)
-                    if event.get("type") == "assistant":
+                    if event.get("type") == "stream_event":
+                        stream_event = event.get("event")
+                        delta = (
+                            stream_event.get("delta")
+                            if isinstance(stream_event, dict)
+                            and stream_event.get("type") == "content_block_delta"
+                            else None
+                        )
+                        if (
+                            isinstance(delta, dict)
+                            and delta.get("type") == "text_delta"
+                        ):
+                            text = delta.get("text", "")
+                            if isinstance(text, str):
+                                current_message_buffer += text
+                                if pusher:
+                                    pusher.push(
+                                        accumulated_text + current_message_buffer,
+                                        activity_from_events(events)[-300:],
+                                    )
+                    elif event.get("type") == "assistant":
                         message_event = event.get("message")
                         if (
                             isinstance(message_event, dict)
@@ -1027,9 +1065,18 @@ class ClaudeProcess:
                                         text = block.get("text")
                                         if isinstance(text, str):
                                             accumulated_text += text
+                            current_message_buffer = ""
                             if pusher:
-                                pusher.push(accumulated_text)
+                                pusher.push(
+                                    accumulated_text + current_message_buffer,
+                                    activity_from_events(events)[-300:],
+                                )
                     if event.get("type") == "result":
+                        if pusher:
+                            pusher.push(
+                                accumulated_text + current_message_buffer,
+                                activity_from_events(events)[-300:],
+                            )
                         self.current_result = event
                         record = dict(event)
                         record["voice"] = voice_summary(event.get("result", ""))
@@ -1199,6 +1246,10 @@ chatgpt_base_url = %s
 name = "ember-openai"
 base_url = %s
 wire_api = "responses"
+
+[sandboxing]
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
 """ % (json.dumps(base_url), json.dumps(provider_base_url))
         with open(os.path.join(codex_home, "config.toml"), "w") as stream:
             stream.write(config)

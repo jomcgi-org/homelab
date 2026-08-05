@@ -85,13 +85,29 @@ for line in sys.stdin:
             "reason": "requires_approval"
         }]
         terminal_reason = "completed"
+    if os.environ.get("FAKE_DELTAS"):
+        print(json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Hello"},
+            },
+        }), flush=True)
     print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
-        {"type": "text", "text": "Assistant progress."},
+        {"type": "text", "text": "Hello world" if os.environ.get("FAKE_DELTAS") else "Assistant progress."},
         {"type": "tool_use", "name": "Read", "input": {"file_path": "a.txt"}},
         {"type": "tool_use", "name": "Edit", "input": {"file_path": "b.txt"}},
         {"type": "tool_use", "name": "Write", "input": {"file_path": "c.txt"}},
         {"type": "tool_use", "name": "Bash", "input": {"command": "git status"}}
     ]}}), flush=True)
+    if os.environ.get("FAKE_DELTAS"):
+        print(json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": " more"},
+            },
+        }), flush=True)
     print(json.dumps({"type": "result", "result": result,
                       "terminal_reason": terminal_reason, "stop_reason": "end_turn",
                       "is_error": False, "permission_denials": permission_denials, "num_turns": 1,
@@ -425,6 +441,8 @@ def test_codex_config_uses_subscription_endpoint_override(tmp_path, monkeypatch)
     assert 'name = "ember-openai"' in config
     assert 'wire_api = "responses"' in config
     assert "enable_codex_api_key_env = false" in config
+    assert 'sandbox_mode = "danger-full-access"' in config
+    assert 'approval_policy = "never"' in config
 
 
 def test_codex_config_appends_codex_to_no_slash_endpoint(tmp_path, monkeypatch):
@@ -440,6 +458,8 @@ def test_codex_config_appends_codex_to_no_slash_endpoint(tmp_path, monkeypatch):
     assert 'name = "ember-openai"' in config
     assert 'wire_api = "responses"' in config
     assert "enable_codex_api_key_env = false" in config
+    assert 'sandbox_mode = "danger-full-access"' in config
+    assert 'approval_policy = "never"' in config
 
 
 def test_codex_child_env_drops_openai_api_key(tmp_path, monkeypatch):
@@ -697,8 +717,50 @@ def test_assistant_message_triggers_progress_push(tmp_path, monkeypatch):
     )
     assert request.method == "POST"
     assert request.get_header("Authorization") == "Bearer abc123"
-    assert json.loads(request.data) == {"partial_text": "Assistant progress."}
+    assert json.loads(request.data) == {
+        "partial_text": "Assistant progress.",
+        "activities": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "a.txt"}},
+            {"type": "edit", "file_path": "b.txt"},
+            {"type": "write", "file_path": "c.txt"},
+            {"type": "bash", "command": "git status"},
+        ],
+    }
     assert timeout == 2
+
+
+def test_delta_accumulation_folds_without_double_count(tmp_path, monkeypatch):
+    """Deltas before and after a complete message do not duplicate text."""
+    monkeypatch.setenv("FAKE_DELTAS", "1")
+    pushes = []
+
+    class FakePusher:
+        def __init__(self, _token):
+            pass
+
+        def push(self, text, activities):
+            pushes.append((text, activities))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes", progress_token="abc123")
+    manager._close_process(kill=True)
+
+    assert "Hello world more" in [text for text, _activities in pushes]
+    assert all("Hello Hello world" not in text for text, _activities in pushes)
+
+
+def test_claude_spawn_includes_include_partial_messages(tmp_path, monkeypatch):
+    """Claude CLI spawn includes the partial message stream flag."""
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes")
+    assert "--include-partial-messages" in json.loads(args_path.read_text())
+    manager._close_process(kill=True)
 
 
 def test_malformed_assistant_events_are_skipped(tmp_path, monkeypatch):
@@ -838,8 +900,8 @@ def test_progress_token_forwarded_to_claude_adapter(monkeypatch):
     assert "progress_token" not in calls[0][1]
 
 
-def test_throttle_allows_push_after_1_second(monkeypatch):
-    """After 1+ second, the next push fires."""
+def test_throttle_allows_push_after_0_2_seconds(monkeypatch):
+    """After 0.2 seconds, the next push fires."""
     current_time = [0.0]
     monkeypatch.setattr(shim.time, "monotonic", lambda: current_time[0])
     requests = []
@@ -864,14 +926,14 @@ def test_throttle_allows_push_after_1_second(monkeypatch):
     pusher.stop()
     assert len(requests) == 1
 
-    current_time[0] = 1.1
+    current_time[0] = 0.25
     pusher.push("text2")
     pusher.stop()
     assert len(requests) == 2
 
 
-def test_throttle_blocks_push_within_1_second(monkeypatch):
-    """Within 1 second of the last push, the next push does not fire."""
+def test_throttle_blocks_push_within_0_2_seconds(monkeypatch):
+    """Within 0.2 seconds of the last push, the next push does not fire."""
     current_time = [0.0]
     monkeypatch.setattr(shim.time, "monotonic", lambda: current_time[0])
     requests = []
@@ -896,10 +958,73 @@ def test_throttle_blocks_push_within_1_second(monkeypatch):
     pusher.stop()
     assert len(requests) == 1
 
-    current_time[0] = 0.2
+    current_time[0] = 0.1
     pusher.push("text2")
     pusher.stop()
     assert len(requests) == 1
+
+
+def test_pusher_throttle_0_2_seconds_with_drain(monkeypatch):
+    """A slot change during a push is sent immediately as a drain push."""
+    requests = []
+    pusher = shim._ProgressPusher("token")
+
+    class FakeResponse:
+        def close(self):
+            pass
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            requests.append(json.loads(request.data.decode())["partial_text"])
+            if len(requests) == 1:
+                pusher.latest_text = "text2"
+            return FakeResponse()
+
+    class ImmediateThread:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(
+        shim.urllib.request, "build_opener", lambda _handler: FakeOpener()
+    )
+    monkeypatch.setattr(shim.threading, "Thread", ImmediateThread)
+    pusher.push("text1", [])
+    assert requests == ["text1", "text2"]
+
+
+def test_activities_sent_in_payload_capped_to_300(tmp_path, monkeypatch):
+    """Progress activities are capped to the last 300 entries."""
+    captured = []
+
+    class FakePusher:
+        def __init__(self, _token):
+            pass
+
+        def push(self, _text, activities):
+            captured.append(activities)
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
+    monkeypatch.setattr(
+        shim,
+        "activity_from_events",
+        lambda _events: [{"index": index} for index in range(400)],
+    )
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes", progress_token="abc123")
+    manager._close_process(kill=True)
+
+    assert captured
+    assert all(len(activities) <= 300 for activities in captured)
+    assert captured[-1][0] == {"index": 100}
 
 
 def test_push_thread_creation_failure_swallowed(monkeypatch):
