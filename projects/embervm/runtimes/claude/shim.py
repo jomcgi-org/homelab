@@ -1466,7 +1466,13 @@ wire_api = "responses"
         finally:
             output_queue.put(None)
 
-    def turn(self, message, session_id=None, model=DEFAULT_CODEX_MODEL):
+    def turn(
+        self,
+        message,
+        session_id=None,
+        model=DEFAULT_CODEX_MODEL,
+        progress_token=None,
+    ):
         with self.turn_lock:
             if self.session_id and session_id and session_id != self.session_id:
                 raise SessionConflictError(
@@ -1524,6 +1530,13 @@ wire_api = "responses"
             result_text = ""
             usage = {}
             events = []
+            accumulated_text = ""
+            cached_activities = []
+            activities_are_stale = True
+            try:
+                pusher = _ProgressPusher(progress_token) if progress_token else None
+            except Exception:
+                pusher = None
             try:
                 while True:
                     try:
@@ -1547,13 +1560,26 @@ wire_api = "responses"
                     events.append(legacy_event)
                     if event_type == "turn/started":
                         self._turn_id = params.get("turn", {}).get("id")
-                    elif event_type == "item/completed":
+                    elif event_type == "item/agentMessage/delta":
+                        delta = params.get("delta", {})
+                        text = delta.get("text") if isinstance(delta, dict) else None
+                        if isinstance(text, str):
+                            accumulated_text += text
+                            if pusher:
+                                try:
+                                    pusher.push(accumulated_text, cached_activities)
+                                except Exception:
+                                    pass
+                    elif event_type in ("item/started", "item/completed"):
                         item = params.get("item", {})
                         if isinstance(item, dict) and item.get("type") in (
-                            "agentMessage",
-                            "agent_message",
+                            "commandExecution",
+                            "command_execution",
                         ):
-                            result_text = item.get("text", "")
+                            activities_are_stale = True
+                        if event_type == "item/completed" and isinstance(item, dict):
+                            if item.get("type") in ("agentMessage", "agent_message"):
+                                result_text = item.get("text", "")
                     elif event_type == "thread/tokenUsage/updated":
                         last = params.get("tokenUsage", {}).get("last", {})
                         usage = {
@@ -1562,7 +1588,26 @@ wire_api = "responses"
                             "cache_read_tokens": last.get("cachedInputTokens", 0),
                             "cache_write_tokens": last.get("cacheWriteInputTokens", 0),
                         }
-                    elif event_type == "turn/completed":
+                    if activities_are_stale:
+                        cached_activities = activity_from_events(events)[-300:]
+                        activities_are_stale = False
+                        if pusher and event_type in ("item/started", "item/completed"):
+                            try:
+                                pusher.push(
+                                    accumulated_text or result_text,
+                                    cached_activities,
+                                )
+                            except Exception:
+                                pass
+                    if event_type == "turn/completed":
+                        if pusher:
+                            try:
+                                pusher.push(
+                                    accumulated_text or result_text,
+                                    cached_activities,
+                                )
+                            except Exception:
+                                pass
                         turn = params.get("turn", {})
                         status = turn.get("status", "completed")
                         if status == "failed":
@@ -1585,6 +1630,11 @@ wire_api = "responses"
                             "activity": activity_from_events(events),
                         }
             finally:
+                if pusher:
+                    try:
+                        pusher.stop()
+                    except Exception:
+                        pass
                 self._turn_done.set()
 
     @staticmethod
@@ -1872,7 +1922,26 @@ class PiProcess:
             error_msg += "\nCLI stderr:\n%s" % stderr
         return RuntimeError(error_msg)
 
-    def turn(self, message, session_id=None, model=DEFAULT_PI_MODEL):
+    def _translate_activity_event(self, event):
+        event_type = event.get("type")
+        if event_type in ("tool_start", "tool_execution_start"):
+            tool_name = event.get("toolName") or event.get("tool_name")
+            args = event.get("args", event.get("input", {}))
+            if tool_name:
+                return {
+                    "type": "tool_execution_start",
+                    "toolName": str(tool_name).lower(),
+                    "args": args,
+                }
+        return event
+
+    def turn(
+        self,
+        message,
+        session_id=None,
+        model=DEFAULT_PI_MODEL,
+        progress_token=None,
+    ):
         with self.turn_lock:
             if self.session_id and session_id and session_id != self.session_id:
                 raise SessionConflictError(
@@ -1916,9 +1985,16 @@ class PiProcess:
             result_text = ""
             usage = {}
             events = []
+            accumulated_text = ""
+            cached_activities = []
+            activities_are_stale = True
             terminal_reason = "completed"
             self._turn_done.clear()
             self._in_flight = True
+            try:
+                pusher = _ProgressPusher(progress_token) if progress_token else None
+            except Exception:
+                pusher = None
             try:
                 self._send({"type": "prompt", "message": message})
                 while True:
@@ -1940,7 +2016,7 @@ class PiProcess:
                                 "prompt failed: %s" % json.dumps(event)[:1500]
                             )
                         continue
-                    events.append(event)
+                    events.append(self._translate_activity_event(event))
                     if event.get("type") == "session":
                         candidate = event.get("id")
                         if isinstance(candidate, str) and candidate:
@@ -1948,11 +2024,13 @@ class PiProcess:
                     elif event.get("type") == "message_end":
                         message_event = event.get("message", {})
                         if message_event.get("role") == "assistant":
-                            result_text = "".join(
+                            message_text = "".join(
                                 item.get("text", "")
                                 for item in message_event.get("content", [])
                                 if item.get("type") == "text"
                             )
+                            result_text = message_text
+                            accumulated_text += message_text
                             raw_usage = message_event.get("usage", {})
                             usage = {
                                 "input_tokens": raw_usage.get("input", 0),
@@ -1963,7 +2041,27 @@ class PiProcess:
                             terminal_reason = message_event.get(
                                 "stopReason", "completed"
                             )
-                    elif event.get("type") == "agent_end":
+                            if pusher:
+                                try:
+                                    pusher.push(accumulated_text, cached_activities)
+                                except Exception:
+                                    pass
+                    elif event.get("type") in (
+                        "tool_start",
+                        "tool_end",
+                        "tool_execution_start",
+                        "tool_execution_end",
+                    ):
+                        activities_are_stale = True
+                    if activities_are_stale:
+                        cached_activities = activity_from_events(events)[-300:]
+                        activities_are_stale = False
+                        if pusher:
+                            try:
+                                pusher.push(accumulated_text, cached_activities)
+                            except Exception:
+                                pass
+                    if event.get("type") == "agent_end":
                         if not result_text:
                             for message_event in reversed(event.get("messages", [])):
                                 if message_event.get("role") == "assistant":
@@ -1973,6 +2071,13 @@ class PiProcess:
                                         if item.get("type") == "text"
                                     )
                                     break
+                        if pusher:
+                            try:
+                                pusher.push(
+                                    accumulated_text or result_text, cached_activities
+                                )
+                            except Exception:
+                                pass
                         if not result_text:
                             error_detail = ""
                             for message_event in reversed(event.get("messages", [])):
@@ -2001,6 +2106,11 @@ class PiProcess:
                         }
                         return record
             finally:
+                if pusher:
+                    try:
+                        pusher.stop()
+                    except Exception:
+                        pass
                 self._in_flight = False
                 self._turn_done.set()
 
@@ -2234,16 +2344,16 @@ class ProcessManager:
             self._hydrate_workspace(repo, branch)
         adapter = self._adapter(model)
         try:
+            extra = {"progress_token": progress_token} if progress_token else {}
             if adapter is self.pi:
-                record = adapter.turn(message, session_id, model or DEFAULT_PI_MODEL)
+                record = adapter.turn(
+                    message, session_id, model or DEFAULT_PI_MODEL, **extra
+                )
             elif adapter is self.codex:
-                record = adapter.turn(message, session_id, model or DEFAULT_CODEX_MODEL)
+                record = adapter.turn(
+                    message, session_id, model or DEFAULT_CODEX_MODEL, **extra
+                )
             else:
-                # Only the claude adapter pushes progress (codex and pi parse
-                # tool-use JSON, not stream-json with assistant messages), and
-                # the kwarg is forwarded only when set so plain turns keep the
-                # pre-progress arity.
-                extra = {"progress_token": progress_token} if progress_token else {}
                 record = adapter.turn(message, session_id, model, **extra)
             if repo is not None and isinstance(record, dict):
                 if self._hydration_error:
