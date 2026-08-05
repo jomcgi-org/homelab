@@ -217,10 +217,6 @@ assert sys.argv[1] == "app-server"
 
 rpc_path = os.environ.get("FAKE_CODEX_RPC")
 scenario = os.environ.get("FAKE_CODEX_SCENARIO", "")
-if scenario == "resume-not-found-path-fallback":
-    sessions = os.path.join(os.environ["CODEX_HOME"], "sessions")
-    os.makedirs(sessions, exist_ok=True)
-    open(os.path.join(sessions, "codex-thread.jsonl"), "w").close()
 
 def record(value):
     if rpc_path:
@@ -260,7 +256,7 @@ for line in sys.stdin:
     elif method == "thread/resume":
         params = request.get("params", {})
         thread_id = params.get("threadId")
-        if scenario == "resume-not-found-path-fallback" and "path" not in params:
+        if scenario == "resume-not-found-no-path":
             response(request, error={"code": -32004, "message": "thread not found"})
         else:
             response(request, {"thread": {"id": thread_id}, "model": "gpt-5.6-luna", "cwd": "/workspace"})
@@ -578,25 +574,60 @@ def test_codex_resume_by_thread_id(tmp_path, monkeypatch):
     manager.session_id = None
     manager.turn("second", session_id=session_id, model="luna")
     assert manager.session_id == session_id
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    thread_start = next(
+        request for request in requests if request["method"] == "thread/start"
+    )
+    thread_resume = next(
+        request for request in requests if request["method"] == "thread/resume"
+    )
+    assert thread_start["params"]["sandboxPolicy"] == {"type": "dangerFullAccess"}
+    assert "sandbox" not in thread_start["params"]
+    assert thread_resume["params"]["sandbox"] == "danger-full-access"
+    assert "sandboxPolicy" not in thread_resume["params"]
     manager._close_process()
 
 
-def test_codex_resume_not_found_falls_back_to_path_glob(tmp_path, monkeypatch):
-    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "resume-not-found-path-fallback")
+def test_codex_resume_failure_raises_with_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "resume-not-found-no-path")
     manager = _codex_manager(tmp_path, monkeypatch)
     manager.turn("first", model="luna")
     session_id = manager.session_id
     manager.session_id = None
-    manager.turn("second", session_id=session_id, model="luna")
-    assert manager.session_id == session_id
+    with pytest.raises(RuntimeError) as exc_info:
+        manager.turn("second", session_id=session_id, model="luna")
+    error = str(exc_info.value)
+    assert session_id in error
+    assert "thread not found" in error
     manager._close_process()
 
 
-def test_codex_per_turn_model_effort_mapping(tmp_path, monkeypatch):
+def test_codex_turn_parameters_per_model(tmp_path, monkeypatch):
     manager = _codex_manager(tmp_path, monkeypatch)
     manager.turn("msg1", model="luna")
     manager.turn("msg2", model="terra")
-    manager.turn("msg3", model="sol")
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    turn_starts = [request for request in requests if request["method"] == "turn/start"]
+    assert len(turn_starts) == 2
+    expected = [
+        ("codex-thread", "luna"),
+        ("codex-thread", "terra"),
+    ]
+    for request, (thread_id, model) in zip(turn_starts, expected):
+        params = request["params"]
+        model_name, effort = shim.CODEX_MODELS[model]
+        assert params["threadId"] == thread_id
+        assert params["model"] == model_name
+        assert params["effort"] == effort
+        assert params["approvalPolicy"] == "never"
+        assert params["cwd"] == str(manager.workspace)
+        assert params["sandboxPolicy"] == {"type": "dangerFullAccess"}
     manager._close_process()
 
 
@@ -622,6 +653,7 @@ def test_codex_server_death_mid_turn_raises_with_stderr(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError) as exc_info:
         manager.turn("msg", model="luna")
     assert "fake codex died mid-turn" in str(exc_info.value)
+    assert "exit code 17" in str(exc_info.value)
     manager._close_process()
 
 
@@ -644,7 +676,8 @@ def test_codex_interrupt_during_turn(tmp_path, monkeypatch):
     thread.join(timeout=7)
 
     assert interrupt_result["terminal_reason"] == "user_interrupt"
-    assert isinstance(interrupt_result["killed"], bool)
+    assert interrupt_result["killed"] is False
+    assert result[0] is not None
     manager._close_process()
 
 
