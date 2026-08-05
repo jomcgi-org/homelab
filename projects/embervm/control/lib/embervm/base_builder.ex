@@ -147,6 +147,8 @@ defmodule Embervm.BaseBuilder do
   # workloads whose current base is already exported. Well below any base's
   # lifetime; the guarded, idempotent EvictArtifact makes a re-sweep harmless.
   @retention_sweep_interval_ms 300_000
+  @retention_min_age_seconds 3_600
+  @retention_max_evictions_per_sweep 20
 
   # -- Client API ------------------------------------------------------------
 
@@ -491,7 +493,8 @@ defmodule Embervm.BaseBuilder do
       base_backoff_ms: base_backoff,
       max_backoff_ms: max_backoff,
       retention_sweep_interval_ms: retention_sweep_interval_ms,
-      retention_sweep_enabled: retention_sweep_enabled
+      retention_sweep_enabled: retention_sweep_enabled,
+      retention_sweep_evictions: 0
     }
 
     schedule_export_reconcile(state)
@@ -2062,6 +2065,7 @@ defmodule Embervm.BaseBuilder do
   # eviction on that same node. noded's in-use/current/BUILDING guard is the final
   # backstop beneath this.
   defp retention_sweep_plan(state) do
+    state = %{state | retention_sweep_evictions: 0}
     {plan, state} = Enum.reduce(state.workloads, {[], state}, fn {name, w}, {plan, acc} ->
       per_node_outcomes = workload_retention(acc, w)
 
@@ -2074,8 +2078,8 @@ defmodule Embervm.BaseBuilder do
             entry = %{workload: name, evict_refs: [], evict_bytes: 0, skipped_unexported: true, node_id: node_id}
             {[entry | p], a}
 
-          {:evict, node_id, refs, bytes} ->
-            entry = %{workload: name, evict_refs: refs, evict_bytes: bytes, skipped_unexported: false, node_id: node_id}
+          {:evict, node_id, refs, bytes, manifest} ->
+            entry = %{workload: name, evict_refs: refs, evict_bytes: bytes, candidates: manifest, skipped_unexported: false, node_id: node_id}
             {[entry | p], apply_retention(a, name, node_id, refs, bytes)}
         end
       end)
@@ -2083,15 +2087,17 @@ defmodule Embervm.BaseBuilder do
 
     {plan, state} =
       if state.workload_sync_done do
-        Enum.reduce(unknown_workload_retention(state), {plan, state}, fn {workload, node_id, refs, bytes}, {p, a} ->
-          entry = %{workload: workload, evict_refs: refs, evict_bytes: bytes, skipped_unexported: false, node_id: node_id}
+        Enum.reduce(unknown_workload_retention(state), {plan, state}, fn {workload, node_id, refs, bytes, manifest}, {p, a} ->
+          entry = %{workload: workload, evict_refs: refs, evict_bytes: bytes, candidates: manifest, skipped_unexported: false, node_id: node_id}
           {[entry | p], apply_retention(a, workload, node_id, refs, bytes)}
         end)
       else
         {plan, state}
       end
 
-    {Enum.reverse(plan), state}
+    plan = Enum.reverse(plan)
+    log_retention_summary(state, plan)
+    {plan, state}
   end
 
   # Decide one retention outcome per node from the representative reported facts:
@@ -2124,6 +2130,7 @@ defmodule Embervm.BaseBuilder do
                 b.workload == w.name,
                 b.base_state != :BASE_BUILD_STATE_BUILDING,
                 b.ref not in desired,
+                base_age_seconds(b) >= @retention_min_age_seconds,
                 do: b
 
           if candidates == [] do
@@ -2131,7 +2138,7 @@ defmodule Embervm.BaseBuilder do
           else
             refs = Enum.map(candidates, & &1.ref)
             bytes = candidates |> Enum.map(&(&1.size_bytes || 0)) |> Enum.sum()
-            {:evict, fact[:instance_id], refs, bytes}
+            {:evict, fact[:instance_id], refs, bytes, retention_manifest(fact, w.name, candidates, w.generation)}
           end
       end
     end
@@ -2167,12 +2174,14 @@ defmodule Embervm.BaseBuilder do
   # backstop) and log the reclaim.
   defp apply_retention(state, workload, node_id, refs, bytes) do
     if state.retention_sweep_enabled do
+      remaining = @retention_max_evictions_per_sweep - state.retention_sweep_evictions
+      refs_to_evict = Enum.take(refs, max(remaining, 0))
       Logger.info(
-        "embervm base builder: base-retention sweep evicting #{length(refs)} superseded local base(s) for #{workload} (~#{bytes} bytes) on #{node_id}"
+        "embervm base builder: base-retention sweep evicting #{length(refs_to_evict)} superseded local base(s) for #{workload} (~#{bytes} bytes planned) on #{node_id}"
       )
 
-      Enum.each(refs, fn ref -> spawn_evict(state, node_id, workload, ref) end)
-      state
+      Enum.each(refs_to_evict, fn ref -> spawn_evict(state, node_id, workload, ref) end)
+      %{state | retention_sweep_evictions: state.retention_sweep_evictions + length(refs_to_evict)}
     else
       Logger.info(
         "embervm base builder: base-retention sweep (DRY RUN, gate off) WOULD evict #{length(refs)} superseded local base(s) for #{workload} (~#{bytes} bytes) on #{node_id}"
@@ -2385,15 +2394,68 @@ defmodule Embervm.BaseBuilder do
         is_binary(b.workload) and
           not Map.has_key?(state.workloads, b.workload) and
           b.base_state != :BASE_BUILD_STATE_BUILDING and
+          base_age_seconds(b) >= @retention_min_age_seconds and
           not MapSet.member?(protected_refs, b.ref)
       end)
       |> Enum.group_by(& &1.workload)
       |> Enum.map(fn {workload, bases} ->
         refs = Enum.map(bases, & &1.ref)
         bytes = Enum.map(bases, &(&1.size_bytes || 0)) |> Enum.sum()
-        {workload, fact[:instance_id], refs, bytes}
+        {workload, fact[:instance_id], refs, bytes, retention_manifest(fact, workload, bases, nil)}
       end)
     end)
+  end
+
+  defp base_age_seconds(base) do
+    created = Map.get(base, :created_at_unix_ms, 0)
+    if is_integer(created) and created > 0 do
+      max(System.system_time(:millisecond) - created, 0) |> div(1_000)
+    else
+      @retention_min_age_seconds
+    end
+  end
+
+  defp retention_manifest(fact, workload, bases, workload_generation) do
+    vendor = fact |> Map.get(:cpu_vendor, "") |> to_string()
+    now = System.system_time(:millisecond)
+
+    Enum.map(bases, fn base ->
+      created = Map.get(base, :created_at_unix_ms, 0)
+      age = if is_integer(created) and created > 0, do: max(div(now - created, 1_000), 0), else: nil
+
+      %{
+        node: fact[:instance_id],
+        path: "/var/lib/embervm/scratch/bases/#{base.ref}",
+        size_bytes: Map.get(base, :size_bytes, 0) || 0,
+        workload: workload,
+        vendor: vendor,
+        base_generation: Map.get(base, :base_generation) || workload_generation,
+        age_seconds: age,
+        reason_unreferenced: "not in current, CP snapshot, or active base_refs"
+      }
+    end)
+  end
+
+  defp log_retention_summary(state, plan) do
+    candidates = Enum.flat_map(plan, &Map.get(&1, :candidates, []))
+    nodes = state |> capacity_facts_by_node() |> map_size()
+
+    if state.retention_sweep_enabled do
+      evicted = Enum.take(candidates, @retention_max_evictions_per_sweep)
+      bytes = Enum.reduce(evicted, 0, fn c, acc -> acc + (c.size_bytes || 0) end)
+
+      Logger.info(
+        "embervm base builder: base retention sweep (ARMED, DELETING) covers #{nodes} nodes, " <>
+          "#{length(evicted)} candidates, #{bytes} bytes evicted"
+      )
+    else
+      bytes = Enum.reduce(candidates, 0, fn c, acc -> acc + (c.size_bytes || 0) end)
+
+      Logger.info(
+        "embervm base builder: base retention sweep (DRY RUN, deletion disabled) covers #{nodes} nodes, " <>
+          "#{length(candidates)} candidates, #{bytes} bytes reclaimable"
+      )
+    end
   end
 
   defp merge_refcounts(entry, counts) do

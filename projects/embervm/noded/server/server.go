@@ -1871,10 +1871,11 @@ func (s *Server) localBasesStatus() []*nodev1.BaseInventoryEntry {
 				sizeBytes = 0
 			}
 			out = append(out, &nodev1.BaseInventoryEntry{
-				Ref:       ref,
-				Workload:  b.workload,
-				SizeBytes: sizeBytes,
-				BaseState: state,
+				Ref:             ref,
+				Workload:        b.workload,
+				SizeBytes:       sizeBytes,
+				BaseState:       state,
+				CreatedAtUnixMs: baseCreatedAtUnixMs(filepath.Join(root, ref)),
 			})
 			continue
 		}
@@ -1887,10 +1888,11 @@ func (s *Server) localBasesStatus() []*nodev1.BaseInventoryEntry {
 			sizeBytes = 0
 		}
 		out = append(out, &nodev1.BaseInventoryEntry{
-			Ref:       ref,
-			Workload:  workloadFromBaseKey(ref),
-			SizeBytes: sizeBytes,
-			BaseState: state,
+			Ref:             ref,
+			Workload:        workloadFromBaseKey(ref),
+			SizeBytes:       sizeBytes,
+			BaseState:       state,
+			CreatedAtUnixMs: baseCreatedAtUnixMs(filepath.Join(root, ref)),
 		})
 	}
 	// A BUILDING ref whose dir has not yet materialized on disk (the build just
@@ -1901,10 +1903,11 @@ func (s *Server) localBasesStatus() []*nodev1.BaseInventoryEntry {
 			continue
 		}
 		out = append(out, &nodev1.BaseInventoryEntry{
-			Ref:       ref,
-			Workload:  b.workload,
-			SizeBytes: uint64(b.sizeBytes),
-			BaseState: b.state,
+			Ref:             ref,
+			Workload:        b.workload,
+			SizeBytes:       uint64(b.sizeBytes),
+			BaseState:       b.state,
+			CreatedAtUnixMs: baseCreatedAtUnixMs(filepath.Join(root, ref)),
 		})
 	}
 	if len(out) == 0 {
@@ -1981,6 +1984,14 @@ func dirSizeBytes(dir string) uint64 {
 		}
 	}
 	return total
+}
+
+func baseCreatedAtUnixMs(dir string) int64 {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return 0
+	}
+	return fi.ModTime().UnixMilli()
 }
 
 // cpuSku builds this node's full CPU-restore identity (PR-E): vendor plus the
@@ -2648,14 +2659,15 @@ func (s *Server) ReconcileBasesFromDisk() {
 			size += mfi.Size()
 		}
 		s.bases.register(baseEntry{
-			snapshotRef: baseKey,
-			workload:    workloadFromBaseKey(baseKey),
-			imageDigest: imageRef,
-			rootfsPath:  rootfsPath,
-			readyPath:   defaultReadyPath,
-			sizeBytes:   size,
-			state:       state,
-			buildErr:    buildErr,
+			snapshotRef:     baseKey,
+			workload:        workloadFromBaseKey(baseKey),
+			imageDigest:     imageRef,
+			rootfsPath:      rootfsPath,
+			readyPath:       defaultReadyPath,
+			sizeBytes:       size,
+			createdAtUnixMs: baseCreatedAtUnixMs(filepath.Join(root, baseKey)),
+			state:           state,
+			buildErr:        buildErr,
 		})
 		n++
 	}

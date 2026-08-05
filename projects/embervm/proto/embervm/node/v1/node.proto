@@ -1489,6 +1489,10 @@ message BaseInventoryEntry {
   // so the sweep and its guards can reason about a BUILDING ref without a second
   // lookup.
   BaseBuildState base_state = 4;
+  // created_at_unix_ms is the on-disk directory mtime used by the control-plane
+  // retention age rail and dry-run manifest. Zero means the daemon could not
+  // determine it, in which case the control plane treats the base as old.
+  int64 created_at_unix_ms = 5;
 }
 
 // SessionVm is one LIVE session VM the node currently holds: the daemon reports

@@ -1200,6 +1200,53 @@ defmodule Embervm.BaseBuilderTest do
     refute_receive {:evicted, "w", "snap-old"}, 200
   end
 
+  test "retention sweep emits an on-disk manifest and honors the minimum age" do
+    agent = start_recorder()
+    table = new_cap_table()
+    builder = start_builder(
+      capacity_table: table,
+      status_writer: recording_status_writer(agent),
+      build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end
+    )
+    build_current(builder, agent, "w__current")
+
+    young = Map.put(ready_base("w__young", "w", 10), :created_at_unix_ms, System.system_time(:millisecond) - 100_000)
+    old = Map.put(ready_base("w__old", "w", 20), :created_at_unix_ms, System.system_time(:millisecond) - 4_000_000)
+    put_local_bases_fact(table, "w", "w__current", true, [ready_base("w__current", "w", 1), young, old])
+
+    [entry] = BaseBuilder.retention_sweep_now(builder)
+    assert entry.evict_refs == ["w__old"]
+    assert [%{path: "/var/lib/embervm/scratch/bases/w__old", size_bytes: 20, age_seconds: age}] = entry.candidates
+    assert age >= 3_600
+    refute_receive {:evicted, "w", "w__old"}, 100
+  end
+
+  test "retention sweep caps armed evictions at twenty bases but keeps the full plan" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+    bases = [ready_base("w__current", "w", 1) | (for n <- 1..21, do: ready_base("w__old#{n}", "w", n))]
+
+    put_local_bases_fact(table, "w", "w__current", true, bases)
+    builder = start_builder(
+      capacity_table: table,
+      status_writer: recording_status_writer(agent),
+      build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+      retention_sweep_enabled: true,
+      evict_fun: fn :fake_channel, workload, ref ->
+        send(test_pid, {:evicted, workload, ref})
+        {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+      end
+    )
+    build_current(builder, agent, "w__current")
+
+    plan = BaseBuilder.retention_sweep_now(builder)
+    assert [%{evict_refs: refs}] = Enum.filter(plan, &(&1.workload == "w"))
+    assert length(refs) == 21
+    for(_ <- 1..20, do: assert_receive({:evicted, "w", _ref}, 1_000))
+    refute_receive {:evicted, "w", _}, 100
+  end
+
   # -- discovery-fed node set (artifact-decoupling PR-C, C4) -------------------
 
   test "add_node/3 re-drives a workload held with no node so its base finally builds" do
