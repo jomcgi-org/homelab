@@ -221,7 +221,15 @@ statefulSweeper:
 # local eviction, and hydrate-on-miss restores from S3 on a cold start.
 # Rollback: set back to "" and bump the chart; that stops further eviction.
 baseRetention:
-  sweepEnabled: "1"
+  # DISARMED 2026-08-05 pending manifest review (#4290, prerequisites in #4364).
+  # This gate had been on since 2026-07-27 and was harmless only because the
+  # sweep found nothing. Two reasons it must be off while that changes: the
+  # keep-set lives in control-plane memory and is never rehydrated on boot, so
+  # after a restart a base still pinned by a BANKED session looks unreferenced
+  # and is evictable, which costs that session its remaining warm-bank window;
+  # and nobody has yet read a manifest of what this would delete. Re-arm in a
+  # follow-up PR once #4364 clears, not by editing this back on its own.
+  sweepEnabled: ""
   # Arm REMOTE base retention (#3947 PR-4, Joe 2026-07-27). Local retention has
   # been reclaiming node disk for a while, but nothing reclaimed the store, so
   # superseded S3 bases accumulated without bound. Armed directly rather than
