@@ -962,13 +962,34 @@ defmodule Embervm.Router do
             # A daemon transport/timeout failure: the session is now failed. 502 so
             # the caller knows the invoke did not complete (at-most-once: it is NOT
             # retried by the platform; the caller creates a fresh session).
-            send_json(conn, 502, %{error: "session invoke failed", reason: inspect(reason), session_id: session_id, retryable: false})
+            send_json(conn, 502, %{error: "session invoke failed", reason: inspect(reason), session_id: session_id, retryable: classify_error_as_retryable(reason)})
         end
 
       {:error, :too_large} ->
         send_json(conn, 413, %{error: "request body exceeds 8 MiB", retryable: false})
     end
   end
+
+  # Memory pressure is inherent to the claude fleet (4096 MiB VMs, single 16gi brick host); idle sessions park/evict on TTL, so RESOURCE_EXHAUSTED is transient and retryable.
+  def classify_error_as_retryable(%GRPC.RPCError{status: 8}), do: true
+  def classify_error_as_retryable(%GRPC.RPCError{}), do: false
+  def classify_error_as_retryable(reason) when is_tuple(reason) do
+    reason
+    |> Tuple.to_list()
+    |> Enum.any?(&classify_error_as_retryable/1)
+  end
+
+  def classify_error_as_retryable(reason) when is_list(reason) do
+    Enum.any?(reason, &classify_error_as_retryable/1)
+  end
+
+  def classify_error_as_retryable(reason) when is_map(reason) do
+    reason
+    |> Map.values()
+    |> Enum.any?(&classify_error_as_retryable/1)
+  end
+
+  def classify_error_as_retryable(_reason), do: false
 
   defp guest_path(conn) do
     # Only an EXPLICIT X-Ember-Guest-Path sets the guest path; absent, return nil so

@@ -75,6 +75,8 @@ defmodule Embervm.RouterTest do
 
     def invoke(_srv, "s-live", _req), do: {:ok, %{status_code: 200, headers: %{"content-type" => "text/plain"}, body: "echoed"}}
     def invoke(_srv, "s-queue", _req), do: {:error, :queue_full}
+    def invoke(_srv, "s-pressure", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8, message: "pressure:mem"}}}}
+    def invoke(_srv, "s-snapshot", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9, message: "snapshot lost"}}}}
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
     def destroy(_srv, "s-live"), do: {:ok, :destroyed}
@@ -86,6 +88,8 @@ defmodule Embervm.RouterTest do
     def verify_token(_srv, "s-live", "sess-token-live"), do: {:ok, %{session_id: "s-live"}}
     def verify_token(_srv, "s-live", _), do: {:error, :unauthorized}
     def verify_token(_srv, "s-queue", "sess-token-queue"), do: {:ok, %{session_id: "s-queue"}}
+    def verify_token(_srv, "s-pressure", "sess-token-pressure"), do: {:ok, %{session_id: "s-pressure"}}
+    def verify_token(_srv, "s-snapshot", "sess-token-snapshot"), do: {:ok, %{session_id: "s-snapshot"}}
     def verify_token(_srv, "s-term", "sess-token-term"), do: {:error, :terminal}
     def verify_token(_srv, _id, _token), do: {:error, :not_found}
 
@@ -822,6 +826,28 @@ defmodule Embervm.RouterTest do
     # s-queue authorizes with its own token and the manager fake returns :queue_full.
     resp = req(:post, "/v1/sessions/s-queue/invoke", auth("sess-token-queue"), "x")
     assert resp.status == 429
+  end
+
+  test "invoke relight RESOURCE_EXHAUSTED is retryable" do
+    with_session_fakes()
+
+    resp = req(:post, "/v1/sessions/s-pressure/invoke", auth("sess-token-pressure"), "x")
+    assert resp.status == 502
+    assert json(resp.body)["retryable"] == true
+  end
+
+  test "invoke relight non-RESOURCE_EXHAUSTED failure is not retryable" do
+    with_session_fakes()
+
+    resp = req(:post, "/v1/sessions/s-snapshot/invoke", auth("sess-token-snapshot"), "x")
+    assert resp.status == 502
+    assert json(resp.body)["retryable"] == false
+  end
+
+  test "classify_error_as_retryable handles nested errors and other statuses" do
+    assert Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8}}})
+    refute Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9}}})
+    refute Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 2}}})
   end
 
   test "GET /v1/sessions/:id accepts the session token OR a management token" do

@@ -261,6 +261,116 @@ def test_deliver_omits_progress_token_when_none(monkeypatch):
     assert "progress_token" not in json.loads(requests[0].content)
 
 
+def test_invoke_retryable_502_is_retried_and_succeeds(monkeypatch):
+    requests = []
+    sleeps = []
+
+    async def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return _error_response(request, 502, True)
+        return _turn_response(request)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    turn, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+        )
+    )
+
+    assert len(requests) == 2
+    assert sleeps == [2]
+    assert turn.result == "ok"
+    assert not turn.is_error
+
+
+def test_invoke_retries_exhaust_after_max_attempts(monkeypatch):
+    requests = []
+    sleeps = []
+
+    async def handler(request):
+        requests.append(request)
+        return _error_response(request, 502, True)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    with pytest.raises(EmberVMTransportError) as exc_info:
+        asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+            )
+        )
+
+    assert len(requests) == 4
+    assert sleeps == [2, 5, 10]
+    assert "502" in str(exc_info.value)
+    assert "error message" in str(exc_info.value)
+    assert "retryable" in str(exc_info.value)
+
+
+def test_invoke_non_retryable_502_is_not_retried(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return _error_response(request, 502, False)
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError) as exc_info:
+        asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+            )
+        )
+
+    assert len(requests) == 1
+    assert "502" in str(exc_info.value)
+
+
+def test_no_double_execution_on_retry(monkeypatch):
+    requests = []
+    sleeps = []
+
+    async def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return _error_response(request, 502, True)
+        return httpx.Response(
+            200,
+            json={
+                "result": "single execution",
+                "terminal_reason": "completed",
+                "num_turns": 1,
+                "session_id": "cli-1",
+            },
+            request=request,
+        )
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    turn, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+        )
+    )
+
+    assert len(requests) == 2
+    assert sleeps == [2]
+    assert requests[0].content == requests[1].content
+    assert turn.result == "single execution"
+    assert turn.num_turns == 1
+
+
 def test_deliver_includes_repo_and_branch_when_present(monkeypatch):
     requests = []
 
