@@ -43,6 +43,7 @@
   let searchTimer = null;
   let searchController = null;
   let requestSequence = 0;
+  let renderedPending = $state({});
 
   const selectedSession = $derived(
     sessions.find((session) => String(session.id) === String(selectedId)) ??
@@ -128,6 +129,28 @@
     return tool;
   }
 
+  function syncPendingPartials(entries) {
+    const next = {};
+    for (const entry of entries ?? []) {
+      const current = renderedPending[entry.seq];
+      const newPartialText = entry.partial_text;
+      const newPartialActivities = entry.partial_activities;
+      if (
+        current?.partial_text !== newPartialText ||
+        JSON.stringify(current?.partial_activities) !==
+          JSON.stringify(newPartialActivities)
+      ) {
+        next[entry.seq] = {
+          partial_text: newPartialText,
+          partial_activities: newPartialActivities,
+        };
+      } else {
+        next[entry.seq] = current;
+      }
+    }
+    renderedPending = next;
+  }
+
   async function loadDetail(
     id,
     sequence = requestSequence,
@@ -145,6 +168,7 @@
       if (!response.ok) throw new Error("Unable to load session");
       const body = await response.json();
       if (sequence === requestSequence && String(selectedId) === String(id)) {
+        syncPendingPartials(body.pending_queue);
         detail = incremental
           ? {
               session: body.session,
@@ -242,6 +266,7 @@
     requestSequence += 1;
     selectedId = id;
     detail = null;
+    renderedPending = {};
     searchResults = null;
     loadDetail(id, requestSequence);
     const session = sessions.find((item) => String(item.id) === String(id));
@@ -397,14 +422,40 @@
   $effect(() => {
     selectedId;
     sessions;
-    const interval = setInterval(
-      async () => {
-        await loadSessions();
-        if (selectedId != null)
-          await loadDetail(selectedId, requestSequence, true);
-      },
-      hasActiveSessions ? 2000 : 15000,
+    detail;
+    const hasClaimed = detail?.pending_queue?.some(
+      (pending) => pending.claimed_by_replica,
     );
+    if (hasClaimed && selectedId != null) {
+      let stopped = false;
+      let timeoutHandle;
+      const schedulePoll = async () => {
+        if (stopped) return;
+        const currentSequence = ++requestSequence;
+        const startTime = Date.now();
+        await loadDetail(selectedId, currentSequence, true);
+        if (stopped || currentSequence !== requestSequence) return;
+        const elapsed = Date.now() - startTime;
+        const delayUntilNext = Math.max(0, 100 - elapsed);
+        timeoutHandle = setTimeout(schedulePoll, delayUntilNext);
+      };
+      // On success, the effect re-run (from detail state change) schedules
+      // the next poll via the initial 100ms timeout.
+      // On error, in-loop self-schedule handles the retry to avoid blocking.
+      timeoutHandle = setTimeout(schedulePoll, 100);
+      const interval = setInterval(loadSessions, 2000);
+      return () => {
+        stopped = true;
+        clearTimeout(timeoutHandle);
+        clearInterval(interval);
+      };
+    }
+    const pollInterval = hasActiveSessions ? 2000 : 15000;
+    const interval = setInterval(async () => {
+      await loadSessions();
+      if (selectedId != null)
+        await loadDetail(selectedId, requestSequence, true);
+    }, pollInterval);
     return () => clearInterval(interval);
   });
 
@@ -547,8 +598,16 @@
               >
               <span class="muted mono">{relativeTime(entry.created_at)}</span>
             </div>
-            {#if entry.partial_text}<pre
-                class="result">{entry.partial_text}</pre>{/if}
+            {#if renderedPending[entry.seq]?.partial_activities}
+              <div class="activities" aria-label="Tool activity">
+                {#each renderedPending[entry.seq].partial_activities as activity}
+                  <div class="activity">{activityLabel(activity)}</div>
+                {/each}
+              </div>
+            {/if}
+            {#if renderedPending[entry.seq]?.partial_text}<pre
+                class="result">{renderedPending[entry.seq]
+                  .partial_text}</pre>{/if}
           {/each}
         {/if}
       </div>
@@ -1058,6 +1117,13 @@
     padding: 0 12px 10px;
   }
   code {
+    color: #625e56;
+    border: 1px solid var(--line);
+    background: var(--page-bg);
+    padding: 3px 5px;
+    white-space: pre-wrap;
+  }
+  .activity {
     color: #625e56;
     border: 1px solid var(--line);
     background: var(--page-bg);

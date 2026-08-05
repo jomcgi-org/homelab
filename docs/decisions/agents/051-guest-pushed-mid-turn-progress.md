@@ -116,6 +116,25 @@ Baseline `docs/security.md`. This adds one egress-allowlist entry and one new cr
 3. Whether token-level streaming (`--include-partial-messages`) is worth the CLI-side protocol change once message-granular visibility is in front of a user; not decided here, per ADR 049's own precedent of deferring streaming until demonstrated insufficient.
 4. Whether other turn-record fields that currently only surface at turn end, `workspace_hydration` (`shim.py:1632-1744`) among them, should ride this same push path; noted as a likely consequence of this decision, not a commitment made here.
 
+## Addendum (2026-08-05)
+
+Open Question 3 is resolved in the affirmative, and quickly: message-granular
+visibility was confirmed insufficient by the owner on the first evening it
+shipped (long tool phases and long generations still read as stalled), so the
+CLI now runs with `--include-partial-messages` and the shim folds
+`content_block_delta` text into the pushed partial. Token-granular is the
+accepted fidelity going forward.
+
+Open Question 4 is partially resolved: tool activities now ride the same push
+(capped to the most recent 300), giving the pending entry a live activity
+trail; `workspace_hydration` remains turn-end-only.
+
+The original fire-and-forget bound of roughly one push per second is
+superseded: the shim pushes on a 200ms cadence with a trailing-edge drain, the
+ingest accepts at a 0.15s per-token window, and the single-user UI polls the
+detail endpoint on a 100ms self-scheduling loop while a turn is in flight. The
+sequencing question (Open Question 1) stays open and unchanged by this.
+
 ---
 
 ## References

@@ -82,6 +82,7 @@ class PendingMessage(SQLModel, table=True):
     seq: int
     message_text: str
     partial_text: str | None = Field(default=None)
+    partial_activities: str | None = Field(default=None)
     model: str | None = Field(default=None)
     claimed_by_replica: str | None = Field(default=None)
     claimed_at: datetime | None = Field(default=None)  # For lease expiry detection

@@ -331,7 +331,11 @@ def get_pending_message_sync(session_id: int, turn_seq: int) -> PendingMessage |
         return get_pending_message(session, session_id, turn_seq)
 
 
-def write_progress_sync(progress_token: str, partial_text: str) -> str:
+def write_progress_sync(
+    progress_token: str,
+    partial_text: str,
+    activities: list | None = None,
+) -> str:
     """Write guest progress to the active pending message.
 
     Returns ``ok`` when a row was updated, ``unknown_token`` when the token
@@ -346,13 +350,16 @@ def write_progress_sync(progress_token: str, partial_text: str) -> str:
         session_id = session_row
 
     with Session(get_engine()) as session:
+        update_kwargs = {"partial_text": partial_text}
+        if activities is not None:
+            update_kwargs["partial_activities"] = json.dumps(activities)
         stmt = (
             update(PendingMessage)
             .where(
                 PendingMessage.session_id == session_id,
                 PendingMessage.claimed_by_replica.isnot(None),
             )
-            .values(partial_text=partial_text)
+            .values(**update_kwargs)
         )
         result = session.execute(stmt)
         session.commit()
@@ -372,7 +379,7 @@ def write_progress_sync(progress_token: str, partial_text: str) -> str:
                 PendingMessage.session_id == session_id,
                 PendingMessage.seq == lowest_seq,
             )
-            .values(partial_text=partial_text)
+            .values(**update_kwargs)
         )
         result = session.execute(stmt)
         session.commit()
