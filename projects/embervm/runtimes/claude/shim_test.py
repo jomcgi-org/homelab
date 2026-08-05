@@ -285,6 +285,7 @@ FAKE_PI_CLI = r"""#!/usr/bin/env python3
 import json
 import os
 import sys
+import time
 
 args_path = os.environ.get("FAKE_PI_ARGS")
 if args_path:
@@ -298,22 +299,62 @@ for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-promp
     assert flag in sys.argv
 assert sys.argv[sys.argv.index("--tools") + 1] == "read,bash,edit,write"
 assert "End every response with a single line" in sys.argv[sys.argv.index("--system-prompt") + 1]
-if os.environ.get("FAKE_PI_MODE") == "provider-error":
-    print(json.dumps({"type": "session", "id": "pi-session", "version": 3}), flush=True)
-    print(json.dumps({"type": "agent_end", "messages": [{
-        "role": "assistant",
-        "content": [],
-        "errorMessage": "connect ECONNREFUSED inference.inference.svc.cluster.local:8080"
-    }]}), flush=True)
-    sys.exit(0)
-print(json.dumps({"type": "session", "id": "pi-session", "version": 3}), flush=True)
-print(json.dumps({"type": "message_end", "message": {
-    "role": "assistant",
-    "content": [{"type": "text", "text": "Done <voice>Pi completed the work.</voice>"}],
-    "stopReason": "stop",
-    "usage": {"input": 5, "output": 7}
-}}), flush=True)
-print(json.dumps({"type": "agent_end", "messages": []}), flush=True)
+rpc_path = os.environ.get("FAKE_PI_RPC")
+state = {"sessionId": "pi-session", "model": {"id": "qwen3.6-27b"}}
+def record(value):
+    if rpc_path:
+        with open(rpc_path, "a") as stream:
+            json.dump(value, stream)
+            stream.write("\n")
+def emit(value):
+    print(json.dumps(value), flush=True)
+def response(command, success=True, data=None):
+    value = {"type": "response", "command": command, "success": success}
+    if data is not None:
+        value["data"] = data
+    emit(value)
+for line in sys.stdin:
+    request = json.loads(line)
+    record(request)
+    command = request["type"]
+    if command == "get_state":
+        response(command, data=state)
+    elif command == "set_model":
+        state["model"] = {"id": request["modelId"]}
+        response(command, data=state["model"])
+    elif command == "switch_session":
+        if os.environ.get("FAKE_PI_SWITCH") == "failed":
+            response(command, success=False)
+        else:
+            state["sessionId"] = os.path.basename(request["sessionPath"]).split(".")[0]
+            response(command, data={"cancelled": os.environ.get("FAKE_PI_SWITCH") == "cancelled"})
+    elif command == "prompt":
+        response(command)
+        if os.environ.get("FAKE_PI_MODE") == "death":
+            print("fake pi died mid-turn", file=sys.stderr, flush=True)
+            sys.exit(17)
+        if os.environ.get("FAKE_PI_MODE") == "interruptible":
+            emit({"type": "agent_start"})
+            abort_request = json.loads(sys.stdin.readline())
+            record(abort_request)
+            response("abort")
+            emit({"type": "agent_end", "messages": []})
+            continue
+        if os.environ.get("FAKE_PI_SLEEP"):
+            time.sleep(float(os.environ["FAKE_PI_SLEEP"]))
+        if os.environ.get("FAKE_PI_MODE") == "provider-error":
+            emit({"type": "agent_end", "messages": [{"role": "assistant", "content": [],
+                  "errorMessage": "provider failed: ECONNREFUSED"}]})
+        elif os.environ.get("FAKE_PI_MODE") == "textless":
+            emit({"type": "agent_end", "messages": []})
+        else:
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [{"type": "text", "text": "Done <voice>Pi completed the work.</voice>"}],
+                  "stopReason": "stop", "usage": {"input": 5, "output": 7}}})
+            emit({"type": "agent_end", "messages": []})
+    elif command == "abort":
+        response(command)
+        emit({"type": "agent_end", "messages": []})
 """
 
 
@@ -369,6 +410,7 @@ def _pi_manager(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("FAKE_PI_ARGS", str(tmp_path / "pi-args.jsonl"))
+    monkeypatch.setenv("FAKE_PI_RPC", str(tmp_path / "pi-rpc.jsonl"))
     monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     return shim.PiProcess(str(workspace), str(executable))
 
@@ -410,6 +452,22 @@ def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
     manager._close_process()
 
 
+def test_pi_rpc_reuses_process_and_records_commands(tmp_path, monkeypatch):
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="qwen")
+    first_process = manager.process
+    manager.turn("second", model="qwen")
+    assert manager.process is first_process
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
+    ]
+    assert [request["type"] for request in requests].count("get_state") == 3
+    assert [request["type"] for request in requests].count("prompt") == 2
+    assert [request["type"] for request in requests].count("switch_session") == 0
+    manager._close_process()
+
+
 def test_pi_textless_terminal_event_surfaces_error_message(tmp_path, monkeypatch):
     # A provider failure arrives as errorMessage on a textless assistant
     # message (pi docs/custom-provider.md); it must become a turn ERROR, not
@@ -421,15 +479,95 @@ def test_pi_textless_terminal_event_surfaces_error_message(tmp_path, monkeypatch
     assert "ECONNREFUSED" in str(excinfo.value)
 
 
+def test_pi_cancelled_switch_raises_session_conflict(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_SWITCH", "cancelled")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="qwen")
+    manager.session_id = None
+    with pytest.raises(shim.SessionConflictError, match="pi-session"):
+        manager.turn("resume", session_id="pi-session", model="qwen")
+    manager._close_process()
+
+
+def test_pi_failed_switch_raises_session_conflict(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_SWITCH", "failed")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="qwen")
+    manager.session_id = None
+    with pytest.raises(
+        shim.SessionConflictError, match="switch_session failed.*pi-session"
+    ):
+        manager.turn("resume", session_id="pi-session", model="qwen")
+    manager._close_process()
+
+
+def test_pi_interrupt_sends_abort(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "interruptible")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    result = [None]
+    exception = [None]
+
+    def run_turn():
+        try:
+            result[0] = manager.turn("block", model="qwen")
+        except Exception as exc:
+            exception[0] = exc
+
+    thread = threading.Thread(target=run_turn)
+    thread.start()
+    time.sleep(0.2)
+    interrupt_result = manager.interrupt()
+    thread.join(timeout=2)
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
+    ]
+    assert any(request["type"] == "abort" for request in requests)
+    assert interrupt_result == {
+        "terminal_reason": "user_interrupt",
+        "killed": False,
+        "timeout": False,
+    }
+    assert thread.is_alive() is False
+    assert "pi turn produced no output" in str(exception[0])
+    manager._close_process()
+
+
+def test_pi_read_timeout_respawns(tmp_path, monkeypatch):
+    monkeypatch.setattr(shim, "TURN_READ_TIMEOUT", 0.1)
+    monkeypatch.setenv("FAKE_PI_SLEEP", "1")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="timed out waiting for Pi output"):
+        manager.turn("slow", model="qwen")
+    assert manager.process is None
+    monkeypatch.delenv("FAKE_PI_SLEEP")
+    manager.turn("again", model="qwen")
+    manager._close_process()
+
+
+def test_pi_death_mid_turn_includes_stderr(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "death")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError) as excinfo:
+        manager.turn("die", model="qwen")
+    assert "fake pi died mid-turn" in str(excinfo.value)
+    assert "exit code 17" in str(excinfo.value)
+    manager._close_process()
+
+
 def test_pi_resume_uses_session_flag(tmp_path, monkeypatch):
     manager = _pi_manager(tmp_path, monkeypatch)
     manager.turn("first", model="qwen")
+    manager.session_id = None
     manager.turn("second", session_id="pi-session", model="qwen")
-    args = [
+    requests = [
         json.loads(line)
-        for line in (tmp_path / "pi-args.jsonl").read_text().splitlines()
+        for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
     ]
-    assert "--session" in args[1] and "pi-session" in args[1]
+    switch = next(
+        request for request in requests if request["type"] == "switch_session"
+    )
+    assert switch["sessionPath"].endswith("/sessions/pi-session.jsonl")
     manager._close_process()
 
 
@@ -840,8 +978,7 @@ def test_spawn_keeps_codex_stdin_as_a_pipe(tmp_path, monkeypatch):
     codex._close_process(kill=True)
 
 
-def test_spawn_closes_pi_stdin(tmp_path, monkeypatch):
-    # pi's message is argv too; same rationale as codex (#4303).
+def test_spawn_keeps_pi_stdin_as_a_pipe(tmp_path, monkeypatch):
     pi = _pi_manager(tmp_path, monkeypatch)
     captured = {}
 
@@ -851,8 +988,8 @@ def test_spawn_closes_pi_stdin(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shim.subprocess, "Popen", fake_popen)
     with pytest.raises(RuntimeError, match="stop after capturing"):
-        pi._spawn("hello", None, "qwen")
-    assert captured["stdin"] is subprocess.DEVNULL
+        pi._spawn("qwen")
+    assert captured["stdin"] is subprocess.PIPE
 
 
 def _manager(tmp_path, monkeypatch, api_key="none"):

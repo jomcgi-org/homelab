@@ -1654,7 +1654,7 @@ wire_api = "responses"
 
 
 class PiProcess:
-    """Run one Pi JSON event-stream process per turn."""
+    """Own one long-lived Pi RPC process and bind sessions lazily."""
 
     INFERENCE_BASE_URL = "http://inference.inference.svc.cluster.local:8080/v1"
 
@@ -1669,6 +1669,13 @@ class PiProcess:
         self.process_lock = threading.Lock()
         self.stderr_lines = collections.deque(maxlen=5)
         self._stderr_thread = None
+        self._stdout_queue = None
+        self._write_lock = threading.Lock()
+        self._turn_done = threading.Event()
+        self._turn_done.set()
+        self._in_flight = False
+        self._model = None
+        self._session_file = None
 
     def ready(self):
         with self.process_lock:
@@ -1715,7 +1722,7 @@ class PiProcess:
         with open(os.path.join(agent_dir, "models.json"), "w") as stream:
             json.dump(config, stream)
 
-    def _spawn(self, message, session_id, model):
+    def _spawn(self, model):
         if not os.path.isdir(self.workspace):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
@@ -1724,9 +1731,8 @@ class PiProcess:
         self._write_model_config(pi_home)
         command = [
             self.executable,
-            "-p",
             "--mode",
-            "json",
+            "rpc",
             "--provider",
             "openai-completions",
             "--model",
@@ -1742,15 +1748,10 @@ class PiProcess:
             "--session-dir",
             os.path.join(pi_home, "sessions"),
         ]
-        if session_id:
-            command.extend(["--session", session_id])
-        command.append(message)
-        # The turn message rides argv (command above); pi never reads it from
-        # stdin, so close it rather than inherit the shim's never-EOF stdin.
         process = subprocess.Popen(
             command,
             cwd=self.workspace,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=child_env,
@@ -1759,9 +1760,11 @@ class PiProcess:
         output_queue = queue.Queue()
         with self.process_lock:
             self.process = process
+            self._stdout_queue = output_queue
+            self._model = model
             _managed_child_pids.add(process.pid)
         threading.Thread(
-            target=CodexProcess._pump_codex_stdout,
+            target=self._pump_pi_stdout,
             args=(process, output_queue),
             daemon=True,
         ).start()
@@ -1772,12 +1775,85 @@ class PiProcess:
             daemon=True,
         )
         self._stderr_thread.start()
-        return process, output_queue
+        try:
+            self._state()
+        except Exception:
+            self._close_process(kill=True)
+            raise
+        return process
+
+    @staticmethod
+    def _pump_pi_stdout(process, output_queue):
+        try:
+            for raw in process.stdout:
+                output_queue.put(raw)
+        finally:
+            output_queue.put(None)
+
+    def _read_event(self, timeout):
+        with self.process_lock:
+            output_queue = self._stdout_queue
+        if output_queue is None:
+            return None
+        try:
+            raw = output_queue.get(timeout=timeout)
+        except queue.Empty as exc:
+            raise TimeoutError from exc
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("pi emitted invalid JSON: %s" % exc) from exc
+
+    def _send(self, command):
+        with self._write_lock:
+            with self.process_lock:
+                process = self.process
+            if process is None or process.poll() is not None:
+                raise self._empty_stream_error(process)
+            process.stdin.write(_json_line(command))
+            process.stdin.flush()
+
+    def _command(self, command, timeout=INIT_READ_TIMEOUT):
+        self._send(command)
+        while True:
+            event = self._read_event(timeout)
+            if event is None:
+                raise self._empty_stream_error(self.process)
+            if event.get("type") == "response" and event.get("command") == command.get(
+                "type"
+            ):
+                if not event.get("success", False):
+                    raise RuntimeError(
+                        "%s failed: %s" % (command["type"], json.dumps(event)[:1500])
+                    )
+                return event.get("data") or {}
+
+    def _session_path(self, session_id):
+        sessions_dir = os.path.join(self._child_env()["PI_HOME"], "sessions")
+        return os.path.join(sessions_dir, "%s.jsonl" % session_id)
+
+    def _state(self):
+        data = self._command({"type": "get_state"})
+        session_file = data.get("sessionFile")
+        session_id = data.get("sessionId")
+        if isinstance(session_id, str) and session_id:
+            self.session_id = session_id
+        if isinstance(session_file, str) and session_file:
+            self._session_file = session_file
+        model = data.get("model")
+        if isinstance(model, dict):
+            model_id = model.get("id")
+            if isinstance(model_id, str):
+                self._model = model_id
+        return data
 
     def _empty_stream_error(self, process):
-        code = process.poll()
+        code = None if process is None else process.poll()
         if code is None:
-            code = process.wait()
+            if process is not None:
+                code = process.wait()
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=1)
         error_msg = "pi exited before agent_end, exit code %s" % code
@@ -1793,106 +1869,183 @@ class PiProcess:
                     "session_id %r does not match active session %r"
                     % (session_id, self.session_id)
                 )
-            process, output_queue = self._spawn(
-                message, session_id or self.session_id, model
-            )
+            with self.process_lock:
+                process = self.process
+            model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
+            if process is None or process.poll() is not None:
+                self._close_process(kill=False)
+                process = self._spawn(model)
+            elif self._model != model_name:
+                self._command(
+                    {
+                        "type": "set_model",
+                        "provider": "openai-completions",
+                        "modelId": model_name,
+                    }
+                )
+                self._model = model_name
+            requested_session = session_id or self.session_id
+            if requested_session and requested_session != self.session_id:
+                try:
+                    data = self._command(
+                        {
+                            "type": "switch_session",
+                            "sessionPath": self._session_path(requested_session),
+                        }
+                    )
+                except RuntimeError as exc:
+                    raise SessionConflictError(
+                        "switch_session failed for session %s: %s"
+                        % (requested_session, exc)
+                    ) from exc
+                if data.get("cancelled"):
+                    raise SessionConflictError(
+                        "switch_session cancelled for session %s" % requested_session
+                    )
+                self._state()
             result_text = ""
             usage = {}
             events = []
             terminal_reason = "completed"
-            while True:
-                try:
-                    raw = output_queue.get(timeout=TURN_READ_TIMEOUT)
-                except queue.Empty as exc:
-                    raise RuntimeError(
-                        "timed out waiting for Pi output after %s seconds"
-                        % TURN_READ_TIMEOUT
-                    ) from exc
-                if raw is None:
-                    raise self._empty_stream_error(process)
-                try:
-                    event = json.loads(raw.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    raise RuntimeError("pi emitted invalid JSON: %s" % exc) from exc
-                events.append(event)
-                if event.get("type") == "session":
-                    candidate = event.get("id")
-                    if isinstance(candidate, str) and candidate:
-                        self.session_id = candidate
-                elif event.get("type") == "message_end":
-                    message_event = event.get("message", {})
-                    if message_event.get("role") == "assistant":
-                        result_text = "".join(
-                            item.get("text", "")
-                            for item in message_event.get("content", [])
-                            if item.get("type") == "text"
-                        )
-                        raw_usage = message_event.get("usage", {})
-                        usage = {
-                            "input_tokens": raw_usage.get("input", 0),
-                            "output_tokens": raw_usage.get("output", 0),
-                            "cache_read_tokens": raw_usage.get("cacheRead", 0),
-                            "cache_write_tokens": raw_usage.get("cacheWrite", 0),
-                        }
-                        terminal_reason = message_event.get("stopReason", "completed")
-                elif event.get("type") == "agent_end":
-                    if not result_text:
-                        for message_event in reversed(event.get("messages", [])):
-                            if message_event.get("role") == "assistant":
-                                result_text = "".join(
-                                    item.get("text", "")
-                                    for item in message_event.get("content", [])
-                                    if item.get("type") == "text"
-                                )
-                                break
-                    if not result_text:
-                        # A textless terminal event is an ERROR, never an empty
-                        # success: pi normalizes provider failures into the
-                        # assistant message's errorMessage (docs/custom-provider.md),
-                        # and live turns persisted blank records with no error
-                        # anywhere. Surface the errorMessage when present, else
-                        # the raw terminal event, so the cause reaches the turn
-                        # record instead of vanishing.
-                        error_detail = ""
-                        for message_event in reversed(event.get("messages", [])):
-                            if message_event.get("errorMessage"):
-                                error_detail = str(message_event["errorMessage"])
-                                break
-                        if not error_detail:
-                            error_detail = (
-                                "terminal event carried no text: %s"
-                                % (json.dumps(event)[:1500])
-                            )
-                        stderr = _truncate_ring_for_error(self.stderr_lines)
-                        if stderr:
-                            error_detail += "\nCLI stderr:\n%s" % stderr
-                        # Reap before raising: the success path hands the child
-                        # to a reaper thread, and skipping that here leaks a
-                        # zombie the PID-1 orphan reaper must not touch.
-                        CodexProcess._reap_process(process)
+            self._turn_done.clear()
+            self._in_flight = True
+            try:
+                self._send({"type": "prompt", "message": message})
+                while True:
+                    try:
+                        event = self._read_event(TURN_READ_TIMEOUT)
+                    except TimeoutError as exc:
+                        self._close_process(kill=True)
                         raise RuntimeError(
-                            "pi turn produced no output: %s" % error_detail
-                        )
-                    record = {
-                        "result": result_text,
-                        "terminal_reason": terminal_reason,
-                        "session_id": self.session_id,
-                        "usage": usage,
-                        "voice": voice_summary(result_text),
-                        "activity": activity_from_events(events),
-                    }
-                    threading.Thread(
-                        target=CodexProcess._reap_process,
-                        args=(process,),
-                        daemon=True,
-                    ).start()
-                    return record
+                            "timed out waiting for Pi output after %s seconds"
+                            % TURN_READ_TIMEOUT
+                        ) from exc
+                    if event is None:
+                        raise self._empty_stream_error(process)
+                    if event.get("type") == "response":
+                        if event.get("command") == "prompt" and not event.get(
+                            "success"
+                        ):
+                            raise RuntimeError(
+                                "prompt failed: %s" % json.dumps(event)[:1500]
+                            )
+                        continue
+                    events.append(event)
+                    if event.get("type") == "session":
+                        candidate = event.get("id")
+                        if isinstance(candidate, str) and candidate:
+                            self.session_id = candidate
+                    elif event.get("type") == "message_end":
+                        message_event = event.get("message", {})
+                        if message_event.get("role") == "assistant":
+                            result_text = "".join(
+                                item.get("text", "")
+                                for item in message_event.get("content", [])
+                                if item.get("type") == "text"
+                            )
+                            raw_usage = message_event.get("usage", {})
+                            usage = {
+                                "input_tokens": raw_usage.get("input", 0),
+                                "output_tokens": raw_usage.get("output", 0),
+                                "cache_read_tokens": raw_usage.get("cacheRead", 0),
+                                "cache_write_tokens": raw_usage.get("cacheWrite", 0),
+                            }
+                            terminal_reason = message_event.get(
+                                "stopReason", "completed"
+                            )
+                    elif event.get("type") == "agent_end":
+                        if not result_text:
+                            for message_event in reversed(event.get("messages", [])):
+                                if message_event.get("role") == "assistant":
+                                    result_text = "".join(
+                                        item.get("text", "")
+                                        for item in message_event.get("content", [])
+                                        if item.get("type") == "text"
+                                    )
+                                    break
+                        if not result_text:
+                            error_detail = ""
+                            for message_event in reversed(event.get("messages", [])):
+                                if message_event.get("errorMessage"):
+                                    error_detail = str(message_event["errorMessage"])
+                                    break
+                            if not error_detail:
+                                error_detail = (
+                                    "terminal event carried no text: %s"
+                                    % (json.dumps(event)[:1500])
+                                )
+                            stderr = _truncate_ring_for_error(self.stderr_lines)
+                            if stderr:
+                                error_detail += "\nCLI stderr:\n%s" % stderr
+                            raise RuntimeError(
+                                "pi turn produced no output: %s" % error_detail
+                            )
+                        self._state()
+                        record = {
+                            "result": result_text,
+                            "terminal_reason": terminal_reason,
+                            "session_id": self.session_id,
+                            "usage": usage,
+                            "voice": voice_summary(result_text),
+                            "activity": activity_from_events(events),
+                        }
+                        return record
+            finally:
+                self._in_flight = False
+                self._turn_done.set()
 
     def interrupt(self, timeout=INTERRUPT_TIMEOUT):
-        return {"terminal_reason": "user_interrupt", "killed": False, "timeout": False}
+        with self.process_lock:
+            process = self.process
+        if process is None or process.poll() is not None or not self._in_flight:
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            }
+        self._in_flight = False
+        try:
+            self._send({"type": "abort"})
+        except Exception:
+            self._close_process(kill=True)
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            }
+        timed_out = not self._turn_done.wait(timeout=timeout)
+        if timed_out:
+            self._close_process(kill=True)
+        return {
+            "terminal_reason": "user_interrupt",
+            "killed": timed_out,
+            "timeout": timed_out,
+        }
 
     def _close_process(self, kill=False):
-        return None
+        with self.process_lock:
+            process = self.process
+            self.process = None
+            self._stdout_queue = None
+            self._model = None
+            self._in_flight = False
+        self._turn_done.set()
+        if process is None:
+            return
+        if kill and process.poll() is None:
+            process.kill()
+        try:
+            if process.stdin:
+                process.stdin.close()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        _managed_child_pids.discard(process.pid)
+        _reap_orphans()
 
 
 def _sync_session_volume():
