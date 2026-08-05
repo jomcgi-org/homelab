@@ -270,6 +270,12 @@ type Config struct {
 	// what actually bound it, and the cgroup budget reader (NodeStatus fields
 	// 26/27) reports the real ceiling.
 	SizeClass string
+	// WarmRestoreWithVolume gates the driver's warm-base restore for volume-bearing
+	// claims and the placeholder attach at base build; default false; armed per
+	// brick size-class through the chart value noded.warmRestoreWithVolumeClasses
+	// (see _noded-pod.tpl). The live experiment is issue #4371. Env var:
+	// EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME.
+	WarmRestoreWithVolume bool
 	// ControlPlaneURL is the control plane's HTTP base URL the daemon dials home to
 	// (EMBERVM_NODED_CONTROL_PLANE_URL, e.g. "http://embervm.embervm.svc:8080").
 	// On start and on a jittered interval the daemon POSTs its identity
@@ -414,6 +420,7 @@ func Load() (Config, error) {
 		// the control plane instead of being discovered via EndpointSlices.
 		PodUID:                os.Getenv("EMBERVM_POD_UID"),
 		SizeClass:             os.Getenv("EMBERVM_NODED_SIZE_CLASS"),
+		WarmRestoreWithVolume: boolDefault("EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME", false),
 		ControlPlaneURL:       os.Getenv("EMBERVM_NODED_CONTROL_PLANE_URL"),
 		ControlPlaneTokenPath: getenvDefault("EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 		RegisterInterval:      30 * time.Second,

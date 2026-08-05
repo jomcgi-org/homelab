@@ -789,6 +789,9 @@ rootfsBuilder:
 # is Task 11), so its steady footprint is just the daemon.
 noded:
   enabled: true
+  # Brick size-classes whose noded gets warm restore with volume enabled;
+  # default empty disables it fleet-wide, armed via deploy values for issue #4371.
+  warmRestoreWithVolumeClasses: []
   image:
     # Pinned at build time by helm_chart(images={"noded.image": ".../noded/image:image.info"}).
     repository: ghcr.io/jomcgi/homelab/projects/embervm/noded/image

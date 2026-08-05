@@ -71,6 +71,10 @@ func run(logger *slog.Logger) error {
 	}); len(removed) > 0 {
 		logger.Info("startup GC: reaped stale instance warmth", "count", len(removed), "segments", removed)
 	}
+	// Unconditional so every brick can restore a placeholder-bearing base hydrated from S3.
+	if _, err := driver.EnsurePlaceholderVolume(cfg.SnapshotRoot); err != nil {
+		return err
+	}
 
 	self, err := os.Executable()
 	if err != nil {
@@ -396,20 +400,21 @@ type driverExtras struct {
 // restore driver leaves them zero because restore ignores them.
 func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
 	return driver.New(driver.Config{
-		KernelImagePath:   cfg.KernelImagePath,
-		KernelBootArgs:    cfg.KernelBootArgs,
-		RootfsPath:        x.rootfsPath,
-		RootfsReadOnly:    true,
-		CanonicalVsockDir: cfg.CanonicalVsockDir,
-		HarnessInit:       x.harnessInit,
-		VCPUs:             x.vcpus,
-		MemMib:            x.memMib,
-		SnapshotRoot:      cfg.SnapshotRoot,
-		WarmthRoot:        cfg.WarmthRoot,
-		Node:              cfg.Node,
-		Arch:              cfg.Arch,
-		Vendor:            cfg.CpuVendor,
-		Template:          cfg.CpuTemplate,
+		KernelImagePath:       cfg.KernelImagePath,
+		KernelBootArgs:        cfg.KernelBootArgs,
+		RootfsPath:            x.rootfsPath,
+		RootfsReadOnly:        true,
+		CanonicalVsockDir:     cfg.CanonicalVsockDir,
+		HarnessInit:           x.harnessInit,
+		VCPUs:                 x.vcpus,
+		MemMib:                x.memMib,
+		SnapshotRoot:          cfg.SnapshotRoot,
+		WarmthRoot:            cfg.WarmthRoot,
+		Node:                  cfg.Node,
+		Arch:                  cfg.Arch,
+		Vendor:                cfg.CpuVendor,
+		Template:              cfg.CpuTemplate,
+		WarmRestoreWithVolume: cfg.WarmRestoreWithVolume,
 	}, &driver.ExecLauncher{
 		Bin:             cfg.BinPath,
 		OOMScoreAdj:     cfg.GuestOomScoreAdj,

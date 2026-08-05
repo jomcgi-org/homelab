@@ -87,6 +87,41 @@ func TestLoadCpuVendorEnvOverride(t *testing.T) {
 	}
 }
 
+func TestLoadWarmRestoreWithVolumeEnv(t *testing.T) {
+	const key = "EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME"
+	for _, tc := range []struct {
+		name  string
+		value *string
+		want  bool
+	}{
+		{name: "unset", want: false},
+		{name: "true", value: stringPtr("true"), want: true},
+		{name: "false", value: stringPtr("false"), want: false},
+		{name: "garbage", value: stringPtr("garbage"), want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.value == nil {
+				if err := os.Unsetenv(key); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				t.Setenv(key, *tc.value)
+			}
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.WarmRestoreWithVolume != tc.want {
+				t.Errorf("WarmRestoreWithVolume = %v, want %v", c.WarmRestoreWithVolume, tc.want)
+			}
+		})
+	}
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
 func TestLoadAdmissionConfig(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_ADMISSION_MODEL", "reserved")
 	t.Setenv("EMBERVM_NODED_VM_OVERHEAD_MIB", "64")
