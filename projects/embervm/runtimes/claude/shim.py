@@ -140,7 +140,13 @@ DEFAULT_EGRESS_PORT = 1024
 def _pump_stdin_to_socket(source, sock):
     try:
         while True:
-            data = source.read(65536)
+            # read1, NOT read: BufferedReader.read(n) blocks until it has all n
+            # bytes or EOF, and git's protocol is request/response in messages of
+            # a few hundred bytes. read(65536) therefore holds each request until
+            # 64 KiB accumulates or the stream closes, stalling every negotiation
+            # round trip and turning a 4s clone into a timeout. read1 returns what
+            # is available after one syscall.
+            data = source.read1(65536)
             if not data:
                 break
             sock.sendall(data)
