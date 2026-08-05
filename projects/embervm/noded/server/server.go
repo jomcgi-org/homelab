@@ -2230,6 +2230,7 @@ func (s *Server) PruneStaleAttach(workload, lineageID string) {
 // free_primed_slots is the count of the primed ids so the two never disagree.
 func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.WorkloadCapacity {
 	byWorkload := make(map[string]*nodev1.WorkloadCapacity)
+	winners := make(map[string]baseEntry)
 	get := func(wl string) *nodev1.WorkloadCapacity {
 		c, ok := byWorkload[wl]
 		if !ok {
@@ -2241,6 +2242,11 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 		}
 		return c
 	}
+	// Two READY bases for one workload is the normal state right after a re-key
+	// (old superseded base plus new, both provisioned), and last-writer-wins made
+	// the advertised ref a per-heartbeat coin flip that placed restores on the
+	// stale base (observed live 2026-08-05, PATCH 400 on the placeholder-less
+	// base); newest-READY-wins is monotonic with builds.
 	for _, b := range s.bases.snapshot() {
 		// A READY base is only reportable if its runtime image is still provisioned:
 		// the control plane places a stateful cold boot on snapshot_ref and the daemon
@@ -2253,7 +2259,25 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 				continue
 			}
 		}
-		c := get(b.workload)
+		current, seen := winners[b.workload]
+		currentReady := seen && current.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY
+		candidateReady := b.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY
+		replace := !seen || (!currentReady && candidateReady)
+		if seen && currentReady == candidateReady {
+			if candidateReady {
+				replace = b.createdAtUnixMs > current.createdAtUnixMs ||
+					(b.createdAtUnixMs == current.createdAtUnixMs && b.snapshotRef > current.snapshotRef)
+			} else {
+				// Preserve the existing last-writer-wins behavior for progress states.
+				replace = true
+			}
+		}
+		if replace {
+			winners[b.workload] = b
+		}
+	}
+	for workload, b := range winners {
+		c := get(workload)
 		c.SnapshotRef = b.snapshotRef
 		c.BaseState = b.state
 		// Base durability (base-durability PR-1, additive): report whether this
@@ -2264,7 +2288,7 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 		// artifactExported is false for a base whose prefix cannot be composed
 		// (no vendor detected), which the control plane safely reads as
 		// not-yet-exported and re-exports (the export verb is idempotent).
-		c.Exported = s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_BASE, b.workload, b.snapshotRef)
+		c.Exported = s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_BASE, workload, b.snapshotRef)
 	}
 	// Serving images (cold-boot handler artifacts) are reported in a DISTINCT field
 	// from the base memory snapshot (D-R3.11.2): serving placement cold-boots this ref,
