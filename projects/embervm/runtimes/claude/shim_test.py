@@ -348,6 +348,8 @@ for line in sys.stdin:
         elif os.environ.get("FAKE_PI_MODE") == "textless":
             emit({"type": "agent_end", "messages": []})
         else:
+            emit({"type": "tool_start", "toolName": "bash",
+                  "args": {"command": "echo pi"}})
             emit({"type": "message_end", "message": {"role": "assistant",
                   "content": [{"type": "text", "text": "Done <voice>Pi completed the work.</voice>"}],
                   "stopReason": "stop", "usage": {"input": 5, "output": 7}}})
@@ -450,6 +452,58 @@ def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
     assert record["session_id"] == "pi-session"
     assert "input_tokens" in record["usage"]
     manager._close_process()
+
+
+def test_pi_pushes_progress_during_turn(tmp_path, monkeypatch):
+    pushes = []
+
+    class FakePusher:
+        def __init__(self, token):
+            assert token == "pi-token"
+
+        def push(self, text, activities):
+            pushes.append((text, activities))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="qwen", progress_token="pi-token")
+    manager._close_process()
+
+    assert pushes
+    assert pushes[0] == ("", [{"type": "bash", "command": "echo pi"}])
+    assert all(
+        set(payload) == {"partial_text", "activities"}
+        for payload in [
+            {"partial_text": text, "activities": activities}
+            for text, activities in pushes
+        ]
+    )
+
+
+def test_pi_no_progress_without_token(tmp_path, monkeypatch):
+    class UnexpectedPusher:
+        def __init__(self, _token):
+            pytest.fail("progress pusher should not be created")
+
+    monkeypatch.setattr(shim, "_ProgressPusher", UnexpectedPusher)
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="qwen")
+    manager._close_process()
+
+
+def test_pi_failing_progress_pusher_does_not_fail_turn(tmp_path, monkeypatch):
+    class FailingPusher:
+        def __init__(self, _token):
+            raise RuntimeError("pusher failed")
+
+    monkeypatch.setattr(shim, "_ProgressPusher", FailingPusher)
+    manager = _pi_manager(tmp_path, monkeypatch)
+    record = manager.turn("hello", model="qwen", progress_token="pi-token")
+    manager._close_process()
+    assert record["result"].startswith("Done ")
 
 
 def test_pi_rpc_reuses_process_and_records_commands(tmp_path, monkeypatch):
@@ -600,6 +654,55 @@ def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
         "activity": [{"type": "bash", "command": "echo test"}],
     }
     manager._close_process()
+
+
+def test_codex_pushes_progress_during_turn(tmp_path, monkeypatch):
+    pushes = []
+
+    class FakePusher:
+        def __init__(self, token):
+            assert token == "codex-token"
+
+        def push(self, text, activities):
+            pushes.append((text, activities))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna", progress_token="codex-token")
+    manager._close_process()
+
+    assert len(pushes) >= 2
+    assert pushes[0][1] == [{"type": "bash", "command": "echo test"}]
+    assert pushes[-1] == (
+        "Done <voice>Codex completed the work.</voice>",
+        pushes[-1][1],
+    )
+
+
+def test_codex_no_progress_without_token(tmp_path, monkeypatch):
+    class UnexpectedPusher:
+        def __init__(self, _token):
+            pytest.fail("progress pusher should not be created")
+
+    monkeypatch.setattr(shim, "_ProgressPusher", UnexpectedPusher)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    manager._close_process()
+
+
+def test_codex_failing_progress_pusher_does_not_fail_turn(tmp_path, monkeypatch):
+    class FailingPusher:
+        def __init__(self, _token):
+            raise RuntimeError("pusher failed")
+
+    monkeypatch.setattr(shim, "_ProgressPusher", FailingPusher)
+    manager = _codex_manager(tmp_path, monkeypatch)
+    record = manager.turn("first", model="luna", progress_token="codex-token")
+    manager._close_process()
+    assert record["result"].startswith("Done ")
 
 
 def test_codex_auth_json_has_inert_subscription_schema(tmp_path, monkeypatch):
