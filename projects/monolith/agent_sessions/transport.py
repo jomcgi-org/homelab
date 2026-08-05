@@ -40,10 +40,19 @@ def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
 
 async def _invoke_with_retryable_backoff(
     invoke_fn: Callable[[], Awaitable["Turn"]],
-    max_attempts: int = 4,
+    max_attempts: int = 8,
 ) -> "Turn":
-    """Call invoke_fn with exponential backoff on retryable errors."""
-    backoff_seconds = [2, 5, 10]
+    """Call invoke_fn with exponential backoff on retryable errors.
+
+    The window is ~2 minutes, not seconds, because the dominant retryable
+    cause is memory pressure at prime/relight and that clears on VM idle
+    TTLs measured in minutes, not on the reclaim-lag race alone. A longer
+    tail cannot make a fast-clearing case slower (a successful attempt
+    returns immediately); it only converts turns that would have died into
+    turns that wait. The per-attempt read timeout is 1800s, so the added
+    sleeps stay far inside the caller's budget.
+    """
+    backoff_seconds = [2, 5, 10, 20, 30, 30, 30]
     for attempt in range(max_attempts):
         try:
             return await invoke_fn()
