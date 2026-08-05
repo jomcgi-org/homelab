@@ -385,14 +385,15 @@ func (r *sessionSnapshotRegistry) snapshot() []sessionSnapshotEntry {
 // BuildBase records for idempotency and what WatchNode reports so the control
 // plane reconciles existing bases instead of rebuilding.
 type baseEntry struct {
-	snapshotRef string
-	workload    string
-	imageDigest string
-	rootfsPath  string
-	sizeBytes   int64
-	readyPath   string
-	state       nodev1.BaseBuildState
-	buildErr    string
+	snapshotRef     string
+	workload        string
+	imageDigest     string
+	rootfsPath      string
+	sizeBytes       int64
+	createdAtUnixMs int64
+	readyPath       string
+	state           nodev1.BaseBuildState
+	buildErr        string
 }
 
 // baseRegistry tracks base build state per snapshot_ref. It survives across a VM
