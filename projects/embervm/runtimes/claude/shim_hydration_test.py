@@ -26,7 +26,7 @@ def manager(tmp_path):
     instance.claude = _Adapter(instance.workspace)
     instance.codex = _Adapter(instance.workspace)
     instance.pi = _Adapter(instance.workspace)
-    instance._hydration_attempted = False
+    instance._hydration_attempts = 0
     instance._hydration_error = None
     instance._checkout_dir = None
     instance._hydration_status = None
@@ -141,8 +141,8 @@ def test_hydration_failure_logs_and_continues(manager, monkeypatch, capsys):
 
 def test_hydration_timeout(manager, monkeypatch, capsys):
     def fake_run(*_a, **kwargs):
-        if kwargs.get("timeout") == 120:
-            raise subprocess.TimeoutExpired("git", 120)
+        if kwargs.get("timeout") == shim.GIT_CLONE_TIMEOUT_SECONDS:
+            raise subprocess.TimeoutExpired("git", shim.GIT_CLONE_TIMEOUT_SECONDS)
         return _GitProcess()
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
@@ -150,6 +150,51 @@ def test_hydration_timeout(manager, monkeypatch, capsys):
     manager.turn("first", repo="owner/repo", branch="main")
 
     assert "workspace hydration failed" in capsys.readouterr().err
+
+
+def test_failed_hydration_retries_on_next_turn_and_succeeds(
+    manager, monkeypatch, capsys
+):
+    clone_calls = []
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            clone_calls.append(command)
+            if len(clone_calls) == 1:
+                raise subprocess.TimeoutExpired("git", shim.GIT_CLONE_TIMEOUT_SECONDS)
+        return _GitProcess()
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+    first = manager.turn("first", repo="owner/repo", branch="main")
+    second = manager.turn("second", repo="owner/repo", branch="main")
+
+    assert first["workspace_hydration"]["failed"]
+    assert second["workspace_hydration"] == "ok"
+    assert len(clone_calls) == 2
+    assert manager.claude.workspace == os.path.join(manager.workspace, "src")
+    assert "retrying workspace hydration" in capsys.readouterr().err
+
+
+def test_hydration_failure_is_capped_and_keeps_reporting(manager, monkeypatch):
+    clone_calls = []
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            clone_calls.append(command)
+            raise subprocess.TimeoutExpired("git", shim.GIT_CLONE_TIMEOUT_SECONDS)
+        return _GitProcess()
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+    records = [
+        manager.turn("turn", repo="owner/repo", branch="main")
+        for _ in range(shim.HYDRATION_ATTEMPT_CAP + 1)
+    ]
+
+    assert len(clone_calls) == shim.HYDRATION_ATTEMPT_CAP
+    assert manager._hydration_attempts == shim.HYDRATION_ATTEMPT_CAP
+    assert all(record["workspace_hydration"]["failed"] for record in records)
 
 
 def test_git_command_shape(manager, monkeypatch):
@@ -199,7 +244,7 @@ def test_no_hydration_when_repo_absent(manager, monkeypatch):
 
     manager.turn("first", session_id="session")
 
-    assert manager._hydration_attempted is False
+    assert manager._hydration_attempts == 0
     assert manager.claude.calls
 
 
