@@ -38,7 +38,24 @@ defmodule Embervm.LogFormatter do
     :nameplate_mib,
     :total_working_set_mib,
     :guest_free?,
-    :cp_reserved_mib
+    :cp_reserved_mib,
+    # Base retention manifest and accounting metadata.
+    :path,
+    :size_bytes,
+    :vendor,
+    :age_seconds,
+    :reason_unreferenced,
+    :candidates,
+    :bytes_reclaimable,
+    :base_generation,
+    :bases_seen_on_disk,
+    :bases_in_desired_set,
+    :bases_protected_by_refcounts,
+    :bases_excluded_as_too_young,
+    :bases_selected_as_candidates,
+    :total_candidates,
+    :shown,
+    :hidden
   ]
 
   @doc """

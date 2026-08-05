@@ -43,4 +43,30 @@ defmodule Embervm.LogFormatterTest do
 
     assert Map.has_key?(decoded, Atom.to_string(:guest_free?))
   end
+
+  test "preserves every retention manifest field in structured JSON" do
+    metadata = [
+      node_id: "node-1",
+      path: "/var/lib/embervm/scratch/bases/ref-1",
+      size_bytes: 42,
+      workload: "claude-runtime",
+      vendor: "intel",
+      age_seconds: 72_000,
+      reason_unreferenced: "known workload superseded: not in current, CP snapshot, or active base_refs",
+      base_generation: 17
+    ]
+
+    line =
+      Embervm.LogFormatter.format(
+        %{level: :info, msg: {:string, "embervm base retention candidate"}, meta: Map.new(metadata)},
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+
+    for {key, value} <- metadata do
+      assert Map.get(decoded, Atom.to_string(key)) == value
+    end
+  end
 end

@@ -2076,12 +2076,19 @@ defmodule Embervm.BaseBuilder do
           :skip ->
             {p, a}
 
-          {:skip_unexported, node_id} ->
-            entry = %{workload: name, evict_refs: [], evict_bytes: 0, skipped_unexported: true, node_id: node_id}
+          {:skip, node_id, accounting} ->
+            entry = %{workload: name, evict_refs: [], evict_bytes: 0, candidates: [],
+              skipped_unexported: false, node_id: node_id, retention_accounting: accounting}
             {[entry | p], a}
 
-          {:evict, node_id, refs, bytes, manifest} ->
-            entry = %{workload: name, evict_refs: refs, evict_bytes: bytes, candidates: manifest, skipped_unexported: false, node_id: node_id}
+          {:skip_unexported, node_id, accounting} ->
+            entry = %{workload: name, evict_refs: [], evict_bytes: 0, skipped_unexported: true,
+              node_id: node_id, retention_accounting: accounting}
+            {[entry | p], a}
+
+          {:evict, node_id, refs, bytes, manifest, accounting} ->
+            entry = %{workload: name, evict_refs: refs, evict_bytes: bytes, candidates: manifest,
+              skipped_unexported: false, node_id: node_id, retention_accounting: accounting}
             {[entry | p], apply_retention(a, name, node_id, refs, bytes, manifest)}
         end
       end)
@@ -2089,8 +2096,9 @@ defmodule Embervm.BaseBuilder do
 
     {plan, state} =
       if state.workload_sync_done do
-        Enum.reduce(unknown_workload_retention(state), {plan, state}, fn {workload, node_id, refs, bytes, manifest}, {p, a} ->
-          entry = %{workload: workload, evict_refs: refs, evict_bytes: bytes, candidates: manifest, skipped_unexported: false, node_id: node_id}
+        Enum.reduce(unknown_workload_retention(state), {plan, state}, fn {workload, node_id, refs, bytes, manifest, accounting}, {p, a} ->
+          entry = %{workload: workload, evict_refs: refs, evict_bytes: bytes, candidates: manifest,
+            skipped_unexported: false, node_id: node_id, retention_accounting: accounting}
           {[entry | p], apply_retention(a, workload, node_id, refs, bytes, manifest)}
         end)
       else
@@ -2119,28 +2127,34 @@ defmodule Embervm.BaseBuilder do
 
       cond do
         not is_binary(node_ref) or node_ref == "" ->
-          :skip
+          local_bases = Enum.filter(Map.get(fact, :local_bases, []), &(&1.workload == w.name))
+          {:skip, fact[:instance_id], retention_accounting(local_bases, [], w.base_refs, [])}
 
         get_in(fact, [:workloads, w.name, :exported]) != true ->
-          {:skip_unexported, fact[:instance_id]}
+          {:skip_unexported, fact[:instance_id], retention_accounting(
+            Enum.filter(Map.get(fact, :local_bases, []), &(&1.workload == w.name)),
+            desired_refs_for_node(node_ref, w), w.base_refs, [])}
 
         true ->
           desired = desired_refs_for_node(node_ref, w)
+          local_bases = Enum.filter(Map.get(fact, :local_bases, []), &(&1.workload == w.name))
 
           candidates =
-            for b <- Map.get(fact, :local_bases, []),
-                b.workload == w.name,
+            for b <- local_bases,
                 b.base_state != :BASE_BUILD_STATE_BUILDING,
                 b.ref not in desired,
+                not base_protected?(w.base_refs, b.ref),
                 base_age_seconds(b) >= @retention_min_age_seconds,
                 do: b
 
           if candidates == [] do
-            :skip
+            {:skip, fact[:instance_id], retention_accounting(local_bases, desired, w.base_refs, candidates)}
           else
             refs = Enum.map(candidates, & &1.ref)
             bytes = candidates |> Enum.map(&(&1.size_bytes || 0)) |> Enum.sum()
-            {:evict, fact[:instance_id], refs, bytes, retention_manifest(fact, w.name, candidates, w.generation)}
+            {:evict, fact[:instance_id], refs, bytes,
+              retention_manifest(fact, w.name, candidates, w.generation),
+              retention_accounting(local_bases, desired, w.base_refs, candidates)}
           end
       end
     end
@@ -2167,6 +2181,40 @@ defmodule Embervm.BaseBuilder do
 
     [node_ref, w.snapshot_ref | superseded_desired]
     |> Enum.uniq()
+  end
+
+  defp base_protected?(base_refs, ref) do
+    case Map.get(base_refs, ref) do
+      %{primed: primed, sessions: sessions} when is_integer(primed) and is_integer(sessions) ->
+        primed > 0 or sessions > 0
+
+      entry when is_map(entry) ->
+        primed = Map.get(entry, :primed, 0)
+        sessions = Map.get(entry, :sessions, 0)
+        (is_integer(primed) and primed > 0) or (is_integer(sessions) and sessions > 0)
+
+      _ ->
+        false
+    end
+  end
+
+  defp retention_accounting(local_bases, desired, base_refs, candidates) do
+    desired_count = Enum.count(local_bases, &(&1.ref in desired))
+    protected_count = Enum.count(local_bases, fn base ->
+      base.ref not in desired and base_protected?(base_refs, base.ref)
+    end)
+    too_young_count = Enum.count(local_bases, fn base ->
+      base.ref not in desired and not base_protected?(base_refs, base.ref) and
+        base_age_seconds(base) < @retention_min_age_seconds
+    end)
+
+    %{
+      bases_seen_on_disk: length(local_bases),
+      bases_in_desired_set: desired_count,
+      bases_protected_by_refcounts: protected_count,
+      bases_excluded_as_too_young: too_young_count,
+      bases_selected_as_candidates: length(candidates)
+    }
   end
 
 
@@ -2430,7 +2478,8 @@ defmodule Embervm.BaseBuilder do
       |> Enum.map(fn {workload, bases} ->
         refs = Enum.map(bases, & &1.ref)
         bytes = Enum.map(bases, &(&1.size_bytes || 0)) |> Enum.sum()
-        {workload, fact[:instance_id], refs, bytes, retention_manifest(fact, workload, bases, nil)}
+        {workload, fact[:instance_id], refs, bytes, retention_manifest(fact, workload, bases, nil),
+          retention_accounting(bases, [], protected_refs, bases)}
       end)
     end)
   end
@@ -2455,14 +2504,16 @@ defmodule Embervm.BaseBuilder do
       path = if is_binary(snapshot_path) and snapshot_path != "", do: snapshot_path, else: "/var/lib/embervm/scratch/bases/#{base.ref}"
 
       %{
-        node: fact[:instance_id],
+        node_id: fact[:instance_id],
         path: path,
         size_bytes: Map.get(base, :size_bytes, 0) || 0,
         workload: workload,
         vendor: vendor,
         base_generation: workload_generation,
         age_seconds: age,
-        reason_unreferenced: "not in current, CP snapshot, or active base_refs"
+        reason_unreferenced: if(is_nil(workload_generation),
+          do: "unknown workload: not in control plane, or workload was deleted",
+          else: "known workload superseded: not in current, CP snapshot, or active base_refs")
       }
     end)
   end
@@ -2470,7 +2521,7 @@ defmodule Embervm.BaseBuilder do
   defp log_retention_summary(state, plan) do
     candidates = Enum.flat_map(plan, &Map.get(&1, :candidates, []))
     manifest = Enum.take(candidates, @retention_max_evictions_per_sweep)
-    nodes = state |> capacity_facts_by_node() |> map_size()
+    nodes_processed = plan |> Enum.map(&Map.get(&1, :node_id)) |> Enum.uniq() |> length()
 
     manifest
     |> Enum.each(fn candidate ->
@@ -2478,14 +2529,39 @@ defmodule Embervm.BaseBuilder do
     end)
 
     candidates
-    |> Enum.group_by(& &1.node)
+    |> Enum.group_by(& &1.node_id)
     |> Enum.each(fn {node, node_candidates} ->
       Logger.info("embervm base retention node summary",
-        node: node,
+        node_id: node,
         candidates: length(node_candidates),
-        bytes_reclaimable: Enum.reduce(node_candidates, 0, &(&1.size_bytes + &2))
+        bytes_reclaimable: Enum.reduce(node_candidates, 0, &((&1.size_bytes || 0) + &2))
       )
     end)
+
+    plan
+    |> Enum.group_by(&Map.get(&1, :node_id))
+    |> Enum.each(fn {node_id, entries} ->
+      accounting =
+        Enum.reduce(entries, %{bases_seen_on_disk: 0, bases_in_desired_set: 0,
+          bases_protected_by_refcounts: 0, bases_excluded_as_too_young: 0,
+          bases_selected_as_candidates: 0}, fn entry, acc ->
+          Enum.reduce(Map.get(entry, :retention_accounting, %{}), acc, fn {key, value}, totals ->
+            Map.update!(totals, key, &(&1 + value))
+          end)
+        end)
+
+      if accounting.bases_seen_on_disk > 0 do
+        Logger.info("embervm base retention node accounting", Keyword.merge([node_id: node_id], Map.to_list(accounting)))
+      end
+    end)
+
+    if length(candidates) > @retention_max_evictions_per_sweep do
+      Logger.info("embervm base retention candidates truncated",
+        total_candidates: length(candidates),
+        shown: @retention_max_evictions_per_sweep,
+        hidden: length(candidates) - @retention_max_evictions_per_sweep
+      )
+    end
 
     disk_driven_plan? = Enum.any?(plan, &Map.has_key?(&1, :candidates))
     deletion_enabled? =
@@ -2496,14 +2572,14 @@ defmodule Embervm.BaseBuilder do
       bytes = Enum.reduce(evicted, 0, fn c, acc -> acc + (c.size_bytes || 0) end)
 
       Logger.info(
-        "embervm base builder: base retention sweep (ARMED, DELETING) covers #{nodes} nodes, " <>
+        "embervm base builder: base retention sweep (ARMED, DELETING) covers #{nodes_processed} nodes, " <>
           "#{length(evicted)} candidates, #{bytes} bytes evicted"
       )
     else
       bytes = Enum.reduce(candidates, 0, fn c, acc -> acc + (c.size_bytes || 0) end)
 
       Logger.info(
-        "embervm base builder: base retention sweep (DRY RUN, deletion disabled) covers #{nodes} nodes, " <>
+        "embervm base builder: base retention sweep (DRY RUN, deletion disabled) covers #{nodes_processed} nodes, " <>
           "#{length(candidates)} candidates, #{bytes} bytes reclaimable"
       )
     end
