@@ -418,8 +418,16 @@ claudeRuntimeWorkload:
   # brick would keep serving its placeholder-less base and every session create
   # would fail at the drive PATCH. The value is inert guest env; bump it any
   # time capture behaviour changes node-side.
+  #
+  # warm-restore-2: the CP restarted during the pre-#4381 window when the brick
+  # coin-flipped its advertised ref, adopted the STALE placeholder-less ref as
+  # recorded, and reconcile's signature-match no-op froze it there, so creates
+  # and rejoins kept restoring the old base after every fact-side fix. Moving
+  # the epoch re-keys the base, which forces a re-record and a fresh build that
+  # every consumer (recorded ref, node facts, retention desired set) converges
+  # on.
   initEnv:
-    EMBER_BASE_EPOCH: "warm-restore-1"
+    EMBER_BASE_EPOCH: "warm-restore-2"
   # ON. The ADR 027 memory:false/filesystem:true quadrant: sessions ride
   # per-lineage workspace volumes with park/rejoin instead of memory-snapshot
   # banking, and raw files in S3 replace multi-GiB snapshots.
