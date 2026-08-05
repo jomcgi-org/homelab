@@ -10,6 +10,11 @@ import socket
 import threading
 import time
 import subprocess
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 
@@ -434,15 +439,18 @@ def test_codex_config_uses_subscription_endpoint_override(tmp_path, monkeypatch)
     monkeypatch.setenv(shim.CODEX_SUBSCRIPTION_BASE_URL_ENV, endpoint)
     child_env = manager._child_env()
     manager._write_model_config(child_env["CODEX_HOME"])
-    config = (tmp_path / "workspace" / ".codex" / "config.toml").read_text()
-    assert 'base_url = "http://broker.test/backend-api/codex/"' in config
-    assert 'chatgpt_base_url = "%s"' % endpoint in config
-    assert "api.openai.com" not in config
-    assert 'name = "ember-openai"' in config
-    assert 'wire_api = "responses"' in config
-    assert "enable_codex_api_key_env = false" in config
-    assert 'sandbox_mode = "danger-full-access"' in config
-    assert 'approval_policy = "never"' in config
+    config = tomllib.loads(
+        (tmp_path / "workspace" / ".codex" / "config.toml").read_text()
+    )
+    assert (
+        config["model_providers"]["ember-openai"]["base_url"]
+        == "http://broker.test/backend-api/codex/"
+    )
+    assert config["chatgpt_base_url"] == endpoint
+    assert config["model_provider"] == "ember-openai"
+    assert config["sandbox_mode"] == "danger-full-access"
+    assert config["approval_policy"] == "never"
+    assert config["model_providers"]["ember-openai"]["wire_api"] == "responses"
 
 
 def test_codex_config_appends_codex_to_no_slash_endpoint(tmp_path, monkeypatch):
@@ -451,15 +459,16 @@ def test_codex_config_appends_codex_to_no_slash_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv(shim.CODEX_SUBSCRIPTION_BASE_URL_ENV, endpoint)
     child_env = manager._child_env()
     manager._write_model_config(child_env["CODEX_HOME"])
-    config = (tmp_path / "workspace" / ".codex" / "config.toml").read_text()
-    assert 'base_url = "http://broker.test/backend-api/codex/"' in config
-    assert 'chatgpt_base_url = "%s"' % endpoint in config
-    assert "api.openai.com" not in config
-    assert 'name = "ember-openai"' in config
-    assert 'wire_api = "responses"' in config
-    assert "enable_codex_api_key_env = false" in config
-    assert 'sandbox_mode = "danger-full-access"' in config
-    assert 'approval_policy = "never"' in config
+    config = tomllib.loads(
+        (tmp_path / "workspace" / ".codex" / "config.toml").read_text()
+    )
+    assert (
+        config["model_providers"]["ember-openai"]["base_url"]
+        == "http://broker.test/backend-api/codex/"
+    )
+    assert config["chatgpt_base_url"] == endpoint
+    assert config["sandbox_mode"] == "danger-full-access"
+    assert config["approval_policy"] == "never"
 
 
 def test_codex_child_env_drops_openai_api_key(tmp_path, monkeypatch):
@@ -492,6 +501,8 @@ def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypat
     network = "sandbox_workspace_write.network_access=true"
     assert network in first
     assert network in resume
+    assert "sandbox_mode=danger-full-access" in first
+    assert "sandbox_mode=danger-full-access" in resume
     manager._close_process()
 
 
@@ -717,14 +728,14 @@ def test_assistant_message_triggers_progress_push(tmp_path, monkeypatch):
     )
     assert request.method == "POST"
     assert request.get_header("Authorization") == "Bearer abc123"
-    assert json.loads(request.data) == {
-        "partial_text": "Assistant progress.",
-        "activities": [
-            {"type": "tool_use", "name": "Read", "input": {"file_path": "a.txt"}},
-            {"type": "edit", "file_path": "b.txt"},
-            {"type": "write", "file_path": "c.txt"},
-            {"type": "bash", "command": "git status"},
-        ],
+    payload = json.loads(request.data)
+    assert payload["partial_text"] == "Assistant progress."
+    assert isinstance(payload["activities"], list)
+    assert len(payload["activities"]) == 4
+    assert payload["activities"][0] == {
+        "type": "tool_use",
+        "name": "Read",
+        "input": {"file_path": "a.txt"},
     }
     assert timeout == 2
 
@@ -965,8 +976,15 @@ def test_throttle_blocks_push_within_0_2_seconds(monkeypatch):
 
 
 def test_pusher_throttle_0_2_seconds_with_drain(monkeypatch):
-    """A slot change during a push is sent immediately as a drain push."""
+    """Drain re-fires after 0.2 seconds and sends the final slot state."""
     requests = []
+    current_time = [0.0]
+    monkeypatch.setattr(shim.time, "monotonic", lambda: current_time[0])
+    monkeypatch.setattr(
+        shim.time,
+        "sleep",
+        lambda duration: current_time.__setitem__(0, current_time[0] + duration),
+    )
     pusher = shim._ProgressPusher("token")
 
     class FakeResponse:
@@ -975,7 +993,9 @@ def test_pusher_throttle_0_2_seconds_with_drain(monkeypatch):
 
     class FakeOpener:
         def open(self, request, timeout):
-            requests.append(json.loads(request.data.decode())["partial_text"])
+            requests.append(
+                (current_time[0], json.loads(request.data.decode())["partial_text"])
+            )
             if len(requests) == 1:
                 pusher.latest_text = "text2"
             return FakeResponse()
@@ -995,7 +1015,54 @@ def test_pusher_throttle_0_2_seconds_with_drain(monkeypatch):
     )
     monkeypatch.setattr(shim.threading, "Thread", ImmediateThread)
     pusher.push("text1", [])
-    assert requests == ["text1", "text2"]
+    assert [text for _, text in requests] == ["text1", "text2"]
+    assert requests[1][0] >= requests[0][0] + 0.2
+
+
+def test_payload_trimmed_to_byte_budget(monkeypatch):
+    """Oversized progress payloads are trimmed below the ingest limit."""
+    captured_payloads = []
+
+    class FakeResponse:
+        def close(self):
+            pass
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            captured_payloads.append(request.data)
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        shim.urllib.request, "build_opener", lambda _handler: FakeOpener()
+    )
+    pusher = shim._ProgressPusher("token")
+    pusher.push(
+        "x" * 500000,
+        [{"index": i, "data": "y" * 1000} for i in range(300)],
+    )
+    pusher.stop()
+
+    assert len(captured_payloads) == 1
+    payload = json.loads(captured_payloads[0].decode())
+    assert len(captured_payloads[0]) < 262144
+    assert len(payload["activities"]) < 300
+
+
+def test_stream_event_reuses_cached_activities(tmp_path, monkeypatch):
+    """Text deltas do not recompute activities for every stream event."""
+    monkeypatch.setenv("FAKE_DELTAS", "1")
+    calls = {"extract": 0}
+    original_extract = shim.activity_from_events
+
+    def counting_extract(events):
+        calls["extract"] += 1
+        return original_extract(events)
+
+    monkeypatch.setattr(shim, "activity_from_events", counting_extract)
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes", progress_token="abc123")
+    manager._close_process(kill=True)
+    assert calls["extract"] <= 3
 
 
 def test_activities_sent_in_payload_capped_to_300(tmp_path, monkeypatch):

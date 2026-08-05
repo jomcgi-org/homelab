@@ -10,6 +10,7 @@ import os
 import queue
 import re
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -650,10 +651,20 @@ class _ProgressPusher:
             url = "http://monolith.monolith.svc.cluster.local:8091/ingest/progress"
             sent_text = self.latest_text
             sent_activities = list(self.latest_activities)
-            text = sent_text[-65536:] if len(sent_text) > 65536 else sent_text
-            data = json.dumps(
-                {"partial_text": text, "activities": sent_activities}
-            ).encode("utf-8")
+            payload = {
+                "partial_text": sent_text[-65536:]
+                if len(sent_text) > 65536
+                else sent_text,
+                "activities": sent_activities,
+            }
+            data = json.dumps(payload).encode("utf-8")
+            while len(data) >= 262144 and (sent_activities or payload["partial_text"]):
+                if sent_activities:
+                    sent_activities.pop(0)
+                else:
+                    payload["partial_text"] = payload["partial_text"][1000:]
+                payload["activities"] = sent_activities
+                data = json.dumps(payload).encode("utf-8")
             request = urllib.request.Request(
                 url,
                 data=data,
@@ -671,7 +682,10 @@ class _ProgressPusher:
                 self.latest_text != self.last_sent_text
                 or self.latest_activities != self.last_sent_activities
             ):
-                self.last_push_time = 0.0
+                self.last_push_time = time.monotonic()
+                remaining = 0.2 - (time.monotonic() - self.last_push_time)
+                if remaining > 0:
+                    time.sleep(remaining)
                 self.thread = threading.Thread(
                     target=self._do_push,
                     daemon=True,
@@ -1006,6 +1020,8 @@ class ClaudeProcess:
             events = []
             accumulated_text = ""
             current_message_buffer = ""
+            cached_activities = []
+            activities_are_stale = True
             pusher = _ProgressPusher(progress_token) if progress_token else None
             try:
                 while True:
@@ -1047,7 +1063,7 @@ class ClaudeProcess:
                                 if pusher:
                                     pusher.push(
                                         accumulated_text + current_message_buffer,
-                                        activity_from_events(events)[-300:],
+                                        cached_activities,
                                     )
                     elif event.get("type") == "assistant":
                         message_event = event.get("message")
@@ -1066,16 +1082,22 @@ class ClaudeProcess:
                                         if isinstance(text, str):
                                             accumulated_text += text
                             current_message_buffer = ""
-                            if pusher:
-                                pusher.push(
-                                    accumulated_text + current_message_buffer,
-                                    activity_from_events(events)[-300:],
-                                )
+                            activities_are_stale = True
+                    elif event.get("type") == "tool_execution_start":
+                        activities_are_stale = True
+                    if activities_are_stale:
+                        cached_activities = activity_from_events(events)[-300:]
+                        activities_are_stale = False
+                    if event.get("type") == "assistant" and pusher:
+                        pusher.push(
+                            accumulated_text + current_message_buffer,
+                            cached_activities,
+                        )
                     if event.get("type") == "result":
                         if pusher:
                             pusher.push(
                                 accumulated_text + current_message_buffer,
-                                activity_from_events(events)[-300:],
+                                cached_activities,
                             )
                         self.current_result = event
                         record = dict(event)
@@ -1241,15 +1263,13 @@ class CodexProcess:
         config = """model_provider = "ember-openai"
 enable_codex_api_key_env = false
 chatgpt_base_url = %s
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
 
 [model_providers.ember-openai]
 name = "ember-openai"
 base_url = %s
 wire_api = "responses"
-
-[sandboxing]
-sandbox_mode = "danger-full-access"
-approval_policy = "never"
 """ % (json.dumps(base_url), json.dumps(provider_base_url))
         with open(os.path.join(codex_home, "config.toml"), "w") as stream:
             stream.write(config)
@@ -1272,15 +1292,17 @@ approval_policy = "never"
                 model_name,
                 "--config",
                 "model_reasoning_effort=%s" % effort,
-                # Network must ride --config, not a flag, and must sit OUTSIDE
-                # the `if not session_id` block below. workspace-write denies
-                # network by default, and resume rejects --sandbox, so a
-                # flag-shaped fix would give the first turn of a session
-                # network and silently drop it on every resumed turn. Verified
-                # against rust-v0.146.0: a resume carrying only this --config
-                # reports "workspace-write (network access enabled)".
+                # The microVM is the security boundary (not the CLI's sandbox).
+                # Fresh guest execs use --sandbox workspace-write for network
+                # isolation; resumed turns skip it. Config layering:
+                # --config sandbox_mode=danger-full-access beats --sandbox, so
+                # all turns run full access. network_access=true is now
+                # redundant under danger-full-access but kept against a future
+                # revert.
                 "--config",
                 "sandbox_workspace_write.network_access=true",
+                "--config",
+                "sandbox_mode=danger-full-access",
             ]
         )
         command.append("--skip-git-repo-check")
@@ -1700,58 +1722,86 @@ class ProcessManager:
         # This deliberately ignores repo/branch changes on restored volumes; per-session
         # volumes make that unreachable in practice (repo fixed at session create).
         if os.path.isdir(checkout_dir):
-            self._checkout_dir = checkout_dir
-            self._hydration_status = "skipped_existing"
-            # Resume slugs are safe: session cwd never changes mid-lineage (repo fixed at create).
-            self.claude.workspace = checkout_dir
-            self.codex.workspace = checkout_dir
-            self.pi.workspace = checkout_dir
-            return
-        try:
-            os.makedirs(self.workspace, exist_ok=True)
-            clone_command = [
-                "git",
-                "-c",
-                "core.gitProxy=%s" % GIT_PROXY_PATH,
-                "clone",
-                "--branch",
-                branch,
-                "--single-branch",
-                "--filter=blob:none",
-                "git://git-mirror.monolith.svc.cluster.local:9418/%s" % repo,
-                checkout_dir,
-            ]
-            result = subprocess.run(
-                clone_command,
-                capture_output=True,
-                timeout=120,
-                **_cli_privilege_kwargs(),
-            )
-            if result.returncode != 0:
-                stderr = result.stderr
-                if isinstance(stderr, bytes):
-                    stderr = stderr.decode("utf-8", "replace")
-                stderr = (stderr or "").strip()
-                raise RuntimeError(
-                    "git command failed with exit code %s%s"
-                    % (result.returncode, ": " + stderr if stderr else "")
+            try:
+                validation = subprocess.run(
+                    ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
+                    capture_output=True,
+                    timeout=5,
+                    **_cli_privilege_kwargs(),
                 )
-        except subprocess.TimeoutExpired as exc:
-            self._hydration_error = str(exc)
-            sys.stderr.write(
-                "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
-                % (repo, branch, exc)
-            )
-            sys.stderr.flush()
-            return
-        except Exception as exc:
-            self._hydration_error = str(exc)
-            sys.stderr.write(
-                "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
-                % (repo, branch, exc)
-            )
-            sys.stderr.flush()
-            return
+                if validation.returncode == 0:
+                    self._checkout_dir = checkout_dir
+                    self._hydration_status = "skipped_existing"
+                    # Resume slugs are safe: session cwd never changes mid-lineage (repo fixed at create).
+                    self.claude.workspace = checkout_dir
+                    self.codex.workspace = checkout_dir
+                    self.pi.workspace = checkout_dir
+                    return
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            # A durable volume can contain a partial clone from a prior failure.
+            shutil.rmtree(checkout_dir, ignore_errors=True)
+        os.makedirs(self.workspace, exist_ok=True)
+        clone_command = [
+            "git",
+            "clone",
+            "--branch",
+            branch,
+            "--config",
+            "core.gitProxy=%s" % GIT_PROXY_PATH,
+            "--single-branch",
+            "--filter=blob:none",
+            "git://git-mirror.monolith.svc.cluster.local:9418/%s" % repo,
+            checkout_dir,
+        ]
+        for attempt in range(2):
+            try:
+                result = subprocess.run(
+                    clone_command,
+                    capture_output=True,
+                    timeout=120,
+                    **_cli_privilege_kwargs(),
+                )
+                if result.returncode != 0:
+                    stderr = result.stderr
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode("utf-8", "replace")
+                    stderr = (stderr or "").strip()
+                    raise RuntimeError(
+                        "git command failed with exit code %s%s"
+                        % (result.returncode, ": " + stderr if stderr else "")
+                    )
+                validation = subprocess.run(
+                    ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
+                    capture_output=True,
+                    timeout=5,
+                    **_cli_privilege_kwargs(),
+                )
+                if validation.returncode == 0:
+                    break
+                shutil.rmtree(checkout_dir, ignore_errors=True)
+                if attempt == 1:
+                    raise RuntimeError(
+                        "cloned directory validation failed: HEAD not found"
+                    )
+            except subprocess.TimeoutExpired as exc:
+                shutil.rmtree(checkout_dir, ignore_errors=True)
+                self._hydration_error = str(exc)
+                sys.stderr.write(
+                    "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
+                    % (repo, branch, exc)
+                )
+                sys.stderr.flush()
+                return
+            except Exception as exc:
+                shutil.rmtree(checkout_dir, ignore_errors=True)
+                self._hydration_error = str(exc)
+                sys.stderr.write(
+                    "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
+                    % (repo, branch, exc)
+                )
+                sys.stderr.flush()
+                return
         exclude_file = os.path.join(checkout_dir, ".git/info/exclude")
         os.makedirs(os.path.dirname(exclude_file), exist_ok=True)
         with open(exclude_file, "a") as stream:
