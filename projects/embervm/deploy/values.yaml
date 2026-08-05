@@ -240,6 +240,18 @@ baseRetention:
   #
   # Rollback: set back to "" and bump the chart; that stops further eviction.
   sweepEnabled: "1"
+  # Arm the DISK-DRIVEN eviction path. This is a second gate, added alongside the
+  # disk-driven candidate logic so that fixing the enumeration could not silently
+  # inherit the legacy gate above, which had been armed since 2026-07-27. Setting
+  # sweepEnabled alone leaves the sweep logging "DRY RUN, deletion disabled",
+  # because candidates now come from the disk-driven plan and are gated here.
+  #
+  # Armed after two consecutive live sweeps named the same two candidates and
+  # nothing else: node-3 claude-runtime/intel superseded bases aged 25h and 48h,
+  # 8.59 GB, with tonight's fresh base correctly spared by the 3600s min-age rail.
+  # Rollback is setting this back to "" and bumping the chart; eviction is also
+  # capped at 20 per sweep, so a logic error cannot clear the fleet in one pass.
+  diskDrivenEnabled: "1"
   # Arm REMOTE base retention (#3947 PR-4, Joe 2026-07-27). Local retention has
   # been reclaiming node disk for a while, but nothing reclaimed the store, so
   # superseded S3 bases accumulated without bound. Armed directly rather than
