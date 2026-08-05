@@ -1038,6 +1038,9 @@ class ClaudeProcess:
             parked_process = (
                 process is not None and process.poll() is None and not self.session_id
             )
+            parked_adoption = parked_process and session_id is not None
+            if parked_adoption:
+                self.session_id = session_id
             try:
                 stat = os.stat(self.workspace)
                 workspace_identity = (stat.st_dev, stat.st_ino)
@@ -1087,7 +1090,7 @@ class ClaudeProcess:
             if not message_sent:
                 message_line = _user_message_line(
                     message,
-                    session_id=session_id if parked_process else None,
+                    session_id=session_id if parked_adoption else None,
                 )
                 process.stdin.write(message_line)
                 process.stdin.flush()
@@ -1180,9 +1183,6 @@ class ClaudeProcess:
                             event.get("result", "")
                         ):
                             raise RuntimeError(str(event.get("result")))
-                        result_session_id = event.get("session_id") or session_id
-                        if isinstance(result_session_id, str) and result_session_id:
-                            self.session_id = result_session_id
                         record = dict(event)
                         record["voice"] = voice_summary(event.get("result", ""))
                         record["activity"] = activity_from_events(events)
@@ -2469,7 +2469,8 @@ class ProcessManager:
         progress_token=None,
     ):
         ensure_workspace_volume()
-        os.makedirs(self.claude.workspace, exist_ok=True)
+        if isinstance(self.claude, ClaudeProcess):
+            os.makedirs(self.claude.workspace, exist_ok=True)
         if repo is not None and branch is not None:
             self._hydrate_workspace(repo, branch)
         adapter = self._adapter(model)
