@@ -16,11 +16,11 @@ NEXT_FILE_MARKER = (
 PATCHES = (
     (
         b"let A=t(),{messages:I,turnInterruptionState:D",
-        b"""if(!l.resume&&!l.continue&&p&&y instanceof XMn){let ve=await y.structuredInput.next();if(!ve.done&&ve.value?.type==="user"){let Ae=ve.value.session_id??ve.value.sessionId;if(typeof Ae==="string"&&Ae.length>0){l.resume=Ae;y.prependedLines.unshift(Ie(ve.value)+"\\n")}}}""",
+        b"""if(!l.resume&&!l.continue&&p&&y instanceof XMn){let ve=await y.structuredInput.next();if(!ve.done&&ve.value){if(ve.value.type==="user"){let Ae=ve.value.session_id??ve.value.sessionId;if(typeof Ae==="string"&&Ae.length>0)l.resume=Ae}y.prependedLines.unshift(Ie(ve.value)+"\\n")}}""",
     ),
     (
         b"let C=t(),{messages:I,turnInterruptionState:R",
-        b"""if(!l.resume&&!l.continue&&p&&_ instanceof JOn){let Ae=await _.structuredInput.next();if(!Ae.done&&Ae.value?.type==="user"){let Ce=Ae.value.session_id??Ae.value.sessionId;if(typeof Ce==="string"&&Ce.length>0){l.resume=Ce;_.prependedLines.unshift(Ie(Ae.value)+"\\n")}}}""",
+        b"""if(!l.resume&&!l.continue&&p&&_ instanceof JOn){let Ae=await _.structuredInput.next();if(!Ae.done&&Ae.value){if(Ae.value.type==="user"){let Ce=Ae.value.session_id??Ae.value.sessionId;if(typeof Ce==="string"&&Ce.length>0)l.resume=Ce}_.prependedLines.unshift(Ie(Ae.value)+"\\n")}}""",
     ),
 )
 

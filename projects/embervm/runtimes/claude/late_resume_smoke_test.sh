@@ -34,3 +34,15 @@ case "$output" in
 	exit 1
 	;;
 esac
+
+fresh_output=$(printf '%s\n' '{"type":"user","message":{"role":"user","content":"fresh create smoke test"}}' |
+	HOME="$home" timeout 30 "$binary" -p --input-format stream-json \
+		--output-format stream-json --verbose --max-turns 0 2>&1 || true)
+
+case "$fresh_output" in
+*'"type":"result"'*) ;;
+*)
+	echo "session-less first message was not re-injected:\n$fresh_output" >&2
+	exit 1
+	;;
+esac
