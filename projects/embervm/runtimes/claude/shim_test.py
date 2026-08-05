@@ -1110,6 +1110,253 @@ def _manager(tmp_path, monkeypatch, api_key="none"):
     return manager
 
 
+class _FakeStdin:
+    def __init__(self):
+        self.lines = []
+
+    def write(self, value):
+        self.lines.append(value)
+
+    def flush(self):
+        pass
+
+
+class _FakeLiveProcess:
+    def __init__(self):
+        self.stdin = _FakeStdin()
+
+    def poll(self):
+        return None
+
+
+def _parked_claude(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = object.__new__(shim.ClaudeProcess)
+    manager.workspace = str(workspace)
+    manager.process = _FakeLiveProcess()
+    manager.init_event = {"type": "system", "subtype": "init"}
+    manager.fatal_error = None
+    manager.session_id = None
+    manager.model = None
+    manager._process_workspace = manager.workspace
+    manager._process_workspace_identity = None
+    manager.turn_lock = threading.Lock()
+    manager.process_lock = threading.Lock()
+    manager.current_result = None
+    manager._stdout_queue = object()
+    manager.unparseable_lines = []
+    manager.stderr_lines = []
+    manager.parsed_events = []
+    return manager
+
+
+def test_user_message_line_includes_optional_session_id():
+    assert json.loads(shim._user_message_line("hello")) == {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "hello"}],
+        },
+    }
+    assert (
+        json.loads(shim._user_message_line("hello", session_id="sid"))["session_id"]
+        == "sid"
+    )
+
+
+def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace" / "src"
+    workspace.mkdir(parents=True)
+    manager = object.__new__(shim.ProcessManager)
+    manager._prewarm_clis = ("claude",)
+    manager._prewarm_complete = False
+    manager.fatal_error = None
+    calls = []
+
+    class Adapter:
+        session_id = "init-sid"
+        fatal_error = None
+
+        def _spawn(self, **kwargs):
+            calls.append(kwargs)
+
+        def ready(self):
+            return True
+
+    manager.claude = Adapter()
+    manager.claude.workspace = str(workspace)
+    manager.codex = Adapter()
+    manager.pi = Adapter()
+    manager._close_process = lambda **_kwargs: None
+    manager.prewarm()
+
+    assert calls == [{"session_id": None, "first_message": None, "model": None}]
+    assert manager.claude.session_id is None
+    assert manager._prewarm_complete
+    assert manager.ready()
+
+
+def test_process_manager_prewarm_failure_is_not_ready(tmp_path):
+    manager = object.__new__(shim.ProcessManager)
+    manager._prewarm_clis = ("claude",)
+    manager._prewarm_complete = False
+    manager.fatal_error = None
+
+    class Adapter:
+        session_id = None
+        fatal_error = None
+
+        def _spawn(self, **_kwargs):
+            raise shim.StartupError("init timeout")
+
+        def ready(self):
+            return True
+
+    manager.claude = Adapter()
+    manager.claude.workspace = str(tmp_path)
+    manager.codex = Adapter()
+    manager.pi = Adapter()
+    manager._close_process = lambda **_kwargs: None
+    manager.prewarm()
+
+    assert not manager.ready()
+    assert "CLI prewarm failed" in manager.fatal_error
+
+
+def test_process_manager_without_prewarm_preserves_ready_semantics():
+    manager = object.__new__(shim.ProcessManager)
+    manager._prewarm_clis = ()
+    manager._prewarm_complete = True
+    manager.fatal_error = None
+
+    class Adapter:
+        def ready(self):
+            return True
+
+    manager.claude = Adapter()
+    manager.codex = Adapter()
+    manager.pi = Adapter()
+    assert manager.ready()
+
+
+def test_process_manager_normalizes_non_repo_workspace_to_src(tmp_path, monkeypatch):
+    class Adapter:
+        def __init__(self, workspace, _executable):
+            self.workspace = workspace
+
+        def ready(self):
+            return True
+
+    monkeypatch.delenv(shim.PREWARM_CLIS_ENV, raising=False)
+    monkeypatch.setattr(
+        shim, "_ensure_persistence_mountpoint_writable", lambda _path: None
+    )
+    monkeypatch.setattr(shim, "_write_git_proxy_helper", lambda: None)
+    monkeypatch.setattr(shim, "ClaudeProcess", Adapter)
+    monkeypatch.setattr(shim, "CodexProcess", Adapter)
+    monkeypatch.setattr(shim, "PiProcess", Adapter)
+
+    manager = shim.ProcessManager(tmp_path / "workspace", "claude", "codex", "pi")
+
+    expected = str(tmp_path / "workspace" / "src")
+    assert manager.claude.workspace == expected
+    assert os.path.isdir(expected)
+
+
+def test_missing_transcript_is_a_turn_error(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    monkeypatch.setattr(
+        manager,
+        "_read_output",
+        lambda _process, _timeout: json.dumps(
+            {
+                "type": "result",
+                "is_error": True,
+                "result": "No conversation found with session ID: sid",
+            }
+        ).encode(),
+    )
+    monkeypatch.setattr(manager, "_parse_line", json.loads)
+    monkeypatch.setattr(manager, "ready", lambda: True)
+
+    with pytest.raises(RuntimeError, match="No conversation found"):
+        manager.turn("hello", session_id="sid")
+
+
+def test_parked_claude_adopts_resume_without_respawn(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    monkeypatch.setattr(
+        manager,
+        "_read_output",
+        lambda _process, _timeout: json.dumps(
+            {
+                "type": "result",
+                "result": "ok",
+                "terminal_reason": "end_turn",
+                "session_id": "sid",
+            }
+        ).encode(),
+    )
+    monkeypatch.setattr(manager, "_parse_line", json.loads)
+    monkeypatch.setattr(manager, "ready", lambda: True)
+    monkeypatch.setattr(manager, "_spawn", lambda **_kwargs: pytest.fail("respawn"))
+
+    manager.turn("hello", session_id="sid")
+    assert json.loads(manager.process.stdin.lines[0])["session_id"] == "sid"
+
+
+def test_parked_claude_create_uses_plain_message(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    monkeypatch.setattr(
+        manager,
+        "_read_output",
+        lambda _process, _timeout: json.dumps(
+            {
+                "type": "result",
+                "result": "ok",
+                "terminal_reason": "end_turn",
+                "session_id": "sid",
+            }
+        ).encode(),
+    )
+    monkeypatch.setattr(manager, "_parse_line", json.loads)
+    monkeypatch.setattr(manager, "ready", lambda: True)
+
+    manager.turn("hello")
+    assert "session_id" not in json.loads(manager.process.stdin.lines[0])
+
+
+def test_parked_claude_model_mismatch_respawns_with_resume(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    calls = []
+
+    def respawn(**kwargs):
+        calls.append(kwargs)
+        manager.process = _FakeLiveProcess()
+        manager._process_workspace = manager.workspace
+
+    monkeypatch.setattr(manager, "_close_process", lambda **_kwargs: None)
+    monkeypatch.setattr(manager, "_spawn", respawn)
+    monkeypatch.setattr(
+        manager,
+        "_read_output",
+        lambda _process, _timeout: json.dumps(
+            {
+                "type": "result",
+                "result": "ok",
+                "terminal_reason": "end_turn",
+                "session_id": "sid",
+            }
+        ).encode(),
+    )
+    monkeypatch.setattr(manager, "_parse_line", json.loads)
+    monkeypatch.setattr(manager, "ready", lambda: True)
+
+    manager.turn("hello", session_id="sid", model="opus")
+    assert calls == [{"session_id": "sid", "first_message": "hello", "model": "opus"}]
+
+
 def test_turn_extracts_voice_activity_and_tolerates_malformed_json(
     tmp_path, monkeypatch
 ):
