@@ -2,9 +2,9 @@
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 # EmberVM claude runtime base image (issue #4055). A session-class guest whose
 # PID 1 is a stdlib-python shim that owns a long-lived Claude Code CLI process
@@ -60,8 +60,8 @@ sh_test(
     srcs = ["late_resume_smoke_test.sh"],
     args = ["$(rootpath :claude_code_patched_binary_amd64)"],
     data = [":claude_code_patched_binary_amd64"],
-    target_compatible_with = ["@platforms//os:linux"],
     tags = ["no-remote-cache"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 # Workspace trust pre-seed. Remote Control server mode and the interactive paths
