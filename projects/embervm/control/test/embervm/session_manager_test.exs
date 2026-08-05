@@ -182,6 +182,7 @@ defmodule Embervm.SessionManagerTest do
           max_sessions: Keyword.get(opts, :max_sessions, 16),
           invoke_queue_cap: Keyword.get(opts, :queue_cap, 4)
         }),
+      mem_mib: Keyword.get(opts, :mem_mib),
       persistence: Keyword.get(opts, :persistence)
     })
   end
@@ -733,6 +734,47 @@ defmodule Embervm.SessionManagerTest do
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.node_id == "node-4"
     assert session.volume_node_id == "node-4"
+  end
+
+  test "rejoin_dials_the_memory_fitting_brick_when_multiple_colocated" do
+    {:ok, dials} = Agent.start_link(fn -> [] end)
+    dial_fun = fn dial_id ->
+      Agent.update(dials, &[dial_id | &1])
+      {:ok, :fake_channel}
+    end
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rejoined-memory-fitting"),
+        channel_fun: dial_fun,
+        session_channel_fun: dial_fun
+      )
+
+    created = create_persistence_session(ctx, mem_mib: 4_096)
+    park_session(ctx, created)
+
+    put_brick(ctx, "wl-persist", "small",
+      size_class: "2gi",
+      mem_headroom: 100,
+      mem_budget: 2_048,
+      session_volumes: [%{lineage_id: created.session_id}]
+    )
+
+    put_brick(ctx, "wl-persist", "large",
+      size_class: "8gi",
+      mem_headroom: 8_000,
+      mem_budget: 8_192,
+      session_volumes: [%{lineage_id: created.session_id}]
+    )
+
+    Agent.update(dials, fn _ -> [] end)
+
+    assert {:ok, %{status_code: 200}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
+
+    rejoin_dials = Agent.get(dials, & &1)
+    assert "node-4/large" in rejoin_dials
+    refute "node-4/small" in rejoin_dials
   end
 
   test "rejoin delivery failure destroys the primed VM and leaves session parked" do
