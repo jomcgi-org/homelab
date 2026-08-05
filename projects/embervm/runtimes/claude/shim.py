@@ -32,6 +32,8 @@ TURN_PATH = "/shim/turn"
 INTERRUPT_PATH = "/shim/interrupt"
 CLOCK_PATH = "/shim/clock"
 DEFAULT_WORKSPACE = "/workspace"
+PREWARM_CLIS_ENV = "EMBER_PREWARM_CLIS"
+SUPPORTED_PREWARM_CLIS = ("claude", "codex", "pi")
 CODEX_MODELS = {
     "luna": ("gpt-5.6-luna", "medium"),
     "terra": ("gpt-5.6-terra", "high"),
@@ -385,16 +387,17 @@ def _json_line(value):
     return (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def _user_message_line(message):
-    return _json_line(
-        {
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [{"type": "text", "text": message}],
-            },
-        }
-    )
+def _user_message_line(message, session_id=None):
+    value = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": message}],
+        },
+    }
+    if session_id is not None:
+        value["session_id"] = session_id
+    return _json_line(value)
 
 
 def voice_summary(result):
@@ -755,6 +758,8 @@ class ClaudeProcess:
         self.fatal_error = None
         self.session_id = None
         self.model = None
+        self._process_workspace = None
+        self._process_workspace_identity = None
         self.turn_lock = threading.Lock()
         self.process_lock = threading.Lock()
         self.current_result = None
@@ -765,9 +770,9 @@ class ClaudeProcess:
 
     def ready(self):
         with self.process_lock:
-            # The readiness probe runs before its first turn. Do not make it wait
-            # for a lazily spawned CLI, but keep real workspace and fatal failures
-            # unhealthy so a bad base is never snapshotted as ready.
+            # The manager readiness probe does not wait for this lazily spawned
+            # CLI when prewarming is unset. Configured prewarming is checked by
+            # the manager, while workspace and fatal failures remain unhealthy.
             return os.path.isdir(self.workspace) and self.fatal_error is None
 
     def _configure_git(self):
@@ -840,6 +845,12 @@ class ClaudeProcess:
         )
         with self.process_lock:
             self.process = process
+            self._process_workspace = self.workspace
+            try:
+                stat = os.stat(self.workspace)
+                self._process_workspace_identity = (stat.st_dev, stat.st_ino)
+            except OSError:
+                self._process_workspace_identity = None
             self.init_event = None
             self._stdout_queue = queue.Queue()
             # REPLACE the rings rather than clearing them: a stale pump thread from
@@ -1024,10 +1035,29 @@ class ClaudeProcess:
                     % (session_id, self.session_id)
                 )
             model_changed = model is not None and model != self.model
-            if process is not None and process.poll() is None and model_changed:
+            parked_process = (
+                process is not None and process.poll() is None and not self.session_id
+            )
+            try:
+                stat = os.stat(self.workspace)
+                workspace_identity = (stat.st_dev, stat.st_ino)
+            except OSError:
+                workspace_identity = None
+            cwd_changed = parked_process and (
+                self._process_workspace != self.workspace
+                or (
+                    self._process_workspace_identity is not None
+                    and workspace_identity != self._process_workspace_identity
+                )
+            )
+            if (
+                process is not None
+                and process.poll() is None
+                and (model_changed or cwd_changed)
+            ):
                 self._close_process(kill=False)
                 self._spawn(
-                    self.session_id or session_id,
+                    session_id if cwd_changed else self.session_id or session_id,
                     first_message=message,
                     model=model,
                 )
@@ -1055,7 +1085,11 @@ class ClaudeProcess:
                 raise StartupError(self.fatal_error or "shim not ready")
             self.current_result = None
             if not message_sent:
-                process.stdin.write(_user_message_line(message))
+                message_line = _user_message_line(
+                    message,
+                    session_id=session_id if parked_process else None,
+                )
+                process.stdin.write(message_line)
                 process.stdin.flush()
             events = []
             accumulated_text = ""
@@ -1140,6 +1174,15 @@ class ClaudeProcess:
                                 cached_activities,
                             )
                         self.current_result = event
+                        if event.get(
+                            "is_error"
+                        ) and "No conversation found with session ID:" in str(
+                            event.get("result", "")
+                        ):
+                            raise RuntimeError(str(event.get("result")))
+                        result_session_id = event.get("session_id") or session_id
+                        if isinstance(result_session_id, str) and result_session_id:
+                            self.session_id = result_session_id
                         record = dict(event)
                         record["voice"] = voice_summary(event.get("result", ""))
                         record["activity"] = activity_from_events(events)
@@ -2234,10 +2277,57 @@ class ProcessManager:
         self._hydration_error = None
         self._checkout_dir = None
         self._hydration_status = None
+        self.fatal_error = None
+        try:
+            self._prewarm_clis = self._read_prewarm_clis()
+        except StartupError as exc:
+            self._prewarm_clis = ()
+            self.fatal_error = str(exc)
+        self._prewarm_complete = not self._prewarm_clis
         _write_git_proxy_helper()
-        self.claude = ClaudeProcess(self.workspace, claude_executable)
-        self.codex = CodexProcess(self.workspace, codex_executable)
-        self.pi = PiProcess(self.workspace, pi_executable)
+        cli_workspace = os.path.join(self.workspace, "src")
+        os.makedirs(cli_workspace, exist_ok=True)
+        self.claude = ClaudeProcess(cli_workspace, claude_executable)
+        self.codex = CodexProcess(cli_workspace, codex_executable)
+        self.pi = PiProcess(cli_workspace, pi_executable)
+        if self._prewarm_clis and self.fatal_error is None:
+            self.prewarm()
+
+    @staticmethod
+    def _read_prewarm_clis():
+        value = os.environ.get(PREWARM_CLIS_ENV, "")
+        if not value.strip():
+            return ()
+        clis = tuple(item.strip() for item in value.split(",") if item.strip())
+        unknown = sorted(set(clis) - set(SUPPORTED_PREWARM_CLIS))
+        if unknown:
+            raise StartupError(
+                "%s contains unsupported CLIs: %s"
+                % (PREWARM_CLIS_ENV, ",".join(unknown))
+            )
+        return tuple(dict.fromkeys(clis))
+
+    def prewarm(self):
+        """Start configured CLIs and leave them ready for the first turn."""
+        try:
+            os.makedirs(self.claude.workspace, exist_ok=True)
+            for cli in self._prewarm_clis:
+                if cli == "claude":
+                    self.claude._spawn(session_id=None, first_message=None, model=None)
+                    # Claude emits a generated id in init, but a parked process
+                    # has not adopted a session until its first user message.
+                    self.claude.session_id = None
+                elif cli == "codex":
+                    self.codex._spawn()
+                else:
+                    self.pi._spawn(DEFAULT_PI_MODEL)
+            self._prewarm_complete = True
+        except Exception as exc:
+            self.fatal_error = "CLI prewarm failed: %s" % exc
+            self.claude.fatal_error = self.fatal_error
+            self._close_process(kill=True)
+            sys.stderr.write("ember-claude-shim: %s\n" % self.fatal_error)
+            sys.stderr.flush()
 
     def _hydrate_workspace(self, repo, branch):
         if self._hydration_status == "ok":
@@ -2359,7 +2449,15 @@ class ProcessManager:
         return self.claude
 
     def ready(self):
-        return self.claude.ready() and self.codex.ready() and self.pi.ready()
+        # The probe must not wait for lazily spawned CLIs when prewarming is
+        # unset, but must wait for every configured prewarm to complete.
+        return (
+            self.fatal_error is None
+            and self._prewarm_complete
+            and self.claude.ready()
+            and self.codex.ready()
+            and self.pi.ready()
+        )
 
     def turn(
         self,
@@ -2371,6 +2469,7 @@ class ProcessManager:
         progress_token=None,
     ):
         ensure_workspace_volume()
+        os.makedirs(self.claude.workspace, exist_ok=True)
         if repo is not None and branch is not None:
             self._hydrate_workspace(repo, branch)
         adapter = self._adapter(model)
