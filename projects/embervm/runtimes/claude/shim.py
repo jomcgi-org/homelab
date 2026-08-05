@@ -395,7 +395,7 @@ def _user_message_line(message, session_id=None):
             "content": [{"type": "text", "text": message}],
         },
     }
-    if session_id is not None:
+    if session_id:
         value["session_id"] = session_id
     return _json_line(value)
 
@@ -853,6 +853,7 @@ class ClaudeProcess:
             self._process_workspace = self.workspace
             try:
                 stat = os.stat(self.workspace)
+                # Capture workspace identity to detect tmpfs-to-volume takeover.
                 self._process_workspace_identity = (stat.st_dev, stat.st_ino)
             except OSError:
                 self._process_workspace_identity = None
@@ -916,6 +917,9 @@ class ClaudeProcess:
                     self.fatal_error = message
                     self._close_process(kill=True)
                     raise StartupError(message)
+                manager = getattr(self, "_manager", None)
+                if manager is not None:
+                    manager.fatal_error = None
                 return
             else:
                 try:
@@ -1032,12 +1036,6 @@ class ClaudeProcess:
         progress_token=None,
     ):
         with self.turn_lock:
-            manager = getattr(self, "_manager", None)
-            remediation = getattr(manager, "_remediation_thread", None)
-            if remediation is not None and remediation.is_alive():
-                done = getattr(manager, "_remediation_done", None)
-                if done is None or not done.wait(timeout=_read_init_timeout()):
-                    raise StartupError("workspace remediation did not complete")
             with self.process_lock:
                 process = self.process
             session_was_bound = bool(self.session_id)
@@ -1050,9 +1048,7 @@ class ClaudeProcess:
             parked_process = (
                 process is not None and process.poll() is None and not self.session_id
             )
-            parked_adoption = parked_process and session_id is not None
-            if parked_adoption:
-                self.session_id = session_id
+            parked_adoption = parked_process and bool(session_id)
             try:
                 stat = os.stat(self.workspace)
                 workspace_identity = (stat.st_dev, stat.st_ino)
@@ -1071,11 +1067,16 @@ class ClaudeProcess:
                 and (model_changed or cwd_changed)
             ):
                 self._close_process(kill=False)
-                self._spawn(
-                    self.session_id or session_id,
-                    first_message=message,
-                    model=model,
-                )
+                try:
+                    self._spawn(
+                        self.session_id or session_id,
+                        first_message=message,
+                        model=model,
+                    )
+                except Exception:
+                    if parked_adoption and not session_was_bound:
+                        self.session_id = None
+                    raise
                 process = self.process
                 message_sent = True
                 if self._manager is not None:
@@ -1091,32 +1092,42 @@ class ClaudeProcess:
                     self._close_process(kill=False)
                 # A request without an id resumes the last session after an
                 # interrupt or relight instead of silently creating a new one.
-                self._spawn(
-                    session_id or self.session_id,
-                    first_message=message,
-                    model=model,
-                )
+                try:
+                    self._spawn(
+                        session_id or self.session_id,
+                        first_message=message,
+                        model=model,
+                    )
+                except Exception:
+                    if parked_adoption and not session_was_bound:
+                        self.session_id = None
+                    raise
                 process = self.process
                 message_sent = True
                 if self._manager is not None:
                     self._manager._prewarm_failed = False
-            if not self.ready():
-                raise StartupError(self.fatal_error or "shim not ready")
-            self.current_result = None
-            if not message_sent:
-                message_line = _user_message_line(
-                    message,
-                    session_id=session_id if parked_adoption else None,
-                )
-                process.stdin.write(message_line)
-                process.stdin.flush()
-            events = []
-            accumulated_text = ""
-            current_message_buffer = ""
-            cached_activities = []
-            activities_are_stale = True
-            pusher = _ProgressPusher(progress_token) if progress_token else None
+            pusher = None
             try:
+                if not self.ready():
+                    raise StartupError(self.fatal_error or "shim not ready")
+                self.current_result = None
+                # Adoption is latched only when the user message is about to be
+                # delivered. Every later failure rolls it back below.
+                if parked_adoption:
+                    self.session_id = session_id
+                if not message_sent:
+                    message_line = _user_message_line(
+                        message,
+                        session_id=session_id if parked_adoption else None,
+                    )
+                    process.stdin.write(message_line)
+                    process.stdin.flush()
+                events = []
+                accumulated_text = ""
+                current_message_buffer = ""
+                cached_activities = []
+                activities_are_stale = True
+                pusher = _ProgressPusher(progress_token) if progress_token else None
                 while True:
                     try:
                         turn_read_timeout = TURN_READ_TIMEOUT
@@ -1209,7 +1220,7 @@ class ClaudeProcess:
                         record["activity"] = activity_from_events(events)
                         return record
             except Exception:
-                if not session_was_bound:
+                if parked_adoption and not session_was_bound:
                     self.session_id = None
                 raise
             finally:
@@ -2313,14 +2324,13 @@ class ProcessManager:
         self._prewarm_thread = None
         self._parked_workspace_identity = None
         self._remediation_lock = threading.Lock()
-        self._remediation_complete = True
+        self._remediation_complete = False
+        self._remediation_attempts = 0
         self._remediation_thread = None
-        self._remediation_done = threading.Event()
-        self._remediation_done.set()
         _write_git_proxy_helper()
         cli_workspace = os.path.join(self.workspace, "src")
         _ensure_cli_dir(cli_workspace)
-        self._parked_workspace_identity = self._workspace_identity(self.workspace)
+        self._parked_workspace_identity = self._workspace_identity(cli_workspace)
         self.claude = ClaudeProcess(cli_workspace, claude_executable)
         self.claude._manager = self
         self.codex = CodexProcess(cli_workspace, codex_executable)
@@ -2338,14 +2348,6 @@ class ProcessManager:
             return (stat.st_dev, stat.st_ino)
         except OSError:
             return None
-
-    @staticmethod
-    def _is_build_guest():
-        try:
-            with open("/proc/cmdline") as stream:
-                return "ember.volume_dev" not in stream.read().split()
-        except OSError:
-            return True
 
     @staticmethod
     def _read_prewarm_clis():
@@ -2378,13 +2380,6 @@ class ProcessManager:
             self._prewarm_failed = True
             if hasattr(self.claude, "_close_process"):
                 self.claude._close_process(kill=True)
-            if not self._is_build_guest():
-                sys.stderr.write(
-                    "ember-claude-shim: warning: %s, deferring spawn to turn\n"
-                    % prewarm_error
-                )
-                sys.stderr.flush()
-                self.fatal_error = None
             sys.stderr.write("ember-claude-shim: %s\n" % prewarm_error)
             sys.stderr.flush()
         finally:
@@ -2518,38 +2513,26 @@ class ProcessManager:
             return False
         if self._prewarm_clis and "claude" in self._prewarm_clis:
             process = getattr(self.claude, "process", None)
-            if (
-                not getattr(self, "_prewarm_failed", False)
-                and process is not None
-                and process.poll() is not None
-            ):
-                self._kick_remediation()
-                return False
-            if (
-                not getattr(self, "_prewarm_failed", False)
-                and process is None
-                and hasattr(self.claude, "process")
-            ):
-                self._kick_remediation()
-                return False
-            identity = self._workspace_identity(
-                getattr(self, "workspace", self.claude.workspace)
-            )
-            if identity != getattr(self, "_parked_workspace_identity", identity):
-                # Detect tmpfs-to-volume takeover.
-                self._kick_remediation()
-        remediation = getattr(self, "_remediation_thread", None)
-        return not (remediation is not None and remediation.is_alive())
+            if not getattr(self, "_remediation_complete", False):
+                process_dead = process is not None and process.poll() is not None
+                identity = self._workspace_identity(self.claude.workspace)
+                identity_changed = process is not None and identity != getattr(
+                    self.claude, "_process_workspace_identity", None
+                )
+                if process_dead or identity_changed:
+                    self._kick_remediation()
+        return True
 
     def _kick_remediation(self):
         with self._remediation_lock:
+            if self._remediation_complete or self._remediation_attempts >= 3:
+                return
             if (
                 self._remediation_thread is not None
                 and self._remediation_thread.is_alive()
             ):
                 return
             self._remediation_complete = False
-            self._remediation_done.clear()
             self._remediation_thread = threading.Thread(
                 target=self._remediate_workspace,
                 name="claude-workspace-remediation",
@@ -2558,25 +2541,32 @@ class ProcessManager:
             self._remediation_thread.start()
 
     def _remediate_workspace(self):
-        try:
-            ensure_workspace_volume()
-            self.claude._close_process(kill=False)
-            _ensure_cli_dir(self.claude.workspace)
-            self.claude._spawn(session_id=None, first_message=None, model=None)
-            self.claude.session_id = None
-            self._parked_workspace_identity = self._workspace_identity(self.workspace)
-        except Exception as exc:
-            if self._is_build_guest():
-                self.fatal_error = "workspace remediation failed: %s" % exc
-            else:
+        with self.claude.turn_lock:
+            try:
+                ensure_workspace_volume()
+                identity = self._workspace_identity(self.claude.workspace)
+                process = getattr(self.claude, "process", None)
+                process_dead = process is not None and process.poll() is not None
+                identity_changed = identity != getattr(
+                    self.claude, "_process_workspace_identity", None
+                )
+                if identity_changed or process_dead:
+                    self.claude._close_process(kill=False)
+                    if not self.claude.session_id:
+                        _ensure_cli_dir(self.claude.workspace)
+                        self.claude._spawn(
+                            session_id=None, first_message=None, model=None
+                        )
+                        self.claude.session_id = None
+                    self._parked_workspace_identity = identity
+                self._remediation_complete = True
+            except Exception as exc:
+                self._remediation_attempts += 1
                 sys.stderr.write(
-                    "ember-claude-shim: warning: workspace remediation failed: %s\n"
-                    % exc
+                    "ember-claude-shim: warning: workspace remediation failed "
+                    "(attempt %s/3): %s\n" % (self._remediation_attempts, exc)
                 )
                 sys.stderr.flush()
-        finally:
-            self._remediation_complete = True
-            self._remediation_done.set()
 
     def turn(
         self,
@@ -2587,6 +2577,7 @@ class ProcessManager:
         branch=None,
         progress_token=None,
     ):
+        ensure_workspace_volume()
         if getattr(self.claude, "workspace", None):
             _ensure_cli_dir(self.claude.workspace)
         if repo is not None and branch is not None:
@@ -2604,6 +2595,8 @@ class ProcessManager:
                 )
             else:
                 record = adapter.turn(message, session_id, model, **extra)
+            # A successful lazy turn is a valid recovery from prewarm failure.
+            self.fatal_error = None
             if repo is not None and isinstance(record, dict):
                 if self._hydration_error:
                     record["workspace_hydration"] = {"failed": self._hydration_error}
@@ -2712,6 +2705,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             not isinstance(progress_token, str) or not progress_token.strip()
         ):
             self._send(400, {"error": "progress_token must be a non-empty string"})
+            return
+        if "session_id" in payload and payload.get("session_id") == "":
+            self._send(400, {"error": "session_id must be a non-empty string"})
             return
         try:
             hydration = {"repo": repo, "branch": branch} if repo is not None else {}
