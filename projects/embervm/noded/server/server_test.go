@@ -1267,6 +1267,49 @@ func TestWorkloadCapacitiesSkipsStaleServingImage(t *testing.T) {
 	}
 }
 
+func TestWorkloadCapacitiesAdvertisesNewestReadyBase(t *testing.T) {
+	const (
+		workload = "claude-runtime"
+		oldRef   = "claude-runtime__old"
+		newRef   = "claude-runtime__new"
+		image    = "img@sha256:runtime"
+	)
+
+	for _, tc := range []struct {
+		name string
+		refs []string
+	}{
+		{name: "old then new", refs: []string{oldRef, newRef}},
+		{name: "new then old", refs: []string{newRef, oldRef}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+			s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: image, RootfsRef: "/rootfs/runtime"}})
+			for _, ref := range tc.refs {
+				s.bases.readyBuild(ref, workload, image, "", "/shim/ready", 2048)
+			}
+			s.bases.mu.Lock()
+			s.bases.bases[oldRef].createdAtUnixMs = 1000
+			s.bases.bases[newRef].createdAtUnixMs = 2000
+			s.bases.mu.Unlock()
+
+			ns, err := client.GetNodeStatus(context.Background(), &nodev1.GetNodeStatusRequest{})
+			if err != nil {
+				t.Fatalf("GetNodeStatus: %v", err)
+			}
+			for _, c := range ns.GetWorkloads() {
+				if c.GetWorkload() == workload {
+					if got := c.GetSnapshotRef(); got != newRef {
+						t.Fatalf("snapshot_ref = %q, want newer ref %q", got, newRef)
+					}
+					return
+				}
+			}
+			t.Fatalf("workload capacity for %q not reported", workload)
+		})
+	}
+}
+
 func TestParseMemHeadroomMib(t *testing.T) {
 	cases := []struct {
 		maxRaw, curRaw string
