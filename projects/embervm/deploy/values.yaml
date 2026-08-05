@@ -104,6 +104,19 @@ noded:
   # (docs/runbooks/embervm-node-scratch-setup.md).
   enabled: false
   maxLiveVMs: 16
+  # ARM warm restore with volume on the 16gi class ONLY (issue #4371 one-brick
+  # experiment). The 16gi brick is the only session-capable brick (sessions are
+  # 4096 MiB), so this is where the unproven Firecracker/ext4 fact gets
+  # answered: does a guest restored from a base snapshot, whose volume drive is
+  # then repointed at a different backing file, come up clean. Requires the
+  # claudeRuntimeWorkload.initEnv epoch below in the SAME change: base refs
+  # exclude noded config, so arming without re-keying the base would leave the
+  # brick failing every volume-bearing claim at the drive PATCH against its old
+  # placeholder-less base, with no rebuild ever coming. Expect a short window of
+  # failing session creates between the brick roll and the base rebuild.
+  # Rollback: set back to [] (and drop the epoch); no chart bump needed, the
+  # values git ref alone rolls the brick Deployment env off.
+  warmRestoreWithVolumeClasses: ["16gi"]
 
 # Node-provisioning contract (ADR embervm/012 storage-tiers amendment; warmth
 # cache-cap retention decisions 2026-07-22): DISABLED. The privileged runtime
@@ -398,6 +411,15 @@ egress:
 # session at all. Sizing and the node disk arithmetic are in chart/values.yaml.
 claudeRuntimeWorkload:
   enabled: true
+  # Epoch entry to force a base rebuild (issue #4371): init_env is in the
+  # workload signature, so this re-keys and rebuilds ONLY the claude-runtime
+  # base. Needed alongside noded.warmRestoreWithVolumeClasses above because the
+  # base key deliberately excludes noded config; without this the armed 16gi
+  # brick would keep serving its placeholder-less base and every session create
+  # would fail at the drive PATCH. The value is inert guest env; bump it any
+  # time capture behaviour changes node-side.
+  initEnv:
+    EMBER_BASE_EPOCH: "warm-restore-1"
   # ON. The ADR 027 memory:false/filesystem:true quadrant: sessions ride
   # per-lineage workspace volumes with park/rejoin instead of memory-snapshot
   # banking, and raw files in S3 replace multi-GiB snapshots.

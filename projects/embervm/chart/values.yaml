@@ -1223,6 +1223,11 @@ claudeRuntimeWorkload:
   port: 1027
   readyPath: /shim/ready
   invokePath: /shim/turn
+  # Guest env baked at base-build time (spec.source.image.initEnv). Entries are
+  # part of the workload signature, so any change re-keys and rebuilds this
+  # workload's base. Deploy values carry an epoch entry when a rebuild must be
+  # forced (issue #4371).
+  initEnv: {}
   vcpus: 2
   # 4 GiB: the CLI is a 262 MB Node ELF with a V8 heap on top, and guest-init
   # mounts tmpfs on both /tmp and /workspace. Those are caps, not reservations, so
