@@ -32,6 +32,13 @@ const (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+	if len(os.Args) > 1 && os.Args[1] == "--ensure-workspace-volume" {
+		if err := ensureWorkspaceVolume(logger); err != nil {
+			logger.Error("workspace volume ensure failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(logger); err != nil {
 		logger.Error("ember-runtime-guest-init exited with error", "err", err)
 		os.Exit(1)

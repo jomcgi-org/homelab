@@ -8,3 +8,8 @@ func mountWorkspaceVolume(logger *slog.Logger) error {
 	logger.Info("workspace volume is a no-op off Linux")
 	return nil
 }
+
+func ensureWorkspaceVolume(logger *slog.Logger) error {
+	logger.Info("workspace volume ensure is a no-op off Linux")
+	return nil
+}
