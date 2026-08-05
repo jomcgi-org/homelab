@@ -161,7 +161,7 @@ func TestClientLoadSnapshotResume(t *testing.T) {
 func TestClientPatchDrive(t *testing.T) {
 	fake, sock := startFakeFC(t)
 	c := New(sock)
-	drive := Drive{DriveID: "volume", PathOnHost: "/sessions/s1/workspace.img", IsRootDevice: false, IsReadOnly: false}
+	drive := PatchedDrive{DriveID: "volume", PathOnHost: "/sessions/s1/workspace.img"}
 	if err := c.PatchDrive(context.Background(), "volume", drive); err != nil {
 		t.Fatalf("PatchDrive: %v", err)
 	}
@@ -175,8 +175,14 @@ func TestClientPatchDrive(t *testing.T) {
 	if r.Method != http.MethodPatch || r.Path != "/drives/volume" {
 		t.Fatalf("request = %s %s, want PATCH /drives/volume", r.Method, r.Path)
 	}
-	if r.Body["drive_id"] != "volume" || r.Body["path_on_host"] != drive.PathOnHost || r.Body["is_read_only"] != false {
+	if r.Body["drive_id"] != "volume" || r.Body["path_on_host"] != drive.PathOnHost {
 		t.Fatalf("drive body = %v", r.Body)
+	}
+	// Firecracker rejects unknown fields on PATCH /drives at JSON parse (its
+	// schema is drive_id, path_on_host, rate_limiter only), so the PUT-only
+	// fields must be absent from the wire body, not merely false.
+	if len(r.Body) != 2 {
+		t.Fatalf("drive body has extra fields = %v, want exactly drive_id and path_on_host", r.Body)
 	}
 }
 

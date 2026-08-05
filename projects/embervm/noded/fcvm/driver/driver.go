@@ -151,7 +151,7 @@ type fcAPI interface {
 	PutMachineConfig(ctx context.Context, m fcclient.MachineConfig) error
 	PutBootSource(ctx context.Context, b fcclient.BootSource) error
 	PutDrive(ctx context.Context, d fcclient.Drive) error
-	PatchDrive(ctx context.Context, driveID string, d fcclient.Drive) error
+	PatchDrive(ctx context.Context, driveID string, d fcclient.PatchedDrive) error
 	PutVsock(ctx context.Context, v fcclient.Vsock) error
 	PutNetworkInterface(ctx context.Context, n fcclient.NetworkInterface) error
 	Start(ctx context.Context) error
@@ -770,11 +770,9 @@ func (d *Driver) loadPatchAndResume(ctx context.Context, threadID, snapPath, mem
 		return d.abort(proc, err)
 	}
 	if volumeDiskPath != "" {
-		if err := client.PatchDrive(ctx, "volume", fcclient.Drive{
-			DriveID:      "volume",
-			PathOnHost:   volumeDiskPath,
-			IsRootDevice: false,
-			IsReadOnly:   false,
+		if err := client.PatchDrive(ctx, "volume", fcclient.PatchedDrive{
+			DriveID:    "volume",
+			PathOnHost: volumeDiskPath,
 		}); err != nil {
 			return d.abort(proc, err)
 		}
