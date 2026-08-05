@@ -241,7 +241,7 @@ func TestDriverWarmRestoreFlagAttachesBasePlaceholderVolume(t *testing.T) {
 		t.Fatalf("Claim: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
-	placeholder := filepath.Join(d.threadDir(h.ThreadID), "placeholder-volume.img")
+	placeholder := filepath.Join(root, "placeholder-volume.img")
 	info, err := os.Stat(placeholder)
 	if err != nil {
 		t.Fatalf("placeholder volume: %v", err)

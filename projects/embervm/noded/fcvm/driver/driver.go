@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -961,7 +962,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 			}
 		}
 		if d.cfg.WarmRestoreWithVolume && cb.volumeDiskPath == "" {
-			placeholder, err := d.ensurePlaceholderVolume(dir)
+			placeholder, err := d.ensurePlaceholderVolume()
 			if err != nil {
 				return err
 			}
@@ -1004,11 +1005,24 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	return h, nil
 }
 
-// ensurePlaceholderVolume creates the sparse backing file captured in a warm
-// base's device set. The guest owns filesystem initialization and mounting;
-// this raw image only needs to provide a stable block-device path in the base.
-func (d *Driver) ensurePlaceholderVolume(threadDir string) (string, error) {
-	path := filepath.Join(threadDir, "placeholder-volume.img")
+// EnsurePlaceholderVolume creates the sparse backing file captured in a warm
+// base's device set. The snapshot bakes this absolute backing path into the
+// base's device table and Firecracker reopens it at snapshot load, so the file
+// must outlive the build VM's bundle directory, which RemoveBundle deletes
+// immediately after capture, and must exist at the same path on any brick that
+// may later restore the base because bases hydrate from S3 across bricks.
+// SnapshotRoot is the node-SHARED snapshots root, using the same chart-derived
+// path on every node, unlike the per-instance WarmthRoot, which is why the file
+// lives there. Guests never mount or write the device unless explicitly told to
+// through the ember.volume_dev / shim --device contract, so one shared backing
+// file is safe across concurrent VMs.
+func EnsurePlaceholderVolume(snapshotRoot string) (string, error) {
+	// Startup calls this before anything else has touched SnapshotRoot on a
+	// fresh node, so the parent cannot be assumed to exist yet.
+	if err := os.MkdirAll(snapshotRoot, 0o750); err != nil {
+		return "", fmt.Errorf("driver: mkdir snapshot root: %w", err)
+	}
+	path := filepath.Join(snapshotRoot, "placeholder-volume.img")
 	if _, err := os.Stat(path); err == nil {
 		return path, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -1016,6 +1030,9 @@ func (d *Driver) ensurePlaceholderVolume(threadDir string) (string, error) {
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return path, nil
+		}
 		return "", fmt.Errorf("driver: create placeholder volume: %w", err)
 	}
 	defer f.Close()
@@ -1024,6 +1041,10 @@ func (d *Driver) ensurePlaceholderVolume(threadDir string) (string, error) {
 		return "", fmt.Errorf("driver: size placeholder volume: %w", err)
 	}
 	return path, nil
+}
+
+func (d *Driver) ensurePlaceholderVolume() (string, error) {
+	return EnsurePlaceholderVolume(d.cfg.SnapshotRoot)
 }
 
 // ClaimServing cold-boots a serving-class microVM from a per-workload rootfs WITH a

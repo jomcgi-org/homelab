@@ -173,6 +173,12 @@ containers:
       # request), which is what keeps the DS pod identical to its pre-brick form.
       - name: EMBERVM_NODED_SIZE_CLASS
         value: {{ .sizeClass | quote }}
+      # Class-scoped because the flag is driver-wide per brick and sessions
+      # place only on the listed class. An empty list renders nothing.
+      {{- if and .sizeClass (has .sizeClass ($ctx.Values.noded.warmRestoreWithVolumeClasses | default (list))) }}
+      - name: EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME
+        value: "true"
+      {{- end }}
       {{- end }}
       # Dial-home registration target: the control plane's HTTP base URL the
       # daemon POSTs {node, pod_uid, address, boot_id} to on start and on a
