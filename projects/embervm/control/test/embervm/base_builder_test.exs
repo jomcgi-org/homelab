@@ -19,6 +19,7 @@ defmodule Embervm.BaseBuilderTest do
   # scheduler contention as the suite grows and flake the wait. Serial keeps the
   # timing deterministic regardless of suite size.
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Embervm.BaseBuilder
   alias Embervm.NodeCapacity
@@ -800,7 +801,8 @@ defmodule Embervm.BaseBuilderTest do
         status_writer: recording_status_writer(agent),
         build_fun: build_fun,
         evict_fun: evict_fun,
-        retention_sweep_enabled: true
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
       )
 
     build_current(builder, agent, "w__current")
@@ -842,7 +844,8 @@ defmodule Embervm.BaseBuilderTest do
         send(test_pid, {:evicted, workload, ref})
         {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
       end,
-      retention_sweep_enabled: true
+      retention_sweep_enabled: true,
+      retention_disk_driven_enabled: true
     )
 
     :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
@@ -857,7 +860,7 @@ defmodule Embervm.BaseBuilderTest do
   test "retention sweep does not evict unknown workloads before the watcher sync" do
     table = new_cap_table()
     put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", true, [ready_base("deleted__old", "deleted", 2_048)])
-    builder = start_builder(capacity_table: table, retention_sweep_enabled: true)
+    builder = start_builder(capacity_table: table, retention_sweep_enabled: true, retention_disk_driven_enabled: true)
 
     plan = BaseBuilder.retention_sweep_now(builder)
     assert plan == []
@@ -874,7 +877,8 @@ defmodule Embervm.BaseBuilderTest do
         send(test_pid, {:evicted, workload, ref})
         {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
       end,
-      retention_sweep_enabled: true
+      retention_sweep_enabled: true,
+      retention_disk_driven_enabled: true
     )
 
     :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
@@ -887,7 +891,7 @@ defmodule Embervm.BaseBuilderTest do
     table = new_cap_table()
     base = Map.put(ready_base("deleted__building", "deleted", 512), :base_state, :BASE_BUILD_STATE_BUILDING)
     put_unknown_local_bases_fact(table, "node-4", "ds", [base])
-    builder = start_builder(capacity_table: table, retention_sweep_enabled: true)
+    builder = start_builder(capacity_table: table, retention_sweep_enabled: true, retention_disk_driven_enabled: true)
 
     :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
     assert BaseBuilder.retention_sweep_now(builder) == []
@@ -946,6 +950,78 @@ defmodule Embervm.BaseBuilderTest do
     refute_receive {:evicted, "w", "w__orphan1"}, 200
   end
 
+  test "disk-driven gate OFF with legacy retention_sweep_enabled ON keeps production dry-run" do
+    test_pid = self()
+    table = new_cap_table()
+    agent = start_recorder()
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: false,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    build_current(builder, agent, "w__current")
+    put_local_bases_fact(table, "w", "w__current", true, [ready_base("w__current", "w", 1), ready_base("w__disk-old", "w", 2_048)])
+
+    log =
+      capture_log(fn ->
+        send(test_pid, {:plan, BaseBuilder.retention_sweep_now(builder)})
+      end)
+
+    assert_receive {:plan, [%{evict_refs: ["w__disk-old"], candidates: [_]}]}
+    refute_receive {:evicted, "w", "w__disk-old"}, 200
+    refute log =~ "ARMED"
+    refute log =~ "DELETING"
+    assert log =~ "DRY RUN"
+  end
+
+  test "disk-driven gate ON evicts disk-enumerated candidates up to the sweep cap" do
+    test_pid = self()
+    table = new_cap_table()
+    agent = start_recorder()
+    bases = [ready_base("w__current", "w", 1) | (for n <- 1..21, do: ready_base("w__disk-old#{n}", "w", n))]
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_disk_driven_enabled: true,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end
+      )
+
+    build_current(builder, agent, "w__current")
+    put_local_bases_fact(table, "w", "w__current", true, bases)
+    [entry] = BaseBuilder.retention_sweep_now(builder)
+
+    assert length(entry.evict_refs) == 21
+    for _ <- 1..20, do: assert_receive({:evicted, "w", _}, 1_000)
+    refute_receive {:evicted, "w", _}, 200
+  end
+
+  test "disk-driven retention log wording is DRY RUN when its gate is off" do
+    table = new_cap_table()
+    builder = start_builder(capacity_table: table, retention_disk_driven_enabled: false)
+    :sys.replace_state(builder, fn state -> %{state | workload_sync_done: true} end)
+    put_node_local_bases_fact(table, "node-4", "ds", "deleted", "deleted__current", true, [ready_base("deleted__old", "deleted", 512)])
+
+    log = capture_log(fn -> BaseBuilder.retention_sweep_now(builder) end)
+    assert log =~ "DRY RUN"
+    refute log =~ "ARMED"
+    refute log =~ "DELETING"
+  end
+
   test "retention sweep skips a workload whose current base is not yet exported (durability floor)" do
     agent = start_recorder()
     test_pid = self()
@@ -964,7 +1040,8 @@ defmodule Embervm.BaseBuilderTest do
         status_writer: recording_status_writer(agent),
         build_fun: build_fun,
         evict_fun: evict_fun,
-        retention_sweep_enabled: true
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
       )
 
     build_current(builder, agent, "w__current")
@@ -1023,7 +1100,8 @@ defmodule Embervm.BaseBuilderTest do
         build_fun: fn :fake_channel, _req -> {:ok, resp("w__intel")} end,
         connect_fun: connect_fun,
         export_fun: export_fun,
-        retention_sweep_enabled: true
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
@@ -1085,7 +1163,8 @@ defmodule Embervm.BaseBuilderTest do
         build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
         export_fun: export_fun,
         evict_fun: evict_fun,
-        retention_sweep_enabled: true
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
@@ -1175,7 +1254,8 @@ defmodule Embervm.BaseBuilderTest do
         status_writer: recording_status_writer(agent),
         build_fun: build_fun,
         evict_fun: evict_fun,
-        retention_sweep_enabled: true
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
       )
 
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 1, image_ref: "imgA"}))
@@ -1233,6 +1313,7 @@ defmodule Embervm.BaseBuilderTest do
       status_writer: recording_status_writer(agent),
       build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
       retention_sweep_enabled: true,
+      retention_disk_driven_enabled: true,
       evict_fun: fn :fake_channel, workload, ref ->
         send(test_pid, {:evicted, workload, ref})
         {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}

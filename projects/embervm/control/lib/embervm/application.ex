@@ -114,6 +114,7 @@ defmodule Embervm.Application do
        nodes: configured_nodes(),
        runtime_images: configured_runtime_images(),
        retention_sweep_enabled: base_retention_sweep_enabled(),
+       retention_disk_driven_enabled: base_retention_disk_driven_enabled(),
        remote_retention_sweep_enabled: base_remote_retention_sweep_enabled(),
        op_log: op_log_mod(),
        op_log_mod: op_log_mod()},
@@ -540,6 +541,17 @@ defmodule Embervm.Application do
   # values env change, no code change. Nothing sets it on in this PR.
   defp base_retention_sweep_enabled do
     case trimmed_env("EMBERVM_BASE_RETENTION_SWEEP") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  # Destructive gate for disk-driven base retention, from
+  # EMBERVM_BASE_RETENTION_DISK_DRIVEN. This is deliberately separate from the
+  # legacy retention gate because disk enumeration must be reviewed in a live
+  # manifest before it is allowed to evict anything.
+  defp base_retention_disk_driven_enabled do
+    case trimmed_env("EMBERVM_BASE_RETENTION_DISK_DRIVEN") do
       v when v in ["1", "true", "TRUE", "True"] -> true
       _ -> false
     end

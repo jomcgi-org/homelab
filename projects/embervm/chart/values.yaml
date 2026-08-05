@@ -718,6 +718,7 @@ statefulSweeper:
 # this value back to "" is the entire rollback lever.
 baseRetention:
   sweepEnabled: ""
+  diskDrivenEnabled: ""
   # Remote (store) base retention gate, #3947 PR-4. "1" arms eviction of
   # superseded S3 bases per (workload, vendor), keeping each vendor's current ref
   # plus any superseded ref still refcounted by a primed VM or a session. Unset

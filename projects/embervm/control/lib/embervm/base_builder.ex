@@ -416,6 +416,7 @@ defmodule Embervm.BaseBuilder do
     # be enabled later via deploy values without a code change; nothing in this PR
     # sets it on. Merging this PR is inert: the sweep runs but only logs.
     retention_sweep_enabled = Keyword.get(opts, :retention_sweep_enabled, false)
+    retention_disk_driven_enabled = Keyword.get(opts, :retention_disk_driven_enabled, false)
 
     status_writer = Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3)
     clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
@@ -494,6 +495,7 @@ defmodule Embervm.BaseBuilder do
       max_backoff_ms: max_backoff,
       retention_sweep_interval_ms: retention_sweep_interval_ms,
       retention_sweep_enabled: retention_sweep_enabled,
+      retention_disk_driven_enabled: retention_disk_driven_enabled,
       retention_sweep_evictions: 0
     }
 
@@ -2080,7 +2082,7 @@ defmodule Embervm.BaseBuilder do
 
           {:evict, node_id, refs, bytes, manifest} ->
             entry = %{workload: name, evict_refs: refs, evict_bytes: bytes, candidates: manifest, skipped_unexported: false, node_id: node_id}
-            {[entry | p], apply_retention(a, name, node_id, refs, bytes)}
+            {[entry | p], apply_retention(a, name, node_id, refs, bytes, manifest)}
         end
       end)
     end)
@@ -2089,7 +2091,7 @@ defmodule Embervm.BaseBuilder do
       if state.workload_sync_done do
         Enum.reduce(unknown_workload_retention(state), {plan, state}, fn {workload, node_id, refs, bytes, manifest}, {p, a} ->
           entry = %{workload: workload, evict_refs: refs, evict_bytes: bytes, candidates: manifest, skipped_unexported: false, node_id: node_id}
-          {[entry | p], apply_retention(a, workload, node_id, refs, bytes)}
+          {[entry | p], apply_retention(a, workload, node_id, refs, bytes, manifest)}
         end)
       else
         {plan, state}
@@ -2172,8 +2174,16 @@ defmodule Embervm.BaseBuilder do
   # (count + total bytes) and change nothing. Gate ON: spawn an idempotent
   # EvictArtifact{remote: false} per candidate ref (noded's guard is the final
   # backstop) and log the reclaim.
-  defp apply_retention(state, workload, node_id, refs, bytes) do
-    if state.retention_sweep_enabled do
+  defp apply_retention(state, workload, node_id, refs, bytes, manifest \\ nil) do
+    if manifest != nil do
+      apply_disk_driven_retention(state, workload, node_id, refs, bytes)
+    else
+      apply_legacy_retention(state, workload, node_id, refs, bytes)
+    end
+  end
+
+  defp apply_disk_driven_retention(state, workload, node_id, refs, bytes) do
+    if state.retention_disk_driven_enabled do
       remaining = @retention_max_evictions_per_sweep - state.retention_sweep_evictions
       refs_to_evict = Enum.take(refs, max(remaining, 0))
       Logger.info(
@@ -2185,6 +2195,25 @@ defmodule Embervm.BaseBuilder do
     else
       Logger.info(
         "embervm base builder: base-retention sweep (DRY RUN, gate off) WOULD evict #{length(refs)} superseded local base(s) for #{workload} (~#{bytes} bytes) on #{node_id}"
+      )
+
+      state
+    end
+  end
+
+  # Preserve the legacy registry-driven behavior exactly. Disk-enumerated
+  # candidates never enter this branch.
+  defp apply_legacy_retention(state, workload, node_id, refs, bytes) do
+    if state.retention_sweep_enabled do
+      Logger.info(
+        "embervm base-retention sweep evicting #{length(refs)} superseded local base(s) for #{workload} (~#{bytes} bytes planned) on #{node_id}"
+      )
+
+      Enum.each(refs, fn ref -> spawn_evict(state, node_id, workload, ref) end)
+      state
+    else
+      Logger.info(
+        "embervm base-retention sweep (DRY RUN, gate off) WOULD evict #{length(refs)} superseded local base(s) for #{workload} (~#{bytes} bytes) on #{node_id}"
       )
 
       state
@@ -2440,7 +2469,11 @@ defmodule Embervm.BaseBuilder do
     candidates = Enum.flat_map(plan, &Map.get(&1, :candidates, []))
     nodes = state |> capacity_facts_by_node() |> map_size()
 
-    if state.retention_sweep_enabled do
+    disk_driven_plan? = Enum.any?(plan, &Map.has_key?(&1, :candidates))
+    deletion_enabled? =
+      if disk_driven_plan?, do: state.retention_disk_driven_enabled, else: state.retention_sweep_enabled
+
+    if deletion_enabled? do
       evicted = Enum.take(candidates, @retention_max_evictions_per_sweep)
       bytes = Enum.reduce(evicted, 0, fn c, acc -> acc + (c.size_bytes || 0) end)
 
