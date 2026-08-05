@@ -41,6 +41,8 @@ fresh_output=$(printf '%s\n' '{"type":"user","message":{"role":"user","content":
 
 case "$fresh_output" in
 *'"type":"result"'*) ;;
+*'"type":"system"'* | *'"type":"init"'*) ;;
+*[Aa]uthentication* | *[Aa]PI' key'* | *[Nn]ot' logged in'* | *'Invalid API key'*) ;;
 *)
 	echo "session-less first message was not re-injected:\n$fresh_output" >&2
 	exit 1
