@@ -308,8 +308,8 @@ def test_invoke_retries_exhaust_after_max_attempts(monkeypatch):
             )
         )
 
-    assert len(requests) == 4
-    assert sleeps == [2, 5, 10]
+    assert len(requests) == 8
+    assert sleeps == [2, 5, 10, 20, 30, 30, 30]
     assert "502" in str(exc_info.value)
     assert "error message" in str(exc_info.value)
     assert "retryable" in str(exc_info.value)
@@ -725,8 +725,8 @@ def test_deliver_retryable_exhaustion(monkeypatch):
     with pytest.raises(EmberVMTransportError):
         asyncio.run(client.deliver(None, "cli-1", "hello"))
 
-    assert len(attempts) == 4
-    assert sleeps == [2, 5, 10]
+    assert len(attempts) == 8
+    assert sleeps == [2, 5, 10, 20, 30, 30, 30]
 
 
 def test_deliver_410_restore_heir_persisted_on_double_failure(monkeypatch):
