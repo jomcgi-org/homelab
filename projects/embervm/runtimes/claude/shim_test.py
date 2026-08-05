@@ -1120,13 +1120,22 @@ class _FakeStdin:
     def flush(self):
         pass
 
+    def close(self):
+        pass
+
 
 class _FakeLiveProcess:
     def __init__(self):
         self.stdin = _FakeStdin()
+        self.returncode = None
+        self.pid = 0
 
     def poll(self):
-        return None
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        return self.returncode
 
 
 def _parked_claude(tmp_path):
@@ -1140,7 +1149,9 @@ def _parked_claude(tmp_path):
     manager.session_id = None
     manager.model = None
     manager._process_workspace = manager.workspace
-    manager._process_workspace_identity = None
+    stat = os.stat(manager.workspace)
+    manager._process_workspace_identity = (stat.st_dev, stat.st_ino)
+    manager._manager = None
     manager.turn_lock = threading.Lock()
     manager.process_lock = threading.Lock()
     manager.current_result = None
@@ -1266,6 +1277,7 @@ def test_process_manager_normalizes_non_repo_workspace_to_src(tmp_path, monkeypa
 
 def test_missing_transcript_is_a_turn_error(tmp_path, monkeypatch):
     manager = _parked_claude(tmp_path)
+    process = manager.process
     monkeypatch.setattr(
         manager,
         "_read_output",
@@ -1282,6 +1294,105 @@ def test_missing_transcript_is_a_turn_error(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="No conversation found"):
         manager.turn("hello", session_id="sid")
+    assert manager.process is None
+    assert process.returncode == 0
+
+
+def test_read_prewarm_clis_rejects_unknown_and_deduplicates(monkeypatch):
+    monkeypatch.setenv(shim.PREWARM_CLIS_ENV, " claude, claude,  ")
+    assert shim.ProcessManager._read_prewarm_clis() == ("claude",)
+    monkeypatch.setenv(shim.PREWARM_CLIS_ENV, "claude, codex")
+    with pytest.raises(shim.StartupError, match="codex"):
+        shim.ProcessManager._read_prewarm_clis()
+
+
+def test_parked_create_latches_session_and_rejects_conflict(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    monkeypatch.setattr(
+        manager,
+        "_read_output",
+        lambda _process, _timeout: json.dumps(
+            {"type": "result", "result": "ok", "session_id": "created"}
+        ).encode(),
+    )
+    monkeypatch.setattr(manager, "_parse_line", json.loads)
+    monkeypatch.setattr(manager, "ready", lambda: True)
+    manager.turn("hello")
+    assert manager.session_id == "created"
+    with pytest.raises(shim.SessionConflictError):
+        manager.turn("wrong", session_id="other")
+
+
+def test_adoption_latch_rolls_back_before_result(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    monkeypatch.setattr(manager, "_read_output", lambda *_args: b"not-json")
+    monkeypatch.setattr(
+        manager,
+        "_parse_line",
+        lambda _raw: (_ for _ in ()).throw(RuntimeError("before result")),
+    )
+    monkeypatch.setattr(manager, "ready", lambda: True)
+    with pytest.raises(RuntimeError, match="before result"):
+        manager.turn("hello", session_id="sid")
+    assert manager.session_id is None
+
+
+def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
+    manager = object.__new__(shim.ProcessManager)
+    manager.workspace = str(tmp_path)
+    manager._prewarm_clis = ("claude",)
+    manager._prewarm_complete = True
+    manager._prewarm_failed = False
+    manager.fatal_error = None
+    manager._parked_workspace_identity = (1, 1)
+    manager._remediation_lock = threading.Lock()
+    manager._remediation_thread = None
+    manager._remediation_done = threading.Event()
+
+    old_process = _FakeLiveProcess()
+    new_process = _FakeLiveProcess()
+
+    class Adapter:
+        workspace = str(tmp_path / "src")
+
+        def __init__(self):
+            self.process = old_process
+            self.session_id = "old"
+
+        def ready(self):
+            return True
+
+        def _close_process(self, **_kwargs):
+            self.process = None
+
+        def _spawn(self, **_kwargs):
+            self.process = new_process
+
+    manager.claude = Adapter()
+    manager.codex = Adapter()
+    manager.pi = Adapter()
+    remediation_started = threading.Event()
+    remediation_done = threading.Event()
+
+    def mock_remediate():
+        remediation_started.set()
+        remediation_done.wait(timeout=5)
+        manager.claude._spawn(session_id=None, first_message=None, model=None)
+        manager.claude.session_id = None
+        manager._remediation_done.set()
+
+    monkeypatch.setattr(manager, "_remediate_workspace", mock_remediate)
+    identities = iter([(2, 2), (2, 2), (2, 2)])
+    monkeypatch.setattr(manager, "_workspace_identity", lambda _path: next(identities))
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "_ensure_cli_dir", lambda _path: None)
+
+    assert not manager.ready()
+    assert remediation_started.is_set()
+    remediation_done.set()
+    assert manager._remediation_done.wait(timeout=1)
+    assert manager.claude.process is new_process
+    assert manager.ready()
 
 
 def test_parked_claude_adopts_resume_without_respawn(tmp_path, monkeypatch):
