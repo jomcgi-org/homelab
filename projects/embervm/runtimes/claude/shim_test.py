@@ -1744,8 +1744,8 @@ def test_workspace_volume_helper_invokes_guest_init_once_per_call(monkeypatch):
     shim.ensure_workspace_volume()
     shim.ensure_workspace_volume()
     assert [call[0] for call in calls] == [
-        [shim.GUEST_INIT_PATH, "--ensure-workspace-volume"],
-        [shim.GUEST_INIT_PATH, "--ensure-workspace-volume"],
+        [shim.GUEST_INIT_PATH, "--ensure-workspace-volume", "--device", "/dev/vdb"],
+        [shim.GUEST_INIT_PATH, "--ensure-workspace-volume", "--device", "/dev/vdb"],
     ]
     assert all(call[1]["check"] for call in calls)
 

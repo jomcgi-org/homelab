@@ -286,6 +286,10 @@ def ensure_workspace_volume():
     a resumed VM's per-session drive to have replaced the warm-base device.
     The Go side checks mountinfo, so this remains a no-op for cold guests and
     repeated turns.
+
+    Pass --device /dev/vdb explicitly: restored guests resume with the base's
+    cmdline, which has no volume argument and never re-reads boot args, so the
+    device cannot come from the kernel command line.
     """
     # The image always contains guest-init. Keeping this guard makes the shim
     # library usable in host-side unit tests and in non-microVM tooling, where
@@ -294,7 +298,7 @@ def ensure_workspace_volume():
         return
     try:
         subprocess.run(
-            [GUEST_INIT_PATH, "--ensure-workspace-volume"],
+            [GUEST_INIT_PATH, "--ensure-workspace-volume", "--device", "/dev/vdb"],
             check=True,
             capture_output=True,
             timeout=30,

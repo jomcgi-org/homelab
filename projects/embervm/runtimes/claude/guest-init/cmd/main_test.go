@@ -300,6 +300,109 @@ func TestEnsureWorkspaceVolumeUsesTmpfsWithoutDevice(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkspaceVolumePlaceholderDeviceIgnoredWithoutCmdlineArg(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	path := t.TempDir() + "/cmdline"
+	// No ember.volume_dev argument: base-build case
+	if err := os.WriteFile(path, []byte("init=/init\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withCmdlinePath(t, path)
+
+	originalMount, originalVolume := mountFn, mountVolumeDeviceFn
+	originalMkdir, originalChown, originalChmod := mkdirAllFn, chownFn, chmodFn
+	originalStat, originalRead, originalWrite := statFn, readFileFn, writeFileFn
+	originalDeviceAvailable, originalMounted := deviceAvailableFn, isMountedFn
+	t.Cleanup(func() {
+		mountFn, mountVolumeDeviceFn = originalMount, originalVolume
+		mkdirAllFn, chownFn, chmodFn = originalMkdir, originalChown, originalChmod
+		statFn, readFileFn, writeFileFn = originalStat, originalRead, originalWrite
+		deviceAvailableFn, isMountedFn = originalDeviceAvailable, originalMounted
+	})
+
+	deviceMounts := 0
+	tmpfsMounts := 0
+	mountFn = func(source, _ string, _ string, _ uintptr, _ string) error {
+		if source == "tmpfs" {
+			tmpfsMounts++
+		}
+		return nil
+	}
+	mountVolumeDeviceFn = func(*slog.Logger, string, string) error {
+		deviceMounts++
+		return nil
+	}
+	mkdirAllFn = func(string, os.FileMode) error { return nil }
+	chownFn = func(string, int, int) error { return nil }
+	chmodFn = func(string, os.FileMode) error { return nil }
+	statFn = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	readFileFn = func(string) ([]byte, error) { return []byte("{}"), nil }
+	writeFileFn = func(string, []byte, os.FileMode) error { return nil }
+	// Device node EXISTS but is NOT requested on cmdline
+	deviceAvailableFn = func(path string) bool { return path == "/dev/vdb" }
+	isMountedFn = func(string) bool { return false }
+
+	// No explicit device, so should use tmpfs
+	if err := ensureWorkspaceVolume(logger); err != nil {
+		t.Fatal(err)
+	}
+	if tmpfsMounts != 1 || deviceMounts != 0 {
+		t.Fatalf("mounts = tmpfs:%d device:%d, want tmpfs:1 device:0 (base build must NOT mount placeholder)", tmpfsMounts, deviceMounts)
+	}
+}
+
+func TestEnsureWorkspaceVolumeWithExplicitDeviceMountsWithoutCmdlineArg(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	path := t.TempDir() + "/cmdline"
+	// No device on cmdline: this is a restored guest
+	if err := os.WriteFile(path, []byte("init=/init\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withCmdlinePath(t, path)
+
+	originalMount, originalVolume := mountFn, mountVolumeDeviceFn
+	originalMkdir, originalChown, originalChmod := mkdirAllFn, chownFn, chmodFn
+	originalStat, originalRead, originalWrite := statFn, readFileFn, writeFileFn
+	originalDeviceAvailable, originalMounted := deviceAvailableFn, isMountedFn
+	t.Cleanup(func() {
+		mountFn, mountVolumeDeviceFn = originalMount, originalVolume
+		mkdirAllFn, chownFn, chmodFn = originalMkdir, originalChown, originalChmod
+		statFn, readFileFn, writeFileFn = originalStat, originalRead, originalWrite
+		deviceAvailableFn, isMountedFn = originalDeviceAvailable, originalMounted
+	})
+
+	deviceMounts := 0
+	tmpfsMounts := 0
+	mountedDev := ""
+	mountFn = func(source, _ string, _ string, _ uintptr, _ string) error {
+		if source == "tmpfs" {
+			tmpfsMounts++
+		}
+		return nil
+	}
+	mountVolumeDeviceFn = func(_ *slog.Logger, dev, _ string) error {
+		deviceMounts++
+		mountedDev = dev
+		return nil
+	}
+	mkdirAllFn = func(string, os.FileMode) error { return nil }
+	chownFn = func(string, int, int) error { return nil }
+	chmodFn = func(string, os.FileMode) error { return nil }
+	statFn = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	readFileFn = func(string) ([]byte, error) { return []byte("{}"), nil }
+	writeFileFn = func(string, []byte, os.FileMode) error { return nil }
+	deviceAvailableFn = func(path string) bool { return path == "/dev/vdb" }
+	isMountedFn = func(string) bool { return false }
+
+	// Explicit device, so should mount it despite cmdline having nothing
+	if err := ensureWorkspaceVolumeWithDevice(logger, "/dev/vdb"); err != nil {
+		t.Fatal(err)
+	}
+	if tmpfsMounts != 0 || deviceMounts != 1 || mountedDev != "/dev/vdb" {
+		t.Fatalf("mounts = tmpfs:%d device:%d (dev=%q), want tmpfs:0 device:1 (dev=/dev/vdb) (restored guest must mount explicit device)", tmpfsMounts, deviceMounts, mountedDev)
+	}
+}
+
 func withCmdlinePath(t *testing.T, path string) {
 	t.Helper()
 	previous := procCmdlinePath

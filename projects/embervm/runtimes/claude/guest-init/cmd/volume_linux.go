@@ -76,7 +76,12 @@ func mountWorkspaceVolume(logger *slog.Logger) error {
 // calls this through the first real turn. The mountinfo guard is the important
 // idempotency boundary: a cold guest is already mounted, while a resumed guest
 // mounts the device that is present after the driver swaps the backing file.
-func ensureWorkspaceVolume(logger *slog.Logger) error {
+//
+// explicitDevice allows the caller to override the device on the cmdline. When
+// set, it takes precedence over cmdline arguments. This is necessary for resumed
+// guests, which resume with the base's cmdline (which lacks the device argument)
+// and never re-read boot args.
+func ensureWorkspaceVolumeWithDevice(logger *slog.Logger, explicitDevice string) error {
 	root, dev := defaultSessionRoot, ""
 	if raw, err := os.ReadFile(procCmdlinePath); err == nil {
 		dev = valueFromCmdline(string(raw), volumeDevCmdlineKey)
@@ -84,8 +89,13 @@ func ensureWorkspaceVolume(logger *slog.Logger) error {
 			root = mount
 		}
 	}
-	if dev == "" && deviceAvailableFn(defaultVolumeDevice) {
-		dev = defaultVolumeDevice
+
+	// Explicit device from caller (shim) takes precedence; cmdline device for
+	// cold-booted sessions. Do NOT auto-detect: a base build should not mount a
+	// placeholder device, or the snapshot captures it mounted and repoint causes
+	// corruption. Device presence is not a signal; explicit request is.
+	if explicitDevice != "" {
+		dev = explicitDevice
 	}
 
 	if isMountedFn(root) {
@@ -93,10 +103,10 @@ func ensureWorkspaceVolume(logger *slog.Logger) error {
 		return nil
 	}
 
-	// The device node is the explicit availability marker. A base build has no
-	// volume node when guest-init runs, so it keeps the tmpfs fallback; a
-	// restored guest sees the node only after the volume has been attached and
-	// repointed. This avoids treating a stale boot argument as a real disk.
+	// The device node is the explicit availability marker. Cold-booted sessions
+	// have the device on the cmdline; resumed guests get it via explicitDevice.
+	// This avoids treating a placeholder device (present but not requested) as
+	// owned by this guest.
 	if dev != "" && deviceAvailableFn(dev) {
 		// Fail closed: a guest told it has a persistent device cannot run correctly
 		// without it, and silently continuing on tmpfs would lose the session.
@@ -184,6 +194,12 @@ func bindWritable(src, target string) error {
 // no one is there to answer. Only when ABSENT: on a session whose disk already
 // carries a record, the CLI's own writes (onboarding state) must win over the
 // image's copy, or every cold boot would silently roll that state back.
+
+// ensureWorkspaceVolume is the entry point for cold boot, reading device from cmdline only.
+func ensureWorkspaceVolume(logger *slog.Logger) error {
+	return ensureWorkspaceVolumeWithDevice(logger, "")
+}
+
 func seedTrustRecord(logger *slog.Logger) error {
 	dst := runtimeHomePath + "/.claude.json"
 	if _, err := statFn(dst); err == nil {
