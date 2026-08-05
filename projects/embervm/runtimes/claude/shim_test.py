@@ -1174,6 +1174,9 @@ def test_user_message_line_includes_optional_session_id():
         json.loads(shim._user_message_line("hello", session_id="sid"))["session_id"]
         == "sid"
     )
+    assert "session_id" not in json.loads(
+        shim._user_message_line("hello", session_id="")
+    )
 
 
 def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
@@ -1233,6 +1236,26 @@ def test_process_manager_prewarm_failure_is_not_ready(tmp_path):
 
     assert not manager.ready()
     assert "CLI prewarm failed" in manager.fatal_error
+
+
+def test_process_manager_turn_always_ensures_workspace_volume(monkeypatch):
+    manager = object.__new__(shim.ProcessManager)
+    calls = []
+
+    class Adapter:
+        workspace = None
+
+        def turn(self, *_args, **_kwargs):
+            return {"ok": True}
+
+    manager.claude = Adapter()
+    manager.codex = Adapter()
+    manager.pi = Adapter()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: calls.append(True))
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+
+    assert manager.turn("hello") == {"ok": True}
+    assert calls == [True]
 
 
 def test_process_manager_without_prewarm_preserves_ready_semantics():
@@ -1346,8 +1369,9 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
     manager.fatal_error = None
     manager._parked_workspace_identity = (1, 1)
     manager._remediation_lock = threading.Lock()
+    manager._remediation_attempts = 0
+    manager._remediation_complete = False
     manager._remediation_thread = None
-    manager._remediation_done = threading.Event()
 
     old_process = _FakeLiveProcess()
     new_process = _FakeLiveProcess()
@@ -1357,7 +1381,9 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
 
         def __init__(self):
             self.process = old_process
-            self.session_id = "old"
+            self.session_id = None
+            self.turn_lock = threading.Lock()
+            self._process_workspace_identity = (1, 1)
 
         def ready(self):
             return True
@@ -1369,29 +1395,28 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
             self.process = new_process
 
     manager.claude = Adapter()
-    manager.codex = Adapter()
-    manager.pi = Adapter()
-    remediation_started = threading.Event()
-    remediation_done = threading.Event()
+    manager.codex = manager.claude
+    manager.pi = manager.claude
+    identities = iter([(1, 1), (2, 2)] + [(2, 2)] * 10)
 
-    def mock_remediate():
-        remediation_started.set()
-        remediation_done.wait(timeout=5)
-        manager.claude._spawn(session_id=None, first_message=None, model=None)
-        manager.claude.session_id = None
-        manager._remediation_done.set()
+    def mock_stat(_path):
+        dev, ino = next(identities)
+        return type("Stat", (), {"st_dev": dev, "st_ino": ino})()
 
-    monkeypatch.setattr(manager, "_remediate_workspace", mock_remediate)
-    identities = iter([(2, 2), (2, 2), (2, 2)])
-    monkeypatch.setattr(manager, "_workspace_identity", lambda _path: next(identities))
+    monkeypatch.setattr(
+        shim.os,
+        "stat",
+        mock_stat,
+    )
     monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
     monkeypatch.setattr(shim, "_ensure_cli_dir", lambda _path: None)
 
-    assert not manager.ready()
-    assert remediation_started.is_set()
-    remediation_done.set()
-    assert manager._remediation_done.wait(timeout=1)
+    assert manager.ready()
+    assert manager._remediation_thread is None
+    assert manager.ready()
+    manager._remediation_thread.join(timeout=1)
     assert manager.claude.process is new_process
+    assert manager._parked_workspace_identity == (2, 2)
     assert manager.ready()
 
 
@@ -1415,6 +1440,22 @@ def test_parked_claude_adopts_resume_without_respawn(tmp_path, monkeypatch):
 
     manager.turn("hello", session_id="sid")
     assert json.loads(manager.process.stdin.lines[0])["session_id"] == "sid"
+
+
+def test_spawn_raise_during_adoption_leaves_session_unbound(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    monkeypatch.setattr(
+        manager,
+        "_spawn",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            shim.StartupError("spawn failed")
+        ),
+    )
+    manager._process_workspace_identity = (0, 0)
+
+    with pytest.raises(shim.StartupError, match="spawn failed"):
+        manager.turn("hello", session_id="sid")
+    assert not manager.session_id
 
 
 def test_parked_claude_create_uses_plain_message(tmp_path, monkeypatch):
