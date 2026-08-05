@@ -63,6 +63,16 @@ type Drive struct {
 	IsReadOnly   bool   `json:"is_read_only"`
 }
 
+// PatchedDrive is the body of PATCH /drives/{drive_id}. Firecracker's PATCH
+// schema is a partial update accepting ONLY drive_id, path_on_host, and
+// rate_limiter, and it rejects unknown fields at JSON parse, so this cannot
+// reuse Drive: is_root_device fails the whole request with a SerdeJson error
+// before the drive is even looked up.
+type PatchedDrive struct {
+	DriveID    string `json:"drive_id"`
+	PathOnHost string `json:"path_on_host"`
+}
+
 // Vsock is the body of PUT /vsock. The controller uses a vsock device for the
 // in-VM wrapper's idle-signal channel (Phase 2).
 type Vsock struct {
@@ -126,7 +136,7 @@ func (c *Client) PutDrive(ctx context.Context, d Drive) error {
 // microVM. Used to repoint the volume drive to a session-specific backing file
 // after LoadSnapshot on the warm-restore path. The drive must already exist in
 // the snapshot's device set.
-func (c *Client) PatchDrive(ctx context.Context, driveID string, d Drive) error {
+func (c *Client) PatchDrive(ctx context.Context, driveID string, d PatchedDrive) error {
 	return c.do(ctx, http.MethodPatch, "/drives/"+driveID, d)
 }
 
