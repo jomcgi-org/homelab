@@ -33,7 +33,15 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 	if len(os.Args) > 1 && os.Args[1] == "--ensure-workspace-volume" {
-		if err := ensureWorkspaceVolume(logger); err != nil {
+		// Parse optional --device flag: --ensure-workspace-volume [--device /dev/vdb]
+		var device string
+		for i := 2; i < len(os.Args)-1; i++ {
+			if os.Args[i] == "--device" && i+1 < len(os.Args) {
+				device = os.Args[i+1]
+				break
+			}
+		}
+		if err := ensureWorkspaceVolumeWithDevice(logger, device); err != nil {
 			logger.Error("workspace volume ensure failed", "err", err)
 			os.Exit(1)
 		}
