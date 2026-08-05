@@ -1481,7 +1481,7 @@ wire_api = "responses"
                     {
                         "cwd": self.workspace,
                         "approvalPolicy": "never",
-                        "sandboxPolicy": {"type": "dangerFullAccess"},
+                        "sandbox": "danger-full-access",
                     },
                 )
                 thread = result.get("thread", {}) if isinstance(result, dict) else {}

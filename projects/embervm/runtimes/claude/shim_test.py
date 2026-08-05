@@ -584,8 +584,11 @@ def test_codex_resume_by_thread_id(tmp_path, monkeypatch):
     thread_resume = next(
         request for request in requests if request["method"] == "thread/resume"
     )
-    assert thread_start["params"]["sandboxPolicy"] == {"type": "dangerFullAccess"}
-    assert "sandbox" not in thread_start["params"]
+    # Thread-scoped requests take SandboxMode (a string); only turn/start takes
+    # the SandboxPolicy object. Sending the wrong one is silently dropped by the
+    # server, which reads as a posture that is set but is not.
+    assert thread_start["params"]["sandbox"] == "danger-full-access"
+    assert "sandboxPolicy" not in thread_start["params"]
     assert thread_resume["params"]["sandbox"] == "danger-full-access"
     assert "sandboxPolicy" not in thread_resume["params"]
     manager._close_process()
