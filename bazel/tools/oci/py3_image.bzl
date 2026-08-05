@@ -25,7 +25,7 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
         tars: Additional tar layers to include in the image (e.g., extra binaries or config).
         multiarch_tars: Optional list of multiarch tar base names. For each base name, py3_image
                        will use {base}_amd64 and {base}_arm64 targets.
-                       Example: ["@claude_code//:tar"] uses @claude_code//:tar_amd64 and @claude_code//:tar_arm64
+                       Example: ["@some_cli//:tar"] uses @some_cli//:tar_amd64 and @some_cli//:tar_arm64
         bash_symlink: Create /bin/bash -> /usr/bin/bash symlink layer. Set to False for bases
                      where /bin is a symlink to /usr/bin (e.g., Wolfi apko images), as the
                      layer would shadow the /bin symlink and break /bin/* resolution.
