@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -24,6 +25,9 @@ const (
 	// image already uses, so when a real disk lands here BOTH become disk-backed
 	// with no further guest change.
 	defaultSessionRoot = "/session"
+	// A warm base is captured without volume boot args. On the normal no-handler
+	// layout, the resumed shim discovers the attached volume through this node.
+	defaultVolumeDevice = "/dev/vdb"
 	// The trust record's read-only master. It cannot live at its final path: a
 	// bind mount over /home/runtime would hide it, so the image bakes it here and
 	// this init seeds a copy into the writable HOME.
@@ -41,6 +45,9 @@ var (
 	readFileFn          = os.ReadFile
 	writeFileFn         = os.WriteFile
 	statFn              = os.Stat
+	deviceAvailableFn   = deviceAvailable
+	isMountedFn         = isMounted
+	mountInfoFn         = os.ReadFile
 )
 
 // mountWorkspaceVolume gives the guest its writable state.
@@ -58,6 +65,18 @@ var (
 // with the conversation. Putting HOME on the same mount as the checkout means the
 // disk #4091 attaches makes both disk-backed at once.
 func mountWorkspaceVolume(logger *slog.Logger) error {
+	return ensureWorkspaceVolume(logger)
+}
+
+// ensureWorkspaceVolume gives the guest its writable state, whether called by
+// PID 1 on a cold boot or by the surviving shim after a snapshot resume.
+//
+// A restored VM resumes after guest-init, so init-only mounts cannot repair a
+// volume device that was attached or repointed after the snapshot. The shim
+// calls this through the first real turn. The mountinfo guard is the important
+// idempotency boundary: a cold guest is already mounted, while a resumed guest
+// mounts the device that is present after the driver swaps the backing file.
+func ensureWorkspaceVolume(logger *slog.Logger) error {
 	root, dev := defaultSessionRoot, ""
 	if raw, err := os.ReadFile(procCmdlinePath); err == nil {
 		dev = valueFromCmdline(string(raw), volumeDevCmdlineKey)
@@ -65,8 +84,20 @@ func mountWorkspaceVolume(logger *slog.Logger) error {
 			root = mount
 		}
 	}
+	if dev == "" && deviceAvailableFn(defaultVolumeDevice) {
+		dev = defaultVolumeDevice
+	}
 
-	if dev != "" {
+	if isMountedFn(root) {
+		logger.Info("session volume: already mounted", "mount", root)
+		return nil
+	}
+
+	// The device node is the explicit availability marker. A base build has no
+	// volume node when guest-init runs, so it keeps the tmpfs fallback; a
+	// restored guest sees the node only after the volume has been attached and
+	// repointed. This avoids treating a stale boot argument as a real disk.
+	if dev != "" && deviceAvailableFn(dev) {
 		// Fail closed: a guest told it has a persistent device cannot run correctly
 		// without it, and silently continuing on tmpfs would lose the session.
 		if err := mountVolumeDeviceFn(logger, dev, root); err != nil {
@@ -102,6 +133,29 @@ func mountWorkspaceVolume(logger *slog.Logger) error {
 		return fmt.Errorf("chown %s: %w", claudeDir, err)
 	}
 	return seedTrustRecord(logger)
+}
+
+func deviceAvailable(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func isMounted(path string) bool {
+	data, err := mountInfoFn("/proc/self/mountinfo")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 5 && unescapeMountInfoPath(fields[4]) == path {
+			return true
+		}
+	}
+	return false
+}
+
+func unescapeMountInfoPath(path string) string {
+	return strings.NewReplacer(`\040`, " ", `\011`, "\t", `\134`, `\`).Replace(path)
 }
 
 // bindWritable creates src on the writable mount, bind-mounts it over target (a

@@ -143,10 +143,14 @@ func TestMountWorkspaceVolumePathsAreIsolated(t *testing.T) {
 	originalStat := statFn
 	originalRead := readFileFn
 	originalWrite := writeFileFn
+	originalDeviceAvailable := deviceAvailableFn
+	originalMounted := isMountedFn
 	t.Cleanup(func() {
 		statFn = originalStat
 		readFileFn = originalRead
 		writeFileFn = originalWrite
+		deviceAvailableFn = originalDeviceAvailable
+		isMountedFn = originalMounted
 	})
 	mountFn = func(string, string, string, uintptr, string) error { return nil }
 	mkdirAllFn = func(string, os.FileMode) error { return nil }
@@ -156,6 +160,7 @@ func TestMountWorkspaceVolumePathsAreIsolated(t *testing.T) {
 	statFn = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 	readFileFn = func(string) ([]byte, error) { return []byte("{}"), nil }
 	writeFileFn = func(string, []byte, os.FileMode) error { return nil }
+	isMountedFn = func(string) bool { return false }
 	for _, tc := range []struct {
 		name, cmdline string
 		wantErr       bool
@@ -169,6 +174,7 @@ func TestMountWorkspaceVolumePathsAreIsolated(t *testing.T) {
 				t.Fatal(err)
 			}
 			withCmdlinePath(t, path)
+			deviceAvailableFn = func(string) bool { return tc.wantErr }
 			mountVolumeDeviceFn = func(*slog.Logger, string, string) error {
 				return errors.New("device unavailable")
 			}
@@ -177,6 +183,120 @@ func TestMountWorkspaceVolumePathsAreIsolated(t *testing.T) {
 				t.Fatalf("mountWorkspaceVolume() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestEnsureWorkspaceVolumeIsIdempotentAndSeedsIdentically(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	path := t.TempDir() + "/cmdline"
+	if err := os.WriteFile(path, []byte("ember.volume_dev=/dev/vdb ember.volume_mount=/session\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withCmdlinePath(t, path)
+
+	originalMount, originalVolume := mountFn, mountVolumeDeviceFn
+	originalMkdir, originalChown, originalChmod := mkdirAllFn, chownFn, chmodFn
+	originalStat, originalRead, originalWrite := statFn, readFileFn, writeFileFn
+	originalDeviceAvailable, originalMounted := deviceAvailableFn, isMountedFn
+	t.Cleanup(func() {
+		mountFn, mountVolumeDeviceFn = originalMount, originalVolume
+		mkdirAllFn, chownFn, chmodFn = originalMkdir, originalChown, originalChmod
+		statFn, readFileFn, writeFileFn = originalStat, originalRead, originalWrite
+		deviceAvailableFn, isMountedFn = originalDeviceAvailable, originalMounted
+	})
+
+	mounts := 0
+	mounted := false
+	bindTargets := []string{}
+	mountFn = func(source, target string, _ string, flags uintptr, _ string) error {
+		mounts++
+		if flags&unix.MS_BIND != 0 {
+			bindTargets = append(bindTargets, source+" -> "+target)
+		}
+		return nil
+	}
+	mountVolumeDeviceFn = func(*slog.Logger, string, string) error {
+		mounts++
+		mounted = true
+		return nil
+	}
+	mkdirAllFn = func(string, os.FileMode) error { return nil }
+	chownFn = func(string, int, int) error { return nil }
+	chmodFn = func(string, os.FileMode) error { return nil }
+	statFn = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	readFileFn = func(string) ([]byte, error) { return []byte("{}"), nil }
+	trustWrites := 0
+	writeFileFn = func(path string, _ []byte, _ os.FileMode) error {
+		if path == runtimeHomePath+"/.claude.json" {
+			trustWrites++
+		}
+		return nil
+	}
+	deviceAvailableFn = func(string) bool { return true }
+	isMountedFn = func(string) bool { return mounted }
+
+	if err := ensureWorkspaceVolume(logger); err != nil {
+		t.Fatal(err)
+	}
+	firstMounts := mounts
+	if firstMounts == 0 {
+		t.Fatal("ensureWorkspaceVolume() did not mount the device")
+	}
+	if len(bindTargets) != 2 || trustWrites != 1 {
+		t.Fatalf("binds = %v, trust writes = %d, want two binds and one trust seed", bindTargets, trustWrites)
+	}
+	if err := ensureWorkspaceVolume(logger); err != nil {
+		t.Fatal(err)
+	}
+	if mounts != firstMounts {
+		t.Fatalf("second ensureWorkspaceVolume() mounted %d additional times", mounts-firstMounts)
+	}
+}
+
+func TestEnsureWorkspaceVolumeUsesTmpfsWithoutDevice(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	path := t.TempDir() + "/cmdline"
+	if err := os.WriteFile(path, []byte("init=/init\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withCmdlinePath(t, path)
+	originalMount, originalVolume := mountFn, mountVolumeDeviceFn
+	originalMkdir, originalChown, originalChmod := mkdirAllFn, chownFn, chmodFn
+	originalStat, originalRead, originalWrite := statFn, readFileFn, writeFileFn
+	originalDeviceAvailable, originalMounted := deviceAvailableFn, isMountedFn
+	t.Cleanup(func() {
+		mountFn, mountVolumeDeviceFn = originalMount, originalVolume
+		mkdirAllFn, chownFn, chmodFn = originalMkdir, originalChown, originalChmod
+		statFn, readFileFn, writeFileFn = originalStat, originalRead, originalWrite
+		deviceAvailableFn, isMountedFn = originalDeviceAvailable, originalMounted
+	})
+
+	deviceMounts := 0
+	tmpfsMounts := 0
+	mountFn = func(source, _ string, _ string, _ uintptr, _ string) error {
+		if source == "tmpfs" {
+			tmpfsMounts++
+		}
+		return nil
+	}
+	mountVolumeDeviceFn = func(*slog.Logger, string, string) error {
+		deviceMounts++
+		return nil
+	}
+	mkdirAllFn = func(string, os.FileMode) error { return nil }
+	chownFn = func(string, int, int) error { return nil }
+	chmodFn = func(string, os.FileMode) error { return nil }
+	statFn = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	readFileFn = func(string) ([]byte, error) { return []byte("{}"), nil }
+	writeFileFn = func(string, []byte, os.FileMode) error { return nil }
+	deviceAvailableFn = func(string) bool { return false }
+	isMountedFn = func(string) bool { return false }
+
+	if err := ensureWorkspaceVolume(logger); err != nil {
+		t.Fatal(err)
+	}
+	if tmpfsMounts != 1 || deviceMounts != 0 {
+		t.Fatalf("mounts = tmpfs:%d device:%d, want tmpfs:1 device:0", tmpfsMounts, deviceMounts)
 	}
 }
 

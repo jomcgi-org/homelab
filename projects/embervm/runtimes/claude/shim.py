@@ -104,6 +104,7 @@ DEFAULT_CLI_UID = 65532
 DEFAULT_CLI_GID = 65532
 PERSISTENCE_MOUNT_PATH_ENV = "EMBER_PERSISTENCE_MOUNT_PATH"
 DEFAULT_PERSISTENCE_MOUNT_PATH = "/session"
+GUEST_INIT_PATH = "/usr/local/bin/ember-runtime-guest-init"
 VOICE_PROMPT = (
     "End every response with a single line: <voice>One or two plain sentences, "
     "no markdown, that a person could hear read aloud: what you did and anything "
@@ -275,6 +276,31 @@ def _ensure_persistence_mountpoint_writable(path):
     # the session looked healthy while persisting nothing, so a mountpoint the
     # CLI still cannot write is worth failing loudly on (#4291).
     os.chown(path, kwargs["user"], kwargs["group"])
+
+
+def ensure_workspace_volume():
+    """Ensure the session volume is mounted before the first real turn.
+
+    The guest-init binary owns the privileged mount implementation. It is
+    invoked after the vsock request reaches the shim, which is late enough for
+    a resumed VM's per-session drive to have replaced the warm-base device.
+    The Go side checks mountinfo, so this remains a no-op for cold guests and
+    repeated turns.
+    """
+    # The image always contains guest-init. Keeping this guard makes the shim
+    # library usable in host-side unit tests and in non-microVM tooling, where
+    # the privileged guest helper is intentionally absent.
+    if not os.path.exists(GUEST_INIT_PATH):
+        return
+    try:
+        subprocess.run(
+            [GUEST_INIT_PATH, "--ensure-workspace-volume"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise StartupError("could not ensure workspace volume: %s" % exc) from exc
 
 
 def _truncate_ring_for_error(ring, max_len=1500):
@@ -2340,6 +2366,7 @@ class ProcessManager:
         branch=None,
         progress_token=None,
     ):
+        ensure_workspace_volume()
         if repo is not None and branch is not None:
             self._hydrate_workspace(repo, branch)
         adapter = self._adapter(model)

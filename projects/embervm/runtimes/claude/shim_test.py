@@ -1733,6 +1733,23 @@ def test_configure_git_uses_decoded_boot_environment(tmp_path, monkeypatch):
     )
 
 
+def test_workspace_volume_helper_invokes_guest_init_once_per_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shim.os.path, "exists", lambda path: True)
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+    shim.ensure_workspace_volume()
+    shim.ensure_workspace_volume()
+    assert [call[0] for call in calls] == [
+        [shim.GUEST_INIT_PATH, "--ensure-workspace-volume"],
+        [shim.GUEST_INIT_PATH, "--ensure-workspace-volume"],
+    ]
+    assert all(call[1]["check"] for call in calls)
+
+
 def test_activity_ignores_malformed_messages_and_bounds_tool_input():
     activity = shim.activity_from_events(
         [
