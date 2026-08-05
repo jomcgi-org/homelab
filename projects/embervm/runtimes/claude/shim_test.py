@@ -1331,8 +1331,8 @@ def test_parked_claude_model_mismatch_respawns_with_resume(tmp_path, monkeypatch
     manager = _parked_claude(tmp_path)
     calls = []
 
-    def respawn(**kwargs):
-        calls.append(kwargs)
+    def respawn(session_id=None, **kwargs):
+        calls.append({"session_id": session_id, **kwargs})
         manager.process = _FakeLiveProcess()
         manager._process_workspace = manager.workspace
 
