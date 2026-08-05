@@ -447,7 +447,8 @@ claudeRuntimeWorkload:
   initEnv:
     EMBER_BASE_EPOCH: "warm-restore-2"
     # initEnv participates in the base signature, so this re-keys and rebuilds
-    # every base at the next chart bump. Prewarm failure fails the base build by design.
+    # only the claude-runtime base at the next chart bump. Prewarm failure fails
+    # the base build by design.
     EMBER_PREWARM_CLIS: "claude"
   # ON. The ADR 027 memory:false/filesystem:true quadrant: sessions ride
   # per-lineage workspace volumes with park/rejoin instead of memory-snapshot
