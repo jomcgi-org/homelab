@@ -780,15 +780,6 @@ multiarch_http_file(
     package_dir = "/usr/local/bin",
 )
 
-multiarch_http_file(
-    name = "claude_code",
-    amd64_sha256 = "0d43fcd11d29206563eeef3a1f787f0615c21cd703cc91f3a180915fd5797ef6",
-    amd64_url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.97/linux-x64/claude",
-    arm64_sha256 = "85167cb721655fdd90b002012a28eca273c89dc2fd709be49afe2a7724c365a0",
-    arm64_url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.97/linux-arm64/claude",
-    binary_name = "claude",
-)
-
 # DuckDB extensions bundled into the lakehouse worker + quack images so they
 # never download at runtime. The minimal hardened image has no system CA bundle
 # DuckDB's extension installer can find (it uses its own HTTPS stack, not

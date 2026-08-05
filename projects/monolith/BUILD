@@ -1813,9 +1813,6 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/main.runfiles/_main/projects/monolith/.main/lib/python3.13/site-packages/certifi/cacert.pem",
     },
     main = "app/main.py",
-    multiarch_tars = [
-        "@claude_code//:tar",
-    ],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
 )
 
@@ -1834,7 +1831,6 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/jobs.runfiles/_main/projects/monolith/.jobs/lib/python3.13/site-packages/certifi/cacert.pem",
     },
     main = "app/jobs_main.py",
-    multiarch_tars = ["@claude_code//:tar"],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/jobs",
 )
 
@@ -2101,7 +2097,6 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/main_public.runfiles/_main/projects/monolith/.main_public/lib/python3.13/site-packages/certifi/cacert.pem",
     },
     main = "app/main_public.py",
-    multiarch_tars = ["@claude_code//:tar"],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-backend",
 )
 

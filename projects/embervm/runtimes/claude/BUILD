@@ -4,6 +4,7 @@ load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 # EmberVM claude runtime base image (issue #4055). A session-class guest whose
 # PID 1 is a stdlib-python shim that owns a long-lived Claude Code CLI process
@@ -29,6 +30,38 @@ tar(
     mtree = [
         "./usr/local/bin/ember-claude-shim type=file content=$(execpath shim.py) mode=0755 uid=0 gid=0",
     ],
+)
+
+# The CLI reads its source bundle at runtime, so patch it as a Bazel artifact
+# rather than mutating the downloaded external repository or an installed CLI.
+genrule(
+    name = "claude_code_patched_binary_amd64",
+    srcs = [
+        "@claude_code_cli//:amd64",
+        "//tools/claude-code-patch:patch_claude.py",
+    ],
+    outs = ["claude_code_patched_amd64"],
+    cmd = "python3 $(location //tools/claude-code-patch:patch_claude.py) " +
+          "$(location @claude_code_cli//:amd64) $@ && chmod 0755 $@",
+    tools = ["//tools/claude-code-patch:patch_claude.py"],
+)
+
+genrule(
+    name = "claude_code_patched_tar_amd64",
+    srcs = [":claude_code_patched_binary_amd64"],
+    outs = ["claude_code_patched_tar_amd64.tar"],
+    cmd = "mkdir -p tmp/usr/local/bin && " +
+          "cp $< tmp/usr/local/bin/claude && " +
+          "tar -C tmp -czf $@ .",
+)
+
+sh_test(
+    name = "claude_code_late_resume_smoke_test",
+    srcs = ["late_resume_smoke_test.sh"],
+    args = ["$(rootpath :claude_code_patched_binary_amd64)"],
+    data = [":claude_code_patched_binary_amd64"],
+    target_compatible_with = ["@platforms//os:linux"],
+    tags = ["no-remote-cache"],
 )
 
 # Workspace trust pre-seed. Remote Control server mode and the interactive paths
@@ -69,7 +102,7 @@ apko_image(
         # The Claude Code CLI, a single 262 MB glibc ELF extracted from the npm
         # registry tarball (see claude_code_cli in MODULE.bazel). amd64 only, so
         # this is the concrete per-arch tar rather than a multiarch_tars entry.
-        "@claude_code_cli//:tar_amd64",
+        ":claude_code_patched_tar_amd64",
         # The Codex CLI, a statically linked musl binary from the GitHub release
         # (see codex_cli in MODULE.bazel). It drives the Luna/Terra/Sol models
         # through the same shim, spawn-per-turn with `exec resume` rather than
