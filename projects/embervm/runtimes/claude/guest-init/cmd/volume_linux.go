@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -38,6 +39,7 @@ var (
 	workspaceMountPath  = "/workspace"
 	runtimeHomePath     = "/home/runtime"
 	mountFn             = unix.Mount
+	unmountFn           = unix.Unmount
 	mountVolumeDeviceFn = mountVolumeDevice
 	mkdirAllFn          = os.MkdirAll
 	chownFn             = os.Chown
@@ -46,7 +48,7 @@ var (
 	writeFileFn         = os.WriteFile
 	statFn              = os.Stat
 	deviceAvailableFn   = deviceAvailable
-	isMountedFn         = isMounted
+	mountedFstypeFn     = mountedFstype
 	mountInfoFn         = os.ReadFile
 )
 
@@ -74,8 +76,10 @@ func mountWorkspaceVolume(logger *slog.Logger) error {
 // A restored VM resumes after guest-init, so init-only mounts cannot repair a
 // volume device that was attached or repointed after the snapshot. The shim
 // calls this through the first real turn. The mountinfo guard is the important
-// idempotency boundary: a cold guest is already mounted, while a resumed guest
-// mounts the device that is present after the driver swaps the backing file.
+// idempotency boundary: a root mounted by the requested device is already
+// usable, while a resumed guest can still have the base's captured tmpfs and
+// binds. The latter must be replaced before the device is mounted, or session
+// writes die when the guest is parked.
 //
 // explicitDevice allows the caller to override the device on the cmdline. When
 // set, it takes precedence over cmdline arguments. This is necessary for resumed
@@ -98,9 +102,24 @@ func ensureWorkspaceVolumeWithDevice(logger *slog.Logger, explicitDevice string)
 		dev = explicitDevice
 	}
 
-	if isMountedFn(root) {
-		logger.Info("session volume: already mounted", "mount", root)
-		return nil
+	if fstype, mounted := mountedFstypeFn(root); mounted {
+		if fstype != "tmpfs" {
+			logger.Info("session volume: already mounted", "mount", root, "fstype", fstype)
+			return nil
+		}
+		if dev == "" || !deviceAvailableFn(dev) {
+			// Base builds intentionally retain their tmpfs fallback. A later shim
+			// call with an explicit device performs the takeover.
+			logger.Info("session volume: captured tmpfs retained", "mount", root)
+			return nil
+		}
+		// The shim ensures this before spawning the adapter, so detaching the
+		// captured binds is safe: no CLI process can be using them yet.
+		for _, path := range []string{workspaceMountPath, runtimeHomePath, root} {
+			if err := unmountFn(path, unix.MNT_DETACH); err != nil && !errors.Is(err, unix.EINVAL) {
+				return fmt.Errorf("detach captured mount %s: %w", path, err)
+			}
+		}
 	}
 
 	// The device node is the explicit availability marker. Cold-booted sessions
@@ -150,18 +169,23 @@ func deviceAvailable(path string) bool {
 	return err == nil
 }
 
-func isMounted(path string) bool {
+func mountedFstype(path string) (string, bool) {
 	data, err := mountInfoFn("/proc/self/mountinfo")
 	if err != nil {
-		return false
+		return "", false
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) >= 5 && unescapeMountInfoPath(fields[4]) == path {
-			return true
+			for i, field := range fields[5:] {
+				if field == "-" && i+6 < len(fields) {
+					return fields[i+6], true
+				}
+			}
+			return "", false
 		}
 	}
-	return false
+	return "", false
 }
 
 func unescapeMountInfoPath(path string) string {
