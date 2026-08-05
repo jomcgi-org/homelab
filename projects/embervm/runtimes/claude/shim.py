@@ -4,6 +4,7 @@
 import http.server
 import base64
 import collections
+import glob
 import json
 import math
 import os
@@ -1146,7 +1147,7 @@ class ClaudeProcess:
 
 
 class CodexProcess:
-    """Run one Codex JSONL process per turn while retaining its thread id."""
+    """Own one long-lived Codex app-server process and bind threads lazily."""
 
     def __init__(self, workspace=None, executable="codex"):
         self.workspace = workspace or os.environ.get(
@@ -1159,6 +1160,13 @@ class CodexProcess:
         self.process_lock = threading.Lock()
         self.stderr_lines = collections.deque(maxlen=5)
         self._stderr_thread = None
+        self._stdout_queue = None
+        self._rpc_id = 0
+        self._server_threads = set()
+        self._turn_id = None
+        self._turn_done = threading.Event()
+        self._turn_done.set()
+        self._write_lock = threading.Lock()
 
     def ready(self):
         with self.process_lock:
@@ -1274,52 +1282,16 @@ wire_api = "responses"
         with open(os.path.join(codex_home, "config.toml"), "w") as stream:
             stream.write(config)
 
-    def _spawn(self, message, session_id, model):
+    def _spawn(self):
         if not os.path.isdir(self.workspace):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         child_env = self._child_env()
         self._write_auth_json(child_env["CODEX_HOME"])
         self._write_model_config(child_env["CODEX_HOME"])
-        model_name, effort = CODEX_MODELS.get(model, CODEX_MODELS[DEFAULT_CODEX_MODEL])
-        if session_id:
-            command = [self.executable, "exec", "resume", session_id, message]
-        else:
-            command = [self.executable, "exec"]
-        command.extend(
-            [
-                "--json",
-                "--model",
-                model_name,
-                "--config",
-                "model_reasoning_effort=%s" % effort,
-                # The microVM is the security boundary (not the CLI's sandbox).
-                # Fresh guest execs use --sandbox workspace-write for network
-                # isolation; resumed turns skip it. Config layering:
-                # --config sandbox_mode=danger-full-access beats --sandbox, so
-                # all turns run full access. network_access=true is now
-                # redundant under danger-full-access but kept against a future
-                # revert.
-                "--config",
-                "sandbox_workspace_write.network_access=true",
-                "--config",
-                "sandbox_mode=danger-full-access",
-            ]
-        )
-        command.append("--skip-git-repo-check")
-        if not session_id:
-            # exec resume rejects both --sandbox and -C on the pinned CLI
-            # (rust-v0.146.0); resume reuses the session's recorded cwd, and
-            # a fresh exec still lands in the workspace because Popen below
-            # sets cwd there regardless.
-            command.extend(["--sandbox", "workspace-write", "-C", self.workspace])
-            command.append(message)
-        # The turn message rides argv (command above), on both a fresh exec
-        # and exec resume; codex never reads it from stdin, so close it
-        # rather than inherit the shim's never-EOF stdin.
         process = subprocess.Popen(
-            command,
+            [self.executable, "app-server"],
             cwd=self.workspace,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=child_env,
@@ -1328,6 +1300,7 @@ wire_api = "responses"
         output_queue = queue.Queue()
         with self.process_lock:
             self.process = process
+            self._stdout_queue = output_queue
             _managed_child_pids.add(process.pid)
         threading.Thread(
             target=self._pump_codex_stdout, args=(process, output_queue), daemon=True
@@ -1339,12 +1312,32 @@ wire_api = "responses"
             daemon=True,
         )
         self._stderr_thread.start()
-        return process, output_queue
+        self._server_threads = set()
+        self._turn_id = None
+        try:
+            self._request(
+                "initialize",
+                {
+                    "clientInfo": {
+                        "name": "homelab-shim",
+                        "title": "Homelab Shim",
+                        "version": "1.0",
+                    }
+                },
+            )
+            self._send({"jsonrpc": "2.0", "method": "initialized"})
+        except Exception:
+            self._close_process(kill=True)
+            raise
+        return process
 
     def _empty_stream_error(self, process):
-        code = process.poll()
-        if code is None:
-            code = process.wait()
+        if process is None:
+            code = None
+        else:
+            code = process.poll()
+            if code is None:
+                code = process.wait()
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=1)
         error_msg = "codex exited before turn.completed, exit code %s" % code
@@ -1352,6 +1345,129 @@ wire_api = "responses"
         if stderr:
             error_msg += "\nCLI stderr:\n%s" % stderr
         return RuntimeError(error_msg)
+
+    def _send(self, value):
+        with self._write_lock:
+            process = self.process
+            if process is None or process.poll() is not None:
+                raise self._empty_stream_error(process)
+            process.stdin.write(_json_line(value))
+            process.stdin.flush()
+
+    def _request(self, method, params, timeout=TURN_READ_TIMEOUT):
+        self._rpc_id += 1
+        request_id = self._rpc_id
+        self._send(
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+        )
+        while True:
+            event = self._read_event(timeout)
+            if event is None:
+                raise self._empty_stream_error(self.process)
+            if event.get("id") == request_id:
+                if "error" in event:
+                    raise RuntimeError(self._rpc_error(event))
+                return event.get("result", {})
+            self._handle_server_request(event)
+
+    @staticmethod
+    def _rpc_error(response):
+        error = response.get("error")
+        if isinstance(error, dict):
+            return "%s: %s" % (error.get("code", "error"), error.get("message", error))
+        return str(error)
+
+    def _handle_server_request(self, event):
+        if event.get("method") is None or event.get("id") is None:
+            return
+        try:
+            self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": event["id"],
+                    "error": {
+                        "code": -32000,
+                        "message": "server request denied by homelab shim",
+                    },
+                }
+            )
+        except Exception:
+            pass
+        sys.stderr.write("ember-claude-shim: denied Codex server request %r\n" % event)
+        sys.stderr.flush()
+
+    def _read_event(self, timeout):
+        try:
+            raw = self._stdout_queue.get(timeout=timeout)
+        except queue.Empty as exc:
+            raise TimeoutError from exc
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("codex emitted invalid JSON: %s" % exc) from exc
+
+    def _resume(self, session_id):
+        params = {
+            "threadId": session_id,
+            "cwd": self.workspace,
+            "approvalPolicy": "never",
+            "sandbox": "danger-full-access",
+        }
+        try:
+            result = self._request("thread/resume", params)
+        except RuntimeError as first_error:
+            paths = glob.glob(
+                os.path.join(
+                    self._child_env()["CODEX_HOME"],
+                    "sessions",
+                    "**",
+                    "*%s.jsonl" % session_id,
+                ),
+                recursive=True,
+            )
+            if not paths:
+                raise RuntimeError(
+                    "unable to resume session %s: %s\n%s"
+                    % (
+                        session_id,
+                        first_error,
+                        _truncate_ring_for_error(self.stderr_lines),
+                    )
+                ) from first_error
+            params["path"] = paths[0]
+            try:
+                result = self._request("thread/resume", params)
+            except RuntimeError as second_error:
+                raise RuntimeError(
+                    "unable to resume session %s: %s\n%s"
+                    % (
+                        session_id,
+                        second_error,
+                        _truncate_ring_for_error(self.stderr_lines),
+                    )
+                ) from second_error
+        thread = result.get("thread", {}) if isinstance(result, dict) else {}
+        thread_id = (
+            thread.get("id", session_id) if isinstance(thread, dict) else session_id
+        )
+        self.session_id = thread_id
+        self._server_threads.add(thread_id)
+
+    def _translate_activity_event(self, event):
+        if event.get("method") == "item/started":
+            item = event.get("params", {}).get("item", {})
+            if isinstance(item, dict) and item.get("type") in (
+                "commandExecution",
+                "command_execution",
+            ):
+                return {
+                    "type": "tool_execution_start",
+                    "toolName": "bash",
+                    "args": {"command": item.get("command", "")},
+                }
+        return event
 
     @staticmethod
     def _pump_codex_stdout(process, output_queue):
@@ -1368,37 +1484,90 @@ wire_api = "responses"
                     "session_id %r does not match active session %r"
                     % (session_id, self.session_id)
                 )
-            process, output_queue = self._spawn(
-                message, session_id or self.session_id, model
+            requested_session = session_id or self.session_id
+            with self.process_lock:
+                process = self.process
+            if process is None or process.poll() is not None:
+                self._close_process(kill=False)
+                self._spawn()
+                requested_session = session_id or self.session_id
+            if requested_session and (
+                requested_session not in self._server_threads
+                or requested_session != self.session_id
+            ):
+                self._resume(requested_session)
+            elif not requested_session:
+                result = self._request(
+                    "thread/start",
+                    {
+                        "cwd": self.workspace,
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                )
+                thread = result.get("thread", {}) if isinstance(result, dict) else {}
+                self.session_id = thread.get("id") if isinstance(thread, dict) else None
+                self._server_threads.add(self.session_id)
+            self._rpc_id += 1
+            request_id = self._rpc_id
+            model_name, effort = CODEX_MODELS.get(
+                model, CODEX_MODELS[DEFAULT_CODEX_MODEL]
+            )
+            self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": self.session_id,
+                        "input": [{"type": "text", "text": message}],
+                        "model": model_name,
+                        "effort": effort,
+                        "sandbox": "danger-full-access",
+                        "approvalPolicy": "never",
+                        "cwd": self.workspace,
+                    },
+                }
             )
             result_text = ""
             usage = {}
             events = []
+            self._turn_done.clear()
             while True:
                 try:
-                    raw = output_queue.get(timeout=TURN_READ_TIMEOUT)
-                except queue.Empty as exc:
+                    event = self._read_event(TURN_READ_TIMEOUT)
+                except TimeoutError as exc:
+                    self._close_process(kill=True)
                     raise RuntimeError(
                         "timed out waiting for Codex output after %s seconds"
                         % TURN_READ_TIMEOUT
                     ) from exc
-                if raw is None:
+                if event is None:
                     raise self._empty_stream_error(process)
-                try:
-                    event = json.loads(raw.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    raise RuntimeError("codex emitted invalid JSON: %s" % exc) from exc
-                events.append(event)
-                if event.get("type") == "thread.started":
-                    thread_id = event.get("thread_id")
-                    if isinstance(thread_id, str) and thread_id:
-                        self.session_id = thread_id
-                elif event.get("type") == "item.completed":
-                    item = event.get("item")
-                    if isinstance(item, dict) and item.get("type") == "agent_message":
+                self._handle_server_request(event)
+                event_type = event.get("method")
+                params = event.get("params", {})
+                legacy_event = self._translate_activity_event(event)
+                events.append(legacy_event)
+                if event_type == "turn/started":
+                    self._turn_id = params.get("turn", {}).get("id")
+                elif event_type == "item/completed":
+                    item = params.get("item", {})
+                    if isinstance(item, dict) and item.get("type") in (
+                        "agentMessage",
+                        "agent_message",
+                    ):
                         result_text = item.get("text", "")
-                elif event.get("type") == "turn.completed":
-                    usage = event.get("usage", {})
+                elif event_type == "thread/tokenUsage/updated":
+                    last = params.get("tokenUsage", {}).get("last", {})
+                    usage = {
+                        "input_tokens": last.get("inputTokens", 0),
+                        "output_tokens": last.get("outputTokens", 0),
+                        "cache_read_tokens": last.get("cachedInputTokens", 0),
+                        "cache_write_tokens": last.get("cacheWriteInputTokens", 0),
+                    }
+                elif event_type == "turn/completed":
+                    self._turn_done.set()
                     record = {
                         "result": result_text,
                         "terminal_reason": "completed",
@@ -1407,12 +1576,8 @@ wire_api = "responses"
                         "voice": voice_summary(result_text),
                         "activity": activity_from_events(events),
                     }
-                    # The CLI exits shortly after turn.completed. Do not wait for
-                    # it here, because the HTTP turn must return at this event.
-                    threading.Thread(
-                        target=self._reap_process, args=(process,), daemon=True
-                    ).start()
                     return record
+            self._turn_done.set()
 
     @staticmethod
     def _reap_process(process):
@@ -1422,10 +1587,69 @@ wire_api = "responses"
             _managed_child_pids.discard(process.pid)
 
     def interrupt(self, timeout=INTERRUPT_TIMEOUT):
-        return {"terminal_reason": "user_interrupt", "killed": False, "timeout": False}
+        with self.process_lock:
+            process = self.process
+            turn_id = self._turn_id
+            thread_id = self.session_id
+        if (
+            process is None
+            or process.poll() is not None
+            or self._turn_done.is_set()
+            or not turn_id
+        ):
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            }
+        try:
+            self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": self._rpc_id + 1,
+                    "method": "turn/interrupt",
+                    "params": {"threadId": thread_id, "turnId": turn_id},
+                }
+            )
+        except Exception:
+            self._close_process(kill=True)
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": True,
+                "timeout": True,
+            }
+        timed_out = not self._turn_done.wait(timeout=timeout)
+        if timed_out:
+            self._close_process(kill=True)
+        return {
+            "terminal_reason": "user_interrupt",
+            "killed": timed_out,
+            "timeout": timed_out,
+        }
 
     def _close_process(self, kill=False):
-        return None
+        with self.process_lock:
+            process = self.process
+            self.process = None
+            self._stdout_queue = None
+            self._server_threads = set()
+            self._turn_id = None
+        if process is None:
+            return
+        if kill and process.poll() is None:
+            process.kill()
+        try:
+            if process.stdin:
+                process.stdin.close()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        _managed_child_pids.discard(process.pid)
+        _reap_orphans()
 
 
 class PiProcess:

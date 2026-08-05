@@ -213,23 +213,75 @@ assert 'base_url = "http://chatgpt.com/backend-api/codex/"' in config
 assert 'chatgpt_base_url = "http://chatgpt.com/backend-api/"' in config
 assert "enable_codex_api_key_env = false" in config
 assert 'wire_api = "responses"' in config
-assert "--skip-git-repo-check" in sys.argv
-assert "--model" in sys.argv
-assert "--config" in sys.argv
-model = sys.argv[sys.argv.index("--model") + 1]
-effort = sys.argv[sys.argv.index("--config") + 1]
-assert model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
-assert effort in ("model_reasoning_effort=medium", "model_reasoning_effort=high")
-print(json.dumps({"type": "thread.started", "thread_id": "codex-thread"}), flush=True)
-print(json.dumps({"type": "item.completed", "item": {
-    "type": "agent_message",
-    "text": "Done <voice>Codex completed the work.</voice>"
-}}), flush=True)
-print(json.dumps({"type": "turn.completed", "usage": {
-    "input_tokens": 3, "output_tokens": 4
-}}), flush=True)
-if os.environ.get("FAKE_CODEX_SLEEP"):
-    time.sleep(float(os.environ["FAKE_CODEX_SLEEP"]))
+assert sys.argv[1] == "app-server"
+
+rpc_path = os.environ.get("FAKE_CODEX_RPC")
+scenario = os.environ.get("FAKE_CODEX_SCENARIO", "")
+if scenario == "resume-not-found-path-fallback":
+    sessions = os.path.join(os.environ["CODEX_HOME"], "sessions")
+    os.makedirs(sessions, exist_ok=True)
+    open(os.path.join(sessions, "codex-thread.jsonl"), "w").close()
+
+def record(value):
+    if rpc_path:
+        with open(rpc_path, "a") as stream:
+            json.dump(value, stream)
+            stream.write("\n")
+
+def emit(value):
+    print(json.dumps(value), flush=True)
+
+def response(request, result=None, error=None):
+    value = {"jsonrpc": "2.0", "id": request["id"]}
+    if error is not None:
+        value["error"] = error
+    else:
+        value["result"] = result or {}
+    emit(value)
+
+initialize = json.loads(sys.stdin.readline())
+record(initialize)
+assert initialize["method"] == "initialize"
+response(initialize, {"cliVersion": "0.146.0"})
+initialized = json.loads(sys.stdin.readline())
+record(initialized)
+assert initialized["method"] == "initialized"
+
+for line in sys.stdin:
+    request = json.loads(line)
+    record(request)
+    method = request.get("method")
+    if "id" not in request:
+        response({"id": None}, error={"code": -32000, "message": "server request denied"})
+        continue
+    if method == "thread/start":
+        response(request, {"thread": {"id": "codex-thread"}, "model": "gpt-5.6-luna", "cwd": "/workspace"})
+        emit({"jsonrpc": "2.0", "method": "thread/started", "params": {"thread": {"id": "codex-thread"}}})
+    elif method == "thread/resume":
+        params = request.get("params", {})
+        thread_id = params.get("threadId")
+        if scenario == "resume-not-found-path-fallback" and "path" not in params:
+            response(request, error={"code": -32004, "message": "thread not found"})
+        else:
+            response(request, {"thread": {"id": thread_id}, "model": "gpt-5.6-luna", "cwd": "/workspace"})
+            emit({"jsonrpc": "2.0", "method": "thread/resumed", "params": {"thread": {"id": thread_id}}})
+    elif method == "turn/start":
+        params = request.get("params", {})
+        emit({"jsonrpc": "2.0", "method": "turn/started", "params": {"turn": {"id": "turn-1"}}})
+        if scenario == "death-mid-turn":
+            print("fake codex died mid-turn", file=sys.stderr, flush=True)
+            sys.exit(17)
+        if scenario != "no-tools":
+            emit({"jsonrpc": "2.0", "method": "item/started", "params": {"item": {"type": "commandExecution", "command": "echo test"}}})
+        if os.environ.get("FAKE_CODEX_SLEEP"):
+            time.sleep(float(os.environ["FAKE_CODEX_SLEEP"]))
+        emit({"jsonrpc": "2.0", "method": "item/completed", "params": {"item": {"type": "agentMessage", "text": "Done <voice>Codex completed the work.</voice>"}}})
+        emit({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"tokenUsage": {"last": {"inputTokens": 3, "outputTokens": 4, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 7}}}})
+        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1"}}})
+    elif method == "turn/interrupt":
+        emit({"jsonrpc": "2.0", "method": "turn/completed", "params": {"turn": {"id": "turn-1"}}})
+    else:
+        response(request, error={"code": -32601, "message": "unknown method"})
 """
 
 
@@ -306,6 +358,7 @@ def _codex_manager(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("FAKE_CODEX_ARGS", str(tmp_path / "codex-args.jsonl"))
+    monkeypatch.setenv("FAKE_CODEX_RPC", str(tmp_path / "codex-rpc.jsonl"))
     monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     return shim.CodexProcess(str(workspace), str(executable))
 
@@ -403,9 +456,14 @@ def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
         "result": "Done <voice>Codex completed the work.</voice>",
         "terminal_reason": "completed",
         "session_id": "codex-thread",
-        "usage": {"input_tokens": 3, "output_tokens": 4},
+        "usage": {
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        },
         "voice": "Codex completed the work.",
-        "activity": [],
+        "activity": [{"type": "bash", "command": "echo test"}],
     }
     manager._close_process()
 
@@ -479,43 +537,141 @@ def test_codex_child_env_drops_openai_api_key(tmp_path, monkeypatch):
 
 def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypatch):
     manager = _codex_manager(tmp_path, monkeypatch)
-    manager.turn("first", model="terra")
-    manager.turn("second", session_id="codex-thread", model="terra")
+    first_record = manager.turn("first", model="terra")
+    first_process = manager.process
+    second_record = manager.turn("second", session_id="codex-thread", model="terra")
+    for record in (first_record, second_record):
+        assert record["usage"] == {
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+        assert record["activity"] == [{"type": "bash", "command": "echo test"}]
+
+    assert manager.process is first_process
     calls = [
         json.loads(line)
         for line in (tmp_path / "codex-args.jsonl").read_text().splitlines()
     ]
-    first = calls[0]
-    assert "-C" in first
-    assert first[first.index("-C") + 1] == str(tmp_path / "workspace")
-    assert first[-1] == "first"
-    resume = calls[1]
-    assert resume[:4] == ["exec", "resume", "codex-thread", "second"]
-    assert "--sandbox" not in resume
-    assert "-C" not in resume
-    assert resume[resume.index("--model") + 1] == "gpt-5.6-terra"
-    assert resume[resume.index("--config") + 1] == "model_reasoning_effort=high"
-    # Sandbox network rides --config on BOTH turns. workspace-write denies
-    # network by default and resume rejects --sandbox, so a flag-shaped fix
-    # would give turn one network and silently drop it on every turn after.
-    network = "sandbox_workspace_write.network_access=true"
-    assert network in first
-    assert network in resume
-    assert "sandbox_mode=danger-full-access" in first
-    assert "sandbox_mode=danger-full-access" in resume
+    assert calls == [["app-server"]]
     manager._close_process()
 
 
-def test_codex_returns_at_turn_completed_without_waiting_for_exit(
-    tmp_path, monkeypatch
-):
+def test_codex_app_server_second_turn_no_respawn(tmp_path, monkeypatch):
     manager = _codex_manager(tmp_path, monkeypatch)
-    monkeypatch.setenv("FAKE_CODEX_SLEEP", "2")
-    started = time.monotonic()
-    manager.turn("fast", model="sol")
-    elapsed = time.monotonic() - started
-    assert elapsed < 0.1
+    assert manager.process is None
+    manager.turn("first", model="luna")
+    first_process = manager.process
+    record = manager.turn("second", model="terra")
+
+    assert manager.process is first_process
     assert manager.process.poll() is None
+    assert record["usage"]["input_tokens"] == 3
+    manager._close_process()
+
+
+def test_codex_resume_by_thread_id(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    session_id = manager.session_id
+    manager.session_id = None
+    manager.turn("second", session_id=session_id, model="luna")
+    assert manager.session_id == session_id
+    manager._close_process()
+
+
+def test_codex_resume_not_found_falls_back_to_path_glob(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "resume-not-found-path-fallback")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    session_id = manager.session_id
+    manager.session_id = None
+    manager.turn("second", session_id=session_id, model="luna")
+    assert manager.session_id == session_id
+    manager._close_process()
+
+
+def test_codex_per_turn_model_effort_mapping(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("msg1", model="luna")
+    manager.turn("msg2", model="terra")
+    manager.turn("msg3", model="sol")
+    manager._close_process()
+
+
+def test_codex_read_timeout_kills_server(tmp_path, monkeypatch):
+    original_timeout = shim.TURN_READ_TIMEOUT
+    monkeypatch.setattr(shim, "TURN_READ_TIMEOUT", 0.1)
+    monkeypatch.setenv("FAKE_CODEX_SLEEP", "10")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="timed out waiting for Codex output"):
+        manager.turn("msg", model="luna")
+    proc = manager.process
+    assert proc is None or proc.poll() is not None
+    monkeypatch.setattr(shim, "TURN_READ_TIMEOUT", original_timeout)
+    manager.turn("second", model="luna")
+    manager._close_process()
+
+
+def test_codex_server_death_mid_turn_raises_with_stderr(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "death-mid-turn")
+    manager = _codex_manager(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        manager.turn("msg", model="luna")
+    assert "fake codex died mid-turn" in str(exc_info.value)
+    manager._close_process()
+
+
+def test_codex_interrupt_during_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SLEEP", "5")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    result = [None]
+    exception = [None]
+
+    def turn_thread():
+        try:
+            result[0] = manager.turn("msg", model="luna")
+        except Exception as exc:
+            exception[0] = exc
+
+    thread = threading.Thread(target=turn_thread)
+    thread.start()
+    time.sleep(0.5)
+    interrupt_result = manager.interrupt()
+    thread.join(timeout=7)
+
+    assert interrupt_result["terminal_reason"] == "user_interrupt"
+    assert isinstance(interrupt_result["killed"], bool)
+    manager._close_process()
+
+
+def test_codex_session_conflict_error_unchanged(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+
+    with pytest.raises(
+        shim.SessionConflictError,
+        match="session_id 'other-thread' does not match active session 'codex-thread'",
+    ):
+        manager.turn("conflict", session_id="other-thread", model="luna")
+    manager._close_process()
+
+
+def test_codex_turn_with_no_tool_items_has_empty_activity(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "no-tools")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    record = manager.turn("no tools", model="luna")
+
+    assert record["activity"] == []
+    assert record["usage"] == {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+    }
     manager._close_process()
 
 
@@ -639,22 +795,13 @@ def test_spawn_keeps_claude_stdin_as_a_pipe(tmp_path, monkeypatch):
     assert kwargs["stdin"] is subprocess.PIPE
 
 
-def test_spawn_closes_codex_stdin(tmp_path, monkeypatch):
-    # codex's message rides argv on both a fresh exec and exec resume, never
-    # stdin, so the shim closes it rather than inherit its own never-EOF
-    # stdin (#4303: otherwise a fresh exec prints "Reading additional input
-    # from stdin..." and could block on a guest that hands it a live stdin).
+def test_spawn_keeps_codex_stdin_as_a_pipe(tmp_path, monkeypatch):
+    # The app-server JSON-RPC channel rides stdin, so Codex must receive a
+    # pipe rather than the DEVNULL stdin used by one-shot CLIs.
     codex = _codex_manager(tmp_path, monkeypatch)
-    captured = {}
-
-    def fake_popen(*args, **kwargs):
-        captured.update(kwargs)
-        raise RuntimeError("stop after capturing Popen kwargs")
-
-    monkeypatch.setattr(shim.subprocess, "Popen", fake_popen)
-    with pytest.raises(RuntimeError, match="stop after capturing"):
-        codex._spawn("hello", None, "luna")
-    assert captured["stdin"] is subprocess.DEVNULL
+    codex._spawn()
+    assert codex.process.stdin is not subprocess.DEVNULL
+    codex._close_process(kill=True)
 
 
 def test_spawn_closes_pi_stdin(tmp_path, monkeypatch):
@@ -1971,7 +2118,14 @@ def test_codex_auth_json_is_parseable_and_inert(tmp_path, monkeypatch):
     import base64 as _b64
 
     manager = _codex_manager(tmp_path, monkeypatch)
-    manager.turn("hello", model="luna")
+    record = manager.turn("hello", model="luna")
+    assert record["usage"] == {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+    }
+    assert record["activity"] == [{"type": "bash", "command": "echo test"}]
     auth_path = os.path.join(str(tmp_path / "workspace"), ".codex", "auth.json")
     auth = json.loads(open(auth_path).read())
     assert auth["auth_mode"] == "chatgpt"
@@ -1984,3 +2138,4 @@ def test_codex_auth_json_is_parseable_and_inert(tmp_path, monkeypatch):
     assert claims["exp"] > 4_000_000_000, (
         "expiry must be far future so the guest never self-refreshes"
     )
+    manager._close_process()
