@@ -1418,7 +1418,7 @@ wire_api = "responses"
             "threadId": session_id,
             "cwd": self.workspace,
             "approvalPolicy": "never",
-            "sandboxPolicy": {"type": "dangerFullAccess"},
+            "sandbox": "danger-full-access",
         }
         try:
             result = self._request("thread/resume", params, timeout=INIT_READ_TIMEOUT)
