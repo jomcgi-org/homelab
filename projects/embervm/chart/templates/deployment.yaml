@@ -348,6 +348,14 @@ spec:
             - name: EMBERVM_BASE_RETENTION_SWEEP
               value: {{ .Values.baseRetention.sweepEnabled | quote }}
             {{- end }}
+            {{- if .Values.baseRetention.diskDrivenEnabled }}
+            # Separate gate for disk-driven base eviction. When unset ("") the
+            # sweep emits a manifest only (dry-run). "1" arms eviction of
+            # disk-found bases. Flip this gate in a follow-up PR after reviewing
+            # the manifest on the live fleet.
+            - name: EMBERVM_BASE_RETENTION_DISK_DRIVEN
+              value: {{ .Values.baseRetention.diskDrivenEnabled | quote }}
+            {{- end }}
             {{- if .Values.baseRetention.remoteSweepEnabled }}
             # Remote base-retention gate (#3947 PR-4): "1" arms eviction of
             # superseded STORE bases per (workload, vendor); unset keeps the
