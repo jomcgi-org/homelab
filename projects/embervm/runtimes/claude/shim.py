@@ -4,7 +4,6 @@
 import http.server
 import base64
 import collections
-import glob
 import json
 import math
 import os
@@ -1324,6 +1323,7 @@ wire_api = "responses"
                         "version": "1.0",
                     }
                 },
+                timeout=INIT_READ_TIMEOUT,
             )
             self._send({"jsonrpc": "2.0", "method": "initialized"})
         except Exception:
@@ -1355,8 +1355,9 @@ wire_api = "responses"
             process.stdin.flush()
 
     def _request(self, method, params, timeout=TURN_READ_TIMEOUT):
-        self._rpc_id += 1
-        request_id = self._rpc_id
+        with self._write_lock:
+            self._rpc_id += 1
+            request_id = self._rpc_id
         self._send(
             {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
         )
@@ -1397,8 +1398,12 @@ wire_api = "responses"
         sys.stderr.flush()
 
     def _read_event(self, timeout):
+        with self.process_lock:
+            output_queue = self._stdout_queue
+        if output_queue is None:
+            return None
         try:
-            raw = self._stdout_queue.get(timeout=timeout)
+            raw = output_queue.get(timeout=timeout)
         except queue.Empty as exc:
             raise TimeoutError from exc
         if raw is None:
@@ -1413,41 +1418,15 @@ wire_api = "responses"
             "threadId": session_id,
             "cwd": self.workspace,
             "approvalPolicy": "never",
-            "sandbox": "danger-full-access",
+            "sandboxPolicy": {"type": "dangerFullAccess"},
         }
         try:
-            result = self._request("thread/resume", params)
-        except RuntimeError as first_error:
-            paths = glob.glob(
-                os.path.join(
-                    self._child_env()["CODEX_HOME"],
-                    "sessions",
-                    "**",
-                    "*%s.jsonl" % session_id,
-                ),
-                recursive=True,
-            )
-            if not paths:
-                raise RuntimeError(
-                    "unable to resume session %s: %s\n%s"
-                    % (
-                        session_id,
-                        first_error,
-                        _truncate_ring_for_error(self.stderr_lines),
-                    )
-                ) from first_error
-            params["path"] = paths[0]
-            try:
-                result = self._request("thread/resume", params)
-            except RuntimeError as second_error:
-                raise RuntimeError(
-                    "unable to resume session %s: %s\n%s"
-                    % (
-                        session_id,
-                        second_error,
-                        _truncate_ring_for_error(self.stderr_lines),
-                    )
-                ) from second_error
+            result = self._request("thread/resume", params, timeout=INIT_READ_TIMEOUT)
+        except RuntimeError as error:
+            raise RuntimeError(
+                "unable to resume session %s: %s\n%s"
+                % (session_id, error, _truncate_ring_for_error(self.stderr_lines))
+            ) from error
         thread = result.get("thread", {}) if isinstance(result, dict) else {}
         thread_id = (
             thread.get("id", session_id) if isinstance(thread, dict) else session_id
@@ -1489,7 +1468,7 @@ wire_api = "responses"
                 process = self.process
             if process is None or process.poll() is not None:
                 self._close_process(kill=False)
-                self._spawn()
+                process = self._spawn()
                 requested_session = session_id or self.session_id
             if requested_session and (
                 requested_session not in self._server_threads
@@ -1502,14 +1481,17 @@ wire_api = "responses"
                     {
                         "cwd": self.workspace,
                         "approvalPolicy": "never",
-                        "sandbox": "danger-full-access",
+                        "sandboxPolicy": {"type": "dangerFullAccess"},
                     },
                 )
                 thread = result.get("thread", {}) if isinstance(result, dict) else {}
                 self.session_id = thread.get("id") if isinstance(thread, dict) else None
                 self._server_threads.add(self.session_id)
-            self._rpc_id += 1
-            request_id = self._rpc_id
+            with self._write_lock:
+                self._turn_done.clear()
+                self._turn_id = None
+                self._rpc_id += 1
+                request_id = self._rpc_id
             model_name, effort = CODEX_MODELS.get(
                 model, CODEX_MODELS[DEFAULT_CODEX_MODEL]
             )
@@ -1523,7 +1505,7 @@ wire_api = "responses"
                         "input": [{"type": "text", "text": message}],
                         "model": model_name,
                         "effort": effort,
-                        "sandbox": "danger-full-access",
+                        "sandboxPolicy": {"type": "dangerFullAccess"},
                         "approvalPolicy": "never",
                         "cwd": self.workspace,
                     },
@@ -1532,52 +1514,68 @@ wire_api = "responses"
             result_text = ""
             usage = {}
             events = []
-            self._turn_done.clear()
-            while True:
-                try:
-                    event = self._read_event(TURN_READ_TIMEOUT)
-                except TimeoutError as exc:
-                    self._close_process(kill=True)
-                    raise RuntimeError(
-                        "timed out waiting for Codex output after %s seconds"
-                        % TURN_READ_TIMEOUT
-                    ) from exc
-                if event is None:
-                    raise self._empty_stream_error(process)
-                self._handle_server_request(event)
-                event_type = event.get("method")
-                params = event.get("params", {})
-                legacy_event = self._translate_activity_event(event)
-                events.append(legacy_event)
-                if event_type == "turn/started":
-                    self._turn_id = params.get("turn", {}).get("id")
-                elif event_type == "item/completed":
-                    item = params.get("item", {})
-                    if isinstance(item, dict) and item.get("type") in (
-                        "agentMessage",
-                        "agent_message",
-                    ):
-                        result_text = item.get("text", "")
-                elif event_type == "thread/tokenUsage/updated":
-                    last = params.get("tokenUsage", {}).get("last", {})
-                    usage = {
-                        "input_tokens": last.get("inputTokens", 0),
-                        "output_tokens": last.get("outputTokens", 0),
-                        "cache_read_tokens": last.get("cachedInputTokens", 0),
-                        "cache_write_tokens": last.get("cacheWriteInputTokens", 0),
-                    }
-                elif event_type == "turn/completed":
-                    self._turn_done.set()
-                    record = {
-                        "result": result_text,
-                        "terminal_reason": "completed",
-                        "session_id": self.session_id,
-                        "usage": usage,
-                        "voice": voice_summary(result_text),
-                        "activity": activity_from_events(events),
-                    }
-                    return record
-            self._turn_done.set()
+            try:
+                while True:
+                    try:
+                        event = self._read_event(TURN_READ_TIMEOUT)
+                    except TimeoutError as exc:
+                        self._close_process(kill=True)
+                        raise RuntimeError(
+                            "timed out waiting for Codex output after %s seconds"
+                            % TURN_READ_TIMEOUT
+                        ) from exc
+                    if event is None:
+                        raise self._empty_stream_error(process)
+                    if event.get("id") == request_id:
+                        if "error" in event:
+                            raise RuntimeError(self._rpc_error(event))
+                        continue
+                    self._handle_server_request(event)
+                    event_type = event.get("method")
+                    params = event.get("params", {})
+                    legacy_event = self._translate_activity_event(event)
+                    events.append(legacy_event)
+                    if event_type == "turn/started":
+                        self._turn_id = params.get("turn", {}).get("id")
+                    elif event_type == "item/completed":
+                        item = params.get("item", {})
+                        if isinstance(item, dict) and item.get("type") in (
+                            "agentMessage",
+                            "agent_message",
+                        ):
+                            result_text = item.get("text", "")
+                    elif event_type == "thread/tokenUsage/updated":
+                        last = params.get("tokenUsage", {}).get("last", {})
+                        usage = {
+                            "input_tokens": last.get("inputTokens", 0),
+                            "output_tokens": last.get("outputTokens", 0),
+                            "cache_read_tokens": last.get("cachedInputTokens", 0),
+                            "cache_write_tokens": last.get("cacheWriteInputTokens", 0),
+                        }
+                    elif event_type == "turn/completed":
+                        turn = params.get("turn", {})
+                        status = turn.get("status", "completed")
+                        if status == "failed":
+                            error = turn.get("error", "Codex turn failed")
+                            if isinstance(error, dict):
+                                error = error.get("message", error)
+                            raise RuntimeError(
+                                "Codex turn failed: %s\n%s"
+                                % (error, _truncate_ring_for_error(self.stderr_lines))
+                            )
+                        terminal_reason = (
+                            "user_interrupt" if status == "interrupted" else "completed"
+                        )
+                        return {
+                            "result": result_text,
+                            "terminal_reason": terminal_reason,
+                            "session_id": self.session_id,
+                            "usage": usage,
+                            "voice": voice_summary(result_text),
+                            "activity": activity_from_events(events),
+                        }
+            finally:
+                self._turn_done.set()
 
     @staticmethod
     def _reap_process(process):
@@ -1603,10 +1601,13 @@ wire_api = "responses"
                 "timeout": False,
             }
         try:
+            with self._write_lock:
+                self._rpc_id += 1
+                request_id = self._rpc_id
             self._send(
                 {
                     "jsonrpc": "2.0",
-                    "id": self._rpc_id + 1,
+                    "id": request_id,
                     "method": "turn/interrupt",
                     "params": {"threadId": thread_id, "turnId": turn_id},
                 }
@@ -1615,8 +1616,8 @@ wire_api = "responses"
             self._close_process(kill=True)
             return {
                 "terminal_reason": "user_interrupt",
-                "killed": True,
-                "timeout": True,
+                "killed": False,
+                "timeout": False,
             }
         timed_out = not self._turn_done.wait(timeout=timeout)
         if timed_out:
