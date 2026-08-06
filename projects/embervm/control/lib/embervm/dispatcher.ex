@@ -114,6 +114,8 @@ defmodule Embervm.Dispatcher do
   @stale_after_ms 15_000
   @queue_depth_cap 10_000
   @sweep_interval_ms 5_000
+  @assign_watchdog_margin_ms 15_000
+  @assign_watchdog_ms nil
   @depth_table :embervm_queue_depth
   # The per-principal queue-depth cap is stored as a distinguished row in the
   # depth table (an atom key, never colliding with the {workload, principal}
@@ -245,6 +247,10 @@ defmodule Embervm.Dispatcher do
         Keyword.get(opts, :get_request_fun, fn tid -> Embervm.TaskStore.get_request(task_store, tid) end),
       stale_after_ms: Keyword.get(opts, :stale_after_ms, @stale_after_ms),
       queue_depth_cap: Keyword.get(opts, :queue_depth_cap, @queue_depth_cap),
+      assign_watchdog_margin_ms:
+        Keyword.get(opts, :assign_watchdog_margin_ms, @assign_watchdog_margin_ms),
+      # Test-only seam: when set, IS the watchdog budget; when nil (production), budget is transport_timeout(entry.timeout_ms) + margin. Tests use this to avoid waiting out the 5s transport headroom floor.
+      assign_watchdog_ms: Keyword.get(opts, :assign_watchdog_ms, @assign_watchdog_ms),
       share_fraction: Keyword.get(opts, :share_fraction, nil),
       sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, @sweep_interval_ms),
       # Quota enforcement (Task 12): the Metering quota-cache table and the
@@ -314,6 +320,30 @@ defmodule Embervm.Dispatcher do
   @impl true
   def handle_info({:assign_done, pid, outcome}, state) do
     {:noreply, finish_worker(state, pid, outcome, :flush)}
+  end
+
+  # A server-enforced gRPC deadline cannot fire when an orphaned channel is
+  # unreachable, so one wedged stream could consume an in-flight slot forever
+  # and silently cap the workload. This wall-clock watchdog is the last-resort
+  # recovery path for that case; the normal transport deadline gets first shot.
+  def handle_info({:worker_timeout, pid, ref}, state) do
+    case Map.get(state.workers, pid) do
+      %{ref: ^ref} = meta ->
+        elapsed_ms = System.monotonic_time(:millisecond) - meta.watchdog_started_at
+
+        Logger.warning("assign worker watchdog fired (elapsed=#{elapsed_ms}ms, budget=#{meta.watchdog_ms}ms)",
+          workload: meta.workload,
+          task_id: meta.task_id,
+          node_id: meta.node_id
+        )
+
+        Process.exit(pid, :kill)
+        {:noreply, state}
+
+      _ ->
+        # The worker completed, or this is a stale timer message for a reused pid.
+        {:noreply, state}
+    end
   end
 
   # A miss worker reports the vm_id it just primed AND the instance it primed on.
@@ -743,11 +773,27 @@ defmodule Embervm.Dispatcher do
         send(owner, {:assign_done, self(), outcome})
       end)
 
+    watchdog_ms = state.assign_watchdog_ms || (transport_timeout(entry.timeout_ms) + state.assign_watchdog_margin_ms)
+    # This must fire AFTER the normal gRPC deadline so the server-enforced path
+    # gets first shot. The client-side kill is genuinely last-resort only.
+    watchdog_ref = Process.send_after(owner, {:worker_timeout, pid, ref}, watchdog_ms)
+
     # vm_id is carried in the meta (not just the worker's ctx) so known_vm_ids can
     # see a warm-reserved VM that is out of inventory but still reported primed by
     # the node until the Assign lands; without it adopt_inventory would re-adopt an
     # in-flight VM and double-dispatch it. nil for a miss (the worker primes its own).
-    meta = %{ref: ref, task_id: task_id, workload: wl, principal: pr, node_id: node_id, mode: mode, vm_id: vm_id}
+    meta = %{
+      ref: ref,
+      task_id: task_id,
+      workload: wl,
+      principal: pr,
+      node_id: node_id,
+      mode: mode,
+      vm_id: vm_id,
+      watchdog_timer_ref: watchdog_ref,
+      watchdog_started_at: System.monotonic_time(:millisecond),
+      watchdog_ms: watchdog_ms
+    }
     %{state | workers: Map.put(state.workers, pid, meta)}
   end
 
@@ -1057,6 +1103,9 @@ defmodule Embervm.Dispatcher do
 
       {meta, workers} ->
         if flush == :flush, do: Process.demonitor(meta.ref, [:flush])
+        # Defensive cancellation: a late timer message is harmless because its
+        # monitor ref is compared against the live worker metadata above.
+        Process.cancel_timer(meta.watchdog_timer_ref)
 
         state = %{state | workers: workers}
         state = apply_outcome(state, meta, outcome)

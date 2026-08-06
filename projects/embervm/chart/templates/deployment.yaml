@@ -334,6 +334,17 @@ spec:
             - name: EMBERVM_STATEFUL_SWEEP_INTERVAL_MS
               value: {{ .Values.statefulSweeper.sweepIntervalMs | quote }}
             {{- end }}
+            {{- if .Values.grpcConnectionSweeper.enabled }}
+            # gRPC connection sweep gate (default off, dry-run logging only). "1" or "true"
+            # arms destructive orphaned connection termination.
+            - name: EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED
+              value: {{ .Values.grpcConnectionSweeper.enabled | quote }}
+            {{- end }}
+            {{- if .Values.grpcConnectionSweeper.sweepIntervalMs }}
+            # gRPC connection sweep tick override (default 60000ms).
+            - name: EMBERVM_GRPC_CONNECTION_SWEEP_INTERVAL_MS
+              value: {{ .Values.grpcConnectionSweeper.sweepIntervalMs | quote }}
+            {{- end }}
             {{- if .Values.statefulSweeper.wakeMax }}
             # Per-workload wake-rate cap override (default 10/min): with a ~1s
             # idle bank every demo query is a wake, so the default cap would turn

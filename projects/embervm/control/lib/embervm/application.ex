@@ -877,10 +877,10 @@ defmodule Embervm.Application do
 
   # The destructive gate for the GrpcConnectionSweeper, from
   # EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED. UNSET or "0"/"false"/"" (the default,
-  # and what this PR ships) => the sweep runs but only logs a dry-run plan, leaving
-  # no children terminated. "1"/"true" => the sweep terminates orchestrators holding
-  # dead addresses or wedged in init. Wired here so it flips via a deploy values env
-  # change, no code change. Nothing sets it on in this PR.
+  # and what the chart defaults to) => the sweep runs but only logs a dry-run plan,
+  # leaving no children terminated. "1"/"true" => the sweep terminates orchestrators
+  # holding dead addresses or wedged in init. Wired here so it flips via a deploy
+  # values env change, no code change.
   defp grpc_connection_sweep_enabled do
     case trimmed_env("EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED") do
       v when v in ["1", "true", "TRUE", "True"] -> true
