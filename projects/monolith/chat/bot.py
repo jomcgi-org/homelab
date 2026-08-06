@@ -1208,7 +1208,11 @@ class ChatBot(discord.Client):
             return
 
         await interaction.response.defer(thinking=True)
-        outcome = await self.start_agent_flow(channel, interaction.user, prompt, repo)
+        # route_via_orchestrator=False: running /agent IS the decision that this
+        # is agent work, so the chat-vs-agent verdict does not get to overrule it.
+        outcome = await self.start_agent_flow(
+            channel, interaction.user, prompt, repo, route_via_orchestrator=False
+        )
         if outcome.chat_reply is not None:
             # ADR 036: the orchestrator routed this to chat, so reply inline
             # instead of opening a session thread. Text + any chart go in ONE
@@ -1241,16 +1245,23 @@ class ChatBot(discord.Client):
         prompt: str,
         repo: str,
         trigger_message: discord.Message | None = None,
+        route_via_orchestrator: bool = True,
     ) -> AgentFlowOutcome:
         """Shared agent dispatch for the /agent slash command AND mention/ambient
-        triggers (ADR 035), routed through the ADR 036 orchestrator.
+        triggers (ADR 035).
 
-        The orchestrator verdict selects the branch:
+        ``route_via_orchestrator`` decides whether the ADR 036 chat-vs-agent
+        verdict runs at all:
 
-        - ``chat`` - no thread, no session, no checklist: produce a
-          conversational reply (local Qwen) and return it for the caller to post.
-        - A non-chat verdict opens a durable EmberVM session thread and queues
-          the raw prompt for the selected repo.
+        - True (the mention/ambient path): the bot has to judge whether a message
+          aimed at it is a task or conversation, so a ``chat`` verdict returns a
+          conversational reply and opens no thread.
+        - False (the ``/agent`` slash command): the invoker already made that
+          judgement by running the command and choosing a repo, so ALWAYS open a
+          thread and start a session. Letting a model overrule an explicit
+          invocation is how a deliberate ``/agent`` ends up answered with a chat
+          summary and no session. Skipping the call also removes a paid
+          OpenRouter round trip from every ``/agent``.
 
         Does not send origin-channel acknowledgements. Returns an
         :class:`AgentFlowOutcome`.
@@ -1262,19 +1273,22 @@ class ChatBot(discord.Client):
         guild_id = str(channel.guild.id) if channel.guild else ""
         channel_id = str(channel.id)
 
-        verdict = await self._orchestrator_verdict(
-            guild_id, channel_id, user, prompt, repo
-        )
+        if route_via_orchestrator:
+            verdict = await self._orchestrator_verdict(
+                guild_id, channel_id, user, prompt, repo
+            )
 
-        if isinstance(verdict, orchestrator.ChatVerdict):
-            reply, files, proposals = await self._orchestrator_chat_reply(
-                channel_id, prompt, verdict, str(user.id)
-            )
-            return AgentFlowOutcome(
-                chat_reply=reply,
-                generated_files=files,
-                pending_proposal=proposals,
-            )
+            if isinstance(verdict, orchestrator.ChatVerdict):
+                reply, files, proposals = await self._orchestrator_chat_reply(
+                    channel_id, prompt, verdict, str(user.id)
+                )
+                return AgentFlowOutcome(
+                    chat_reply=reply,
+                    generated_files=files,
+                    pending_proposal=proposals,
+                )
+        else:
+            verdict = None
 
         # Agent sessions use the selected repo directly. The orchestrator's
         # conversational verdict above remains unchanged.
