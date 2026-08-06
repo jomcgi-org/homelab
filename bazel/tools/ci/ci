@@ -286,7 +286,7 @@ cmd_test() {
 	# (recycle-runner=false) ran out of disk the same way.
 	local out
 	out="$(mktemp)"
-	trap 'rm -f "${out:-}"' RETURN
+	trap 'rm -f "${out:-}"' RETURN INT TERM
 	local bb_status=0
 	local esc=$'\x1b'
 	bb remote --os=linux --arch=amd64 \
@@ -297,8 +297,8 @@ cmd_test() {
 	# bb remote exits 0 when the remote ACTION fails, so require positive evidence
 	# of a test summary before accepting (#4118). Diagnose red test runs before
 	# runner failures because a genuine red run can include both outputs.
-	if grep -qE 'Executed [0-9]+ out of [0-9]+ tests' "$out"; then
-		if grep -qE 'Executed [0-9]+ out of [0-9]+ tests.* fail' "$out" ||
+	if grep -qE 'Executed [0-9]+ out of [0-9]+ tests?' "$out"; then
+		if grep -qE 'Executed [0-9]+ out of [0-9]+ tests?.* fail' "$out" ||
 			grep -qE "(^|${esc}\[[0-9;]*m)//[^ ]+ +(FAILED|TIMEOUT) in" "$out"; then
 			err "the run reported test failures, so this is a red run, not an infra failure"
 			return 1
@@ -308,7 +308,7 @@ cmd_test() {
 		err "remote runner failed before or while running tests (see output above, issue #4118)"
 		return 1
 	fi
-	if ! grep -qE 'Executed [0-9]+ out of [0-9]+ tests' "$out"; then
+	if ! grep -qE 'Executed [0-9]+ out of [0-9]+ tests?' "$out"; then
 		err "no bazel test summary was found, so nothing was verified (issue #4118)"
 		if [[ "$bb_status" -ne 0 ]]; then
 			return "$bb_status"

@@ -90,6 +90,10 @@ cat >"$TMP/green_run" <<'EOF'
 INFO: Analyzed 361 targets
 Executed 3 out of 361 tests: 361 tests pass.
 EOF
+cat >"$TMP/singular_green_run" <<'EOF'
+INFO: Analyzed 1 target
+Executed 1 out of 1 test: 1 test passes.
+EOF
 cat >"$TMP/action_failed" <<'EOF'
 Command failed: exit status 1
 
@@ -125,6 +129,12 @@ Executed 10 out of 10 tests: 8 tests pass, 2 fail locally.
 Command failed: exit status 3
 Action failed: exit status 1
 EOF
+cat >"$TMP/singular_red_run_with_runner_markers" <<'EOF'
+//projects/foo:bar    FAILED in 0.4s
+Executed 1 out of 1 test: 1 fails locally.
+Command failed: exit status 3
+Action failed: exit status 1
+EOF
 
 run_behavioral_case() {
 	local name="$1"
@@ -152,6 +162,7 @@ run_behavioral_case() {
 }
 
 run_behavioral_case "green_run_passes" "$TMP/green_run" 0 0
+run_behavioral_case "singular_green_passes" "$TMP/singular_green_run" 0 0
 run_behavioral_case "action_failed_caught" "$TMP/action_failed" 0 1
 run_behavioral_case "missing_summary_caught" "$TMP/missing_summary" 0 1
 run_behavioral_case "bb_failure_propagates" "$TMP/bb_failure" 1 1
@@ -177,6 +188,26 @@ if [[ "$red_run_status" -ne 0 ]] &&
 	pass "red_run_diagnosed_as_red"
 else
 	fail "red_run_diagnosed_as_red" "expected red-run diagnosis, got exit $red_run_status: $(tr '\n' ' ' <"$red_run_output")"
+fi
+
+singular_red_stderr="$TMP/singular_red_diagnosed.err"
+singular_red_stdout="$TMP/singular_red_diagnosed.out"
+singular_red_status=0
+if (cd "$FAKE_ROOT" && HOME="$TMP/singular_red_diagnosed-home" \
+	XDG_CACHE_HOME="$TMP/singular_red_diagnosed-xdg-cache" \
+	PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
+	BB_FIXTURE="$TMP/singular_red_run_with_runner_markers" BB_STATUS=0 "$CI" test \
+	>"$singular_red_stdout" 2>"$singular_red_stderr"); then
+	singular_red_status=0
+else
+	singular_red_status=$?
+fi
+if [[ "$singular_red_status" -ne 0 ]] &&
+	grep -qF "the run reported test failures, so this is a red run" "$singular_red_stderr" &&
+	! grep -qF "remote runner failed" "$singular_red_stderr"; then
+	pass "singular_red_diagnosed"
+else
+	fail "singular_red_diagnosed" "expected red-run diagnosis, got exit $singular_red_status: $(tr '\n' ' ' <"$singular_red_stderr")"
 fi
 
 echo "--- $PASS passed, $FAIL failed ---"
