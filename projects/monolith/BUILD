@@ -3146,6 +3146,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
+        ":pkg_agent_sessions",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -3609,6 +3610,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
+        ":pkg_agent_sessions",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",

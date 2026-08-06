@@ -15,6 +15,11 @@ class AgentSession(SQLModel, table=True):
     workspace: str
     branch: str
     repo: str | None = None
+    # The Discord thread this session is bound to, or None for a session started
+    # from the /agents UI or an MCP tool. Unique so a thread can never fan out to
+    # two sessions; Postgres allows many NULLs under a unique constraint, so the
+    # unbound sessions are unaffected.
+    discord_thread: str | None = Field(default=None, unique=True, index=True)
     model: str | None = Field(default=None)
     cli_session_id: str | None = Field(
         default=None

@@ -15,6 +15,11 @@ from pydantic_ai import (
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
+from agent_sessions import api as agent_session_api
+from agent_sessions import mcp as agent_session_mcp
+from agent_sessions import store as agent_session_store
+from agent_sessions.models import AgentSession
+from agent_sessions.transport import Turn
 from chat.bot import ChatBot, create_bot, should_respond
 from chat.models import ReactionEvent
 
@@ -349,8 +354,7 @@ class TestStreamResponseContext:
 
 
 # ---------------------------------------------------------------------------
-# ChatBot._maybe_handle_goosecracker_reply -- agent-thread ACL gate + steering
-# (ADR 035 Phase 2)
+# ChatBot._maybe_handle_agent_thread_reply -- owner-only agent-session routing
 # ---------------------------------------------------------------------------
 
 
@@ -369,58 +373,195 @@ def _make_goosecracker_mock(**overrides) -> MagicMock:
     return mock
 
 
-class TestGoosecrackerReplySteering:
+class TestAgentSessionReplyOwnership:
     @pytest.mark.asyncio
-    async def test_permitted_user_steering_gets_running_reaction(self):
-        """A user holding the agent grant for the thread's repo steers a running
-        turn: 👀 reaction, no text reply, continue_session is called."""
+    async def test_owner_reply_is_queued_for_the_bound_session(
+        self, monkeypatch, engine
+    ):
+        """Only the configured owner can queue a follow-up agent turn."""
+        for module in (agent_session_api, agent_session_mcp, agent_session_store):
+            monkeypatch.setattr(module, "get_engine", lambda: engine)
+        with Session(engine) as session:
+            agent_session_store.create_session(
+                session,
+                "bound-thread",
+                "<guest>",
+                "main",
+                "luna",
+                discord_thread="555",
+            )
         bot = _make_bot()
         message = _make_message(content="also add tests", channel_id=555, msg_id=7)
         message.add_reaction = AsyncMock()
 
-        mock_gc = _make_goosecracker_mock()
-        mock_acl = MagicMock()
-        mock_acl.is_granted = MagicMock(return_value=True)
-
         with (
-            patch("chat.bot.goosecracker", mock_gc),
-            patch("chat.bot.acl", mock_acl),
+            patch("chat.bot.acl.is_owner", return_value=True),
+            patch(
+                "agent_sessions.api.send_to_thread_session",
+                AsyncMock(return_value={"action": "queued"}),
+            ) as send,
             patch.object(bot, "_complete_lock", MagicMock()),
         ):
-            handled = await bot._maybe_handle_goosecracker_reply(message)
+            handled = await bot._maybe_handle_agent_thread_reply(message)
 
         assert handled is True
-        mock_gc.continue_session.assert_called_once()
-        message.add_reaction.assert_called_once_with(mock_gc.REACTION_RUNNING)
+        send.assert_awaited_once_with("555", "also add tests")
+        message.add_reaction.assert_awaited_once_with("⏳")
         message.reply.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unpermitted_user_gets_refusal_and_nothing_enqueued(self):
-        """A user without the agent grant for the thread's repo gets a refusal
-        reply naming the missing grant; continue_session is never called."""
+    async def test_non_owner_gets_owner_only_refusal_and_nothing_enqueued(self):
+        """A non-owner cannot continue a bound session, regardless of repo ACLs."""
         bot = _make_bot()
         message = _make_message(content="also add tests", channel_id=555, msg_id=7)
         message.add_reaction = AsyncMock()
 
-        mock_gc = _make_goosecracker_mock()
-        mock_acl = MagicMock()
-        mock_acl.is_granted = MagicMock(return_value=False)
-        mock_acl.allowed_scopes = MagicMock(return_value={"otherrepo"})
-
         with (
-            patch("chat.bot.goosecracker", mock_gc),
-            patch("chat.bot.acl", mock_acl),
+            patch("chat.bot.acl.is_owner", return_value=False),
+            patch("agent_sessions.api.session_id_for_thread", return_value=3),
+            patch("agent_sessions.api.send_to_thread_session", AsyncMock()) as send,
             patch.object(bot, "_complete_lock", MagicMock()),
         ):
-            handled = await bot._maybe_handle_goosecracker_reply(message)
+            handled = await bot._maybe_handle_agent_thread_reply(message)
 
         assert handled is True
-        mock_gc.continue_session.assert_not_called()
-        message.reply.assert_called_once()
-        refusal = message.reply.call_args[0][0]
-        assert "homelab" in refusal
-        assert "otherrepo" in refusal
+        send.assert_not_awaited()
+        message.reply.assert_awaited_once_with(
+            "Only the configured owner can continue agent sessions."
+        )
         message.add_reaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_owner_ambient_engage_returns_refusal_without_session(
+    monkeypatch, engine
+):
+    monkeypatch.setenv("OWNER_DISCORD_USER_ID", "999")
+    bot = _make_bot()
+    bot._complete_lock = MagicMock()
+    bot.start_agent_flow = AsyncMock()
+    message = _make_message(content="build it")
+    message.channel = MagicMock(spec=discord.TextChannel)
+    message.channel.id = 99
+    message.channel.guild = None
+
+    outcome = await bot._engage_agent(message)
+
+    assert outcome is not None
+    assert outcome.chat_reply == (
+        "Only the configured owner can start or continue agent sessions."
+    )
+    bot.start_agent_flow.assert_not_awaited()
+    with Session(engine) as session:
+        assert len(session.exec(select(AgentSession)).all()) == 0
+    # AMBIENT (no mention, no reply-to-bot): refused SILENTLY. A channel that
+    # merely opted into ambient mode must not fill with refusals aimed at people
+    # who were not addressing the bot.
+    message.reply.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_owner_explicit_mention_gets_spoken_refusal(monkeypatch, engine):
+    """An EXPLICIT trigger is refused out loud, unlike the ambient case above."""
+    monkeypatch.setenv("OWNER_DISCORD_USER_ID", "999")
+    bot = _make_bot()
+    bot._complete_lock = MagicMock()
+    bot.start_agent_flow = AsyncMock()
+    message = _make_message(content="build it", mentions=[bot.user])
+    message.channel = MagicMock(spec=discord.TextChannel)
+    message.channel.id = 99
+    message.channel.guild = None
+
+    outcome = await bot._engage_agent(message)
+
+    bot.start_agent_flow.assert_not_awaited()
+    message.reply.assert_awaited_once_with(outcome.chat_reply)
+    with Session(engine) as session:
+        assert len(session.exec(select(AgentSession)).all()) == 0
+
+
+@pytest.mark.asyncio
+async def test_non_owner_slash_agent_returns_refusal_without_session(
+    monkeypatch, engine
+):
+    monkeypatch.setenv("OWNER_DISCORD_USER_ID", "999")
+    bot = _make_bot()
+    interaction = MagicMock()
+    interaction.user.id = 42
+    interaction.channel = MagicMock(spec=discord.TextChannel)
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await bot._handle_agent_command(interaction, "build it", "")
+
+    with Session(engine) as session:
+        assert len(session.exec(select(AgentSession)).all()) == 0
+    interaction.followup.send.assert_awaited_once_with(
+        "Only the configured owner can start or continue agent sessions."
+    )
+
+
+@pytest.mark.asyncio
+async def test_owner_slash_flow_creates_luna_session_bound_to_thread(
+    monkeypatch, engine
+):
+    monkeypatch.setenv("OWNER_DISCORD_USER_ID", "42")
+    for module in (agent_session_api, agent_session_mcp, agent_session_store):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    monkeypatch.setattr(agent_session_api, "_schedule_next_message", lambda _id: None)
+    bot = _make_bot()
+    bot._orchestrator_verdict = AsyncMock(
+        return_value=__import__("chat.orchestrator", fromlist=["FailOpen"]).FailOpen(
+            "test"
+        )
+    )
+    channel = _flow_channel()
+    thread = MagicMock(id=555, mention="<#555>")
+    thread.send = AsyncMock()
+    channel.create_thread = AsyncMock(return_value=thread)
+
+    outcome = await bot.start_agent_flow(
+        channel, SimpleNamespace(id=42, mention="<@42>"), "build it", "jomcgi/homelab"
+    )
+
+    assert outcome.thread is thread
+    with Session(engine) as session:
+        row = session.exec(select(AgentSession)).one()
+        assert row.model == "luna"
+        assert row.repo == "jomcgi/homelab"
+        assert row.discord_thread == "555"
+
+
+@pytest.mark.asyncio
+async def test_unbound_agent_thread_reply_falls_through(monkeypatch, engine):
+    for module in (agent_session_api, agent_session_mcp, agent_session_store):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    bot = _make_bot()
+    message = _make_message(content="continue")
+    message.channel.id = 555
+
+    assert await bot._maybe_handle_agent_thread_reply(message) is False
+
+
+@pytest.mark.asyncio
+async def test_terminal_notification_routes_to_thread_or_default_channel(monkeypatch):
+    calls = []
+
+    async def notify(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(agent_session_mcp.agent_api, "notify", notify)
+    turn = Turn("done", "completed", "end_turn", False, [], 1, "s", {}, 0, 1, [])
+    bound = AgentSession(
+        local_session_id="s", workspace="w", branch="main", discord_thread="555"
+    )
+    default = AgentSession(local_session_id="default", workspace="w", branch="main")
+
+    await agent_session_mcp._notify_terminal(turn, "done", "completed", bound)
+    await agent_session_mcp._notify_terminal(turn, "done", "completed", default)
+
+    assert calls[0][1]["channel"] == "555"
+    assert calls[1][1]["channel"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -430,12 +571,15 @@ class TestGoosecrackerReplySteering:
 
 class TestAttentionGate:
     @pytest.mark.asyncio
-    async def test_mention_in_ambient_channel_with_grant_starts_agent_flow(self):
-        """A mention in an AMBIENT channel where the author holds the agent
-        grant runs the shared agent flow off the trigger message, and
+    async def test_mention_in_ambient_channel_by_owner_starts_agent_flow(
+        self, monkeypatch
+    ):
+        """A mention in an AMBIENT channel from the owner runs the shared agent
+        flow off the trigger message, and
         completes the lock (Phase 3 containment: agent-triggering only fires
         in opted-in channels)."""
         bot = _make_bot()
+        monkeypatch.setenv("OWNER_DISCORD_USER_ID", "42")
         bot_user = bot.user
 
         message = _make_message(content="hey bot help", mentions=[bot_user])
@@ -453,14 +597,16 @@ class TestAttentionGate:
             patch("chat.bot.acl.ambient_channels", return_value={"99"}),
             patch("chat.bot.directives.get_active", return_value=""),
             patch("chat.bot.directives.get_active_version", return_value=0),
-            patch("chat.bot.acl.feature_enabled", return_value=True),
-            patch("chat.bot.acl.is_granted", return_value=True),
             patch("chat.bot.attention_log.log_decision", MagicMock()),
             patch(
                 "chat.bot.attention.needs_agent", AsyncMock(return_value=True)
             ) as mock_needs_agent,
             patch.object(
-                bot, "start_agent_flow", AsyncMock(return_value=MagicMock())
+                bot,
+                "start_agent_flow",
+                AsyncMock(
+                    return_value=SimpleNamespace(chat_reply=None, thread=MagicMock())
+                ),
             ) as mock_start_flow,
             patch.object(bot, "_complete_lock", MagicMock()) as mock_complete_lock,
         ):
@@ -602,11 +748,13 @@ class TestAttentionGate:
             mock_engage_agent.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_mention_in_ambient_channel_without_grant_gets_refusal(self):
-        """A mention in an ambient channel from a user lacking the agent grant
-        gets a refusal reply naming the allowed scopes; start_agent_flow is
-        never called."""
+    async def test_mention_in_ambient_channel_by_non_owner_gets_refusal(
+        self, monkeypatch
+    ):
+        """A non-owner ambient mention gets the owner-only refusal without
+        reaching the session-start flow."""
         bot = _make_bot()
+        monkeypatch.setenv("OWNER_DISCORD_USER_ID", "999")
         bot_user = bot.user
 
         message = _make_message(content="hey bot help", mentions=[bot_user])
@@ -624,9 +772,6 @@ class TestAttentionGate:
             patch("chat.bot.acl.ambient_channels", return_value={"99"}),
             patch("chat.bot.directives.get_active", return_value=""),
             patch("chat.bot.directives.get_active_version", return_value=0),
-            patch("chat.bot.acl.feature_enabled", return_value=True),
-            patch("chat.bot.acl.is_granted", return_value=False),
-            patch("chat.bot.acl.allowed_scopes", return_value={"homelab"}),
             patch("chat.bot.attention_log.log_decision", MagicMock()),
             patch("chat.bot.attention.needs_agent", AsyncMock(return_value=True)),
             patch.object(bot, "start_agent_flow", AsyncMock()) as mock_start_flow,
@@ -639,9 +784,9 @@ class TestAttentionGate:
             await bot.on_message(message)
 
             mock_start_flow.assert_not_called()
-            message.reply.assert_called_once()
-            refusal = message.reply.call_args[0][0]
-            assert "homelab" in refusal
+            message.reply.assert_awaited_once_with(
+                "Only the configured owner can start or continue agent sessions."
+            )
             mock_complete_lock.assert_called_once_with(str(message.id))
 
     @pytest.mark.asyncio
@@ -1359,7 +1504,7 @@ class TestStartAgentFlowOrchestrator:
                 "_orchestrator_chat_reply",
                 AsyncMock(return_value=("here is a friendly answer", [], [])),
             ),
-            patch("chat.bot.goosecracker.start_agent_session") as mock_start_session,
+            patch("chat.bot.acl.is_owner", return_value=True),
         ):
             outcome = await bot.start_agent_flow(channel, user, "name my boat", "")
 
@@ -1367,16 +1512,18 @@ class TestStartAgentFlowOrchestrator:
         assert outcome.generated_files == []
         assert outcome.thread is None
         channel.create_thread.assert_not_called()
-        mock_start_session.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_plan_verdict_submits_raw_task_and_prerenders_checklist_from_plan(
+    async def test_plan_verdict_opens_thread_and_submits_raw_prompt(
         self,
     ):
-        """A PlanVerdict opens a thread, submits the RAW prompt as the task (the
-        plan supersedes the advisory brief, so no brief markdown is prepended),
-        threads the plan through to start_agent_session, and pre-renders the
-        checklist from the plan's step stage-titles."""
+        """A PlanVerdict opens a thread and submits the RAW prompt.
+
+        The plan itself is no longer consumed: its only reader was the retired
+        goosecracker runner, which delivered it to the guest via injectedContext.
+        Agent sessions take the prompt alone, so a PlanVerdict now behaves
+        exactly like a FailOpen here. Kept as a regression test that a non-chat
+        verdict still opens a thread rather than silently doing nothing."""
         from chat import orchestrator
         from chat.orchestrator_plan import Plan, PlanStep
 
@@ -1404,24 +1551,26 @@ class TestStartAgentFlowOrchestrator:
         )
         with (
             patch.object(bot, "_orchestrator_verdict", AsyncMock(return_value=verdict)),
-            patch("chat.bot.goosecracker.start_agent_session") as mock_start_session,
-            patch.object(bot, "_start_goosecracker_stream") as mock_stream,
+            patch("chat.bot.acl.is_owner", return_value=True),
+            patch(
+                "agent_sessions.api.start_session_for_thread", new_callable=AsyncMock
+            ) as start_session,
         ):
             outcome = await bot.start_agent_flow(channel, user, "raw prompt", "")
 
         assert outcome.thread is thread
         # The submitted task is the raw prompt (ground truth), never brief-prefixed.
-        task = mock_start_session.call_args.kwargs["task"]
-        assert task == "raw prompt"
-        assert "Task brief" not in task
-        # The validated plan is threaded through so the runner renders the router.
-        assert mock_start_session.call_args.kwargs["plan"] is plan
-        # The checklist is pre-rendered from the plan's step stage-titles (the
-        # same mapping the rendered router's progress markers use: query ->
-        # "Answering", implement -> "Implementing").
+        # None, not "", because start_session_for_thread validates a non-None repo
+        # against REPO_CATALOG.
+        start_session.assert_awaited_once_with("555", "raw prompt", None)
+        # The echo is an attributed, FENCED block (_format_agent_prompt_echo), so
+        # match on the prompt being inside it rather than on the exact framing.
+        # The checklist that used to be pre-rendered here from the plan's steps is
+        # gone with the plan itself, so the intro is now the bare placeholder.
         sent_bodies = [c.args[0] for c in thread.send.call_args_list]
-        assert any("Answering" in b and "Implementing" in b for b in sent_bodies)
-        mock_stream.assert_called_once()
+        assert sent_bodies[0].startswith("Prompt from ")
+        assert "raw prompt" in sent_bodies[0]
+        assert sent_bodies[1] == "🤖 Planning..."
 
     @pytest.mark.asyncio
     async def test_failopen_preserves_raw_prompt_submit(self):
@@ -1440,13 +1589,17 @@ class TestStartAgentFlowOrchestrator:
         verdict = orchestrator.FailOpen("orchestrator disabled")
         with (
             patch.object(bot, "_orchestrator_verdict", AsyncMock(return_value=verdict)),
-            patch("chat.bot.goosecracker.start_agent_session") as mock_start_session,
-            patch.object(bot, "_start_goosecracker_stream"),
+            patch("chat.bot.acl.is_owner", return_value=True),
+            patch(
+                "agent_sessions.api.start_session_for_thread", new_callable=AsyncMock
+            ) as start_session,
         ):
             outcome = await bot.start_agent_flow(channel, user, "raw prompt", "")
 
         assert outcome.thread is thread
-        assert mock_start_session.call_args.kwargs["task"] == "raw prompt"
+        # A repo-less run passes None, not "": start_session_for_thread validates
+        # any non-None repo against REPO_CATALOG, and "" is not in it.
+        start_session.assert_awaited_once_with("777", "raw prompt", None)
         sent_bodies = [c.args[0] for c in thread.send.call_args_list]
         assert "🤖 Planning..." in sent_bodies
 

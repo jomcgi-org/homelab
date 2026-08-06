@@ -890,7 +890,7 @@ class ChatBot(discord.Client):
         # instead of going to the chat agent. Only threads can be goosecracker
         # sessions, so the DB lookup is skipped for ordinary channels.
         if isinstance(message.channel, discord.Thread):
-            if await self._maybe_handle_goosecracker_reply(message):
+            if await self._maybe_handle_agent_thread_reply(message):
                 return
 
         # Trust safeguards (ADR chat/003): heuristic signals update the
@@ -1198,27 +1198,7 @@ class ChatBot(discord.Client):
         requires that the caller hold some agent grant in this server, so a
         repo-less run is permitted wherever /agent is; a non-empty repo must be
         in the server's grants."""
-        guild_id = interaction.guild_id
         repo = repo.strip()
-        if not await asyncio.to_thread(acl.feature_enabled, guild_id, "agent"):
-            await interaction.response.send_message(
-                "/agent isn't enabled in this server.", ephemeral=True
-            )
-            return
-        if not await asyncio.to_thread(
-            acl.is_granted, guild_id, interaction.user.id, "agent", repo
-        ):
-            scopes = await asyncio.to_thread(
-                acl.allowed_scopes, guild_id, interaction.user.id, "agent"
-            )
-            allowed = ", ".join(sorted(scopes)) or "none"
-            target = f"'{repo}'" if repo else "an artifact (no repo)"
-            await interaction.response.send_message(
-                f"This server can't run /agent on {target}. Allowed here: {allowed}.",
-                ephemeral=True,
-            )
-            return
-
         channel = interaction.channel
         if not isinstance(channel, discord.TextChannel):
             await interaction.response.send_message(
@@ -1269,22 +1249,16 @@ class ChatBot(discord.Client):
 
         - ``chat`` - no thread, no session, no checklist: produce a
           conversational reply (local Qwen) and return it for the caller to post.
-        - ``goose`` (a :class:`~chat.orchestrator.PlanVerdict`) - open a session
-          thread as today, but hand the guest the raw user prompt (the plan
-          supersedes the advisory brief, so it is never prepended) plus the
-          validated runtime :class:`~chat.orchestrator_plan.Plan`: the runner
-          delivers a rendered router + plan file via ``injectedContext``
-          instead of the baked ``recipe="agent"`` path (Task 6 of the
-          runtime-recipes plan). Pre-renders the checklist from the plan's
-          steps.
-        - ``FailOpen`` (disabled, ungranted, unreachable, unparseable, or an
-          unusable/invalid plan) - EXACT pre-036 behaviour: open a thread and
-          submit the raw prompt with no plan, i.e. the baked ``recipe="agent"``
-          path. This is the safety net (Design invariant 2).
+        - A non-chat verdict opens a durable EmberVM session thread and queues
+          the raw prompt for the selected repo.
 
-        Does NOT do ACL checks or send origin-channel acks (the caller owns
-        those). Returns an :class:`AgentFlowOutcome`.
+        Does not send origin-channel acknowledgements. Returns an
+        :class:`AgentFlowOutcome`.
         """
+        if not acl.is_owner(user.id):
+            return AgentFlowOutcome(
+                chat_reply="Only the configured owner can start or continue agent sessions."
+            )
         guild_id = str(channel.guild.id) if channel.guild else ""
         channel_id = str(channel.id)
 
@@ -1302,20 +1276,9 @@ class ChatBot(discord.Client):
                 pending_proposal=proposals,
             )
 
-        # A PlanVerdict seeds the guest with a runtime plan; FailOpen (or any
-        # other non-plan verdict) keeps today's baked recipe="agent" raw path.
-        plan_verdict = (
-            verdict if isinstance(verdict, orchestrator.PlanVerdict) else None
-        )
-        # The plan already carries the ADR 029 out-of-scope repo replacement
-        # (orchestrator.compile substitutes the invoker's own scope when the
-        # model named a repo outside its grants); fall back to the invoker
-        # -supplied repo when the plan named none.
-        effective_repo = (
-            plan_verdict.repo
-            if plan_verdict is not None and plan_verdict.repo
-            else repo
-        )
+        # Agent sessions use the selected repo directly. The orchestrator's
+        # conversational verdict above remains unchanged.
+        effective_repo = repo
 
         name = f"agent: {prompt}"[:90]
         try:
@@ -1325,20 +1288,14 @@ class ChatBot(discord.Client):
                 thread = await channel.create_thread(
                     name=name, type=discord.ChannelType.public_thread
                 )
-            # The plan supersedes the advisory brief: the task the guest
-            # executes is just the raw user prompt (ground truth), never
-            # brief-markdown-prefixed. The runtime router (built from the plan)
-            # is what actually drives the run, delivered via injectedContext.
-            # For failopen it is exactly the raw prompt too, so that path is
-            # byte-for-byte today's behaviour.
-            await asyncio.to_thread(
-                goosecracker.start_agent_session,
+            # Keep this import lazy because agent_sessions.api imports mcp,
+            # which reaches chat.api and then chat.bot during startup.
+            from agent_sessions.api import start_session_for_thread
+
+            await start_session_for_thread(
                 str(thread.id),
-                effective_repo,
                 prompt,
-                channel_id,
-                task=prompt,
-                plan=plan_verdict.plan if plan_verdict is not None else None,
+                effective_repo or None,
             )
             # ADR 036: the orchestrator wrote its telemetry row BEFORE this
             # thread existed (it decides whether to open one), so the row's
@@ -1352,7 +1309,7 @@ class ChatBot(discord.Client):
                     orchestrator.link_thread, brief_id, str(thread.id)
                 )
         except Exception:
-            logger.exception("goosecracker: failed to start agent session")
+            logger.exception("agent_sessions: failed to start agent session")
             return AgentFlowOutcome()
 
         try:
@@ -1361,39 +1318,11 @@ class ChatBot(discord.Client):
             # not the intro (which the progress stream live-edits and would clobber).
             await thread.send(_format_agent_prompt_echo(user, prompt))
         except Exception:
-            logger.exception("goosecracker: failed to post agent prompt echo")
+            logger.exception("agent_sessions: failed to post agent prompt echo")
         try:
-            # ADR 035: a bare "Planning..." placeholder, not a progress claim.
-            # For a PlanVerdict, pre-render the checklist from the plan's ordered
-            # steps (using the same stage-title mapping the rendered router's
-            # progress markers use, so the checklist matches) so the owner sees
-            # the plan before the guest's own ::stages:: markers arrive;
-            # render_checklist then takes over.
-            intro_content = "🤖 Planning..."
-            if plan_verdict is not None and plan_verdict.plan.steps:
-                # Cross-domain: reach goosecracker only through its api facade
-                # (import_boundaries_test). Kept lazy because this module
-                # (chat.bot) already imports chat.orchestrator at module load,
-                # so a top-level goosecracker.api import risks a circular-import
-                # shape. Distinct name from the `chat.goosecracker` module this
-                # file imports as `goosecracker`, to avoid shadowing it.
-                from goosecracker.api import stage_title
-
-                synthetic = goosecracker_progress.Progress(
-                    stages=[
-                        goosecracker_progress.Stage(
-                            index=i, title=stage_title(step), state="pending"
-                        )
-                        for i, step in enumerate(plan_verdict.plan.steps)
-                    ]
-                )
-                rendered = render_checklist(synthetic)
-                if rendered:
-                    intro_content = rendered
-            intro = await thread.send(intro_content)
-            self._start_goosecracker_stream(str(thread.id), intro, kind="agent")
+            await thread.send("🤖 Planning...")
         except Exception:
-            logger.exception("goosecracker: failed to post agent thread intro")
+            logger.exception("agent_sessions: failed to post agent thread intro")
         return AgentFlowOutcome(thread=thread)
 
     async def _orchestrator_verdict(
@@ -1696,14 +1625,23 @@ class ChatBot(discord.Client):
                 gp.clear(artifact_id)
                 return
 
-    async def _maybe_handle_goosecracker_reply(self, message: discord.Message) -> bool:
-        """Handle a reply inside a goosecracker thread (Model B re-run).
+    async def _maybe_handle_agent_thread_reply(self, message: discord.Message) -> bool:
+        """Queue an owner reply for the agent session bound to its thread.
 
-        Returns True when the message was a goosecracker thread message (handled,
-        so the caller skips the chat agent), False otherwise.
+        Looks up the session bound to the message thread, gates continuation on
+        the configured owner, and queues a turn. Returns True when the message
+        was handled and the caller should skip the chat agent, and False when
+        this thread has no bound agent session.
         """
+        # Import lazily because agent_sessions.api imports mcp, which reaches
+        # chat.api and then chat.bot during startup.
+        import agent_sessions.api
+
         thread_id = str(message.channel.id)
-        if not await asyncio.to_thread(goosecracker.is_goosecracker_thread, thread_id):
+        session_id = await asyncio.to_thread(
+            agent_sessions.api.session_id_for_thread, thread_id
+        )
+        if session_id is None:
             return False
 
         msg_id = str(message.id)
@@ -1712,39 +1650,20 @@ class ChatBot(discord.Client):
         if message.author.bot:
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
-        # Goosecracker threads are per-server ACL gated on the session's own repo
-        # scope (ADR 035 Phase 2): steering or continuing an in-flight turn needs
-        # the same `agent` grant that opened it. A repo-less run (an artifact the
-        # agent built with no repo) uses the empty scope.
-        guild_id = message.guild.id if message.guild else None
-        repo = await asyncio.to_thread(goosecracker.session_scope, thread_id) or ""
-        if not await asyncio.to_thread(
-            acl.is_granted, guild_id, message.author.id, "agent", repo
-        ):
-            scopes = await asyncio.to_thread(
-                acl.allowed_scopes, guild_id, message.author.id, "agent"
-            )
-            allowed = ", ".join(sorted(scopes)) or "none"
-            roast = await goosecracker.build_roast(message.content)
-            target = f"`{repo}`" if repo else "this"
+        if not acl.is_owner(message.author.id):
             await message.reply(
-                f"{roast}\nYou'd need an `agent` grant for {target} in this "
-                f"server to steer here. Allowed here: {allowed}."
+                "Only the configured owner can continue agent sessions."
             )
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
 
         try:
-            result = await asyncio.to_thread(
-                goosecracker.continue_session,
-                thread_id,
-                message.content,
-                msg_id,
-                author_id=str(message.author.id),
+            result = await agent_sessions.api.send_to_thread_session(
+                thread_id, message.content
             )
         except Exception:
-            logger.exception("goosecracker: failed to continue session")
-            await message.reply("Couldn't rebuild that one. Check the logs.")
+            logger.exception("agent_sessions: failed to continue session")
+            await message.reply("Couldn't send that to the session. Check the logs.")
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True
 
@@ -1752,66 +1671,38 @@ class ChatBot(discord.Client):
             # Lost a race with session teardown; let normal handling take it.
             return False
 
-        action = result.get("action") if isinstance(result, dict) else None
-
-        if action == "queued":
-            # A turn is already running; the reply was queued for the next turn.
-            # Acknowledge with a ⏳ reaction on the user's own message instead of a
-            # text reply, so a burst of replies does not spam the thread. The
-            # runner flips it ⏳ → 👀 → ✅/❌ as the queued turn runs and finishes.
-            try:
-                await message.add_reaction(goosecracker.REACTION_QUEUED)
-            except discord.HTTPException:
-                logger.exception("goosecracker: failed to react queued on %s", msg_id)
-            await asyncio.to_thread(self._complete_lock, msg_id)
-            return True
-
-        if action == "steering":
-            # A turn is already running; the reply was enqueued as steering
-            # (ADR 035 Phase 2) rather than queued behind the turn. Acknowledge
-            # with 👀 directly (no ⏳ stage: it is not waiting for a slot, it will
-            # be picked up by the running guest at its next stage boundary).
-            try:
-                await message.add_reaction(goosecracker.REACTION_RUNNING)
-            except discord.HTTPException:
-                logger.exception("goosecracker: failed to react steering on %s", msg_id)
-            await asyncio.to_thread(self._complete_lock, msg_id)
-            return True
-
-        # Otherwise a new turn was dispatched (session was idle or reclaimed).
-        # ADR 035: see the matching comment in _handle_agent_command.
-        progress_msg = await message.reply("🤖 Planning...")
-        self._start_goosecracker_stream(thread_id, progress_msg, kind="agent")
+        try:
+            await message.add_reaction("⏳")
+        except discord.HTTPException:
+            logger.exception("agent_sessions: failed to react queued on %s", msg_id)
         await asyncio.to_thread(self._complete_lock, msg_id)
         return True
 
-    async def _engage_agent(self, message: discord.Message) -> None:
+    async def _engage_agent(self, message: discord.Message) -> AgentFlowOutcome | None:
         """A mention/reply/ambient engage: run the /agent flow (repo-less) off
-        this message, applying the same agent ACL check as ``/agent``. On a
-        missing grant, an EXPLICIT trigger (mention/reply) gets a short
-        refusal; an ambient engage stays silent (no spam in a channel nobody
-        asked the bot into). Marks the message lock completed either way.
+        this message, applying the owner-only agent gate. On a non-owner, an
+        EXPLICIT trigger (mention/reply) gets a short refusal; an ambient engage
+        stays silent (no spam in a channel nobody asked the bot into). Marks the
+        message lock completed either way.
+
+        The gate is duplicated here and in ``start_agent_flow`` on purpose. The
+        one in the shared flow is the security chokepoint, covering the slash
+        command too; this one exists so an ambient engage can be refused
+        SILENTLY, which the shared flow cannot express (it returns a chat_reply
+        its callers post).
         """
-        guild_id = message.guild.id if message.guild else None
         user = message.author
-        granted = await asyncio.to_thread(
-            acl.feature_enabled, guild_id, "agent"
-        ) and await asyncio.to_thread(acl.is_granted, guild_id, user.id, "agent", "")
-        explicit = should_respond(message, self.user)
-        if not granted:
-            if explicit:
-                scopes = await asyncio.to_thread(
-                    acl.allowed_scopes, guild_id, user.id, "agent"
-                )
-                allowed = ", ".join(sorted(scopes)) or "none"
+        if not acl.is_owner(user.id):
+            outcome = AgentFlowOutcome(
+                chat_reply="Only the configured owner can start or continue agent sessions."
+            )
+            if should_respond(message, self.user):
                 try:
-                    await message.reply(
-                        f"I can't run the agent for you here. Allowed: {allowed}."
-                    )
+                    await message.reply(outcome.chat_reply)
                 except discord.HTTPException:
-                    logger.exception("agent: failed to send refusal")
+                    logger.exception("agent: failed to send owner-only refusal")
             await asyncio.to_thread(self._complete_lock, str(message.id))
-            return
+            return outcome
 
         channel = message.channel
         if not isinstance(channel, discord.TextChannel):
@@ -1891,12 +1782,13 @@ class ChatBot(discord.Client):
                     )
             except discord.HTTPException:
                 logger.exception("orchestrator: failed to send chat reply")
-        elif outcome.thread is None and explicit:
+        elif outcome.thread is None:
             try:
                 await message.reply("Couldn't start that one. Check the logs.")
             except discord.HTTPException:
                 logger.exception("agent: failed to send start-failure reply")
         await asyncio.to_thread(self._complete_lock, str(message.id))
+        return outcome
 
     def _complete_lock(self, msg_id: str) -> None:
         """Mark a message lock completed (sync; call via asyncio.to_thread)."""

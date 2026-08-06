@@ -25,6 +25,7 @@ from sqlmodel import Session, select
 
 from core.db import get_engine
 from chat.models import GoosecrackerSession, GoosecrackerSteering, Message
+from chat.acl import is_owner, owner_id
 
 if TYPE_CHECKING:
     from chat import orchestrator_plan
@@ -63,22 +64,6 @@ AGENT_TIER = ""
 # Shown when the owner gate rejects someone and the qwen roast path is
 # unavailable (model down), so a non-owner always gets a clear refusal.
 _FALLBACK_ROAST = "Nice try. You need an agent grant to drive that thread."
-
-
-def owner_id() -> str:
-    """The configured owner Discord user id, or "" when unset."""
-    return os.environ.get("OWNER_DISCORD_USER_ID", "")
-
-
-def is_owner(user_id: int | str) -> bool:
-    """True only when an owner id is configured and matches.
-
-    Fails closed: an unset OWNER_DISCORD_USER_ID rejects everyone rather than
-    opening the agent (which runs arbitrary code in a microVM and spends model
-    budget) to the whole server.
-    """
-    owner = owner_id()
-    return bool(owner) and str(user_id) == owner
 
 
 def _join_transcript(existing: str, message: str) -> str:

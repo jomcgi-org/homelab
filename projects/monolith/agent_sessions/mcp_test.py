@@ -1094,7 +1094,7 @@ def test_notify_terminal_with_no_terminal_reason_warns(monkeypatch):
 
     notify_calls = []
 
-    async def mock_notify(summary, level):
+    async def mock_notify(summary, level, channel=None):
         notify_calls.append((summary, level))
 
     monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)

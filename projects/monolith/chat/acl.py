@@ -29,6 +29,23 @@ logger = logging.getLogger(__name__)
 LOOM_GUILD_ID = "1512814732392927463"
 
 
+def owner_id() -> str:
+    """Return the configured Discord owner id, or an empty id when unset."""
+    return os.environ.get("OWNER_DISCORD_USER_ID", "")
+
+
+def is_owner(user_id: int | str) -> bool:
+    """Return whether ``user_id`` is the configured owner.
+
+    This fails closed when ``OWNER_DISCORD_USER_ID`` is unset because agent
+    runs execute arbitrary code in a microVM and spend model budget. An absent
+    owner configuration must never turn that expensive capability into an
+    accidentally public one.
+    """
+    owner = owner_id()
+    return bool(owner) and str(user_id) == owner
+
+
 def _norm(value: object) -> str:
     """Discord ids arrive as int or str; grants store strings, "" for absent."""
     return "" if value is None else str(value)
