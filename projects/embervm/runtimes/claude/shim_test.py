@@ -1812,11 +1812,10 @@ def test_parked_claude_model_mismatch_respawns_with_resume(tmp_path, monkeypatch
     assert calls == [{"session_id": "sid", "first_message": "hello", "model": "opus"}]
 
 
-def test_claude_turn_timing_reports_spawn_adopt_and_remediation(
+def test_claude_turn_timing_reports_spawn_adopt_reuse_and_remediation(
     tmp_path, monkeypatch, capsys
 ):
     manager = _parked_claude(tmp_path)
-    manager.process.returncode = 0
 
     def spawn(session_id=None, first_message=None, model=None, **_kwargs):
         if manager.process is None or manager.process.poll() is not None:
@@ -1839,20 +1838,25 @@ def test_claude_turn_timing_reports_spawn_adopt_and_remediation(
     manager.turn("first", session_id="sid")
     assert manager.process is not None
     first = capsys.readouterr().err
-    assert "phase=cli_ready path=lazy_spawn ms=" in first
+    assert "phase=cli_ready path=adopt ms=" in first
     assert "phase=model ms=" in first
     assert (
-        first.split("phase=cli_ready path=lazy_spawn ms=", 1)[1]
-        .split("\n", 1)[0]
-        .isdigit()
+        first.split("phase=cli_ready path=adopt ms=", 1)[1].split("\n", 1)[0].isdigit()
     )
 
     manager.turn("second", session_id="sid")
-    relit = capsys.readouterr().err
-    assert "phase=cli_ready path=adopt ms=" in relit
-    assert "phase=model ms=" in relit
+    reuse = capsys.readouterr().err
+    assert "phase=cli_ready path=reuse ms=" in reuse
+    assert "path=lazy_spawn" not in reuse
+    assert "phase=model ms=" in reuse
 
+    manager.process.returncode = 0
     manager.turn("third", session_id="sid", model="opus")
+    lazy_spawn = capsys.readouterr().err
+    assert "phase=cli_ready path=lazy_spawn ms=" in lazy_spawn
+    assert "phase=model ms=" in lazy_spawn
+
+    manager.turn("fourth", session_id="sid", model="sonnet")
     remediation = capsys.readouterr().err
     assert "phase=cli_ready path=remediation_respawn ms=" in remediation
     assert "phase=model ms=" in remediation
