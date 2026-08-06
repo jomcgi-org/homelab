@@ -25,6 +25,9 @@ EGRESS_PORT_ENV = "EMBER_EGRESS_PORT"
 DEFAULT_EGRESS_PORT = 1024
 VSOCK_EGRESS_CID = 2
 VSOCK_EGRESS_PORT = 1025
+EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS = 5.0
+EGRESS_VSOCK_CONNECT_ATTEMPTS = 3
+EGRESS_VSOCK_CONNECT_BACKOFF_SECONDS = 0.2
 VSOCK_ADDRESS_FAMILY = getattr(socket, "AF_VSOCK", -1)
 HEALTHZ_PATH = "/shim/healthz"
 READY_PATH = "/shim/ready"
@@ -193,7 +196,12 @@ def main():
     host, port = sys.argv[1:]
     try:
         egress_port = int(os.environ.get(EGRESS_PORT_ENV, DEFAULT_EGRESS_PORT))
-        sock = socket.create_connection((EGRESS_LOCALHOST, egress_port))
+        HANDSHAKE_TIMEOUT = float(
+            os.environ.get("EMBER_GIT_PROXY_HANDSHAKE_TIMEOUT_SECONDS", "30")
+        )
+        sock = socket.create_connection(
+            (EGRESS_LOCALHOST, egress_port), timeout=HANDSHAKE_TIMEOUT
+        )
         sock.sendall(("CONNECT %s:%s HTTP/1.1\r\n\r\n" % (host, port)).encode())
         response = b""
         while b"\r\n\r\n" not in response:
@@ -205,6 +213,7 @@ def main():
                 return 1
         if not response.startswith(b"HTTP/1.1 200"):
             return 1
+        sock.settimeout(None)
         threads = [
             threading.Thread(
                 target=_pump_stdin_to_socket, args=(sys.stdin.buffer, sock)
@@ -671,8 +680,36 @@ class VsockEgressForwarder:
             if host_port is None:
                 client.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
                 return
-            upstream = socket.socket(VSOCK_ADDRESS_FAMILY, socket.SOCK_STREAM)
-            upstream.connect((VSOCK_EGRESS_CID, VSOCK_EGRESS_PORT))
+            # A wedged vsock lane, including the FC v1.12.1 restore bug (#4389),
+            # used to make connect hang forever and cost the guest a full
+            # git-clone timeout. Fail within seconds so lane failures stay fast
+            # and visible.
+            last_error = None
+            for attempt_index in range(EGRESS_VSOCK_CONNECT_ATTEMPTS):
+                attempt = socket.socket(VSOCK_ADDRESS_FAMILY, socket.SOCK_STREAM)
+                try:
+                    attempt.settimeout(EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS)
+                    attempt.connect((VSOCK_EGRESS_CID, VSOCK_EGRESS_PORT))
+                    attempt.settimeout(None)
+                    upstream = attempt
+                    break
+                except OSError as exc:
+                    last_error = exc
+                    try:
+                        attempt.close()
+                    except OSError:
+                        pass
+                    if attempt_index + 1 < EGRESS_VSOCK_CONNECT_ATTEMPTS:
+                        time.sleep(
+                            EGRESS_VSOCK_CONNECT_BACKOFF_SECONDS * (2**attempt_index)
+                        )
+            if upstream is None:
+                sys.stderr.write(
+                    "ember-claude-shim: egress vsock connect failed after %s attempts: %s\n"
+                    % (EGRESS_VSOCK_CONNECT_ATTEMPTS, last_error)
+                )
+                sys.stderr.flush()
+                return
             # The one-line preamble the host lane parses before it dials, and the
             # only thing this forwarder ever writes on the guest's behalf.
             upstream.sendall(("%s\n" % host_port).encode("latin-1"))

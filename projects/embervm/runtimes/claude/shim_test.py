@@ -7,6 +7,7 @@ import io
 import os
 import signal
 import socket
+import sys
 import threading
 import time
 import subprocess
@@ -2585,6 +2586,9 @@ def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
     connected = []
 
     class FakeVsock:
+        def settimeout(self, timeout):
+            pass
+
         def connect(self, address):
             connected.append(address)
 
@@ -2628,6 +2632,135 @@ def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
         forwarder.close()
 
 
+def test_egress_vsock_connect_constants_are_tunable():
+    assert shim.EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS == 5.0
+    assert shim.EGRESS_VSOCK_CONNECT_ATTEMPTS == 3
+
+
+def test_egress_forwarder_retries_vsock_connect(monkeypatch):
+    forwarder = shim.VsockEgressForwarder(port=0)
+    original_socket = socket.socket
+    vsock_peer, vsock_forwarder = socket.socketpair()
+    attempts = []
+
+    class FakeVsock:
+        def settimeout(self, timeout):
+            pass
+
+        def connect(self, address):
+            attempts.append(address)
+            if len(attempts) < 3:
+                raise OSError("wedged lane")
+
+        def recv(self, size):
+            return vsock_forwarder.recv(size)
+
+        def sendall(self, data):
+            return vsock_forwarder.sendall(data)
+
+        def shutdown(self, how):
+            return vsock_forwarder.shutdown(how)
+
+        def close(self):
+            pass
+
+    def socket_factory(family, *args, **kwargs):
+        if family == shim.VSOCK_ADDRESS_FAMILY:
+            return FakeVsock()
+        return original_socket(family, *args, **kwargs)
+
+    monkeypatch.setattr(shim.socket, "socket", socket_factory)
+    monkeypatch.setattr(shim.time, "sleep", lambda _: None)
+    forwarder.listen()
+    client = socket.create_connection((shim.EGRESS_LOCALHOST, forwarder.port))
+    try:
+        client.sendall(b"CONNECT example.com:443 HTTP/1.1\r\n\r\nrequest")
+        preamble = b"example.com:443\n"
+        assert vsock_peer.recv(len(preamble)) == preamble
+        established = b"HTTP/1.1 200 Connection Established\r\n\r\n"
+        assert client.recv(len(established)) == established
+        assert vsock_peer.recv(7) == b"request"
+        vsock_peer.sendall(b"response")
+        assert client.recv(8) == b"response"
+        assert len(attempts) == 3
+    finally:
+        client.close()
+        vsock_peer.close()
+        forwarder.close()
+
+
+def test_egress_forwarder_failed_vsock_connect_closes_client(monkeypatch, capsys):
+    forwarder = shim.VsockEgressForwarder(port=0)
+    original_socket = socket.socket
+    attempts = []
+
+    class FakeVsock:
+        def settimeout(self, timeout):
+            pass
+
+        def connect(self, address):
+            attempts.append(address)
+            raise OSError("wedged lane")
+
+        def close(self):
+            pass
+
+    def socket_factory(family, *args, **kwargs):
+        if family == shim.VSOCK_ADDRESS_FAMILY:
+            return FakeVsock()
+        return original_socket(family, *args, **kwargs)
+
+    monkeypatch.setattr(shim.socket, "socket", socket_factory)
+    monkeypatch.setattr(shim.time, "sleep", lambda _: None)
+    forwarder.listen()
+    client = socket.create_connection((shim.EGRESS_LOCALHOST, forwarder.port))
+    try:
+        client.sendall(b"CONNECT example.com:443 HTTP/1.1\r\n\r\n")
+        client.settimeout(2)
+        assert client.recv(4096) == b""
+        assert len(attempts) == shim.EGRESS_VSOCK_CONNECT_ATTEMPTS
+        assert "egress vsock connect failed" in capsys.readouterr().err
+    finally:
+        client.close()
+        forwarder.close()
+
+
+def test_git_proxy_helper_handshake_timeout(tmp_path, monkeypatch):
+    helper_path = tmp_path / "ember-git-proxy"
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(helper_path))
+    shim._write_git_proxy_helper()
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind((shim.EGRESS_LOCALHOST, 0))
+    listener.listen()
+    accepted = []
+
+    def accept_connection():
+        connection, _ = listener.accept()
+        accepted.append(connection)
+
+    accept_thread = threading.Thread(target=accept_connection)
+    accept_thread.start()
+    environment = os.environ.copy()
+    environment[shim.EGRESS_PORT_ENV] = str(listener.getsockname()[1])
+    environment["EMBER_GIT_PROXY_HANDSHAKE_TIMEOUT_SECONDS"] = "1"
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(helper_path), "example.com", "9418"],
+            env=environment,
+            capture_output=True,
+            timeout=3,
+        )
+    finally:
+        listener.close()
+        accept_thread.join(timeout=1)
+        for connection in accepted:
+            connection.close()
+    assert result.returncode == 1
+    assert time.monotonic() - started < 3
+
+
 def _forwarder_exchange(monkeypatch, request_bytes):
     """Drive one connection through the forwarder, returning what the lane saw."""
     forwarder = shim.VsockEgressForwarder(port=0)
@@ -2635,6 +2768,9 @@ def _forwarder_exchange(monkeypatch, request_bytes):
     vsock_peer, vsock_forwarder = socket.socketpair()
 
     class FakeVsock:
+        def settimeout(self, timeout):
+            pass
+
         def connect(self, address):
             pass
 
