@@ -216,6 +216,7 @@ def test_git_command_shape(manager, monkeypatch):
         [
             "git",
             "clone",
+            "--progress",
             "--branch",
             "main",
             "--config",
@@ -270,6 +271,7 @@ def test_hydration_works_for_non_default_branch(manager, monkeypatch):
     assert commands[0] == [
         "git",
         "clone",
+        "--progress",
         "--branch",
         "develop",
         "--config",

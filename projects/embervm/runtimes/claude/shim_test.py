@@ -2942,12 +2942,13 @@ def test_egress_copy_counts_bytes(capsys):
     class FakeDestination:
         def __init__(self):
             self.data = bytearray()
+            self.shutdown_calls = []
 
         def sendall(self, data):
             self.data.extend(data)
 
         def shutdown(self, how):
-            pass
+            self.shutdown_calls.append(how)
 
     source = FakeSource(payload)
     destination = FakeDestination()
@@ -2955,8 +2956,102 @@ def test_egress_copy_counts_bytes(capsys):
 
     captured = capsys.readouterr().err
     assert len(destination.data) == len(payload)
-    assert "egress-copy: down 4194304" in captured
+    assert "egress-copy: down 1048576" in captured
     assert "egress-copy: down closed total=%s err=none" % len(payload) in captured
+    assert destination.shutdown_calls == [socket.SHUT_WR]
+
+
+def test_egress_copy_can_skip_half_close():
+    class FakeSource:
+        def __init__(self):
+            self.done = False
+
+        def recv(self, size):
+            if self.done:
+                return b""
+            self.done = True
+            return b"payload"
+
+    class FakeDestination:
+        def __init__(self):
+            self.data = bytearray()
+            self.shutdown_calls = []
+
+        def sendall(self, data):
+            self.data.extend(data)
+
+        def shutdown(self, how):
+            self.shutdown_calls.append(how)
+
+    destination = FakeDestination()
+    shim.VsockEgressForwarder._copy(
+        FakeSource(), destination, "up", propagate_half_close=False
+    )
+
+    assert destination.data == b"payload"
+    assert destination.shutdown_calls == []
+
+
+def test_egress_forwarder_scopes_half_close_to_git_port(monkeypatch):
+    # Port 9418 keeps the upstream write side open after the client
+    # half-closes (the #4389 shape: git sends its request, half-closes, and
+    # the bulk response must keep flowing); every other port propagates the
+    # half-close so ordinary tunnels still tear down promptly.
+    original_socket = socket.socket
+    for port, expect_propagated in (("9418", False), ("443", True)):
+        forwarder = shim.VsockEgressForwarder(port=0)
+        vsock_peer, vsock_forwarder = socket.socketpair()
+
+        class FakeVsock:
+            def __init__(self):
+                self.timeouts = []
+
+            def settimeout(self, timeout):
+                self.timeouts.append(timeout)
+
+            def connect(self, address):
+                pass
+
+            def recv(self, size):
+                return vsock_forwarder.recv(size)
+
+            def sendall(self, data):
+                return vsock_forwarder.sendall(data)
+
+            def shutdown(self, how):
+                return vsock_forwarder.shutdown(how)
+
+            def close(self):
+                return vsock_forwarder.close()
+
+        def socket_factory(family, *args, **kwargs):
+            if family == shim.VSOCK_ADDRESS_FAMILY:
+                return FakeVsock()
+            return original_socket(family, *args, **kwargs)
+
+        monkeypatch.setattr(shim.socket, "socket", socket_factory)
+        forwarder.listen()
+        client = socket.create_connection((shim.EGRESS_LOCALHOST, forwarder.port))
+        try:
+            client.sendall(("CONNECT example.com:%s HTTP/1.1\r\n\r\n" % port).encode())
+            preamble = ("example.com:%s\n" % port).encode()
+            assert vsock_peer.recv(len(preamble)) == preamble
+            established = b"HTTP/1.1 200 Connection Established\r\n\r\n"
+            assert client.recv(len(established)) == established
+            client.sendall(b"request")
+            assert vsock_peer.recv(7) == b"request"
+            client.shutdown(socket.SHUT_WR)
+            vsock_peer.settimeout(2)
+            if expect_propagated:
+                assert vsock_peer.recv(4096) == b""
+            else:
+                vsock_peer.sendall(b"late response")
+                client.settimeout(2)
+                assert client.recv(13) == b"late response"
+        finally:
+            client.close()
+            vsock_peer.close()
+            forwarder.close()
 
 
 def test_egress_forwarder_takes_absolute_uri_host_and_replays_the_request(monkeypatch):

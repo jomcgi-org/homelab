@@ -25,6 +25,11 @@ EGRESS_PORT_ENV = "EMBER_EGRESS_PORT"
 DEFAULT_EGRESS_PORT = 1024
 VSOCK_EGRESS_CID = 2
 VSOCK_EGRESS_PORT = 1025
+# The one destination port whose tunnels must NOT propagate the client's
+# half-close onto the vsock leg (#4389): git's stateless protocol half-closes
+# after the request and FC hybrid vsock kills the in-flight response on any
+# shutdown. See VsockEgressForwarder._forward.
+GIT_DAEMON_PORT = "9418"
 EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS = 5.0
 EGRESS_VSOCK_CONNECT_ATTEMPTS = 3
 EGRESS_VSOCK_CONNECT_BACKOFF_SECONDS = 0.2
@@ -66,7 +71,8 @@ def _write_hydration_diagnostics(exc, checkout_dir):
             stderr = ""
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", "replace")
-        write_value("stderr=", stderr[-800:])
+        stderr = stderr.replace("\r", "\n")
+        write_value("stderr=", stderr[-2000:])
 
         stdout = getattr(exc, "stdout", None)
         if stdout is None:
@@ -255,7 +261,8 @@ def _pump_stdin_to_socket(source, sock):
         pass
     finally:
         # Half-close: tell the server the request stream is done while the
-        # response direction keeps flowing.
+        # response direction keeps flowing. This stops at the forwarder and
+        # is deliberately not propagated onto its vsock leg.
         try:
             sock.shutdown(socket.SHUT_WR)
         except OSError:
@@ -704,9 +711,9 @@ class VsockEgressForwarder:
             threading.Thread(target=self._forward, args=(client,), daemon=True).start()
 
     @staticmethod
-    def _copy(source, destination, direction=None):
+    def _copy(source, destination, direction=None, *, propagate_half_close=True):
         total_bytes = 0
-        next_boundary = 4 * 1024 * 1024
+        next_boundary = 1024 * 1024
         error = None
 
         def write_progress(message):
@@ -731,7 +738,7 @@ class VsockEgressForwarder:
                 total_bytes += len(data)
                 while direction is not None and total_bytes >= next_boundary:
                     write_progress(str(next_boundary))
-                    next_boundary += 4 * 1024 * 1024
+                    next_boundary += 1024 * 1024
         except OSError as exc:
             error = exc
             return
@@ -741,10 +748,11 @@ class VsockEgressForwarder:
                     "closed total=%s err=%s"
                     % (total_bytes, repr(error) if error is not None else "none")
                 )
-            try:
-                destination.shutdown(socket.SHUT_WR)
-            except OSError:
-                pass
+            if propagate_half_close:
+                try:
+                    destination.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
 
     @staticmethod
     def _read_proxy_request(client):
@@ -842,8 +850,22 @@ class VsockEgressForwarder:
                 client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             if pending:
                 upstream.sendall(pending)
+            # FC hybrid vsock has no half-close; propagating the client's
+            # SHUT_WR onto the vsock leg kills the in-flight response (#4389).
+            # Suppression is scoped to the git daemon port because git:// is
+            # the one protocol here that half-closes mid-exchange and then
+            # expects a large response; its server never needs the EOF (the
+            # response ends via flush-pkt) and the leaked tunnel is bounded by
+            # the VM's lifetime. Everything else (HTTPS CONNECT) only closes
+            # when the exchange is over, and keeping the propagation there is
+            # what tears those tunnels down promptly.
+            half_close_upstream = not host_port.endswith(":" + GIT_DAEMON_PORT)
             copies = [
-                threading.Thread(target=self._copy, args=(client, upstream, "up")),
+                threading.Thread(
+                    target=self._copy,
+                    args=(client, upstream, "up"),
+                    kwargs={"propagate_half_close": half_close_upstream},
+                ),
                 threading.Thread(target=self._copy, args=(upstream, client, "down")),
             ]
             for copy_thread in copies:
@@ -2677,6 +2699,7 @@ class ProcessManager:
         clone_command = [
             "git",
             "clone",
+            "--progress",
             "--branch",
             branch,
             "--config",
