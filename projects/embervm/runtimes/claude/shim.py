@@ -44,6 +44,41 @@ VOLUME_DEVICE_ENV = "EMBER_VOLUME_DEV"
 DEFAULT_VOLUME_DEVICE = "/dev/vdb"
 
 
+def _turn_timing_now():
+    """Return a monotonic timestamp without allowing diagnostics to fail work."""
+    try:
+        return time.monotonic()
+    except Exception:
+        return None
+
+
+def _emit_turn_timing(phase, elapsed=None, path=None, status=None):
+    """Best-effort timing telemetry for a single turn phase."""
+    try:
+        if elapsed is None:
+            return
+        fields = ["ember-claude-shim: turn-timing", "phase=%s" % phase]
+        if path is not None:
+            fields.append("path=%s" % path)
+        if status is not None:
+            fields.append("status=%s" % status)
+        fields.append("ms=%s" % max(0, int(elapsed * 1000)))
+        sys.stderr.write("%s\n" % " ".join(fields))
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _emit_elapsed(phase, started, path=None, status=None):
+    """Emit elapsed monotonic time, swallowing all instrumentation failures."""
+    try:
+        finished = _turn_timing_now()
+        if started is not None and finished is not None:
+            _emit_turn_timing(phase, finished - started, path=path, status=status)
+    except Exception:
+        pass
+
+
 def _write_hydration_diagnostics(exc, checkout_dir):
     """Write hydration diagnostics to stderr when subprocess.TimeoutExpired occurs.
 
@@ -1163,6 +1198,7 @@ class ClaudeProcess:
             daemon=True,
         ).start()
         if first_message is not None:
+            self._turn_timing_model_start = _turn_timing_now()
             process.stdin.write(_user_message_line(first_message))
             process.stdin.flush()
         # Note: unparseable-line stderr writes are synchronous on the read thread
@@ -1323,6 +1359,7 @@ class ClaudeProcess:
         progress_token=None,
     ):
         with self.turn_lock:
+            cli_ready_start = _turn_timing_now()
             with self.process_lock:
                 process = self.process
             session_was_bound = bool(self.session_id)
@@ -1336,6 +1373,7 @@ class ClaudeProcess:
                 process is not None and process.poll() is None and not self.session_id
             )
             parked_adoption = parked_process and bool(session_id)
+            cli_ready_path = "adopt" if parked_process else "lazy_spawn"
             workspace_identity = _workspace_identity(self.workspace)
             cwd_changed = parked_process and (
                 (
@@ -1352,6 +1390,7 @@ class ClaudeProcess:
                 and process.poll() is None
                 and (model_changed or cwd_changed)
             ):
+                cli_ready_path = "remediation_respawn"
                 self._close_process(kill=False)
                 try:
                     self._spawn(
@@ -1372,6 +1411,8 @@ class ClaudeProcess:
             # (and bill) the same turn twice if the fresh CLI died between
             # init and this poll.
             if not message_sent and (process is None or process.poll() is not None):
+                if cli_ready_path != "remediation_respawn":
+                    cli_ready_path = "lazy_spawn"
                 if process is not None:
                     self._close_process(kill=False)
                 # A request without an id resumes the last session after an
@@ -1413,9 +1454,12 @@ class ClaudeProcess:
                             process = self.process
                             message_sent = True
                             parked_adoption = False
+                            cli_ready_path = "remediation_respawn"
                     if parked_adoption:
                         self.session_id = session_id
+                _emit_elapsed("cli_ready", cli_ready_start, path=cli_ready_path)
                 if not message_sent:
+                    self._turn_timing_model_start = _turn_timing_now()
                     message_line = _user_message_line(
                         message,
                         session_id=session_id if parked_adoption else None,
@@ -1518,6 +1562,9 @@ class ClaudeProcess:
                         record = dict(event)
                         record["voice"] = voice_summary(event.get("result", ""))
                         record["activity"] = activity_from_events(events)
+                        _emit_elapsed(
+                            "model", getattr(self, "_turn_timing_model_start", None)
+                        )
                         return record
             except Exception:
                 if parked_adoption and not session_was_bound:
@@ -1888,6 +1935,7 @@ wire_api = "responses"
         progress_token=None,
     ):
         with self.turn_lock:
+            cli_ready_start = _turn_timing_now()
             if self.session_id and session_id and session_id != self.session_id:
                 raise SessionConflictError(
                     "session_id %r does not match active session %r"
@@ -1896,7 +1944,9 @@ wire_api = "responses"
             requested_session = session_id or self.session_id
             with self.process_lock:
                 process = self.process
+            cli_ready_path = "adopt"
             if process is None or process.poll() is not None:
+                cli_ready_path = "lazy_spawn"
                 self._close_process(kill=False)
                 process = self._spawn()
                 requested_session = session_id or self.session_id
@@ -1925,6 +1975,8 @@ wire_api = "responses"
             model_name, effort = CODEX_MODELS.get(
                 model, CODEX_MODELS[DEFAULT_CODEX_MODEL]
             )
+            _emit_elapsed("cli_ready", cli_ready_start, path=cli_ready_path)
+            self._turn_timing_model_start = _turn_timing_now()
             self._send(
                 {
                     "jsonrpc": "2.0",
@@ -2034,6 +2086,9 @@ wire_api = "responses"
                             )
                         terminal_reason = (
                             "user_interrupt" if status == "interrupted" else "completed"
+                        )
+                        _emit_elapsed(
+                            "model", getattr(self, "_turn_timing_model_start", None)
                         )
                         return {
                             "result": result_text,
@@ -2357,6 +2412,7 @@ class PiProcess:
         progress_token=None,
     ):
         with self.turn_lock:
+            cli_ready_start = _turn_timing_now()
             if self.session_id and session_id and session_id != self.session_id:
                 raise SessionConflictError(
                     "session_id %r does not match active session %r"
@@ -2364,8 +2420,10 @@ class PiProcess:
                 )
             with self.process_lock:
                 process = self.process
+            cli_ready_path = "adopt"
             model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
             if process is None or process.poll() is not None:
+                cli_ready_path = "lazy_spawn"
                 self._close_process(kill=False)
                 process = self._spawn(model)
             elif self._model != model_name:
@@ -2396,6 +2454,7 @@ class PiProcess:
                         "switch_session cancelled for session %s" % requested_session
                     )
                 self._state()
+            _emit_elapsed("cli_ready", cli_ready_start, path=cli_ready_path)
             result_text = ""
             usage = {}
             events = []
@@ -2410,6 +2469,7 @@ class PiProcess:
             except Exception:
                 pusher = None
             try:
+                self._turn_timing_model_start = _turn_timing_now()
                 self._send({"type": "prompt", "message": message})
                 while True:
                     try:
@@ -2518,6 +2578,9 @@ class PiProcess:
                             "voice": voice_summary(result_text),
                             "activity": activity_from_events(events),
                         }
+                        _emit_elapsed(
+                            "model", getattr(self, "_turn_timing_model_start", None)
+                        )
                         return record
             finally:
                 if pusher:
@@ -2691,11 +2754,14 @@ class ProcessManager:
             self._prewarm_complete = True
 
     def _hydrate_workspace(self, repo, branch):
+        hydration_start = _turn_timing_now()
         if self._hydration_status == "ok":
             if self._checkout_dir and os.path.isdir(self._checkout_dir):
                 self._hydration_status = "skipped_existing"
+                _emit_elapsed("hydration", hydration_start, status="skipped_existing")
             return
         if self._hydration_status == "skipped_existing":
+            _emit_elapsed("hydration", hydration_start, status="skipped_existing")
             return
         if self._hydration_attempts >= HYDRATION_ATTEMPT_CAP:
             return
@@ -2731,6 +2797,9 @@ class ProcessManager:
                     self.claude.workspace = checkout_dir
                     self.codex.workspace = checkout_dir
                     self.pi.workspace = checkout_dir
+                    _emit_elapsed(
+                        "hydration", hydration_start, status="skipped_existing"
+                    )
                     return
             except (OSError, subprocess.TimeoutExpired):
                 pass
@@ -2761,12 +2830,14 @@ class ProcessManager:
             checkout_dir,
         ]
         try:
+            clone_start = _turn_timing_now()
             result = subprocess.run(
                 clone_command,
                 capture_output=True,
                 timeout=GIT_CLONE_TIMEOUT_SECONDS,
                 **_cli_privilege_kwargs(),
             )
+            _emit_elapsed("hydration_clone", clone_start)
             if result.returncode != 0:
                 stderr = result.stderr
                 if isinstance(stderr, bytes):
@@ -2814,6 +2885,7 @@ class ProcessManager:
         self.claude.workspace = checkout_dir
         self.codex.workspace = checkout_dir
         self.pi.workspace = checkout_dir
+        _emit_elapsed("hydration", hydration_start, status="cloned")
 
     def _adapter(self, model):
         if model == "qwen":
@@ -2915,6 +2987,7 @@ class ProcessManager:
         branch=None,
         progress_token=None,
     ):
+        total_start = _turn_timing_now()
         with self._mount_lock:
             ensure_workspace_volume()
         if getattr(self.claude, "workspace", None):
@@ -2954,6 +3027,7 @@ class ProcessManager:
             # is still safe, and a raised turn may still have left durable-
             # worth CLI state that a later park would otherwise lose.
             _sync_session_volume()
+            _emit_elapsed("total", total_start)
 
     def interrupt(self):
         # An interrupt has no model in its request, so interrupt both adapters.

@@ -1812,6 +1812,52 @@ def test_parked_claude_model_mismatch_respawns_with_resume(tmp_path, monkeypatch
     assert calls == [{"session_id": "sid", "first_message": "hello", "model": "opus"}]
 
 
+def test_claude_turn_timing_reports_spawn_adopt_and_remediation(
+    tmp_path, monkeypatch, capsys
+):
+    manager = _parked_claude(tmp_path)
+    manager.process.returncode = 0
+
+    def spawn(session_id=None, first_message=None, model=None, **_kwargs):
+        if manager.process is None or manager.process.poll() is not None:
+            manager.process = _FakeLiveProcess()
+        manager._turn_timing_model_start = shim._turn_timing_now()
+        manager.model = model
+        manager._process_workspace = manager.workspace
+
+    monkeypatch.setattr(manager, "_spawn", spawn)
+    monkeypatch.setattr(
+        manager,
+        "_read_output",
+        lambda _process, _timeout: json.dumps(
+            {"type": "result", "result": "ok", "session_id": "sid"}
+        ).encode(),
+    )
+    monkeypatch.setattr(manager, "_parse_line", json.loads)
+    monkeypatch.setattr(manager, "ready", lambda: True)
+
+    manager.turn("first", session_id="sid")
+    assert manager.process is not None
+    first = capsys.readouterr().err
+    assert "phase=cli_ready path=lazy_spawn ms=" in first
+    assert "phase=model ms=" in first
+    assert (
+        first.split("phase=cli_ready path=lazy_spawn ms=", 1)[1]
+        .split("\n", 1)[0]
+        .isdigit()
+    )
+
+    manager.turn("second", session_id="sid")
+    relit = capsys.readouterr().err
+    assert "phase=cli_ready path=adopt ms=" in relit
+    assert "phase=model ms=" in relit
+
+    manager.turn("third", session_id="sid", model="opus")
+    remediation = capsys.readouterr().err
+    assert "phase=cli_ready path=remediation_respawn ms=" in remediation
+    assert "phase=model ms=" in remediation
+
+
 def test_turn_extracts_voice_activity_and_tolerates_malformed_json(
     tmp_path, monkeypatch
 ):

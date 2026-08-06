@@ -363,6 +363,58 @@ def test_hydration_status_surfaced_in_turn(manager, monkeypatch):
     assert "workspace_hydration" not in record
 
 
+def test_hydration_timing_reports_clone_and_existing_status(
+    manager, monkeypatch, capsys
+):
+    checkout_dir = os.path.join(manager.workspace, "src")
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            os.makedirs(os.path.join(checkout_dir, ".git"), exist_ok=True)
+        return _GitProcess()
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+    manager.turn("first", repo="owner/repo", branch="main")
+    first_lines = capsys.readouterr().err.splitlines()
+    assert any(
+        line.startswith(
+            "ember-claude-shim: turn-timing phase=hydration status=cloned ms="
+        )
+        and line.rsplit("ms=", 1)[1].isdigit()
+        for line in first_lines
+    )
+    assert any(
+        line.startswith("ember-claude-shim: turn-timing phase=hydration_clone ms=")
+        and line.rsplit("ms=", 1)[1].isdigit()
+        for line in first_lines
+    )
+    assert any(
+        line.startswith("ember-claude-shim: turn-timing phase=total ms=")
+        and line.rsplit("ms=", 1)[1].isdigit()
+        for line in first_lines
+    )
+
+    manager.turn("second", repo="owner/repo", branch="main")
+    second_lines = capsys.readouterr().err.splitlines()
+    skipped = [
+        line
+        for line in second_lines
+        if line.startswith(
+            "ember-claude-shim: turn-timing phase=hydration status=skipped_existing ms="
+        )
+    ]
+    assert len(skipped) == 1
+    assert skipped[0].rsplit("ms=", 1)[1].isdigit()
+    assert (
+        sum(
+            line.startswith("ember-claude-shim: turn-timing phase=total ms=")
+            and line.rsplit("ms=", 1)[1].isdigit()
+            for line in second_lines
+        )
+        == 1
+    )
+
+
 def test_failed_clone_leaves_no_directory(manager, monkeypatch):
     checkout_dir = os.path.join(manager.workspace, "src")
 
