@@ -103,6 +103,28 @@ EOF
 cat >"$TMP/bb_failure" <<'EOF'
 Executed 3 out of 361 tests: 361 tests pass.
 EOF
+cat >"$TMP/summary_reports_failures" <<'EOF'
+//projects/foo:bar    FAILED in 0.4s
+Executed 361 out of 361 tests: 358 tests pass, 3 fail locally.
+EOF
+{
+	printf '\033[31mAction failed: failed to start remote runner\033[0m\n'
+	printf '\033[31mCommand failed: exit status 1\033[0m\n'
+} >"$TMP/ansi_prefixed_markers_caught"
+cat >"$TMP/midline_marker_not_infra" <<'EOF'
+INFO: Analyzed 5 targets
+expected output: Command failed: exit status 1 (from fixture)
+Executed 5 out of 5 tests: 5 tests pass.
+EOF
+cat >"$TMP/bb_status_3_propagates" <<'EOF'
+Executed 5 out of 5 tests: 5 tests pass.
+EOF
+cat >"$TMP/red_run_with_runner_markers" <<'EOF'
+Executed 10 out of 10 tests: 8 tests pass, 2 fail locally.
+//projects/foo:bar FAILED in 2s
+Command failed: exit status 3
+Action failed: exit status 1
+EOF
 
 run_behavioral_case() {
 	local name="$1"
@@ -110,9 +132,13 @@ run_behavioral_case() {
 	local bb_status="$3"
 	local want_status="$4"
 	local output="$TMP/$name.out"
+	local home="$TMP/$name-home"
+	local xdg_cache_home="$TMP/$name-xdg-cache"
 	local got_status=0
+	mkdir -p "$home" "$xdg_cache_home"
 
-	if (cd "$FAKE_ROOT" && PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
+	if (cd "$FAKE_ROOT" && HOME="$home" XDG_CACHE_HOME="$xdg_cache_home" \
+		PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
 		BB_FIXTURE="$fixture" BB_STATUS="$bb_status" "$CI" test >"$output" 2>&1); then
 		got_status=0
 	else
@@ -129,6 +155,29 @@ run_behavioral_case "green_run_passes" "$TMP/green_run" 0 0
 run_behavioral_case "action_failed_caught" "$TMP/action_failed" 0 1
 run_behavioral_case "missing_summary_caught" "$TMP/missing_summary" 0 1
 run_behavioral_case "bb_failure_propagates" "$TMP/bb_failure" 1 1
+run_behavioral_case "summary_reports_failures_caught" "$TMP/summary_reports_failures" 0 1
+run_behavioral_case "ansi_prefixed_markers_caught" "$TMP/ansi_prefixed_markers_caught" 0 1
+run_behavioral_case "midline_marker_not_infra" "$TMP/midline_marker_not_infra" 0 0
+run_behavioral_case "bb_status_3_propagates" "$TMP/bb_status_3_propagates" 3 3
+
+red_run_output="$TMP/red_run_diagnosed_as_red.out"
+red_run_status=0
+if (cd "$FAKE_ROOT" && HOME="$TMP/red_run_diagnosed_as_red-home" \
+	XDG_CACHE_HOME="$TMP/red_run_diagnosed_as_red-xdg-cache" \
+	PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
+	BB_FIXTURE="$TMP/red_run_with_runner_markers" BB_STATUS=0 "$CI" test \
+	>"$red_run_output" 2>&1); then
+	red_run_status=0
+else
+	red_run_status=$?
+fi
+if [[ "$red_run_status" -ne 0 ]] &&
+	grep -qF "the run reported test failures, so this is a red run" "$red_run_output" &&
+	! grep -qF "remote runner failed" "$red_run_output"; then
+	pass "red_run_diagnosed_as_red"
+else
+	fail "red_run_diagnosed_as_red" "expected red-run diagnosis, got exit $red_run_status: $(tr '\n' ' ' <"$red_run_output")"
+fi
 
 echo "--- $PASS passed, $FAIL failed ---"
 [[ $FAIL -eq 0 ]]
