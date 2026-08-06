@@ -38,7 +38,9 @@ git rev-parse HEAD
 gh pr view <number> --json headRefOid -q .headRefOid
 ```
 
-If they differ, the push did not land. Fetch, rebase, and push again.
+If they differ, re-query once after a few seconds (the PR object can lag the
+push). Still different with no push error: the push did not land. Fetch,
+rebase, and push again.
 
 ## Merging
 
