@@ -1395,7 +1395,9 @@ def test_adoption_latch_rolls_back_before_result(tmp_path, monkeypatch):
     assert manager.session_id is None
 
 
-def test_takeover_remediation_closes_stranded_process_without_respawn(tmp_path, monkeypatch):
+def test_takeover_remediation_closes_stranded_process_without_respawn(
+    tmp_path, monkeypatch
+):
     manager = _new_process_manager()
     manager.workspace = str(tmp_path)
     manager._prewarm_clis = ("claude",)
