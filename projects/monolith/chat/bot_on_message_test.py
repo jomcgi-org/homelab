@@ -1514,6 +1514,47 @@ class TestStartAgentFlowOrchestrator:
         channel.create_thread.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_slash_path_skips_the_orchestrator_entirely(self):
+        """/agent always opens a session, and never pays for a route call.
+
+        Running /agent IS the decision that this is agent work, so a chat verdict
+        must not be able to overrule it. Before this, an explicit /agent with a
+        repo selected could be answered with a conversational summary and no
+        session at all.
+        """
+        bot = _make_bot()
+        channel = _flow_channel()
+        thread = MagicMock()
+        thread.id = 909
+        thread.send = AsyncMock()
+        channel.create_thread = AsyncMock(return_value=thread)
+
+        with (
+            patch.object(bot, "_orchestrator_verdict", AsyncMock()) as verdict_call,
+            patch.object(bot, "_orchestrator_chat_reply", AsyncMock()) as chat_call,
+            patch("chat.bot.acl.is_owner", return_value=True),
+            patch(
+                "agent_sessions.api.start_session_for_thread", new_callable=AsyncMock
+            ) as start_session,
+        ):
+            outcome = await bot.start_agent_flow(
+                channel,
+                MagicMock(),
+                "fix the flaky test",
+                "jomcgi/homelab",
+                route_via_orchestrator=False,
+            )
+
+        assert outcome.thread is thread
+        assert outcome.chat_reply is None
+        # Not merely ignored: never called, so /agent costs no OpenRouter round trip.
+        verdict_call.assert_not_awaited()
+        chat_call.assert_not_awaited()
+        start_session.assert_awaited_once_with(
+            "909", "fix the flaky test", "jomcgi/homelab"
+        )
+
+    @pytest.mark.asyncio
     async def test_plan_verdict_opens_thread_and_submits_raw_prompt(
         self,
     ):
