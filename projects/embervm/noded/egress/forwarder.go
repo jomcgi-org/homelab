@@ -68,6 +68,13 @@ func tunnelToSidecar(logger *slog.Logger, guestConn net.Conn, sidecarAddr string
 		logger.Warn("egress: dial sidecar", "addr", sidecarAddr, "err", err)
 		return
 	}
+	// Git's protocol is request/response in small messages. Nagle holds each
+	// write until the prior segment is ACKed, while delayed ACK waits up to
+	// 40ms. This measured as ~55ms per 64 KiB chunk and about 10 seconds added
+	// to an 11.24 MiB clone, so disable Nagle on this socket.
+	if tcpConn, ok := up.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+	}
 	defer up.Close()
 
 	done := make(chan struct{}, 2)
