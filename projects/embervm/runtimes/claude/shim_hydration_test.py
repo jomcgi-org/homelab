@@ -222,10 +222,44 @@ def test_git_command_shape(manager, monkeypatch):
             "--config",
             "core.gitProxy=/tmp/ember-git-proxy",
             "--single-branch",
+            "--depth=1",
             "git://git-mirror.monolith.svc.cluster.local:9418/owner/repo",
             checkout_dir,
         ],
     ]
+
+
+def test_git_clone_regression_guards(manager, monkeypatch):
+    """Verify critical clone command properties to prevent regressions."""
+    processes = [_GitProcess(), _GitProcess()]
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            commands.append(command)
+        return processes.pop(0)
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+    manager.turn("first", repo="owner/repo", branch="main")
+
+    assert len(commands) == 1
+    command = commands[0]
+
+    # Regression guard: --depth=1 must be present (shallow clone)
+    assert "--depth=1" in command, "clone command missing --depth=1"
+
+    # Regression guard: --filter must NOT be present (no blob filter)
+    # A blob filter causes second connection on checkout, wedging vsock (#4417)
+    assert not any("--filter" in arg for arg in command), (
+        "clone command must not contain --filter argument"
+    )
+
+    # Verify load-bearing flags remain
+    assert "--single-branch" in command, "clone command missing --single-branch"
+    assert any("core.gitProxy=" in arg for arg in command), (
+        "clone command missing core.gitProxy config"
+    )
 
 
 def test_cli_cwd_set_to_checkout(manager, monkeypatch):
@@ -276,6 +310,7 @@ def test_hydration_works_for_non_default_branch(manager, monkeypatch):
         "--config",
         "core.gitProxy=/tmp/ember-git-proxy",
         "--single-branch",
+        "--depth=1",
         "git://git-mirror.monolith.svc.cluster.local:9418/owner/repo",
         checkout_dir,
     ]

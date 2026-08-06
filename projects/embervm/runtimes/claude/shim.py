@@ -2746,10 +2746,17 @@ class ProcessManager:
             "--config",
             "core.gitProxy=%s" % GIT_PROXY_PATH,
             "--single-branch",
-            # Deliberately a FULL clone, not --filter=blob:none: a blob filter
-            # makes checkout open a SECOND lane connection for the lazy blob
-            # fetch, and connection #2 through the vsock lane wedges (#4389).
-            # One fetch on one connection moves ~12 MB more and works.
+            "--depth=1",
+            # --depth=1 shallow clone reduces transfer from 249.40 MiB (full) to
+            # ~11.2 MiB (working tree only), saving ~37s of hydration time. Shallow
+            # clones are single-connection because the tip commit's blobs ride in the
+            # same packfile as the objects, so checkout is satisfied entirely from
+            # one fetch with no lazy blob loads on a second connection.
+            # Not using --filter=blob:none (which would reopen #4417): blob filters
+            # defer blobs, making checkout lazy-fetch them on a second connection
+            # that wedges. History is available on demand via git fetch --unshallow
+            # or --deepen=N, though such fetches also open a second connection and
+            # remain subject to #4417 until that is fixed.
             "git://git-mirror.monolith.svc.cluster.local:9418/%s" % repo,
             checkout_dir,
         ]
