@@ -344,6 +344,11 @@ def main():
         sock = socket.create_connection(
             (EGRESS_LOCALHOST, egress_port), timeout=handshake_timeout
         )
+        # Git's protocol is request/response in small messages. Nagle holds
+        # each write until the prior segment is ACKed, while delayed ACK waits
+        # up to 40ms. This measured as ~55ms per 64 KiB chunk and about 10
+        # seconds added to an 11.24 MiB clone, so disable Nagle on this socket.
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         sock.sendall(("CONNECT %s:%s HTTP/1.1\r\n\r\n" % (host, port)).encode())
         response = b""
         while b"\r\n\r\n" not in response:

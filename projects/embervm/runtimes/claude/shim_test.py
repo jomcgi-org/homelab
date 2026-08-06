@@ -2843,6 +2843,26 @@ def test_git_proxy_helper_handshake_timeout(tmp_path, monkeypatch):
     assert time.monotonic() - started < 3
 
 
+def test_git_proxy_helper_source_includes_tcp_nodelay(tmp_path, monkeypatch):
+    """Guard that the generated git proxy helper includes TCP_NODELAY.
+
+    The helper is an embedded script executed as a subprocess. Its client socket
+    options cannot be inspected from the parent, so this test asserts at the
+    source level: the helper source must contain the setsockopt(TCP_NODELAY, 1)
+    call after socket.create_connection(). This is an honest source-level guard
+    for an embedded script, not a behavioural assertion.
+    """
+    helper_path = tmp_path / "ember-git-proxy"
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(helper_path))
+    shim._write_git_proxy_helper()
+
+    helper_source = helper_path.read_text()
+    # The helper must set TCP_NODELAY on the socket immediately after creating it.
+    assert "sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)" in helper_source
+    # Sanity check: the source must contain create_connection too.
+    assert "socket.create_connection" in helper_source
+
+
 def test_git_proxy_helper_blocks_after_handshake_timeout(tmp_path, monkeypatch):
     helper_path = tmp_path / "ember-git-proxy"
     monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(helper_path))
