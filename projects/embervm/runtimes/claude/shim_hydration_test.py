@@ -222,7 +222,6 @@ def test_git_command_shape(manager, monkeypatch):
             "--config",
             "core.gitProxy=/tmp/ember-git-proxy",
             "--single-branch",
-            "--filter=blob:none",
             "git://git-mirror.monolith.svc.cluster.local:9418/owner/repo",
             checkout_dir,
         ],
@@ -277,7 +276,6 @@ def test_hydration_works_for_non_default_branch(manager, monkeypatch):
         "--config",
         "core.gitProxy=/tmp/ember-git-proxy",
         "--single-branch",
-        "--filter=blob:none",
         "git://git-mirror.monolith.svc.cluster.local:9418/owner/repo",
         checkout_dir,
     ]
