@@ -48,7 +48,17 @@ defmodule Embervm.DispatcherTest do
         assign_fun: Keyword.get(opts, :assign_fun, fn _ch, _req -> {:ok, success_resp()} end),
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-#{System.unique_integer([:positive])}"}} end),
         start_sweep: false
-      ] ++ Keyword.take(opts, [:queue_depth_cap, :share_fraction, :stale_after_ms, :quota_config, :quota_table, :wall_clock])
+      ] ++
+        Keyword.take(opts, [
+          :queue_depth_cap,
+          :share_fraction,
+          :stale_after_ms,
+          :quota_config,
+          :quota_table,
+          :wall_clock,
+          :assign_watchdog_margin_ms,
+          :assign_watchdog_ms
+        ])
 
     {:ok, disp} = Dispatcher.start_link(disp_opts)
 
@@ -922,6 +932,54 @@ defmodule Embervm.DispatcherTest do
 
     assert eventually(fn -> state_of(ctx, tid) == :dead_lettered end)
     assert Agent.get(attempts, & &1) == 1
+  end
+
+  test "a wedged assign worker is killed by the watchdog and releases its cap" do
+    {:ok, assigns} = Agent.start_link(fn -> 0 end)
+
+    assign_fun = fn _ch, _req ->
+      case Agent.get_and_update(assigns, fn n -> {n, n + 1} end) do
+        0 -> :timer.sleep(:infinity)
+        _ -> {:ok, success_resp()}
+      end
+    end
+
+    ctx = start_stack(assign_fun: assign_fun, assign_watchdog_ms: 150)
+
+    put_catalog(ctx, "wl-watchdog", cap: 1, timeout_ms: 1)
+    put_facts(ctx, "wl-watchdog", free: 1, max: 8)
+
+    first = submit(ctx, "wl-watchdog", "p1")
+    assert eventually(fn -> Agent.get(assigns, & &1) == 1 end)
+    # The watchdog kills the wedged worker, which frees the in-flight slot AND
+    # lets the task retry onto a healthy assign. Retry config here comes from
+    # Retry.default_config() (max_attempts: 3), NOT the `retry:` passed to
+    # put_catalog: TaskStore.cfg_for/1 calls WorkloadCatalog.retry_config/1, the
+    # one-arg form that reads the module default table, while put_catalog writes
+    # the per-test table. So the second attempt runs and succeeds.
+    assert eventually(fn -> state_of(ctx, first) == :succeeded end, 3_000),
+           "expected :succeeded, got #{inspect(state_of(ctx, first))}"
+    # The regression this fixes: without the watchdog, a wedged worker pins
+    # inflight_wl at cap forever and every later task is silently denied :cap.
+    assert Dispatcher.stats(ctx.name).inflight_wl == %{}
+
+    second = submit(ctx, "wl-watchdog", "p1")
+    assert eventually(fn -> state_of(ctx, second) == :succeeded end, 3_000),
+           "expected :succeeded, got #{inspect(state_of(ctx, second))}"
+    assert {:ok, %{status_code: 200, body: "ok"}} = TaskStore.get_result(ctx.store, second)
+  end
+
+  test "a fast assign completes without a watchdog failure" do
+    ctx = start_stack()
+    put_catalog(ctx, "wl-fast", cap: 1)
+    put_facts(ctx, "wl-fast", free: 1, max: 8)
+
+    tid = submit(ctx, "wl-fast", "p1")
+
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end, 3_000),
+           "expected :succeeded, got #{inspect(state_of(ctx, tid))}"
+    assert {:ok, %{status_code: 200, body: "ok"}} = TaskStore.get_result(ctx.store, tid)
+    assert Dispatcher.stats(ctx.name).inflight_wl == %{}
   end
 
   # -- admit? 429 gate -------------------------------------------------------

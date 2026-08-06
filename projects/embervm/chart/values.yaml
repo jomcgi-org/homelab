@@ -731,6 +731,14 @@ statefulSweeper:
   sweepIntervalMs: ""
   wakeMax: ""
 
+# gRPC connection sweep gate for orphaned channels. Empty means off: the
+# sweeper only logs what it would clean up and leaves connections untouched.
+# Set enabled to "1" or "true" to arm the destructive sweep, which terminates
+# orphaned connections. This is a deploy values gate, not an application default.
+grpcConnectionSweeper:
+  enabled: ""
+  sweepIntervalMs: ""
+
 # Base-retention sweep gate (base-durability PR-3, control-plane env). Empty
 # (the default) leaves the reconciled sweep in dry-run: it logs what it would
 # evict and deletes nothing. "1" arms it: superseded local bases outside each
