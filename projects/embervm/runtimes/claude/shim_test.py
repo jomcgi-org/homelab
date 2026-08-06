@@ -2853,7 +2853,7 @@ def test_git_proxy_helper_sets_tcp_nodelay(tmp_path, monkeypatch):
     listener.bind((shim.EGRESS_LOCALHOST, 0))
     listener.listen()
     accepted = []
-    observed_nodelay = []
+    created_connections = []
 
     def serve_connection():
         connection, _ = listener.accept()
@@ -2869,9 +2869,7 @@ def test_git_proxy_helper_sets_tcp_nodelay(tmp_path, monkeypatch):
 
     def create_connection(*args, **kwargs):
         connection = original_create_connection(*args, **kwargs)
-        observed_nodelay.append(
-            connection.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
-        )
+        created_connections.append(connection)
         return connection
 
     monkeypatch.setattr(socket, "create_connection", create_connection)
@@ -2887,7 +2885,10 @@ def test_git_proxy_helper_sets_tcp_nodelay(tmp_path, monkeypatch):
         for connection in accepted:
             connection.close()
     assert exit_info.value.code == 0
-    assert observed_nodelay == [1]
+    assert len(created_connections) == 1
+    assert (
+        created_connections[0].getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY) == 1
+    )
 
 
 def test_git_proxy_helper_blocks_after_handshake_timeout(tmp_path, monkeypatch):
