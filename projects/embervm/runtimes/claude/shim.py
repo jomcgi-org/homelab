@@ -191,7 +191,8 @@ INTERRUPT_TIMEOUT = 30.0
 CLI_PROBE_TIMEOUT = 10.0
 HYDRATION_ATTEMPT_CAP = 3
 # The guest path is proxied over vsock, so it is materially slower than a direct
-# clone. A partial clone of this repo is approximately 67 MB.
+# clone. A full clone of this repo moves roughly 25 MB through the lane, well
+# inside this cap at observed lane throughput.
 GIT_CLONE_TIMEOUT_SECONDS = 300
 PERMISSION_MODE_ENV = "EMBER_PERMISSION_MODE"
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
@@ -2705,7 +2706,10 @@ class ProcessManager:
             "--config",
             "core.gitProxy=%s" % GIT_PROXY_PATH,
             "--single-branch",
-            "--filter=blob:none",
+            # Deliberately a FULL clone, not --filter=blob:none: a blob filter
+            # makes checkout open a SECOND lane connection for the lazy blob
+            # fetch, and connection #2 through the vsock lane wedges (#4389).
+            # One fetch on one connection moves ~12 MB more and works.
             "git://git-mirror.monolith.svc.cluster.local:9418/%s" % repo,
             checkout_dir,
         ]
