@@ -1373,7 +1373,7 @@ class ClaudeProcess:
                 process is not None and process.poll() is None and not self.session_id
             )
             parked_adoption = parked_process and bool(session_id)
-            cli_ready_path = "adopt" if parked_process else "lazy_spawn"
+            cli_ready_path = None
             workspace_identity = _workspace_identity(self.workspace)
             cwd_changed = parked_process and (
                 (
@@ -1390,7 +1390,6 @@ class ClaudeProcess:
                 and process.poll() is None
                 and (model_changed or cwd_changed)
             ):
-                cli_ready_path = "remediation_respawn"
                 self._close_process(kill=False)
                 try:
                     self._spawn(
@@ -1404,6 +1403,7 @@ class ClaudeProcess:
                     raise
                 process = self.process
                 message_sent = True
+                cli_ready_path = "remediation_respawn"
             else:
                 message_sent = False
             # After a model-change respawn the first_message is already in
@@ -1411,8 +1411,6 @@ class ClaudeProcess:
             # (and bill) the same turn twice if the fresh CLI died between
             # init and this poll.
             if not message_sent and (process is None or process.poll() is not None):
-                if cli_ready_path != "remediation_respawn":
-                    cli_ready_path = "lazy_spawn"
                 if process is not None:
                     self._close_process(kill=False)
                 # A request without an id resumes the last session after an
@@ -1429,6 +1427,7 @@ class ClaudeProcess:
                     raise
                 process = self.process
                 message_sent = True
+                cli_ready_path = "lazy_spawn"
             pusher = None
             try:
                 if not self.ready():
@@ -1457,6 +1456,9 @@ class ClaudeProcess:
                             cli_ready_path = "remediation_respawn"
                     if parked_adoption:
                         self.session_id = session_id
+                        cli_ready_path = "adopt"
+                if cli_ready_path is None:
+                    cli_ready_path = "reuse"
                 _emit_elapsed("cli_ready", cli_ready_start, path=cli_ready_path)
                 if not message_sent:
                     self._turn_timing_model_start = _turn_timing_now()
@@ -1944,17 +1946,20 @@ wire_api = "responses"
             requested_session = session_id or self.session_id
             with self.process_lock:
                 process = self.process
-            cli_ready_path = "adopt"
+            cli_ready_path = None
+            process_was_unbound = not self.session_id
             if process is None or process.poll() is not None:
-                cli_ready_path = "lazy_spawn"
                 self._close_process(kill=False)
                 process = self._spawn()
                 requested_session = session_id or self.session_id
+                cli_ready_path = "lazy_spawn"
             if requested_session and (
                 requested_session not in self._server_threads
                 or requested_session != self.session_id
             ):
                 self._resume(requested_session)
+                if cli_ready_path is None and process_was_unbound:
+                    cli_ready_path = "adopt"
             elif not requested_session:
                 result = self._request(
                     "thread/start",
@@ -1967,6 +1972,10 @@ wire_api = "responses"
                 thread = result.get("thread", {}) if isinstance(result, dict) else {}
                 self.session_id = thread.get("id") if isinstance(thread, dict) else None
                 self._server_threads.add(self.session_id)
+                if cli_ready_path is None and process_was_unbound:
+                    cli_ready_path = "adopt"
+            if cli_ready_path is None:
+                cli_ready_path = "reuse"
             with self._write_lock:
                 self._turn_done.clear()
                 self._turn_id = None
@@ -2420,12 +2429,13 @@ class PiProcess:
                 )
             with self.process_lock:
                 process = self.process
-            cli_ready_path = "adopt"
+            cli_ready_path = None
+            process_was_unbound = not self.session_id
             model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
             if process is None or process.poll() is not None:
-                cli_ready_path = "lazy_spawn"
                 self._close_process(kill=False)
                 process = self._spawn(model)
+                cli_ready_path = "lazy_spawn"
             elif self._model != model_name:
                 self._command(
                     {
@@ -2454,6 +2464,10 @@ class PiProcess:
                         "switch_session cancelled for session %s" % requested_session
                     )
                 self._state()
+                if cli_ready_path is None and process_was_unbound:
+                    cli_ready_path = "adopt"
+            if cli_ready_path is None:
+                cli_ready_path = "reuse"
             _emit_elapsed("cli_ready", cli_ready_start, path=cli_ready_path)
             result_text = ""
             usage = {}
