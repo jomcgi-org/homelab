@@ -459,8 +459,20 @@ claudeRuntimeWorkload:
   # the epoch re-keys the base, which forces a re-record and a fresh build that
   # every consumer (recorded ref, node facts, retention desired set) converges
   # on.
+  #
+  # warm-restore-3: the #4418 re-arm restored warmRestoreWithVolumeClasses
+  # without moving this epoch, and the two MUST move together. Every base on
+  # disk was rebuilt at 09:43Z under hypervisorEpoch fc-v1.16.1-r2 by bricks
+  # that were still DISARMED, so it carries no placeholder volume drive
+  # (verified: the claude-runtime snapfile holds the rootfs drive id and no
+  # volume one). An armed brick restoring a session PATCHes a "volume" drive
+  # that the base does not have, and every session create fails there. The base
+  # signature deliberately excludes noded config, so arming alone can never
+  # trigger the rebuild that arming requires. Scoped to claude-runtime because
+  # only a restore that carries a volume needs the placeholder: task bases
+  # restore volume-less and are unaffected either way.
   initEnv:
-    EMBER_BASE_EPOCH: "warm-restore-2"
+    EMBER_BASE_EPOCH: "warm-restore-3"
     # initEnv participates in the base signature, so this re-keys and rebuilds
     # only the claude-runtime base at the next chart bump. Prewarm failure fails
     # the base build by design.
