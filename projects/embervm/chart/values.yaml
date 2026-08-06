@@ -26,7 +26,10 @@ scratchSizeGi: 35
 # kata_firecracker_archive). Rendered into every buildable workload's initEnv as
 # EMBER_HYPERVISOR_EPOCH, which participates in the base signature (base_builder
 # signature/1 includes sorted init_env), so moving this value re-keys and
-# rebuilds EVERY workload base on the next sync. Firecracker snapshot formats
+# rebuilds every IMAGE-LANE workload base on the next sync. Zip-lane (FaaS)
+# workloads never see initEnv (workload_watcher replaces it wholesale with the
+# handler entry), so a future zip registration needs its own re-key path when
+# the hypervisor moves. Firecracker snapshot formats
 # are version-locked: a base rebuild does not happen on its own when the binary
 # moves (the signature has no hypervisor input), and a v-old snapshot loaded by
 # a v-new hypervisor fails every dispatch (#4389). Bump this in the SAME PR as
