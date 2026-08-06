@@ -1471,6 +1471,11 @@ chatgpt_base_url = %s
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
 
+# Codex 0.146.0 binary inspection exposes [tools].web_search, while
+# web_search_request is deprecated because web search is enabled by default.
+[tools]
+web_search = true
+
 [model_providers.ember-openai]
 name = "ember-openai"
 base_url = %s
