@@ -1395,7 +1395,7 @@ def test_adoption_latch_rolls_back_before_result(tmp_path, monkeypatch):
     assert manager.session_id is None
 
 
-def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
+def test_takeover_remediation_closes_stranded_process_without_respawn(tmp_path, monkeypatch):
     manager = _new_process_manager()
     manager.workspace = str(tmp_path)
     manager._prewarm_clis = ("claude",)
@@ -1439,10 +1439,9 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
 
     assert manager.ready()
     manager._remediation_thread.join(timeout=1)
-    # Remediation replaced the parked process with a fresh one.
-    assert manager.claude.process is not old_process
-    assert manager.claude.process is not None
-    assert manager.claude.process.poll() is None
+    # Mount-only remediation (#4393): the stranded process is closed and the
+    # respawn is left to the turn path's lazy spawn.
+    assert manager.claude.process is None
     assert manager.ready()
 
 
