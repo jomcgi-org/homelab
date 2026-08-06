@@ -3054,6 +3054,54 @@ def test_egress_forwarder_scopes_half_close_to_git_port(monkeypatch):
             forwarder.close()
 
 
+def test_git_proxy_helper_exits_when_response_goes_idle(tmp_path, monkeypatch):
+    # The lane never propagates the client half-close onto vsock (#4389), so
+    # the server-held connection stays open forever after the response ends.
+    # git waits for the helper process to exit, so the helper must leave on
+    # its own once the response has been idle past the deadline.
+    helper_path = tmp_path / "ember-git-proxy"
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(helper_path))
+    shim._write_git_proxy_helper()
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind((shim.EGRESS_LOCALHOST, 0))
+    listener.listen()
+    accepted = []
+
+    def serve_connection():
+        connection, _ = listener.accept()
+        accepted.append(connection)
+        connection.recv(4096)
+        connection.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        connection.recv(4096)
+        connection.sendall(b"response payload")
+        # Deliberately neither close nor shutdown: the connection idles open,
+        # exactly like the suppressed-half-close lane.
+        time.sleep(8)
+
+    accept_thread = threading.Thread(target=serve_connection, daemon=True)
+    accept_thread.start()
+    environment = os.environ.copy()
+    environment[shim.EGRESS_PORT_ENV] = str(listener.getsockname()[1])
+    environment["EMBER_GIT_PROXY_IDLE_EXIT_SECONDS"] = "1"
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(helper_path), "example.com", "9418"],
+            input=b"request",
+            env=environment,
+            capture_output=True,
+            timeout=6,
+        )
+    finally:
+        listener.close()
+        for connection in accepted:
+            connection.close()
+    assert result.returncode == 0
+    assert result.stdout == b"response payload"
+    assert time.monotonic() - started < 6
+
+
 def test_egress_forwarder_takes_absolute_uri_host_and_replays_the_request(monkeypatch):
     # HTTP_PROXY is set alongside HTTPS_PROXY, so a plain-HTTP request arrives as
     # an absolute-URI line rather than a CONNECT. The destination comes from Host,
