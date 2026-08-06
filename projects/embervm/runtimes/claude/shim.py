@@ -243,6 +243,7 @@ import os
 import socket
 import sys
 import threading
+import time
 
 EGRESS_LOCALHOST = "127.0.0.1"
 EGRESS_PORT_ENV = "EMBER_EGRESS_PORT"
@@ -274,12 +275,16 @@ def _pump_stdin_to_socket(source, sock):
             pass
 
 
+LAST_RX = [time.monotonic()]
+
+
 def _pump_socket_to_stdout(sock, destination):
     try:
         while True:
             data = sock.recv(65536)
             if not data:
                 break
+            LAST_RX[0] = time.monotonic()
             destination.write(data)
             destination.flush()
     except OSError:
@@ -319,18 +324,49 @@ def main():
             sys.stderr.write("ERROR: proxy handshake returned a non-200 response\n")
             return 1
         sock.settimeout(None)
-        threads = [
-            threading.Thread(
-                target=_pump_stdin_to_socket, args=(sys.stdin.buffer, sock)
-            ),
-            threading.Thread(
-                target=_pump_socket_to_stdout, args=(sock, sys.stdout.buffer)
-            ),
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        try:
+            idle_exit = float(
+                os.environ.get("EMBER_GIT_PROXY_IDLE_EXIT_SECONDS", "10")
+            )
+            if idle_exit <= 0:
+                idle_exit = 10
+        except ValueError:
+            idle_exit = 10
+        # Daemon threads: interpreter exit must never wait on a pump still
+        # blocked in recv (the idle-exit path below leaves exactly that).
+        stdin_pump = threading.Thread(
+            target=_pump_stdin_to_socket, args=(sys.stdin.buffer, sock), daemon=True
+        )
+        stdout_pump = threading.Thread(
+            target=_pump_socket_to_stdout, args=(sock, sys.stdout.buffer), daemon=True
+        )
+        stdin_pump.start()
+        stdout_pump.start()
+        stdin_pump.join()
+        # git half-closes stdin right after its request and then reads the
+        # response, so stdin EOF says nothing about completion. The response
+        # side has no EOF either: the lane deliberately never propagates the
+        # half-close onto vsock (#4389), so the server-held connection stays
+        # open forever and git waits for THIS process to exit. Once the
+        # response has been idle past the deadline, close up and leave; a
+        # mid-response server pause shorter than the deadline is unaffected.
+        LAST_RX[0] = time.monotonic()
+        while stdout_pump.is_alive():
+            stdout_pump.join(timeout=0.5)
+            if not stdout_pump.is_alive():
+                break
+            if time.monotonic() - LAST_RX[0] > idle_exit:
+                # shutdown, not just close: close() does not wake a thread
+                # blocked in recv, SHUT_RDWR does.
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                break
         return 0
     except (OSError, ValueError) as exc:
         sys.stderr.write("ERROR: %s\n" % exc)
