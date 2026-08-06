@@ -36,7 +36,14 @@ scratchSizeGi: 35
 # any Firecracker version change. Banked session and stateful memory snapshots
 # are separate artifacts this knob does not rebuild; they must be drained or
 # left to fail over cold at rollout.
-hypervisorEpoch: "fc-v1.16.1"
+# r2: the first fc-v1.16.1 re-key raced the brick roll. The CR update landed
+# while the outgoing v1.12.1 bricks still served builds, five workload bases
+# were written by the OLD binary under the NEW epoch, and the v1.16.1 bricks
+# re-registered them as Ready with no format check (#4407), failing every
+# restore with a bitcode error. Bricks are all v1.16.1 now, so this re-key
+# rebuilds on the right binary. Sequencing lesson: an epoch move only takes
+# effect safely once the fleet it names is actually serving.
+hypervisorEpoch: "fc-v1.16.1-r2"
 
 # Node-provisioning contract actuator (ADR embervm/012 storage-tiers amendment):
 # the scratch-prep DaemonSet that provisions the uniform capped loop scratch (see
