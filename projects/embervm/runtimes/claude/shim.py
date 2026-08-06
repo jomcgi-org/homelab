@@ -2645,16 +2645,16 @@ class ProcessManager:
                         self.claude, "_process_workspace_identity", None
                     )
                     if identity_changed or process_dead:
+                        # Mount-only remediation: close the stranded process
+                        # and leave the respawn to the turn path's proven lazy
+                        # spawn. The eager respawn here waited its full 30s
+                        # init budget without ever observing the init event
+                        # (#4393), turning every warm-restore rejoin into a
+                        # 30s stall; until that wait is fixed, closing early
+                        # and spawning lazily restores the ~3s pre-deploy
+                        # rejoin while prewarm keeps its create and cold-boot
+                        # wins.
                         self.claude._close_process(kill=False)
-                        if not self.claude.session_id:
-                            _ensure_cli_dir(self.claude.workspace)
-                            self.claude._spawn(
-                                session_id=None,
-                                first_message=None,
-                                model=None,
-                                init_timeout=30,
-                            )
-                            self.claude.session_id = None
                     with self._remediation_lock:
                         self._remediation_attempts += 1
                 except Exception as exc:
