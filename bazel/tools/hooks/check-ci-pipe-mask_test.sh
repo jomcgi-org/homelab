@@ -246,6 +246,42 @@ run_test "ci_tee_dev_null_tail_blocked" \
 	'{"tool_input":{"command":"ci test 2>&1 | tee /dev/null | tail -3"}}' \
 	2 "BLOCKED"
 
+run_test "git_chain_ci_tail_blocked" \
+	'{"tool_input":{"command":"git add -A && ci test | tail -20"}}' \
+	2 "BLOCKED"
+
+run_test "gh_chain_ci_tail_blocked" \
+	'{"tool_input":{"command":"gh pr checkout 4394 && ci test | tail -20"}}' \
+	2 "BLOCKED"
+
+run_test "ci_tee_dev_null_blocked" \
+	'{"tool_input":{"command":"ci test | tee /dev/null"}}' \
+	2 "BLOCKED"
+
+run_test "nohup_ci_tail_blocked" \
+	'{"tool_input":{"command":"nohup ci test | tail -20"}}' \
+	2 "BLOCKED"
+
+run_test "time_ci_tail_blocked" \
+	'{"tool_input":{"command":"time ci test | tail -3"}}' \
+	2 "BLOCKED"
+
+run_test "timeout_flags_ci_tail_blocked" \
+	'{"tool_input":{"command":"timeout -k 10 900 ci test | tail -20"}}' \
+	2 "BLOCKED"
+
+run_test "git_commit_message_prose_allowed" \
+	'{"tool_input":{"command":"git commit -m \"never pipe ci test | tail\""}}' \
+	0 ""
+
+run_test "gh_body_prose_allowed" \
+	'{"tool_input":{"command":"gh pr create --body \"ci test | tail -20 is banned\""}}' \
+	0 ""
+
+run_test "git_prose_chain_allowed" \
+	'{"tool_input":{"command":"git add -A && git commit -m \"ci: fix\" && git push"}}' \
+	0 ""
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
