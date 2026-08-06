@@ -29,6 +29,17 @@ for docs-only changes.
 Check `gh pr view --json state` first. Never push to a merged branch: start a new
 worktree instead.
 
+If CI's format bot pushed a `style: auto-format` commit, your next push is
+rejected as non-fast-forward, and wrappers have swallowed that rejection
+before: fetch and rebase first. After every push, confirm the remote took it:
+
+```bash
+git rev-parse HEAD
+gh pr view <number> --json headRefOid -q .headRefOid
+```
+
+If they differ, the push did not land. Fetch, rebase, and push again.
+
 ## Merging
 
 This repo allows **rebase merges only**. Squash and merge commits are disabled,
@@ -71,6 +82,21 @@ It moves `chart/Chart.yaml` `version` and `deploy/application.yaml`
 `targetRevision` together, numbering from the origin/main tip so concurrent
 sessions cannot pick the same version. Without it the merge fails the `Push
 images` action with the exact fix command.
+
+## Done means live
+
+Merged is not done for a change that must deploy. Done means all four:
+
+1. `gh pr view <number> --json state` says `MERGED`.
+2. The ArgoCD app reports Synced and Healthy
+   (`kubectl get application -n argocd <app>`, read-only). A moved
+   `targetRevision` only proves desire, not deployment.
+3. The workload actually rolled: the pod name changed and its image matches
+   the bumped chart.
+4. The service answers: curl its endpoint or check its probe.
+
+If any step stalls, open `docs/runbooks/argocd-outofsync.md`. Never report
+success on a subset.
 
 ## Issues
 

@@ -11,6 +11,12 @@ sh_test(
 )
 
 sh_test(
+    name = "check_ci_pipe_mask_test",
+    srcs = ["check-ci-pipe-mask_test.sh"],
+    data = [":check-ci-pipe-mask.sh"],
+)
+
+sh_test(
     name = "check_public_reader_grant_test",
     srcs = ["check-public-reader-grant_test.sh"],
     data = [":check-public-reader-grant.sh"],

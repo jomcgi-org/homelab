@@ -27,6 +27,22 @@ hiccups) until a real test failure has been ruled out. Claude has hallucinated
 infra failures in this repo before, and one wrong "it's just flaky" costs several
 wasted iterations.
 
+## Green that proves nothing
+
+`ci test` has exited 0 without testing anything (#4118): the remote runner can
+fail setup, and a fully cached run re-executes nothing. Judge a run by its
+log, not its exit code: find the `Executed N out of M tests` summary and grep
+the full output for `FAILED`. Never pipe `ci` output through `tail` or
+`head`; a hook blocks it because truncated reads are how false greens happen.
+
+## Retrigger discipline
+
+Never retrigger a red run before reading the failing log and naming the
+failure. One known shape: a red Test check whose bazel summary looks green is
+the Elixir mix test genrule failing inside the build (ordering flake, #4391).
+Do not blind-retrigger it; if the same failure reappears, treat it as new
+evidence, not the same flake.
+
 ## Reproduce locally
 
 `ci test` is 1:1 with the Workflows Test action:
