@@ -191,9 +191,13 @@ INTERRUPT_TIMEOUT = 30.0
 CLI_PROBE_TIMEOUT = 10.0
 HYDRATION_ATTEMPT_CAP = 3
 # The guest path is proxied over vsock, so it is materially slower than a direct
-# clone. A full clone of this repo moves roughly 25 MB through the lane, well
-# inside this cap at observed lane throughput.
-GIT_CLONE_TIMEOUT_SECONDS = 300
+# clone, and a FULL clone additionally pays 86k delta resolutions plus a 151 MB
+# checkout on 2 vCPUs: the instrumented #4389 run finished deltas and most of
+# the checkout just past the old 300 second cap. Only the first turn per
+# session volume ever pays this (the rev-parse gate skips hydration after one
+# success), and the outer budgets (monolith 1800s wall clock, invocation 900s)
+# leave headroom.
+GIT_CLONE_TIMEOUT_SECONDS = 600
 PERMISSION_MODE_ENV = "EMBER_PERMISSION_MODE"
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
 CLI_UID_ENV = "EMBER_CLI_UID"
