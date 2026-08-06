@@ -44,6 +44,15 @@ overrides the per-task review steps in
 `superpowers:subagent-driven-development`, which was calibrated for a more
 autonomous setting.
 
+Completion claims are verified, not trusted. When an implementer or teammate
+agent reports a commit or an edit, check the artifact itself (`git show
+--stat`, re-read the file) before building on it or reporting it up. A merged
+PR whose change must deploy is done only when the rollout is verified live;
+the `pr-workflow` skill has the checklist. When debugging, state the
+hypothesis and run the one command that would falsify it before writing any
+fix. For site copy and CV prose, audit facts and flag unsupportable claims,
+but offer at most one draft: Joe writes the final wording.
+
 If you end a turn blocked on a decision only Joe can make and he may be away,
 send one `monolith-monolith-agent-notify` line saying what you need. Main loop
 only: subagents report blockers to their dispatcher, never to Discord.
@@ -144,6 +153,11 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 - **Grep the tests before changing a number.** TTLs, timeouts, `max_tokens`, and
   retry counts get asserted on. Update the assertions in the same commit or CI
   fails in a way that reads like flakiness.
+- **Never truncate or discard `ci` / `bb remote` output** with `| tail`,
+  `| head`, or `>/dev/null`; a hook blocks it. Truncated reads are how
+  false-green reports happen, and `ci test` has exited 0 without running
+  anything (#4118). Judge a run by its `Executed N out of M tests` summary
+  line and grep the full log for `FAILED`, never by exit code alone.
 - **Images are apko plus `rules_apko`, never Dockerfiles**, always dual-arch
   (x86_64 and aarch64), always non-root on uid 65532 with `runAsNonRoot: true`.
 - **Python deps are `@pip//package` via `aspect_rules_py`.** This repo does not

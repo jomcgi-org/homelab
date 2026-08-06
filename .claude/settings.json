@@ -60,6 +60,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/prefer-bb-remote.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/bazel/tools/hooks/check-ci-pipe-mask.sh",
+            "timeout": 5
           }
         ]
       },
