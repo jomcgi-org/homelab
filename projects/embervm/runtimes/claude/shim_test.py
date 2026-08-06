@@ -2889,6 +2889,76 @@ def _forwarder_exchange(monkeypatch, request_bytes):
         forwarder.close()
 
 
+def test_hydration_diagnostics_timeout(capsys, monkeypatch, tmp_path):
+    checkout_dir = tmp_path / "checkout"
+    checkout_dir.mkdir()
+    (checkout_dir / "small").write_bytes(b"content")
+    monkeypatch.setattr(shim.time, "sleep", lambda seconds: None)
+    exc = subprocess.TimeoutExpired(
+        cmd=["git", "clone"],
+        timeout=300,
+        output=b"out",
+        stderr=b"Receiving objects: 87%",
+    )
+
+    shim._write_hydration_diagnostics(exc, str(checkout_dir))
+
+    captured = capsys.readouterr().err
+    assert "Receiving objects: 87%" in captured
+    assert "checkout_kb=" in captured
+    assert "diskstats=" in captured
+    assert (
+        "diskstats=unavailable" in captured
+        or " vda " in captured
+        or " vdb " in captured
+    )
+
+
+def test_hydration_diagnostics_generic_exception(capsys, monkeypatch, tmp_path):
+    monkeypatch.setattr(shim.time, "sleep", lambda seconds: None)
+
+    shim._write_hydration_diagnostics(
+        ValueError("not a subprocess error"), str(tmp_path)
+    )
+
+    captured = capsys.readouterr().err
+    assert "ValueError" in captured
+
+
+def test_egress_copy_counts_bytes(capsys):
+    payload = b"x" * (4 * 1024 * 1024 + 123)
+
+    class FakeSource:
+        def __init__(self, data):
+            self.data = data
+            self.done = False
+
+        def recv(self, size):
+            if self.done:
+                return b""
+            self.done = True
+            return self.data
+
+    class FakeDestination:
+        def __init__(self):
+            self.data = bytearray()
+
+        def sendall(self, data):
+            self.data.extend(data)
+
+        def shutdown(self, how):
+            pass
+
+    source = FakeSource(payload)
+    destination = FakeDestination()
+    shim.VsockEgressForwarder._copy(source, destination, "down")
+
+    captured = capsys.readouterr().err
+    assert len(destination.data) == len(payload)
+    assert "egress-copy: down 4194304" in captured
+    assert "egress-copy: down closed total=%s err=none" % len(payload) in captured
+
+
 def test_egress_forwarder_takes_absolute_uri_host_and_replays_the_request(monkeypatch):
     # HTTP_PROXY is set alongside HTTPS_PROXY, so a plain-HTTP request arrives as
     # an absolute-URI line rather than a CONNECT. The destination comes from Host,

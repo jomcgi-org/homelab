@@ -37,6 +37,90 @@ CLOCK_PATH = "/shim/clock"
 DEFAULT_WORKSPACE = "/workspace"
 VOLUME_DEVICE_ENV = "EMBER_VOLUME_DEV"
 DEFAULT_VOLUME_DEVICE = "/dev/vdb"
+
+
+def _write_hydration_diagnostics(exc, checkout_dir):
+    """Write hydration diagnostics to stderr when subprocess.TimeoutExpired occurs.
+
+    Args:
+        exc: subprocess.TimeoutExpired or any Exception.
+        checkout_dir: path to the directory being checked out.
+
+    The diagnostic path is deliberately best-effort because it runs while
+    handling another failure and stderr is the guest's only telemetry channel.
+    """
+    prefix = "ember-claude-shim: hydration-diag: "
+
+    def write_line(line):
+        sys.stderr.write(prefix + line + "\n")
+        sys.stderr.flush()
+
+    def write_value(label, value):
+        for line in value.splitlines() or [""]:
+            write_line("%s%s" % (label, line))
+
+    try:
+        write_line("exception=%s" % type(exc).__name__)
+        stderr = getattr(exc, "stderr", None)
+        if stderr is None:
+            stderr = ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        write_value("stderr=", stderr[-800:])
+
+        stdout = getattr(exc, "stdout", None)
+        if stdout is None:
+            stdout = ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        write_value("stdout=", stdout[-200:])
+
+        checkout_bytes = 0
+        for root, dirs, files in os.walk(checkout_dir):
+            for name in dirs + files:
+                try:
+                    checkout_bytes += (
+                        os.stat(
+                            os.path.join(root, name), follow_symlinks=False
+                        ).st_blocks
+                        * 512
+                    )
+                except OSError:
+                    pass
+        try:
+            checkout_bytes += (
+                os.stat(checkout_dir, follow_symlinks=False).st_blocks * 512
+            )
+        except OSError:
+            pass
+        write_line("checkout_kb=%s" % (checkout_bytes // 1024))
+
+        def read_diskstats(label):
+            try:
+                with open("/proc/diskstats") as stream:
+                    lines = [
+                        line.rstrip("\n")
+                        for line in stream
+                        if len(line.split()) >= 3 and line.split()[2] in ("vda", "vdb")
+                    ]
+            except (OSError, IOError):
+                lines = []
+            if lines:
+                for line in lines:
+                    write_line("%s%s" % (label, line))
+            else:
+                write_line("%sunavailable" % label)
+
+        read_diskstats("diskstats=")
+        time.sleep(2)
+        read_diskstats("diskstats2=")
+    except Exception as diag_exc:
+        try:
+            write_line("hydration-diag failed: %s" % diag_exc)
+        except Exception:
+            pass
+
+
 PREWARM_CLIS_ENV = "EMBER_PREWARM_CLIS"
 SUPPORTED_PREWARM_CLIS = ("claude",)
 CODEX_MODELS = {
@@ -620,16 +704,43 @@ class VsockEgressForwarder:
             threading.Thread(target=self._forward, args=(client,), daemon=True).start()
 
     @staticmethod
-    def _copy(source, destination):
+    def _copy(source, destination, direction=None):
+        total_bytes = 0
+        next_boundary = 4 * 1024 * 1024
+        error = None
+
+        def write_progress(message):
+            if direction is None:
+                return
+            # Copy threads are daemon threads that can outlive their test's (or
+            # the process's) stderr; diagnostic chatter must never raise.
+            try:
+                sys.stderr.write(
+                    "ember-claude-shim: egress-copy: %s %s\n" % (direction, message)
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+
         try:
             while True:
                 data = source.recv(64 * 1024)
                 if not data:
                     return
                 destination.sendall(data)
-        except OSError:
+                total_bytes += len(data)
+                while direction is not None and total_bytes >= next_boundary:
+                    write_progress(str(next_boundary))
+                    next_boundary += 4 * 1024 * 1024
+        except OSError as exc:
+            error = exc
             return
         finally:
+            if direction is not None:
+                write_progress(
+                    "closed total=%s err=%s"
+                    % (total_bytes, repr(error) if error is not None else "none")
+                )
             try:
                 destination.shutdown(socket.SHUT_WR)
             except OSError:
@@ -732,8 +843,8 @@ class VsockEgressForwarder:
             if pending:
                 upstream.sendall(pending)
             copies = [
-                threading.Thread(target=self._copy, args=(client, upstream)),
-                threading.Thread(target=self._copy, args=(upstream, client)),
+                threading.Thread(target=self._copy, args=(client, upstream, "up")),
+                threading.Thread(target=self._copy, args=(upstream, client, "down")),
             ]
             for copy_thread in copies:
                 copy_thread.start()
@@ -2600,6 +2711,7 @@ class ProcessManager:
             if validation.returncode != 0:
                 raise RuntimeError("cloned directory validation failed: HEAD not found")
         except subprocess.TimeoutExpired as exc:
+            _write_hydration_diagnostics(exc, checkout_dir)
             shutil.rmtree(checkout_dir, ignore_errors=True)
             self._hydration_error = str(exc)
             sys.stderr.write(
@@ -2609,6 +2721,7 @@ class ProcessManager:
             sys.stderr.flush()
             return
         except Exception as exc:
+            _write_hydration_diagnostics(exc, checkout_dir)
             shutil.rmtree(checkout_dir, ignore_errors=True)
             self._hydration_error = str(exc)
             sys.stderr.write(
