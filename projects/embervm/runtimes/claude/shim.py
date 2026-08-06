@@ -2620,7 +2620,7 @@ class ProcessManager:
                 name="claude-workspace-remediation",
                 daemon=True,
             )
-            self._remediation_thread.start()
+        self._remediation_thread.start()
 
     def _remediate_workspace(self):
         with self._mount_lock:
