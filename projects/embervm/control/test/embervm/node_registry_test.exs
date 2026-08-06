@@ -248,6 +248,7 @@ defmodule Embervm.NodeRegistryTest do
   test "a real spawn_monitor streamer connects, publishes facts, and reconnects on clean drop" do
     {:ok, connects} = Agent.start_link(fn -> 0 end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(connects) end)
+    test_pid = self()
 
     connect_fun = fn _address ->
       Agent.update(connects, &(&1 + 1))
@@ -270,7 +271,7 @@ defmodule Embervm.NodeRegistryTest do
         # the fake channel, which is not a real gRPC channel. The replay is not
         # under test here (see the dedicated reconnect-replays-registry test).
         sync_registry_fun: fn :fake_channel, _id, _request -> :ok end,
-        disconnect_fun: fn :fake_channel -> :ok end,
+        disconnect_fun: fn ch -> send(test_pid, {:disconnected, ch}) end,
         # Small backoff so the reconnect fires quickly; large age-out so the
         # real-time ticks do not race the assertions.
         base_backoff_ms: 10,
@@ -318,7 +319,7 @@ defmodule Embervm.NodeRegistryTest do
         # Stub the registry replay: the real default dials NodeService.Stub over
         # the fake channel (not a real gRPC channel); the replay is not under test.
         sync_registry_fun: fn :fake_channel, _id, _request -> :ok end,
-        disconnect_fun: fn :fake_channel -> :ok end,
+        disconnect_fun: fn ch -> send(test_pid, {:disconnected, ch}) end,
         reassign_fun: fn id -> send(test_pid, {:reassigned, id}) end,
         # Small age-out windows and backoff so the wedge is detected and the kill
         # + reconnect happen quickly, with plenty of polling margin below.
@@ -338,6 +339,7 @@ defmodule Embervm.NodeRegistryTest do
 
     # The wedged streamer was killed and a fresh connection opened (recovery).
     eventually(fn -> Agent.get(connects, & &1) >= 2 end, 200)
+    assert_receive {:disconnected, :fake_channel}, 2_000
   end
 
   # -- registry replay on (re)connect (artifact-decoupling Phase 2) ----------
@@ -371,7 +373,7 @@ defmodule Embervm.NodeRegistryTest do
         connect_fun: connect_fun,
         watch_fun: watch_fun,
         sync_registry_fun: sync_registry_fun,
-        disconnect_fun: fn :fake_channel -> :ok end,
+        disconnect_fun: fn ch -> send(test_pid, {:disconnected, ch}) end,
         base_backoff_ms: 10,
         max_backoff_ms: 10,
         age_check_ms: 60_000,
@@ -411,7 +413,7 @@ defmodule Embervm.NodeRegistryTest do
         connect_fun: fn _address -> {:ok, :fake_channel} end,
         watch_fun: watch_fun,
         sync_registry_fun: sync_registry_fun,
-        disconnect_fun: fn :fake_channel -> :ok end,
+        disconnect_fun: fn ch -> send(test_pid, {:disconnected, ch}) end,
         registry_resync_ms: 30,
         base_backoff_ms: 60_000,
         max_backoff_ms: 60_000,
@@ -457,7 +459,7 @@ defmodule Embervm.NodeRegistryTest do
           send(test_pid, {:registry_sync, request})
           :ok
         end,
-        disconnect_fun: fn :fake_channel -> :ok end,
+        disconnect_fun: fn ch -> send(test_pid, {:disconnected, ch}) end,
         age_check_ms: 60_000,
         unknown_after_ms: 60_000,
         down_after_ms: 60_000
@@ -492,7 +494,7 @@ defmodule Embervm.NodeRegistryTest do
           send(test_pid, {:registry_sync, request})
           :ok
         end,
-        disconnect_fun: fn :fake_channel -> :ok end,
+        disconnect_fun: fn ch -> send(test_pid, {:disconnected, ch}) end,
         age_check_ms: 60_000,
         unknown_after_ms: 60_000,
         down_after_ms: 60_000
@@ -533,7 +535,7 @@ defmodule Embervm.NodeRegistryTest do
           send(test_pid, {:registry_sync, request})
           :ok
         end,
-        disconnect_fun: fn :fake_channel -> :ok end,
+        disconnect_fun: fn ch -> send(test_pid, {:disconnected, ch}) end,
         age_check_ms: 60_000,
         unknown_after_ms: 60_000,
         down_after_ms: 60_000
@@ -561,7 +563,7 @@ defmodule Embervm.NodeRegistryTest do
       connect_fun: fn _address -> {:ok, :fake_channel} end,
       watch_fun: blocking_watch(),
       sync_registry_fun: sync_registry_fun,
-      disconnect_fun: fn :fake_channel -> :ok end,
+      disconnect_fun: fn ch -> send(test_pid, {:disconnected, ch}) end,
       age_check_ms: 60_000,
       unknown_after_ms: 60_000,
       down_after_ms: 60_000
@@ -897,4 +899,175 @@ defmodule Embervm.NodeRegistryTest do
     refute Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1")
     assert NodeRegistry.capacity(table) == []
   end
+
+  test "expiry disconnects the stored streamer channel" do
+    {clock, advance} = new_clock()
+    test_pid = self()
+
+    {reg, table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          disconnect_fun: fn channel -> send(test_pid, {:disconnected, channel}) end,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 90_000
+        )
+      )
+
+    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
+    eventually(fn -> NodeRegistry.capacity(table) != [] end, 200)
+
+    advance.(100_000)
+    :ok = NodeRegistry.tick(reg)
+
+    refute Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1")
+    assert NodeRegistry.capacity(table) == []
+    assert_receive {:disconnected, :fake_channel}, 2_000
+  end
+
+  test "normal streamer exit disconnects its channel exactly once" do
+    {:ok, connects} = Agent.start_link(fn -> 0 end)
+    {:ok, watches} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(connects) end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(watches) end)
+    test_pid = self()
+
+    connect_fun = fn _address ->
+      Agent.update(connects, &(&1 + 1))
+      {:ok, :fake_channel}
+    end
+
+    watch_fun = fn :fake_channel, node_id, emit ->
+      emit.(node_status(node_id: node_id))
+
+      case Agent.get_and_update(watches, fn count -> {count + 1, count + 1} end) do
+        1 -> {:ok, :closed}
+        _ -> receive do: (:never -> {:ok, :closed})
+      end
+    end
+
+    {_reg, table} =
+      start_registry(
+        watch_startup: true,
+        connect_fun: connect_fun,
+        watch_fun: watch_fun,
+        sync_registry_fun: fn :fake_channel, _id, _request -> :ok end,
+        disconnect_fun: fn channel -> send(test_pid, {:disconnected, channel}) end,
+        base_backoff_ms: 10,
+        max_backoff_ms: 10,
+        age_check_ms: 60_000,
+        unknown_after_ms: 60_000,
+        down_after_ms: 60_000
+      )
+
+    eventually(fn -> NodeRegistry.capacity(table) != [] end, 200)
+    eventually(fn -> Agent.get(connects, & &1) >= 2 end, 200)
+    assert_receive {:disconnected, :fake_channel}, 2_000
+    refute_receive {:disconnected, :fake_channel}, 200
+  end
+
+  test "ignores channel messages from superseded streamers" do
+    {clock, advance} = new_clock()
+    test_pid = self()
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          connect_fun: fn _address ->
+            send(test_pid, {:streamer_pid, self()})
+            {:ok, :real_channel}
+          end,
+          disconnect_fun: fn channel -> send(test_pid, {:disconnected, channel}) end,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 90_000
+        )
+      )
+
+    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
+    assert_receive {:streamer_pid, streamer_pid}, 2_000
+
+    send(reg, {:streamer_channel, "old_fake_pid", :stale_channel})
+    send(reg, {:streamer_channel, streamer_pid, :real_channel})
+    advance.(100_000)
+    :ok = NodeRegistry.tick(reg)
+
+    assert_receive {:disconnected, :real_channel}, 2_000
+    refute_receive {:disconnected, :stale_channel}, 200
+  end
+
+  test "dead superseded streamer's channel is disconnected by registry" do
+    {clock, _advance} = new_clock()
+    test_pid = self()
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          connect_fun: fn _address ->
+            send(test_pid, {:streamer_pid, self()})
+            {:ok, :channel_from_dead_streamer}
+          end,
+          disconnect_fun: fn channel -> send(test_pid, {:disconnected, channel}) end,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 90_000
+        )
+      )
+
+    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
+    assert_receive {:streamer_pid, _streamer_pid}, 2_000
+
+    # Simulate a dead pid sending a channel message (race: kill before message processed)
+    dead_pid = spawn(fn -> :ok end)
+    :ok = Process.sleep(10)  # Let it die
+    refute Process.alive?(dead_pid)
+
+    send(reg, {:streamer_channel, dead_pid, :channel_from_dead_streamer})
+
+    # The registry should disconnect the orphaned channel
+    assert_receive {:disconnected, :channel_from_dead_streamer}, 2_000
+  end
+
+  test "live superseded streamer's channel is not taken over" do
+    {clock, _advance} = new_clock()
+    test_pid = self()
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          connect_fun: fn _address ->
+            send(test_pid, {:streamer_pid, self()})
+            {:ok, :stale_channel}
+          end,
+          disconnect_fun: fn channel -> send(test_pid, {:disconnected, channel}) end,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 90_000
+        )
+      )
+
+    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
+    assert_receive {:streamer_pid, _streamer_pid}, 2_000
+
+    # Spawn a live superseded process that will send a stale channel
+    live_fake_pid = spawn(fn ->
+      receive do
+        :die -> :ok
+      end
+    end)
+
+    send(reg, {:streamer_channel, live_fake_pid, :stale_channel})
+
+    # The registry should NOT disconnect a live superseded streamer's channel
+    # (it will disconnect in its own after clause)
+    refute_receive {:disconnected, :stale_channel}, 200
+
+    # Clean up the fake pid
+    send(live_fake_pid, :die)
+  end
+
 end

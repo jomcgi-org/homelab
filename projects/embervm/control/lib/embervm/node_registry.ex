@@ -363,6 +363,29 @@ defmodule Embervm.NodeRegistry do
     end
   end
 
+  # A channel from the CURRENT streamer. Events from a superseded streamer are
+  # handled carefully: if the pid is dead (killed before it sent this message or
+  # already reaped), its after clause will never run, so we must disconnect here.
+  # If the pid is alive, it still owns the channel and will release it itself.
+  def handle_info({:streamer_channel, pid, channel}, state) do
+    case Map.get(state.streamers, pid) do
+      nil ->
+        # The pid is not the current streamer. If it is also DEAD, its after clause
+        # either already ran or never will (untrappable kill), and no one else holds
+        # this channel, so release it here rather than orphan it. A live superseded
+        # streamer still owns its channel and releases it itself. is_pid/1 guards
+        # first: Process.alive?/1 RAISES on a non-pid, and a raise here would take
+        # the registry down over a message it should simply ignore.
+        if is_pid(pid) and not Process.alive?(pid) do
+          safe_channel_disconnect(state.disconnect_fun, channel)
+        end
+        {:noreply, state}
+
+      node_id ->
+        {:noreply, put_in(state.node_runtime[node_id].channel, channel)}
+    end
+  end
+
   # A streamer finished (stream closed cleanly or errored). Decide the next move
   # for its node: reconnect immediately on a healthy long-lived close, back off
   # otherwise. Ignored if the pid is no longer the current streamer.
@@ -1065,8 +1088,13 @@ defmodule Embervm.NodeRegistry do
 
     case state.node_runtime[node_id].streamer do
       {pid, _ref} ->
+        channel = state.node_runtime[node_id].channel
         state = forget_streamer(state, pid, node_id)
+
+        # Process.exit(:kill) is untrappable, so the streamer cannot release its
+        # channel in the after clause. NodeRegistry owns cleanup at this kill site.
         Process.exit(pid, :kill)
+        safe_channel_disconnect(state.disconnect_fun, channel)
         schedule_reconnect(state, node_id)
 
       nil ->
@@ -1098,6 +1126,8 @@ defmodule Embervm.NodeRegistry do
         result =
           case connect_fun.(address) do
             {:ok, channel} ->
+              send(owner, {:streamer_channel, streamer, channel})
+
               try do
                 # Artifact-decoupling Phase 2: on EVERY (re)connect, before we
                 # start consuming the WatchNode stream, PUSH the authoritative
@@ -1134,15 +1164,15 @@ defmodule Embervm.NodeRegistry do
     |> put_in([:streamers, pid], node_id)
   end
 
-  # Clear a streamer from the current-streamer index and the node runtime. Safe
-  # to call for a pid already forgotten (idempotent), which happens when the
-  # down-edge kill and the subsequent :DOWN both run.
+  # Clear a streamer and its channel from the current-streamer index and the node
+  # runtime. Safe to call for a pid already forgotten (idempotent), which happens
+  # when the down-edge kill and the subsequent :DOWN both run.
   defp forget_streamer(state, pid, node_id) do
     state = %{state | streamers: Map.delete(state.streamers, pid)}
 
     case state.node_runtime[node_id] do
       %{streamer: {^pid, _ref}} = rt ->
-        put_in(state.node_runtime[node_id], %{rt | streamer: nil})
+        put_in(state.node_runtime[node_id], %{rt | streamer: nil, channel: nil})
 
       _ ->
         state
@@ -1347,6 +1377,8 @@ defmodule Embervm.NodeRegistry do
       address: spec.address,
       # {pid, ref} of the live streamer, or nil when no stream is open.
       streamer: nil,
+      # Channel owned by the current streamer, or nil before it connects.
+      channel: nil,
       backoff_ms: base_backoff,
       # Monotonic ms the current stream opened, to tell a healthy long-lived close
       # (reconnect now) from a suspect fast close (back off).
@@ -1387,9 +1419,14 @@ defmodule Embervm.NodeRegistry do
 
     state =
       case state.node_runtime[instance_id] do
-        %{streamer: {pid, _ref}} ->
+        %{streamer: {pid, _ref}} = rt ->
+          channel = rt.channel
           state = forget_streamer(state, pid, instance_id)
+
+          # Process.exit(:kill) is untrappable, so the streamer cannot release its
+          # channel in the after clause. NodeRegistry owns cleanup at this kill site.
           Process.exit(pid, :kill)
+          safe_channel_disconnect(state.disconnect_fun, channel)
           state
 
         _ ->
@@ -1447,6 +1484,25 @@ defmodule Embervm.NodeRegistry do
   catch
     kind, reason ->
       Logger.warning("embervm node registry: channel removal for #{key} exited: #{inspect({kind, reason})}")
+      :ok
+  end
+
+  # The streamer cannot disconnect itself because Process.exit(:kill) is
+  # untrappable and skips the after clause. Ownership moves to NodeRegistry for
+  # guaranteed cleanup.
+  defp safe_channel_disconnect(_disconnect_fun, nil), do: :ok
+  defp safe_channel_disconnect(nil, _channel), do: :ok
+
+  defp safe_channel_disconnect(disconnect_fun, channel) do
+    disconnect_fun.(channel)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm node registry: channel disconnect failed: #{inspect(e)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("embervm node registry: channel disconnect exited: #{inspect({kind, reason})}")
       :ok
   end
 
