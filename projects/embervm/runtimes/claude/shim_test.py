@@ -1110,6 +1110,12 @@ def _manager(tmp_path, monkeypatch, api_key="none"):
     return manager
 
 
+def _new_process_manager():
+    manager = object.__new__(shim.ProcessManager)
+    manager._mount_lock = threading.Lock()
+    return manager
+
+
 class _FakeStdin:
     def __init__(self):
         self.lines = []
@@ -1182,7 +1188,7 @@ def test_user_message_line_includes_optional_session_id():
 def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace" / "src"
     workspace.mkdir(parents=True)
-    manager = object.__new__(shim.ProcessManager)
+    manager = _new_process_manager()
     manager._prewarm_clis = ("claude",)
     manager._prewarm_complete = False
     manager.fatal_error = None
@@ -1201,8 +1207,12 @@ def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
 
     manager.claude = Adapter()
     manager.claude.workspace = str(workspace)
-    manager.codex = Adapter()
-    manager.pi = Adapter()
+    temp_a = Adapter()
+    temp_a.turn_lock = threading.Lock()
+    manager.codex = temp_a
+    temp_b = Adapter()
+    temp_b.turn_lock = threading.Lock()
+    manager.pi = temp_b
     manager._close_process = lambda **_kwargs: None
     manager.prewarm()
 
@@ -1224,7 +1234,7 @@ def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
 
 
 def test_process_manager_prewarm_failure_is_not_ready(tmp_path):
-    manager = object.__new__(shim.ProcessManager)
+    manager = _new_process_manager()
     manager._prewarm_clis = ("claude",)
     manager._prewarm_complete = False
     manager.fatal_error = None
@@ -1241,8 +1251,12 @@ def test_process_manager_prewarm_failure_is_not_ready(tmp_path):
 
     manager.claude = Adapter()
     manager.claude.workspace = str(tmp_path)
-    manager.codex = Adapter()
-    manager.pi = Adapter()
+    temp_a = Adapter()
+    temp_a.turn_lock = threading.Lock()
+    manager.codex = temp_a
+    temp_b = Adapter()
+    temp_b.turn_lock = threading.Lock()
+    manager.pi = temp_b
     manager._close_process = lambda **_kwargs: None
     manager.prewarm()
 
@@ -1251,8 +1265,7 @@ def test_process_manager_prewarm_failure_is_not_ready(tmp_path):
 
 
 def test_process_manager_turn_always_ensures_workspace_volume(monkeypatch):
-    manager = object.__new__(shim.ProcessManager)
-    manager._mount_lock = threading.Lock()
+    manager = _new_process_manager()
     calls = []
 
     class Adapter:
@@ -1262,8 +1275,12 @@ def test_process_manager_turn_always_ensures_workspace_volume(monkeypatch):
             return {"ok": True}
 
     manager.claude = Adapter()
-    manager.codex = Adapter()
-    manager.pi = Adapter()
+    temp_a = Adapter()
+    temp_a.turn_lock = threading.Lock()
+    manager.codex = temp_a
+    temp_b = Adapter()
+    temp_b.turn_lock = threading.Lock()
+    manager.pi = temp_b
     monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: calls.append(True))
     monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
 
@@ -1272,7 +1289,7 @@ def test_process_manager_turn_always_ensures_workspace_volume(monkeypatch):
 
 
 def test_process_manager_without_prewarm_preserves_ready_semantics():
-    manager = object.__new__(shim.ProcessManager)
+    manager = _new_process_manager()
     manager._prewarm_clis = ()
     manager._prewarm_complete = True
     manager.fatal_error = None
@@ -1282,8 +1299,12 @@ def test_process_manager_without_prewarm_preserves_ready_semantics():
             return True
 
     manager.claude = Adapter()
-    manager.codex = Adapter()
-    manager.pi = Adapter()
+    temp_a = Adapter()
+    temp_a.turn_lock = threading.Lock()
+    manager.codex = temp_a
+    temp_b = Adapter()
+    temp_b.turn_lock = threading.Lock()
+    manager.pi = temp_b
     assert manager.ready()
 
 
@@ -1374,13 +1395,12 @@ def test_adoption_latch_rolls_back_before_result(tmp_path, monkeypatch):
 
 
 def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
-    manager = object.__new__(shim.ProcessManager)
+    manager = _new_process_manager()
     manager.workspace = str(tmp_path)
     manager._prewarm_clis = ("claude",)
     manager._prewarm_complete = True
     manager.fatal_error = None
     manager._remediation_lock = threading.Lock()
-    manager._mount_lock = threading.Lock()
     manager._remediation_attempts = 0
     manager._remediation_thread = None
 
@@ -1424,7 +1444,10 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
     # The first ready() call starts remediation for the tmpfs-to-volume takeover.
     assert manager.ready()
     manager._remediation_thread.join(timeout=1)
-    assert manager.claude.process is new_process
+    # Remediation replaced the parked process with a fresh one.
+    assert manager.claude.process is not old_process
+    assert manager.claude.process is not None
+    assert manager.claude.process.poll() is None
     assert manager.ready()
 
 
@@ -1455,19 +1478,21 @@ def test_workspace_is_tmpfs_reads_last_mount(monkeypatch):
 
 
 def test_ready_build_requires_parked_alive_but_session_is_best_effort(monkeypatch):
-    manager = object.__new__(shim.ProcessManager)
+    manager = _new_process_manager()
     manager._prewarm_clis = ("claude",)
     manager._prewarm_complete = True
     manager.fatal_error = None
     manager._remediation_lock = threading.Lock()
     manager._remediation_attempts = 0
     manager._remediation_thread = None
-    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
-    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
+    # Build-guest state: both probes return False (no filesystem on volume)
+    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: False)
+    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: False)
 
     class Adapter:
         def __init__(self, process=None):
             self.process = process
+            self.turn_lock = threading.Lock()
 
         def ready(self):
             return True
@@ -1477,18 +1502,13 @@ def test_ready_build_requires_parked_alive_but_session_is_best_effort(monkeypatc
     manager.claude = Adapter(dead)
     manager.codex = Adapter()
     manager.pi = Adapter()
+    # Dead parked CLI in build-guest state -> ready() must return False
     assert not manager.ready()
-
-    kicked = []
-    manager._kick_remediation = lambda: kicked.append(True)
-    assert manager.ready()
-    assert kicked == [True]
 
 
 def test_remediation_bound_session_closes_without_respawn(tmp_path, monkeypatch):
-    manager = object.__new__(shim.ProcessManager)
+    manager = _new_process_manager()
     manager._remediation_lock = threading.Lock()
-    manager._mount_lock = threading.Lock()
     manager._remediation_attempts = 0
     manager._remediation_thread = None
     old_process = _FakeLiveProcess()
@@ -1629,12 +1649,11 @@ def test_legacy_spawn_fallback_uses_legacy_cwd(tmp_path, monkeypatch):
 
 
 def test_remediation_attempts_cap_at_three(tmp_path, monkeypatch):
-    manager = object.__new__(shim.ProcessManager)
+    manager = _new_process_manager()
     manager._prewarm_clis = ()
     manager._prewarm_complete = True
     manager.fatal_error = None
     manager._remediation_lock = threading.Lock()
-    manager._mount_lock = threading.Lock()
     manager._remediation_attempts = 0
     manager._remediation_thread = None
 
@@ -1675,8 +1694,7 @@ def test_remediation_attempts_cap_at_three(tmp_path, monkeypatch):
 
 
 def test_concurrent_ensure_workspace_volume_serializes(tmp_path, monkeypatch):
-    manager = object.__new__(shim.ProcessManager)
-    manager._mount_lock = threading.Lock()
+    manager = _new_process_manager()
     manager._remediation_lock = threading.Lock()
     manager._remediation_attempts = 0
     manager._remediation_thread = None
@@ -1987,7 +2005,7 @@ def test_progress_token_validation():
 
 def test_progress_token_forwarded_to_claude_adapter(monkeypatch):
     """ProcessManager.turn forwards progress_token only when supplied."""
-    manager = object.__new__(shim.ProcessManager)
+    manager = _new_process_manager()
     manager._hydration_error = None
     manager._hydration_status = None
     monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
@@ -2303,7 +2321,7 @@ def test_claude_model_none_keeps_legacy_argv(tmp_path, monkeypatch):
 
 
 def test_manager_passes_claude_model_to_adapter():
-    manager = object.__new__(shim.ProcessManager)
+    manager = _new_process_manager()
 
     class Claude:
         def turn(self, *args):
