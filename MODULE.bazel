@@ -578,14 +578,26 @@ multiarch_http_archive(
 # no /opt/kata install (see projects/platform/firecracker-node). Pinned to a kata
 # release rather than the old install-kata.sh `releases/latest`. Both arches are
 # required: the fc-invoke image is dual-arch and apko needs a per-arch tar layer.
+#
+# The hypervisor binary itself comes from the upstream Firecracker v1.16.1
+# release, not the kata bundle: kata pins v1.12.1 (still on main), which
+# predates the vsock-after-snapshot-restore fixes the warm-restore fleet needs
+# (#4389; upstream #5688/#5882/#5958). Only the guest kernel still comes from
+# kata. Moving the Firecracker version invalidates every base snapshot
+# (version-locked format); the BaseBuilder rebuilds them on the roll.
 kata_firecracker_archive = use_repo_rule("//bazel/tools/http:kata_firecracker_archive.bzl", "kata_firecracker_archive")
 
 kata_firecracker_archive(
     name = "kata_firecracker",
+    amd64_firecracker_sha256 = "382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6",
+    amd64_firecracker_url = "https://github.com/firecracker-microvm/firecracker/releases/download/v1.16.1/firecracker-v1.16.1-x86_64.tgz",
     amd64_sha256 = "1449ecea50bd91fa73a94648db195d18950fe869ba4b1f12d05f55f1fa7c1b01",
     amd64_url = "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-amd64.tar.zst",
+    arm64_firecracker_sha256 = "8d0e69f6d6f9a1724551f607f18504052c16c1828ee3d4d7b6e6c73380871e0e",
+    arm64_firecracker_url = "https://github.com/firecracker-microvm/firecracker/releases/download/v1.16.1/firecracker-v1.16.1-aarch64.tgz",
     arm64_sha256 = "8736c054d9223974735394f822000823baef509e1c33405ec798240fa9b6e4b5",
     arm64_url = "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-arm64.tar.zst",
+    firecracker_version = "v1.16.1",
 )
 
 # k3s binary + airgap image tarball, vendored per arch for the EmberVM composite
