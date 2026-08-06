@@ -153,11 +153,12 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 - **Grep the tests before changing a number.** TTLs, timeouts, `max_tokens`, and
   retry counts get asserted on. Update the assertions in the same commit or CI
   fails in a way that reads like flakiness.
-- **Never truncate or discard `ci` / `bb remote` output** with `| tail`,
-  `| head`, or `>/dev/null`; a hook blocks it. Truncated reads are how
-  false-green reports happen, and `ci test` has exited 0 without running
-  anything (#4118). Judge a run by its `Executed N out of M tests` summary
-  line and grep the full log for `FAILED`, never by exit code alone.
+- **Never pipe `ci` / `bb remote` output straight into a filter** (`tail`,
+  `head`, `grep`, `sed`, `awk`, `wc`) **or discard it** (`>/dev/null`); a
+  hook blocks it. Run unpiped, or `| tee` to a file and inspect the saved
+  log. Truncated reads are how false-green reports happen, and `ci test`
+  has exited 0 without running anything (#4118). Judge a run by its
+  `Executed N out of M tests` summary line, never by exit code alone.
 - **Images are apko plus `rules_apko`, never Dockerfiles**, always dual-arch
   (x86_64 and aarch64), always non-root on uid 65532 with `runAsNonRoot: true`.
 - **Python deps are `@pip//package` via `aspect_rules_py`.** This repo does not

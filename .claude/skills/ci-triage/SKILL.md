@@ -32,8 +32,9 @@ wasted iterations.
 `ci test` has exited 0 without testing anything (#4118): the remote runner can
 fail setup, and a fully cached run re-executes nothing. Judge a run by its
 log, not its exit code: find the `Executed N out of M tests` summary and grep
-the full output for `FAILED`. Never pipe `ci` output through `tail` or
-`head`; a hook blocks it because truncated reads are how false greens happen.
+the full output for `FAILED`. Never pipe `ci` output straight into `tail`,
+`head`, or `grep`; a hook blocks it. `| tee` the run to a file first, then
+grep the saved log.
 
 ## Retrigger discipline
 

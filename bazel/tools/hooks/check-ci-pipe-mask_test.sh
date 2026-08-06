@@ -186,6 +186,66 @@ run_test "empty_json_allowed" \
 	'{}' \
 	0 ""
 
+run_test "ci_chain_git_pipe_allowed" \
+	'{"tool_input":{"command":"ci lint && git status --short | head -20"}}' \
+	0 ""
+
+run_test "ci_tee_filter_allowed" \
+	'{"tool_input":{"command":"ci test 2>&1 | tee /tmp/ci.log | grep -E \"Executed|FAILED\""}}' \
+	0 ""
+
+run_test "ci_tee_then_grep_allowed" \
+	'{"tool_input":{"command":"ci test 2>&1 | tee /tmp/ci.log; grep Executed /tmp/ci.log | head -1"}}' \
+	0 ""
+
+run_test "bb_remote_allowed" \
+	'{"tool_input":{"command":"bb remote test //... --config=ci"}}' \
+	0 ""
+
+run_test "gh_pr_body_allowed" \
+	'{"tool_input":{"command":"gh pr create --body \"never run ci test | tail -20\""}}' \
+	0 ""
+
+run_test "git_commit_pipe_message_allowed" \
+	'{"tool_input":{"command":"git commit -m \"docs: ci test | tail is banned\""}}' \
+	0 ""
+
+run_test "ci_then_gh_pipe_allowed" \
+	'{"tool_input":{"command":"ci && gh pr checks 4394 | grep -i fail"}}' \
+	0 ""
+
+run_test "ci_sed_blocked" \
+	'{"tool_input":{"command":"ci test | sed -n '\''1,20p'\''"}}' \
+	2 "BLOCKED"
+
+run_test "ci_awk_blocked" \
+	'{"tool_input":{"command":"ci test | awk '\''{print $1}'\''"}}' \
+	2 "BLOCKED"
+
+run_test "ci_wc_blocked" \
+	'{"tool_input":{"command":"ci test | wc -l"}}' \
+	2 "BLOCKED"
+
+run_test "ci_pipe_amp_tail_blocked" \
+	'{"tool_input":{"command":"ci test |& tail -20"}}' \
+	2 "BLOCKED"
+
+run_test "timeout_ci_tail_blocked" \
+	'{"tool_input":{"command":"timeout 900 ci test | tail -20"}}' \
+	2 "BLOCKED"
+
+run_test "env_ci_tail_blocked" \
+	'{"tool_input":{"command":"CI=1 ci test | tail -5"}}' \
+	2 "BLOCKED"
+
+run_test "parenthesized_ci_tail_blocked" \
+	'{"tool_input":{"command":"( ci test ) | tail -20"}}' \
+	2 "BLOCKED"
+
+run_test "ci_tee_dev_null_tail_blocked" \
+	'{"tool_input":{"command":"ci test 2>&1 | tee /dev/null | tail -3"}}' \
+	2 "BLOCKED"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
