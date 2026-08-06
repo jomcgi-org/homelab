@@ -1,5 +1,8 @@
 import json
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent_sessions import store
@@ -167,5 +170,38 @@ def test_write_progress_sync_falls_back_to_unclaimed_row(monkeypatch, tmp_path):
             ).all()
             assert rows[0].partial_text == "working"
             assert rows[1].partial_text is None
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_discord_thread_binds_at_most_one_session(monkeypatch, tmp_path):
+    """A thread can never fan out to two sessions.
+
+    The unique constraint is what makes session_id_for_thread a lookup rather
+    than a choice: without it a second /agent in the same thread would create a
+    rival session and turns would land in whichever one the query happened to
+    return first.
+    """
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            store.create_session(
+                session, "local-1", "<guest>", "main", "luna", discord_thread="t-1"
+            )
+            with pytest.raises(IntegrityError):
+                store.create_session(
+                    session, "local-2", "<guest>", "main", "luna", discord_thread="t-1"
+                )
+            session.rollback()
+
+        # Unbound sessions are unaffected: many NULLs are allowed under the
+        # constraint, which is what keeps the UI and MCP lanes working.
+        with Session(engine) as session:
+            store.create_session(session, "local-3", "<guest>", "main", "luna")
+            store.create_session(session, "local-4", "<guest>", "main", "luna")
+            rows = session.exec(
+                select(AgentSession).where(AgentSession.discord_thread.is_(None))
+            ).all()
+            assert len(rows) == 2
     finally:
         _restore_schemas(schemas)

@@ -4,10 +4,8 @@ The prompt otherwise survives only in the ~90-char thread title, so the echo
 posts it in full. Covers attribution, code-fence escaping (the prompt is
 user-controlled and must not break out of the block), and the 2000-char cap.
 
-Also covers the ADR 035 ack/checklist split in _handle_agent_command: the
-prompt echo (message A) must never be the message handed to the streaming
-progress editor (message B), so the echo stays put while the checklist
-above it gets live-edited.
+Also covers the durable agent-session path: the prompt echo and planning
+placeholder remain separate from session creation.
 """
 
 from types import SimpleNamespace
@@ -16,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import pytest
 
+from chat import orchestrator
 from chat.bot import ChatBot, _PROMPT_ECHO_MAX, _format_agent_prompt_echo
 
 _USER = SimpleNamespace(mention="<@123>")
@@ -61,11 +60,8 @@ def _make_bot() -> ChatBot:
 
 
 @pytest.mark.asyncio
-async def test_handle_agent_command_never_streams_the_prompt_echo():
-    """The prompt echo (message A) and the streamed checklist placeholder
-    (message B) are two distinct thread.send() calls, and only B is handed to
-    _start_goosecracker_stream. This locks in the split an earlier PR (#3096)
-    already made, so a future edit can't collapse them back into one message."""
+async def test_handle_agent_command_starts_session_after_prompt_echo():
+    """The owner starts an EmberVM session after the prompt echo and intro."""
     bot = _make_bot()
     bot._start_goosecracker_stream = MagicMock()
 
@@ -83,23 +79,29 @@ async def test_handle_agent_command_never_streams_the_prompt_echo():
     thread.id = 777
     thread.mention = "<#777>"
     echo_msg = MagicMock(name="echo_msg")
-    intro_msg = MagicMock(name="intro_msg")
-    thread.send = AsyncMock(side_effect=[echo_msg, intro_msg])
+    thread.send = AsyncMock(side_effect=[echo_msg, MagicMock(name="intro_msg")])
     channel.create_thread = AsyncMock(return_value=thread)
 
     with (
-        patch("chat.bot.acl.feature_enabled", return_value=True),
-        patch("chat.bot.acl.is_granted", return_value=True),
-        patch("chat.bot.goosecracker.start_agent_session"),
+        patch("chat.bot.acl.is_owner", return_value=True),
+        patch.object(
+            bot,
+            "_orchestrator_verdict",
+            AsyncMock(return_value=orchestrator.FailOpen("test")),
+        ),
+        patch(
+            "agent_sessions.api.start_session_for_thread", new_callable=AsyncMock
+        ) as start_session,
     ):
-        await bot._handle_agent_command(interaction, "add a health check", "some/repo")
+        await bot._handle_agent_command(
+            interaction, "add a health check", "jomcgi/homelab"
+        )
 
     assert thread.send.call_count == 2
     echo_call_content = thread.send.call_args_list[0][0][0]
     assert echo_call_content.startswith("Prompt from <@42>:")
 
-    # Only the second thread.send() result (the placeholder) is streamed; the
-    # ack is never touched by the editor.
-    bot._start_goosecracker_stream.assert_called_once_with(
-        str(thread.id), intro_msg, kind="agent"
+    start_session.assert_awaited_once_with(
+        str(thread.id), "add a health check", "jomcgi/homelab"
     )
+    bot._start_goosecracker_stream.assert_not_called()

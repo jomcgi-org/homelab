@@ -151,10 +151,17 @@ def _persist_session(
     branch: str,
     model: str | None,
     repo: str | None = None,
+    discord_thread: str | None = None,
 ) -> AgentSession:
     with Session(get_engine()) as db_session:
         return store.create_session(
-            db_session, local_session_id, workspace, branch, model, repo
+            db_session,
+            local_session_id,
+            workspace,
+            branch,
+            model,
+            repo,
+            discord_thread=discord_thread,
         )
 
 
@@ -168,14 +175,24 @@ def _turn_status(turn: Turn) -> str:
     return "completed"
 
 
-async def _notify_terminal(turn: Turn, summary: str, status: str) -> None:
+async def _notify_terminal(
+    turn: Turn, summary: str, status: str, row: AgentSession | None = None
+) -> None:
     if turn.permission_denials or status == "needs_input":
         level = "warn"  # Needs user action
     elif status == "completed":
         level = "info"
     else:
         level = "warn"
-    await agent_api.notify(summary, level=level)
+    if row is not None and status == "needs_input":
+        summary = f"Needs input: {summary}"
+    elif row is not None and status == "warn":
+        summary = f"Warning: {summary}"
+    summary = summary[:2000]
+    if row is not None and row.discord_thread:
+        await agent_api.notify(summary, level=level, channel=row.discord_thread)
+    else:
+        await agent_api.notify(summary, level=level, channel=None)
 
 
 def _get_pending_message_sync(session_id: int, turn_seq: int):
@@ -452,7 +469,7 @@ async def _execute_pending_message(session_id: int) -> None:
             return
         await asyncio.to_thread(_delete_pending_message_sync, session_id, claimed_seq)
         if not ui_originated:
-            await _notify_terminal(turn, summary, status)
+            await _notify_terminal(turn, summary, status, session_row)
         # This session's next message could not be claimed while this one was
         # outstanding, so nudge the queue now that it is not. Without this the
         # follow-up waits for the sweep, which is correct but adds its interval

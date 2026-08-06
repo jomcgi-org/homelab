@@ -25,12 +25,15 @@ def create_session(
     branch: str,
     model: str | None = None,
     repo: str | None = None,
+    *,
+    discord_thread: str | None = None,
 ) -> AgentSession:
     row = AgentSession(
         local_session_id=local_session_id,
         workspace=workspace,
         branch=branch,
         repo=repo,
+        discord_thread=discord_thread,
         model=model,
         progress_token=secrets.token_urlsafe(32),
     )
@@ -47,6 +50,14 @@ def get_session(session: Session, session_id: int) -> AgentSession | None:
 def get_session_by_local_id(session: Session, local_id: str) -> AgentSession | None:
     return session.exec(
         select(AgentSession).where(AgentSession.local_session_id == local_id)
+    ).first()
+
+
+def get_session_by_discord_thread(
+    session: Session, thread_id: str
+) -> AgentSession | None:
+    return session.exec(
+        select(AgentSession).where(AgentSession.discord_thread == thread_id)
     ).first()
 
 
