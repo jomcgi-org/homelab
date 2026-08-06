@@ -1252,6 +1252,7 @@ def test_process_manager_prewarm_failure_is_not_ready(tmp_path):
 
 def test_process_manager_turn_always_ensures_workspace_volume(monkeypatch):
     manager = object.__new__(shim.ProcessManager)
+    manager._mount_lock = threading.Lock()
     calls = []
 
     class Adapter:
@@ -1379,6 +1380,7 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
     manager._prewarm_complete = True
     manager.fatal_error = None
     manager._remediation_lock = threading.Lock()
+    manager._mount_lock = threading.Lock()
     manager._remediation_attempts = 0
     manager._remediation_thread = None
 
@@ -1406,7 +1408,7 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
     manager.claude = Adapter()
     manager.codex = manager.claude
     manager.pi = manager.claude
-    identities = iter([(1, 1), (2, 2)])
+    identities = iter([(1, 1), (2, 2)] + [(2, 2)] * 100)
 
     def mock_identity(_path):
         dev, ino = next(identities)
@@ -1439,6 +1441,19 @@ def test_volume_probe_requires_ext4_magic(tmp_path, monkeypatch):
     assert not shim._volume_has_ext4()
 
 
+def test_volume_has_ext4_missing_device_returns_false(tmp_path, monkeypatch):
+    monkeypatch.setenv(shim.VOLUME_DEVICE_ENV, str(tmp_path / "missing"))
+    assert not shim._volume_has_ext4()
+
+
+def test_workspace_is_tmpfs_reads_last_mount(monkeypatch):
+    mounts = io.StringIO(
+        "tmpfs /workspace tmpfs rw 0 0\n/dev/vdb /workspace ext4 rw 0 0\n"
+    )
+    monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: mounts)
+    assert not shim._workspace_is_tmpfs()
+
+
 def test_ready_build_requires_parked_alive_but_session_is_best_effort(monkeypatch):
     manager = object.__new__(shim.ProcessManager)
     manager._prewarm_clis = ("claude",)
@@ -1447,6 +1462,8 @@ def test_ready_build_requires_parked_alive_but_session_is_best_effort(monkeypatc
     manager._remediation_lock = threading.Lock()
     manager._remediation_attempts = 0
     manager._remediation_thread = None
+    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
+    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
 
     class Adapter:
         def __init__(self, process=None):
@@ -1464,9 +1481,6 @@ def test_ready_build_requires_parked_alive_but_session_is_best_effort(monkeypatc
 
     kicked = []
     manager._kick_remediation = lambda: kicked.append(True)
-    # The external probes are patched on the module for the session-guest case.
-    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
-    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
     assert manager.ready()
     assert kicked == [True]
 
@@ -1474,6 +1488,7 @@ def test_ready_build_requires_parked_alive_but_session_is_best_effort(monkeypatc
 def test_remediation_bound_session_closes_without_respawn(tmp_path, monkeypatch):
     manager = object.__new__(shim.ProcessManager)
     manager._remediation_lock = threading.Lock()
+    manager._mount_lock = threading.Lock()
     manager._remediation_attempts = 0
     manager._remediation_thread = None
     old_process = _FakeLiveProcess()
@@ -1522,6 +1537,188 @@ def test_parked_claude_adopts_resume_without_respawn(tmp_path, monkeypatch):
 
     manager.turn("hello", session_id="sid")
     assert json.loads(manager.process.stdin.lines[0])["session_id"] == "sid"
+
+
+def test_legacy_adoption_respawns_for_workspace_change(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    old_process = manager.process
+    new_process = _FakeLiveProcess()
+    spawn_calls = []
+
+    def fake_spawn(session_id, first_message, model):
+        spawn_calls.append((session_id, first_message, model, manager.workspace))
+        manager.process = new_process
+
+    monkeypatch.setattr(
+        shim,
+        "_transcript_exists",
+        lambda cwd, session_id: cwd == str(tmp_path) and session_id == "sid",
+    )
+    monkeypatch.setattr(manager, "_spawn", fake_spawn)
+    monkeypatch.setattr(
+        manager,
+        "_read_output",
+        lambda _process, _timeout: json.dumps(
+            {"type": "result", "result": "ok", "session_id": "sid"}
+        ).encode(),
+    )
+    monkeypatch.setattr(manager, "_parse_line", json.loads)
+    monkeypatch.setattr(manager, "ready", lambda: True)
+
+    manager.turn("hello", session_id="sid")
+    assert spawn_calls == [("sid", "hello", None, str(tmp_path / "workspace"))]
+    assert manager.process is new_process
+    assert old_process.stdin.lines == []
+
+
+def test_legacy_spawn_fallback_uses_legacy_cwd(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = shim.ClaudeProcess(str(workspace), "fake-cli")
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+    monkeypatch.setattr(
+        shim,
+        "_transcript_exists",
+        lambda cwd, session_id: cwd == str(tmp_path) and session_id == "sid",
+    )
+
+    captured = {}
+
+    class Process(_FakeLiveProcess):
+        stdout = []
+        stderr = io.BytesIO()
+
+    process = Process()
+    process.stdout = iter(
+        [
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": "sid",
+                    "apiKeySource": "none",
+                }
+            ).encode()
+            + b"\n"
+        ]
+    )
+
+    def fake_popen(_command, **kwargs):
+        captured.update(kwargs)
+        return process
+
+    monkeypatch.setattr(shim.subprocess, "Popen", fake_popen)
+    output = iter(
+        [
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": "sid",
+                    "apiKeySource": "none",
+                }
+            ).encode()
+            + b"\n"
+        ]
+    )
+    monkeypatch.setattr(
+        manager, "_read_output", lambda _process, _timeout: next(output)
+    )
+    manager._spawn("sid")
+    assert captured["cwd"] == str(tmp_path)
+
+
+def test_remediation_attempts_cap_at_three(tmp_path, monkeypatch):
+    manager = object.__new__(shim.ProcessManager)
+    manager._prewarm_clis = ()
+    manager._prewarm_complete = True
+    manager.fatal_error = None
+    manager._remediation_lock = threading.Lock()
+    manager._mount_lock = threading.Lock()
+    manager._remediation_attempts = 0
+    manager._remediation_thread = None
+
+    class Adapter:
+        workspace = str(tmp_path / "workspace")
+        process = None
+        session_id = "bound"
+        turn_lock = threading.Lock()
+        _process_workspace_identity = (1, 1)
+
+        def ready(self):
+            return True
+
+    manager.claude = Adapter()
+    manager.codex = manager.claude
+    manager.pi = manager.claude
+    manager._workspace_identity = lambda _path: (1, 1)
+    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
+    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    starts = []
+
+    class ImmediateThread:
+        def __init__(self, target, name, daemon):
+            self.target = target
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            starts.append(True)
+            self.target()
+
+    monkeypatch.setattr(shim.threading, "Thread", ImmediateThread)
+    for _ in range(10):
+        assert manager.ready()
+    assert len(starts) == 3
+
+
+def test_concurrent_ensure_workspace_volume_serializes(tmp_path, monkeypatch):
+    manager = object.__new__(shim.ProcessManager)
+    manager._mount_lock = threading.Lock()
+    manager._remediation_lock = threading.Lock()
+    manager._remediation_attempts = 0
+    manager._remediation_thread = None
+    active = False
+    concurrent = []
+    state_lock = threading.Lock()
+
+    def ensure():
+        nonlocal active
+        with state_lock:
+            if active:
+                concurrent.append(True)
+            active = True
+        time.sleep(0.05)
+        with state_lock:
+            active = False
+
+    class Adapter:
+        workspace = str(tmp_path / "workspace")
+        process = None
+        session_id = "bound"
+        turn_lock = threading.Lock()
+        _process_workspace_identity = (1, 1)
+
+        def turn(self, *_args, **_kwargs):
+            return {"ok": True}
+
+    manager.claude = Adapter()
+    manager.codex = manager.claude
+    manager.pi = manager.claude
+    manager._workspace_identity = lambda _path: (1, 1)
+    monkeypatch.setattr(shim, "ensure_workspace_volume", ensure)
+    monkeypatch.setattr(shim, "_ensure_cli_dir", lambda _path: None)
+    threads = [
+        threading.Thread(target=lambda: manager.turn("hello")),
+        threading.Thread(target=manager._remediate_workspace),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=1)
+    assert concurrent == []
 
 
 def test_spawn_raise_during_adoption_leaves_session_unbound(tmp_path, monkeypatch):
@@ -2535,6 +2732,13 @@ def test_http_rejects_session_conflict_and_bad_content_length(tmp_path, monkeypa
     try:
         status, _ = _request(
             server, "POST", shim.TURN_PATH, json.dumps({"message": "first"}).encode()
+        )
+        assert status == 200
+        status, _ = _request(
+            server,
+            "POST",
+            shim.TURN_PATH,
+            json.dumps({"message": "resume", "session_id": None}).encode(),
         )
         assert status == 200
         status, body = _request(

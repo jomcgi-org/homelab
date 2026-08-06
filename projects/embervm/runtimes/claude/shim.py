@@ -341,13 +341,15 @@ def _workspace_is_tmpfs():
     """Return whether /workspace is mounted as tmpfs, or False on probe errors."""
     try:
         with open("/proc/mounts") as mounts:
+            last_match = None
             for line in mounts:
                 fields = line.split()
                 if (
                     len(fields) >= 3
                     and fields[1].replace(r"\040", " ") == DEFAULT_WORKSPACE
                 ):
-                    return fields[2] == "tmpfs"
+                    last_match = fields[2]
+            return last_match == "tmpfs" if last_match else False
     except Exception:
         return False
     return False
@@ -1173,7 +1175,25 @@ class ClaudeProcess:
                 # Adoption is latched only when the user message is about to be
                 # delivered. Every later failure rolls it back below.
                 if parked_adoption:
-                    self.session_id = session_id
+                    # Check if this legacy session must respawn due to workspace change.
+                    if not _transcript_exists(self.workspace, session_id):
+                        legacy_workspace = os.path.dirname(self.workspace)
+                        if _transcript_exists(legacy_workspace, session_id):
+                            # Close parked CLI and respawn with legacy cwd to restore state.
+                            self._close_process(kill=False)
+                            try:
+                                self._spawn(
+                                    session_id, first_message=message, model=model
+                                )
+                            except Exception:
+                                if parked_adoption and not session_was_bound:
+                                    self.session_id = None
+                                raise
+                            process = self.process
+                            message_sent = True
+                            parked_adoption = False
+                    if parked_adoption:
+                        self.session_id = session_id
                 if not message_sent:
                     message_line = _user_message_line(
                         message,
@@ -2380,6 +2400,7 @@ class ProcessManager:
             self.fatal_error = str(exc)
         self._prewarm_complete = not self._prewarm_clis
         self._prewarm_thread = None
+        self._mount_lock = threading.Lock()
         self._remediation_lock = threading.Lock()
         self._remediation_attempts = 0
         self._remediation_thread = None
@@ -2567,6 +2588,10 @@ class ProcessManager:
         if not self.claude.ready() or not self.codex.ready() or not self.pi.ready():
             return False
         process = getattr(self.claude, "process", None)
+        # Base build safety depends on the noded placeholder volume staying blank
+        # (zero-filled, no filesystem). Guest-init in guest init forbids mounting a
+        # placeholder during base build (volume_linux.go:97-100). If the placeholder
+        # gains a superblock this probe would misfire and skip the build liveness check.
         volume_has_ext4 = _volume_has_ext4()
         if (
             self._prewarm_clis
@@ -2598,33 +2623,38 @@ class ProcessManager:
             self._remediation_thread.start()
 
     def _remediate_workspace(self):
-        with self.claude.turn_lock:
-            try:
-                ensure_workspace_volume()
-                identity = self._workspace_identity(self.claude.workspace)
-                process = getattr(self.claude, "process", None)
-                process_dead = process is not None and process.poll() is not None
-                identity_changed = identity != getattr(
-                    self.claude, "_process_workspace_identity", None
-                )
-                if identity_changed or process_dead:
-                    self.claude._close_process(kill=False)
-                    if not self.claude.session_id:
-                        _ensure_cli_dir(self.claude.workspace)
-                        self.claude._spawn(
-                            session_id=None,
-                            first_message=None,
-                            model=None,
-                            init_timeout=30,
-                        )
-                        self.claude.session_id = None
-            except Exception as exc:
-                self._remediation_attempts += 1
-                sys.stderr.write(
-                    "ember-claude-shim: warning: workspace remediation failed "
-                    "(attempt %s/3): %s\n" % (self._remediation_attempts, exc)
-                )
-                sys.stderr.flush()
+        with self._mount_lock:
+            with self.claude.turn_lock:
+                try:
+                    ensure_workspace_volume()
+                    identity = self._workspace_identity(self.claude.workspace)
+                    process = getattr(self.claude, "process", None)
+                    process_dead = process is not None and process.poll() is not None
+                    identity_changed = identity != getattr(
+                        self.claude, "_process_workspace_identity", None
+                    )
+                    if identity_changed or process_dead:
+                        self.claude._close_process(kill=False)
+                        if not self.claude.session_id:
+                            _ensure_cli_dir(self.claude.workspace)
+                            self.claude._spawn(
+                                session_id=None,
+                                first_message=None,
+                                model=None,
+                                init_timeout=30,
+                            )
+                            self.claude.session_id = None
+                    with self._remediation_lock:
+                        self._remediation_attempts += 1
+                except Exception as exc:
+                    with self._remediation_lock:
+                        self._remediation_attempts += 1
+                        attempts = self._remediation_attempts
+                    sys.stderr.write(
+                        "ember-claude-shim: warning: workspace remediation failed "
+                        "(attempt %s/3): %s\n" % (attempts, exc)
+                    )
+                    sys.stderr.flush()
 
     def turn(
         self,
@@ -2635,7 +2665,8 @@ class ProcessManager:
         branch=None,
         progress_token=None,
     ):
-        ensure_workspace_volume()
+        with self._mount_lock:
+            ensure_workspace_volume()
         if getattr(self.claude, "workspace", None):
             _ensure_cli_dir(self.claude.workspace)
         if repo is not None and branch is not None:
@@ -2766,16 +2797,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         ):
             self._send(400, {"error": "progress_token must be a non-empty string"})
             return
-        if "session_id" in payload and (
-            not isinstance(payload.get("session_id"), str)
-            or not payload.get("session_id", "").strip()
-        ):
-            self._send(400, {"error": "session_id must be a non-empty string"})
-            return
+        if "session_id" in payload:
+            sid = payload.get("session_id")
+            if sid is not None and (not isinstance(sid, str) or not sid.strip()):
+                self._send(400, {"error": "session_id must be a non-empty string"})
+                return
         try:
             session_id = payload.get("session_id")
             if isinstance(session_id, str):
                 session_id = session_id.strip()
+            elif session_id is None:
+                session_id = None
             hydration = {"repo": repo, "branch": branch} if repo is not None else {}
             progress = (
                 {"progress_token": progress_token.strip()} if progress_token else {}
