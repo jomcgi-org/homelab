@@ -32,6 +32,8 @@ TURN_PATH = "/shim/turn"
 INTERRUPT_PATH = "/shim/interrupt"
 CLOCK_PATH = "/shim/clock"
 DEFAULT_WORKSPACE = "/workspace"
+VOLUME_DEVICE_ENV = "EMBER_VOLUME_DEV"
+DEFAULT_VOLUME_DEVICE = "/dev/vdb"
 PREWARM_CLIS_ENV = "EMBER_PREWARM_CLIS"
 SUPPORTED_PREWARM_CLIS = ("claude",)
 CODEX_MODELS = {
@@ -112,6 +114,15 @@ VOICE_PROMPT = (
     "no markdown, that a person could hear read aloud: what you did and anything "
     "you need from them.</voice>"
 )
+
+
+def _workspace_identity(path):
+    """Get (st_dev, st_ino) for workspace path, or None on error."""
+    try:
+        stat = os.stat(path)
+        return (stat.st_dev, stat.st_ino)
+    except OSError:
+        return None
 
 
 def _cli_privilege_kwargs():
@@ -307,6 +318,50 @@ def ensure_workspace_volume():
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise StartupError("could not ensure workspace volume: %s" % exc) from exc
+
+
+def _transcript_slug(cwd):
+    """Return the Claude project directory slug for a working directory."""
+    return cwd.replace("/", "-")
+
+
+def _transcript_exists(cwd, session_id):
+    home = os.environ.get("HOME", os.path.expanduser("~"))
+    path = os.path.join(
+        home,
+        ".claude",
+        "projects",
+        _transcript_slug(cwd),
+        "%s.jsonl" % session_id,
+    )
+    return os.path.isfile(path)
+
+
+def _workspace_is_tmpfs():
+    """Return whether /workspace is mounted as tmpfs, or False on probe errors."""
+    try:
+        with open("/proc/mounts") as mounts:
+            for line in mounts:
+                fields = line.split()
+                if (
+                    len(fields) >= 3
+                    and fields[1].replace(r"\040", " ") == DEFAULT_WORKSPACE
+                ):
+                    return fields[2] == "tmpfs"
+    except Exception:
+        return False
+    return False
+
+
+def _volume_has_ext4():
+    """Return whether the configured volume device has an ext4 superblock."""
+    device = os.environ.get(VOLUME_DEVICE_ENV, DEFAULT_VOLUME_DEVICE)
+    try:
+        with open(device, "rb") as volume:
+            volume.seek(0x438)
+            return volume.read(2) == b"\x53\xef"
+    except Exception:
+        return False
 
 
 def _truncate_ring_for_error(ring, max_len=1500):
@@ -759,11 +814,8 @@ class ClaudeProcess:
         self.session_id = None
         self.model = None
         self._process_workspace = None
-        try:
-            stat = os.stat(self.workspace)
-            self._process_workspace_identity = (stat.st_dev, stat.st_ino)
-        except OSError:
-            self._process_workspace_identity = None
+        self._process_uses_legacy_cwd = False
+        self._process_workspace_identity = _workspace_identity(self.workspace)
         self._manager = None
         self.turn_lock = threading.Lock()
         self.process_lock = threading.Lock()
@@ -799,12 +851,23 @@ class ClaudeProcess:
                 detail = completed.stderr.decode("utf-8", "replace").strip()
                 raise StartupError("git config failed for %s: %s" % (key, detail))
 
-    def _spawn(self, session_id=None, first_message=None, model=None):
+    def _spawn(
+        self, session_id=None, first_message=None, model=None, init_timeout=None
+    ):
         if self.fatal_error is not None:
             raise StartupError(self.fatal_error)
         if not os.path.isdir(self.workspace):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         self._configure_git()
+        spawn_workspace = self.workspace
+        uses_legacy_cwd = False
+        if session_id and not _transcript_exists(self.workspace, session_id):
+            legacy_workspace = os.path.dirname(self.workspace)
+            # Fallback for pre-2026-08-05 sessions, safe to delete once no
+            # legacy lineages remain.
+            if _transcript_exists(legacy_workspace, session_id):
+                spawn_workspace = legacy_workspace
+                uses_legacy_cwd = True
         # The microVM is the security boundary. The shim may start as root inside the guest
         # (apko's run-as: 65532 is ignored on raw Firecracker boot, per review), so drop the
         # CLI to the runtime uid/gid only when the shim is root. In-guest
@@ -841,7 +904,7 @@ class ClaudeProcess:
         )
         process = subprocess.Popen(
             command,
-            cwd=self.workspace,
+            cwd=spawn_workspace,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -850,13 +913,10 @@ class ClaudeProcess:
         )
         with self.process_lock:
             self.process = process
-            self._process_workspace = self.workspace
-            try:
-                stat = os.stat(self.workspace)
-                # Capture workspace identity to detect tmpfs-to-volume takeover.
-                self._process_workspace_identity = (stat.st_dev, stat.st_ino)
-            except OSError:
-                self._process_workspace_identity = None
+            self._process_workspace = spawn_workspace
+            self._process_uses_legacy_cwd = uses_legacy_cwd
+            # Capture workspace identity to detect tmpfs-to-volume takeover.
+            self._process_workspace_identity = _workspace_identity(spawn_workspace)
             self.init_event = None
             self._stdout_queue = queue.Queue()
             # REPLACE the rings rather than clearing them: a stale pump thread from
@@ -885,7 +945,11 @@ class ClaudeProcess:
         # Note: unparseable-line stderr writes are synchronous on the read thread
         # and race the init timeout. This is fine for tens-of-lines Bun panics
         # but could turn thousands-of-lines dumps into a generic init timeout.
-        init_read_timeout = _read_init_timeout()
+        # Resolve the environment at spawn time so callers and tests that set
+        # EMBER_INIT_READ_TIMEOUT after module import still affect lazy starts.
+        init_read_timeout = (
+            _read_init_timeout() if init_timeout is None else init_timeout
+        )
         while True:
             try:
                 raw = self._read_output(process, init_read_timeout)
@@ -1049,13 +1113,12 @@ class ClaudeProcess:
                 process is not None and process.poll() is None and not self.session_id
             )
             parked_adoption = parked_process and bool(session_id)
-            try:
-                stat = os.stat(self.workspace)
-                workspace_identity = (stat.st_dev, stat.st_ino)
-            except OSError:
-                workspace_identity = None
+            workspace_identity = _workspace_identity(self.workspace)
             cwd_changed = parked_process and (
-                self._process_workspace != self.workspace
+                (
+                    self._process_workspace != self.workspace
+                    and not getattr(self, "_process_uses_legacy_cwd", False)
+                )
                 or (
                     self._process_workspace_identity is not None
                     and workspace_identity != self._process_workspace_identity
@@ -1079,8 +1142,6 @@ class ClaudeProcess:
                     raise
                 process = self.process
                 message_sent = True
-                if self._manager is not None:
-                    self._manager._prewarm_failed = False
             else:
                 message_sent = False
             # After a model-change respawn the first_message is already in
@@ -1104,8 +1165,6 @@ class ClaudeProcess:
                     raise
                 process = self.process
                 message_sent = True
-                if self._manager is not None:
-                    self._manager._prewarm_failed = False
             pusher = None
             try:
                 if not self.ready():
@@ -2320,17 +2379,13 @@ class ProcessManager:
             self._prewarm_clis = ()
             self.fatal_error = str(exc)
         self._prewarm_complete = not self._prewarm_clis
-        self._prewarm_failed = False
         self._prewarm_thread = None
-        self._parked_workspace_identity = None
         self._remediation_lock = threading.Lock()
-        self._remediation_complete = False
         self._remediation_attempts = 0
         self._remediation_thread = None
         _write_git_proxy_helper()
         cli_workspace = os.path.join(self.workspace, "src")
         _ensure_cli_dir(cli_workspace)
-        self._parked_workspace_identity = self._workspace_identity(cli_workspace)
         self.claude = ClaudeProcess(cli_workspace, claude_executable)
         self.claude._manager = self
         self.codex = CodexProcess(cli_workspace, codex_executable)
@@ -2343,11 +2398,7 @@ class ProcessManager:
 
     @staticmethod
     def _workspace_identity(path):
-        try:
-            stat = os.stat(path)
-            return (stat.st_dev, stat.st_ino)
-        except OSError:
-            return None
+        return _workspace_identity(path)
 
     @staticmethod
     def _read_prewarm_clis():
@@ -2369,7 +2420,12 @@ class ProcessManager:
             _ensure_cli_dir(self.claude.workspace)
             for cli in self._prewarm_clis:
                 if cli == "claude":
-                    self.claude._spawn(session_id=None, first_message=None, model=None)
+                    self.claude._spawn(
+                        session_id=None,
+                        first_message=None,
+                        model=None,
+                        init_timeout=30,
+                    )
                     # Claude emits a generated id in init, but a parked process
                     # has not adopted a session until its first user message.
                     self.claude.session_id = None
@@ -2377,7 +2433,6 @@ class ProcessManager:
         except Exception as exc:
             self.fatal_error = "CLI prewarm failed: %s" % exc
             prewarm_error = self.fatal_error
-            self._prewarm_failed = True
             if hasattr(self.claude, "_close_process"):
                 self.claude._close_process(kill=True)
             sys.stderr.write("ember-claude-shim: %s\n" % prewarm_error)
@@ -2511,28 +2566,30 @@ class ProcessManager:
             return False
         if not self.claude.ready() or not self.codex.ready() or not self.pi.ready():
             return False
-        if self._prewarm_clis and "claude" in self._prewarm_clis:
-            process = getattr(self.claude, "process", None)
-            if not getattr(self, "_remediation_complete", False):
-                process_dead = process is not None and process.poll() is not None
-                identity = self._workspace_identity(self.claude.workspace)
-                identity_changed = process is not None and identity != getattr(
-                    self.claude, "_process_workspace_identity", None
-                )
-                if process_dead or identity_changed:
-                    self._kick_remediation()
+        process = getattr(self.claude, "process", None)
+        volume_has_ext4 = _volume_has_ext4()
+        if (
+            self._prewarm_clis
+            and "claude" in self._prewarm_clis
+            and not volume_has_ext4
+        ):
+            # A base build has no filesystem on the volume, so its parked CLI
+            # must be alive before the image is accepted as a warm base.
+            if process is None or process.poll() is not None:
+                return False
+        if _workspace_is_tmpfs() and volume_has_ext4:
+            self._kick_remediation()
         return True
 
     def _kick_remediation(self):
         with self._remediation_lock:
-            if self._remediation_complete or self._remediation_attempts >= 3:
+            if self._remediation_attempts >= 3:
                 return
             if (
                 self._remediation_thread is not None
                 and self._remediation_thread.is_alive()
             ):
                 return
-            self._remediation_complete = False
             self._remediation_thread = threading.Thread(
                 target=self._remediate_workspace,
                 name="claude-workspace-remediation",
@@ -2555,11 +2612,12 @@ class ProcessManager:
                     if not self.claude.session_id:
                         _ensure_cli_dir(self.claude.workspace)
                         self.claude._spawn(
-                            session_id=None, first_message=None, model=None
+                            session_id=None,
+                            first_message=None,
+                            model=None,
+                            init_timeout=30,
                         )
                         self.claude.session_id = None
-                    self._parked_workspace_identity = identity
-                self._remediation_complete = True
             except Exception as exc:
                 self._remediation_attempts += 1
                 sys.stderr.write(
@@ -2595,8 +2653,10 @@ class ProcessManager:
                 )
             else:
                 record = adapter.turn(message, session_id, model, **extra)
-            # A successful lazy turn is a valid recovery from prewarm failure.
-            self.fatal_error = None
+            # Only Claude can recover a Claude prewarm failure. Codex and pi
+            # turns must not clear the manager's Claude fatal state.
+            if adapter is self.claude:
+                self.fatal_error = None
             if repo is not None and isinstance(record, dict):
                 if self._hydration_error:
                     record["workspace_hydration"] = {"failed": self._hydration_error}
@@ -2706,17 +2766,23 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         ):
             self._send(400, {"error": "progress_token must be a non-empty string"})
             return
-        if "session_id" in payload and payload.get("session_id") == "":
+        if "session_id" in payload and (
+            not isinstance(payload.get("session_id"), str)
+            or not payload.get("session_id", "").strip()
+        ):
             self._send(400, {"error": "session_id must be a non-empty string"})
             return
         try:
+            session_id = payload.get("session_id")
+            if isinstance(session_id, str):
+                session_id = session_id.strip()
             hydration = {"repo": repo, "branch": branch} if repo is not None else {}
             progress = (
                 {"progress_token": progress_token.strip()} if progress_token else {}
             )
             record = self.manager.turn(
                 message,
-                payload.get("session_id"),
+                session_id,
                 payload.get("model"),
                 **(hydration | progress),
             )

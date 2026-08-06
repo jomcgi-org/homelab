@@ -1191,6 +1191,7 @@ def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
     class Adapter:
         session_id = "init-sid"
         fatal_error = None
+        process = _FakeLiveProcess()
 
         def _spawn(self, **kwargs):
             calls.append(kwargs)
@@ -1205,7 +1206,18 @@ def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
     manager._close_process = lambda **_kwargs: None
     manager.prewarm()
 
-    assert calls == [{"session_id": None, "first_message": None, "model": None}]
+    # Mock the external state checks so ready() returns True.
+    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: False)
+    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: False)
+
+    assert calls == [
+        {
+            "session_id": None,
+            "first_message": None,
+            "model": None,
+            "init_timeout": 30,
+        }
+    ]
     assert manager.claude.session_id is None
     assert manager._prewarm_complete
     assert manager.ready()
@@ -1365,12 +1377,9 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
     manager.workspace = str(tmp_path)
     manager._prewarm_clis = ("claude",)
     manager._prewarm_complete = True
-    manager._prewarm_failed = False
     manager.fatal_error = None
-    manager._parked_workspace_identity = (1, 1)
     manager._remediation_lock = threading.Lock()
     manager._remediation_attempts = 0
-    manager._remediation_complete = False
     manager._remediation_thread = None
 
     old_process = _FakeLiveProcess()
@@ -1397,27 +1406,100 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
     manager.claude = Adapter()
     manager.codex = manager.claude
     manager.pi = manager.claude
-    identities = iter([(1, 1), (2, 2)] + [(2, 2)] * 10)
+    identities = iter([(1, 1), (2, 2)])
 
-    def mock_stat(_path):
+    def mock_identity(_path):
         dev, ino = next(identities)
-        return type("Stat", (), {"st_dev": dev, "st_ino": ino})()
+        return (dev, ino)
 
-    monkeypatch.setattr(
-        shim.os,
-        "stat",
-        mock_stat,
-    )
+    manager._workspace_identity = mock_identity
     monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
     monkeypatch.setattr(shim, "_ensure_cli_dir", lambda _path: None)
+    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
+    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
 
     assert manager.ready()
-    assert manager._remediation_thread is None
+    # The first ready() call starts remediation for the tmpfs-to-volume takeover.
     assert manager.ready()
     manager._remediation_thread.join(timeout=1)
     assert manager.claude.process is new_process
-    assert manager._parked_workspace_identity == (2, 2)
     assert manager.ready()
+
+
+def test_transcript_slug_replaces_slashes():
+    assert shim._transcript_slug("/workspace/src") == "-workspace-src"
+
+
+def test_volume_probe_requires_ext4_magic(tmp_path, monkeypatch):
+    device = tmp_path / "volume"
+    device.write_bytes(b"\0" * 0x438 + b"\x53\xef")
+    monkeypatch.setenv(shim.VOLUME_DEVICE_ENV, str(device))
+    assert shim._volume_has_ext4()
+    device.write_bytes(b"\0" * 0x43A)
+    assert not shim._volume_has_ext4()
+
+
+def test_ready_build_requires_parked_alive_but_session_is_best_effort(monkeypatch):
+    manager = object.__new__(shim.ProcessManager)
+    manager._prewarm_clis = ("claude",)
+    manager._prewarm_complete = True
+    manager.fatal_error = None
+    manager._remediation_lock = threading.Lock()
+    manager._remediation_attempts = 0
+    manager._remediation_thread = None
+
+    class Adapter:
+        def __init__(self, process=None):
+            self.process = process
+
+        def ready(self):
+            return True
+
+    dead = _FakeLiveProcess()
+    dead.returncode = 1
+    manager.claude = Adapter(dead)
+    manager.codex = Adapter()
+    manager.pi = Adapter()
+    assert not manager.ready()
+
+    kicked = []
+    manager._kick_remediation = lambda: kicked.append(True)
+    # The external probes are patched on the module for the session-guest case.
+    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
+    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
+    assert manager.ready()
+    assert kicked == [True]
+
+
+def test_remediation_bound_session_closes_without_respawn(tmp_path, monkeypatch):
+    manager = object.__new__(shim.ProcessManager)
+    manager._remediation_lock = threading.Lock()
+    manager._remediation_attempts = 0
+    manager._remediation_thread = None
+    old_process = _FakeLiveProcess()
+    old_process.returncode = 1
+    calls = []
+
+    class Adapter:
+        workspace = str(tmp_path / "src")
+        process = old_process
+        session_id = "bound-session"
+        turn_lock = threading.Lock()
+        _process_workspace_identity = (1, 1)
+
+        def _close_process(self, **_kwargs):
+            calls.append("close")
+            self.process = None
+
+        def _spawn(self, **_kwargs):
+            calls.append("spawn")
+
+    manager.claude = Adapter()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    manager._workspace_identity = lambda _path: (2, 2)
+    manager._remediate_workspace()
+    assert calls == ["close"]
+    assert manager.claude.session_id == "bound-session"
 
 
 def test_parked_claude_adopts_resume_without_respawn(tmp_path, monkeypatch):
