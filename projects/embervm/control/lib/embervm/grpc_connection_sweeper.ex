@@ -47,16 +47,35 @@ defmodule Embervm.GrpcConnectionSweeper do
   The registry stores addresses like `"10.42.3.34:9090"`, while the
   orchestrator's state target reads `"ipv4:10.42.3.34:9090"`. Normalization
   must handle both formats defensively before comparison.
+
+  ## Strike-based confirmation: calibrated on false-positive patterns
+
+  Live logs from 46 sweeps of the control plane showed every observed false positive
+  (transient unreadable processes) persisted exactly ONE sweep, while genuine leaks
+  persisted 42 or more sweeps: 8 pids in 1 sweep (false positives), gap, then 1+2+2+2+1
+  pids spread across 42-46 consecutive sweeps. The threshold N=3 sits inside a 40-sweep
+  gap, so every real leak is caught within the first 3 sweeps of its life.
+
+  Strike counts require N=3 consecutive NON-ABORTED classifications; aborted sweeps
+  (registry down, empty keep-set) neither grant nor reset strikes. With sweep interval 60s,
+  confirmation window is 3 consecutive NON-ABORTED sweeps, so up to 3 minutes
+  if the registry stays healthy. An aborted sweep (registry down, empty keep-set)
+  neither grants nor resets strikes, so a child flagged as reapable, then
+  invisible for several sweeps due to registry outage, is not delayed further
+  once the registry recovers.
+
+  The sweeper requires strikes on both branches: unreadable (one-second :sys.get_state
+  timeout) and target-not-in-live-set, so a connection mid-TCP-establish cannot be
+  killed by a transiently unreadable state.
   """
 
   use GenServer
   require Logger
 
-  alias Embervm.NodeRegistry
-
   # Default sweep interval: 60s, balanced against the backoff_max of 120s.
   # One sweep every 60s gives a detection window of up to 120s + 60s.
   @sweep_interval_ms 60_000
+  @wedged_strikes_required 3
 
   # Short timeout for reading a child's state via :sys.get_state. The
   # wedged-in-init processes time out here, which is exactly what we need to
@@ -76,9 +95,10 @@ defmodule Embervm.GrpcConnectionSweeper do
 
   @doc """
   Run one sweep synchronously and return the list of {pid, reason} entries
-  that were reaped or would be reaped with the gate on. Lets a test drive the
-  sweep deterministically without the timer, and an operator preview what it
-  would reap.
+  that meet the reap threshold. This is a REAL sweep: it advances strike counts
+  and terminates children when the gate is enabled and threshold is met. It is
+  not a read-only preview. Operators wanting to preview the plan should
+  read the dry-run logs instead.
   """
   @spec sweep_now(GenServer.server()) :: [{pid(), String.t()}]
   def sweep_now(server \\ __MODULE__) do
@@ -91,13 +111,14 @@ defmodule Embervm.GrpcConnectionSweeper do
   def init(opts) do
     # Injected seams (defaults are the real NodeRegistry, real supervisor
     # enumeration, and real termination). Tests inject fakes.
-    node_registry = Keyword.get(opts, :node_registry, NodeRegistry)
+    status_fun = Keyword.get(opts, :status_fun, &Embervm.NodeRegistry.status/0)
     supervisor = Keyword.get(opts, :supervisor, GRPC.Client.Supervisor)
     terminate_child_fun = Keyword.get(opts, :terminate_child_fun, &DynamicSupervisor.terminate_child/2)
 
     # 0 disables the timer (unit-test default); production uses the module
     # default.
     sweep_interval_ms = Keyword.get(opts, :sweep_interval_ms, @sweep_interval_ms)
+    strikes_required = Keyword.get(opts, :strikes_required, @wedged_strikes_required)
 
     # Destructive gate: false (default, ships inert) means the sweep logs a
     # dry-run plan but deletes NOTHING. true means it fires the terminations.
@@ -106,11 +127,13 @@ defmodule Embervm.GrpcConnectionSweeper do
     sweep_enabled = Keyword.get(opts, :sweep_enabled, false)
 
     state = %{
-      node_registry: node_registry,
+      status_fun: status_fun,
       supervisor: supervisor,
       terminate_child_fun: terminate_child_fun,
       sweep_interval_ms: sweep_interval_ms,
-      sweep_enabled: sweep_enabled
+      sweep_enabled: sweep_enabled,
+      strikes_required: strikes_required,
+      strikes: %{}
     }
 
     schedule_sweep(state)
@@ -119,15 +142,15 @@ defmodule Embervm.GrpcConnectionSweeper do
 
   @impl true
   def handle_call(:sweep_now, _from, state) do
-    reaped = sweep(state)
-    {:reply, reaped, state}
+    {reaped, new_state} = sweep(state)
+    {:reply, reaped, new_state}
   end
 
   @impl true
   def handle_info(:sweep, state) do
-    _reaped = sweep(state)
-    schedule_sweep(state)
-    {:noreply, state}
+    {_reaped, new_state} = sweep(state)
+    schedule_sweep(new_state)
+    {:noreply, new_state}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -146,12 +169,12 @@ defmodule Embervm.GrpcConnectionSweeper do
     case keep_set do
       :unavailable ->
         Logger.info("embervm grpc connection sweeper: skipping sweep (keep-set unavailable, likely at boot)")
-        []
+        {[], state}
 
       {:ok, set} ->
         if MapSet.size(set) == 0 do
           Logger.info("embervm grpc connection sweeper: skipping sweep (no live addresses in keep-set)")
-          []
+          {[], state}
         else
           classify_and_reap(state, set)
         end
@@ -163,15 +186,42 @@ defmodule Embervm.GrpcConnectionSweeper do
   defp classify_and_reap(state, keep_set) do
     children = DynamicSupervisor.which_children(state.supervisor)
 
-    reaped =
-      children
-      |> Enum.map(&classify_child(&1, keep_set, state))
+    classifications = Enum.map(children, &classify_child(&1, keep_set, state))
+
+    strikes =
+      classifications
+      |> Enum.reduce(state.strikes, fn
+        {pid, :keep}, strikes -> Map.delete(strikes, pid)
+        {pid, _reason}, strikes -> Map.update(strikes, pid, 1, &(&1 + 1))
+      end)
+      |> Map.take(Enum.map(children, fn {:undefined, pid, _type, _modules} -> pid end))
+
+    reapable =
+      classifications
       |> Enum.filter(&should_reap?/1)
+      |> Enum.map(fn {pid, reason} ->
+        strike_count = Map.fetch!(strikes, pid)
+
+        strike_reason =
+          if strike_count >= state.strikes_required do
+            "#{reason} (reapable for #{strike_count} consecutive sweeps, threshold #{state.strikes_required})"
+          else
+            "#{reason} (strike #{strike_count} of #{state.strikes_required})"
+          end
+
+        {pid, strike_reason}
+      end)
+
+    reaped =
+      reapable
+      |> Enum.filter(fn {pid, _reason} -> Map.fetch!(strikes, pid) >= state.strikes_required end)
       |> Enum.map(fn {pid, reason} -> maybe_reap(state, pid, reason) end)
       |> Enum.filter(&(not is_nil(&1)))
 
-    log_sweep(state, reaped)
-    reaped
+    new_state = %{state | strikes: strikes}
+    log_sweep(new_state, reaped)
+    log_pending(new_state, reapable)
+    {reaped, new_state}
   end
 
   # Classify a child as reapable or keep-able. Returns {pid, reason} where
@@ -255,6 +305,12 @@ defmodule Embervm.GrpcConnectionSweeper do
   # - it shows :proc_lib.sync_start in its current function, OR
   # - it is very new and unreadable (may still be initializing)
   defp process_looks_wedged?(pid) do
+    # Note: the reductions < 100 fallback is unstable under repeated :sys.get_state
+    # probing; each probe delivers a message that increments reductions, eventually
+    # crossing 100 and flipping classification to :keep, which resets strikes. Only
+    # the proc_lib.sync_start arm is stable across extended observation. Real leaks
+    # in live logs stay flagged 42+ sweeps, indicating they are stuck in sync_start,
+    # not riding the reductions fallback.
     case :erlang.process_info(pid, [:current_function, :reductions]) do
       [{:current_function, {:proc_lib, :sync_start, 2}}, {:reductions, _}] ->
         # Definitively stuck in sync_start init
@@ -305,7 +361,7 @@ defmodule Embervm.GrpcConnectionSweeper do
   # all". Both abort the sweep, but for different reasons and logging.
   defp get_live_addresses(state) do
     try do
-      status = state.node_registry.status()
+      status = state.status_fun.()
 
       addresses =
         status
@@ -370,6 +426,22 @@ defmodule Embervm.GrpcConnectionSweeper do
     end
 
     :ok
+  end
+
+  defp log_pending(%{sweep_enabled: true}, _reapable), do: :ok
+
+  defp log_pending(state, reapable) do
+    pending =
+      reapable
+      |> Enum.filter(fn {pid, _reason} -> Map.fetch!(state.strikes, pid) < state.strikes_required end)
+
+    if not Enum.empty?(pending) do
+      Logger.info("embervm grpc connection sweeper (DRY RUN, gate off): #{length(pending)} orchestrator(s) accumulating strikes")
+
+      Enum.each(pending, fn {pid, reason} ->
+        Logger.info("  pid #{inspect(pid)}: #{reason}")
+      end)
+    end
   end
 
   defp schedule_sweep(%{sweep_interval_ms: ms}) when ms > 0 do
