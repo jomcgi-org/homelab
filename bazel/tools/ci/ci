@@ -284,10 +284,28 @@ cmd_test() {
 	# the failing target moves between runs, and it is never the target you changed.
 	# Confirmed not to be runner-recycling debris; a fresh runner
 	# (recycle-runner=false) ran out of disk the same way.
+	local out
+	out="$(mktemp)"
+	local bb_status=0
 	bb remote --os=linux --arch=amd64 \
 		--runner_exec_properties=include-secrets=true \
 		--runner_exec_properties=EstimatedFreeDiskBytes=120GB \
-		"${bazel_args[@]}"
+		"${bazel_args[@]}" 2>&1 | tee "$out" || bb_status=$?
+
+	# bb remote exits 0 when the remote ACTION fails, so require its failure
+	# markers and positive evidence of a test summary before accepting (#4118).
+	if grep -qE 'Action failed:|Command failed: exit status' "$out"; then
+		rm -f "$out"
+		err "remote runner failed before or while running tests (see output above, issue #4118)"
+		return 1
+	fi
+	if ! grep -qE 'Executed [0-9]+ out of [0-9]+ tests' "$out"; then
+		rm -f "$out"
+		err "no bazel test summary was found, so nothing was verified (issue #4118)"
+		return 1
+	fi
+	rm -f "$out"
+	return "$bb_status"
 }
 
 cmd_all() {
