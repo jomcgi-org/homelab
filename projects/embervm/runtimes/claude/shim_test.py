@@ -2584,10 +2584,14 @@ def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
     original_socket = socket.socket
     vsock_peer, vsock_forwarder = socket.socketpair()
     connected = []
+    fake_vsocks = []
 
     class FakeVsock:
+        def __init__(self):
+            self.timeouts = []
+
         def settimeout(self, timeout):
-            pass
+            self.timeouts.append(timeout)
 
         def connect(self, address):
             connected.append(address)
@@ -2606,7 +2610,9 @@ def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
 
     def socket_factory(family, *args, **kwargs):
         if family == shim.VSOCK_ADDRESS_FAMILY:
-            return FakeVsock()
+            fake_vsock = FakeVsock()
+            fake_vsocks.append(fake_vsock)
+            return fake_vsock
         return original_socket(family, *args, **kwargs)
 
     monkeypatch.setattr(shim.socket, "socket", socket_factory)
@@ -2626,13 +2632,17 @@ def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
         vsock_peer.sendall(b"response")
         assert client.recv(8) == b"response"
         assert connected == [(shim.VSOCK_EGRESS_CID, shim.VSOCK_EGRESS_PORT)]
+        assert fake_vsocks[0].timeouts == [
+            shim.EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS,
+            None,
+        ]
     finally:
         client.close()
         vsock_peer.close()
         forwarder.close()
 
 
-def test_egress_vsock_connect_constants_are_tunable():
+def test_egress_vsock_connect_constants_pinned():
     assert shim.EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS == 5.0
     assert shim.EGRESS_VSOCK_CONNECT_ATTEMPTS == 3
 
@@ -2642,10 +2652,14 @@ def test_egress_forwarder_retries_vsock_connect(monkeypatch):
     original_socket = socket.socket
     vsock_peer, vsock_forwarder = socket.socketpair()
     attempts = []
+    fake_vsocks = []
 
     class FakeVsock:
+        def __init__(self):
+            self.timeouts = []
+
         def settimeout(self, timeout):
-            pass
+            self.timeouts.append(timeout)
 
         def connect(self, address):
             attempts.append(address)
@@ -2666,7 +2680,9 @@ def test_egress_forwarder_retries_vsock_connect(monkeypatch):
 
     def socket_factory(family, *args, **kwargs):
         if family == shim.VSOCK_ADDRESS_FAMILY:
-            return FakeVsock()
+            fake_vsock = FakeVsock()
+            fake_vsocks.append(fake_vsock)
+            return fake_vsock
         return original_socket(family, *args, **kwargs)
 
     monkeypatch.setattr(shim.socket, "socket", socket_factory)
@@ -2683,6 +2699,10 @@ def test_egress_forwarder_retries_vsock_connect(monkeypatch):
         vsock_peer.sendall(b"response")
         assert client.recv(8) == b"response"
         assert len(attempts) == 3
+        assert fake_vsocks[-1].timeouts == [
+            shim.EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS,
+            None,
+        ]
     finally:
         client.close()
         vsock_peer.close()
@@ -2693,10 +2713,14 @@ def test_egress_forwarder_failed_vsock_connect_closes_client(monkeypatch, capsys
     forwarder = shim.VsockEgressForwarder(port=0)
     original_socket = socket.socket
     attempts = []
+    fake_vsocks = []
 
     class FakeVsock:
+        def __init__(self):
+            self.timeouts = []
+
         def settimeout(self, timeout):
-            pass
+            self.timeouts.append(timeout)
 
         def connect(self, address):
             attempts.append(address)
@@ -2707,7 +2731,9 @@ def test_egress_forwarder_failed_vsock_connect_closes_client(monkeypatch, capsys
 
     def socket_factory(family, *args, **kwargs):
         if family == shim.VSOCK_ADDRESS_FAMILY:
-            return FakeVsock()
+            fake_vsock = FakeVsock()
+            fake_vsocks.append(fake_vsock)
+            return fake_vsock
         return original_socket(family, *args, **kwargs)
 
     monkeypatch.setattr(shim.socket, "socket", socket_factory)
@@ -2720,6 +2746,10 @@ def test_egress_forwarder_failed_vsock_connect_closes_client(monkeypatch, capsys
         assert client.recv(4096) == b""
         assert len(attempts) == shim.EGRESS_VSOCK_CONNECT_ATTEMPTS
         assert "egress vsock connect failed" in capsys.readouterr().err
+        assert all(
+            fake_vsock.timeouts == [shim.EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS]
+            for fake_vsock in fake_vsocks
+        )
     finally:
         client.close()
         forwarder.close()
@@ -2739,7 +2769,7 @@ def test_git_proxy_helper_handshake_timeout(tmp_path, monkeypatch):
         connection, _ = listener.accept()
         accepted.append(connection)
 
-    accept_thread = threading.Thread(target=accept_connection)
+    accept_thread = threading.Thread(target=accept_connection, daemon=True)
     accept_thread.start()
     environment = os.environ.copy()
     environment[shim.EGRESS_PORT_ENV] = str(listener.getsockname()[1])
@@ -2758,7 +2788,50 @@ def test_git_proxy_helper_handshake_timeout(tmp_path, monkeypatch):
         for connection in accepted:
             connection.close()
     assert result.returncode == 1
+    captured_err = result.stderr.decode().lower()
+    assert "timed out" in captured_err or "timeout" in captured_err
     assert time.monotonic() - started < 3
+
+
+def test_git_proxy_helper_blocks_after_handshake_timeout(tmp_path, monkeypatch):
+    helper_path = tmp_path / "ember-git-proxy"
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(helper_path))
+    shim._write_git_proxy_helper()
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind((shim.EGRESS_LOCALHOST, 0))
+    listener.listen()
+    accepted = []
+
+    def serve_connection():
+        connection, _ = listener.accept()
+        accepted.append(connection)
+        connection.recv(4096)
+        connection.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        time.sleep(1.5)
+        connection.sendall(b"late payload")
+        connection.shutdown(socket.SHUT_WR)
+
+    accept_thread = threading.Thread(target=serve_connection, daemon=True)
+    accept_thread.start()
+    environment = os.environ.copy()
+    environment[shim.EGRESS_PORT_ENV] = str(listener.getsockname()[1])
+    environment["EMBER_GIT_PROXY_HANDSHAKE_TIMEOUT_SECONDS"] = "1"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(helper_path), "example.com", "9418"],
+            input=b"",
+            env=environment,
+            capture_output=True,
+            timeout=5,
+        )
+    finally:
+        listener.close()
+        accept_thread.join(timeout=1)
+        for connection in accepted:
+            connection.close()
+    assert result.returncode == 0
+    assert result.stdout == b"late payload"
 
 
 def _forwarder_exchange(monkeypatch, request_bytes):
@@ -2768,8 +2841,11 @@ def _forwarder_exchange(monkeypatch, request_bytes):
     vsock_peer, vsock_forwarder = socket.socketpair()
 
     class FakeVsock:
+        def __init__(self):
+            self.timeouts = []
+
         def settimeout(self, timeout):
-            pass
+            self.timeouts.append(timeout)
 
         def connect(self, address):
             pass
