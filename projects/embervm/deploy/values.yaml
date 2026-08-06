@@ -121,14 +121,21 @@ noded:
   # Rollback: set back to [] (uniformly, never partially); no chart bump
   # needed, the values git ref alone rolls the brick Deployment envs off.
   #
-  # DISARMED 2026-08-06 (#4389, reopened): the hydration-clone stall follows
-  # RESTORED session VMs and survives the Firecracker v1.16.1 upgrade, while
-  # cold-booted sessions cloned cleanly for weeks before the fleet-wide arming.
-  # Cold boot is both the A/B discriminator and the mitigation that unblocks
-  # repo-attached turns while the restore-path vsock fault (guest kernel
-  # 6.18.35 driver state across snapshot restore is the leading suspect) is
-  # run down. Re-arm with the full class list once #4389 closes for real.
-  warmRestoreWithVolumeClasses: []
+  # RE-ARMED 2026-08-06 (#4418) after a diagnostic disarm. The disarm was an A/B
+  # discriminator for #4389, and it EXONERATED restore: cold-booted sessions
+  # stalled byte-identically, so "the stall follows restored VMs" was a
+  # coincidence of timing, not a cause. The real chain was four stacked defects
+  # on the egress lane, all fixed and validated live: SHUT_WR propagated onto a
+  # vsock leg that has no half-close (#4412), the resulting suppression severing
+  # the git proxy helper's exit chain (#4415), blob:none forcing a second lane
+  # connection at checkout (#4414, the wedge itself now tracked as #4417), and a
+  # clone budget too short for the full-clone shape (#4413). A repo-attached
+  # session then hydrated and ran billed turns end to end.
+  #
+  # Restoring the full list is the whole point of the feature: sessions start
+  # from a disk snapshot at 2.5ms load-to-resume instead of paying a cold boot
+  # every time. Uniform, per the rollback contract above, never partial.
+  warmRestoreWithVolumeClasses: ["2gi", "4gi", "8gi", "16gi"]
 
 # Node-provisioning contract (ADR embervm/012 storage-tiers amendment; warmth
 # cache-cap retention decisions 2026-07-22): DISABLED. The privileged runtime
