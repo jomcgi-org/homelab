@@ -583,8 +583,12 @@ multiarch_http_archive(
 # release, not the kata bundle: kata pins v1.12.1 (still on main), which
 # predates the vsock-after-snapshot-restore fixes the warm-restore fleet needs
 # (#4389; upstream #5688/#5882/#5958). Only the guest kernel still comes from
-# kata. Moving the Firecracker version invalidates every base snapshot
-# (version-locked format); the BaseBuilder rebuilds them on the roll.
+# kata. Moving the Firecracker version invalidates every snapshot (the format
+# is version-locked) and nothing rebuilds them automatically: the base
+# signature has no hypervisor input, so any version change here MUST move
+# hypervisorEpoch in projects/embervm/chart/values.yaml in the same PR, which
+# re-keys every workload base via initEnv. Banked session and stateful memory
+# snapshots are not covered by that knob and fail over cold at rollout.
 kata_firecracker_archive = use_repo_rule("//bazel/tools/http:kata_firecracker_archive.bzl", "kata_firecracker_archive")
 
 kata_firecracker_archive(

@@ -24,6 +24,12 @@ spec:
       port: {{ .Values.bazelQueryWorkload.port }}
       readyPath: {{ .Values.bazelQueryWorkload.readyPath | quote }}
       invokePath: {{ .Values.bazelQueryWorkload.invokePath | quote }}
+      # Baked guest env; part of the base signature (base_builder signature/1
+      # includes sorted init_env), so the shared hypervisor epoch re-keys this
+      # base whenever the vendored Firecracker binary moves: a new hypervisor
+      # must never try to load a previous version's snapshot (#4389).
+      initEnv:
+        EMBER_HYPERVISOR_EPOCH: {{ .Values.hypervisorEpoch | quote }}
   resources:
     vcpus: {{ .Values.bazelQueryWorkload.vcpus }}
     memMib: {{ .Values.bazelQueryWorkload.memMib }}

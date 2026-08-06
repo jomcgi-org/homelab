@@ -22,6 +22,19 @@ image:
 # unfilled cap costs only what is written. Raise fleet-wide here, never per node.
 scratchSizeGi: 35
 
+# Warmth generation of the vendored Firecracker binary (MODULE.bazel
+# kata_firecracker_archive). Rendered into every buildable workload's initEnv as
+# EMBER_HYPERVISOR_EPOCH, which participates in the base signature (base_builder
+# signature/1 includes sorted init_env), so moving this value re-keys and
+# rebuilds EVERY workload base on the next sync. Firecracker snapshot formats
+# are version-locked: a base rebuild does not happen on its own when the binary
+# moves (the signature has no hypervisor input), and a v-old snapshot loaded by
+# a v-new hypervisor fails every dispatch (#4389). Bump this in the SAME PR as
+# any Firecracker version change. Banked session and stateful memory snapshots
+# are separate artifacts this knob does not rebuild; they must be drained or
+# left to fail over cold at rollout.
+hypervisorEpoch: "fc-v1.16.1"
+
 # Node-provisioning contract actuator (ADR embervm/012 storage-tiers amendment):
 # the scratch-prep DaemonSet that provisions the uniform capped loop scratch (see
 # scratchSizeGi) on the pet-node fleet. TOP-LEVEL, not noded.scratchPrep: its

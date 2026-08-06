@@ -32,6 +32,12 @@ spec:
       ref: "{{ .Values.scratchPostgres.guestImage.repository }}@{{ .Values.scratchPostgres.guestImage.digest }}"
       port: 1027
       readyPath: /shim/ready
+      # Baked guest env; part of the base signature (base_builder signature/1
+      # includes sorted init_env), so the shared hypervisor epoch re-keys this
+      # base whenever the vendored Firecracker binary moves: a new hypervisor
+      # must never try to load a previous version's snapshot (#4389).
+      initEnv:
+        EMBER_HYPERVISOR_EPOCH: {{ .Values.hypervisorEpoch | quote }}
   resources:
     # Same warm-peak sizing as scratch-postgres (the fc-base sizing coupling
     # keys memMib to the shared base image, D-R3.11.1).
