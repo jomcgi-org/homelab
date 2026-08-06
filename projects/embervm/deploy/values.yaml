@@ -477,6 +477,25 @@ claudeRuntimeWorkload:
     # only the claude-runtime base at the next chart bump. Prewarm failure fails
     # the base build by design.
     EMBER_PREWARM_CLIS: "claude"
+    # Interim speed knob for #4429, pending protocol-aware completion.
+    #
+    # The git proxy helper cannot see the end of a response: #4412 stopped
+    # propagating half-close onto the vsock leg (Firecracker hybrid vsock has
+    # none, and propagating it killed in-flight responses), so the server-held
+    # connection never closes and git blocks until the helper exits. The helper
+    # therefore infers completion from silence, and its default deadline is 10s,
+    # which is charged to EVERY clone after the last byte arrives.
+    #
+    # Measured: fitting t = a + b*bytes across an 11.24 MiB shallow clone (11.5s)
+    # and a 249.40 MiB full clone (~37s) gives 9.3 MiB/s marginal throughput and
+    # a 10.3s fixed cost. The lane is fast; the constant is this timeout.
+    #
+    # 2s, not lower: the mirror serves this entire clone in 1.3s over loopback,
+    # so this leaves roughly 2x margin over the whole server-side operation
+    # rather than over one gap. If the deadline ever does fire early the pack
+    # fails git's own checksum, so hydration errors loudly and retries rather
+    # than leaving a silently truncated checkout.
+    EMBER_GIT_PROXY_IDLE_EXIT_SECONDS: "2"
   # ON. The ADR 027 memory:false/filesystem:true quadrant: sessions ride
   # per-lineage workspace volumes with park/rejoin instead of memory-snapshot
   # banking, and raw files in S3 replace multi-GiB snapshots.
