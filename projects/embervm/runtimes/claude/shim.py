@@ -192,26 +192,35 @@ def _pump_socket_to_stdout(sock, destination):
 
 def main():
     if len(sys.argv) != 3:
+        sys.stderr.write("ERROR: expected host and port arguments\n")
         return 2
     host, port = sys.argv[1:]
     try:
         egress_port = int(os.environ.get(EGRESS_PORT_ENV, DEFAULT_EGRESS_PORT))
-        HANDSHAKE_TIMEOUT = float(
-            os.environ.get("EMBER_GIT_PROXY_HANDSHAKE_TIMEOUT_SECONDS", "30")
-        )
+        try:
+            handshake_timeout = float(
+                os.environ.get("EMBER_GIT_PROXY_HANDSHAKE_TIMEOUT_SECONDS", "30")
+            )
+            if handshake_timeout <= 0:
+                handshake_timeout = 30
+        except ValueError:
+            handshake_timeout = 30
         sock = socket.create_connection(
-            (EGRESS_LOCALHOST, egress_port), timeout=HANDSHAKE_TIMEOUT
+            (EGRESS_LOCALHOST, egress_port), timeout=handshake_timeout
         )
         sock.sendall(("CONNECT %s:%s HTTP/1.1\r\n\r\n" % (host, port)).encode())
         response = b""
         while b"\r\n\r\n" not in response:
             chunk = sock.recv(4096)
             if not chunk:
+                sys.stderr.write("ERROR: proxy closed during handshake\n")
                 return 1
             response += chunk
             if len(response) > 65536:
+                sys.stderr.write("ERROR: proxy handshake response is too large\n")
                 return 1
         if not response.startswith(b"HTTP/1.1 200"):
+            sys.stderr.write("ERROR: proxy handshake returned a non-200 response\n")
             return 1
         sock.settimeout(None)
         threads = [
@@ -227,7 +236,8 @@ def main():
         for thread in threads:
             thread.join()
         return 0
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        sys.stderr.write("ERROR: %s\n" % exc)
         return 1
 
 
@@ -680,10 +690,10 @@ class VsockEgressForwarder:
             if host_port is None:
                 client.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
                 return
-            # A wedged vsock lane, including the FC v1.12.1 restore bug (#4389),
-            # used to make connect hang forever and cost the guest a full
-            # git-clone timeout. Fail within seconds so lane failures stay fast
-            # and visible.
+            # Bound the connect leg so a lane that cannot establish a connection
+            # fails in seconds instead of silently consuming the full hydration
+            # timeout; a transfer that stalls after connect is still governed by
+            # the hydration timeout by design.
             last_error = None
             for attempt_index in range(EGRESS_VSOCK_CONNECT_ATTEMPTS):
                 attempt = socket.socket(VSOCK_ADDRESS_FAMILY, socket.SOCK_STREAM)
