@@ -745,6 +745,7 @@ def test_codex_config_uses_subscription_endpoint_override(tmp_path, monkeypatch)
     assert config["model_provider"] == "ember-openai"
     assert config["sandbox_mode"] == "danger-full-access"
     assert config["approval_policy"] == "never"
+    assert config["tools"]["web_search"] is True
     assert config["model_providers"]["ember-openai"]["wire_api"] == "responses"
 
 
@@ -764,6 +765,7 @@ def test_codex_config_appends_codex_to_no_slash_endpoint(tmp_path, monkeypatch):
     assert config["chatgpt_base_url"] == endpoint
     assert config["sandbox_mode"] == "danger-full-access"
     assert config["approval_policy"] == "never"
+    assert config["tools"]["web_search"] is True
 
 
 def test_codex_child_env_drops_openai_api_key(tmp_path, monkeypatch):
