@@ -145,6 +145,22 @@ defmodule Embervm.Application do
       # reads; workers invalidate a channel on a transport error. With no node
       # wired it caches nothing.
       {Embervm.NodeChannel, nodes: configured_nodes()},
+      # The gRPC connection orchestrator sweeper (issue #4419): a periodic GC that
+      # reaps leaked GRPC.Client.Connection processes that hold dead addresses or are
+      # wedged in initialization. Two classes of leak occur when an instance expires:
+      # responsive orchestrators retrying dead addresses forever, and orchestrators
+      # stuck in :proc_lib.sync_start that never enter their GenServer loop. Both are
+      # reaped by exit signal (DynamicSupervisor.terminate_child), which works for
+      # wedged processes that GenServer.call based disconnect cannot reach. Placed
+      # AFTER NodeRegistry (whose live address set it reads to form the keep-set) and
+      # AFTER NodeChannel (which reads the same node config). Duplicates on live
+      # addresses are kept (expected when multiple components dial independently); the
+      # predicate is "target not in live set", never "more than one per address". Gate
+      # OFF by default (EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED): the sweep runs and logs
+      # but does not terminate, so merging is inert and arming is a separate values
+      # change after observing the logs.
+      {Embervm.GrpcConnectionSweeper, grpc_connection_sweeper_opts()},
+
       # Metering, audit, and quotas (Task 12). Owns the public per-principal daily
       # quota-cache ETS table (rebuilt on boot from the op-log's usage projection)
       # and appends request-scoped denials. Placed AFTER OpLog.SQLite (it reads the
@@ -848,6 +864,30 @@ defmodule Embervm.Application do
       control_plane_activator_ip: stateful_activator_ip()
     ]
   end
+
+  # GrpcConnectionSweeper config: the destructive gate and sweep cadence from env.
+  # Default is gate OFF (the sweep runs but only logs, leaving connections untouched).
+  defp grpc_connection_sweeper_opts do
+    [
+      sweep_enabled: grpc_connection_sweep_enabled(),
+      sweep_interval_ms: int_env_or_nil("EMBERVM_GRPC_CONNECTION_SWEEP_INTERVAL_MS")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  # The destructive gate for the GrpcConnectionSweeper, from
+  # EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED. UNSET or "0"/"false"/"" (the default,
+  # and what this PR ships) => the sweep runs but only logs a dry-run plan, leaving
+  # no children terminated. "1"/"true" => the sweep terminates orchestrators holding
+  # dead addresses or wedged in init. Wired here so it flips via a deploy values env
+  # change, no code change. Nothing sets it on in this PR.
+  defp grpc_connection_sweep_enabled do
+    case trimmed_env("EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
 
   # The activator endpoint the node Envoy routes to when a serving workload has no
   # healthy published instance, from EMBERVM_SERVING_ACTIVATOR_IP + _PORT (Task 8
