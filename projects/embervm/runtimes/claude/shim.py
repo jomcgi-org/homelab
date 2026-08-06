@@ -313,7 +313,46 @@ def _pump_stdin_to_socket(source, sock):
 LAST_RX = [time.monotonic()]
 
 
-def _pump_socket_to_stdout(sock, destination):
+class _PktLineCompletionParser:
+    "Observe git's pkt-line stream without changing the forwarded bytes."
+
+    def __init__(self):
+        self.buffer = bytearray()
+        self.complete = False
+        self.watchdog_only = False
+
+    def feed(self, data):
+        self.buffer.extend(data)
+        while not self.complete and not self.watchdog_only:
+            if len(self.buffer) < 4:
+                return
+
+            header = bytes(self.buffer[:4])
+            if header == b"PACK":
+                # A non-sideband upload-pack response switches to raw pack
+                # data here, so there is no framing marker we can trust.
+                self.watchdog_only = True
+                return
+            if any(byte not in b"0123456789abcdefABCDEF" for byte in header):
+                self.watchdog_only = True
+                return
+
+            length = int(header, 16)
+            if length == 0:
+                del self.buffer[:4]
+                self.complete = True
+                return
+            if length in (1, 2, 3):
+                frame_length = 4
+            else:
+                frame_length = length
+            if len(self.buffer) < frame_length:
+                return
+            del self.buffer[:frame_length]
+
+
+def _pump_socket_to_stdout(sock, destination, response_complete):
+    parser = _PktLineCompletionParser()
     try:
         while True:
             data = sock.recv(65536)
@@ -322,6 +361,10 @@ def _pump_socket_to_stdout(sock, destination):
             LAST_RX[0] = time.monotonic()
             destination.write(data)
             destination.flush()
+            parser.feed(data)
+            if parser.complete:
+                response_complete.set()
+                break
     except OSError:
         pass
 
@@ -377,22 +420,34 @@ def main():
         stdin_pump = threading.Thread(
             target=_pump_stdin_to_socket, args=(sys.stdin.buffer, sock), daemon=True
         )
+        response_complete = threading.Event()
         stdout_pump = threading.Thread(
-            target=_pump_socket_to_stdout, args=(sock, sys.stdout.buffer), daemon=True
+            target=_pump_socket_to_stdout,
+            args=(sock, sys.stdout.buffer, response_complete),
+            daemon=True,
         )
         stdin_pump.start()
         stdout_pump.start()
         stdin_pump.join()
-        # git half-closes stdin right after its request and then reads the
-        # response, so stdin EOF says nothing about completion. The response
-        # side has no EOF either: the lane deliberately never propagates the
-        # half-close onto vsock (#4389), so the server-held connection stays
-        # open forever and git waits for THIS process to exit. Once the
-        # response has been idle past the deadline, close up and leave; a
-        # mid-response server pause shorter than the deadline is unaffected.
+        # Firecracker hybrid vsock cannot propagate the response half-close,
+        # so git cannot otherwise see that a clone is complete. A sideband
+        # response has a flush-pkt, which lets us leave as soon as its protocol
+        # is structurally complete. Raw PACK data has no framing information,
+        # so the idle watchdog remains the safe fallback for that case.
         LAST_RX[0] = time.monotonic()
         while stdout_pump.is_alive():
-            stdout_pump.join(timeout=0.5)
+            if response_complete.wait(timeout=0.5):
+                # shutdown, not just close: close() does not wake a thread
+                # blocked in recv, SHUT_RDWR does.
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                break
             if not stdout_pump.is_alive():
                 break
             if time.monotonic() - LAST_RX[0] > idle_exit:
