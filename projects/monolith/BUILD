@@ -3145,8 +3145,8 @@ py_test(
     srcs = ["chat/bot_on_message_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_cyclegroup",
         ":pkg_agent_sessions",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
@@ -3609,8 +3609,8 @@ py_test(
     srcs = ["chat/bot_agent_prompt_echo_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_cyclegroup",
         ":pkg_agent_sessions",
+        ":pkg_cyclegroup",
         "@pip//discord_py",
         "@pip//pytest",
         "@pip//pytest_asyncio",
