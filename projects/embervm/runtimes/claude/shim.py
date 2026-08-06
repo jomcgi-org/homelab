@@ -2401,6 +2401,9 @@ class ProcessManager:
         self._prewarm_complete = not self._prewarm_clis
         self._prewarm_thread = None
         self._mount_lock = threading.Lock()
+        # Injectable so tests can substitute a deferred-start fake without
+        # patching the stdlib threading module process-wide.
+        self._thread_factory = threading.Thread
         self._remediation_lock = threading.Lock()
         self._remediation_attempts = 0
         self._remediation_thread = None
@@ -2615,12 +2618,20 @@ class ProcessManager:
                 and self._remediation_thread.is_alive()
             ):
                 return
-            self._remediation_thread = threading.Thread(
+            # start() stays inside the lock: is_alive() is False for a
+            # constructed-but-unstarted thread, so releasing before start()
+            # lets two concurrent probes double-start the same Thread and
+            # RuntimeError out of the readiness handler. A real remediation
+            # thread reaching its own _remediation_lock uses merely waits the
+            # microseconds until this block exits; only an inline-running test
+            # fake would deadlock, which is why the factory is injectable.
+            thread = self._thread_factory(
                 target=self._remediate_workspace,
                 name="claude-workspace-remediation",
                 daemon=True,
             )
-        self._remediation_thread.start()
+            self._remediation_thread = thread
+            thread.start()
 
     def _remediate_workspace(self):
         with self._mount_lock:
@@ -2806,8 +2817,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             session_id = payload.get("session_id")
             if isinstance(session_id, str):
                 session_id = session_id.strip()
-            elif session_id is None:
-                session_id = None
             hydration = {"repo": repo, "branch": branch} if repo is not None else {}
             progress = (
                 {"progress_token": progress_token.strip()} if progress_token else {}

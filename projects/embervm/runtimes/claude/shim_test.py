@@ -1113,6 +1113,7 @@ def _manager(tmp_path, monkeypatch, api_key="none"):
 def _new_process_manager():
     manager = object.__new__(shim.ProcessManager)
     manager._mount_lock = threading.Lock()
+    manager._thread_factory = threading.Thread
     return manager
 
 
@@ -1428,20 +1429,14 @@ def test_takeover_remediation_replaces_parked_process(tmp_path, monkeypatch):
     manager.claude = Adapter()
     manager.codex = manager.claude
     manager.pi = manager.claude
-    identities = iter([(1, 1), (2, 2)] + [(2, 2)] * 100)
-
-    def mock_identity(_path):
-        dev, ino = next(identities)
-        return (dev, ino)
-
-    manager._workspace_identity = mock_identity
+    # The workspace identity already differs from the parked process's (1, 1):
+    # the takeover has happened, so a single remediation pass must respawn.
+    manager._workspace_identity = lambda _path: (2, 2)
     monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
     monkeypatch.setattr(shim, "_ensure_cli_dir", lambda _path: None)
     monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
     monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
 
-    assert manager.ready()
-    # The first ready() call starts remediation for the tmpfs-to-volume takeover.
     assert manager.ready()
     manager._remediation_thread.join(timeout=1)
     # Remediation replaced the parked process with a fresh one.
@@ -1676,7 +1671,9 @@ def test_remediation_attempts_cap_at_three(tmp_path, monkeypatch):
     monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
     starts = []
 
-    class ImmediateThread:
+    pending = []
+
+    class DeferredThread:
         def __init__(self, target, name, daemon):
             self.target = target
 
@@ -1685,11 +1682,16 @@ def test_remediation_attempts_cap_at_three(tmp_path, monkeypatch):
 
         def start(self):
             starts.append(True)
-            self.target()
+            pending.append(self.target)
 
-    monkeypatch.setattr(shim.threading, "Thread", ImmediateThread)
+    manager._thread_factory = DeferredThread
     for _ in range(10):
         assert manager.ready()
+        # Run the remediation body after start() returns, matching a real
+        # thread; running it inline inside start() would deadlock on the
+        # _remediation_lock the kick still holds.
+        while pending:
+            pending.pop(0)()
     assert len(starts) == 3
 
 

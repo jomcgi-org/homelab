@@ -2,6 +2,7 @@ import io
 import json
 import os
 import subprocess
+import threading
 
 import pytest
 
@@ -30,6 +31,7 @@ def manager(tmp_path):
     instance._hydration_error = None
     instance._checkout_dir = None
     instance._hydration_status = None
+    instance._mount_lock = threading.Lock()
     return instance
 
 
