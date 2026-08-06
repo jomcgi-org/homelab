@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import subprocess
+import runpy
 
 try:
     import tomllib
@@ -2843,24 +2844,50 @@ def test_git_proxy_helper_handshake_timeout(tmp_path, monkeypatch):
     assert time.monotonic() - started < 3
 
 
-def test_git_proxy_helper_source_includes_tcp_nodelay(tmp_path, monkeypatch):
-    """Guard that the generated git proxy helper includes TCP_NODELAY.
-
-    The helper is an embedded script executed as a subprocess. Its client socket
-    options cannot be inspected from the parent, so this test asserts at the
-    source level: the helper source must contain the setsockopt(TCP_NODELAY, 1)
-    call after socket.create_connection(). This is an honest source-level guard
-    for an embedded script, not a behavioural assertion.
-    """
+def test_git_proxy_helper_sets_tcp_nodelay(tmp_path, monkeypatch):
     helper_path = tmp_path / "ember-git-proxy"
     monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(helper_path))
     shim._write_git_proxy_helper()
 
-    helper_source = helper_path.read_text()
-    # The helper must set TCP_NODELAY on the socket immediately after creating it.
-    assert "sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)" in helper_source
-    # Sanity check: the source must contain create_connection too.
-    assert "socket.create_connection" in helper_source
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind((shim.EGRESS_LOCALHOST, 0))
+    listener.listen()
+    accepted = []
+    observed_nodelay = []
+
+    def serve_connection():
+        connection, _ = listener.accept()
+        accepted.append(connection)
+        connection.recv(4096)
+        connection.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        connection.shutdown(socket.SHUT_WR)
+
+    accept_thread = threading.Thread(target=serve_connection, daemon=True)
+    accept_thread.start()
+    monkeypatch.setenv(shim.EGRESS_PORT_ENV, str(listener.getsockname()[1]))
+    original_create_connection = socket.create_connection
+
+    def create_connection(*args, **kwargs):
+        connection = original_create_connection(*args, **kwargs)
+        observed_nodelay.append(
+            connection.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY)
+        )
+        return connection
+
+    monkeypatch.setattr(socket, "create_connection", create_connection)
+    monkeypatch.setattr(sys, "argv", [str(helper_path), "example.com", "9418"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO()))
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(io.BytesIO()))
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            runpy.run_path(str(helper_path), run_name="__main__")
+    finally:
+        listener.close()
+        accept_thread.join(timeout=1)
+        for connection in accepted:
+            connection.close()
+    assert exit_info.value.code == 0
+    assert observed_nodelay == [1]
 
 
 def test_git_proxy_helper_blocks_after_handshake_timeout(tmp_path, monkeypatch):
