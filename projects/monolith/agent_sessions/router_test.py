@@ -172,6 +172,29 @@ def test_list_session_vms_maps_control_plane_states(client, monkeypatch):
     assert body["vms"]["s-park"]["cp_state"] == "parked"
 
 
+def test_list_session_vms_follows_pagination(client, monkeypatch):
+    calls = []
+
+    async def fake_list_sessions(limit=50, offset=0):
+        calls.append(offset)
+        if offset == 0:
+            return {
+                "total": 501,
+                "items": [
+                    {"session_id": f"s-{i}", "state": "parked"} for i in range(500)
+                ],
+            }
+        return {"total": 501, "items": [{"session_id": "s-tail", "state": "running"}]}
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+    body = client.get("/api/agents/vms").json()
+    # The CP retains terminal rows for days; the tail page must be
+    # fetched or an old parked session silently renders as "off".
+    assert calls == [0, 500]
+    assert len(body["vms"]) == 501
+    assert body["vms"]["s-tail"]["state"] == "awake"
+
+
 def test_list_session_vms_degrades_when_embervm_is_down(client, monkeypatch):
     async def broken_list_sessions(limit=50, offset=0):
         raise EmberVMTransportError("control plane unreachable")
