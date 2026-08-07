@@ -3663,3 +3663,67 @@ def test_codex_auth_json_is_parseable_and_inert(tmp_path, monkeypatch):
         "expiry must be far future so the guest never self-refreshes"
     )
     manager._close_process()
+
+
+def test_install_egress_ca_appends_to_system_bundle(tmp_path, monkeypatch):
+    """The fetched CA is APPENDED to the image's trust store, never replaces it.
+
+    The guest still has to verify the real public internet on every host the
+    sidecar merely tunnels, so replacing the bundle would trade one MITM lane for
+    a guest that trusts nothing else.
+    """
+    system = tmp_path / "system.crt"
+    system.write_bytes(
+        b"-----BEGIN CERTIFICATE-----\nSYSTEM\n-----END CERTIFICATE-----\n"
+    )
+    out = tmp_path / "bundle.crt"
+    monkeypatch.setattr(shim, "SYSTEM_CA_BUNDLE", str(system))
+    monkeypatch.setattr(shim, "CA_BUNDLE_PATH", str(out))
+    monkeypatch.setattr(
+        shim,
+        "fetch_egress_ca",
+        lambda *a, **k: (
+            b"-----BEGIN CERTIFICATE-----\nEGRESS\n-----END CERTIFICATE-----\n"
+        ),
+    )
+
+    assert shim.install_egress_ca() == str(out)
+    written = out.read_bytes()
+    assert b"SYSTEM" in written
+    assert b"EGRESS" in written
+
+
+def test_install_egress_ca_returns_none_without_a_ca(tmp_path, monkeypatch):
+    """No CA served means leave every trust variable unset.
+
+    A guest that trusted a CA it failed to fetch would fail every TLS handshake;
+    staying on the stock trust store only loses credential injection.
+    """
+    monkeypatch.setattr(shim, "CA_BUNDLE_PATH", str(tmp_path / "bundle.crt"))
+    monkeypatch.setattr(shim, "fetch_egress_ca", lambda *a, **k: None)
+    assert shim.install_egress_ca() is None
+
+
+def test_fetch_egress_ca_rejects_a_non_pem_response(monkeypatch):
+    """A sidecar with no CA closes without writing; anything that is not a
+    certificate must read as absent rather than be written into the bundle."""
+
+    class _Sock:
+        def settimeout(self, _):
+            pass
+
+        def connect(self, _):
+            pass
+
+        def sendall(self, _):
+            pass
+
+        def recv(self, _):
+            return b""
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(shim.socket, "socket", lambda *a, **k: _Sock())
+    monkeypatch.setattr(shim, "VSOCK_ADDRESS_FAMILY", 40)
+    assert shim.fetch_egress_ca() is None

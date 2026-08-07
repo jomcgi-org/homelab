@@ -446,13 +446,12 @@ egress:
     # the vault holds one credential rather than a derived base64 copy that
     # would silently outlive a rotation of the value it came from.
     #
-    # Both are reachable only in CLEARTEXT from the guest: the sidecar injects
-    # on a plaintext request and originates the verified TLS to :443 itself. A
-    # guest speaking https:// to a credentialed host blind-tunnels with NO
-    # injection (ca.enabled is false), so the remote must be
-    # http://github.com/... and API calls must use http://api.github.com. That
-    # is also why gh cannot be credentialed here (it is https-only); curl plus
-    # jq are the PR-opening path.
+    # Reached over ordinary https://. With ca.enabled below, the sidecar
+    # terminates the guest's TLS using a leaf minted from the egress CA, injects
+    # the header, and originates a FRESH verified TLS connection to the real
+    # destination. Without that CA it could only blind-tunnel TLS, and
+    # blind-tunnelled bytes cannot be credentialed, which is why gh (https-only,
+    # no way to address a host in cleartext) could not authenticate at all.
     - header: Authorization
       basicUser: "x-access-token"
       env: EMBER_GITHUB_GIT_TOKEN
@@ -474,6 +473,18 @@ egress:
   # A key missing here DENIES its egressTo hosts rather than tunnelling them
   # (see the fail-closed arm in the sidecar's handle), so this repoint and the
   # entries above have to land together.
+  # TLS-MITM lane (ADR 023 phase 6b). ON, because a credential can only be
+  # injected into bytes the sidecar can read: a guest speaking https:// to a
+  # credentialed host is blind-tunnelled otherwise, so gh and every ordinary
+  # HTTP client go out unauthenticated. cert-manager mints the CA
+  # (templates/egress-ca.yaml); the sidecar signs per-destination leaves at
+  # request time; the guest fetches the PUBLIC cert over its host-local vsock at
+  # spawn, so rotating the CA does not require a fleet base rebuild.
+  #
+  # The private key is mounted into the sidecar alone and never reaches a guest.
+  ca:
+    enabled: true
+
   onepassword:
     name: embervm-embervm-egress
     itemPath: "vaults/k8s-homelab/items/embervm-agent-secrets"
