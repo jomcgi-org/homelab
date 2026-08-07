@@ -190,6 +190,7 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 | Adding a service | `docs/contributing.md`, `docs/reference/services.md` |
 | Observability work | `docs/observability.md` |
 | Alerting work | `docs/reference/observability-alerting.md` |
+| Frontend or design work: tokens, palette, motion, a11y | `.impeccable.md` (three scoped design systems, deliberately not converged) |
 | Operator changes | `projects/operators/best-practices.md` |
 | EmberVM: how it works today, invariants, ADR map | `projects/embervm/ARCHITECTURE.md` (source of truth for current state; the ADRs are rationale) |
 | Design proposals | `docs/decisions/`, numbered per category |
