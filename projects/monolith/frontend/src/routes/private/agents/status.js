@@ -16,3 +16,13 @@ export function statusLabel(session) {
   if (session?.status === "warn") return "warn";
   return "completed";
 }
+
+// Coarse EmberVM guest state for a session, joined against the /agents/vms
+// control-plane listing. "off" covers no binding, a binding the control
+// plane no longer knows, and terminal states alike: in every case the next
+// prompt boots fresh.
+export function vmState(session, vms) {
+  const vm = vms?.[session?.ember_session_id];
+  if (vm?.state === "awake" || vm?.state === "asleep") return vm.state;
+  return "off";
+}

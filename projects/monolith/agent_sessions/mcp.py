@@ -168,12 +168,21 @@ def _persist_session(
         )
 
 
+# Terminal reasons that mean the turn ended normally. The claude lane
+# reports "completed" or "end_turn"; the pi lane passes the model's raw
+# stopReason through, which is "stop" for a normal qwen turn (see
+# runtimes/claude/shim.py). Comparing against "completed" alone marked
+# every successful qwen turn warn. None (transport died mid-turn) and
+# unrecognized values stay warn.
+_CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop"}
+
+
 def _turn_status(turn: Turn) -> str:
     # permission_denials is the signal for "agent blocked waiting on user";
     # stop_reason enum (end_turn, max_tokens, etc.) never indicates user input needed
     if turn.permission_denials:
         return "needs_input"
-    if turn.is_error or turn.terminal_reason != "completed":
+    if turn.is_error or turn.terminal_reason not in _CLEAN_TERMINAL_REASONS:
         return "warn"
     return "completed"
 

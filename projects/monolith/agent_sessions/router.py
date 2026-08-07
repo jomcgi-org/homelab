@@ -139,6 +139,7 @@ def _session_payload(
         "model": row.model,
         "status": row.status,
         "title": row.title or _fallback_title(first_turn_prompt, first_pending_prompt),
+        "ember_session_id": row.ember_session_id,
         "created_at": _iso(row.created_at),
         "last_turn_at": _iso(row.last_turn_at),
         "voice_summary": row.voice_summary,
@@ -176,6 +177,39 @@ def list_sessions(
     session: Session = Depends(get_session),
 ) -> list[dict]:
     return _rows(session, status, limit)
+
+
+# Control-plane session states collapsed to what the console renders. The
+# guest lifecycle is the control plane's truth, not the monolith's local
+# binding: a park (idleBankSeconds after the last invoke) happens without
+# the monolith noticing until the next send, so the UI polls this instead.
+_VM_AWAKE_STATES = {"creating", "running", "relighting"}
+_VM_ASLEEP_STATES = {"banking", "banked", "parking", "parked"}
+
+
+@router.get("/vms")
+async def list_session_vms() -> dict:
+    """Map ember session ids to a coarse VM state for the console UI."""
+    try:
+        page = await _transport.list_sessions(limit=500)
+    except EmberVMTransportError as exc:
+        return {"vms": {}, "error": str(exc)}
+    vms = {}
+    for item in page.get("items", []):
+        state = str(item.get("state", ""))
+        if state in _VM_AWAKE_STATES:
+            coarse = "awake"
+        elif state in _VM_ASLEEP_STATES:
+            coarse = "asleep"
+        else:
+            coarse = "off"
+        vms[item.get("session_id")] = {
+            "state": coarse,
+            "cp_state": state,
+            "last_invoke_at": item.get("last_invoke_at"),
+            "expires_at": item.get("expires_at"),
+        }
+    return {"vms": vms}
 
 
 @router.get("/sessions/{session_id}")
