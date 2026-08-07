@@ -220,10 +220,10 @@ def test_git_command_shape(manager, monkeypatch):
             "--branch",
             "main",
             "--config",
-            "core.gitProxy=/tmp/ember-git-proxy",
+            "http.proxy=http://127.0.0.1:1024",
             "--single-branch",
-            "--depth=1",
-            "git://git-mirror.monolith.svc.cluster.local:9418/owner/repo",
+            "--filter=blob:none",
+            "https://github.com/owner/repo.git",
             checkout_dir,
         ],
     ]
@@ -246,19 +246,32 @@ def test_git_clone_regression_guards(manager, monkeypatch):
     assert len(commands) == 1
     command = commands[0]
 
-    # Regression guard: --depth=1 must be present (shallow clone)
-    assert "--depth=1" in command, "clone command missing --depth=1"
+    # Regression guard: --depth=1 must be ABSENT. It was the workaround for
+    # #4417 while hydration ran over git:// (:9418, the one port whose tunnels
+    # deliberately never close). Over https the tunnel closes normally, and the
+    # whole point of the move is that history is present.
+    assert "--depth=1" not in command, "clone command must not be shallow"
 
-    # Regression guard: --filter must NOT be present (no blob filter)
-    # A blob filter causes second connection on checkout, wedging vsock (#4417)
-    assert not any("--filter" in arg for arg in command), (
-        "clone command must not contain --filter argument"
+    # Regression guard: the blob filter is what makes full history affordable.
+    # Dropping it turns hydration into a full-content clone of all history.
+    assert "--filter=blob:none" in command, "clone command missing --filter=blob:none"
+
+    # Regression guard: https to GitHub, never git://. A git:// URL would put
+    # hydration back on the port whose lingering tunnels wedge connection #2,
+    # and would also lose the sidecar's credential injection (it can only set a
+    # header on bytes it can read, which requires the TLS-MITM lane).
+    url = command[-2]
+    assert url.startswith("https://github.com/"), "clone must use https to GitHub"
+    assert not any(arg.startswith("git://") for arg in command), (
+        "clone command must not use the git:// transport"
     )
 
-    # Verify load-bearing flags remain
+    # Verify load-bearing flags remain. http.proxy, not core.gitProxy: the
+    # helper is a git:// proxy and does nothing for an https remote, and this
+    # subprocess does not inherit the CLI spawn env that carries HTTPS_PROXY.
     assert "--single-branch" in command, "clone command missing --single-branch"
-    assert any("core.gitProxy=" in arg for arg in command), (
-        "clone command missing core.gitProxy config"
+    assert any(arg.startswith("http.proxy=") for arg in command), (
+        "clone command missing http.proxy config"
     )
 
 
@@ -285,7 +298,7 @@ def test_no_hydration_when_repo_absent(manager, monkeypatch):
 
 
 def test_hydration_works_for_non_default_branch(manager, monkeypatch):
-    """Verify clone works for branches other than the mirror default."""
+    """Verify clone works for branches other than the repository default."""
     processes = [_GitProcess(), _GitProcess()]
     commands = []
 
@@ -308,10 +321,10 @@ def test_hydration_works_for_non_default_branch(manager, monkeypatch):
         "--branch",
         "develop",
         "--config",
-        "core.gitProxy=/tmp/ember-git-proxy",
+        "http.proxy=http://127.0.0.1:1024",
         "--single-branch",
-        "--depth=1",
-        "git://git-mirror.monolith.svc.cluster.local:9418/owner/repo",
+        "--filter=blob:none",
+        "https://github.com/owner/repo.git",
         checkout_dir,
     ]
     assert manager._checkout_dir == checkout_dir
