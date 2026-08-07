@@ -18,7 +18,7 @@ from sqlmodel.pool import StaticPool
 from agent_sessions import api as agent_session_api
 from agent_sessions import mcp as agent_session_mcp
 from agent_sessions import store as agent_session_store
-from agent_sessions.models import AgentSession
+from agent_sessions.models import AgentSession, PendingMessage
 from agent_sessions.transport import Turn
 from chat.bot import ChatBot, create_bot, should_respond
 from chat.models import ReactionEvent
@@ -562,6 +562,87 @@ async def test_terminal_notification_routes_to_thread_or_default_channel(monkeyp
 
     assert calls[0][1]["channel"] == "555"
     assert calls[1][1]["channel"] is None
+
+
+@pytest.mark.asyncio
+async def test_thread_delivery_posts_the_verbatim_result_not_the_voice_summary(
+    monkeypatch,
+):
+    """A bound thread gets the whole answer; the default channel gets the summary.
+
+    voice.extract_voice_summary is the first sentence capped at 200 chars, which
+    is right for the voice lane and wrong for a thread: it turned a
+    multi-paragraph answer into one sentence and silently dropped the rest.
+    """
+    calls = []
+
+    async def notify(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(agent_session_mcp.agent_api, "notify", notify)
+    body = "First sentence. Second paragraph with the actual detail."
+    turn = Turn(body, "completed", "end_turn", False, [], 1, "s", {}, 0, 1, [])
+    bound = AgentSession(
+        local_session_id="s", workspace="w", branch="main", discord_thread="555"
+    )
+    default = AgentSession(local_session_id="d", workspace="w", branch="main")
+
+    await agent_session_mcp._notify_terminal(
+        turn, "First sentence.", "completed", bound
+    )
+    await agent_session_mcp._notify_terminal(
+        turn, "First sentence.", "completed", default
+    )
+
+    assert calls[0][0][0] == body
+    assert calls[1][0][0] == "First sentence."
+
+
+@pytest.mark.asyncio
+async def test_long_thread_result_is_chunked_and_marked_when_truncated(monkeypatch):
+    """A huge turn splits into bounded messages and says so when it is cut."""
+    calls = []
+
+    async def notify(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(agent_session_mcp.agent_api, "notify", notify)
+    body = "\n".join(f"line {i} " + "x" * 100 for i in range(200))
+    turn = Turn(body, "completed", "end_turn", False, [], 1, "s", {}, 0, 1, [])
+    bound = AgentSession(
+        local_session_id="s", workspace="w", branch="main", discord_thread="777"
+    )
+
+    await agent_session_mcp._notify_terminal(turn, "sum", "completed", bound)
+
+    assert len(calls) == agent_session_mcp._MAX_THREAD_CHUNKS
+    assert all(len(c[0][0]) <= 2000 for c in calls)
+    assert all(c[1]["channel"] == "777" for c in calls)
+    assert calls[-1][0][0].endswith("... (truncated)")
+
+
+@pytest.mark.asyncio
+async def test_follow_up_turn_keeps_the_session_pinned_model(monkeypatch, engine):
+    """A thread reply must run the session's own model, never the claude default.
+
+    Passing None here is not "unset": model_family(None) is the claude family, so
+    a luna session's follow-up ran the claude adapter against a codex transcript
+    and died with "claude exited before init / No conversation found".
+    """
+    for module in (agent_session_api, agent_session_mcp, agent_session_store):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    monkeypatch.setattr(agent_session_api, "_schedule_next_message", lambda _id: None)
+    with Session(engine) as session:
+        agent_session_store.create_session(
+            session, "pinned", "<guest>", "main", "luna", discord_thread="888"
+        )
+
+    result = await agent_session_api.send_to_thread_session("888", "and now the tests")
+
+    assert result is not None
+    with Session(engine) as session:
+        queued = session.exec(select(PendingMessage)).all()
+    assert [m.model for m in queued] == ["luna"]
 
 
 # ---------------------------------------------------------------------------

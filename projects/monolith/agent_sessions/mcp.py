@@ -175,6 +175,39 @@ def _turn_status(turn: Turn) -> str:
     return "completed"
 
 
+# Discord's hard per-message limit is 2000; leave room for a status prefix and
+# the outbox's own formatting.
+_DISCORD_CHUNK = 1800
+# Cap on how many messages one turn may post into a thread. A long agent turn
+# can run to tens of KB, and pasting all of it would bury the thread.
+_MAX_THREAD_CHUNKS = 4
+
+
+def _chunk_for_discord(text: str) -> list[str]:
+    """Split a turn result into Discord-sized messages, preferring line breaks.
+
+    Bounded by _MAX_THREAD_CHUNKS with an explicit truncation marker, so a huge
+    turn is visibly cut rather than silently losing its tail.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    chunks: list[str] = []
+    while text and len(chunks) < _MAX_THREAD_CHUNKS:
+        if len(text) <= _DISCORD_CHUNK:
+            chunks.append(text)
+            text = ""
+            break
+        split = text.rfind("\n", 0, _DISCORD_CHUNK)
+        if split <= 0:
+            split = _DISCORD_CHUNK
+        chunks.append(text[:split].rstrip())
+        text = text[split:].lstrip()
+    if text:
+        chunks[-1] = chunks[-1][: _DISCORD_CHUNK - 40].rstrip() + "\n\n... (truncated)"
+    return chunks
+
+
 async def _notify_terminal(
     turn: Turn, summary: str, status: str, row: AgentSession | None = None
 ) -> None:
@@ -184,15 +217,32 @@ async def _notify_terminal(
         level = "info"
     else:
         level = "warn"
+
+    thread = row.discord_thread if row is not None else None
+    if thread:
+        # A thread is a reading surface, so post the VERBATIM result. The voice
+        # summary is the first sentence capped at 200 chars, which is right for
+        # the voice lane and useless here: it turned a multi-paragraph answer
+        # into "The workspace is clean." with the rest silently dropped.
+        body = turn.result or summary
+        chunks = _chunk_for_discord(body) or [summary or "(no output)"]
+        if status == "needs_input":
+            chunks[0] = f"**Needs input**\n{chunks[0]}"
+        elif status != "completed":
+            chunks[0] = f"**Turn ended: {status}**\n{chunks[0]}"
+        for chunk in chunks:
+            await agent_api.notify(chunk, level=level, channel=thread)
+        return
+
+    # No thread bound (MCP or /agents UI): the short voice summary is the right
+    # shape for the default channel, which is a notification surface. The status
+    # prefix stays gated on `row` exactly as before, so this change is confined
+    # to the thread lane.
     if row is not None and status == "needs_input":
         summary = f"Needs input: {summary}"
     elif row is not None and status == "warn":
         summary = f"Warning: {summary}"
-    summary = summary[:2000]
-    if row is not None and row.discord_thread:
-        await agent_api.notify(summary, level=level, channel=row.discord_thread)
-    else:
-        await agent_api.notify(summary, level=level, channel=None)
+    await agent_api.notify(summary[:2000], level=level, channel=None)
 
 
 def _get_pending_message_sync(session_id: int, turn_seq: int):
