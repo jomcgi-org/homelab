@@ -541,14 +541,39 @@ def main():
             sys.stderr.write("ERROR: proxy handshake returned a non-200 response\n")
             return 1
         sock.settimeout(None)
+        # This default is the whole hydration budget, not a safety margin, and it
+        # has to live HERE rather than in chart values (#4429).
+        #
+        # The helper cannot see the end of a response: #4412 stopped propagating
+        # half-close onto the vsock leg (Firecracker hybrid vsock has none, and
+        # propagating it killed in-flight responses), so the server-held
+        # connection never closes and git blocks until this process exits. The
+        # deadline below is therefore charged to EVERY clone after its last byte.
+        # Measured live at the old 10s default: an 11.24 MiB shallow clone took
+        # 10.9s wall for ~1.2s of transfer.
+        #
+        # 2s, not lower: the mirror serves that entire clone in 1.3s over
+        # loopback, so this leaves roughly 2x margin over the whole server-side
+        # operation rather than over one gap. If it ever does fire early the pack
+        # fails git's own checksum, so hydration errors loudly and retries rather
+        # than leaving a silently truncated checkout.
+        #
+        # Not a chart knob: the workload CR's initEnv is a base-SIGNATURE input
+        # only. The control plane sends it as BuildBaseRequest.init_env, noded
+        # never reads that field (the base-build claim is ClaimSpec{Arch,
+        # ThreadID}, and ClaimSpec has no env member), and the guest's entire
+        # environment comes from guest-init setDefaultEnv plus ember.env.* boot
+        # args that only ClaimStateful populates. Setting this in values.yaml
+        # re-keys the base and rebuilds it while changing nothing in the guest,
+        # which is exactly how the 10s default survived a deploy that looked
+        # successful. The env override below stays for tests, which set it in
+        # their own process environment.
         try:
-            idle_exit = float(
-                os.environ.get("EMBER_GIT_PROXY_IDLE_EXIT_SECONDS", "10")
-            )
+            idle_exit = float(os.environ.get("EMBER_GIT_PROXY_IDLE_EXIT_SECONDS", "2"))
             if idle_exit <= 0:
-                idle_exit = 10
+                idle_exit = 2
         except ValueError:
-            idle_exit = 10
+            idle_exit = 2
         # Daemon threads: interpreter exit must never wait on a pump still
         # blocked in recv (the idle-exit path below leaves exactly that).
         stdin_pump = threading.Thread(

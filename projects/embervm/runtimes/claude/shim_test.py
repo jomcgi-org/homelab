@@ -3285,6 +3285,59 @@ def test_git_proxy_helper_exits_when_response_goes_idle(tmp_path, monkeypatch):
     assert time.monotonic() - started < 6
 
 
+def test_git_proxy_helper_default_idle_deadline_is_seconds_not_tens(
+    tmp_path, monkeypatch
+):
+    # The DEFAULT is the one that runs in prod: the workload CR's initEnv is a
+    # base-signature input that never reaches the guest environment, so there is
+    # no chart override in play and this constant IS the hydration tail (#4429).
+    # It regressed silently once (a 10s default charged to every clone, measured
+    # at 10.9s wall for ~1.2s of transfer), so this asserts the default itself
+    # with the env var deliberately unset rather than trusting the override path.
+    helper_path = tmp_path / "ember-git-proxy"
+    monkeypatch.setattr(shim, "GIT_PROXY_PATH", str(helper_path))
+    shim._write_git_proxy_helper()
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind((shim.EGRESS_LOCALHOST, 0))
+    listener.listen()
+    accepted = []
+
+    def serve_connection():
+        connection, _ = listener.accept()
+        accepted.append(connection)
+        connection.recv(4096)
+        connection.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        connection.recv(4096)
+        connection.sendall(b"response payload")
+        time.sleep(9)
+
+    accept_thread = threading.Thread(target=serve_connection, daemon=True)
+    accept_thread.start()
+    environment = os.environ.copy()
+    environment[shim.EGRESS_PORT_ENV] = str(listener.getsockname()[1])
+    environment.pop("EMBER_GIT_PROXY_IDLE_EXIT_SECONDS", None)
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(helper_path), "example.com", "9418"],
+            input=b"request",
+            env=environment,
+            capture_output=True,
+            timeout=8,
+        )
+    finally:
+        listener.close()
+        for connection in accepted:
+            connection.close()
+    assert result.returncode == 0
+    assert result.stdout == b"response payload"
+    # Comfortably under the old 10s default and over the 2s deadline plus the
+    # helper's 0.5s poll granularity, so this fails loudly on a regression to
+    # tens of seconds without being tight enough to flake on a slow runner.
+    assert time.monotonic() - started < 6
+
+
 def test_egress_forwarder_takes_absolute_uri_host_and_replays_the_request(monkeypatch):
     # HTTP_PROXY is set alongside HTTPS_PROXY, so a plain-HTTP request arrives as
     # an absolute-URI line rather than a CONNECT. The destination comes from Host,

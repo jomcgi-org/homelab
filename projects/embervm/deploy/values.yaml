@@ -521,31 +521,27 @@ claudeRuntimeWorkload:
   # trigger the rebuild that arming requires. Scoped to claude-runtime because
   # only a restore that carries a volume needs the placeholder: task bases
   # restore volume-less and are unaffected either way.
+  # WARNING: every entry below is a base-SIGNATURE input and NOTHING here reaches
+  # the guest's environment. The control plane sends the map as
+  # BuildBaseRequest.init_env, noded never reads that field (the base-build claim
+  # is ClaimSpec{Arch, ThreadID} and ClaimSpec has no env member), and the guest's
+  # whole environment comes from guest-init setDefaultEnv plus the ember.env.*
+  # boot args that only ClaimStateful populates. So an entry here re-keys the base
+  # and rebuilds it, which looks exactly like a successful deploy, while changing
+  # nothing the guest can read. Use it as a rebuild epoch, never as a knob.
+  # Making it mean what it says is tracked in #4429.
   initEnv:
     EMBER_BASE_EPOCH: "warm-restore-3"
-    # initEnv participates in the base signature, so this re-keys and rebuilds
-    # only the claude-runtime base at the next chart bump. Prewarm failure fails
-    # the base build by design.
+    # INERT, kept only as documented intent: the shim reads EMBER_PREWARM_CLIS
+    # from its own environment, which never receives this, so _read_prewarm_clis
+    # returns () and prewarm silently no-ops. Live turn-timing confirms it: first
+    # turns log path=lazy_spawn, never a prewarmed CLI. #4423 (prewarm codex and
+    # pi too) has to fix the wiring above before it can build on this.
     EMBER_PREWARM_CLIS: "claude"
-    # Interim speed knob for #4429, pending protocol-aware completion.
-    #
-    # The git proxy helper cannot see the end of a response: #4412 stopped
-    # propagating half-close onto the vsock leg (Firecracker hybrid vsock has
-    # none, and propagating it killed in-flight responses), so the server-held
-    # connection never closes and git blocks until the helper exits. The helper
-    # therefore infers completion from silence, and its default deadline is 10s,
-    # which is charged to EVERY clone after the last byte arrives.
-    #
-    # Measured: fitting t = a + b*bytes across an 11.24 MiB shallow clone (11.5s)
-    # and a 249.40 MiB full clone (~37s) gives 9.3 MiB/s marginal throughput and
-    # a 10.3s fixed cost. The lane is fast; the constant is this timeout.
-    #
-    # 2s, not lower: the mirror serves this entire clone in 1.3s over loopback,
-    # so this leaves roughly 2x margin over the whole server-side operation
-    # rather than over one gap. If the deadline ever does fire early the pack
-    # fails git's own checksum, so hydration errors loudly and retries rather
-    # than leaving a silently truncated checkout.
-    EMBER_GIT_PROXY_IDLE_EXIT_SECONDS: "2"
+    # The git proxy idle deadline that dominates hydration (#4429) is deliberately
+    # NOT here: it was set here first, rebuilt the base, and left the guest on its
+    # 10s default anyway. It now lives in the guest at shim.py, which is the only
+    # place a guest-read value can live today.
   # ON. The ADR 027 memory:false/filesystem:true quadrant: sessions ride
   # per-lineage workspace volumes with park/rejoin instead of memory-snapshot
   # banking, and raw files in S3 replace multi-GiB snapshots.
