@@ -1,0 +1,16 @@
+.agstory {
+  --ag-frost-deep: #2b628f;
+  --ag-amber-deep: #9a6414;
+  --ag-idle: #e6e2d7;
+  --ag-s3-fill: rgba(185, 210, 234, 0.14);
+  --ag-chip-shadow: rgba(224, 66, 26, 0.5);
+  --ag-vm-glow: rgba(224, 66, 26, 0.5);
+  --ag-tier-ram: rgba(224, 66, 26, 0.06);
+  --ag-tier-disk: rgba(242, 176, 78, 0.08);
+  --ag-tier-s3: rgba(61, 126, 194, 0.08);
+}
+
+html:has(.agstory),
+body:has(.agstory) {
+  background: var(--em-ground);
+}

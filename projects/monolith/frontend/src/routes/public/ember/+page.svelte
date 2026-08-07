@@ -517,7 +517,8 @@
       </h2>
       <p class="body">
         Three of these exhibits run on the live system, through the same wake
-        path production uses; the fourth explains the resume itself.
+        path production uses; the fourth explains the resume itself, and the
+        fifth explains the agent lifecycle.
       </p>
       <div class="doors">
         <a class="door" href="/ember/postgres">
@@ -546,6 +547,15 @@
             (kernel, memory, device state) comes back in ~22&nbsp;ms.
           </p>
           <span class="go">ember/firecracker</span>
+        </a>
+        <a class="door" href="/ember/agents">
+          <span class="k">explainer</span>
+          <h3>Every agent gets its own machine</h3>
+          <p>
+            The agent lifecycle: a VM per session, restored in 2.5 ms, parked
+            after 20 s idle, resumed from S3 days later.
+          </p>
+          <span class="go">ember/agents</span>
         </a>
         <a class="door" href="/ember/semgrep">
           <span class="k">workload demo</span>
