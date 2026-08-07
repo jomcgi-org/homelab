@@ -185,10 +185,17 @@
     const list = CALLS[beat];
     let active = null;
     for (const call of list || []) if (local >= call.a) active = call;
+    // Type within the first ~third of the call's window, then hold the
+    // finished line until the next call starts. Typing across the whole
+    // window meant the text completed exactly as the next call replaced
+    // it, so no call was ever readable at real scroll speed.
     wireTextEl.textContent = active
       ? active.text.slice(
           0,
-          Math.round(sub(local, active.a, active.b) * active.text.length),
+          Math.round(
+            sub(local, active.a, active.a + (active.b - active.a) * 0.35) *
+              active.text.length,
+          ),
         )
       : "";
     wireTextEl.className = `wt ${active?.cls ?? ""}`;
