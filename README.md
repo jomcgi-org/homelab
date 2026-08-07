@@ -11,6 +11,7 @@ Personal monorepo. Dev tooling and deployment for my projects.
 - [**Discord bot**](projects/monolith/chat/): LLM-powered chat with vision, web search, knowledge graph context, and a per-user trust ledger ([ADR chat/003](docs/decisions/chat/003-trust-safety-safeguards.md)).
 - [**OCI Model Cache**](projects/operators/oci-model-cache/): Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
 - [**Sextant**](projects/sextant/): code generator that turns YAML state-machine specs into type-safe Go for operators. Invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
+- [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against. One namespaced vocabulary, three deliberately distinct themes (neobrutalist, ember, Grimoire) that override it inside their own scope class. Rationale in [ADR platform/013](docs/decisions/platform/013-design-system-contract-distinct-themes.md).
 - [**Build system**](bazel/): custom Bazel rules for Helm, Semgrep SAST, and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
 - [**Buck2 rules**](buck2/): reusable Buck2 rules for container images (apko/OCI) and Helm charts, the Buck2 counterparts to the Bazel rules, consumable by other Buck2 projects as an external cell.
 
