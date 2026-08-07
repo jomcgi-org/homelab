@@ -92,6 +92,13 @@ first:
   hard `4px 4px 0` offset; ember fills them with a hairline and a soft layered
   shadow; Grimoire with the slate accent and its serif display stack. Nothing
   about the perceptual differences `.impeccable.md` documents changes.
+- **Visibility (shipped with the contract, not deferred to a later ADR).**
+  The contract ships with a way to see it: every primitive rendered under
+  every theme's scope, live, in one place. This is not a documentation
+  nicety, it is the real mitigation for the token-leak risk below. A
+  theme-incompatible assumption baked into a contract token is invisible in a
+  code diff and obvious the moment the same primitive renders three ways on
+  one screen.
 
 | Aspect | Today | Decided |
 | ------ | ----- | ------- |
@@ -162,6 +169,72 @@ Verified this session:
 - Migration is incremental by construction: the package can exist and be
   consumed by one theme before the other two move their CSS into it, so this
   is not a stop-the-world rename.
+
+### The contract ships with a way to see it
+
+Concretely, the failure this guards against: a contract token quietly encodes
+one theme's opinion, a shadow token that assumes an offset ember's soft
+shadow cannot express, or a border token that assumes an ink weight. "Keep
+the vocabulary about roles, not values" is a principle, and principles do not
+catch this. Rendering one primitive under all three theme scopes at once
+does, because the wrong one looks wrong.
+
+That check is nearly free, and for a reason this ADR's own decision creates:
+because every theme is a scope class (`.ember-site`, `.grimoire`, the public
+baseline), a single page can render one `Button` three times, each inside a
+different scope wrapper, side by side on one screen. The scoping that makes
+the architecture safe is the same property that makes the gallery cheap.
+
+Two surfaces, with different jobs:
+
+- **`jomcgi.dev/design`, an unlisted URL. The canonical surface.** CI builds
+  it from the same pipeline as the app, off the same tokens and the same
+  primitives, so it cannot drift from what actually ships. When the gallery
+  and production disagree, the gallery is wrong and says so immediately.
+- **Storybook, local development only.** Authoring ergonomics: isolation,
+  controls, iterating on one primitive without navigating an app around it.
+
+The division is deliberate. Storybook is not CI-built, so it *can* drift; that
+is an accepted tradeoff rather than an oversight, and it is acceptable
+precisely because Storybook is not the source of truth. `/design` is.
+
+**Public tier consequences.** `/design` on the apex is served by
+`monolith-public`, so `docs/runbooks/public-tier-checklist.md` applies to it
+like any other public page:
+
+- The public origin deliberately has **no `/api` ingress**. The gallery must
+  be self-contained and must never client-fetch `/api/...`, which would work
+  against the private origin in dev and fail on the real public origin. A
+  component gallery renders components, not data, so it should need no fetch
+  at all.
+- It reads no database, which is what makes the checklist's `public_reader`
+  grant and `is_global` filtering items inapplicable. Stated rather than
+  assumed, because "reads no data" is the reason, not an accident.
+- Every change to the gallery bumps **both** `monolith` and `monolith-public`,
+  not just one.
+- Public-served code importing a gazelle-excluded package raises
+  `ModuleNotFoundError` only in the public image, so a new import here needs
+  the public binary's BUILD glob checked by hand.
+
+**Unlisted is not private.** Anyone with the URL can read it, and it is a
+deliberate choice rather than an access control. Whether it also carries
+`noindex` is an open question below. Worth noting the tradeoff runs both ways:
+`.impeccable.md` records the public tier's reader as a technical audience
+evaluating the work on its merits, and a design system page is good signal for
+exactly that reader, so indexing may be desirable rather than merely tolerable.
+
+**Storybook is the repo's first**, a deliberate new toolchain in a codebase
+that has had none. Its cost stays proportionate by staying local: not CI-built
+means no Bazel target, no apko image, and no new gating check. The expensive
+part of adopting tooling here has never been the dependency, it is the build
+and release wiring, and a local-only dev tool skips all of it.
+
+One further payoff, verified while writing this ADR: the `/design-sync` skill,
+which imports a design system into claude.ai/design, cannot run against this
+repo today because it finds no Storybook, no `*.stories.*`, and no package
+with a library entry point. Both surfaces above produce all three as a side
+effect, so an external design-tool import becomes possible without that ever
+being the goal.
 
 ---
 
@@ -293,7 +366,7 @@ already gets.
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
 | Primitive layer is built but not adopted, becoming a fourth thing to maintain | Medium | Medium | Success measure tracks adoption explicitly, not existence; if it stalls, that's a signal to revisit rather than declare done |
-| Contract token names leak an implicit opinion one theme disagrees with (e.g. a shadow token assumes an offset that ember's soft shadow can't express) | Medium | Low | Keep the contract's vocabulary about roles (surface, ink, spacing, border weight, shadow), not values; each theme supplies its own value shape |
+| Contract token names leak an implicit opinion one theme disagrees with (e.g. a shadow token assumes an offset that ember's soft shadow can't express) | Medium | Low | Keep the contract's vocabulary about roles (surface, ink, spacing, border weight, shadow), not values; each theme supplies its own value shape. The mechanism that actually catches a leak, rather than discouraging it, is the `jomcgi.dev/design` gallery rendering each primitive under all three theme scopes side by side, so a token that only works for one theme is visible immediately instead of surfacing when someone builds an ember page |
 | Migrating `design-system.css` / `tokens.css` off unscoped `:root` risks a visual regression on pages that unintentionally depend on the current collision's resolution order | Low | Medium | Grimoire's scoped-override pattern is proven in production today; land the namespace fix behind the existing hermetic visual regression suite (`docs/decisions/tooling/010-hermetic-visual-regression.md`) |
 | Scope creep: "standardize the contract" is read as license to also standardize appearance | Medium | Medium | This ADR explicitly rejects visual convergence; GitHub issues for the contract work should scope to tokens and primitives only |
 | Extracting `projects/design-system/` as a new pnpm workspace package breaks `$lib`-relative imports or the Bazel `js_library` graph mid-migration | Medium | Medium | Migration is incremental (package exists and is consumed before every theme moves its CSS in); land behind the existing hermetic visual regression suite; `projects/grimoire/frontend` already proves cross-package pnpm/Bazel wiring works in this repo |
@@ -314,6 +387,11 @@ Resolved in follow-up GitHub issues, not here:
 4. Exact shape of the `projects/design-system/` package (its `package.json`,
    `BUILD` target, and `pnpm-workspace.yaml` entry) and the order in which the
    three themes' CSS moves into it versus staying a consumer of it in place.
+5. Whether `jomcgi.dev/design` carries `noindex`. Unlisted is a choice about
+   discoverability, not access, and the tradeoff runs both ways (see above).
+6. Whether Storybook later becomes a CI-built artifact. Staying local-only
+   keeps its cost proportionate but accepts that it can drift from `/design`;
+   revisit if that drift starts costing more than the wiring would.
 
 ---
 
@@ -331,4 +409,5 @@ Resolved in follow-up GitHub issues, not here:
 | `projects/shared/README.md` | Existing precedent for a `projects/<name>/` peer package holding cross-project shared assets |
 | `pnpm-workspace.yaml` | Workspace package list the new `projects/design-system` entry joins |
 | `.claude/CLAUDE.md` | Source of the `projects/<name>/` convention that rules out a top-level `./design/` |
+| `docs/runbooks/public-tier-checklist.md` | Applies to `jomcgi.dev/design`; the no-`/api`-on-the-public-origin rule and the both-charts-bump rule are the two that bite |
 | `docs/security.md` | Baseline; unaffected by this decision |
