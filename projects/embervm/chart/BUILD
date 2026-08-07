@@ -55,3 +55,17 @@ helm_chart(
     publish = True,
     visibility = ["//overlays:__subpackages__"],
 )
+
+# Exposed so the ENOSPC-reclaim guard in the claude runtime package can read the
+# gate default and the builder script text. Mirrors
+# projects/embervm/deploy:deploy_values, which the cleartext-lane guard reads the
+# same way. The guard lives there, not here, because a chart package has no
+# Python toolchain context.
+filegroup(
+    name = "rootfs_reclaim_sources",
+    srcs = [
+        "templates/noded-rootfs-builder-configmap.yaml",
+        "values.yaml",
+    ],
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
+)

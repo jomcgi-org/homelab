@@ -30,6 +30,18 @@ data:
     set -euo pipefail
     : "${GUEST_IMAGE:?GUEST_IMAGE required}"
     : "${BASE_ROOTFS_PATH:?BASE_ROOTFS_PATH required}"
+    # Defaulted, never required. The ConfigMap lands at sync wave 0 while bricks
+    # roll later and one at a time, so a pod restarting in that window still has
+    # the OLD pod spec and none of these set. Requiring them would turn that
+    # window into a crashloop on a node with no disk problem at all. Unset simply
+    # means reclaim is unavailable. Validation lives in the reclaim function, so
+    # a malformed value disables reclaim instead of failing every bake fleetwide.
+    : "${EMBERVM_ROOTFS_RECLAIM_ENABLED:=}"
+    : "${EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT:=}"
+    : "${EMBERVM_ROOTFS_RECLAIM_TARGET_FREE_BYTES:=}"
+    # Safety constant, not a tuning knob: how long an intermediate must sit
+    # untouched before it counts as abandoned rather than in flight.
+    : "${EMBERVM_ROOTFS_RECLAIM_MIN_AGE_SECONDS:=3600}"
     size="${ROOTFS_SIZE:-2G}"
     # Registry reads (crane) can hit a transient DNS/network blip. Observed
     # 2026-07-19: a `{:connect, :no_addresses}` blip while the control plane's
@@ -52,6 +64,149 @@ data:
         attempt=$((attempt + 1))
         delay=$((delay * 2))
       done
+    }
+    # Plain integer, computed with shell arithmetic rather than inside awk.
+    # busybox awk can format a large integral double in scientific notation, and
+    # a non-numeric operand makes `[ -ge ]` ERROR rather than compare. In a
+    # deletion loop that reads as "never stop" instead of "stop now", so both
+    # operands are validated before any comparison happens.
+    free_bytes() {
+      local kb
+      kb="$(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }')" || return 1
+      case "$kb" in
+        "" | *[!0-9]*) return 1 ;;
+      esac
+      printf '%s\n' "$((kb * 1024))"
+    }
+    # ENOSPC orphan reclaim (#4458).
+    #
+    # Deliberately narrow: this removes ONLY abandoned build intermediates, never
+    # a published artifact. A bake writes rootfs-<digest>.ext4.tmp.<pid> and
+    # renames on success; SnapshotBase stages into bases/<key>.building and
+    # renames on success. Both are garbage by construction once nothing is
+    # writing them, so reclaiming them needs NO judgement about which base is
+    # current or which session is pinned to what.
+    #
+    # That judgement belongs to the control plane, which owns the authoritative
+    # current ref and drives eviction through noded's evictBaseLocal. An earlier
+    # draft of this script tried to make it here in bash and got it wrong three
+    # separate ways: a .building orphan looked "newest" so the LIVE base became
+    # the candidate, a failed stat won the newest slot so a vanished path was
+    # kept instead, and equal mtimes resolved by directory order. None of that
+    # arises when the only candidates are files nothing can be referencing.
+    #
+    # Age is the ONLY thing separating an abandoned intermediate from one a
+    # co-located brick is writing right now: several pods share this hostPath and
+    # there is no lock. Anything younger than the min age is left alone, and this
+    # bake's own temporary is excluded by name as well.
+    reclaim_orphans_after_enospc() {
+      local keep_path="$1"
+      local snapshots_root="$EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT"
+      local target="$EMBERVM_ROOTFS_RECLAIM_TARGET_FREE_BYTES"
+      local min_age="$EMBERVM_ROOTFS_RECLAIM_MIN_AGE_SECONDS"
+      local noded_root bases now armed free_before free_after simulated
+      local would_free path mtime age size
+      local -a candidates=()
+      armed=0
+      if [ "$EMBERVM_ROOTFS_RECLAIM_ENABLED" = "1" ]; then
+        armed=1
+      fi
+      # Every bail-out below returns 1, which the caller turns into the same
+      # non-zero exit the bake had anyway. A misconfigured reclaim must never be
+      # worse than no reclaim.
+      if [ -z "$snapshots_root" ]; then
+        echo "rootfs ENOSPC reclaim unavailable: snapshots root unset (pod spec predates this feature)" >&2
+        return 1
+      fi
+      case "$target" in
+        "" | *[!0-9]*)
+          echo "rootfs ENOSPC reclaim unavailable: target_free_bytes must be plain digits, got '$target'" >&2
+          return 1
+          ;;
+      esac
+      case "$min_age" in
+        "" | *[!0-9]*)
+          echo "rootfs ENOSPC reclaim unavailable: min_age_seconds must be plain digits, got '$min_age'" >&2
+          return 1
+          ;;
+      esac
+      if ! free_before="$(free_bytes "$snapshots_root")"; then
+        echo "rootfs ENOSPC reclaim unavailable: cannot read free space for $snapshots_root" >&2
+        return 1
+      fi
+      noded_root="$(dirname "$snapshots_root")"
+      bases="$snapshots_root/bases"
+      now="$(date +%s)"
+      # Bake temporaries, one level under each workload's scratch dir. BOTH the
+      # rootfs- prefix and the .tmp. infix are required, so a completed
+      # rootfs-<digest>.ext4 can never match: a banked session embeds the host
+      # path of the rootfs it was born on and removing one corrupts that restore.
+      while IFS= read -r -d '' path; do
+        if [ "$path" != "$keep_path" ]; then
+          candidates+=("$path")
+        fi
+      done < <(find "$noded_root" -mindepth 2 -maxdepth 2 -type f -name 'rootfs-*.ext4.tmp.*' -print0 2>/dev/null)
+      # Staging dirs left behind by a SnapshotBase that died before its rename.
+      if [ -d "$bases" ]; then
+        while IFS= read -r -d '' path; do
+          candidates+=("$path")
+        done < <(find "$bases" -mindepth 1 -maxdepth 1 -type d -name '*.building' -print0 2>/dev/null)
+      fi
+      echo "rootfs ENOSPC orphan reclaim: armed=$armed free_before=$free_before target=$target min_age_seconds=$min_age candidates=${#candidates[@]}" >&2
+      simulated="$free_before"
+      would_free=0
+      for path in "${candidates[@]}"; do
+        if [ "$armed" = "1" ]; then
+          if ! free_before="$(free_bytes "$snapshots_root")"; then
+            echo "rootfs ENOSPC orphan reclaim: lost free-space reading, stopping" >&2
+            break
+          fi
+        else
+          free_before="$simulated"
+        fi
+        # Applies in BOTH modes so the dry-run manifest stops where an armed run
+        # would. It is an ESTIMATE: a file still held open elsewhere returns its
+        # blocks only once that holder exits, so an armed run can need to go
+        # further than the manifest showed.
+        if [ "$free_before" -ge "$target" ]; then
+          break
+        fi
+        mtime="$(stat -c %Y -- "$path" 2>/dev/null || echo "")"
+        case "$mtime" in
+          "" | *[!0-9]*)
+            echo "rootfs ENOSPC orphan reclaim: skipping unreadable $path" >&2
+            continue
+            ;;
+        esac
+        age=$((now - mtime))
+        if [ "$age" -lt "$min_age" ]; then
+          echo "rootfs ENOSPC orphan reclaim: sparing $path, age ${age}s under min ${min_age}s (a co-located bake may own it)" >&2
+          continue
+        fi
+        size="$(du -sk -- "$path" 2>/dev/null | awk '{print $1}')"
+        case "$size" in
+          "" | *[!0-9]*) size=0 ;;
+        esac
+        size=$((size * 1024))
+        if [ "$armed" = "1" ]; then
+          echo "rootfs ENOSPC orphan reclaim DELETE path=$path size_bytes=$size age_seconds=$age free_before=$free_before" >&2
+          rm -rf -- "$path"
+          free_after="$(free_bytes "$snapshots_root" || echo "$free_before")"
+          echo "rootfs ENOSPC orphan reclaim DELETED path=$path size_bytes=$size free_after=$free_after" >&2
+        else
+          free_after=$((free_before + size))
+          echo "rootfs ENOSPC orphan reclaim DISARMED: WOULD DELETE path=$path size_bytes=$size age_seconds=$age free_before=$free_before free_after=$free_after" >&2
+          simulated="$free_after"
+          would_free=$((would_free + size))
+        fi
+      done
+      if [ "$armed" != "1" ]; then
+        echo "rootfs ENOSPC orphan reclaim DISARMED: would_free_bytes=$would_free, failing as before" >&2
+        return 1
+      fi
+      free_after="$(free_bytes "$snapshots_root" || echo 0)"
+      echo "rootfs ENOSPC orphan reclaim complete: free_after=$free_after target=$target" >&2
+      return 0
     }
     base_dir="$(dirname "$BASE_ROOTFS_PATH")"
     mkdir -p "$base_dir"
@@ -95,7 +250,57 @@ data:
       }
       rm -f "$cache.tmp.$$"
       retry export_rootfs
-      mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache.tmp.$$" "$size"
+      mkfs_output="$(mktemp)"
+      set +e
+      mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache.tmp.$$" "$size" >"$mkfs_output" 2>&1
+      mkfs_status=$?
+      set -e
+      if [ "$mkfs_status" -ne 0 ]; then
+        cat "$mkfs_output" >&2
+        # TWO signals, because the message text alone is not dependable.
+        # e2fsprogs reports host-filesystem exhaustion variously as "No space
+        # left on device", as a short write, or as a failure to allocate a
+        # block, and the exact wording has never been confirmed against a real
+        # wedged node. A free-space floor does not depend on wording at all, so
+        # a missed message cannot leave the node deadlocked the way it did on
+        # 2026-08-07. grep -E rather than BRE alternation: this is busybox grep.
+        enospc=0
+        if grep -qiE 'ENOSPC|No space left on device|short write|Could not allocate block' "$mkfs_output"; then
+          enospc=1
+        elif free_now="$(free_bytes "$EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT")" &&
+          [ "$free_now" -lt "$EMBERVM_ROOTFS_RECLAIM_TARGET_FREE_BYTES" ] 2>/dev/null; then
+          echo "rootfs bake failed with free space $free_now under target; treating as ENOSPC" >&2
+          enospc=1
+        fi
+        if [ "$enospc" -eq 1 ]; then
+          echo "rootfs bake hit ENOSPC" >&2
+          if [ "$EMBERVM_ROOTFS_RECLAIM_ENABLED" != "1" ]; then
+            echo "rootfs ENOSPC orphan reclaim is DISARMED; dry-run manifest follows" >&2
+          fi
+          # Status captured explicitly for legibility. Note this does NOT restore
+          # errexit inside the function: `set +e` around the call suppresses it
+          # for the whole body exactly as `if ! reclaim ...` would. Nothing in
+          # reclaim_orphans_after_enospc relies on errexit; every bail-out is an
+          # explicit `return 1`, and the values it computes are validated before
+          # they are compared, which is what makes that safe.
+          set +e
+          reclaim_orphans_after_enospc "$cache.tmp.$$"
+          reclaim_status=$?
+          set -e
+          rm -f "$mkfs_output"
+          if [ "$reclaim_status" -ne 0 ]; then
+            exit 1
+          fi
+          rm -f "$cache.tmp.$$"
+          echo "rootfs ENOSPC orphan reclaim retry: mkfs.ext4 once" >&2
+          mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache.tmp.$$" "$size"
+        else
+          echo "mkfs.ext4 failed and free space looks fine; reclaim not attempted" >&2
+          rm -f "$mkfs_output"
+          exit "$mkfs_status"
+        fi
+      fi
+      rm -f "$mkfs_output"
       mv -f "$cache.tmp.$$" "$cache"
       echo "rootfs baked at $cache ($size)"
     fi

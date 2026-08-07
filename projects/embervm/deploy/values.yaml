@@ -2,6 +2,18 @@
 # pinned into the chart at build time (helm_chart images=), so it is not set
 # here. Defaults in the chart are sized small to start (SigNoz 7-day-peak
 # resizing later).
+# ENOSPC orphan reclaim (#4458). DISARMED deliberately: land it, wait for a
+# brick to hit ENOSPC, read the dry-run manifest it logs ("WOULD DELETE ...
+# would_free_bytes=N"), and arm only once that manifest names what you expect.
+# Same sequence baseRetention was armed by.
+#
+# Arming deletes abandoned build intermediates only (rootfs-*.ext4.tmp.* from a
+# dead bake, bases/*.building from a dead SnapshotBase), never a published rootfs
+# or base, and never anything younger than the min age. Rollback is setting this
+# back to "" and bumping the chart.
+rootfsReclaim:
+  enabled: ""
+
 opLog:
   # Postgres op-log tier (ADR embervm/007), hosted as its own database on the
   # existing monolith-pg CNPG cluster. This retires the node-pinned RWO SQLite

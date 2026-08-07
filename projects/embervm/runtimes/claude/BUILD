@@ -169,6 +169,25 @@ tar(
     ],
 )
 
+# Guard (#4458): the ENOSPC reclaim deletes base bundles on a wedged brick, so
+# it must ship disarmed and its stop condition must be able to evaluate. Reads
+# the chart via a cross-package data dep because a chart package has no Python
+# toolchain context.
+# Hand-registered: gazelle does not generate py_test here.
+py_test(
+    name = "rootfs_reclaim_guard_test",
+    srcs = ["rootfs_reclaim_guard_test.py"],
+    data = [
+        "//projects/embervm/chart:rootfs_reclaim_sources",
+        "//projects/embervm/deploy:deploy_values",
+    ],
+    imports = ["."],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
 # Guard (ADR 023 6b): the guest points its API client at an http:// URL, so the
 # sidecar MUST have a credential entry for that host. Without one the connection
 # blind-tunnels and the whole prompt leaves the cluster unencrypted.
