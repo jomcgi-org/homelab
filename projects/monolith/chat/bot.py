@@ -50,6 +50,20 @@ from sqlmodel import Session, select
 
 logger = logging.getLogger(__name__)
 
+# Default model for a Discord-started agent session, and the choices offered
+# on /agent. Sourced from agent_sessions so the picker cannot drift from what
+# model_family accepts. A model pins the session's adapter family for its
+# whole life, so this is chosen once at /agent time and not per turn.
+DEFAULT_AGENT_MODEL = "luna"
+# Kept as a LITERAL, not imported from agent_sessions. A module-level import
+# here would put agent_sessions into the Bazel dep graph of every target that
+# imports chat.bot, which is why every other agent_sessions import in this file
+# is function-local. The pairing is enforced instead by a drift test
+# (test_agent_model_choices_match_supported_models), in a target that already
+# depends on both.
+AGENT_MODEL_CHOICES = ("luna", "terra", "sol", "opus", "sonnet", "fable", "qwen")
+
+
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_MESSAGE_LIMIT = 2000
 THINKING_TRUNCATE_AT = 1985
@@ -766,13 +780,21 @@ class ChatBot(discord.Client):
         @discord.app_commands.describe(
             prompt="The task for the agent",
             repo="Repo to hydrate from; leave empty to just build an artifact",
+            model="Model to run (default luna). Pins the session's adapter family.",
+        )
+        @discord.app_commands.choices(
+            model=[
+                discord.app_commands.Choice(name=name, value=name)
+                for name in AGENT_MODEL_CHOICES
+            ]
         )
         async def agent_command(
             interaction: discord.Interaction,
             prompt: str,
             repo: str = "",
+            model: str = DEFAULT_AGENT_MODEL,
         ) -> None:
-            await self._handle_agent_command(interaction, prompt, repo)
+            await self._handle_agent_command(interaction, prompt, repo, model)
 
         @agent_command.autocomplete("repo")
         async def agent_repo_autocomplete(
@@ -1188,7 +1210,11 @@ class ChatBot(discord.Client):
         await self._persist_reaction_signal(payload, "remove")
 
     async def _handle_agent_command(
-        self, interaction: discord.Interaction, prompt: str, repo: str
+        self,
+        interaction: discord.Interaction,
+        prompt: str,
+        repo: str,
+        model: str = DEFAULT_AGENT_MODEL,
     ) -> None:
         """/agent (open per ADR 029): allowed for everyone in a server that is
         opted in, with the repo bound to that server's grants.
@@ -1211,7 +1237,12 @@ class ChatBot(discord.Client):
         # route_via_orchestrator=False: running /agent IS the decision that this
         # is agent work, so the chat-vs-agent verdict does not get to overrule it.
         outcome = await self.start_agent_flow(
-            channel, interaction.user, prompt, repo, route_via_orchestrator=False
+            channel,
+            interaction.user,
+            prompt,
+            repo,
+            route_via_orchestrator=False,
+            model=model,
         )
         if outcome.chat_reply is not None:
             # ADR 036: the orchestrator routed this to chat, so reply inline
@@ -1246,6 +1277,7 @@ class ChatBot(discord.Client):
         repo: str,
         trigger_message: discord.Message | None = None,
         route_via_orchestrator: bool = True,
+        model: str = DEFAULT_AGENT_MODEL,
     ) -> AgentFlowOutcome:
         """Shared agent dispatch for the /agent slash command AND mention/ambient
         triggers (ADR 035).
@@ -1310,6 +1342,7 @@ class ChatBot(discord.Client):
                 str(thread.id),
                 prompt,
                 effective_repo or None,
+                model=model,
             )
             # ADR 036: the orchestrator wrote its telemetry row BEFORE this
             # thread existed (it decides whether to open one), so the row's
