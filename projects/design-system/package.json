@@ -1,0 +1,9 @@
+{
+  "name": "@homelab/design-system",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./tokens/contract.css",
+    "./tokens/contract.css": "./tokens/contract.css"
+  }
+}

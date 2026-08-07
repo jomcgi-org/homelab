@@ -1,0 +1,42 @@
+/*
+  Design System Contract: Shared token namespace
+
+  This file defines the --ds-* token roles, sourced from both the public
+  neobrutalist visual language (design-system.css: surface, ink, accent,
+  line, shadow, type, radius) and the shared functional tokens (tokens.css:
+  spacing and status). Themes override these tokens inside their own scope
+  class (e.g., .public, .ember-site, .grimoire) and never at :root.
+  See ADR platform/013.
+*/
+
+:root {
+  --ds-surface: #f3ede1;
+  --ds-surface-raised: #ffffff;
+  --ds-ink: #1a1a1a; /* --ink */
+  --ds-ink-muted: #2a2824; /* --ink-2 */
+  --ds-ink-faint: #6b6658; /* --ink-3 */
+  --ds-line: #ddd5c3;
+  --ds-line-strong: #bcb39e;
+  --ds-accent: #ffde01;
+  --ds-on-accent: #1a1a1a;
+  --ds-shadow: 4px 4px 0 var(--ds-ink);
+  --ds-shadow-raised: 6px 6px 0 var(--ds-ink);
+  --ds-border-weight: 2px;
+
+  --ds-font-display: "Instrument Serif", Georgia, serif;
+  --ds-font-body: "Hanken Grotesk", -apple-system, "Helvetica Neue", sans-serif;
+  --ds-font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --ds-space-xs: 8px;
+  --ds-space-sm: 12px;
+  --ds-space-md: 16px;
+  --ds-space-lg: 24px;
+  --ds-space-xl: 40px;
+  --ds-space-2xl: 60px;
+  --ds-radius: 8px;
+
+  --ds-ok: #00b300; /* --st-ok */
+  --ds-warn: #ff9900; /* --st-warn */
+  --ds-err: #cc0000; /* --st-err */
+}
