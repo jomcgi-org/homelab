@@ -196,6 +196,21 @@ func setDefaultEnv(logger *slog.Logger) {
 		// for every adapter including future ones, and it does not depend on
 		// $HOME/.gitconfig surviving the HOME bind-mount from the session volume.
 		// _configure_git stays as belt-and-braces for the claude path.
+		// A LOGIN GATE DUMMY for gh, exactly like CLAUDE_CODE_OAUTH_TOKEN above and
+		// for the same reason: gh refuses to issue any request while it believes
+		// it has no credentials ("To get started with GitHub CLI, please run: gh
+		// auth login"), so it never reaches the sidecar that would credential it.
+		// Observed live: gh made no API call at all, returning exit 4 without a
+		// single request leaving the guest.
+		//
+		// The value is inert and is DISCARDED: the egress-proxy sets the
+		// Authorization header itself on the way out (ADR 023 phase 6b), so a
+		// prompt-injected guest cannot authenticate as anyone by supplying a
+		// token of its own. gh auth status still reports "not logged in", which
+		// is correct and expected: it inspects local credentials, and the real
+		// one is never local.
+		"GH_TOKEN": "ember-guest-login-gate-dummy-not-a-credential",
+
 		"GIT_AUTHOR_NAME":     "EmberAgent",
 		"GIT_AUTHOR_EMAIL":    "agent@jomcgi.dev",
 		"GIT_COMMITTER_NAME":  "EmberAgent",

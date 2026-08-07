@@ -316,6 +316,38 @@ def fetch_egress_ca(timeout=EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS):
     return pem if b"BEGIN CERTIFICATE" in pem else None
 
 
+def apply_egress_ca_trust():
+    """Fetch + install the egress CA and export the trust variables.
+
+    Called PER TURN, not at startup. A session guest is restored from a shared
+    snapshot, so its process memory is cloned with main() long since finished:
+    anything done there runs once, at base-build time, on a different machine,
+    and can never run again for a real session. At base-build time the egress
+    lane is not open either, so the fetch there fails with ECONNRESET and the
+    trust is simply absent for every session that base ever serves.
+
+    A turn is the first moment that is guaranteed to be post-restore with the
+    lane live, which is why ensure_workspace_volume() is called from the same
+    place. Re-running is cheap (one vsock round trip) and is what keeps a CA
+    rotation from needing a fleet base rebuild.
+    """
+    bundle = install_egress_ca()
+    if not bundle:
+        return None
+    os.environ.update(
+        {
+            # OpenSSL/python, curl, git and node/bun each read a different
+            # variable for the same thing. gh is Go, which reads SSL_CERT_FILE.
+            "SSL_CERT_FILE": bundle,
+            "REQUESTS_CA_BUNDLE": bundle,
+            "CURL_CA_BUNDLE": bundle,
+            "GIT_SSL_CAINFO": bundle,
+            "NODE_EXTRA_CA_CERTS": bundle,
+        }
+    )
+    return bundle
+
+
 def install_egress_ca():
     """Write system-trust + egress CA to CA_BUNDLE_PATH; return the path or None.
 
@@ -3081,6 +3113,10 @@ class ProcessManager:
         total_start = _turn_timing_now()
         with self._mount_lock:
             ensure_workspace_volume()
+        # Per turn, for the same reason ensure_workspace_volume is: this is the
+        # first point guaranteed to be post-restore with the egress lane live.
+        # Doing it at startup put it at base-build time, where the lane is shut.
+        apply_egress_ca_trust()
         if getattr(self.claude, "workspace", None):
             _ensure_cli_dir(self.claude.workspace)
         if repo is not None and branch is not None:
@@ -3298,31 +3334,6 @@ def build_server(manager):
 
 def main():
     install_child_reaper()
-    # Trust the egress CA before any adapter spawns, in THIS process's
-    # environment rather than one adapter's child_env, so every CLI and
-    # everything they shell out to (git, gh, curl) inherits it. The claude
-    # adapter's env is not the boundary: gh and git are run by the model, not by
-    # the shim, and they are the tools that need this.
-    #
-    # Without it the sidecar can only blind-tunnel TLS, and blind-tunnelled
-    # bytes cannot be credentialed, which is why gh could not authenticate at
-    # all. With it, ordinary https:// works everywhere and no tool needs an
-    # http:// special case.
-    bundle = install_egress_ca()
-    if bundle:
-        os.environ.update(
-            {
-                # OpenSSL/python, curl, git, and node/bun each read a different
-                # variable for the same thing. gh is Go, which reads SSL_CERT_FILE.
-                "SSL_CERT_FILE": bundle,
-                "REQUESTS_CA_BUNDLE": bundle,
-                "CURL_CA_BUNDLE": bundle,
-                "GIT_SSL_CAINFO": bundle,
-                "NODE_EXTRA_CA_CERTS": bundle,
-            }
-        )
-        sys.stderr.write("ember-claude-shim: egress CA installed at %s\n" % bundle)
-        sys.stderr.flush()
     manager = ProcessManager(
         claude_executable="claude", codex_executable="codex", pi_executable="pi"
     )

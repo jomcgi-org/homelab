@@ -104,6 +104,7 @@ func TestSetDefaultEnvSetsGitIdentityForEveryAdapter(t *testing.T) {
 		"EMBER_GIT_USER_NAME", "EMBER_GIT_USER_EMAIL",
 		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
 		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+		"GH_TOKEN",
 	}
 	previous := make(map[string]string, len(keys))
 	wasSet := make(map[string]bool, len(keys))
@@ -123,6 +124,12 @@ func TestSetDefaultEnvSetsGitIdentityForEveryAdapter(t *testing.T) {
 	setDefaultEnv(logger)
 
 	const name, email = "EmberAgent", "agent@jomcgi.dev"
+	// gh refuses to issue any request while it believes it has no credentials,
+	// so it never reaches the sidecar that would credential it. The value is
+	// inert and discarded on the way out; only its PRESENCE matters.
+	if got := os.Getenv("GH_TOKEN"); got == "" {
+		t.Error("GH_TOKEN must be set to a login-gate dummy, or gh makes no request at all")
+	}
 	want := map[string]string{
 		"EMBER_GIT_USER_NAME": name, "EMBER_GIT_USER_EMAIL": email,
 		"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,

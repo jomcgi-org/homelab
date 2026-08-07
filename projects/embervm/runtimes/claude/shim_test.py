@@ -3727,3 +3727,41 @@ def test_fetch_egress_ca_rejects_a_non_pem_response(monkeypatch):
     monkeypatch.setattr(shim.socket, "socket", lambda *a, **k: _Sock())
     monkeypatch.setattr(shim, "VSOCK_ADDRESS_FAMILY", 40)
     assert shim.fetch_egress_ca() is None
+
+
+def test_apply_egress_ca_trust_exports_every_tool_variable(tmp_path, monkeypatch):
+    """One bundle, five variables, because each tool reads a different one.
+
+    gh is Go (SSL_CERT_FILE), git is curl (GIT_SSL_CAINFO), the CLI is bun
+    (NODE_EXTRA_CA_CERTS). Missing any one leaves that tool unable to verify the
+    sidecar's minted leaf, which surfaces as "self-signed certificate in
+    certificate chain" rather than as a missing credential.
+    """
+    bundle = tmp_path / "bundle.crt"
+    monkeypatch.setattr(shim, "install_egress_ca", lambda: str(bundle))
+    for key in (
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
+        "NODE_EXTRA_CA_CERTS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    assert shim.apply_egress_ca_trust() == str(bundle)
+    for key in (
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
+        "NODE_EXTRA_CA_CERTS",
+    ):
+        assert os.environ[key] == str(bundle), key
+
+
+def test_apply_egress_ca_trust_sets_nothing_without_a_ca(monkeypatch):
+    """No CA means leave the stock trust store alone, not point at a missing file."""
+    monkeypatch.setattr(shim, "install_egress_ca", lambda: None)
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    assert shim.apply_egress_ca_trust() is None
+    assert "SSL_CERT_FILE" not in os.environ
