@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { statusClass, statusLabel } from "./status.js";
+import { statusClass, statusLabel, vmState } from "./status.js";
 
 test.each([
   [{ status: "running" }, "running", "running"],
@@ -18,5 +18,28 @@ describe("agent status", () => {
   test("exports the status mapping helpers", () => {
     expect(statusClass).toBeTypeOf("function");
     expect(statusLabel).toBeTypeOf("function");
+  });
+});
+
+describe("vmState", () => {
+  const vms = {
+    "s-awake": { state: "awake" },
+    "s-asleep": { state: "asleep" },
+    "s-weird": { state: "destroying" },
+  };
+
+  test.each([
+    [{ ember_session_id: "s-awake" }, "awake"],
+    [{ ember_session_id: "s-asleep" }, "asleep"],
+    [{ ember_session_id: "s-weird" }, "off"],
+    [{ ember_session_id: "s-unknown" }, "off"],
+    [{ ember_session_id: null }, "off"],
+    [null, "off"],
+  ])("maps %j to %s", (session, expected) => {
+    expect(vmState(session, vms)).toBe(expected);
+  });
+
+  test("is off when the vm map is missing", () => {
+    expect(vmState({ ember_session_id: "s-awake" }, null)).toBe("off");
   });
 });

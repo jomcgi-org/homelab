@@ -14,6 +14,7 @@ from agent_sessions import mcp
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.router import router
 from core.db import get_session
+from faas.embervm_client import EmberVMTransportError
 
 
 @pytest.fixture(name="session")
@@ -138,6 +139,47 @@ def test_list_sessions_title_falls_back_to_pending_prompt(client, session):
     assert titles["pending-only"] == "First line"
     assert titles["empty"] == ""
     assert titles["named"] == "Qwen picked this name"
+
+
+def test_list_sessions_exposes_ember_binding(client, session):
+    _session(session, "bound", ember_session_id="s-abc123")
+    _session(session, "unbound")
+
+    body = client.get("/api/agents/sessions").json()
+    bindings = {item["local_session_id"]: item["ember_session_id"] for item in body}
+    assert bindings["bound"] == "s-abc123"
+    assert bindings["unbound"] is None
+
+
+def test_list_session_vms_maps_control_plane_states(client, monkeypatch):
+    async def fake_list_sessions(limit=50, offset=0):
+        return {
+            "items": [
+                {"session_id": "s-run", "state": "running", "expires_at": 99},
+                {"session_id": "s-park", "state": "parked", "last_invoke_at": 5},
+                {"session_id": "s-bank", "state": "banked"},
+                {"session_id": "s-gone", "state": "destroying"},
+            ]
+        }
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+    body = client.get("/api/agents/vms").json()
+    assert body["vms"]["s-run"]["state"] == "awake"
+    assert body["vms"]["s-park"]["state"] == "asleep"
+    assert body["vms"]["s-bank"]["state"] == "asleep"
+    assert body["vms"]["s-gone"]["state"] == "off"
+    assert body["vms"]["s-run"]["expires_at"] == 99
+    assert body["vms"]["s-park"]["cp_state"] == "parked"
+
+
+def test_list_session_vms_degrades_when_embervm_is_down(client, monkeypatch):
+    async def broken_list_sessions(limit=50, offset=0):
+        raise EmberVMTransportError("control plane unreachable")
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", broken_list_sessions)
+    body = client.get("/api/agents/vms").json()
+    assert body["vms"] == {}
+    assert "unreachable" in body["error"]
 
 
 def test_get_session_detail(client, session):

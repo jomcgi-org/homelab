@@ -384,6 +384,22 @@ def _completed_turn(message: str) -> Turn:
     )
 
 
+@pytest.mark.parametrize(
+    ("terminal_reason", "expected"),
+    [
+        ("completed", "completed"),  # claude lane
+        ("end_turn", "completed"),  # claude lane, raw stream value
+        ("stop", "completed"),  # pi lane passes qwen's stopReason through
+        ("error", "warn"),
+        (None, "warn"),  # transport died mid-turn
+        ("max_tokens", "warn"),  # truncated turn deserves attention
+    ],
+)
+def test_turn_status_accepts_every_lane_clean_reason(terminal_reason, expected):
+    turn = _completed_turn("hello")._replace(terminal_reason=terminal_reason)
+    assert mcp._turn_status(turn) == expected
+
+
 def _completed_delivery(message: str) -> tuple[Turn, EmberSession]:
     return _completed_turn(message), EmberSession("ember-1", "token-1", None)
 

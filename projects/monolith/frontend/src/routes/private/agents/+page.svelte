@@ -1,7 +1,7 @@
 <script>
   import { tick } from "svelte";
   import { renderAgentMarkdown } from "./markdown.js";
-  import { statusClass, statusLabel } from "./status.js";
+  import { statusClass, statusLabel, vmState } from "./status.js";
   import "./agents-theme.css";
 
   let { data } = $props();
@@ -50,6 +50,7 @@
   let searchController = null;
   let requestSequence = 0;
   let renderedPending = $state({});
+  let vms = $state({});
   let turnsEl = $state(null);
 
   const selectedSession = $derived(
@@ -174,9 +175,16 @@
     return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
   }
 
+  // Mirrors the backend's _CLEAN_TERMINAL_REASONS: "completed"/"end_turn"
+  // from the claude lane, "stop" from the pi lane's raw stopReason. A
+  // qwen turn is a normal success with terminal_reason "stop", and the
+  // old !== "completed" check painted every one of them as failed.
+  const CLEAN_TERMINAL_REASONS = new Set(["completed", "end_turn", "stop"]);
+
   function turnFailed(turn) {
     return Boolean(
-      turn?.terminal_reason && turn.terminal_reason !== "completed",
+      turn?.terminal_reason &&
+      !CLEAN_TERMINAL_REASONS.has(turn.terminal_reason),
     );
   }
 
@@ -308,6 +316,17 @@
       }
     } catch (error) {
       errorMessage = error.message;
+    }
+  }
+
+  async function loadVms() {
+    try {
+      const response = await fetch("/agents/vms");
+      if (!response.ok) return;
+      const body = await response.json();
+      vms = body.vms ?? {};
+    } catch {
+      // VM state is advisory; keep the last known map on transient failures.
     }
   }
 
@@ -567,6 +586,16 @@
     }
   });
 
+  // Guest VM state polls on its own cadence: the control plane parks a VM
+  // idleBankSeconds (20s) after its last invoke without telling the
+  // monolith, so a fixed 5s poll keeps the chip honest even when the
+  // session list has dropped to its slow 15s interval.
+  $effect(() => {
+    loadVms();
+    const interval = setInterval(loadVms, 5000);
+    return () => clearInterval(interval);
+  });
+
   $effect(() => () => {
     clearTimeout(searchTimer);
     searchController?.abort();
@@ -670,6 +699,13 @@
           </div>
         </div>
         <div class="head-actions">
+          <span
+            class={`vm-chip vm-${vmState(selectedSession, vms)}`}
+            title={vms[selectedSession.ember_session_id]?.cp_state
+              ? `control plane: ${vms[selectedSession.ember_session_id].cp_state}`
+              : "no live microVM; the next prompt boots fresh"}
+            >vm {vmState(selectedSession, vms)}</span
+          >
           {#if statusClass(selectedSession) !== "completed"}
             <span class={`session-state ${statusClass(selectedSession)}`}
               >{statusLabel(selectedSession)}</span
@@ -1276,6 +1312,23 @@
     font-size: var(--size-meta);
     text-transform: lowercase;
     white-space: nowrap;
+  }
+  .vm-chip {
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    padding: 3px 10px;
+    font-family: var(--font-mono);
+    font-size: var(--size-meta);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .vm-chip.vm-awake {
+    color: var(--ok);
+    border-color: var(--ok);
+  }
+  .vm-chip.vm-asleep {
+    color: var(--info);
+    border-color: var(--info);
   }
   .session-state.warn {
     color: var(--attn);
