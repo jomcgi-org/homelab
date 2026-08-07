@@ -20,9 +20,11 @@ that implements the spec.
 
 ## Test-writing traps (each of these has cost a review round)
 
-- `projects/monolith/agent_sessions/` and `projects/monolith/knowledge/` are
-  gazelle-excluded: a new `*_test.py` there needs a hand-written `py_test`
-  target in `projects/monolith/BUILD`, or Bazel never runs it.
+- Effectively every subpackage under `projects/monolith/` is gazelle-excluded
+  (verify with `grep gazelle:exclude projects/monolith/BUILD`): any new
+  `*_test.py` under `projects/monolith/` needs a hand-written `py_test` target
+  in `projects/monolith/BUILD`, following the hundreds already there, or Bazel
+  never runs it.
 - SQLite in tests: use a file-backed database under `tmp_path`. An in-memory
   StaticPool database is ONE connection and deadlocks concurrency tests.
 - `build_app()` calls `logging.basicConfig(force=True)`, which removes
@@ -42,7 +44,9 @@ that implements the spec.
 
 - Python deps are `@pip//package` via `aspect_rules_py`. `requirement()`
   syntax does not exist in this repo.
-- Frontend is Svelte 5 runes only (`$props`, `$derived`, `$effect`). CSS is
+- The `projects/monolith/frontend/` frontend is Svelte 5 runes only (`$props`,
+  `$derived`, `$effect`); the `projects/grimoire/frontend/` frontend is React
+  19. Match the conventions of whichever frontend the task touches. CSS is
   imported from JavaScript (the route layout), never via bare `@import`
   package specifiers inside CSS: PostCSS cannot resolve them.
 - Containers are apko, never Dockerfiles: dual-arch, non-root uid 65532.
