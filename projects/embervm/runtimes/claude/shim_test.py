@@ -3732,7 +3732,7 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
     tokens using a false budget. With contextWindow=128000 (pi's hardcoded
     default), pi believes available tokens is about 107k even when the real
     window is 32768, leading to a loud 400 error as soon as input tokens
-    exceed 32768 - 16384 = 16384 (exactly half the real window). The arithmetic
+    exceed 30000 - 4096 (exactly half the real window). The arithmetic
     must ensure that input + max_output_tokens <= real_budget for all inputs.
     """
     manager = _pi_manager(tmp_path, monkeypatch)
@@ -3744,7 +3744,7 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
         - shim.PI_CONTEXT_SAFETY_TOKENS
         > 0
     ), "Context window too small: max output tokens plus safety margin exceeds budget"
-    assert shim.PI_CONTEXT_WINDOW == 32768
+    assert shim.PI_CONTEXT_WINDOW == 30000
 
     models_path = tmp_path / "workspace" / ".pi" / "agent" / "models.json"
     models = json.loads(models_path.read_text())
@@ -3754,6 +3754,26 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
     assert model_dict["maxTokens"] == shim.PI_MAX_OUTPUT_TOKENS
 
     manager._close_process()
+
+
+def test_pi_context_window_headroom_relationship():
+    """PI_CONTEXT_WINDOW plus PI_CONTEXT_WINDOW_HEADROOM must not exceed vLLM capacity.
+
+    The headroom gap absorbs pi's estimate error. This test uses only constants,
+    so it runs without file I/O or temporary paths, and verifies the invariant
+    even without the Bazel data dependency.
+    """
+    # vLLM is configured to serve 32768 tokens in projects/inference/deploy/values.yaml
+    vllm_max_model_len = 32768
+    declared_window = shim.PI_CONTEXT_WINDOW
+    declared_headroom = shim.PI_CONTEXT_WINDOW_HEADROOM
+
+    total = declared_window + declared_headroom
+    assert total <= vllm_max_model_len, (
+        "PI_CONTEXT_WINDOW (%s) + PI_CONTEXT_WINDOW_HEADROOM (%s) = %s exceeds "
+        "vLLM capacity (%s). Raise vLLM's --max-model-len or lower PI_CONTEXT_WINDOW."
+        % (declared_window, declared_headroom, total, vllm_max_model_len)
+    )
 
 
 def test_pi_settings_json_compaction_reserve_exceeds_max_output(tmp_path, monkeypatch):

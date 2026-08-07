@@ -186,15 +186,30 @@ PI_MODELS = {
 }
 DEFAULT_PI_MODEL = "qwen"
 
-# PI context configuration. These values must be kept in sync with vLLM's
-# --max-model-len (projects/inference/deploy/values.yaml:195). A stale
-# contextWindow value here re-arms the bug where pi's clampMaxTokensToContext
-# computes available output tokens using a false budget, leading to a loud
-# 400 error as soon as input tokens reach exactly half the real window.
-PI_CONTEXT_WINDOW = 32768
+# PI context configuration. This constant is deliberately set BELOW vLLM's
+# --max-model-len (projects/inference/deploy/values.yaml) because pi's
+# clampMaxTokensToContext computes available output tokens by subtracting a
+# fixed CONTEXT_SAFETY_TOKENS margin, and pi's estimateContextTokens uses a
+# chars/4 heuristic rather than a tokenizer. The gap between PI_CONTEXT_WINDOW
+# and the real vLLM limit absorbs estimate error. Measured in prod on
+# 2026-08-07, a turn carrying two 50 KiB repetitive-ASCII tool results
+# undercounted by 4097 tokens against pi's fixed 4096 margin, failing with a
+# 400 error by one token. Setting PI_CONTEXT_WINDOW to 30000 converts the fixed
+# 4096 margin into an effective margin of (32768 - 30000) + 4096 = 6864 tokens,
+# approximately 1.7x the observed worst-case undercount. This gap also lowers
+# the compaction trigger from 22528 to 19760 tokens, providing more mid-run
+# runway before the window fills. This matters because pi does not check
+# compaction between tool iterations. Do NOT "correct" this value upward to
+# match vLLM's --max-model-len; the gap is the point.
+PI_CONTEXT_WINDOW = 30000
+# MINIMUM required gap between PI_CONTEXT_WINDOW and vLLM's real
+# --max-model-len, enforced by pi_context_window_sync_test. It is a floor, not
+# the actual gap: today the real gap is 32768 - 30000 = 2768. Lowering this
+# constant weakens the guard, so treat a test failure against it as a signal to
+# lower PI_CONTEXT_WINDOW rather than to lower this floor.
+PI_CONTEXT_WINDOW_HEADROOM = 2048
 # pi's hardcoded safety margin in clampMaxTokensToContext.
 PI_CONTEXT_SAFETY_TOKENS = 4096
-
 # Maximum output tokens pi will attempt to generate. This caps reply length to
 # prevent bloated answers that waste the context window. It also caps pi's
 # compaction summary at PI_MAX_OUTPUT_TOKENS via
