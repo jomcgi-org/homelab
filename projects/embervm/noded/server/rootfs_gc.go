@@ -41,9 +41,20 @@ const (
 	// often, and each pass stats every rootfs file on the node.
 	rootfsGCInterval = 30 * time.Minute
 	// rootfsGCMinAge spares a freshly baked rootfs whose registry push has not
-	// arrived yet. Generous relative to the bake-to-sync gap (seconds to minutes).
+	// arrived yet, and prevents reclaiming a temporary from an in-progress bake.
+	// Temporaries are never in the keep-set because they are not named by a
+	// registry ref or a base's rootfsPath, so they rely entirely on this age guard.
+	// The bake is expected to complete well inside this one-hour window. A bake
+	// slower than that can have its temporary reclaimed while it is being written.
 	rootfsGCMinAge = 1 * time.Hour
 )
+
+// isReclaimableRootfs reports whether name is a completed rootfs image or an
+// abandoned build temporary that is eligible for the rootfs sweep.
+func isReclaimableRootfs(name string) bool {
+	return strings.HasPrefix(name, "rootfs-") &&
+		(strings.HasSuffix(name, ".ext4") || strings.Contains(name, ".tmp."))
+}
 
 // startRootfsGC runs the rootfs sweep on a ticker until ctx is done. It sweeps
 // once at startup too: a daemon that has just restarted is the most likely moment
@@ -105,7 +116,10 @@ func (s *Server) sweepRootfs(now time.Time) (removed int, freed int64) {
 				continue
 			}
 			name := ent.Name()
-			if !strings.HasPrefix(name, "rootfs-") || !strings.HasSuffix(name, ".ext4") {
+			// Failed bakes can leave temporary rootfs files behind. They are
+			// reclaimed only in a registry-known workload directory and only after
+			// the same min-age guard as completed rootfs images.
+			if !isReclaimableRootfs(name) {
 				continue
 			}
 			path := filepath.Join(dir, name)
