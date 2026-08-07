@@ -1,12 +1,12 @@
 # EmberVM Architecture
 
 A single rolled-up description of how EmberVM operates, written for a reader
-who needs to reason about the system without re-reading 27 ADRs.
+who needs to reason about the system without re-reading 31 ADRs.
 
 Two kinds of statement appear here:
 
 - **Built**: how the system behaves today (Accepted ADRs, shipped code).
-- **Decided direction**: agreed in Draft ADRs 014, 015, and 019 through 027,
+- **Decided direction**: agreed in Draft ADRs 014, 015, and 019 through 028,
   but not yet implemented or only partially landed. These sections are
   marked.
 
@@ -248,22 +248,39 @@ it as the fallback), mints instance ids node-side with `origin: ACTIVATOR`,
 and the CP adopts and backfills on reconcile. Status: partial land, soak
 ongoing.
 
-### Sessions: the durability ladder (ADR 016, amended by ADR 027)
+### Sessions: the durability ladder (ADR 016, amended by ADRs 027, 029, 030)
 
 | Tier | Window | Artifact | Pinning |
 | ---- | ------ | -------- | ------- |
-| Live | 8h continuous ceiling | running VM | node-resident |
+| Live | 6h continuous ceiling (`maxLifetimeSeconds`) | running VM | node-resident |
 | Warm bank | 7 days from last bank | memory snapshot in S3 | CPU-vendor + base-generation |
 | Durable workspace | 7 days from last use | zstd content-addressed file set | none |
 
 Resume is one interface with four verbs: cold boot; base-snapshot restore;
 warm (memory) restore; base + workspace hydration. The CP picks the cheapest
-unexpired artifact. A relight starts a fresh 8h window, so a lineage spans
-weeks of shorter runs. "Instant for 8h, restorable for 7 days" is strictly
-more than the AWS Lambda MicroVMs offer being copied. ADR 027 amends this
-ladder: capture may decouple from bank (close-triggered for
-no-memory-snapshot workloads), retention becomes `latest + N`, and the
-workspace size cap becomes a declared soft budget.
+unexpired artifact. "Instant for 6h, restorable for 7 days" is strictly more
+than the AWS Lambda MicroVMs offer being copied. ADR 027 amends this ladder:
+capture may decouple from bank (close-triggered for no-memory-snapshot
+workloads), retention becomes `latest + N`, and the workspace size cap
+becomes a declared soft budget.
+
+**The 6h ceiling is a version-convergence bound, not a data lifetime** (ADR
+030). It exists so a session cannot ride a stale base image forever, since a
+session pinned to an old base keeps that base's registry entry live and
+blocks the retention sweep from reclaiming it. It is deliberately not raised
+to buy continuity. Continuity comes from **adoption** instead: lineage is
+decoupled from session generation, so `session_id == lineage_id` holds only
+for the first generation, and a later generation inherits the prior
+lineage's workspace rather than starting blank. That is why a lineage spans
+weeks of shorter runs even though no single session may.
+
+**Parked sessions count as disk, not against `concurrency.cap`** (ADR 029).
+A session in ADR 027's `memory: false, filesystem: true` quadrant parks to
+its workspace volume holding zero RAM, so bucketing it as live let two idle
+sessions pin a `cap: 2` workload for hours while nothing ran (#4298).
+`concurrency.cap` now bounds concurrently running VMs only, and wake does
+not re-check it: placement's memory admission and the per-principal
+wake-rate limit are what protect the receiving node.
 
 The S3 artifact GC uses an 8-hour TTL for stateful warmth and 7-day TTLs for
 session memory, serving snapshots, session workspaces, and group sets.
@@ -432,10 +449,11 @@ maxReplicas, while scale-down stays observe-only. Promoting to `full`
 Live shape is `desiredReplicas` 2gi 1 and 16gi 1, with per-node floor bricks
 of class 2gi pinned on node-1, node-2, and node-3. The 4gi and 8gi classes
 are present at zero replicas. Chart clamps are min 16gi 1, and max 2gi 4 /
-4gi 3 / 8gi 2. Desired counts come from the per-class `desiredReplicas`
-values knob reconciled by `Embervm.BrickController` through `/scale` because
-ArgoCD ignores `/spec/replicas` fleet-wide, so git-declared replicas would
-not sync. Instance identity is the kubelet pod UID.
+4gi 3 / 8gi 2 / 16gi 2. Desired counts come from the per-class
+`desiredReplicas` values knob reconciled by `Embervm.BrickController`
+through `/scale` because ArgoCD ignores `/spec/replicas` fleet-wide, so
+git-declared replicas would not sync. Instance identity is the kubelet pod
+UID.
 
 ---
 
@@ -547,9 +565,12 @@ acts on the guest's behalf through the brokered egress path.
   durable state lives in S3, so quorum loss is bounded downtime, not data
   loss. Guests are the first OOM victims. **Do not import this clause into a
   cluster whose etcd is precious.**
-- Warmth is effectively single-vendor (AMD) until the CPU-template work
-  lands; the Intel pool runs cold-boot work. The vendor gate fails closed at
-  the daemon.
+- Warmth never crosses a CPU vendor until the CPU-template work lands, so
+  artifacts are keyed per vendor and the gate fails closed at the daemon.
+  Both pools now hold their own warmth: `noded.warmRestoreWithVolumeClasses`
+  is armed uniformly across `2gi`, `4gi`, `8gi`, and `16gi` (never partial,
+  per the rollback contract), and the Intel-pinned floor bricks restore from
+  intel-keyed bases at the same 2.5ms load-to-resume as the AMD tier.
 - Scratch is a node-provisioning contract: every FC-labelled node
   bind-mounts its real device at `/var/lib/embervm/scratch` (hostPath type
   Directory fails closed if unsatisfied). Karpenter `instanceStorePolicy`
@@ -573,7 +594,8 @@ acts on the guest's behalf through the brokered egress path.
 | `statefulTcpPortRange` | 10 ports (5400-5409), CRD-validated | hard cap on stateful workload count; remedy constrained to name-based L4 (SNI/PROXY protocol), not per-workload ClusterIP Services (ADR 024/026) |
 | CPU pivot | 1,024 MiB per vCPU | provisional, tracks hand-set declarations; replace from measured utilization |
 | Active brick utilization target | >90% | chosen by analogy; too high if shed events become common |
-| Stateful continuity floor / session ceiling | 8h (same number, opposite meanings) | asserted for symmetry; validate against rotation cadence |
+| Stateful continuity floor | 8h (also the S3 stateful warmth TTL) | asserted; validate against rotation cadence |
+| Session live ceiling | 6h (`maxLifetimeSeconds`) | a version-convergence bound (ADR 030), not a durability claim; these two were once the same number chosen for symmetry, and no longer are |
 | Brick silence timeout / grant expiry | ~6h range | the divergence bound and availability trade in one number |
 | Wake-grant gap budget | k=4 (default cadence class) | tolerates a CP gap with three noded restarts |
 | Definitions target | 100k+ | owner-set goal, not measured demand |
@@ -605,8 +627,11 @@ that a class is retired (its store is legitimately empty), which exempts that
 kind's branch. Unknown tokens fail the chart render and are dropped by the
 app, so the guard can only be weakened deliberately.
 
-The S3 warmth GC is dry-run by default and may delete only the explicit
-allowlist of warmth prefixes. Its 8-hour stateful TTL keeps the newest one
+The S3 warmth GC is dry-run in code and may delete only the explicit
+allowlist of warmth prefixes. It is **armed in the homelab**
+(`warmthS3Gc.enabled: "1"`, 2026-08-04, after a dry-run manifest was read
+and verified); rollback is setting `enabled` back to `""` and bumping the
+chart. Its 8-hour stateful TTL keeps the newest one
 reference per vendor and workload for live workloads (any non-terminal
 instance or volume row); older superseded refs are eligible after the grace
 window. Dead workloads' namespaces, including their newest ref, are evicted
@@ -633,7 +658,9 @@ and 019-028. ADRs 019-027 are one design pass answering "what changes to
 manage 100k+ workload definitions" (see `docs/decisions/embervm/README.md`
 for their reading order); they are decided direction, not yet built. ADRs
 014 and 015 predate that pass and are a separate case. ADRs 014 and 015 have
-since been amended for fail-open metering.
+since been amended for fail-open metering. ADRs 029, 030, and 031 are
+Accepted and post-date that pass: 029 and 030 are shipped corrections to the
+session model, so read them as current behaviour rather than direction.
 
 | ADR | Decides | Status / superseded by |
 | --- | ------- | ---------------------- |
@@ -665,6 +692,8 @@ since been amended for fail-open metering.
 | [026](../../docs/decisions/embervm/026-template-composition-gitops-registration.md) | Templates not stamps; GitOps without per-workload CRs; desired-set registration | Draft |
 | [027](../../docs/decisions/embervm/027-snapshot-modes-workload-property.md) | Snapshot modes as a declared workload property (persistence flags, shared keyspace) | Draft |
 | [028](../../docs/decisions/embervm/028-demand-loaded-rootfs-oci-chunk-store.md) | Demand-loaded rootfs: OCI ref as the interface, EROFS + content-defined chunk store, ublk presentation | Draft; supersedes 005 decision 3 (Pattern A) |
+| [029](../../docs/decisions/embervm/029-parked-sessions-disk-bucket-not-cap.md) | Parked sessions bucket as disk, not against `concurrency.cap`; wake deliberately does not re-check the cap | Accepted; amends 016 decision 6 on the capacity-accounting axis only |
+| [030](../../docs/decisions/embervm/030-lineage-decoupled-from-session-generation.md) | Lineage decoupled from session generation; `maxLifetimeSeconds` (6h) reaffirmed as a version-convergence bound; continuity via workspace adoption | Accepted; amends 027's quadrant description |
 | [031](../../docs/decisions/embervm/031-health-signals-classified-by-time-to-impact.md) | Health signals classified by time-to-impact: immediate latch for platform-impact-now signals (sustained artifact export failures), >24h-sustained latch for maintenance-debt signals (S3 warmth GC sweep stall); both end in the health surface, not alert-only | Accepted; decided direction, detector implementation tracked in #4338, not yet built |
 
 Operational entry points: ArgoCD and SigNoz at `private.jomcgi.dev/app/*`,
@@ -679,7 +708,7 @@ that changes a decision updates this document in the same PR; the `adr`
 skill and `check-adr-architecture-sync` hook enforce it. If the two
 disagree, fix both.
 
-Sources: ADRs embervm/001-027, the project README (goals and non-goals), and
+Sources: ADRs embervm/001-031, the project README (goals and non-goals), and
 the brick-program decision log. EmberVM generalized the fc-invoke / FaaS
 line (agents/030, agents/044, agents/045); fc-invoke itself is being
 deprecated, and the carried-over sandbox isolation posture, microVM surface,
