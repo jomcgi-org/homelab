@@ -113,14 +113,6 @@
     padding: 24px;
     background: var(--em-ground);
   }
-  .hero .kicker {
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--em-faint);
-    margin-bottom: 18px;
-  }
   .hero h1 {
     margin: 0;
     font-size: clamp(38px, 6.4vw, 72px);
@@ -757,14 +749,8 @@
     <div class="stage">
       <!-- hero -->
       <div class="hero" id="hero">
-        <div class="kicker">
-          ember / agents · how this site runs its AI agents
-        </div>
         <h1>One microVM per <span class="em">agent session.</span></h1>
-        <p class="sub">
-          Killed on idle, rebuilt from disk days later on whichever node has
-          room.
-        </p>
+        <p class="sub">Killed on idle, rebuilt from disk or S3 on resume.</p>
         <div class="stats">
           <span><b>2.5 ms</b> VM resume</span>
           <span class="sep">·</span>
@@ -1281,7 +1267,7 @@
       One microVM per agent session.
     </h2>
     <p class="body" style="margin-bottom: 40px">
-      Killed on idle, rebuilt from disk days later on whichever node has room.
+      Killed on idle, rebuilt from disk or S3 on resume.
     </p>
     <!-- captions repeat statically; omitted in the mockup, the scrubbed
          stage is the design surface under review -->
