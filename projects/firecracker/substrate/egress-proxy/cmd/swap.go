@@ -130,7 +130,22 @@ type secretEntry struct {
 	// Header is the request header to set, e.g. "Authorization".
 	Header string `json:"header"`
 	// ValuePrefix is prepended to the resolved value, e.g. "Bearer ".
-	ValuePrefix string   `json:"valuePrefix"`
+	ValuePrefix string `json:"valuePrefix"`
+	// BasicUser, when set, emits RFC 7617 Basic instead of ValuePrefix+value:
+	// "Basic " + base64(BasicUser + ":" + value).
+	//
+	// This exists because git over HTTPS and the GitHub API want the SAME token
+	// in two different shapes. Verified against github.com with a real PAT:
+	//
+	//   git-receive-pack + "Authorization: Bearer <tok>"                 -> 401
+	//   git-receive-pack + "Authorization: Basic base64(user:<tok>)"     -> 200
+	//   api.github.com   + "Authorization: Bearer <tok>"                 -> 200
+	//
+	// Encoding HERE rather than storing a pre-encoded second secret keeps ONE
+	// credential in the vault. A stored base64 blob would be a derived copy that
+	// silently outlives a rotation of the value it was derived from, and nothing
+	// would detect the drift until a push started failing.
+	BasicUser   string   `json:"basicUser"`
 	Env         string   `json:"env"`
 	BrokerGrant string   `json:"brokerGrant"`
 	EgressTo    []string `json:"egressTo"`
@@ -214,6 +229,17 @@ func (e *secretEntry) resolve() error {
 	return nil
 }
 
+// headerValue renders what the sidecar SETS on the request: Basic when the
+// entry names a user, otherwise the prefix form. One place, so the two callers
+// (claim-bearing and plain) cannot diverge on encoding.
+func (e *secretEntry) headerValue() string {
+	value := e.resolvedValue()
+	if e.BasicUser != "" {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(e.BasicUser+":"+value))
+	}
+	return e.ValuePrefix + value
+}
+
 func (e *secretEntry) resolvedValue() string {
 	if e.mu != nil {
 		e.mu.RLock()
@@ -255,6 +281,15 @@ func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry 
 		hasSecret := (e.Env != "") != (e.BrokerGrant != "")
 		if e.Header == "" || len(e.EgressTo) == 0 || !hasSecret {
 			logger.Error("invalid secret catalog entry (needs exactly one of env or brokerGrant, plus header and egressTo); refusing to start", "env", e.Env, "brokerGrant", e.BrokerGrant)
+			exitFn(1)
+			return nil
+		}
+		// basicUser and valuePrefix are two different encodings of the same
+		// header, so setting both is a config error rather than a precedence
+		// question. Failing at load beats guessing and injecting the wrong shape,
+		// which surfaces later as an opaque 401 from the destination.
+		if e.BasicUser != "" && e.ValuePrefix != "" {
+			logger.Error("secret catalog entry sets both basicUser and valuePrefix; refusing to start", "egressTo", e.EgressTo)
 			exitFn(1)
 			return nil
 		}
@@ -564,7 +599,7 @@ func injectRequest(req *http.Request, sec *secretEntry) bool {
 		// claim here rather than trusting the guest: they cannot drift, and a
 		// valid token paired with a stale account id is exactly the failure this
 		// fixes (the provider rejects the pair and calls it token_expired).
-		req.Header.Set(sec.Header, sec.ValuePrefix+sec.resolvedValue())
+		req.Header.Set(sec.Header, sec.headerValue())
 		req.Header.Set(sec.ClaimHeader, claim)
 		return true
 	}
@@ -576,7 +611,7 @@ func injectRequest(req *http.Request, sec *secretEntry) bool {
 	if !requested {
 		return false
 	}
-	req.Header.Set(sec.Header, sec.ValuePrefix+sec.resolvedValue())
+	req.Header.Set(sec.Header, sec.headerValue())
 	return true
 }
 
