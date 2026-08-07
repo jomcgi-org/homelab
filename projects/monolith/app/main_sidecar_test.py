@@ -477,7 +477,8 @@ async def test_start_bot_when_ready_not_scheduled_when_no_token():
     ):
         await _start_singletons(app)
 
-    # Ships and agent_sessions ingest tasks (no bot; scheduler loop removed).
-    assert len(created_tasks) == 2, (
-        f"Expected 2 tasks without a bot token, got {len(created_tasks)}"
+    # Ships ingest plus the agent_sessions sweep and title refresh (no bot;
+    # scheduler loop removed).
+    assert len(created_tasks) == 3, (
+        f"Expected 3 tasks without a bot token, got {len(created_tasks)}"
     )
