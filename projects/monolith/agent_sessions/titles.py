@@ -116,14 +116,18 @@ def build_title_prompt(candidate: dict) -> str:
     )
 
 
+# Quotes, backticks, and periods in either order (LLMs emit both
+# `"name".` and `"name."`), plus whitespace.
+_TRIM_CHARS = " \"'`“”‘’."
+
+
 def sanitize_title(raw: str) -> str:
-    text = " ".join(str(raw or "").split())
-    text = text.strip().strip("\"'`“”‘’").rstrip(".")
+    text = " ".join(str(raw or "").split()).strip(_TRIM_CHARS)
     return text[:TITLE_MAX_CHARS].strip()
 
 
 async def _call_qwen(prompt: str) -> str:
-    url = os.environ.get("LLAMA_CPP_URL", "")
+    url = os.environ.get("LLAMA_CPP_URL", "").rstrip("/")
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         resp = await client.post(
             f"{url}/v1/chat/completions",

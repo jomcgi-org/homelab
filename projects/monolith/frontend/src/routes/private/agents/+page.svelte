@@ -619,7 +619,10 @@
           >
             <span class="snippet">{result.snippet}</span>
             <span class="result-meta mono"
-              >turn {result.seq} · {relativeTime(result.created_at)}</span
+              >{String(result.local_session_id || result.workspace || "").slice(
+                0,
+                8,
+              )} · turn {result.seq} · {relativeTime(result.created_at)}</span
             >
           </button>
         {:else}<div class="empty">No matching turns</div>{/each}
@@ -719,6 +722,9 @@
                 <span>{turn.model || selectedSession.model || "luna"}</span>
                 <span>{relativeTime(turn.created_at)}</span>
                 {#if cost(turn.cost_usd)}<span>{cost(turn.cost_usd)}</span>{/if}
+                {#if turn.stop_reason && turn.stop_reason !== "end_turn"}
+                  <span>{turn.stop_reason}</span>
+                {/if}
                 {#if turnFailed(turn)}<span class="badge-failed">failed</span
                   >{/if}
               </div>
@@ -733,10 +739,7 @@
                 <span class="role">you</span>
                 <div class="prompt-text">{entry.prompt}</div>
               </div>
-              <div
-                class={`live-line ${state === "working" ? "" : "quiet"}`}
-                aria-live="polite"
-              >
+              <div class={`live-line ${state === "working" ? "" : "quiet"}`}>
                 <span class="live-dot" aria-hidden="true"></span>
                 {#if state === "working"}
                   {#if partial?.partial_activities?.length}
@@ -922,11 +925,11 @@
       </form>
     </section>
   {/if}
-</main>
 
-{#if errorMessage}<div class="error-banner" role="status">
-    {errorMessage}
-  </div>{/if}
+  {#if errorMessage}<div class="error-banner" role="status">
+      {errorMessage}
+    </div>{/if}
+</main>
 
 {#snippet sessionRow(session)}
   <button
@@ -1005,14 +1008,12 @@
     font-family: var(--font-ui);
   }
   .console .mono,
-  .console code,
   .console pre,
   .console input.mono,
   .console select.mono {
     font-family: var(--font-mono);
   }
   .mono,
-  code,
   pre {
     font-size: var(--size-body-mono);
   }

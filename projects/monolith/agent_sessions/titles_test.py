@@ -100,6 +100,7 @@ def test_sessions_without_turns_are_not_candidates(session):
 
 def test_sanitize_title():
     assert titles.sanitize_title('"Fix the CI  pipeline."') == "Fix the CI pipeline"
+    assert titles.sanitize_title('"Fix it".') == "Fix it"
     assert titles.sanitize_title("Name:\nplan the demo") == "Name: plan the demo"
     assert titles.sanitize_title(None) == ""
     assert len(titles.sanitize_title("x" * 500)) == titles.TITLE_MAX_CHARS

@@ -66,4 +66,29 @@ describe("renderAgentMarkdown", () => {
     expect(html).toContain("<code>ci</code>");
     expect(html).toContain("<pre><code>plain block</code></pre>");
   });
+
+  it("renders http links as anchors too", () => {
+    const html = renderAgentMarkdown("[svc](http://monolith.svc:8080/x)");
+    expect(html).toContain('href="http://monolith.svc:8080/x"');
+  });
+
+  it("leaves shell comments inside fences untouched", () => {
+    const html = renderAgentMarkdown("```bash\n# install deps\nnpm i\n```");
+    expect(html).toContain("# install deps");
+    expect(html).not.toContain("<h2>");
+  });
+
+  it("leaves markdown links inside fences as literal text", () => {
+    const html = renderAgentMarkdown(
+      "```\nsee [docs](https://example.com/x)\n```",
+    );
+    expect(html).not.toContain("<a ");
+    expect(html).toContain("[docs](https://example.com/x)");
+  });
+
+  it("strips an unterminated voice block while streaming", () => {
+    const html = renderAgentMarkdown("The answer.\n\n<voice>Spoken so far");
+    expect(html).toContain("The answer.");
+    expect(html).not.toContain("Spoken so far");
+  });
 });
