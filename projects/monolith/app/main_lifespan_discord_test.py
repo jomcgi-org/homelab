@@ -84,12 +84,15 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        assert len(created) == 5  # bot + outbox + ships + agent_sessions + lock sweeps
+        assert (
+            len(created) == 6
+        )  # bot + outbox + ships + agent_sessions + lock sweeps + title refresh
 
     @pytest.mark.asyncio
     async def test_start_singletons_one_task_without_token(self):
-        """Without a token: ships + agent_sessions sweeps = 2 tasks (no bot, no drain, no sweep; the
-        scheduler dispatch loop was removed - jobs run as Argo CronWorkflows)."""
+        """Without a token: ships + agent_sessions sweep + title refresh = 3 tasks
+        (no bot, no drain, no lock sweep; the scheduler dispatch loop was
+        removed - jobs run as Argo CronWorkflows)."""
         created, cap = _capture()
         env = {k: v for k, v in os.environ.items() if k != "DISCORD_BOT_TOKEN"}
         env["DISCORD_BOT_TOKEN"] = ""
@@ -105,7 +108,7 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        assert len(created) == 2  # ships + agent_sessions sweeps
+        assert len(created) == 3  # ships + agent_sessions sweep + title refresh
 
     @pytest.mark.asyncio
     async def test_stop_singletons_closes_and_cancels(self):

@@ -128,7 +128,9 @@ class TestSingletonBotClose:
         ):
             await _start_singletons(app)
 
-        assert len(tasks) == 5  # bot + outbox + ships + agent_sessions + lock sweeps
+        assert (
+            len(tasks) == 6
+        )  # bot + outbox + ships + agent_sessions + lock sweeps + title refresh
 
 
 # ---------------------------------------------------------------------------
