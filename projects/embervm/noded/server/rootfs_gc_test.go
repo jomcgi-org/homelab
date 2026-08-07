@@ -199,6 +199,79 @@ func TestSweepRootfsMinAgeGuard(t *testing.T) {
 	}
 }
 
+func TestSweepRootfsTemporaryFiles(t *testing.T) {
+	t.Run("removes old orphaned temporary and counts bytes", func(t *testing.T) {
+		// Protects against: temp files left by failed bakes not being reclaimed.
+		s := newStoreTestServer(t, newFakeStore())
+		dir := filepath.Join(t.TempDir(), "semgrep")
+		temporary := writeRootfs(t, dir, "rootfs-60cd82d81a20.ext4.tmp.1", rootfsGCMinAge+time.Minute)
+		current := filepath.Join(dir, "rootfs-current.ext4")
+
+		s.registry.sync([]workloadEntry{{Workload: "semgrep", ImageRef: "img", RootfsRef: current}})
+
+		removed, freed := s.sweepRootfs(time.Now())
+		if removed != 1 {
+			t.Fatalf("removed = %d, want 1", removed)
+		}
+		if freed != int64(len("rootfs")) {
+			t.Fatalf("freed = %d, want %d", freed, len("rootfs"))
+		}
+		if _, err := os.Stat(temporary); !os.IsNotExist(err) {
+			t.Fatalf("orphaned temporary should be gone, stat error = %v", err)
+		}
+	})
+
+	t.Run("spares young temporary", func(t *testing.T) {
+		// Protects against: deleting temporaries of in-progress bakes (the min-age guard for temporaries).
+		s := newStoreTestServer(t, newFakeStore())
+		dir := filepath.Join(t.TempDir(), "semgrep")
+		temporary := writeRootfs(t, dir, "rootfs-60cd82d81a20.ext4.tmp.1", rootfsGCMinAge-time.Minute)
+		current := filepath.Join(dir, "rootfs-current.ext4")
+
+		s.registry.sync([]workloadEntry{{Workload: "semgrep", ImageRef: "img", RootfsRef: current}})
+
+		if removed, _ := s.sweepRootfs(time.Now()); removed != 0 {
+			t.Fatalf("removed = %d, want 0 for a young temporary", removed)
+		}
+		if _, err := os.Stat(temporary); err != nil {
+			t.Fatalf("young temporary must survive the min-age guard: %v", err)
+		}
+	})
+
+	t.Run("ignores unrelated temporary name", func(t *testing.T) {
+		// Protects against: problem 1 - the loose contains predicate matching unrelated files.
+		s := newStoreTestServer(t, newFakeStore())
+		dir := filepath.Join(t.TempDir(), "semgrep")
+		unrelated := writeRootfs(t, dir, "backup.tar.tmp.1", rootfsGCMinAge+time.Minute)
+		current := filepath.Join(dir, "rootfs-current.ext4")
+
+		s.registry.sync([]workloadEntry{{Workload: "semgrep", ImageRef: "img", RootfsRef: current}})
+
+		if removed, _ := s.sweepRootfs(time.Now()); removed != 0 {
+			t.Fatalf("removed = %d, want 0 for an unrelated temporary name", removed)
+		}
+		if _, err := os.Stat(unrelated); err != nil {
+			t.Fatalf("unrelated temporary must survive: %v", err)
+		}
+	})
+
+	t.Run("keeps referenced rootfs", func(t *testing.T) {
+		// Protects against: the predicate edit accidentally widening the match to consume live images.
+		s := newStoreTestServer(t, newFakeStore())
+		dir := filepath.Join(t.TempDir(), "semgrep")
+		current := writeRootfs(t, dir, "rootfs-current.ext4", rootfsGCMinAge+time.Minute)
+
+		s.registry.sync([]workloadEntry{{Workload: "semgrep", ImageRef: "img", RootfsRef: current}})
+
+		if removed, _ := s.sweepRootfs(time.Now()); removed != 0 {
+			t.Fatalf("removed = %d, want 0 for a referenced rootfs", removed)
+		}
+		if _, err := os.Stat(current); err != nil {
+			t.Fatalf("referenced rootfs must survive: %v", err)
+		}
+	})
+}
+
 // TestReconcileBasesCheckRootfsExists proves restart reconciliation reports a base
 // with a lost backing file as NONE, which is the ONLY state the control plane acts
 // on: Embervm.BaseBuilder.node_reports_base_absent?/3 matches NONE and nothing there
