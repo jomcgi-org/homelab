@@ -3320,6 +3320,25 @@ class ProcessManager:
         if getattr(self.claude, "workspace", None):
             _ensure_cli_dir(self.claude.workspace)
         if repo is not None and branch is not None:
+            # Say what the guest is doing while it clones. Without this the UI
+            # falls through to "starting the agent..." for the whole hydration,
+            # because that is its label for "VM running, no partials yet", and a
+            # multi-second clone reads as dead time.
+            #
+            # A plain string is a valid activity (the console's activityParts
+            # takes `typeof activity === "string"` as {verb, detail:""}), and
+            # partial_activities is the FIRST branch of its live-line ladder, so
+            # this needs no schema, no migration and no console change. The
+            # adapter builds its own pusher immediately after and its real CLI
+            # activities replace this line.
+            #
+            # Only meaningful when hydration actually clones: a restored volume
+            # short-circuits on the rev-parse gate, so the pusher fires and is
+            # replaced almost at once, which is the honest signal either way.
+            if progress_token:
+                _ProgressPusher(progress_token).push(
+                    "", ["cloning %s@%s" % (repo, branch)]
+                )
             self._hydrate_workspace(repo, branch)
         adapter = self._adapter(model)
         try:

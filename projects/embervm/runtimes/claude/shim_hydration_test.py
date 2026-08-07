@@ -459,3 +459,61 @@ def test_poisoned_directory_is_cleaned_and_recloned(manager, monkeypatch):
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
     manager.turn("first", repo="owner/repo", branch="main")
     assert [command[1] for command in calls] == ["-C", "clone", "-C"]
+
+
+def test_cloning_progress_is_pushed_before_the_clone(manager, monkeypatch):
+    """The console shows the clone WHILE it runs, so the push must precede it.
+
+    Pushed after, it would only ever be visible once the thing it announces had
+    already finished, which is the failure this guards: the whole point is that
+    a multi-second hydration stops reading as dead time under the console's
+    "starting the agent..." fallback.
+    """
+    events = []
+
+    class _CapturingPusher:
+        def __init__(self, progress_token):
+            events.append(("pusher", progress_token))
+
+        def push(self, text, activities=None):
+            events.append(("push", text, activities))
+
+    monkeypatch.setattr(shim, "_ProgressPusher", _CapturingPusher)
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            events.append(("clone", command[-2]))
+        return _GitProcess()
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+    manager.turn("first", repo="owner/repo", branch="main", progress_token="tok-1")
+
+    assert ("pusher", "tok-1") in events
+    push_index = next(i for i, e in enumerate(events) if e[0] == "push")
+    clone_index = next(i for i, e in enumerate(events) if e[0] == "clone")
+    assert push_index < clone_index, "progress must be pushed BEFORE the clone runs"
+
+    # A bare string is a valid activity to the console (activityParts treats
+    # `typeof activity === "string"` as {verb, detail: ""}), and naming the repo
+    # and branch is what distinguishes this from a generic spinner.
+    assert events[push_index][2] == ["cloning owner/repo@main"]
+
+
+def test_no_progress_push_without_a_token(manager, monkeypatch):
+    """No token means no ingest route, so pushing would be a wasted round trip."""
+    pushes = []
+
+    class _CapturingPusher:
+        def __init__(self, progress_token):
+            pushes.append(progress_token)
+
+        def push(self, *_args, **_kwargs):
+            pushes.append("pushed")
+
+    monkeypatch.setattr(shim, "_ProgressPusher", _CapturingPusher)
+    monkeypatch.setattr(shim.subprocess, "run", lambda *_a, **_k: _GitProcess())
+
+    manager.turn("first", repo="owner/repo", branch="main")
+
+    assert pushes == []
