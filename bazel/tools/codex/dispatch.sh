@@ -2,8 +2,8 @@
 # Deterministic wrapper for dispatching implementation work to the Codex CLI.
 #
 # Usage:
-#   bazel/tools/codex/dispatch.sh <tier> <workdir> "<task spec>"
-#   echo "<task spec>" | bazel/tools/codex/dispatch.sh <tier> <workdir> -
+#   "$WORKDIR"/bazel/tools/codex/dispatch.sh <tier> "$WORKDIR" "<task spec>"
+#   echo "<task spec>" | "$WORKDIR"/bazel/tools/codex/dispatch.sh <tier> "$WORKDIR" -
 #
 #   tier:    luna | terra | frontier
 #            luna = default (most value / $); terra = step-up; frontier/Sol = rare
@@ -96,20 +96,38 @@ mkdir -p "$RUNDIR"
 # refuse loudly instead. A lock whose pid is dead is stale and reclaimed.
 LOCK="$RUNDIR/lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
-	OTHER_PID="$(cat "$LOCK/pid" 2>/dev/null || true)"
-	if [[ -n "$OTHER_PID" ]] && kill -0 "$OTHER_PID" 2>/dev/null; then
+	if ! OTHER_PID="$(cat "$LOCK/pid" 2>/dev/null)" || [[ -z "$OTHER_PID" ]]; then
+		echo "dispatch lock is being acquired for $WORKDIR" >&2
+		exit "$BUSY_EXIT"
+	fi
+	OTHER_CHILD=""
+	if [[ -e "$LOCK/child" ]]; then
+		if ! OTHER_CHILD="$(cat "$LOCK/child" 2>/dev/null)"; then
+			echo "dispatch lock metadata is unreadable for $WORKDIR" >&2
+			exit "$BUSY_EXIT"
+		fi
+		if [[ -n "$OTHER_CHILD" ]] && kill -0 "$OTHER_CHILD" 2>/dev/null; then
+			echo "dispatch child pid $OTHER_CHILD already owns $WORKDIR" >&2
+			echo "live log: $(cat "$LOCK/log" 2>/dev/null || echo unknown)" >&2
+			exit "$BUSY_EXIT"
+		fi
+	fi
+	if kill -0 "$OTHER_PID" 2>/dev/null; then
 		echo "dispatch pid $OTHER_PID already owns $WORKDIR" >&2
 		echo "live log: $(cat "$LOCK/log" 2>/dev/null || echo unknown)" >&2
 		exit "$BUSY_EXIT"
 	fi
 	rm -rf "$LOCK"
-	mkdir "$LOCK"
+	if ! mkdir "$LOCK" 2>/dev/null; then
+		echo "dispatch lock was claimed by another invocation for $WORKDIR" >&2
+		exit "$BUSY_EXIT"
+	fi
 fi
+echo $$ >"$LOCK/pid"
 
-STAMP="$(date +%Y%m%dT%H%M%S)"
+STAMP="$(date +%Y%m%dT%H%M%S).$$"
 LOG="$RUNDIR/$STAMP.log"
 LAST="$RUNDIR/$STAMP.last-message.txt"
-echo $$ >"$LOCK/pid"
 echo "$LOG" >"$LOCK/log"
 
 # If the harness kills this wrapper (timeout, user interrupt), take the codex
@@ -118,13 +136,17 @@ echo "$LOG" >"$LOCK/log"
 CHILD=""
 cleanup() {
 	if [[ -n "$CHILD" ]]; then
-		kill -TERM "$CHILD" 2>/dev/null || true
+		kill -TERM -- -$CHILD 2>/dev/null || true
+		wait "$CHILD" 2>/dev/null || true
+		CHILD=""
 	fi
 	rm -rf "$LOCK"
 }
 trap cleanup EXIT
 trap 'cleanup; trap - TERM; exit 143' TERM INT
 
+rm -f "$LAST"
+set -m
 set +e
 codex exec \
 	--model "$MODEL" \
@@ -136,6 +158,7 @@ codex exec \
 	-C "$WORKDIR" \
 	"${SPEC}${GUARDRAILS}" >"$LOG" 2>&1 &
 CHILD=$!
+echo "$CHILD" >"$LOCK/child"
 wait "$CHILD"
 CODE=$?
 CHILD=""
@@ -146,7 +169,7 @@ set -e
 # non-zero exit so a task spec that merely mentions rate limits or 429s
 # does not false-positive.
 if [[ "$CODE" -ne 0 ]] &&
-	grep -qiE 'usage limit|rate limit|too many requests|429|quota|plan limit' "$LOG"; then
+	grep -qiE 'usage limit|plan limit|rate limit|too many requests|quota exceeded|http/?[12]?[.0-9]* 429|status(:)? 429' "$LOG"; then
 	echo "CODEX_QUOTA_EXHAUSTED model=$MODEL log=$LOG" >&2
 	exit "$QUOTA_EXIT"
 fi
