@@ -185,6 +185,41 @@ PI_MODELS = {
     "qwen": "qwen3.6-27b",
 }
 DEFAULT_PI_MODEL = "qwen"
+
+# PI context configuration. These values must be kept in sync with vLLM's
+# --max-model-len (projects/inference/deploy/values.yaml:195). A stale
+# contextWindow value here re-arms the bug where pi's clampMaxTokensToContext
+# computes available output tokens using a false budget, leading to a loud
+# 400 error as soon as input tokens reach exactly half the real window.
+PI_CONTEXT_WINDOW = 32768
+# pi's hardcoded safety margin in clampMaxTokensToContext.
+PI_CONTEXT_SAFETY_TOKENS = 4096
+
+# Maximum output tokens pi will attempt to generate. This caps reply length to
+# prevent bloated answers that waste the context window. It also caps pi's
+# compaction summary at PI_MAX_OUTPUT_TOKENS via
+# min(floor(0.8 * reserveTokens), model.maxTokens).
+# pi's estimateContextTokens anchors on the provider's real usage.totalTokens
+# from the last assistant message and only chars/4-estimates messages after it,
+# so the exposure is one turn's trailing tool results, not the whole
+# conversation. This is why PI_MAX_OUTPUT_TOKENS matters for compaction but not
+# for 400-safety.
+PI_MAX_OUTPUT_TOKENS = 4096
+
+# Compaction reserve in tokens. This must exceed PI_MAX_OUTPUT_TOKENS plus
+# PI_CONTEXT_SAFETY_TOKENS so pi starts compacting while there is still room for
+# a full response at turn boundaries. pi checks compaction at agent_end and
+# before a prompt, not between tool iterations, so a run that approaches the
+# reserve mid-execution can still produce short replies.
+PI_COMPACTION_RESERVE_TOKENS = 10240
+
+# Tokens to keep after compaction. pi's default keepRecentTokens (20000)
+# exceeds the usable budget after pi's default 16384 reserve (32768 - 16384 =
+# 16384), so post-compaction context would land straight back above the
+# threshold. This value must be less than
+# (PI_CONTEXT_WINDOW - PI_COMPACTION_RESERVE_TOKENS) so compaction actually
+# helps when it fires.
+PI_COMPACTION_KEEP_RECENT_TOKENS = 8000
 MAX_REQUEST_BODY_BYTES = 1 << 20
 MAX_TOOL_INPUT_BYTES = 4096
 # Cap on the proxy request head the egress forwarder reads before it knows the
@@ -2408,12 +2443,58 @@ class PiProcess:
                         "supportsDeveloperRole": False,
                         "supportsReasoningEffort": False,
                     },
-                    "models": [{"id": PI_MODELS[DEFAULT_PI_MODEL]}],
+                    "models": [
+                        {
+                            "id": PI_MODELS[DEFAULT_PI_MODEL],
+                            "contextWindow": PI_CONTEXT_WINDOW,
+                            "maxTokens": PI_MAX_OUTPUT_TOKENS,
+                        }
+                    ],
                 }
             }
         }
         with open(os.path.join(agent_dir, "models.json"), "w") as stream:
             json.dump(config, stream)
+
+    def _write_settings_json(self, pi_home):
+        """Write pi's settings.json with compaction configuration.
+
+        pi may persist unrelated keys in settings.json, so this method reads
+        any existing file, merges the compaction block, and writes back. If
+        the file is missing, unreadable, or contains invalid JSON, fall back
+        to writing just the compaction block without crashing the spawn.
+        """
+        agent_dir = os.path.join(pi_home, "agent")
+        _ensure_cli_dir(agent_dir)
+        settings_path = os.path.join(agent_dir, "settings.json")
+
+        existing_settings = {}
+        try:
+            with open(settings_path, "r") as stream:
+                existing_settings = json.load(stream)
+        except (OSError, ValueError):
+            # ValueError covers both json.JSONDecodeError and UnicodeDecodeError.
+            # A torn write on the durable workspace volume can produce invalid UTF-8.
+            pass
+
+        if not isinstance(existing_settings, dict):
+            existing_settings = {}
+
+        existing_settings["compaction"] = {
+            "enabled": True,
+            "reserveTokens": PI_COMPACTION_RESERVE_TOKENS,
+            "keepRecentTokens": PI_COMPACTION_KEEP_RECENT_TOKENS,
+        }
+
+        try:
+            with open(settings_path, "w") as stream:
+                json.dump(existing_settings, stream)
+        except OSError as exc:
+            sys.stderr.write(
+                "ember-claude-shim: warning: failed to write %s: %s\n"
+                % (settings_path, exc)
+            )
+            sys.stderr.flush()
 
     def _spawn(self, model, system_prompt=None):
         if not os.path.isdir(self.workspace):
@@ -2422,6 +2503,7 @@ class PiProcess:
         child_env = self._child_env()
         pi_home = child_env["PI_HOME"]
         self._write_model_config(pi_home)
+        self._write_settings_json(pi_home)
         command = [
             self.executable,
             "--mode",
