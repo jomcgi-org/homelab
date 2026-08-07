@@ -583,12 +583,12 @@ acts on the guest's behalf through the brokered egress path.
 ## 11. Roadmap state
 
 R0 Tasks, R1 Zip lane, R2 Sessions, R3 Serving, R4 Stateful, R5 Composite,
-and R6 Continuity are **shipped**. R6 Facade (etcd shim, virtual control
+R6 Continuity, and R8 Consumers (agent threads on sessions, goosecracker
+retired) are **shipped**. R6 Facade (etcd shim, virtual control
 planes, hard tenancy) is demoted to Recorded pending real demand. R7
 Distribution is decided (vendor-aware placement over the export/restore
-verbs; needs a second warm-capable node to matter). R8 Consumers (agent
-threads on sessions, retiring fc-agentd) and R9 Packaging (standalone
-open-sourceable artifact) are decided. In-flight engineering: promoting
+verbs; needs a second warm-capable node to matter). R9 Packaging (standalone
+open-sourceable artifact) is decided. In-flight engineering: promoting
 brick autoscale from `up` to `full`, node-local activator soak, and the
 conciseness program (issue #4009).
 

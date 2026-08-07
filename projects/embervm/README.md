@@ -196,8 +196,9 @@ continuity polish. Full milestone candour lives in
       cold-boot committed stateful state (ADR embervm/009).
 - [ ] **R7 Distribution**: multi-node pre-warm and copy-not-rebuild placement
       (needs more than one FC node to matter).
-- [ ] **R8 Consumers**: agent-thread tier on EmberVM sessions; retire
-      fc-invoke for goosecracker (dogfood, not product definition).
+- [x] **R8 Consumers**: agent-thread tier on EmberVM sessions
+      (`monolith/agent_sessions`); goosecracker, the per-agent daemon it grew
+      out of, is retired (dogfood, not product definition).
 - [ ] **R9 Packaging**: standalone install / quickstart for external adopters
       (closer to the product than more classes).
 - [x] **CPU headroom reporting** from cgroups in NodeStatus.
