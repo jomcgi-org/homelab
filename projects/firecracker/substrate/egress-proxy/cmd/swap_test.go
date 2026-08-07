@@ -694,3 +694,40 @@ func TestSwapPumpInjectsOnThePlaintextLane(t *testing.T) {
 		t.Errorf("response not relayed to the guest: %q", back.String())
 	}
 }
+
+// git over HTTPS and the GitHub API want the SAME token in two shapes. Verified
+// against github.com with a real PAT: git-receive-pack 401s on Bearer and 200s
+// on Basic, while api.github.com 200s on Bearer. Encoding in the sidecar keeps
+// ONE credential in the vault instead of a derived base64 copy that would
+// silently outlive a rotation.
+func TestHeaderValueEncodesBasicWhenUserIsSet(t *testing.T) {
+	basic := secretEntry{Header: "Authorization", BasicUser: "x-access-token", value: "ghp_example"}
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:ghp_example"))
+	if got := basic.headerValue(); got != want {
+		t.Errorf("headerValue() = %q, want %q", got, want)
+	}
+
+	bearer := secretEntry{Header: "Authorization", ValuePrefix: "Bearer ", value: "ghp_example"}
+	if got, want := bearer.headerValue(), "Bearer ghp_example"; got != want {
+		t.Errorf("headerValue() = %q, want %q", got, want)
+	}
+
+	// Same secret, two lanes, two shapes: this is the whole point.
+	if basic.headerValue() == bearer.headerValue() {
+		t.Error("basic and bearer encodings of the same token must differ")
+	}
+}
+
+func TestLoadSecretsRejectsBothBasicUserAndValuePrefix(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	called := 0
+	prev := exitFn
+	exitFn = func(int) { called++ }
+	defer func() { exitFn = prev }()
+
+	t.Setenv("EGRESS_SECRETS", `[{"header":"Authorization","valuePrefix":"Bearer ","basicUser":"x-access-token","env":"TOK","egressTo":["github.com"]}]`)
+	loadSecrets(logger)
+	if called == 0 {
+		t.Error("an entry setting both encodings must refuse to start, not pick one")
+	}
+}

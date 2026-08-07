@@ -439,11 +439,44 @@ egress:
       # opt-in, and claim-resolution failure still denies (issue #4298).
       injectAlwaysPaths:
         - /backend-api/ps/mcp
-  # Shared with the monolith gardener, which reads the same item. Read-only sync,
-  # so two consumers is fine; the field label CLAUDE_AUTH_TOKEN becomes the key.
+    # GitHub, in TWO shapes of the SAME token, because git and the API disagree
+    # about how to carry it. Verified against github.com with a real PAT:
+    # git-receive-pack 401s on Bearer and 200s on Basic, while api.github.com
+    # 200s on Bearer. basicUser makes the sidecar do the RFC 7617 encoding, so
+    # the vault holds one credential rather than a derived base64 copy that
+    # would silently outlive a rotation of the value it came from.
+    #
+    # Both are reachable only in CLEARTEXT from the guest: the sidecar injects
+    # on a plaintext request and originates the verified TLS to :443 itself. A
+    # guest speaking https:// to a credentialed host blind-tunnels with NO
+    # injection (ca.enabled is false), so the remote must be
+    # http://github.com/... and API calls must use http://api.github.com. That
+    # is also why gh cannot be credentialed here (it is https-only); curl plus
+    # jq are the PR-opening path.
+    - header: Authorization
+      basicUser: "x-access-token"
+      env: EMBER_GITHUB_GIT_TOKEN
+      egressTo:
+        - github.com
+      secretRef:
+        name: embervm-embervm-egress
+        key: GH_AUTH_TOKEN
+    - header: Authorization
+      valuePrefix: "Bearer "
+      env: EMBER_GITHUB_API_TOKEN
+      egressTo:
+        - api.github.com
+      secretRef:
+        name: embervm-embervm-egress
+        key: GH_AUTH_TOKEN
+  # embervm-agent-secrets carries CLAUDE_AUTH_TOKEN and GH_AUTH_TOKEN together,
+  # so every guest credential comes from one item. Field labels become the keys.
+  # A key missing here DENIES its egressTo hosts rather than tunnelling them
+  # (see the fail-closed arm in the sidecar's handle), so this repoint and the
+  # entries above have to land together.
   onepassword:
     name: embervm-embervm-egress
-    itemPath: "vaults/k8s-homelab/items/litellm-claude-auth"
+    itemPath: "vaults/k8s-homelab/items/embervm-agent-secrets"
 
 # Voice-drivable Claude Code agent sessions (issue #4055). The monolith addresses
 # this workload by name, so it must exist before agent_sessions can create a
