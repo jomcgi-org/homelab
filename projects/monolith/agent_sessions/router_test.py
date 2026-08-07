@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 
-from agent_sessions import store
+from agent_sessions import api, store
 from agent_sessions import mcp
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.router import router
@@ -419,8 +419,10 @@ def test_mcp_tools_still_work(session, monkeypatch):
     monkeypatch.setattr(
         mcp,
         "_persist_session",
-        lambda local, workspace, branch, model, repo=None: store.create_session(
-            session, local, workspace, branch, model, repo
+        lambda local, workspace, branch, model, repo=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
         ),
     )
     monkeypatch.setattr(
@@ -455,8 +457,31 @@ def test_start_session_marks_message_ui_originated(client, session, monkeypatch)
     monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
 
     body = client.post("/api/agents/sessions", json={"prompt": "Hello"}).json()
+    assert store.get_session(session, body["session_id"]).system_prompt is None
     assert mcp._consume_ui_originated(body["session_id"], body["turn"]) is True
     mcp._ui_originated.clear()
+
+
+def test_start_session_for_discord_thread_has_no_system_prompt(session, monkeypatch):
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *_args: 1)
+    monkeypatch.setattr(api, "_schedule_next_message", lambda _session_id: None)
+    monkeypatch.setattr(
+        api,
+        "_persist_session",
+        lambda local, workspace, branch, model, repo=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
+        ),
+    )
+
+    session_id = asyncio.run(
+        api.start_session_for_thread("thread-1", "Hello", repo=None)
+    )
+
+    row = store.get_session(session, session_id)
+    assert row.discord_thread == "thread-1"
+    assert row.system_prompt is None
 
 
 def test_send_message_marks_message_ui_originated(client, session, monkeypatch):

@@ -151,7 +151,9 @@ def _persist_session(
     branch: str,
     model: str | None,
     repo: str | None = None,
+    *,
     discord_thread: str | None = None,
+    system_prompt: str | None = None,
 ) -> AgentSession:
     with Session(get_engine()) as db_session:
         return store.create_session(
@@ -162,6 +164,7 @@ def _persist_session(
             model,
             repo,
             discord_thread=discord_thread,
+            system_prompt=system_prompt,
         )
 
 
@@ -450,6 +453,8 @@ async def _execute_pending_message(session_id: int) -> None:
             if session_row.repo is not None:
                 deliver_kwargs["repo"] = session_row.repo
                 deliver_kwargs["branch"] = session_row.branch
+            if session_row.system_prompt is not None:
+                deliver_kwargs["system_prompt"] = session_row.system_prompt
             turn, ember = await _transport.deliver(
                 existing_ember,
                 cli_session_id,
@@ -618,7 +623,14 @@ async def monolith_agent_session_start(prompt: str, model: str | None = None) ->
     local_session_id = str(uuid4())
     workspace = "<guest>"  # Workspace is in the guest, not the pod
     row = await asyncio.to_thread(
-        _persist_session, local_session_id, workspace, "main", model, None
+        _persist_session,
+        local_session_id,
+        workspace,
+        "main",
+        model,
+        None,
+        discord_thread=None,
+        system_prompt=voice.VOICE_INSTRUCTION,
     )
     turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     _schedule_next_message(row.id)

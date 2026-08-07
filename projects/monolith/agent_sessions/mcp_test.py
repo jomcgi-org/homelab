@@ -6,7 +6,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from agent_sessions import mcp, model_family, store
+from agent_sessions import mcp, model_family, store, voice
 from agent_sessions.models import AgentSession, AgentTurn
 from agent_sessions.transport import EmberSession, EmberSessionGone, Turn
 from faas.embervm_client import EmberVMTransportError
@@ -44,6 +44,44 @@ def test_session_start_stores_model_on_session_and_pending(monkeypatch, session,
     pending = store.get_pending_message(session, row.id, result["turn"])
     assert row.model == model
     assert pending.model == model
+
+
+def test_session_start_stores_voice_system_prompt(monkeypatch, session):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    result = asyncio.run(mcp.monolith_agent_session_start("hello"))
+
+    row = store.get_session(session, result["session_id"])
+    assert row.system_prompt == voice.VOICE_INSTRUCTION
+
+
+def test_execute_pending_message_forwards_system_prompt_only_when_set(
+    monkeypatch, session
+):
+    delivered = []
+
+    async def mock_deliver(*args, **kwargs):
+        delivered.append(kwargs)
+        return _completed_delivery(args[2])
+
+    async def mock_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    prompted = store.create_session(
+        session, "prompted", "/workspace", "main", system_prompt="X"
+    )
+    store.create_pending_message(session, prompted.id, "hello")
+    asyncio.run(mcp._execute_pending_message(prompted.id))
+    assert delivered[-1]["system_prompt"] == "X"
+
+    unprompted = store.create_session(session, "unprompted", "/workspace", "main")
+    store.create_pending_message(session, unprompted.id, "hello")
+    asyncio.run(mcp._execute_pending_message(unprompted.id))
+    assert "system_prompt" not in delivered[-1]
 
 
 @pytest.fixture
@@ -150,6 +188,7 @@ def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
         repo=None,
         branch=None,
         progress_token=None,
+        system_prompt=None,
     ):
         delivered_models.append(model)
         return _completed_delivery(message)
@@ -189,6 +228,7 @@ def test_session_start_returns_immediately(monkeypatch, session):
         repo=None,
         branch=None,
         progress_token=None,
+        system_prompt=None,
     ):
         started.set()
         await asyncio.Event().wait()
@@ -225,6 +265,7 @@ def test_session_start_happy_path_persists_result(monkeypatch, session):
         repo=None,
         branch=None,
         progress_token=None,
+        system_prompt=None,
     ):
         return _completed_delivery(message)
 
@@ -299,6 +340,7 @@ def test_concurrent_executors_on_first_turn_run_once(monkeypatch, session):
         repo=None,
         branch=None,
         progress_token=None,
+        system_prompt=None,
     ):
         executions.append(message)
         await asyncio.sleep(0.01)
@@ -395,6 +437,7 @@ def test_pending_message_executed_in_background(monkeypatch, session):
         repo=None,
         branch=None,
         progress_token=None,
+        system_prompt=None,
     ):
         return _completed_delivery(message)
 
@@ -438,6 +481,7 @@ def test_failed_delivery_clears_reused_ember_session(monkeypatch, session):
         repo=None,
         branch=None,
         progress_token=None,
+        system_prompt=None,
     ):
         raise EmberSessionGone("terminal invoke failure")
 
@@ -476,6 +520,7 @@ def test_clear_ember_session_not_called_when_fresh_binding_persisted(
         repo=None,
         branch=None,
         progress_token=None,
+        system_prompt=None,
     ):
         heir = EmberSession("heir-id", "heir-token", None)
         if on_create is not None:

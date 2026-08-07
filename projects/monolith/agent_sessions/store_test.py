@@ -72,6 +72,25 @@ def test_write_progress_sync_updates_claimed_row(monkeypatch, tmp_path):
         _restore_schemas(schemas)
 
 
+def test_create_session_persists_optional_system_prompt(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            prompted = store.create_session(
+                session,
+                "prompted",
+                "<guest>",
+                "main",
+                system_prompt="X",
+            )
+            unprompted = store.create_session(session, "unprompted", "<guest>", "main")
+
+            assert prompted.system_prompt == "X"
+            assert unprompted.system_prompt is None
+    finally:
+        _restore_schemas(schemas)
+
+
 def test_write_progress_sync_stores_activities(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     activities = [{"type": "tool", "name": "shell"}]
