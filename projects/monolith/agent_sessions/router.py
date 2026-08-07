@@ -78,12 +78,31 @@ def _aggregate_statement(status: str | None = None, session_id: int | None = Non
             PendingMessage.session_id == session_id
         )
     pending = pending_statement.group_by(PendingMessage.session_id).subquery()
+    # The session list renders a human title (the first prompt) instead of
+    # the raw UUID; sessions whose first turn has not completed yet fall
+    # back to the first queued prompt.
+    first_turn_prompt = (
+        select(AgentTurn.prompt)
+        .where(AgentTurn.session_id == AgentSession.id)
+        .order_by(AgentTurn.seq)
+        .limit(1)
+        .scalar_subquery()
+    )
+    first_pending_prompt = (
+        select(PendingMessage.message_text)
+        .where(PendingMessage.session_id == AgentSession.id)
+        .order_by(PendingMessage.seq)
+        .limit(1)
+        .scalar_subquery()
+    )
     statement = (
         select(
             AgentSession,
             func.coalesce(turns.c.turn_count, 0),
             func.coalesce(turns.c.total_cost_usd, 0),
             func.coalesce(pending.c.pending_count, 0),
+            first_turn_prompt,
+            first_pending_prompt,
         )
         .outerjoin(turns, turns.c.session_id == AgentSession.id)
         .outerjoin(pending, pending.c.session_id == AgentSession.id)
@@ -94,8 +113,20 @@ def _aggregate_statement(status: str | None = None, session_id: int | None = Non
     return statement
 
 
+def _fallback_title(
+    first_turn_prompt: str | None, first_pending_prompt: str | None
+) -> str:
+    text = (first_turn_prompt or first_pending_prompt or "").strip()
+    return text.split("\n")[0][:140]
+
+
 def _session_payload(
-    row: AgentSession, turn_count: int, total_cost_usd: float, pending_count: int
+    row: AgentSession,
+    turn_count: int,
+    total_cost_usd: float,
+    pending_count: int,
+    first_turn_prompt: str | None = None,
+    first_pending_prompt: str | None = None,
 ) -> dict:
     return {
         "id": row.id,
@@ -105,6 +136,7 @@ def _session_payload(
         "repo": row.repo,
         "model": row.model,
         "status": row.status,
+        "title": row.title or _fallback_title(first_turn_prompt, first_pending_prompt),
         "created_at": _iso(row.created_at),
         "last_turn_at": _iso(row.last_turn_at),
         "voice_summary": row.voice_summary,
@@ -119,10 +151,7 @@ def _rows(session: Session, status: str | None = None, limit: int | None = None)
     if limit is not None:
         statement = statement.limit(limit)
     results = session.exec(statement).all()
-    return [
-        _session_payload(result[0], result[1], result[2], result[3])
-        for result in results
-    ]
+    return [_session_payload(*result) for result in results]
 
 
 class StartRequest(BaseModel):
@@ -158,7 +187,7 @@ def get_session_detail(
     ).first()
     if result is None:
         raise HTTPException(status_code=404, detail="Agent session not found")
-    row, turn_count, total_cost_usd, pending_count = result
+    row, turn_count, total_cost_usd, pending_count, first_turn, first_pending = result
     turns_statement = select(AgentTurn).where(AgentTurn.session_id == session_id)
     if after_seq is not None:
         turns_statement = turns_statement.where(AgentTurn.seq > after_seq)
@@ -169,7 +198,9 @@ def get_session_detail(
         .order_by(PendingMessage.seq)
     ).all()
     return {
-        "session": _session_payload(row, turn_count, total_cost_usd, pending_count),
+        "session": _session_payload(
+            row, turn_count, total_cost_usd, pending_count, first_turn, first_pending
+        ),
         "turns": [
             {
                 "seq": turn.seq,
