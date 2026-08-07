@@ -22,24 +22,34 @@ bare Mac `bazel`.
 - NOT for CI-only-verifiable work (deep Helm, Bazel/apko, RBAC, migration
   ordering): keep that on **Opus 5**
 - NOT for review: reviewer stays Opus (never downgrade)
+- NOT for typing out a fix that review already wrote. If the exact diff is in
+  hand and under ~20 lines, apply it directly in the main loop: the thinking
+  is spent, and a dispatch round costs more than the typing.
 
 ## How to Dispatch
 
 Prefer the **`implementer`** agent (`.claude/agents/implementer.md`): it has no
 `Write` or `Edit` tool, so spawning it cannot silently turn into Claude writing
-the code. Hand it the full spec and a worktree path; it runs the wrapper below
-and returns the diff. Drive the wrapper directly only when you need a tier or
+the code. Hand it the full spec and a worktree path; it runs the wrapper and
+returns the diff. Drive the wrapper directly only when you need a tier or
 invocation the agent does not cover.
 
-Always through the wrapper:
+Always through the wrapper, always in the background, always by the worktree's
+own copy (relative paths have exit-127'd when cwd drifted):
 
-```bash
-bazel/tools/codex/dispatch.sh <tier> <workdir> "<full task spec>"
-# or:
-bazel/tools/codex/dispatch.sh luna /tmp/claude-worktrees/my-task - <<'SPEC'
-...multi-line spec...
-SPEC
 ```
+Bash tool:
+  command: "$WORKDIR"/bazel/tools/codex/dispatch.sh luna "$WORKDIR" - <<'SPEC'
+  ...full spec...
+  SPEC
+  run_in_background: true
+```
+
+Workers run minutes to over an hour (median ~2.5 min, p90 ~8 min, tail 80+
+min). A foreground call dies at the shell timeout, kills the worker mid-run,
+and leaves a partial diff that reads as a wrong implementation at review. The
+full transcript lands in `<worktree>/.codex-dispatch/<stamp>.log`; stdout is
+just the worker's final message.
 
 | Tier       | Model         | Effort | Use for |
 | ---------- | ------------- | ------ | ------- |
@@ -50,15 +60,55 @@ SPEC
 Rules:
 
 1. **Prefer Luna.** Do not default to Terra or Sol to "be safe."
-2. **One worktree per worker.** The sandbox blocks writes outside the worktree.
-   It does NOT block network (workers need to fetch deps and read upstream
-   docs), so "no commit, no push" is enforced by the spec guardrails the
-   wrapper appends, not by the sandbox.
-3. **Full spec up front** (files, acceptance, patterns to imitate).
+2. **One worktree per worker, one worker per worktree.** The wrapper enforces
+   the second half (exit 65) because concurrent workers interleave edits.
+3. **Full spec up front** (see the template below).
 4. **Fan out in parallel** for independent tasks.
 5. **Opus reviews** the diff, runs **`ci`** (or `ci lint` + `ci test`), then
    commits Conventional Commits. Do not skip `ci` and hope PR CI is the first
    signal.
+
+## Spec Template
+
+Repo conventions ship with the worktree in `AGENTS.md` (codex reads it
+automatically), so do not restate them. What the spec must carry:
+
+```markdown
+# Task: <one line>
+
+## Goal
+<what changes and why, including the invariant the change must preserve;
+for EmberVM control-plane work, state what would falsify the design>
+
+## Files
+<files to touch, and the files whose patterns to imitate>
+
+## Acceptance
+<grep-able assertions the implementer verifies mechanically:
+"def handle_agent_thread_reply exists in chat/bot.py",
+"py_test target bot_agent_thread_test in projects/monolith/BUILD">
+
+## Out of scope
+<what NOT to touch>
+```
+
+The Acceptance section is load-bearing: the implementer greps each line before
+reporting success, which catches an incomplete diff at Haiku prices instead of
+at Opus review.
+
+## Correction Rounds
+
+After a review or a red `ci`, **batch every finding into one respec and one
+dispatch**. Single-finding dispatches have taken four rounds to fix one test;
+the batched respec fixes the lot in one. Same rule for test failures: all of
+them, one spec.
+
+- Never re-dispatch a trimmed spec after a failure or kill; a shorter respec
+  produces a worse diff.
+- Before any re-dispatch, confirm the previous worker is dead and inspect
+  `git status` for a partial diff to build on or reset.
+- Exact fixes under ~20 lines that review already wrote: main loop, not a
+  dispatch (see When to Use).
 
 ## Quota Exhaustion (exit code 42)
 

@@ -77,6 +77,12 @@ preference, it is how the budget lasts. Three lanes:
   Open it when Opus has stalled and the blocker is running out of context, not
   when the problem is merely hard.
 
+Dispatches run in the background (they take minutes to over an hour) and
+correction rounds are batched: after a review or a red `ci`, one consolidated
+respec covering every finding, never one dispatch per finding. If review
+already produced the exact diff (under ~20 lines), apply it directly; the
+thinking is spent and dispatch overhead exceeds the typing.
+
 **If you are about to write implementation code in the main loop, that is the
 signal to dispatch instead.** Writing it yourself is the default failure mode,
 and it is the expensive one. Spawn the **`implementer`** agent
