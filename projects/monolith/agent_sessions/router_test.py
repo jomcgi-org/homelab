@@ -114,6 +114,30 @@ def test_list_sessions_aggregates(client, session):
     assert item["turn_count"] == 2
     assert item["pending_count"] == 1
     assert item["total_cost_usd"] == pytest.approx(0.1)
+    assert item["title"] == "one"
+
+
+def test_list_sessions_title_falls_back_to_pending_prompt(client, session):
+    pending_only = _session(session, "pending-only")
+    session.add(
+        PendingMessage(
+            session_id=pending_only.id,
+            seq=1,
+            message_text="First line\nsecond line",
+        )
+    )
+    _session(session, "empty")
+    session.commit()
+
+    _session(session, "named", title="Qwen picked this name")
+    body = client.get("/api/agents/sessions").json()
+    titles = {item["local_session_id"]: item["title"] for item in body}
+    # No completed turn yet: the queued prompt names the session, first
+    # line only. A session with no turns and no queue has no title, and a
+    # Qwen-generated name always wins over the prompt fallback.
+    assert titles["pending-only"] == "First line"
+    assert titles["empty"] == ""
+    assert titles["named"] == "Qwen picked this name"
 
 
 def test_get_session_detail(client, session):
@@ -153,6 +177,7 @@ def test_get_session_detail(client, session):
     assert body["session"]["turn_count"] == 2
     assert body["session"]["pending_count"] == 1
     assert body["session"]["total_cost_usd"] == 0
+    assert body["session"]["title"] == "one"
     assert [turn["seq"] for turn in body["turns"]] == [1, 2]
     assert body["turns"][1]["usage"] == {"activities": ["shell"]}
     assert body["pending_queue"][0]["prompt"] == "next"

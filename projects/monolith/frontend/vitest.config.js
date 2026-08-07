@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 export default defineConfig({
   resolve: {
     alias: {
+      // SvelteKit's `$lib` alias, for tests that exercise modules importing
+      // through it (the agents markdown wrapper does).
+      $lib: fileURLToPath(new URL("./src/lib", import.meta.url)),
       // The bare node test env has no SvelteKit plugin, so the `$app/environment`
       // virtual module does not resolve when a `+page.server.js` load (and, via
       // cache-headers.js, `versionedEtag`) is imported directly. Point it at a

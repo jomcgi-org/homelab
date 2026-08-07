@@ -1,9 +1,14 @@
 <script>
+  import { tick } from "svelte";
+  import { renderAgentMarkdown } from "./markdown.js";
   import { statusClass, statusLabel } from "./status.js";
+  import "./agents-theme.css";
 
   let { data } = $props();
 
   const MODELS = ["opus", "fable", "sonnet", "luna", "terra", "sol", "qwen"];
+  const RECENT_HISTORY_MS = 24 * 60 * 60 * 1000;
+  const ATTENTION_MS = 60 * 60 * 1000;
 
   let selectedId = $state(null);
   let sidebarCollapsed = $state(false);
@@ -25,6 +30,7 @@
   let sending = $state(false);
   let creating = $state(false);
   let showNewPanel = $state(false);
+  let showAllHistory = $state(false);
   let repos = $state([]);
   let branches = $state([]);
   let repoLoading = $state(false);
@@ -44,6 +50,7 @@
   let searchController = null;
   let requestSequence = 0;
   let renderedPending = $state({});
+  let turnsEl = $state(null);
 
   const selectedSession = $derived(
     sessions.find((session) => String(session.id) === String(selectedId)) ??
@@ -56,6 +63,14 @@
   const historySessions = $derived(
     sessions.filter((session) => !isActive(session)).sort(compareSessions),
   );
+  const recentHistorySessions = $derived(
+    historySessions.filter(
+      (session) => Date.now() - lastActiveAt(session) < RECENT_HISTORY_MS,
+    ),
+  );
+  const visibleHistorySessions = $derived(
+    showAllHistory ? historySessions : recentHistorySessions,
+  );
   const visibleSearchResults = $derived(searchResults ?? []);
   const hasActiveSessions = $derived(
     sessions.some((session) => isActive(session)) ||
@@ -63,6 +78,12 @@
         sessions.find((session) => String(session.id) === String(selectedId))
           ?.pending_count,
       ) > 0,
+  );
+  const headerTitle = $derived(
+    firstLine(selectedSession?.title) ||
+      firstLine(detail?.turns?.[0]?.prompt) ||
+      firstLine(detail?.pending_queue?.[0]?.prompt) ||
+      sessionTitle(selectedSession),
   );
 
   function isActive(session) {
@@ -75,6 +96,13 @@
     return (
       (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime)
     );
+  }
+
+  function lastActiveAt(session) {
+    const at = Date.parse(
+      timestamp(session?.last_turn_at ?? session?.created_at),
+    );
+    return Number.isNaN(at) ? 0 : at;
   }
 
   function timestamp(value) {
@@ -100,33 +128,105 @@
     return `${Math.floor(months / 12)}y`;
   }
 
-  function displayName(session) {
+  function firstLine(value) {
+    return String(value || "")
+      .trim()
+      .split("\n")[0];
+  }
+
+  function shortId(session) {
+    return String(session?.local_session_id || session?.id || "session").slice(
+      0,
+      8,
+    );
+  }
+
+  function sessionTitle(session) {
     return (
-      session?.local_session_id ||
-      `${session?.workspace || "workspace"}/${session?.branch || "branch"}`
+      firstLine(session?.title) ||
+      (session?.repo ? `${session.repo}@${session.branch || "main"}` : "") ||
+      shortId(session)
     );
   }
 
   function formatRepoContext(session) {
-    if (session?.repo) return `${session.repo}@${session.branch || "main"}`;
-    return `${session?.workspace || "workspace"} / ${session?.branch || "branch"}`;
+    if (session?.repo) return `${session.repo} @ ${session.branch || "main"}`;
+    if (session?.workspace && session.workspace !== "<guest>") {
+      return session.workspace;
+    }
+    return "scratch workspace";
+  }
+
+  function sidebarDot(session) {
+    const cls = statusClass(session);
+    if (cls === "running" || cls === "working" || cls === "needs_input") {
+      return cls;
+    }
+    if (cls === "warn" && Date.now() - lastActiveAt(session) < ATTENTION_MS) {
+      return "warn";
+    }
+    return "idle";
   }
 
   function cost(value) {
-    return `$${Number(value || 0).toFixed(4)}`;
+    const amount = Number(value || 0);
+    if (!(amount > 0)) return "";
+    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
   }
 
-  function activityLabel(activity) {
-    if (typeof activity === "string") return activity;
-    if (!activity || typeof activity !== "object") return "activity";
-    const tool = String(activity.tool || activity.name || "activity");
-    if (tool.toLowerCase() === "edit" || tool.toLowerCase() === "write") {
-      return `${tool} ${activity.file_path || activity.path || "file"}`;
+  function turnFailed(turn) {
+    return Boolean(
+      turn?.terminal_reason && turn.terminal_reason !== "completed",
+    );
+  }
+
+  function activityParts(activity) {
+    if (typeof activity === "string") return { verb: activity, detail: "" };
+    if (!activity || typeof activity !== "object") {
+      return { verb: "step", detail: "" };
     }
-    if (tool.toLowerCase() === "bash" || tool.toLowerCase() === "shell") {
-      return `${tool} ${activity.command || activity.input || ""}`.trim();
+    const kind = String(
+      activity.type || activity.tool || activity.name || "",
+    ).toLowerCase();
+    if (kind === "edit" || kind === "write") {
+      return { verb: kind, detail: activity.file_path || activity.path || "" };
     }
-    return tool;
+    if (kind === "bash" || kind === "shell") {
+      return {
+        verb: "run",
+        detail: activity.command || compactInput(activity.input),
+      };
+    }
+    if (activity.name) {
+      return {
+        verb: String(activity.name),
+        detail: compactInput(activity.input),
+      };
+    }
+    return { verb: kind || "step", detail: compactInput(activity.input) };
+  }
+
+  function compactInput(input) {
+    if (input == null) return "";
+    const text = typeof input === "string" ? input : JSON.stringify(input);
+    return text.length > 110 ? `${text.slice(0, 110)}…` : text;
+  }
+
+  function activityLine(activity) {
+    const { verb, detail } = activityParts(activity);
+    return detail ? `${verb} ${detail}` : verb;
+  }
+
+  function liveStateLabel(entry, index) {
+    if (entry.claimed_by_replica) return "working";
+    return index === 0 ? "starting" : "waiting";
+  }
+
+  function autoScroll(force = false) {
+    if (!turnsEl) return;
+    const nearBottom =
+      turnsEl.scrollHeight - turnsEl.scrollTop - turnsEl.clientHeight < 200;
+    if (force || nearBottom) turnsEl.scrollTop = turnsEl.scrollHeight;
   }
 
   function syncPendingPartials(entries) {
@@ -184,6 +284,8 @@
               pending_queue: body.pending_queue,
             }
           : body;
+        const force = !incremental;
+        tick().then(() => autoScroll(force));
       }
     } catch (error) {
       if (sequence === requestSequence) errorMessage = error.message;
@@ -500,10 +602,10 @@
       <span class="sr-only">Search sessions</span>
       <input
         bind:value={searchQuery}
-        placeholder="search transcript"
+        placeholder="search transcripts"
         autocomplete="off"
       />
-      {#if searchLoading}<span class="search-pulse">...</span>{/if}
+      {#if searchLoading}<span class="search-pulse">…</span>{/if}
     </label>
 
     {#if searchResults !== null}
@@ -515,10 +617,6 @@
             type="button"
             onclick={() => selectSession(result.session_id)}
           >
-            <span class="result-id mono"
-              >{result.local_session_id ||
-                `${result.workspace}/${result.seq}`}</span
-            >
             <span class="snippet">{result.snippet}</span>
             <span class="result-meta mono"
               >turn {result.seq} · {relativeTime(result.created_at)}</span
@@ -527,96 +625,174 @@
         {:else}<div class="empty">No matching turns</div>{/each}
       </div>
     {:else}
-      <div class="group-title">Active <span>{activeSessions.length}</span></div>
+      {#if activeSessions.length}
+        <div class="group-title">
+          Active <span>{activeSessions.length}</span>
+        </div>
+        <div class="session-list">
+          {#each activeSessions as session (session.id)}
+            {@render sessionRow(session)}
+          {/each}
+        </div>
+      {/if}
+      <div class="group-title history-title">Recent</div>
       <div class="session-list">
-        {#each activeSessions as session (session.id)}
+        {#each visibleHistorySessions as session (session.id)}
           {@render sessionRow(session)}
-        {:else}<div class="empty">No active sessions</div>{/each}
+        {:else}<div class="empty">
+            {activeSessions.length ? "No recent sessions" : "No sessions yet"}
+          </div>{/each}
       </div>
-      <div class="group-title history-title">
-        History <span>{historySessions.length}</span>
-      </div>
-      <div class="session-list">
-        {#each historySessions as session (session.id)}
-          {@render sessionRow(session)}
-        {:else}<div class="empty">No history</div>{/each}
-      </div>
+      {#if historySessions.length > recentHistorySessions.length}
+        <button
+          class="history-toggle"
+          type="button"
+          onclick={() => (showAllHistory = !showAllHistory)}
+          >{showAllHistory
+            ? "show recent only"
+            : `show all (${historySessions.length})`}</button
+        >
+      {/if}
     {/if}
   </aside>
 
   <section class="transcript" aria-label="Agent transcript">
     {#if selectedSession}
       <header class="transcript-head">
-        <div>
-          <div class="eyebrow mono">{displayName(selectedSession)}</div>
+        <div class="head-main">
+          <h1 class="session-title" title={headerTitle}>{headerTitle}</h1>
           <div class="session-context mono">
-            {formatRepoContext(selectedSession)}
+            {formatRepoContext(selectedSession)} · {selectedSession.model ||
+              "luna"} · {shortId(selectedSession)}
           </div>
         </div>
         <div class="head-actions">
-          <span class={`session-state ${statusClass(selectedSession)}`}
-            >{statusLabel(selectedSession)}</span
-          >
+          {#if statusClass(selectedSession) !== "completed"}
+            <span class={`session-state ${statusClass(selectedSession)}`}
+              >{statusLabel(selectedSession)}</span
+            >
+          {/if}
           <button class="destroy-button" type="button" onclick={destroySession}
             >destroy</button
           >
         </div>
       </header>
-      <div class="turns">
-        {#each detail?.turns ?? [] as turn (turn.seq)}
-          <article class="turn">
-            <div class="turn-bar mono">
-              <span>#{turn.seq}</span><span
-                >{turn.model || selectedSession.model || "luna"}</span
-              ><span>{cost(turn.cost_usd)}</span><span
-                >{turn.stop_reason || turn.terminal_reason || "pending"}</span
-              >
-            </div>
-            <div class="prompt"><span class="role">you</span>{turn.prompt}</div>
-            {#if turn.usage?.activities?.length}
-              <div class="activities" aria-label="Tool activity">
-                {#each turn.usage.activities as activity}<code
-                    >{activityLabel(activity)}</code
-                  >{/each}
+      <div class="turns" bind:this={turnsEl}>
+        <div class="turns-inner">
+          {#each detail?.turns ?? [] as turn (turn.seq)}
+            <article class="turn">
+              <div class="prompt">
+                <span class="role">you</span>
+                <div class="prompt-text">{turn.prompt}</div>
               </div>
-            {/if}
-            {#if turn.result_text}<pre
-                class="result">{turn.result_text}</pre>{/if}
-          </article>
-        {:else}<div class="empty transcript-empty">
-            No completed turns
-          </div>{/each}
-
-        {#if detail?.pending_queue?.length}
-          <div class="queue-title">pending queue</div>
-          {#each detail.pending_queue as entry (entry.seq)}
-            <div class="queue-entry">
-              <span class="queue-seq mono">#{entry.seq}</span>
-              <span class="queue-prompt">{entry.prompt}</span>
-              <span class:claimed={entry.claimed_by_replica} class="claim"
-                >{entry.claimed_by_replica ? "claimed" : "waiting"}</span
-              >
-              <span class="muted mono">{relativeTime(entry.created_at)}</span>
-            </div>
-            {#if renderedPending[entry.seq]?.partial_activities}
-              <div class="activities" aria-label="Tool activity">
-                {#each renderedPending[entry.seq].partial_activities as activity}
-                  <div class="activity">{activityLabel(activity)}</div>
-                {/each}
+              {#if turn.usage?.activities?.length}
+                <details class="steps">
+                  <summary
+                    >{turn.usage.activities.length}
+                    {turn.usage.activities.length === 1
+                      ? "step"
+                      : "steps"}</summary
+                  >
+                  <ol class="step-list">
+                    {#each turn.usage.activities as activity}
+                      <li>
+                        <span class="step-verb"
+                          >{activityParts(activity).verb}</span
+                        >
+                        <span class="step-detail"
+                          >{activityParts(activity).detail}</span
+                        >
+                      </li>
+                    {/each}
+                  </ol>
+                </details>
+              {/if}
+              {#if turnFailed(turn)}
+                <pre class="turn-error">{turn.result_text ||
+                    "The turn failed without output."}</pre>
+              {:else if turn.result_text}
+                <div class="result-md">
+                  {@html renderAgentMarkdown(turn.result_text)}
+                </div>
+              {/if}
+              <div class="turn-meta mono">
+                <span>{turn.model || selectedSession.model || "luna"}</span>
+                <span>{relativeTime(turn.created_at)}</span>
+                {#if cost(turn.cost_usd)}<span>{cost(turn.cost_usd)}</span>{/if}
+                {#if turnFailed(turn)}<span class="badge-failed">failed</span
+                  >{/if}
               </div>
-            {/if}
-            {#if renderedPending[entry.seq]?.partial_text}<pre
-                class="result">{renderedPending[entry.seq]
-                  .partial_text}</pre>{/if}
+            </article>
           {/each}
-        {/if}
+
+          {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
+            {@const partial = renderedPending[entry.seq]}
+            {@const state = liveStateLabel(entry, index)}
+            <article class="turn live">
+              <div class="prompt">
+                <span class="role">you</span>
+                <div class="prompt-text">{entry.prompt}</div>
+              </div>
+              <div
+                class={`live-line ${state === "working" ? "" : "quiet"}`}
+                aria-live="polite"
+              >
+                <span class="live-dot" aria-hidden="true"></span>
+                {#if state === "working"}
+                  {#if partial?.partial_activities?.length}
+                    <span class="live-latest"
+                      >{activityLine(
+                        partial.partial_activities[
+                          partial.partial_activities.length - 1
+                        ],
+                      )}</span
+                    >
+                  {:else}
+                    <span class="live-latest">working…</span>
+                  {/if}
+                {:else if state === "starting"}
+                  <span class="live-latest">starting up…</span>
+                {:else}
+                  <span class="live-latest">waiting for the turn ahead…</span>
+                {/if}
+              </div>
+              {#if partial?.partial_activities?.length > 1}
+                <ol class="step-list live-steps" aria-label="Agent activity">
+                  {#if partial.partial_activities.length > 6}
+                    <li class="step-earlier">
+                      … {partial.partial_activities.length - 6} earlier steps
+                    </li>
+                  {/if}
+                  {#each partial.partial_activities.slice(-6) as activity}
+                    <li>
+                      <span class="step-verb"
+                        >{activityParts(activity).verb}</span
+                      >
+                      <span class="step-detail"
+                        >{activityParts(activity).detail}</span
+                      >
+                    </li>
+                  {/each}
+                </ol>
+              {/if}
+              {#if partial?.partial_text}
+                <div class="result-md">
+                  {@html renderAgentMarkdown(partial.partial_text)}
+                </div>
+              {/if}
+            </article>
+          {/each}
+
+          {#if !(detail?.turns ?? []).length && !(detail?.pending_queue ?? []).length}
+            <div class="empty transcript-empty">
+              {detail
+                ? "No turns yet. Send a prompt below."
+                : "Loading session…"}
+            </div>
+          {/if}
+        </div>
       </div>
 
-      {#if detail?.pending_queue?.length}<div class="working-line shimmer">
-          <span class="dot working"></span>
-          {#if detail.pending_queue.some((entry) => entry.claimed_by_replica)}running{:else}waking…{/if}
-          <span class="muted">{detail.pending_queue.length} queued</span>
-        </div>{/if}
       <form
         class="composer"
         onsubmit={(event) => {
@@ -624,33 +800,34 @@
           sendPrompt();
         }}
       >
-        <textarea
-          bind:value={prompt}
-          placeholder="send a prompt to this session"
-          rows="3"
-          onkeydown={(e) => {
-            if (
-              (e.metaKey || e.ctrlKey) &&
-              e.key === "Enter" &&
-              !e.isComposing &&
-              !sending &&
-              prompt.trim()
-            ) {
-              e.preventDefault();
-              sendPrompt();
-            }
-          }}></textarea>
-        <div class="composer-actions">
-          <select class="mono" bind:value={composerModel} aria-label="Model">
-            <option value="">session default</option>
-            {#each MODELS as model}<option value={model}>{model}</option>{/each}
-          </select>
-          <button
-            class="send-button"
-            type="submit"
-            disabled={sending || !prompt.trim()}
-            >{sending ? "sending..." : "send"}</button
-          >
+        <div class="composer-inner">
+          <textarea
+            bind:value={prompt}
+            placeholder="send a prompt to this session (⌘⏎ to send)"
+            rows="3"
+            onkeydown={(e) => {
+              if (
+                (e.metaKey || e.ctrlKey) &&
+                e.key === "Enter" &&
+                !e.isComposing &&
+                !sending &&
+                prompt.trim()
+              ) {
+                e.preventDefault();
+                sendPrompt();
+              }
+            }}></textarea>
+          <div class="composer-actions">
+            {@render modelPicker(composerModel, (model) => {
+              composerModel = model;
+            })}
+            <button
+              class="send-button"
+              type="submit"
+              disabled={sending || !prompt.trim()}
+              >{sending ? "sending…" : "send"}</button
+            >
+          </div>
         </div>
       </form>
     {:else}
@@ -685,13 +862,12 @@
               }
             }}></textarea></label
         >
-        <label
-          >model<select class="mono" bind:value={newSession.model}
-            ><option value="">session default</option
-            >{#each MODELS as model}<option value={model}>{model}</option
-              >{/each}</select
-          ></label
-        >
+        <div class="field">
+          <span class="field-label">model</span>
+          {@render modelPicker(newSession.model, (model) => {
+            newSession.model = model;
+          })}
+        </div>
         <label
           >repo<select
             class="mono"
@@ -705,7 +881,7 @@
             {#if repoLoading}
               <option value="">loading repos</option>
             {:else}
-              <option value="">none (bare workspace)</option>
+              <option value="">none (scratch workspace)</option>
               {#each repos as repo}
                 <option value={repo.id} title={repo.description || ""}>
                   {repo.id}
@@ -740,7 +916,7 @@
             class="send-button"
             type="submit"
             disabled={creating || !newSession.prompt.trim()}
-            >{creating ? "creating" : "create"}</button
+            >{creating ? "creating…" : "create"}</button
           >
         </div>
       </form>
@@ -757,26 +933,47 @@
     class:chosen={String(selectedId) === String(session.id)}
     class="session-row"
     type="button"
-    aria-label={`${displayName(session)}: ${statusLabel(session)}`}
+    aria-label={`${sessionTitle(session)}: ${statusLabel(session)}`}
     onclick={() => selectSession(session)}
   >
-    <span
-      class={`dot ${statusClass(session)}`}
-      title={`${displayName(session)}: ${statusLabel(session)}`}
+    <span class={`dot ${sidebarDot(session)}`} title={statusLabel(session)}
     ></span>
     <span class="row-main"
-      ><span class="session-name">{displayName(session)}</span><span
+      ><span class="session-name">{sessionTitle(session)}</span><span
         class="row-sub mono"
       >
-        {#if session.repo}{session.repo}@{session.branch || "main"} · {relativeTime(
-            session.last_turn_at || session.created_at,
-          )}{:else}{session.model || "luna"} · {relativeTime(
-            session.last_turn_at || session.created_at,
-          )}{/if}
+        {session.model || "luna"}
+        {#if session.repo}· {(session.repo.split("/")[1] || session.repo) +
+            "@" +
+            (session.branch || "main")}{/if}
+        · {relativeTime(session.last_turn_at || session.created_at)}
       </span></span
     >
-    <span class="row-cost mono">{cost(session.total_cost_usd)}</span>
+    {#if cost(session.total_cost_usd)}
+      <span class="row-cost mono">{cost(session.total_cost_usd)}</span>
+    {/if}
   </button>
+{/snippet}
+
+{#snippet modelPicker(current, choose)}
+  <div class="model-chips" role="group" aria-label="Model">
+    <button
+      type="button"
+      class="chip"
+      class:on={!current}
+      aria-pressed={!current}
+      onclick={() => choose("")}>default</button
+    >
+    {#each MODELS as model}
+      <button
+        type="button"
+        class="chip"
+        class:on={current === model}
+        aria-pressed={current === model}
+        onclick={() => choose(model)}>{model}</button
+      >
+    {/each}
+  </div>
 {/snippet}
 
 <style>
@@ -791,15 +988,9 @@
     --font-ui:
       system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
-    --size-meta: 11px;
+    --size-meta: 11.5px;
     --size-body-mono: 12.5px;
-    --size-body: 13.5px;
-    --page-bg: #f5f2ec;
-    --panel-bg: #fffdfa;
-    --text: #252521;
-    --muted: #827c72;
-    --line: #d8d2c7;
-    --line-strong: #c9c2b7;
+    --size-body: 14px;
     color-scheme: light;
     height: 100vh;
     display: grid;
@@ -808,7 +999,7 @@
     color: var(--text);
     font-family: var(--font-ui);
     font-size: var(--size-body);
-    line-height: 1.4;
+    line-height: 1.45;
   }
   .console * {
     font-family: var(--font-ui);
@@ -838,13 +1029,14 @@
   input,
   textarea,
   select {
-    border-radius: 3px;
+    border-radius: 6px;
   }
   button:focus-visible,
   input:focus-visible,
   textarea:focus-visible,
-  select:focus-visible {
-    outline: 2px solid #8aa9c2;
+  select:focus-visible,
+  .steps summary:focus-visible {
+    outline: 2px solid var(--info);
     outline-offset: 1px;
   }
   .sidebar {
@@ -870,8 +1062,8 @@
   }
   .eyebrow,
   .group-title,
-  .queue-title {
-    color: #77736b;
+  .field-label {
+    color: var(--muted);
     font-size: var(--size-meta);
     line-height: 1.2;
     letter-spacing: 0.13em;
@@ -883,9 +1075,8 @@
   .quiet-button,
   .send-button {
     height: 30px;
-    padding: 0 10px;
+    padding: 0 12px;
     border: 1px solid var(--line-strong);
-    border-radius: 3px;
     font-size: var(--size-meta);
     line-height: 1;
   }
@@ -893,26 +1084,34 @@
   .new-button,
   .destroy-button,
   .quiet-button {
-    color: #4e4a43;
-    background: transparent;
+    color: var(--text);
+    background: var(--panel-bg);
   }
   .collapse-button {
     width: 30px;
     padding: 0;
+    background: transparent;
+  }
+  .destroy-button:hover {
+    color: var(--err);
+    border-color: var(--err-line);
+    background: var(--err-bg);
   }
   .new-button:hover,
-  .destroy-button:hover,
   .quiet-button:hover,
   .collapse-button:hover,
   .session-row:hover,
-  .session-row.chosen,
   .search-result:hover {
-    background: #ebe7df;
+    background: var(--hover);
+  }
+  .session-row.chosen {
+    background: var(--panel-bg);
+    border-color: var(--line);
   }
   .search-label {
     position: relative;
     display: block;
-    margin: 16px 0;
+    margin: 16px 0 12px;
   }
   .search-label input,
   .new-panel input,
@@ -923,7 +1122,6 @@
     color: var(--text);
     background: var(--panel-bg);
     border: 1px solid var(--line-strong);
-    border-radius: 3px;
     padding: 0 9px;
     outline: none;
   }
@@ -934,16 +1132,16 @@
   }
   .new-panel textarea,
   .composer textarea {
-    padding: 7px 9px;
+    padding: 8px 10px;
   }
   input:focus,
   textarea:focus,
   select:focus {
-    border-color: #7794a8;
+    border-color: var(--info);
   }
   select {
     appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m2.5 4.5 3.5 3 3.5-3' fill='none' stroke='%236b665d' stroke-width='1.25'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m2.5 4.5 3.5 3 3.5-3' fill='none' stroke='%2363605a' stroke-width='1.25'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 8px center;
     padding-right: 27px;
@@ -952,7 +1150,7 @@
     position: absolute;
     top: 5px;
     right: 9px;
-    color: #8b857b;
+    color: var(--muted);
   }
   .group-title {
     display: flex;
@@ -960,7 +1158,15 @@
     margin: 12px 4px 6px;
   }
   .history-title {
-    margin-top: 20px;
+    margin-top: 18px;
+  }
+  .history-toggle {
+    margin: 8px 4px;
+    padding: 2px 0;
+    border: 0;
+    background: none;
+    color: var(--info);
+    font-size: var(--size-meta);
   }
   .session-list {
     min-height: 0;
@@ -974,7 +1180,7 @@
     color: inherit;
     background: transparent;
     border: 1px solid transparent;
-    padding: 7px 6px;
+    padding: 7px 8px;
     display: flex;
     gap: 8px;
     align-items: flex-start;
@@ -985,21 +1191,18 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #979188;
-    margin-top: 5px;
+    background: var(--dot-idle);
+    margin-top: 6px;
   }
-  .dot.running {
-    background: #4c9660;
-  }
+  .dot.running,
   .dot.working {
-    background: #4c9660;
-    animation: pulse 1.2s ease-in-out infinite;
+    background: var(--ok);
   }
   .dot.warn {
-    background: #b47b2c;
+    background: var(--attn);
   }
   .dot.needs_input {
-    background: #4a83ad;
+    background: var(--info);
   }
   .row-main {
     min-width: 0;
@@ -1007,32 +1210,31 @@
     display: grid;
     gap: 2px;
   }
-  .session-name,
-  .result-id {
+  .session-name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #302e29;
-    font-size: var(--size-body-mono);
+    color: var(--text);
+    font-size: 13px;
   }
   .row-sub,
   .row-cost,
   .result-meta,
-  .muted,
   .session-context {
     color: var(--muted);
     font-size: var(--size-meta);
   }
   .row-cost {
     white-space: nowrap;
+    margin-top: 1px;
   }
   .search-result {
     display: grid;
     gap: 4px;
   }
   .snippet {
-    color: #625e56;
-    font-size: var(--size-body);
+    color: var(--text-soft);
+    font-size: 13px;
     line-height: 1.35;
     display: -webkit-box;
     -webkit-line-clamp: 2;
@@ -1044,161 +1246,292 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    background: var(--panel-bg);
   }
   .transcript-head {
-    padding: 16px 24px 12px;
+    padding: 14px 28px;
     border-bottom: 1px solid var(--line);
   }
+  .head-main {
+    min-width: 0;
+  }
+  .session-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .session-context {
-    margin-top: 4px;
-    font-family: var(--font-mono);
+    margin-top: 3px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .session-state {
-    color: #625e56;
-    border: 1px solid var(--line-strong);
-    padding: 5px 8px;
+    border-radius: 999px;
+    padding: 4px 10px;
     font-size: var(--size-meta);
     text-transform: lowercase;
-  }
-  .session-state.completed {
-    color: #938d83;
+    white-space: nowrap;
   }
   .session-state.warn {
-    color: #c79f4a;
+    color: var(--attn);
+    background: var(--attn-soft);
   }
   .session-state.needs_input {
-    color: #4a8ec7;
+    color: var(--info);
+    background: var(--info-soft);
   }
   .session-state.running,
   .session-state.working {
-    color: #4a9f5c;
+    color: var(--ok);
+    background: var(--ok-soft);
   }
   .turns {
     flex: 1;
-    padding: 16px 24px;
+    padding: 8px 28px 20px;
     overflow: auto;
   }
+  .turns-inner {
+    max-width: 860px;
+    margin: 0 auto;
+  }
   .turn {
-    border: 1px solid var(--line);
-    margin-bottom: 12px;
-    background: var(--panel-bg);
+    padding: 18px 0 14px;
+    border-top: 1px solid var(--line);
   }
-  .turn-bar {
-    display: flex;
-    gap: 12px;
-    padding: 7px 10px;
-    border-bottom: 1px solid #e2ddd4;
-    color: var(--muted);
-    font-size: var(--size-meta);
-  }
-  .turn-bar span:nth-last-child(2) {
-    margin-left: auto;
+  .turn:first-child {
+    border-top: 0;
   }
   .prompt {
-    padding: 10px 12px 8px;
-    color: #302e29;
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    background: var(--page-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .prompt-text {
+    color: var(--text);
+    font-weight: 500;
     white-space: pre-wrap;
-    line-height: 1.45;
-    font-size: var(--size-body);
+    overflow-wrap: anywhere;
+    min-width: 0;
   }
   .role {
     color: var(--muted);
-    margin-right: 8px;
     font-size: var(--size-meta);
     text-transform: uppercase;
+    letter-spacing: 0.08em;
+    flex: 0 0 auto;
   }
-  .activities {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 0 12px 10px;
+  .steps {
+    margin: 10px 0 0;
   }
-  code {
-    color: #625e56;
-    border: 1px solid var(--line);
-    background: var(--page-bg);
-    padding: 3px 5px;
-    white-space: pre-wrap;
+  .steps summary {
+    cursor: pointer;
+    user-select: none;
+    width: fit-content;
+    color: var(--muted);
+    font-size: var(--size-meta);
+    font-family: var(--font-mono);
+    border-radius: 4px;
   }
-  .activity {
-    color: #625e56;
-    border: 1px solid var(--line);
-    background: var(--page-bg);
-    padding: 3px 5px;
-    white-space: pre-wrap;
+  .steps summary:hover {
+    color: var(--text);
   }
-  .result {
-    margin: 0;
-    padding: 12px;
-    border-top: 1px solid #e2ddd4;
-    color: #4d4942;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    line-height: 1.5;
-  }
-  .queue-title {
-    margin: 20px 0 6px;
-  }
-  .queue-entry {
+  .step-list {
+    margin: 8px 0 0;
+    padding: 0 0 0 12px;
+    border-left: 2px solid var(--line);
+    list-style: none;
     display: grid;
-    grid-template-columns: 38px minmax(0, 1fr) auto auto;
+    gap: 4px;
+  }
+  .step-list li {
+    min-width: 0;
+  }
+  .step-verb {
+    color: var(--text);
+    font-weight: 600;
+    font-family: var(--font-mono);
+    font-size: var(--size-meta);
+  }
+  .step-detail {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--size-meta);
+    overflow-wrap: anywhere;
+  }
+  .step-earlier {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--size-meta);
+  }
+  .live-steps {
+    margin-top: 8px;
+  }
+  .live-line {
+    display: flex;
     align-items: center;
     gap: 8px;
-    border-top: 1px solid #e2ddd4;
-    padding: 8px 3px;
+    margin: 12px 0 0;
+    color: var(--ok);
+    font-family: var(--font-mono);
     font-size: var(--size-body-mono);
+    min-width: 0;
   }
-  .queue-prompt {
+  .live-line.quiet {
+    color: var(--muted);
+  }
+  .live-dot {
+    flex: 0 0 8px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .live-latest {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .queue-seq,
-  .claim {
+  .result-md {
+    margin-top: 10px;
+    color: var(--text-soft);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+  }
+  .result-md :global(p) {
+    margin: 0 0 10px;
+  }
+  .result-md :global(p:last-child) {
+    margin-bottom: 0;
+  }
+  .result-md :global(h2),
+  .result-md :global(h3) {
+    color: var(--text);
+    margin: 16px 0 6px;
+    font-size: 15px;
+  }
+  .result-md :global(h3) {
+    font-size: 14px;
+  }
+  .result-md :global(ul),
+  .result-md :global(ol) {
+    margin: 8px 0 10px;
+    padding-left: 22px;
+  }
+  .result-md :global(li) {
+    margin: 3px 0;
+  }
+  .result-md :global(code) {
+    font-family: var(--font-mono);
+    font-size: var(--size-body-mono);
+    background: var(--code-bg);
+    border-radius: 3px;
+    padding: 1px 4px;
+  }
+  .result-md :global(pre) {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 10px 0;
+  }
+  .result-md :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+  .result-md :global(a) {
+    color: var(--info);
+  }
+  .result-md :global(blockquote) {
+    border-left: 3px solid var(--line-strong);
+    margin: 10px 0;
+    padding: 2px 12px;
     color: var(--muted);
   }
-  .claim.claimed {
-    color: #4c9660;
+  .result-md :global(table) {
+    border-collapse: collapse;
+    margin: 10px 0;
   }
-  .working-line {
-    border-top: 1px solid var(--line);
-    padding: 8px 24px;
-    color: #625e56;
+  .result-md :global(th),
+  .result-md :global(td) {
+    border: 1px solid var(--line);
+    padding: 5px 9px;
+    text-align: left;
+  }
+  .turn-error {
+    margin: 10px 0 0;
+    padding: 10px 12px;
+    background: var(--err-bg);
+    border: 1px solid var(--err-line);
+    border-radius: 8px;
+    color: var(--err);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+  }
+  .turn-meta {
+    display: flex;
+    gap: 12px;
+    margin-top: 10px;
+    color: var(--muted);
     font-size: var(--size-meta);
   }
-  .working-line.shimmer {
-    background: linear-gradient(90deg, transparent, #ebe7df, transparent);
-    background-size: 200% 100%;
-    animation: shimmer 1.8s linear infinite;
-  }
-  .working-line .dot {
-    display: inline-block;
-    margin: 0 7px 1px 0;
-  }
-  .working-line .muted {
-    margin-left: 6px;
+  .badge-failed {
+    color: var(--err);
+    font-weight: 600;
   }
   .composer {
     border-top: 1px solid var(--line);
-    padding: 12px 24px 16px;
+    padding: 12px 28px 16px;
+  }
+  .composer-inner {
+    max-width: 860px;
+    margin: 0 auto;
     display: grid;
-    gap: 8px;
+    gap: 10px;
   }
   .composer textarea {
     resize: vertical;
     min-height: 70px;
   }
-  .composer select {
-    width: auto;
-    min-width: 110px;
+  .composer-actions {
+    align-items: flex-start;
+  }
+  .model-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .chip {
+    font-family: var(--font-mono);
+    font-size: var(--size-meta);
+    padding: 5px 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    background: var(--panel-bg);
+    color: var(--text);
+  }
+  .chip:hover {
+    background: var(--hover);
+  }
+  .chip.on {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--ink-text);
   }
   .send-button {
-    color: var(--panel-bg);
-    background: #4d6757;
-    border-color: #4d6757;
+    color: var(--ink-text);
+    background: var(--ink);
+    border-color: var(--ink);
+    font-weight: 600;
   }
   .send-button:disabled {
     cursor: not-allowed;
@@ -1209,28 +1542,34 @@
     z-index: 2;
     top: 0;
     right: 0;
-    width: min(350px, 100vw);
+    width: min(360px, 100vw);
     height: 100vh;
-    background: var(--page-bg);
+    overflow: auto;
+    background: var(--panel-bg);
     border-left: 1px solid var(--line-strong);
     padding: 20px;
-    box-shadow: -1px 0 2px #4b463d1a;
+    box-shadow: -2px 0 12px rgba(0, 0, 0, 0.07);
   }
   .new-panel form {
     display: grid;
-    gap: 12px;
+    gap: 14px;
     margin-top: 16px;
   }
-  .new-panel label {
+  .new-panel label,
+  .new-panel .field {
     display: grid;
-    gap: 5px;
-    color: #77736b;
+    gap: 6px;
+    color: var(--muted);
     font-size: var(--size-meta);
     text-transform: uppercase;
     letter-spacing: 0.08em;
   }
   .new-panel textarea {
     resize: vertical;
+    color: var(--text);
+    text-transform: none;
+    letter-spacing: normal;
+    font-size: var(--size-body);
   }
   .new-actions {
     justify-content: flex-end;
@@ -1238,25 +1577,32 @@
   }
   .empty {
     padding: 10px 4px;
-    color: #938d83;
-    font-size: var(--size-meta);
+    color: var(--muted);
+    font-size: 13px;
   }
   .blank-state {
     margin: auto;
   }
   .transcript-empty {
-    padding: 24px 0;
+    padding: 32px 0;
   }
   .error-banner {
     position: fixed;
     right: 16px;
     bottom: 16px;
     max-width: 420px;
-    padding: 9px 11px;
-    border: 1px solid #c58c88;
-    color: #874b46;
-    background: #fff1ef;
-    font-size: var(--size-meta);
+    padding: 10px 12px;
+    border: 1px solid var(--err-line);
+    border-radius: 6px;
+    color: var(--err);
+    background: var(--err-bg);
+    font-size: 13px;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .dot.working,
+    .live-dot {
+      animation: pulse 1.2s ease-in-out infinite;
+    }
   }
   .sidebar-collapsed {
     grid-template-columns: 44px minmax(0, 1fr);
@@ -1280,6 +1626,7 @@
   .sidebar-collapsed .new-button,
   .sidebar-collapsed .search-label,
   .sidebar-collapsed .group-title,
+  .sidebar-collapsed .history-toggle,
   .sidebar-collapsed .row-main,
   .sidebar-collapsed .row-cost,
   .sidebar-collapsed .search-result,
@@ -1290,6 +1637,7 @@
   :global(html[data-agents-rail="collapsed"]) .console .new-button,
   :global(html[data-agents-rail="collapsed"]) .console .search-label,
   :global(html[data-agents-rail="collapsed"]) .console .group-title,
+  :global(html[data-agents-rail="collapsed"]) .console .history-toggle,
   :global(html[data-agents-rail="collapsed"]) .console .row-main,
   :global(html[data-agents-rail="collapsed"]) .console .row-cost,
   :global(html[data-agents-rail="collapsed"]) .console .search-result,
@@ -1318,14 +1666,6 @@
       opacity: 0.35;
     }
   }
-  @keyframes shimmer {
-    from {
-      background-position: 200% 0;
-    }
-    to {
-      background-position: -200% 0;
-    }
-  }
   @media (max-width: 760px) {
     .console {
       grid-template-columns: 1fr;
@@ -1344,8 +1684,7 @@
     }
     .transcript-head,
     .turns,
-    .composer,
-    .working-line {
+    .composer {
       padding-left: 16px;
       padding-right: 16px;
     }

@@ -1,0 +1,38 @@
+/* Palette for the private /agents console.
+ *
+ * Colors live here, in a real CSS file, rather than in the component's
+ * <style> block: the component references var(--*) only, so the
+ * svelte-hardcoded-color-in-style rule stays clean by construction
+ * instead of by suppression.
+ *
+ * Direction: white working surfaces, near-black ink, and color reserved
+ * for state (running / attention / error). The previous grey-on-beige
+ * scheme was rejected for readability; secondary text stays secondary
+ * through size, never through washout (see .impeccable.md).
+ */
+.console {
+  --page-bg: #f4f3f0; /* chrome: sidebar, new-session drawer */
+  --panel-bg: #ffffff; /* working surfaces: transcript, inputs */
+  --text: #1b1a18;
+  --text-soft: #3a3835; /* response body */
+  --muted: #63605a; /* meta lines; 5.9:1 on white, AA for body text */
+  --line: #e3e1dc; /* hairline dividers */
+  --line-strong: #c7c3bb; /* control borders */
+  --hover: #edebe6;
+
+  --ink: #22211e; /* solid buttons + selected model chips */
+  --ink-text: #ffffff;
+
+  --ok: #2e6b41; /* running / working; 5.6:1 on white */
+  --ok-soft: #e7f0e9;
+  --attn: #8f6212; /* warn; text-safe amber */
+  --attn-soft: #f6eedd;
+  --info: #33608c; /* needs input + focus ring */
+  --info-soft: #e8eff7;
+  --err: #9d3a30;
+  --err-bg: #faf1ef;
+  --err-line: #e4c1bc;
+
+  --code-bg: #f2f1ee; /* inline code + fenced blocks in rendered markdown */
+  --dot-idle: #c2beb6; /* history sessions carry no status color */
+}
