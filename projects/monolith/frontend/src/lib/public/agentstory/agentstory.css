@@ -1,4 +1,7 @@
 .agstory {
+  /* Same value as the landing page's --eml-line-strong: diagram lane
+     borders in --em-line read as invisible on the white panel. */
+  --ag-line-strong: #c9c3b4;
   --ag-frost-deep: #2b628f;
   --ag-amber-deep: #9a6414;
   --ag-idle: #e6e2d7;

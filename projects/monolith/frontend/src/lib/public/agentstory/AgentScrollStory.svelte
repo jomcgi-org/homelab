@@ -337,9 +337,8 @@
         </div>
         <h1>Every agent gets <span class="em">its own machine.</span></h1>
         <p class="sub">
-          Each agent session runs in its own hardware-isolated <b
-            >Firecracker microVM</b
-          >. The machine is disposable; <b>the disk is the session</b>.
+          One <b>Firecracker microVM</b> per session. The VM is disposable;
+          <b>the disk survives</b>.
         </p>
         <div class="stats">
           <span><b>2.5 ms</b> VM resume</span><span class="sep">·</span><span
@@ -487,7 +486,7 @@
                   y="85"
                   text-anchor="middle">off</text
                 ><g id="g-ram"></g><text class="nsub" x="424" y="176"
-                  >shim :1027 · vsock only · no NIC</text
+                  >shim :1027 · vsock · no NIC</text
                 ></g
               >
               <g id="g-scratch"
@@ -506,28 +505,28 @@
                 ><g id="g-chipBase"
                   ><rect
                     class="box paper ember-b"
-                    x="232"
+                    x="228"
                     y="266"
-                    width="146"
+                    width="154"
                     height="26"
                     rx="6"
                   /><text
                     class="nsub"
-                    x="240"
+                    x="236"
                     y="283"
                     style="fill: var(--em-muted)">base memfile · shared</text
                   ></g
                 ><g id="g-chipWs"
                   ><rect
                     class="box paper amber-b"
-                    x="232"
+                    x="228"
                     y="300"
-                    width="146"
+                    width="154"
                     height="26"
                     rx="6"
                   /><text
                     class="nsub"
-                    x="240"
+                    x="236"
                     y="317"
                     style="fill: var(--em-muted)">workspace.img · yours</text
                   ></g
@@ -585,7 +584,7 @@
                 /><text class="nlabel" x="782" y="255" text-anchor="middle"
                   >api.anthropic.com</text
                 ><text class="nsub" x="782" y="270" text-anchor="middle"
-                  >tls ends at the sidecar</text
+                  >tls ends at sidecar</text
                 ></g
               ><g id="g-github"
                 ><rect
@@ -625,12 +624,12 @@
                 ><g id="g-s3ws"
                   ><rect
                     class="box paper frost-b"
-                    x="370"
+                    x="358"
                     y="424"
-                    width="250"
+                    width="272"
                     height="30"
                     rx="6"
-                  /><text class="nsub frost" x="382" y="443"
+                  /><text class="nsub frost" x="370" y="443"
                     >session-workspace/&lt;lineage&gt; · 7 d gc</text
                   ></g
                 ></g
@@ -700,7 +699,7 @@
               ><path
                 class="epath ep-frost"
                 id="p-restore"
-                d="M624,439 L706,437"
+                d="M634,439 L706,437"
               /><text class="elabel el-frost" id="l-restore" x="630" y="470"
                 >restore</text
               >
@@ -720,8 +719,8 @@
   <div class="static-story">
     <h1>Every agent gets its own machine.</h1>
     <p>
-      Each agent session runs in a hardware-isolated Firecracker microVM. The
-      machine is disposable; the disk is the session.
+      One Firecracker microVM per session. The VM is disposable; the disk
+      survives.
     </p>
     <ol>
       <li>
@@ -1040,13 +1039,15 @@
   }
   .dg .lane-r {
     fill: none;
-    stroke: var(--em-line);
-    stroke-dasharray: 4 5;
+    /* --em-line vanished on the white panel; the landing arch's strong
+       rule color is the precedent for diagram lane borders. */
+    stroke: var(--ag-line-strong);
+    stroke-dasharray: 4 4;
   }
   .dg .lane-s3-r {
     fill: var(--ag-s3-fill);
-    stroke: var(--em-frost-dim);
-    stroke-dasharray: 4 5;
+    stroke: var(--em-frost);
+    stroke-dasharray: 4 4;
   }
   .dg .box {
     fill: var(--em-ground);
@@ -1114,7 +1115,8 @@
     marker-end: url(#m-good);
   }
   .dg .elabel {
-    font-size: 10.5px;
+    font-size: 11.5px;
+    font-weight: 600;
   }
   .dg .el-ember {
     fill: var(--em-ember-deep);
