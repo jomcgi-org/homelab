@@ -7073,6 +7073,18 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_titles_test",
+    srcs = ["agent_sessions/titles_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_sessions_mcp_test",
     srcs = ["agent_sessions/mcp_test.py"],
     imports = ["."],

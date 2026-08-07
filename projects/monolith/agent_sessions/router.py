@@ -80,16 +80,18 @@ def _aggregate_statement(status: str | None = None, session_id: int | None = Non
     pending = pending_statement.group_by(PendingMessage.session_id).subquery()
     # The session list renders a human title (the first prompt) instead of
     # the raw UUID; sessions whose first turn has not completed yet fall
-    # back to the first queued prompt.
+    # back to the first queued prompt. Truncated in SQL: the list is polled
+    # every 2s while a session is active, and _fallback_title only keeps
+    # 140 chars, so shipping whole prompt TEXT columns would be waste.
     first_turn_prompt = (
-        select(AgentTurn.prompt)
+        select(func.substr(AgentTurn.prompt, 1, 200))
         .where(AgentTurn.session_id == AgentSession.id)
         .order_by(AgentTurn.seq)
         .limit(1)
         .scalar_subquery()
     )
     first_pending_prompt = (
-        select(PendingMessage.message_text)
+        select(func.substr(PendingMessage.message_text, 1, 200))
         .where(PendingMessage.session_id == AgentSession.id)
         .order_by(PendingMessage.seq)
         .limit(1)
