@@ -102,6 +102,6 @@ async def test_handle_agent_command_starts_session_after_prompt_echo():
     assert echo_call_content.startswith("Prompt from <@42>:")
 
     start_session.assert_awaited_once_with(
-        str(thread.id), "add a health check", "jomcgi/homelab"
+        str(thread.id), "add a health check", "jomcgi/homelab", model="luna"
     )
     bot._start_goosecracker_stream.assert_not_called()

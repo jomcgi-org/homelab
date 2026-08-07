@@ -1632,8 +1632,65 @@ class TestStartAgentFlowOrchestrator:
         verdict_call.assert_not_awaited()
         chat_call.assert_not_awaited()
         start_session.assert_awaited_once_with(
-            "909", "fix the flaky test", "jomcgi/homelab"
+            "909", "fix the flaky test", "jomcgi/homelab", model="luna"
         )
+
+    @pytest.mark.asyncio
+    async def test_model_choice_pins_the_session_and_defaults_to_luna(self):
+        """/agent's model option reaches the session; omitting it gives luna.
+
+        The model pins the session's adapter family for its whole life, so a
+        wrong value here is not a per-turn slip: every later reply in that thread
+        inherits it.
+        """
+        from chat.bot import DEFAULT_AGENT_MODEL
+
+        assert DEFAULT_AGENT_MODEL == "luna"
+
+        for chosen, expected in (("opus", "opus"), (None, "luna")):
+            bot = _make_bot()
+            channel = _flow_channel()
+            thread = MagicMock()
+            thread.id = 4242
+            thread.send = AsyncMock()
+            channel.create_thread = AsyncMock(return_value=thread)
+
+            kwargs = {"route_via_orchestrator": False}
+            if chosen is not None:
+                kwargs["model"] = chosen
+
+            with (
+                patch("chat.bot.acl.is_owner", return_value=True),
+                patch(
+                    "agent_sessions.api.start_session_for_thread",
+                    new_callable=AsyncMock,
+                ) as start_session,
+            ):
+                await bot.start_agent_flow(
+                    channel, MagicMock(), "do the thing", "jomcgi/homelab", **kwargs
+                )
+
+            assert start_session.await_args.kwargs["model"] == expected
+
+    def test_agent_model_choices_match_supported_models(self):
+        """chat.bot's picker list must equal agent_sessions.SUPPORTED_MODELS.
+
+        The list is duplicated on purpose: importing agent_sessions at module
+        scope in chat.bot would drag it into the Bazel dep graph of every target
+        importing chat.bot (~38 of them fail with ModuleNotFoundError), which is
+        why every other agent_sessions import in that file is function-local.
+        This test is the seam that keeps the two copies honest, and it lives here
+        because this target already depends on both.
+        """
+        from agent_sessions import SUPPORTED_MODELS, model_family
+
+        from chat.bot import AGENT_MODEL_CHOICES
+
+        assert tuple(AGENT_MODEL_CHOICES) == tuple(SUPPORTED_MODELS)
+        # Discord caps a slash-command choice list at 25.
+        assert 0 < len(AGENT_MODEL_CHOICES) <= 25
+        for name in AGENT_MODEL_CHOICES:
+            assert model_family(name) in {"codex", "claude", "pi"}
 
     @pytest.mark.asyncio
     async def test_plan_verdict_opens_thread_and_submits_raw_prompt(
@@ -1684,7 +1741,7 @@ class TestStartAgentFlowOrchestrator:
         # The submitted task is the raw prompt (ground truth), never brief-prefixed.
         # None, not "", because start_session_for_thread validates a non-None repo
         # against REPO_CATALOG.
-        start_session.assert_awaited_once_with("555", "raw prompt", None)
+        start_session.assert_awaited_once_with("555", "raw prompt", None, model="luna")
         # The echo is an attributed, FENCED block (_format_agent_prompt_echo), so
         # match on the prompt being inside it rather than on the exact framing.
         # The checklist that used to be pre-rendered here from the plan's steps is
@@ -1721,7 +1778,7 @@ class TestStartAgentFlowOrchestrator:
         assert outcome.thread is thread
         # A repo-less run passes None, not "": start_session_for_thread validates
         # any non-None repo against REPO_CATALOG, and "" is not in it.
-        start_session.assert_awaited_once_with("777", "raw prompt", None)
+        start_session.assert_awaited_once_with("777", "raw prompt", None, model="luna")
         sent_bodies = [c.args[0] for c in thread.send.call_args_list]
         assert "🤖 Planning..." in sent_bodies
 
