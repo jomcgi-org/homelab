@@ -242,11 +242,34 @@ DEFAULT_CLI_GID = 65532
 PERSISTENCE_MOUNT_PATH_ENV = "EMBER_PERSISTENCE_MOUNT_PATH"
 DEFAULT_PERSISTENCE_MOUNT_PATH = "/session"
 GUEST_INIT_PATH = "/usr/local/bin/ember-runtime-guest-init"
-VOICE_PROMPT = (
-    "End every response with a single line: <voice>One or two plain sentences, "
-    "no markdown, that a person could hear read aloud: what you did and anything "
-    "you need from them.</voice>"
+SANDBOX_PROMPT = (
+    "Facts about the sandbox you are running in. They override any assumption "
+    "you would otherwise make, and none of them are problems to debug.\n"
+    "- You are alone in a disposable Firecracker microVM. There is no "
+    "interactive terminal: you cannot prompt mid-turn, so a question ends your "
+    "turn and is read asynchronously.\n"
+    "- When the session has a repo, the checkout is at /workspace/src. It is a "
+    "depth-1 single-branch clone, so history before the tip commit is absent. "
+    "git log beyond HEAD, git bisect and git blame on older lines will fail, "
+    "and unshallowing is not supported here.\n"
+    "- origin points at an internal read-only mirror, not at GitHub. The mirror "
+    "accepts pushes only under refs/agents/**.\n"
+    "- Your git identity is already configured. Do not set user.name or "
+    "user.email.\n"
+    "- All network egress is proxied. The public internet is reachable and "
+    "in-cluster services are not. You hold no credentials: the proxy attaches "
+    "them on the way out, so no token is readable from in here.\n"
+    "- gh reaches GitHub even though `gh auth status` reports you are not "
+    "logged in. That report is expected, because it inspects local credentials "
+    "and the real one is never local. Judge by whether the request succeeds.\n"
 )
+
+
+def compose_system_prompt(caller_prompt=None):
+    """Join the shim-owned sandbox prompt with an optional caller prompt."""
+    if caller_prompt and caller_prompt.strip():
+        return SANDBOX_PROMPT + "\n" + caller_prompt.strip()
+    return SANDBOX_PROMPT
 
 
 def _workspace_identity(path):
@@ -1180,6 +1203,7 @@ class ClaudeProcess:
         self.fatal_error = None
         self.session_id = None
         self.model = None
+        self.system_prompt = None
         self._process_workspace = None
         self._process_uses_legacy_cwd = False
         self._process_workspace_identity = _workspace_identity(self.workspace)
@@ -1219,7 +1243,12 @@ class ClaudeProcess:
                 raise StartupError("git config failed for %s: %s" % (key, detail))
 
     def _spawn(
-        self, session_id=None, first_message=None, model=None, init_timeout=None
+        self,
+        session_id=None,
+        first_message=None,
+        model=None,
+        init_timeout=None,
+        system_prompt=None,
     ):
         if self.fatal_error is not None:
             raise StartupError(self.fatal_error)
@@ -1258,7 +1287,7 @@ class ClaudeProcess:
             command.extend(["--model", CLAUDE_MODELS.get(model, model)])
         if session_id:
             command.extend(["--resume", session_id])
-        command.extend(["--append-system-prompt", VOICE_PROMPT])
+        command.extend(["--append-system-prompt", compose_system_prompt(system_prompt)])
         egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
         proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
         child_env = os.environ.copy()
@@ -1342,6 +1371,7 @@ class ClaudeProcess:
                 elif session_id:
                     self.session_id = session_id
                 self.model = model
+                self.system_prompt = system_prompt
                 if event.get("apiKeySource") != "none":
                     message = "apiKeySource must be none, got %r" % event.get(
                         "apiKeySource"
@@ -1466,6 +1496,7 @@ class ClaudeProcess:
         session_id=None,
         model=None,
         progress_token=None,
+        system_prompt=None,
     ):
         with self.turn_lock:
             cli_ready_start = _turn_timing_now()
@@ -1478,6 +1509,7 @@ class ClaudeProcess:
                     % (session_id, self.session_id)
                 )
             model_changed = model is not None and model != self.model
+            system_prompt_changed = system_prompt != self.system_prompt
             parked_process = (
                 process is not None and process.poll() is None and not self.session_id
             )
@@ -1497,14 +1529,18 @@ class ClaudeProcess:
             if (
                 process is not None
                 and process.poll() is None
-                and (model_changed or cwd_changed)
+                and (model_changed or cwd_changed or system_prompt_changed)
             ):
+                # Prewarm parks a CLI started without a caller prompt. Since
+                # append-system-prompt is spawn-time only, adoption must respawn
+                # when this turn carries a different prompt.
                 self._close_process(kill=False)
                 try:
                     self._spawn(
                         self.session_id or session_id,
                         first_message=message,
                         model=model,
+                        system_prompt=system_prompt,
                     )
                 except Exception:
                     if parked_adoption and not session_was_bound:
@@ -1529,6 +1565,7 @@ class ClaudeProcess:
                         session_id or self.session_id,
                         first_message=message,
                         model=model,
+                        system_prompt=system_prompt,
                     )
                 except Exception:
                     if parked_adoption and not session_was_bound:
@@ -1553,7 +1590,10 @@ class ClaudeProcess:
                             self._close_process(kill=False)
                             try:
                                 self._spawn(
-                                    session_id, first_message=message, model=model
+                                    session_id,
+                                    first_message=message,
+                                    model=model,
+                                    system_prompt=system_prompt,
                                 )
                             except Exception:
                                 if parked_adoption and not session_was_bound:
@@ -1995,12 +2035,13 @@ wire_api = "responses"
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError("codex emitted invalid JSON: %s" % exc) from exc
 
-    def _resume(self, session_id):
+    def _resume(self, session_id, system_prompt=None):
         params = {
             "threadId": session_id,
             "cwd": self.workspace,
             "approvalPolicy": "never",
             "sandbox": "danger-full-access",
+            "developerInstructions": compose_system_prompt(system_prompt),
         }
         try:
             result = self._request("thread/resume", params, timeout=INIT_READ_TIMEOUT)
@@ -2044,6 +2085,7 @@ wire_api = "responses"
         session_id=None,
         model=DEFAULT_CODEX_MODEL,
         progress_token=None,
+        system_prompt=None,
     ):
         with self.turn_lock:
             cli_ready_start = _turn_timing_now()
@@ -2066,7 +2108,9 @@ wire_api = "responses"
                 requested_session not in self._server_threads
                 or requested_session != self.session_id
             ):
-                self._resume(requested_session)
+                # Resume repeats the developer instructions so a restarted
+                # app-server thread receives the same prompt without duplication.
+                self._resume(requested_session, system_prompt=system_prompt)
                 if cli_ready_path is None and process_was_unbound:
                     cli_ready_path = "adopt"
             elif not requested_session:
@@ -2076,6 +2120,7 @@ wire_api = "responses"
                         "cwd": self.workspace,
                         "approvalPolicy": "never",
                         "sandbox": "danger-full-access",
+                        "developerInstructions": compose_system_prompt(system_prompt),
                     },
                 )
                 thread = result.get("thread", {}) if isinstance(result, dict) else {}
@@ -2322,6 +2367,7 @@ class PiProcess:
         self._turn_done.set()
         self._in_flight = False
         self._model = None
+        self._system_prompt = None
         self._session_file = None
 
     def ready(self):
@@ -2369,7 +2415,7 @@ class PiProcess:
         with open(os.path.join(agent_dir, "models.json"), "w") as stream:
             json.dump(config, stream)
 
-    def _spawn(self, model):
+    def _spawn(self, model, system_prompt=None):
         if not os.path.isdir(self.workspace):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
@@ -2385,7 +2431,7 @@ class PiProcess:
             "--model",
             model_name,
             "--system-prompt",
-            "You are a focused coding agent. " + VOICE_PROMPT,
+            "You are a focused coding agent. " + compose_system_prompt(system_prompt),
             "--no-context-files",
             "--no-extensions",
             "--no-skills",
@@ -2409,6 +2455,7 @@ class PiProcess:
             self.process = process
             self._stdout_queue = output_queue
             self._model = model
+            self._system_prompt = system_prompt
             _managed_child_pids.add(process.pid)
         threading.Thread(
             target=self._pump_pi_stdout,
@@ -2528,6 +2575,7 @@ class PiProcess:
         session_id=None,
         model=DEFAULT_PI_MODEL,
         progress_token=None,
+        system_prompt=None,
     ):
         with self.turn_lock:
             cli_ready_start = _turn_timing_now()
@@ -2543,8 +2591,12 @@ class PiProcess:
             model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
             if process is None or process.poll() is not None:
                 self._close_process(kill=False)
-                process = self._spawn(model)
+                process = self._spawn(model, system_prompt=system_prompt)
                 cli_ready_path = "lazy_spawn"
+            elif self._system_prompt != system_prompt:
+                self._close_process(kill=False)
+                process = self._spawn(model, system_prompt=system_prompt)
+                cli_ready_path = "remediation_respawn"
             elif self._model != model_name:
                 self._command(
                     {
@@ -3109,6 +3161,7 @@ class ProcessManager:
         repo=None,
         branch=None,
         progress_token=None,
+        system_prompt=None,
     ):
         total_start = _turn_timing_now()
         with self._mount_lock:
@@ -3124,16 +3177,20 @@ class ProcessManager:
         adapter = self._adapter(model)
         try:
             extra = {"progress_token": progress_token} if progress_token else {}
+            prompt = {"system_prompt": system_prompt} if system_prompt else {}
             if adapter is self.pi:
                 record = adapter.turn(
-                    message, session_id, model or DEFAULT_PI_MODEL, **extra
+                    message, session_id, model or DEFAULT_PI_MODEL, **(extra | prompt)
                 )
             elif adapter is self.codex:
                 record = adapter.turn(
-                    message, session_id, model or DEFAULT_CODEX_MODEL, **extra
+                    message,
+                    session_id,
+                    model or DEFAULT_CODEX_MODEL,
+                    **(extra | prompt),
                 )
             else:
-                record = adapter.turn(message, session_id, model, **extra)
+                record = adapter.turn(message, session_id, model, **(extra | prompt))
             # Only Claude can recover a Claude prewarm failure. Codex and pi
             # turns must not clear the manager's Claude fatal state.
             if adapter is self.claude:
@@ -3248,6 +3305,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         ):
             self._send(400, {"error": "progress_token must be a non-empty string"})
             return
+        system_prompt = payload.get("system_prompt")
+        if system_prompt is not None and (
+            not isinstance(system_prompt, str) or not system_prompt.strip()
+        ):
+            self._send(400, {"error": "system_prompt must be a non-empty string"})
+            return
         if "session_id" in payload:
             sid = payload.get("session_id")
             if sid is not None and (not isinstance(sid, str) or not sid.strip()):
@@ -3261,11 +3324,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             progress = (
                 {"progress_token": progress_token.strip()} if progress_token else {}
             )
+            prompt = {"system_prompt": system_prompt.strip()} if system_prompt else {}
             record = self.manager.turn(
                 message,
                 session_id,
                 payload.get("model"),
-                **(hydration | progress),
+                **(hydration | progress | prompt),
             )
             if repo is not None and isinstance(record, dict):
                 if getattr(self.manager, "_hydration_error", None):
