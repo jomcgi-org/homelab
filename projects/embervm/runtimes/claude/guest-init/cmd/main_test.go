@@ -91,6 +91,50 @@ func TestSetDefaultEnv(t *testing.T) {
 	}
 }
 
+// Git identity must reach EVERY adapter, not just claude. The EMBER_GIT_* pair
+// only becomes git config via ClaudeProcess._configure_git, which runs on the
+// claude spawn path alone, so a codex (luna/terra/sol) or pi (qwen) session had
+// no identity and every commit failed with "no configured author identity".
+// git reads GIT_AUTHOR_*/GIT_COMMITTER_* directly with no config file, so these
+// hold for all adapters and do not depend on $HOME/.gitconfig surviving the HOME
+// bind-mount from the session volume.
+func TestSetDefaultEnvSetsGitIdentityForEveryAdapter(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	keys := []string{
+		"EMBER_GIT_USER_NAME", "EMBER_GIT_USER_EMAIL",
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+	}
+	previous := make(map[string]string, len(keys))
+	wasSet := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		previous[key], wasSet[key] = os.LookupEnv(key)
+		os.Unsetenv(key)
+	}
+	t.Cleanup(func() {
+		for _, key := range keys {
+			if wasSet[key] {
+				_ = os.Setenv(key, previous[key])
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		}
+	})
+	setDefaultEnv(logger)
+
+	const name, email = "EmberAgent", "agent@jomcgi.dev"
+	want := map[string]string{
+		"EMBER_GIT_USER_NAME": name, "EMBER_GIT_USER_EMAIL": email,
+		"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
+		"GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email,
+	}
+	for key, value := range want {
+		if got := os.Getenv(key); got != value {
+			t.Errorf("%s = %q, want %q", key, got, value)
+		}
+	}
+}
+
 func TestSetMmdsEnv(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	validName := base64.RawURLEncoding.EncodeToString([]byte("Test User"))

@@ -29,6 +29,17 @@ contents:
     # Per-turn commits onto the session branch are how agent-diff produces an
     # exact diffstat (git show <sha> --stat) with no model involvement.
     - git
+    # Opening a PR from inside a session. gh reads GH_TOKEN/GITHUB_TOKEN, but the
+    # guest never holds one: the egress-proxy sidecar sets the Authorization
+    # header on the way out (ADR 023 phase 6b), so whatever gh sends is discarded.
+    # Wolfi names this `gh`, not `github-cli` (the retired goosecracker guest
+    # image shipped the same package under this name).
+    - gh
+    # curl, because the image otherwise has NO http client at all: probing an
+    # endpoint from inside a session meant hand-writing python urllib.
+    - curl
+    # jq, because essentially every gh/API workflow pipes through it.
+    - jq
     # Persistent workspaces are probed and formatted by guest-init on first boot.
     - e2fsprogs
     - blkid

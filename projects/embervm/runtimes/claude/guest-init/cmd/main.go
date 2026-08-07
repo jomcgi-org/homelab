@@ -180,8 +180,26 @@ func setDefaultEnv(logger *slog.Logger) {
 		// which keeps the guest bootable today without pretending the value is
 		// per-principal. Attributing a commit to the human who asked for it is
 		// per-commit --author, tracked with the rest of git integration in #4070.
-		"EMBER_GIT_USER_NAME":  "EmberVM Agent",
+		"EMBER_GIT_USER_NAME":  "EmberAgent",
 		"EMBER_GIT_USER_EMAIL": "agent@jomcgi.dev",
+
+		// The SAME identity as git's own environment variables, because the
+		// EMBER_GIT_* pair above only reaches git through
+		// ClaudeProcess._configure_git, which runs `git config --global` on the
+		// claude adapter's spawn path and nowhere else. A codex (luna/terra/sol)
+		// or pi (qwen) session therefore had NO identity at all and any commit
+		// failed with "no configured author identity" (seen live on a luna
+		// session; luna is /agent's default, so every Discord agent session hit
+		// it the moment it tried to commit).
+		//
+		// git reads these directly, with no config file, so identity now holds
+		// for every adapter including future ones, and it does not depend on
+		// $HOME/.gitconfig surviving the HOME bind-mount from the session volume.
+		// _configure_git stays as belt-and-braces for the claude path.
+		"GIT_AUTHOR_NAME":     "EmberAgent",
+		"GIT_AUTHOR_EMAIL":    "agent@jomcgi.dev",
+		"GIT_COMMITTER_NAME":  "EmberAgent",
+		"GIT_COMMITTER_EMAIL": "agent@jomcgi.dev",
 	}
 	for key, value := range defaults {
 		// Key only, never the value: one of these carries the egress placeholder,
