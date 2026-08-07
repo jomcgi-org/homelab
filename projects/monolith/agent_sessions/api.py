@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlmodel import Session
 
 from agent_sessions import model_family, store
+from agent_sessions.codex_login import codex_login_gate
 from agent_sessions.mcp import (
     _load_session_row,
     _persist_pending_message,
@@ -21,7 +22,7 @@ from goosecracker.api import REPO_CATALOG
 
 async def start_session_for_thread(
     thread_id: str, prompt: str, repo: str | None, model: str = "luna"
-) -> int:
+) -> int | dict:
     """Create a model session bound to a Discord thread and queue its first turn.
 
     ``thread_id`` identifies the Discord thread that should receive terminal
@@ -33,6 +34,9 @@ async def start_session_for_thread(
     if repo is not None and repo not in REPO_CATALOG:
         raise ValueError(f"unknown repo {repo}; catalog: {', '.join(REPO_CATALOG)}")
     model_family(model)
+    login = await codex_login_gate(model)
+    if login is not None:
+        return login
     row = await asyncio.to_thread(
         _persist_session,
         str(uuid4()),
@@ -70,6 +74,9 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
     if row is None:
         return None
     model_family(row.model)
+    login = await codex_login_gate(row.model)
+    if login is not None:
+        return login
     # row.model, NOT None. None is not "unset", it resolves to the CLAUDE family
     # (model_family(None) == "claude"), so a None here ran the claude adapter
     # against a session whose CLI transcript belongs to codex and died with
