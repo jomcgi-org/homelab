@@ -1400,3 +1400,68 @@ def test_ui_mark_store_is_bounded():
     assert mcp._consume_ui_originated(1, 0) is False
     assert mcp._consume_ui_originated(1, mcp._UI_ORIGINATED_CAP + 49) is True
     mcp._ui_originated.clear()
+
+
+def test_session_start_defaults_to_the_homelab_repo(monkeypatch, session):
+    """A voice session with no repo argument still gets a checkout.
+
+    Before this, mcp.py passed repo=None unconditionally, so an MCP-started
+    session hydrated nothing and the agent could not read the code or open a PR.
+    The console's dropdown has no equivalent here, so the default carries it.
+    """
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    result = asyncio.run(mcp.monolith_agent_session_start("hello"))
+
+    row = store.get_session(session, result["session_id"])
+    assert row.repo == "jomcgi/homelab"
+    assert row.branch == "main"
+
+
+def test_session_start_accepts_an_explicit_repo_and_branch(monkeypatch, session):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    result = asyncio.run(
+        mcp.monolith_agent_session_start(
+            "hello", repo="weave-hand/loom", branch="develop"
+        )
+    )
+
+    row = store.get_session(session, result["session_id"])
+    assert row.repo == "weave-hand/loom"
+    assert row.branch == "develop"
+
+
+def test_session_start_empty_repo_opts_out_of_hydration(monkeypatch, session):
+    """An empty repo keeps the cheap, checkout-less session available.
+
+    Hydration is per SESSION (volumes are per lineage), so a talking-only
+    session should not pay a clone it will never read.
+    """
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    result = asyncio.run(mcp.monolith_agent_session_start("hello", repo=""))
+
+    row = store.get_session(session, result["session_id"])
+    assert row.repo is None
+
+
+def test_session_start_rejects_a_repo_outside_the_catalog(monkeypatch, session):
+    """Fail closed: this value is interpolated into a clone URL in the guest.
+
+    The clone runs on a credentialed egress path, so an unvalidated repo would
+    be a fetch-anything primitive carrying a real GitHub token. Rejected BEFORE
+    any session row exists, so a bad argument costs nothing.
+    """
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    result = asyncio.run(
+        mcp.monolith_agent_session_start("hello", repo="attacker/exfil")
+    )
+
+    assert result["accepted"] is False
+    assert "unknown repo attacker/exfil" in result["error"]
+    # No session id handed back, and nothing persisted under it: the gate runs
+    # before _persist_session, so a rejected repo leaves no row to clean up.
+    assert "session_id" not in result
+    assert session.exec(select(AgentSession)).all() == []
