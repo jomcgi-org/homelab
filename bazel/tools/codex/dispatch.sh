@@ -15,7 +15,15 @@
 #   42  Codex quota / rate limit exhausted (caller must Discord-notify Joe once
 #       and fall back to Sonnet subagents; see the codex-implement skill)
 #   64  usage error
+#   65  another dispatch already owns this workdir. Never double-dispatch a
+#       worktree: two workers interleave edits. Wait for the running worker
+#       (its live log path is printed) or kill it explicitly first.
 #   *   codex exec's own failure code, passed through
+#
+# Runs take minutes to over an hour (median ~2.5 min, p90 ~8 min, tail 80+
+# min). Callers MUST invoke this in the background (run_in_background), never
+# in a foreground shell whose default timeout kills the worker mid-run and
+# leaves a partial diff that reads as a wrong implementation at review.
 #
 # Guardrails baked in:
 #   - workspace-write sandbox scoped to <workdir>: no writes outside the
@@ -27,11 +35,16 @@
 #     is DNS failures buried in the transcript. With network on, "cannot push
 #     upstream" is enforced by the spec guardrails below rather than by the
 #     sandbox, so keep that line in GUARDRAILS.
-#   - repo guardrails appended to every spec (no local tests, no commits,
-#     apko not Dockerfiles, non-root, conventional repo patterns)
+#   - repo conventions live in AGENTS.md at the repo root, which codex reads
+#     automatically from the worktree; GUARDRAILS carries only the
+#     invocation-specific rules
+#   - the full transcript is written to <workdir>/.codex-dispatch/<stamp>.log
+#     and kept for triage; stdout carries only the worker's final message and
+#     the log path, so tool results stay small
 set -euo pipefail
 
 QUOTA_EXIT=42
+BUSY_EXIT=65
 
 usage() {
 	echo "usage: $0 <luna|terra|frontier> <workdir> <spec|-> " >&2
@@ -64,20 +77,53 @@ fi
 }
 
 GUARDRAILS='
---- Repo guardrails (do not violate) ---
-- Do NOT run pytest/go test/npm test/bazel test on the Mac. The orchestrator
-  runs `ci` (bb remote Linux Test) after reviewing your diff.
+--- Repo guardrails (do not violate; AGENTS.md at the repo root is the full contract) ---
 - Do NOT run git commit, git push, or any git state-changing command. The
   orchestrator reviews and commits your diff. The sandbox has network access,
   so this is on you to respect: nothing stops a push at the sandbox layer.
-- You DO have network access for reads (fetching deps, reading upstream docs).
+- Do NOT run bazel, go test, or npm test on this machine. Targeted pytest on
+  the specific hermetic Python test files you edited is allowed and
+  encouraged; a local pass is advisory, the orchestrator runs ci on Linux as
+  the gate.
 - Never use em-dashes in anything you write.
-- Containers: apko only (no Dockerfiles), non-root uid 65532.
-- Never hardcode .svc.cluster.local URLs or @sha256: image digests.
 - When done, print a short summary of files changed and any open questions.'
 
-LOG="$(mktemp -t codex-dispatch.XXXXXX.log)"
-trap 'rm -f "$LOG"' EXIT
+RUNDIR="$WORKDIR/.codex-dispatch"
+mkdir -p "$RUNDIR"
+
+# Single-flight: one worker per worktree. A second dispatch into a worktree
+# with a live worker interleaves edits and has produced corrupted diffs, so
+# refuse loudly instead. A lock whose pid is dead is stale and reclaimed.
+LOCK="$RUNDIR/lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+	OTHER_PID="$(cat "$LOCK/pid" 2>/dev/null || true)"
+	if [[ -n "$OTHER_PID" ]] && kill -0 "$OTHER_PID" 2>/dev/null; then
+		echo "dispatch pid $OTHER_PID already owns $WORKDIR" >&2
+		echo "live log: $(cat "$LOCK/log" 2>/dev/null || echo unknown)" >&2
+		exit "$BUSY_EXIT"
+	fi
+	rm -rf "$LOCK"
+	mkdir "$LOCK"
+fi
+
+STAMP="$(date +%Y%m%dT%H%M%S)"
+LOG="$RUNDIR/$STAMP.log"
+LAST="$RUNDIR/$STAMP.last-message.txt"
+echo $$ >"$LOCK/pid"
+echo "$LOG" >"$LOCK/log"
+
+# If the harness kills this wrapper (timeout, user interrupt), take the codex
+# child down too: an orphaned worker keeps editing the worktree underneath
+# whatever retry follows.
+CHILD=""
+cleanup() {
+	if [[ -n "$CHILD" ]]; then
+		kill -TERM "$CHILD" 2>/dev/null || true
+	fi
+	rm -rf "$LOCK"
+}
+trap cleanup EXIT
+trap 'cleanup; trap - TERM; exit 143' TERM INT
 
 set +e
 codex exec \
@@ -86,9 +132,13 @@ codex exec \
 	--config sandbox_workspace_write.network_access=true \
 	--sandbox workspace-write \
 	--skip-git-repo-check \
+	--output-last-message "$LAST" \
 	-C "$WORKDIR" \
-	"${SPEC}${GUARDRAILS}" 2>&1 | tee "$LOG"
-CODE=${PIPESTATUS[0]}
+	"${SPEC}${GUARDRAILS}" >"$LOG" 2>&1 &
+CHILD=$!
+wait "$CHILD"
+CODE=$?
+CHILD=""
 set -e
 
 # Quota / rate-limit detection: codex surfaces plan exhaustion as an error
@@ -97,8 +147,16 @@ set -e
 # does not false-positive.
 if [[ "$CODE" -ne 0 ]] &&
 	grep -qiE 'usage limit|rate limit|too many requests|429|quota|plan limit' "$LOG"; then
-	echo "CODEX_QUOTA_EXHAUSTED model=$MODEL" >&2
+	echo "CODEX_QUOTA_EXHAUSTED model=$MODEL log=$LOG" >&2
 	exit "$QUOTA_EXIT"
+fi
+
+echo "--- codex exit $CODE (model=$MODEL, transcript: $LOG) ---"
+if [[ -s "$LAST" ]]; then
+	cat "$LAST"
+else
+	echo "(no final message captured; last 40 transcript lines follow)"
+	tail -40 "$LOG"
 fi
 
 exit "$CODE"
