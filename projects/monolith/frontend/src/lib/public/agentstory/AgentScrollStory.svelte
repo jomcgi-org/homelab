@@ -368,7 +368,7 @@
                   <b>vm awake · 2.5 ms</b>
                 </div>
                 <div class="ci evt" data-at="0.30">
-                  clone jomcgi/homelab · <b>11.2 MiB</b>
+                  clone jomcgi/homelab · <b>full history</b>
                 </div>
                 <div class="ci msg bot" data-at="0.37">
                   Checking ArgoCD and the chart versions.
