@@ -336,14 +336,8 @@
   <div class="scroller" bind:this={scrollerEl}>
     <div class="stage">
       <div class="hero" bind:this={heroEl}>
-        <div class="kicker">
-          ember / agents · how this site runs its AI agents
-        </div>
         <h1>One microVM per <span class="em">agent session.</span></h1>
-        <p class="sub">
-          Killed on idle, rebuilt from disk days later on whichever node has
-          room.
-        </p>
+        <p class="sub">Killed on idle, rebuilt from disk or S3 on resume.</p>
         <div class="stats">
           <span><b>2.5 ms</b> VM resume</span><span class="sep">·</span><span
             ><b>20 s</b> idle → VM destroyed</span
@@ -726,8 +720,8 @@
   <div class="static-story">
     <h1>One microVM per agent session.</h1>
     <p class="body">
-      Killed on idle, rebuilt from disk days later on whichever node has room.
-      Credentials stay <b>outside</b> the VM.
+      Killed on idle, rebuilt from disk or S3 on resume. Credentials stay
+      <b>outside</b> the VM.
     </p>
     <ol>
       <li>
@@ -838,16 +832,10 @@
     padding: 24px;
     background: var(--em-ground);
   }
-  .hero .kicker,
   .stats,
   .cue {
     font: 12.5px var(--em-mono);
     color: var(--em-faint);
-  }
-  .hero .kicker {
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-bottom: 18px;
   }
   .hero h1 {
     margin: 0;
