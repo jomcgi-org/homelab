@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from agent_sessions import api, store
 from agent_sessions import mcp
+from agent_sessions.codex_login import codex_login_gate
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.router import router
 from core.db import get_session
@@ -466,6 +467,207 @@ def test_send_message_model_family_mismatch(client, session, monkeypatch):
     assert "Model family mismatch" in body["error"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["opus", "qwen"])
+async def test_codex_login_gate_skips_broker_for_non_codex_models(monkeypatch, model):
+    calls = []
+
+    async def broker_request(*args):
+        calls.append(args)
+        raise AssertionError("non-Codex models must not call the broker")
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    assert await codex_login_gate(model) is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_codex_login_gate_granted_does_not_start_login(monkeypatch):
+    calls = []
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        return {"state": "granted"}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    assert await codex_login_gate("luna") is None
+    assert calls == [("GET", "/grants/codex-cluster/login/status")]
+
+
+@pytest.mark.asyncio
+async def test_codex_login_gate_none_returns_device_login(monkeypatch):
+    calls = []
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        if method == "GET":
+            return {"state": "none"}
+        return {"verification_url": "https://example.test", "user_code": "CODE"}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    result = await codex_login_gate("luna")
+    assert result["login_required"] is True
+    assert result["verification_url"] == "https://example.test"
+    assert result["user_code"] == "CODE"
+    assert calls == [
+        ("GET", "/grants/codex-cluster/login/status"),
+        ("POST", "/grants/codex-cluster/login/start"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_codex_login_gate_login_pending_is_not_an_error(monkeypatch):
+    async def broker_request(method, path):
+        if method == "GET":
+            return {"state": "none"}
+        response = httpx.Response(409, request=httpx.Request("POST", "https://broker"))
+        raise httpx.HTTPStatusError(
+            "login pending", request=response.request, response=response
+        )
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    result = await codex_login_gate("luna")
+    assert result["pending"] is True
+    assert result["login_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_codex_login_gate_broker_failure_returns_login_error(monkeypatch):
+    async def broker_request(*args):
+        raise Exception("broker offline")
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    result = await codex_login_gate("luna")
+    assert result["login_required"] is True
+    assert result["error"] == "broker offline"
+
+
+@pytest.mark.asyncio
+async def test_codex_login_gate_does_not_swallow_unknown_model(monkeypatch):
+    async def broker_request(*args):
+        raise AssertionError("model validation must happen before broker I/O")
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    with pytest.raises(ValueError, match="Unknown model"):
+        await codex_login_gate("unknown")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grant", ["INVALID", "-invalid"])
+async def test_codex_login_gate_does_not_swallow_invalid_grant(monkeypatch, grant):
+    async def broker_request(*args):
+        raise AssertionError("grant validation must happen before broker I/O")
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    with pytest.raises(ValueError, match="invalid grant name"):
+        await codex_login_gate("luna", grant)
+
+
+def test_send_message_gates_on_effective_model(client, session, monkeypatch):
+    row = _session(session, "pinned-codex", model="luna", status="completed")
+    seen = []
+
+    async def fake_gate(model):
+        seen.append(model)
+        return None
+
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr("agent_sessions.router.codex_login_gate", fake_gate)
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._set_session_status",
+        lambda session_id, status: store.update_session_status(
+            session, session_id, status
+        ),
+    )
+    monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
+
+    body = client.post(
+        f"/api/agents/sessions/{row.id}/messages",
+        json={"prompt": "follow up", "model": "terra"},
+    ).json()
+    assert body["accepted"] is True
+    assert seen == ["terra"]
+
+
+@pytest.mark.parametrize("model", ["opus", "qwen"])
+def test_router_start_non_codex_models_enqueue_without_broker(
+    client, session, monkeypatch, model
+):
+    calls = []
+
+    async def broker_request(*args):
+        calls.append(args)
+        raise AssertionError("non-Codex models must not call the broker")
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_session",
+        lambda local, workspace, branch, selected_model, repo: store.create_session(
+            session, local, workspace, branch, selected_model, repo
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, selected_model: (
+            store.create_pending_message(
+                session, session_id, prompt, selected_model
+            ).seq
+        ),
+    )
+    monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
+
+    body = client.post(
+        "/api/agents/sessions",
+        json={"prompt": "Hello", "model": model},
+    ).json()
+
+    assert body["accepted"] is True
+    assert body["turn"] == 1
+    assert calls == []
+
+
+def test_router_start_codex_login_required_does_not_enqueue(client, monkeypatch):
+    calls = []
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        if method == "GET":
+            return {"state": "none"}
+        return {"verification_url": "https://example.test", "user_code": "CODE"}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_session",
+        lambda *args, **kwargs: pytest.fail("login-required session was persisted"),
+    )
+
+    body = client.post(
+        "/api/agents/sessions", json={"prompt": "Hello", "model": "luna"}
+    ).json()
+
+    assert body["accepted"] is False
+    assert body["login_required"] is True
+    assert body["verification_url"] == "https://example.test"
+    assert body["user_code"] == "CODE"
+    assert calls == [
+        ("GET", "/grants/codex-cluster/login/status"),
+        ("POST", "/grants/codex-cluster/login/start"),
+    ]
+
+
 def test_send_message_session_not_found(client, monkeypatch):
     monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: None)
     body = client.post(
@@ -553,6 +755,10 @@ def test_start_session_marks_message_ui_originated(client, session, monkeypatch)
 
 
 def test_start_session_for_discord_thread_has_no_system_prompt(session, monkeypatch):
+    async def broker_request(*args):
+        return {"state": "granted"}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
     monkeypatch.setattr(api, "_persist_pending_message", lambda *_args: 1)
     monkeypatch.setattr(api, "_schedule_next_message", lambda _session_id: None)
     monkeypatch.setattr(
@@ -572,6 +778,43 @@ def test_start_session_for_discord_thread_has_no_system_prompt(session, monkeypa
     row = store.get_session(session, session_id)
     assert row.discord_thread == "thread-1"
     assert row.system_prompt is None
+
+
+@pytest.mark.parametrize("model", ["opus", "qwen"])
+def test_send_to_thread_session_queues_without_broker_for_non_codex(
+    session, monkeypatch, model
+):
+    row = _session(session, "thread-send", model=model)
+    calls = []
+
+    async def broker_request(*args):
+        calls.append(args)
+        raise AssertionError("Non-Codex sessions must not call the broker")
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    monkeypatch.setattr(api, "session_id_for_thread", lambda _: row.id)
+    monkeypatch.setattr(api, "_load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        api,
+        "_persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr(
+        api,
+        "_set_session_status",
+        lambda session_id, status: store.update_session_status(
+            session, session_id, status
+        ),
+    )
+    monkeypatch.setattr(api, "_schedule_next_message", lambda _: None)
+
+    result = asyncio.run(api.send_to_thread_session("thread-1", "follow up"))
+
+    assert result["action"] == "queued"
+    assert result["turn"] == 1
+    assert calls == []
 
 
 def test_send_message_marks_message_ui_originated(client, session, monkeypatch):

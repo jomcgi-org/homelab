@@ -4,10 +4,42 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from chat.bot import (
+    _format_codex_login_message,
     _render_goosecracker_progress,
     download_image_attachments,
     should_respond,
 )
+
+
+def test_format_codex_login_message_with_url_and_code():
+    result = {
+        "message": "Approve the login.",
+        "verification_url": "https://example.test/device",
+        "user_code": "ABCD-1234",
+    }
+    assert _format_codex_login_message(result) == (
+        "🔐 Approve the login.\n"
+        "Approve in your browser: https://example.test/device\n"
+        "User code: `ABCD-1234`"
+    )
+
+
+def test_format_codex_login_message_pending():
+    assert (
+        _format_codex_login_message({"pending": True, "message": "Already pending."})
+        == "🔐 Already pending."
+    )
+
+
+def test_format_codex_login_message_error():
+    assert (
+        _format_codex_login_message(
+            {"error": "broker offline", "message": "Try again."}
+        )
+        == "🔐 Try again.\nBroker error: broker offline"
+    )
+
+
 from chat.goosecracker_progress import Progress
 
 

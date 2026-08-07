@@ -274,6 +274,22 @@ _CHECKLIST_COLLAPSE_AT = 1900
 GOOSECRACKER_CHECKLIST_MIN_EDIT_INTERVAL = 2.0  # coalesce checklist edits
 
 
+def _format_codex_login_message(result: dict) -> str:
+    """Explain the broker action needed before a Codex turn can run."""
+    message = (
+        result.get("message") or "Codex login is required before this session can run."
+    )
+    verification_url = result.get("verification_url")
+    user_code = result.get("user_code")
+    if verification_url and user_code:
+        return f"🔐 {message}\nApprove in your browser: {verification_url}\nUser code: `{user_code}`"
+    if result.get("pending"):
+        return f"🔐 {message}"
+    if result.get("error"):
+        return f"🔐 {message}\nBroker error: {result['error']}"
+    return f"🔐 {message}"
+
+
 @dataclass
 class AgentFlowOutcome:
     """Result of ``start_agent_flow`` after the ADR 036 orchestrator verdict.
@@ -1338,12 +1354,15 @@ class ChatBot(discord.Client):
             # which reaches chat.api and then chat.bot during startup.
             from agent_sessions.api import start_session_for_thread
 
-            await start_session_for_thread(
+            start_result = await start_session_for_thread(
                 str(thread.id),
                 prompt,
                 effective_repo or None,
                 model=model,
             )
+            if isinstance(start_result, dict) and start_result.get("login_required"):
+                await thread.send(_format_codex_login_message(start_result))
+                return AgentFlowOutcome(thread=thread)
             # ADR 036: the orchestrator wrote its telemetry row BEFORE this
             # thread existed (it decides whether to open one), so the row's
             # thread_id is null. Backfill it now that the thread id is known, so
@@ -1717,6 +1736,11 @@ class ChatBot(discord.Client):
         if result is None:
             # Lost a race with session teardown; let normal handling take it.
             return False
+
+        if result.get("login_required"):
+            await message.channel.send(_format_codex_login_message(result))
+            await asyncio.to_thread(self._complete_lock, msg_id)
+            return True
 
         try:
             await message.add_reaction("⏳")

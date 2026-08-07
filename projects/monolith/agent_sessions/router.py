@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
 from agent_sessions import model_family, store
+from agent_sessions.codex_login import codex_login_gate
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
     _clear_ember_bindings_for,
@@ -294,6 +295,9 @@ async def start_session(request: StartRequest) -> dict:
         model_family(request.model)
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
+    login = await codex_login_gate(request.model)
+    if login is not None:
+        return {"accepted": False, **login}
     row = await asyncio.to_thread(
         _persist_session,
         str(uuid4()),
@@ -426,6 +430,9 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
             ),
         }
     effective_model = request.model or row.model
+    login = await codex_login_gate(effective_model)
+    if login is not None:
+        return {"accepted": False, **login}
     turn = await asyncio.to_thread(
         _persist_pending_message, session_id, request.prompt, effective_model
     )
