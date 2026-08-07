@@ -95,9 +95,7 @@ def pick_stale_sessions(session: Session, limit: int = BATCH_LIMIT) -> list[dict
     return candidates
 
 
-def store_title(
-    session: Session, session_id: int, title: str, turn_seq: int
-) -> None:
+def store_title(session: Session, session_id: int, title: str, turn_seq: int) -> None:
     row = session.get(AgentSession, session_id)
     if row is None:
         return
