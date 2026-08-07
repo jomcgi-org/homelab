@@ -441,6 +441,20 @@ volumes:
   - name: egress-ca
     secret:
       secretName: {{ $ctx.Values.egress.ca.secretName | default (printf "%s-egress-ca" (include "embervm.fullname" $ctx)) }}
+      # optional, for the same reason the secretRef entries above are optional:
+      # without it the kubelet fails container creation on a missing Secret and
+      # WEDGES THE BRICK ROLL (observed live at 0.1.350, and again at 0.1.451
+      # when this volume was added non-optional). cert-manager issues this
+      # Secret from a Certificate in the SAME sync that adds the mount, and
+      # ArgoCD blocks that sync waiting for the brick Deployment to go healthy,
+      # so the mount can be waiting on a Secret whose creation is waiting on the
+      # mount. Optional breaks the deadlock.
+      #
+      # Degrading is safe: the sidecar treats an unreadable CA as "no MITM lane"
+      # (newCAMinter fails, minter stays nil) and keeps injecting on the
+      # cleartext lane, so a guest loses https:// credential injection rather
+      # than all egress.
+      optional: true
 {{- end }}
   - name: dev-kvm
     hostPath:
