@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from agent_sessions import model_family
 from agent_sessions import mcp
 
 _DEFAULT_GRANT = mcp._DEFAULT_GRANT
+logger = logging.getLogger(__name__)
 
 
 async def codex_login_gate(
@@ -15,8 +18,8 @@ async def codex_login_gate(
 ) -> dict | None:
     """Return a user-facing login response when a Codex grant is not ready.
 
-    Non-Codex sessions skip the broker entirely. Broker failures are returned as
-    login responses because a preflight check must not turn into a 500 response.
+    Non-Codex sessions skip the broker entirely. An unreachable broker does not
+    block the turn, since the sidecar may still have a cached token.
     """
     family = model_family(model)
     grant = mcp._grant_or_raise(grant)
@@ -26,12 +29,11 @@ async def codex_login_gate(
     try:
         status = await mcp._broker_request("GET", f"/grants/{grant}/login/status")
     except Exception as exc:
-        return {
-            "login_required": True,
-            "error": str(exc) or exc.__class__.__name__,
-            "grant": grant,
-            "message": "Codex login could not be checked. Try again after checking the token broker.",
-        }
+        # If we cannot ask the broker, proceed so a cached sidecar token can
+        # still serve the turn. Only a positive non-granted response blocks.
+        reason = str(exc) or exc.__class__.__name__
+        logger.warning("Could not check Codex login status: %s", reason)
+        return None
     if status.get("state") == "granted":
         return None
 
