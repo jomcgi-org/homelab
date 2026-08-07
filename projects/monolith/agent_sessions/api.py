@@ -40,7 +40,7 @@ async def start_session_for_thread(
         "main",
         model,
         repo,
-        thread_id,
+        discord_thread=thread_id,
     )
     await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     _schedule_next_message(row.id)

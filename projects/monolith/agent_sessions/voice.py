@@ -4,6 +4,15 @@ import re
 
 _VOICE_RE = re.compile(r"<voice>(.*?)</voice>", re.IGNORECASE | re.DOTALL)
 
+# Pairs with extract_voice_summary, which falls back to the first sentence
+# when the tag is absent, so sessions without this prompt still get a usable
+# summary.
+VOICE_INSTRUCTION = (
+    "End every response with a single line: <voice>One or two plain sentences, "
+    "no markdown, that a person could hear read aloud: what you did and anything "
+    "you need from them.</voice>"
+)
+
 
 def extract_voice_summary(result_text: str) -> str:
     if not result_text:

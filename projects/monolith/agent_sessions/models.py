@@ -41,6 +41,11 @@ class AgentSession(SQLModel, table=True):
     prior_ember_lineage_id: str | None = Field(default=None)
     prior_cli_session_id: str | None = Field(default=None)
     progress_token: str | None = Field(default=None)
+    # The CALLER's system prompt for this session, appended to the guest shim's
+    # own sandbox prompt. Only the MCP lane sets it (to the voice instruction);
+    # a Discord thread posts the turn result verbatim, so voice markup there is
+    # noise rather than signal.
+    system_prompt: str | None = Field(default=None)
     # BigInteger, not the default Integer: this is epoch MILLISECONDS from the
     # control plane, which overflows int4. The migration already declares BIGINT,
     # but SQLModel maps a plain int to sqlalchemy Integer and emits an explicit

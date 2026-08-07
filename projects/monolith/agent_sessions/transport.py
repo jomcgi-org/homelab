@@ -138,6 +138,7 @@ class ShimTransport(Protocol):
         repo: str | None = None,
         branch: str | None = None,
         progress_token: str | None = None,
+        system_prompt: str | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -357,6 +358,7 @@ class EmberVmShimTransport:
         repo: str | None = None,
         branch: str | None = None,
         progress_token: str | None = None,
+        system_prompt: str | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -368,6 +370,8 @@ class EmberVmShimTransport:
                 only actually sent once the restore is confirmed to have
                 recovered the workspace (see restore_from below).
             message: User message / prompt to send to Claude.
+            system_prompt: The caller's system prompt, appended to the shim's
+                own sandbox prompt. Omitted from the payload if None.
             restore_from: A prior LINEAGE handle to inherit the guest
                 workspace from when ember is None (#4306 slice 5: the
                 binding-was-cleared path, e.g. after an EmberSessionGone or
@@ -442,6 +446,8 @@ class EmberVmShimTransport:
                 payload["branch"] = branch or "main"
             if progress_token is not None:
                 payload["progress_token"] = progress_token
+            if system_prompt is not None:
+                payload["system_prompt"] = system_prompt
             body = json.dumps(payload)
             url = f"{EMBERVM_URL}/v1/sessions/{current.session_id}/invoke"
             headers = {
