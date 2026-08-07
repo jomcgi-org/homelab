@@ -275,7 +275,14 @@ pnpm = use_extension("@aspect_rules_js//npm:extensions.bzl", "pnpm")
 # Allows developers to run the same pnpm version that Bazel manages
 use_repo(pnpm, "pnpm")
 
-pnpm.pnpm(pnpm_version = "9.15.9")
+# Must stay in step with the format pnpm-lock.yaml is written in. The lockfile
+# is pnpm 10 format: patch hashes are sha256 hex (not v9's base32) and
+# platform-specific packages carry `libc:` fields v9 does not understand.
+# Running v9 against it fails `pnpm install --frozen-lockfile` with
+# ERR_PNPM_LOCKFILE_CONFIG_MISMATCH, and regenerating the lockfile under v9
+# "fixes" that by silently stripping every `libc:` field, which is what selects
+# the musl vs glibc native binaries.
+pnpm.pnpm(pnpm_version = "10.34.5")
 
 npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
 npm.npm_translate_lock(
