@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { statusClass, statusLabel, vmState } from "./status.js";
+import { statusClass, statusLabel, vmRunning, vmState } from "./status.js";
 
 test.each([
   [{ status: "running" }, "running", "running"],
@@ -41,5 +41,23 @@ describe("vmState", () => {
 
   test("is off when the vm map is missing", () => {
     expect(vmState({ ember_session_id: "s-awake" }, null)).toBe("off");
+  });
+});
+
+describe("vmRunning", () => {
+  test.each([
+    [{ cp_state: "running" }, true],
+    [{ cp_state: "relighting" }, false],
+    [{ cp_state: "creating" }, false],
+    [{ cp_state: "parked" }, false],
+  ])("cp_state %j running=%s", (vm, expected) => {
+    expect(vmRunning({ ember_session_id: "s-1" }, { "s-1": vm })).toBe(
+      expected,
+    );
+  });
+
+  test("is false with no binding or no map", () => {
+    expect(vmRunning({ ember_session_id: null }, {})).toBe(false);
+    expect(vmRunning(null, null)).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 <script>
   import { tick } from "svelte";
   import { renderAgentMarkdown } from "./markdown.js";
-  import { statusClass, statusLabel, vmState } from "./status.js";
+  import { statusClass, statusLabel, vmRunning, vmState } from "./status.js";
   import "./agents-theme.css";
 
   let { data } = $props();
@@ -804,8 +804,16 @@
                         ],
                       )}</span
                     >
-                  {:else}
+                  {:else if partial?.partial_text}
                     <span class="live-latest">working…</span>
+                  {:else if vmRunning(selectedSession, vms)}
+                    <!-- Claimed, VM confirmed running, no output yet: the
+                         CLI is spinning up / the model has the prompt. -->
+                    <span class="live-latest">starting the agent…</span>
+                  {:else}
+                    <!-- Claimed but the control plane does not report the
+                         guest running yet: park rejoin or cold boot. -->
+                    <span class="live-latest">waking vm…</span>
                   {/if}
                 {:else if state === "starting"}
                   <span class="live-latest">starting up…</span>
@@ -1331,22 +1339,24 @@
     text-transform: lowercase;
     white-space: nowrap;
   }
+  /* Soft tinted fills matching the session-state pills: state reads from
+     color, not from a hard outline. */
   .vm-chip {
     border-radius: 999px;
-    border: 1px solid var(--line-strong);
-    padding: 3px 10px;
+    padding: 4px 10px;
     font-family: var(--font-mono);
     font-size: var(--size-meta);
     color: var(--muted);
+    background: var(--hover);
     white-space: nowrap;
   }
   .vm-chip.vm-awake {
     color: var(--ok);
-    border-color: var(--ok);
+    background: var(--ok-soft);
   }
   .vm-chip.vm-asleep {
     color: var(--info);
-    border-color: var(--info);
+    background: var(--info-soft);
   }
   .session-state.warn {
     color: var(--attn);
