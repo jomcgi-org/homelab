@@ -190,12 +190,24 @@ _VM_ASLEEP_STATES = {"banking", "banked", "parking", "parked"}
 @router.get("/vms")
 async def list_session_vms() -> dict:
     """Map ember session ids to a coarse VM state for the console UI."""
+    # The control plane retains terminal session rows for days, so the
+    # listing can exceed one page; a silently truncated page would render
+    # a parked-days-ago session as "off" (the opposite of the truth).
+    # Follow `total` across pages, bounded far above the workload cap.
+    items = []
+    offset = 0
     try:
-        page = await _transport.list_sessions(limit=500)
+        for _ in range(4):
+            page = await _transport.list_sessions(limit=500, offset=offset)
+            batch = page.get("items", [])
+            items.extend(batch)
+            offset += len(batch)
+            if not batch or offset >= int(page.get("total") or 0):
+                break
     except EmberVMTransportError as exc:
         return {"vms": {}, "error": str(exc)}
     vms = {}
-    for item in page.get("items", []):
+    for item in items:
         state = str(item.get("state", ""))
         if state in _VM_AWAKE_STATES:
             coarse = "awake"

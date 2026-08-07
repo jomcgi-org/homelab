@@ -175,10 +175,12 @@
     return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
   }
 
-  // Mirrors the backend's _CLEAN_TERMINAL_REASONS: "completed"/"end_turn"
-  // from the claude lane, "stop" from the pi lane's raw stopReason. A
-  // qwen turn is a normal success with terminal_reason "stop", and the
-  // old !== "completed" check painted every one of them as failed.
+  // Success allowlist shared with the backend's _CLEAN_TERMINAL_REASONS:
+  // "completed"/"end_turn" from the claude lane, "stop" from the pi
+  // lane's raw stopReason. One deliberate difference: a missing
+  // terminal_reason warns the SESSION server-side (transport died
+  // mid-turn) but does not paint the turn card failed here, since the
+  // card has no error text to show for it.
   const CLEAN_TERMINAL_REASONS = new Set(["completed", "end_turn", "stop"]);
 
   function turnFailed(turn) {
@@ -586,14 +588,30 @@
     }
   });
 
-  // Guest VM state polls on its own cadence: the control plane parks a VM
-  // idleBankSeconds (20s) after its last invoke without telling the
-  // monolith, so a fixed 5s poll keeps the chip honest even when the
-  // session list has dropped to its slow 15s interval.
+  // Guest VM state polls at the transcript ladder's 100ms cadence: this
+  // page has one private viewer, the control-plane listing is a cheap
+  // in-memory read, and the 20s idle-park should flip the chip the
+  // moment it happens. Self-scheduling (like the ladder) so a slow
+  // fetch never stacks requests; a hidden tab skips the fetch entirely
+  // because unlike the ladder this loop runs for the life of the page.
   $effect(() => {
-    loadVms();
-    const interval = setInterval(loadVms, 5000);
-    return () => clearInterval(interval);
+    let stopped = false;
+    let timeoutHandle;
+    const schedulePoll = async () => {
+      if (stopped) return;
+      const startTime = Date.now();
+      if (!document.hidden) await loadVms();
+      if (stopped) return;
+      timeoutHandle = setTimeout(
+        schedulePoll,
+        Math.max(0, 100 - (Date.now() - startTime)),
+      );
+    };
+    schedulePoll();
+    return () => {
+      stopped = true;
+      clearTimeout(timeoutHandle);
+    };
   });
 
   $effect(() => () => {

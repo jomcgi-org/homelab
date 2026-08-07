@@ -26,6 +26,10 @@ from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 
+# Session listing is an in-memory control-plane read serving the console's
+# VM-state poll; it must never inherit the turn-sized read timeout.
+LIST_SESSIONS_READ_TIMEOUT = 5.0
+
 
 def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
     try:
@@ -281,7 +285,13 @@ class EmberVmShimTransport:
 
         url = f"{EMBERVM_URL}/v1/workloads/{self.workload}/sessions"
         headers = auth_headers()
-        timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
+        # NOT self.read_timeout: that 30-minute value is sized for a turn,
+        # and this listing now serves the console's fast VM-state poll. A
+        # wedged control plane must fail the poll's degrade path in
+        # seconds, not accumulate half-hour requests behind it.
+        timeout = httpx.Timeout(
+            LIST_SESSIONS_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
+        )
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
