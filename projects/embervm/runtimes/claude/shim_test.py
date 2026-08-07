@@ -3725,6 +3725,183 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     manager._close_process()
 
 
+def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
+    """models.json must declare contextWindow and maxTokens matching vLLM.
+
+    If these values are wrong, pi's clampMaxTokensToContext computes available
+    tokens using a false budget. With contextWindow=128000 (pi's hardcoded
+    default), pi believes available tokens is about 107k even when the real
+    window is 32768, leading to a loud 400 error as soon as input tokens
+    exceed 32768 - 16384 = 16384 (exactly half the real window). The arithmetic
+    must ensure that input + max_output_tokens <= real_budget for all inputs.
+    """
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="qwen")
+
+    assert (
+        shim.PI_CONTEXT_WINDOW
+        - shim.PI_MAX_OUTPUT_TOKENS
+        - shim.PI_CONTEXT_SAFETY_TOKENS
+        > 0
+    ), "Context window too small: max output tokens plus safety margin exceeds budget"
+    assert shim.PI_CONTEXT_WINDOW == 32768
+
+    models_path = tmp_path / "workspace" / ".pi" / "agent" / "models.json"
+    models = json.loads(models_path.read_text())
+    model_dict = models["providers"]["openai-completions"]["models"][0]
+
+    assert model_dict["contextWindow"] == shim.PI_CONTEXT_WINDOW
+    assert model_dict["maxTokens"] == shim.PI_MAX_OUTPUT_TOKENS
+
+    manager._close_process()
+
+
+def test_pi_settings_json_compaction_reserve_exceeds_max_output(tmp_path, monkeypatch):
+    """Compaction reserve must exceed max output plus pi's safety margin."""
+    assert (
+        shim.PI_COMPACTION_RESERVE_TOKENS
+        > shim.PI_MAX_OUTPUT_TOKENS + shim.PI_CONTEXT_SAFETY_TOKENS
+    ), "Compaction reserve too small: full response may not fit when compaction fires"
+
+
+def test_pi_settings_json_keep_recent_smaller_than_usable_window(tmp_path, monkeypatch):
+    """keepRecentTokens must be less than the usable window after compaction."""
+    usable_after_reserve = shim.PI_CONTEXT_WINDOW - shim.PI_COMPACTION_RESERVE_TOKENS
+    assert shim.PI_COMPACTION_KEEP_RECENT_TOKENS < usable_after_reserve, (
+        "keepRecentTokens exceeds usable window: compaction will not reduce context"
+    )
+
+
+def test_pi_settings_json_is_written_with_compaction_block(tmp_path, monkeypatch):
+    """settings.json must contain pi's compaction configuration."""
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="qwen")
+
+    settings_path = tmp_path / "workspace" / ".pi" / "agent" / "settings.json"
+    settings = json.loads(settings_path.read_text())
+
+    assert "compaction" in settings
+    assert settings["compaction"]["enabled"] is True
+    assert settings["compaction"]["reserveTokens"] == shim.PI_COMPACTION_RESERVE_TOKENS
+    assert (
+        settings["compaction"]["keepRecentTokens"]
+        == shim.PI_COMPACTION_KEEP_RECENT_TOKENS
+    )
+
+    manager._close_process()
+
+
+def test_pi_settings_json_merge_preserves_unrelated_keys(tmp_path, monkeypatch):
+    """Existing settings.json unrelated keys must survive spawn."""
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    settings_dir = tmp_path / "workspace" / ".pi" / "agent"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text(json.dumps({"custom": {"key": "value"}}))
+
+    manager.turn("hello", model="qwen")
+
+    settings = json.loads(settings_path.read_text())
+    assert settings["custom"] == {"key": "value"}, (
+        "Merge did not preserve unrelated key"
+    )
+    assert "compaction" in settings, "Merge did not add compaction block"
+
+    manager._close_process()
+
+
+def test_pi_settings_json_corrupt_file_does_not_break_spawn(tmp_path, monkeypatch):
+    """Corrupt settings.json must not break spawn."""
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    settings_dir = tmp_path / "workspace" / ".pi" / "agent"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text("{invalid json content")
+
+    manager.turn("hello", model="qwen")
+
+    settings = json.loads(settings_path.read_text())
+    assert "compaction" in settings, "Corrupt file was not replaced with fresh content"
+
+    manager._close_process()
+
+
+def test_pi_settings_json_invalid_utf8_does_not_crash(tmp_path, monkeypatch):
+    """Invalid UTF-8 in settings.json must not crash _write_settings_json.
+
+    A torn write on the durable workspace volume can produce invalid UTF-8 bytes.
+    UnicodeDecodeError must be caught and handled gracefully without crashing the
+    spawn.
+    """
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    settings_dir = tmp_path / "workspace" / ".pi" / "agent"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+    # Write genuinely invalid UTF-8 bytes
+    settings_path.write_bytes(b"\xff\xfe\x00garbage")
+
+    # This should not crash; the spawn should proceed
+    manager.turn("hello", model="qwen")
+
+    settings = json.loads(settings_path.read_text())
+    assert "compaction" in settings, (
+        "Invalid UTF-8 should be replaced with fresh content"
+    )
+
+    manager._close_process()
+
+
+def test_pi_settings_json_valid_non_object_json_does_not_crash(tmp_path, monkeypatch):
+    """Valid JSON that is not an object must not crash _write_settings_json.
+
+    json.load succeeds on [], "hello", null, and 3. The method must guard
+    against these and fall back to a fresh dict without crashing the spawn.
+    """
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    settings_dir = tmp_path / "workspace" / ".pi" / "agent"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text(json.dumps([1, 2, 3]))
+
+    manager.turn("hello", model="qwen")
+
+    settings = json.loads(settings_path.read_text())
+    assert isinstance(settings, dict), "Non-dict JSON should be replaced with dict"
+    assert "compaction" in settings
+
+    manager._close_process()
+
+
+def test_pi_settings_json_existing_compaction_block_replaced(tmp_path, monkeypatch):
+    """A pre-existing compaction block must be replaced wholesale, not merged."""
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    settings_dir = tmp_path / "workspace" / ".pi" / "agent"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "compaction": {"enabled": False, "reserveTokens": 1000},
+                "custom": {"key": "value"},
+            }
+        )
+    )
+
+    manager.turn("hello", model="qwen")
+
+    settings = json.loads(settings_path.read_text())
+    assert settings["compaction"]["enabled"] is True
+    assert settings["compaction"]["reserveTokens"] == shim.PI_COMPACTION_RESERVE_TOKENS
+    assert settings["custom"] == {"key": "value"}
+
+    manager._close_process()
+
+
 def test_codex_auth_json_is_parseable_and_inert(tmp_path, monkeypatch):
     """The CLI parses these tokens, so shape matters more than content."""
     import base64 as _b64

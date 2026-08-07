@@ -140,6 +140,21 @@ py_test(
     ],
 )
 
+# Guard: pi must be told Qwen's real context window. A stale value re-arms
+# the 400 that killed guest turns (see PI_CONTEXT_WINDOW in shim.py).
+# Hand-registered: gazelle does not generate py_test here.
+py_test(
+    name = "pi_context_window_sync_test",
+    srcs = ["pi_context_window_sync_test.py"],
+    data = ["//projects/inference/deploy:values_yaml"],
+    imports = ["."],
+    deps = [
+        ":shim_lib",
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
 platform_transition_filegroup(
     name = "guest_init_amd64_bin",
     srcs = ["//projects/embervm/runtimes/claude/guest-init/cmd"],
