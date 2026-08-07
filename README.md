@@ -68,7 +68,7 @@ buck2/                # Reusable Buck2 image/helm/apko rules (consumable as a ce
 docs/                 # Design docs, ADRs, and plans
 ```
 
-See [docs/contributing.md](docs/contributing.md) for the full structure. Architecture decisions are tracked in [docs/decisions/](docs/decisions/).
+See [docs/contributing.md](docs/contributing.md) for the full structure and contribution workflow. Architecture decisions are tracked in [docs/decisions/](docs/decisions/).
 
 ## What's next
 
