@@ -3017,8 +3017,48 @@ def test_git_proxy_helper_blocks_after_handshake_timeout(tmp_path, monkeypatch):
     assert result.stdout == b"late payload"
 
 
-def _forwarder_exchange(monkeypatch, request_bytes):
-    """Drive one connection through the forwarder, returning what the lane saw."""
+def _read_until(sock, expect, deadline_seconds=2):
+    """Accumulate from sock until expect is present, or the deadline expires.
+
+    A single recv() is not a message read. The forwarder writes the destination
+    preamble and the replayed request head as two separate sendall() calls
+    (shim.py, VsockEgressForwarder: the preamble, then `pending`), and a stream
+    socket carries no boundary between them, so one recv() returns whichever
+    bytes happen to have arrived. Usually both writes coalesce and a single read
+    sees everything; under scheduling pressure the first read returns only the
+    preamble, which is what made this suite FLAKY under Bazel retry (#4425,
+    observed as `assert b'GET http://example.com/x HTTP/1.1' in
+    b'example.com:80\\n'`).
+
+    expect=None means "expect nothing", so this drains until the deadline and
+    returns whatever arrived, which is how a caller asserts that the forwarder
+    stayed silent.
+    """
+    chunks = b""
+    finished = time.monotonic() + deadline_seconds
+    while True:
+        if expect is not None and expect in chunks:
+            return chunks
+        remaining = finished - time.monotonic()
+        if remaining <= 0:
+            return chunks
+        try:
+            sock.settimeout(remaining)
+            received = sock.recv(4096)
+        except (TimeoutError, OSError):
+            return chunks
+        if not received:
+            return chunks
+        chunks += received
+
+
+def _forwarder_exchange(monkeypatch, request_bytes, expect_upstream=None):
+    """Drive one connection through the forwarder, returning what the lane saw.
+
+    expect_upstream is the byte string the caller is going to assert on. It is
+    passed in rather than inferred so the read stops as soon as the assertion
+    could succeed, instead of being a race against whichever bytes arrived first.
+    """
     forwarder = shim.VsockEgressForwarder(port=0)
     original_socket = socket.socket
     vsock_peer, vsock_forwarder = socket.socketpair()
@@ -3055,12 +3095,8 @@ def _forwarder_exchange(monkeypatch, request_bytes):
     client = socket.create_connection((shim.EGRESS_LOCALHOST, forwarder.port))
     try:
         client.sendall(request_bytes)
-        vsock_peer.settimeout(2)
+        upstream_saw = _read_until(vsock_peer, expect_upstream)
         client.settimeout(2)
-        try:
-            upstream_saw = vsock_peer.recv(4096)
-        except (TimeoutError, OSError):
-            upstream_saw = b""
         try:
             client_saw = client.recv(4096)
         except (TimeoutError, OSError):
@@ -3343,12 +3379,52 @@ def test_egress_forwarder_takes_absolute_uri_host_and_replays_the_request(monkey
     # an absolute-URI line rather than a CONNECT. The destination comes from Host,
     # and the whole head is replayed: an origin server must accept an absolute-URI
     # request line, so the forwarder never rewrites it.
+    # The preamble and the replayed head are two separate writes, so read until
+    # the second one lands rather than asserting on one recv (#4425).
     upstream_saw, _ = _forwarder_exchange(
         monkeypatch,
         b"GET http://example.com/x HTTP/1.1\r\nHost: example.com\r\n\r\n",
+        expect_upstream=b"GET http://example.com/x HTTP/1.1",
     )
     assert upstream_saw.startswith(b"example.com:80\n")
     assert b"GET http://example.com/x HTTP/1.1" in upstream_saw
+
+
+def test_read_until_spans_separate_writes():
+    # The bug #4425 recorded, isolated: two sendalls with a gap between them is
+    # exactly what the forwarder does (preamble, then the replayed head), and a
+    # single recv sees only the first. A read that stops at one recv fails here
+    # deterministically, where against the live forwarder it only fails when the
+    # scheduler happens to split the writes.
+    reader, writer = socket.socketpair()
+
+    def write_in_two_parts():
+        writer.sendall(b"example.com:80\n")
+        time.sleep(0.2)
+        writer.sendall(b"GET http://example.com/x HTTP/1.1\r\n")
+
+    thread = threading.Thread(target=write_in_two_parts, daemon=True)
+    thread.start()
+    try:
+        saw = _read_until(reader, b"GET http://example.com/x HTTP/1.1")
+    finally:
+        thread.join(timeout=2)
+        reader.close()
+        writer.close()
+    assert saw.startswith(b"example.com:80\n")
+    assert b"GET http://example.com/x HTTP/1.1" in saw
+
+
+def test_read_until_returns_what_arrived_when_nothing_is_expected():
+    # expect=None is how a caller asserts the forwarder stayed silent, so this
+    # must drain to the deadline and return empty rather than block forever.
+    reader, writer = socket.socketpair()
+    try:
+        saw = _read_until(reader, None, deadline_seconds=0.2)
+    finally:
+        reader.close()
+        writer.close()
+    assert saw == b""
 
 
 def test_egress_forwarder_rejects_a_head_it_cannot_route(monkeypatch):
