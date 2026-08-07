@@ -26,7 +26,7 @@
     "autoprefixer": "^10.4.23",
     "eslint": "^9.39.2",
     "happy-dom": "^20.8.9",
-    "postcss": "^8.5.18",
+    "postcss": "^8.5.23",
     "prettier": "^3.8.1",
     "prettier-plugin-svelte": "^4.1.1",
     "svelte": "^5.56.4",
