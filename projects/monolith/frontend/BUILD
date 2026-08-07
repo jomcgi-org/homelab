@@ -27,6 +27,7 @@ js_library(
         "vite.config.js",
     ],
     deps = [
+        ":node_modules/@homelab/design-system",
         ":node_modules/@sveltejs/adapter-node",
         ":node_modules/@sveltejs/kit",
         ":node_modules/@sveltejs/vite-plugin-svelte",
@@ -103,6 +104,7 @@ js_library(
         "vite.config.js",
     ],
     deps = [
+        ":node_modules/@homelab/design-system",
         ":node_modules/@sveltejs/adapter-node",
         ":node_modules/@sveltejs/kit",
         ":node_modules/@sveltejs/vite-plugin-svelte",

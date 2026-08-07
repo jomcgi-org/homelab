@@ -1,4 +1,5 @@
 <script>
+  import "@homelab/design-system/tokens/contract.css";
   import "$lib/global.css";
   import { page } from "$app/stores";
   import { Nav } from "$lib/public/components";

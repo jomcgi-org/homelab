@@ -2,6 +2,7 @@
 packages:
   - packages/*
   - bazel/tools
+  - projects/design-system
   - projects/grimoire/frontend
   - projects/monolith/frontend
   - projects/monolith/frontend/visual

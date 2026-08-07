@@ -158,6 +158,8 @@ importers:
 
   bazel/tools: {}
 
+  projects/design-system: {}
+
   projects/grimoire/frontend:
     dependencies:
       '@tanstack/react-query':
@@ -194,6 +196,9 @@ importers:
 
   projects/monolith/frontend:
     dependencies:
+      '@homelab/design-system':
+        specifier: workspace:*
+        version: link:../../design-system
       '@dagrejs/dagre':
         specifier: ^1.1.4
         version: 1.1.8
