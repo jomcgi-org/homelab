@@ -70,7 +70,14 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
     if row is None:
         return None
     model_family(row.model)
-    turn = await asyncio.to_thread(_persist_pending_message, session_id, message, None)
+    # row.model, NOT None. None is not "unset", it resolves to the CLAUDE family
+    # (model_family(None) == "claude"), so a None here ran the claude adapter
+    # against a session whose CLI transcript belongs to codex and died with
+    # "claude exited before init / No conversation found with session ID".
+    # Every follow-up turn must stay inside the family the session pinned.
+    turn = await asyncio.to_thread(
+        _persist_pending_message, session_id, message, row.model
+    )
     await asyncio.to_thread(_set_session_status, session_id, "running")
     _schedule_next_message(session_id)
     return {"action": "queued", "session_id": session_id, "turn": turn}
