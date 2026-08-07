@@ -198,7 +198,10 @@
           ),
         )
       : "";
-    wireTextEl.className = `wt ${active?.cls ?? ""}`;
+    // classList, never className: overwriting className would drop Svelte's
+    // scoping hash and detach every .wt rule (fcstory convention).
+    wireTextEl.classList.remove("w-ember", "w-amber", "w-good", "w-frost");
+    if (active?.cls) wireTextEl.classList.add(active.cls);
     let target = 0;
     for (const item of chatItems) {
       const opacity = sub(t, item.at, item.at + CHAT_REVEAL);
@@ -231,7 +234,8 @@
           ? "vm asleep"
           : "vm off";
     chipWordEl.textContent = word;
-    chipEl.className = `vmchip ${chipMode === "off" ? "" : chipMode}`;
+    chipEl.classList.toggle("awake", chipMode === "awake");
+    chipEl.classList.toggle("asleep", chipMode === "asleep");
   }
 
   function measure() {
@@ -335,10 +339,10 @@
         <div class="kicker">
           ember / agents · how this site runs its AI agents
         </div>
-        <h1>Every agent gets <span class="em">its own machine.</span></h1>
+        <h1>One microVM per <span class="em">agent session.</span></h1>
         <p class="sub">
-          One <b>Firecracker microVM</b> per session. The VM is disposable;
-          <b>the disk survives</b>.
+          Killed on idle, rebuilt from disk days later on whichever node has
+          room.
         </p>
         <div class="stats">
           <span><b>2.5 ms</b> VM resume</span><span class="sep">·</span><span
@@ -479,6 +483,8 @@
                   y="72"
                   width="80"
                   height="18"
+                  rx="9"
+                  style="fill: var(--ag-idle)"
                 /><text
                   class="pill-t"
                   id="t-pill"
@@ -565,6 +571,7 @@
                   width="208"
                   height="20"
                   opacity="0"
+                  style="fill: var(--em-good-dim)"
                 /><text
                   class="swap-t good"
                   id="t-real"
@@ -717,10 +724,10 @@
     </div>
   </div>
   <div class="static-story">
-    <h1>Every agent gets its own machine.</h1>
-    <p>
-      One Firecracker microVM per session. The VM is disposable; the disk
-      survives.
+    <h1>One microVM per agent session.</h1>
+    <p class="body">
+      Killed on idle, rebuilt from disk days later on whichever node has room.
+      Credentials stay <b>outside</b> the VM.
     </p>
     <ol>
       <li>
@@ -751,7 +758,6 @@
         <dd>retired workspaces · <b>survives the machine</b> · 7 d gc</dd>
       </div>
     </dl>
-    <p class="body"><b>Only the bottom tier is allowed to matter.</b></p>
     <h2 class="h2">Keep going</h2>
     <div class="doors">
       <a class="door" href="/ember/firecracker"
@@ -850,6 +856,7 @@
     font-weight: 850;
     letter-spacing: -0.035em;
     line-height: 1.02;
+    text-wrap: balance;
   }
   .hero .em {
     color: var(--em-ember);
@@ -861,9 +868,9 @@
     font-size: clamp(16px, 2vw, 20px);
     line-height: 1.5;
   }
-  .hero .sub b,
   .stats b {
     color: var(--em-ink);
+    font-weight: 650;
   }
   .stats {
     display: flex;
@@ -953,11 +960,13 @@
     border-radius: 50%;
     background: var(--ag-idle);
   }
-  .vmchip.awake .d {
+  /* awake/asleep arrive via classList from frame(), so they must be
+     :global or the compiler prunes them as unused (fcstory convention). */
+  .vmchip:global(.awake) .d {
     background: var(--em-ember);
     box-shadow: 0 0 6px 1px var(--ag-chip-shadow);
   }
-  .vmchip.asleep .d {
+  .vmchip:global(.asleep) .d {
     background: var(--em-frost);
   }
   .chat-view {
@@ -1001,6 +1010,7 @@
   }
   .evt b {
     color: var(--em-ember-deep);
+    font-weight: 600;
   }
   .evt.frost,
   .evt.frost b {
@@ -1130,8 +1140,19 @@
   .dg .el-good {
     fill: var(--em-good-deep);
   }
-  .dg .cellr {
+  /* RAM cells are built with createElementNS, so they never get the
+     scoping hash: the selector must be :global. The transition is what
+     makes the memory sweep fade instead of popping cell by cell. */
+  .dg :global(.cellr) {
     fill: var(--ag-idle);
+    transition: fill 0.3s ease;
+  }
+  .dg .mk {
+    fill: none;
+    stroke-width: 1.6;
+  }
+  .dg .pill {
+    rx: 9px;
   }
   .dg .pill-t {
     font: 600 10px var(--em-mono);
@@ -1139,6 +1160,7 @@
   }
   .dg .swap-r {
     fill: var(--em-track);
+    rx: 4px;
   }
   .dg .swap-t {
     fill: var(--em-muted);
@@ -1202,16 +1224,17 @@
   .wt {
     color: var(--em-ink);
   }
-  .w-ember {
+  /* w-* classes arrive via classList from frame(): must be :global. */
+  .wt:global(.w-ember) {
     color: var(--em-ember-deep);
   }
-  .w-amber {
+  .wt:global(.w-amber) {
     color: var(--ag-amber-deep);
   }
-  .w-good {
+  .wt:global(.w-good) {
     color: var(--em-good-deep);
   }
-  .w-frost {
+  .wt:global(.w-frost) {
     color: var(--ag-frost-deep);
   }
   .wc {
@@ -1229,19 +1252,29 @@
     padding: 20px 24px 90px;
   }
   .h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
     margin: 56px 0 16px;
     font-size: 24px;
+    font-weight: 750;
+    letter-spacing: -0.015em;
   }
   .h2::before {
     content: "##";
-    margin-right: 12px;
     color: var(--em-ember);
     font: 16px var(--em-mono);
   }
   .body {
+    margin: 0 0 14px;
+    max-width: 68ch;
     color: var(--em-muted);
     font-size: 15.5px;
     line-height: 1.55;
+  }
+  .body b {
+    color: var(--em-ink);
+    font-weight: 600;
   }
   .tiers-mini {
     margin: 0;
@@ -1276,6 +1309,7 @@
   }
   .tiers-mini dd b {
     color: var(--em-ink);
+    font-weight: 600;
   }
   .doors {
     display: grid;
@@ -1290,6 +1324,13 @@
     background: var(--em-panel);
     box-shadow: var(--em-shadow-soft);
     text-decoration: none;
+    transition:
+      border-color 0.18s ease,
+      transform 0.18s ease;
+  }
+  .door:hover {
+    border-color: var(--em-ember-dim);
+    transform: translateY(-2px);
   }
   .door .k,
   .go {
@@ -1303,6 +1344,7 @@
     font-size: 18px;
   }
   .door p {
+    margin: 0;
     color: var(--em-muted);
     font-size: 14px;
     line-height: 1.5;
@@ -1349,6 +1391,7 @@
   @media (max-width: 880px) {
     .stagegrid {
       grid-template-columns: 1fr;
+      grid-template-rows: minmax(0, 1fr) auto;
       padding: 60px 14px 14px;
     }
     .machine-col {
@@ -1357,6 +1400,12 @@
     .chat-col {
       order: 2;
       height: 210px;
+    }
+    .msg {
+      font-size: 12.5px;
+    }
+    .evt {
+      font-size: 10px;
     }
     .dg {
       max-height: 46vh;

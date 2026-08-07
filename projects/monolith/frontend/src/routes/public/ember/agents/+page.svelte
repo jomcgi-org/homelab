@@ -3,10 +3,10 @@
 </script>
 
 <svelte:head>
-  <title>Every agent gets its own machine · ember/agents</title>
+  <title>One microVM per agent session · ember/agents</title>
   <meta
     name="description"
-    content="How this site runs its AI agents: each session in its own Firecracker microVM, restored from a shared base snapshot in 2.5 ms, credentials held outside the VM, workspaces tiered to S3."
+    content="How this site runs its AI agents: one Firecracker microVM per session, restored from a shared base snapshot in 2.5 ms, killed 20 s after the last turn, rebuilt from a workspace tiered to S3. Credentials stay outside the VM."
   />
   <noscript>
     <style>
