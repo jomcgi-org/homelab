@@ -1,19 +1,22 @@
+/* Extra tokens for the /ember/agents scroll story, scoped under .agstory.
+ * The page layers over the ember mini-site sheet (lib/public/ember/ember.css)
+ * and only defines what that sheet lacks, so AgentScrollStory.svelte's <style>
+ * block references var(--em-*) and var(--ag-*) exclusively (semgrep rule
+ * svelte-hardcoded-color-in-style flags bare hex inside a .svelte <style>).
+ *
+ * The overscroll ground is already pinned by ember.css's html:has(.ember-site)
+ * rule, and the component root carries both classes, so this file deliberately
+ * does not repeat it: a :has() rule here would read --em-ground off <html>,
+ * where it is not defined, and resolve to transparent.
+ */
+
 .agstory {
-  /* Same value as the landing page's --eml-line-strong: diagram lane
-     borders in --em-line read as invisible on the white panel. */
+  /* Same value as the landing page's --eml-line-strong. Diagram lane borders
+     drawn in --em-line read as invisible on the white panel. */
   --ag-line-strong: #c9c3b4;
   --ag-frost-deep: #2b628f;
   --ag-amber-deep: #9a6414;
   --ag-idle: #e6e2d7;
   --ag-s3-fill: rgba(185, 210, 234, 0.14);
   --ag-chip-shadow: rgba(224, 66, 26, 0.5);
-  --ag-vm-glow: rgba(224, 66, 26, 0.5);
-  --ag-tier-ram: rgba(224, 66, 26, 0.06);
-  --ag-tier-disk: rgba(242, 176, 78, 0.08);
-  --ag-tier-s3: rgba(61, 126, 194, 0.08);
-}
-
-html:has(.agstory),
-body:has(.agstory) {
-  background: var(--em-ground);
 }

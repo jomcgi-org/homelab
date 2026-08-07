@@ -1,4 +1,4 @@
-<title>Every agent gets its own machine · ember/agents</title>
+<title>One microVM per agent session · ember/agents</title>
 
 <!--
   Reference mockup, round 4, for the proposed /ember/agents scroll explainer.
@@ -760,10 +760,10 @@
         <div class="kicker">
           ember / agents · how this site runs its AI agents
         </div>
-        <h1>Every agent gets <span class="em">its own machine.</span></h1>
+        <h1>One microVM per <span class="em">agent session.</span></h1>
         <p class="sub">
-          One <b>Firecracker microVM</b> per session. The VM is disposable;
-          <b>the disk survives</b>.
+          Killed on idle, rebuilt from disk days later on whichever node has
+          room.
         </p>
         <div class="stats">
           <span><b>2.5 ms</b> VM resume</span>
@@ -1278,11 +1278,10 @@
   <!-- static fallback (reduced motion / no JS) -->
   <div class="static-story">
     <h2 style="font-size: 30px; font-weight: 800; letter-spacing: -0.02em">
-      Every agent gets its own machine.
+      One microVM per agent session.
     </h2>
     <p class="body" style="margin-bottom: 40px">
-      One Firecracker microVM per session. The VM is disposable; the disk
-      survives.
+      Killed on idle, rebuilt from disk days later on whichever node has room.
     </p>
     <!-- captions repeat statically; omitted in the mockup, the scrubbed
          stage is the design surface under review -->
@@ -1308,9 +1307,6 @@
         <dd>retired workspaces · <b>survives the machine</b> · 7 d gc</dd>
       </div>
     </dl>
-    <p class="body" style="margin-top: 12px">
-      <b>Only the bottom tier is allowed to matter.</b>
-    </p>
 
     <h2 class="h2">Keep going</h2>
     <div class="doors">
