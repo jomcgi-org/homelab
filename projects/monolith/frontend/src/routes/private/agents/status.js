@@ -26,3 +26,10 @@ export function vmState(session, vms) {
   if (vm?.state === "awake" || vm?.state === "asleep") return vm.state;
   return "off";
 }
+
+// True only once the control plane reports the guest fully running (not
+// creating/relighting). Distinguishes "waking vm" from "vm is up but the
+// CLI has not produced output yet" for a claimed turn with no partials.
+export function vmRunning(session, vms) {
+  return vms?.[session?.ember_session_id]?.cp_state === "running";
+}
