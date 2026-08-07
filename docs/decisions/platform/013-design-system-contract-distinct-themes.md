@@ -92,13 +92,6 @@ first:
   hard `4px 4px 0` offset; ember fills them with a hairline and a soft layered
   shadow; Grimoire with the slate accent and its serif display stack. Nothing
   about the perceptual differences `.impeccable.md` documents changes.
-- **Visibility (shipped with the contract, not deferred to a later ADR).**
-  The contract ships with a way to see it: every primitive rendered under
-  every theme's scope, live, in one place. This is not a documentation
-  nicety, it is the real mitigation for the token-leak risk below. A
-  theme-incompatible assumption baked into a contract token is invisible in a
-  code diff and obvious the moment the same primitive renders three ways on
-  one screen.
 
 | Aspect | Today | Decided |
 | ------ | ----- | ------- |
