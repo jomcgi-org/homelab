@@ -52,7 +52,7 @@ export const CALLS = {
       a: 0.3,
       b: 0.6,
       cls: "w-good",
-      text: "git clone --depth=1 github.com/jomcgi/homelab",
+      text: "git clone --filter=blob:none github.com/jomcgi/homelab",
     },
   ],
   creds: [
