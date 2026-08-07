@@ -133,9 +133,9 @@
       desc: "Workloads stop belonging to one machine: a wake restores the snapshot onto whichever node has room, and capacity is pre-provisioned across the fleet ahead of demand. Needs a second warm-capable node to matter.",
     },
     {
-      done: false,
+      done: true,
       name: "R8 consumers",
-      desc: "The agent platform moves onto sessions as a first-class consumer, retiring the older per-agent daemon it grew out of. Dogfooding is the acceptance test: the thing that runs this site's agents runs on the sandbox primitive.",
+      desc: "The agent platform runs on sessions as a first-class consumer, and the older per-agent daemon it grew out of is retired. Dogfooding was the acceptance test: the thing that runs this site's agents runs on the sandbox primitive.",
     },
     {
       done: false,
