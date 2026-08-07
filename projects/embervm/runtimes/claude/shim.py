@@ -270,6 +270,78 @@ def _cli_privilege_kwargs():
 
 GIT_PROXY_PATH = "/tmp/ember-git-proxy"
 
+# The egress CA the sidecar mints MITM leaves from, and the reserved preamble
+# name it serves that certificate on. Fetched at spawn rather than baked into
+# the guest image so a CA rotation does not require a fleet base rebuild.
+CA_FETCH_HOST = "ca.egress.internal:80"
+CA_BUNDLE_PATH = "/tmp/ember-ca-bundle.crt"
+# Where the image's own trust store lives (apko ca-certificates-bundle). The
+# fetched CA is APPENDED to a copy of it rather than replacing it: the guest
+# still has to verify the real public internet on any host the sidecar merely
+# tunnels.
+SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+
+
+def fetch_egress_ca(timeout=EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS):
+    """Return the egress CA certificate in PEM, or None when there is no CA.
+
+    Speaks the same one-line preamble the forwarder uses, directly on the vsock,
+    because this runs before any HTTP client exists to proxy through. A sidecar
+    with no CA loaded closes without writing, which reads here as None and
+    leaves the guest on its unmodified system trust store.
+    """
+    if VSOCK_ADDRESS_FAMILY == -1:
+        return None
+    sock = socket.socket(VSOCK_ADDRESS_FAMILY, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        sock.connect((VSOCK_EGRESS_CID, VSOCK_EGRESS_PORT))
+        sock.sendall(("%s\n" % CA_FETCH_HOST).encode("latin-1"))
+        chunks = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError as exc:
+        sys.stderr.write("ember-claude-shim: egress CA fetch failed: %s\n" % exc)
+        sys.stderr.flush()
+        return None
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    pem = b"".join(chunks)
+    return pem if b"BEGIN CERTIFICATE" in pem else None
+
+
+def install_egress_ca():
+    """Write system-trust + egress CA to CA_BUNDLE_PATH; return the path or None.
+
+    Returning None means "leave every trust variable unset", which keeps the
+    guest on its stock trust store. That is the correct degrade: a guest that
+    trusted a CA it failed to fetch would fail every TLS handshake instead.
+    """
+    pem = fetch_egress_ca()
+    if not pem:
+        return None
+    try:
+        system = b""
+        if os.path.exists(SYSTEM_CA_BUNDLE):
+            with open(SYSTEM_CA_BUNDLE, "rb") as stream:
+                system = stream.read()
+        with open(CA_BUNDLE_PATH, "wb") as stream:
+            stream.write(system)
+            if system and not system.endswith(b"\n"):
+                stream.write(b"\n")
+            stream.write(pem)
+    except OSError as exc:
+        sys.stderr.write("ember-claude-shim: egress CA install failed: %s\n" % exc)
+        sys.stderr.flush()
+        return None
+    return CA_BUNDLE_PATH
+
 
 def _write_git_proxy_helper():
     """Install the stdlib-only git proxy used by session guests."""
@@ -3226,6 +3298,31 @@ def build_server(manager):
 
 def main():
     install_child_reaper()
+    # Trust the egress CA before any adapter spawns, in THIS process's
+    # environment rather than one adapter's child_env, so every CLI and
+    # everything they shell out to (git, gh, curl) inherits it. The claude
+    # adapter's env is not the boundary: gh and git are run by the model, not by
+    # the shim, and they are the tools that need this.
+    #
+    # Without it the sidecar can only blind-tunnel TLS, and blind-tunnelled
+    # bytes cannot be credentialed, which is why gh could not authenticate at
+    # all. With it, ordinary https:// works everywhere and no tool needs an
+    # http:// special case.
+    bundle = install_egress_ca()
+    if bundle:
+        os.environ.update(
+            {
+                # OpenSSL/python, curl, git, and node/bun each read a different
+                # variable for the same thing. gh is Go, which reads SSL_CERT_FILE.
+                "SSL_CERT_FILE": bundle,
+                "REQUESTS_CA_BUNDLE": bundle,
+                "CURL_CA_BUNDLE": bundle,
+                "GIT_SSL_CAINFO": bundle,
+                "NODE_EXTRA_CA_CERTS": bundle,
+            }
+        )
+        sys.stderr.write("ember-claude-shim: egress CA installed at %s\n" % bundle)
+        sys.stderr.flush()
     manager = ProcessManager(
         claude_executable="claude", codex_executable="codex", pi_executable="pi"
     )

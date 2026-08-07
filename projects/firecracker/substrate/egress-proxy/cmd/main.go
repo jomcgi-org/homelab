@@ -148,6 +148,12 @@ func main() {
 
 const defaultListenAddr = "127.0.0.1:8888"
 
+// caFetchHost is the reserved preamble name a guest uses to fetch the egress
+// CA's PUBLIC certificate. It is never resolved and never dialled: handle
+// answers it directly, before routing, so it cannot collide with a real
+// destination or escape the node.
+const caFetchHost = "ca.egress.internal"
+
 // proxy holds the split-horizon posture, the secret catalog, and the CA minter.
 type proxy struct {
 	// externalAllow permits public (non-internal) destinations.
@@ -191,6 +197,28 @@ func (p *proxy) handle(client net.Conn) {
 		return
 	}
 	dest := net.JoinHostPort(host, port)
+
+	// CA bootstrap. The guest cannot verify a MITM leaf until it trusts this CA,
+	// and it cannot be given the CA over TLS, so it asks for it in the clear on a
+	// reserved name that never leaves the node.
+	//
+	// This is not a trust hole: the link is a host-local vsock with no network
+	// segment on it, and the process answering IS the trust anchor the guest is
+	// about to rely on for every byte of egress. There is no weaker party to
+	// impersonate. Fetching rather than baking also means a CA rotation does not
+	// require rebuilding the fleet's guest base.
+	if host == caFetchHost {
+		if p.minter == nil {
+			p.logger.Warn("egress: CA fetch requested but no CA is loaded", "dest", dest)
+			return
+		}
+		if _, err := client.Write(p.minter.caCertPEM()); err != nil {
+			p.logger.Warn("egress: CA fetch write failed", "err", err)
+			return
+		}
+		p.logger.Info("egress: served CA certificate to guest")
+		return
+	}
 
 	// Resolve + classify + pin. dialAddr is the exact ip:port we will connect to,
 	// so the policy decision and the connect cannot diverge (no DNS-rebind race).

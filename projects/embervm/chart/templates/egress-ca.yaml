@@ -1,0 +1,62 @@
+{{- if and .Values.egress.enabled .Values.egress.ca.enabled }}
+{{- $caSecret := .Values.egress.ca.secretName | default (printf "%s-egress-ca" (include "embervm.fullname" .)) }}
+# The egress CA (ADR 023 phase 6b, TLS-MITM lane).
+#
+# The sidecar terminates a guest's TLS with a leaf it mints from this CA, reads
+# the plaintext request, sets the credential header, and originates a FRESH
+# verified TLS connection to the real destination. That is what lets a tool
+# which only ever speaks https:// (gh, and any normal HTTP client) receive an
+# injected credential: without it the sidecar can only blind-tunnel TLS, and
+# blind-tunnelled bytes cannot be credentialed.
+#
+# cert-manager mints only the CA here. The sidecar signs per-destination leaves
+# itself at request time (caMinter), because the set of hosts is whatever the
+# catalog covers and issuing a Certificate per host would put cert-manager in
+# the request path.
+#
+# The PRIVATE key never leaves this Secret, which is mounted read-only into the
+# sidecar alone. The guest receives only the public certificate, and fetches it
+# from the sidecar over its host-local vsock rather than having it baked into
+# the base image: that keeps a CA rotation from requiring a fleet base rebuild,
+# and the fetch is not a trust hole because the process serving the certificate
+# is the same process that is the trust anchor, reached over a link with no
+# network segment on it.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "embervm.fullname" . }}-egress-selfsigned
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "embervm.fullname" . }}-egress-ca
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: {{ include "embervm.fullname" . }}-egress-ca
+  secretName: {{ $caSecret }}
+  # Long-lived because a rotation re-mints every leaf the sidecar has cached and
+  # every guest must re-fetch the public cert. renewBefore leaves a wide window
+  # so a rotation is never a cliff.
+  duration: 8760h # 1 year
+  renewBefore: 720h # 30 days
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    # Rotate the key on renewal: a CA that renews onto the same key gains
+    # nothing from renewing.
+    rotationPolicy: Always
+  usages:
+    - cert sign
+    - crl sign
+    - digital signature
+  issuerRef:
+    name: {{ include "embervm.fullname" . }}-egress-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+{{- end }}
