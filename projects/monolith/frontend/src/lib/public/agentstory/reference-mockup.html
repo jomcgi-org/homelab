@@ -351,13 +351,14 @@
 
   .dg .lane-r {
     fill: none;
-    stroke: var(--em-line);
-    stroke-dasharray: 4 5;
+    /* landing --eml-line-strong: --em-line vanished on the white panel */
+    stroke: #c9c3b4;
+    stroke-dasharray: 4 4;
   }
   .dg .lane-s3-r {
     fill: rgba(185, 210, 234, 0.14);
-    stroke: var(--em-frost-dim);
-    stroke-dasharray: 4 5;
+    stroke: var(--em-frost);
+    stroke-dasharray: 4 4;
   }
   .dg .llabel {
     font-family: var(--em-mono);
@@ -429,7 +430,8 @@
   }
   .dg .elabel {
     font-family: var(--em-mono);
-    font-size: 10.5px;
+    font-size: 11.5px;
+    font-weight: 600;
   }
   .dg .el-ember {
     fill: var(--em-ember-deep);
@@ -760,9 +762,8 @@
         </div>
         <h1>Every agent gets <span class="em">its own machine.</span></h1>
         <p class="sub">
-          Each agent session runs in its own hardware-isolated
-          <b>Firecracker microVM</b>. The machine is disposable;
-          <b>the disk is the session</b>.
+          One <b>Firecracker microVM</b> per session. The VM is disposable;
+          <b>the disk survives</b>.
         </p>
         <div class="stats">
           <span><b>2.5 ms</b> VM resume</span>
@@ -988,7 +989,7 @@
                 </text>
                 <g id="g-ram"></g>
                 <text class="nsub" x="424" y="176">
-                  shim :1027 · vsock only · no NIC
+                  shim :1027 · vsock · no NIC
                 </text>
               </g>
 
@@ -1013,15 +1014,15 @@
                 <g id="g-chip-base">
                   <rect
                     class="box paper ember-b"
-                    x="232"
+                    x="228"
                     y="266"
-                    width="146"
+                    width="154"
                     height="26"
                     rx="6"
                   />
                   <text
                     class="nsub"
-                    x="240"
+                    x="236"
                     y="283"
                     style="fill: var(--em-muted)"
                   >
@@ -1031,15 +1032,15 @@
                 <g id="g-chip-ws">
                   <rect
                     class="box paper amber-b"
-                    x="232"
+                    x="228"
                     y="300"
-                    width="146"
+                    width="154"
                     height="26"
                     rx="6"
                   />
                   <text
                     class="nsub"
-                    x="240"
+                    x="236"
                     y="317"
                     style="fill: var(--em-muted)"
                   >
@@ -1116,7 +1117,7 @@
                   api.anthropic.com
                 </text>
                 <text class="nsub" x="782" y="270" text-anchor="middle">
-                  tls ends at the sidecar
+                  tls ends at sidecar
                 </text>
               </g>
               <g id="g-github">
@@ -1165,13 +1166,13 @@
                 <g id="g-s3ws">
                   <rect
                     class="box paper frost-b"
-                    x="370"
+                    x="358"
                     y="424"
-                    width="250"
+                    width="272"
                     height="30"
                     rx="6"
                   />
-                  <text class="nsub frost" x="382" y="443">
+                  <text class="nsub frost" x="370" y="443">
                     session-workspace/&lt;lineage&gt; · 7 d gc
                   </text>
                 </g>
@@ -1255,7 +1256,7 @@
               <path
                 class="epath ep-frost"
                 id="p-restore"
-                d="M624,439 L706,437"
+                d="M634,439 L706,437"
               />
               <text class="elabel el-frost" id="l-restore" x="630" y="470">
                 restore
@@ -1280,8 +1281,8 @@
       Every agent gets its own machine.
     </h2>
     <p class="body" style="margin-bottom: 40px">
-      Each agent session runs in a hardware-isolated Firecracker microVM. The
-      machine is disposable; the disk is the session.
+      One Firecracker microVM per session. The VM is disposable; the disk
+      survives.
     </p>
     <!-- captions repeat statically; omitted in the mockup, the scrubbed
          stage is the design surface under review -->
