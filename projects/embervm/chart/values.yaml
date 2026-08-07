@@ -813,6 +813,38 @@ rootfsBuilder:
   # fc-invoke's 4G). The ext4 is sparse, so an oversized fs costs little.
   rootfsSize: 4G
 
+# ENOSPC orphan reclaim in the rootfs builder (#4458). Last-resort deadlock
+# breaker, not a GC. When a brick's scratch is full the bake fails with ENOSPC,
+# so noded never starts, so the control plane's base retention sweep (which
+# reaches nodes over RPC) cannot see or reclaim anything there, so the disk stays
+# full. Observed 2026-08-07: 8 hours, 77 restarts, no self-healing.
+#
+# It removes ONLY abandoned build intermediates: rootfs-<digest>.ext4.tmp.<pid>
+# left by a dead bake, and bases/<key>.building left by a dead SnapshotBase.
+# Never a published rootfs or base, so it needs no judgement about which base is
+# current. Anything younger than the min age is spared, because a co-located
+# brick sharing this hostPath may be writing it right now.
+rootfsReclaim:
+  # "1" arms deletion. Default "" logs a dry-run manifest of what it WOULD
+  # delete and then fails the bake exactly as before, which is what you read
+  # before arming. Rollback is setting this back to "" and bumping the chart.
+  enabled: ""
+  # Stop deleting once this much scratch is free.
+  #
+  # MUST exceed rootfsBuilder.rootfsSize (4G) with headroom for ext4
+  # metadata, and rootfs_reclaim_guard_test asserts that. It is not a comfort
+  # margin, it is the livelock rail: this same constant is both the loop's stop
+  # condition and the ENOSPC floor, so a value below the bake size lets reclaim
+  # free one orphan, stop, fail the retry, and then on the next restart see free
+  # space already above target and break before deleting anything. The brick
+  # would crashloop forever with reclaimable garbage sitting on disk. It also
+  # truncates the dry-run manifest, under-reporting what actually needs to go.
+  #
+  # MUST be a quoted string: an unquoted integer this large is rendered by Helm
+  # in scientific notation, and the shell comparison then errors rather than
+  # compares, which in a deletion loop reads as "never stop".
+  targetFreeBytes: "6442450944"
+
 # embervm-noded: the node daemon (gRPC NodeService) that owns Firecracker microVM
 # lifecycle on node-4. A SECOND Deployment in this chart, privileged and node-
 # pinned, forked from the fc-invoke node layer (ADR embervm/001). It coexists with

@@ -75,6 +75,12 @@ initContainers:
         value: {{ include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top) | quote }}
       - name: ROOTFS_SIZE
         value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
+      - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
+        value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
+      - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
+        value: {{ printf "%s/embervm-noded/snapshots" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
+      - name: EMBERVM_ROOTFS_RECLAIM_TARGET_FREE_BYTES
+        value: {{ $ctx.Values.rootfsReclaim.targetFreeBytes | quote }}
       {{- if $ctx.Values.imagePullSecret.enabled }}
       - name: DOCKER_CONFIG
         value: /ghcr
