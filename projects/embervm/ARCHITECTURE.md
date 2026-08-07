@@ -6,6 +6,8 @@ who needs to reason about the system without re-reading 31 ADRs.
 Two kinds of statement appear here:
 
 - **Built**: how the system behaves today (Accepted ADRs, shipped code).
+  One exception, called out in its row: ADR 031 is Accepted as a decision
+  but its detector is not built (#4338).
 - **Decided direction**: agreed in Draft ADRs 014, 015, and 019 through 028,
   but not yet implemented or only partially landed. These sections are
   marked.
@@ -289,8 +291,8 @@ session memory, serving snapshots, session workspaces, and group sets.
 
 ## 5. The invariants
 
-These are the load-bearing rules. Every design change is judged against
-them.
+These are the rules everything else rests on. Every design change is judged
+against them.
 
 1. **The hit/miss invariant.** The control plane is on the invocation path
    if and only if the invocation requires a lifecycle action (create,
@@ -375,10 +377,16 @@ them.
 - **Adoption**: noded reports `primed_vm_ids`, session VMs,
   checkpoint-pending VMs, and banked artifacts on every `NodeStatus`; the
   dispatcher and managers reconcile on boot and every sweep. This is the
-  standing fix for the restart-wedge bug class, and the protocols are the
-  subject of the TLA+ pilot (ADR 006: per-protocol PlusCal specs in
-  `projects/embervm/specs/`, three conformance layers, deferred until the
-  protocol surface is stable).
+  standing fix for the restart-wedge bug class, and the protocols are
+  model-checked (ADR 006). Three PlusCal specs live in
+  `projects/embervm/specs/` and run under TLC in the build: `adoption.tla`
+  (VM lifecycle and adoption), `bank_relight.tla` (session bank/relight
+  generation pairing), and `quota.tla` (the fail-closed per-principal daily
+  quota gate). Ten genrules drive `//bazel/tla:tlc.sh` across their cfgs, so
+  a spec violation is a red build rather than a report, and the layer-1
+  vocabulary guard (`vocabulary.exs`) keeps the specs honest against the
+  code. Layer-2 trace validation (op-log events mapped to TLA+ actions and
+  checked against a drill trace) is the part still deferred.
 - **Cells** (ADR 007): the unit of horizontal scale is a cell, a complete
   single-writer control plane owning a bounded set of bricks and workloads,
   with one op-log appender (ordering is within-cell only). The seams exist
@@ -536,7 +544,7 @@ fixed-manual (class 3, never leaves a central key-sharded swap tier). Guests
 hold per-light placeholder nonces; a brick-local proxy on every guest egress
 injects real credentials from memory-only leases sealed to the brick's
 dial-home identity. RAM scrubbing before snapshot is rejected as a
-load-bearing mechanism; revocation at the validator is the control.
+mechanism to rely on; revocation at the validator is the control.
 
 **Public surface hardening** (as shipped): the public routes are scoped at their
 HTTPRoutes, with serving routes additionally constrained by node Envoy authority
@@ -604,15 +612,24 @@ acts on the guest's behalf through the brokered egress path.
 
 ## 11. Roadmap state
 
+Two different rungs have been called R6. ADR 001's original **R6 Facade**
+(etcd shim, virtual control planes, hard tenancy) was demoted to Recorded
+pending real demand, and ADR 009 then reused the number for **R6
+Continuity**, which is the R6 meant everywhere else in this document. The
+ladder below is ADR 009's.
+
 R0 Tasks, R1 Zip lane, R2 Sessions, R3 Serving, R4 Stateful, R5 Composite,
 R6 Continuity, and R8 Consumers (agent threads on sessions, goosecracker
-retired) are **shipped**. R6 Facade (etcd shim, virtual control
-planes, hard tenancy) is demoted to Recorded pending real demand. R7
-Distribution is decided (vendor-aware placement over the export/restore
-verbs; needs a second warm-capable node to matter). R9 Packaging (standalone
-open-sourceable artifact) is decided. In-flight engineering: promoting
-brick autoscale from `up` to `full`, node-local activator soak, and the
-conciseness program (issue #4009).
+retired) are **shipped**. R7 Distribution is decided (vendor-aware placement
+over the export/restore verbs; needs a second warm-capable node to matter).
+R9 Packaging (standalone open-sourceable artifact) is decided. In-flight
+engineering: promoting brick autoscale from `up` to `full`, node-local
+activator soak, and the conciseness program (issue #4009).
+
+R5 Composite shipped as a code path but has no live consumer: the
+scratch-k8s demo it was built for is retired, there is no group workload
+template in the chart, and `warmthS3Gc.allowEmptyKinds: "group"` is the
+operator statement to the GC that the class is legitimately empty.
 
 The availability contract is spot semantics: a routine roll gives every
 workload up to two minutes of drain notice; state durability is the hard
@@ -669,7 +686,7 @@ session model, so read them as current behaviour rather than direction.
 | [003](../../docs/decisions/embervm/003-control-plane-managed-snapshot-distribution.md) | CP-managed snapshot distribution; Build/Restore/Export/Evict verbs | Accepted; verbs generalized by 009, placement resolved by 011 |
 | [004](../../docs/decisions/embervm/004-agent-sandbox-interface-compatibility.md) | Back kubernetes-sigs/agent-sandbox as the session interface via a deferred edge adapter | Accepted; adapter still gated on upstream traction |
 | [005](../../docs/decisions/embervm/005-embervm-eks-scale-out-metal-pool-bricks.md) | EKS scale-out: metal pool, bricks, EmberPool, dial-home, snapshot keys | Accepted; decision 3 (Pattern A guest base) superseded by 028 |
-| [006](../../docs/decisions/embervm/006-tla-formal-specification-pilot.md) | Scoped TLA+ pilot with three conformance layers | Accepted; deferred until protocols stabilize |
+| [006](../../docs/decisions/embervm/006-tla-formal-specification-pilot.md) | Scoped TLA+ pilot with three conformance layers | Accepted; three specs (`adoption`, `bank_relight`, `quota`) ship and run under TLC in the build; trace conformance still deferred |
 | [007](../../docs/decisions/embervm/007-sharded-control-plane-pg-oplog-cells.md) | Batched Postgres op-log tier; cells; hot-loop corrections | Accepted; metering-write rejection reversed by 020 |
 | [008](../../docs/decisions/embervm/008-interruptible-bank-stateful-datastores.md) | Opt-in two-phase interruptible bank (hot-or-warm wakes) | Accepted |
 | [009](../../docs/decisions/embervm/009-roadmap-extension-continuity-before-tenancy.md) | Continuity before tenancy: R6-R9 ladder, spot availability contract, S3 seam | Accepted |
