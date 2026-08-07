@@ -27,6 +27,19 @@ from agent_sessions.transport import (
 )
 from core.db import get_engine
 from core.mcp_app import mcp
+from goosecracker.api import REPO_CATALOG
+
+# Voice and MCP sessions hydrate this repo unless the caller names another. The
+# /agents console makes the choice explicit in a dropdown; there is no dropdown
+# here, and a session with no checkout cannot do the work these calls ask for
+# (read the code, open a PR), so an empty workspace is the wrong default for
+# this surface even though it is the cheaper one.
+#
+# Cost is real and per SESSION, not per repo: volumes are per lineage, so every
+# new session clones again. Issue #4473 moves the clone back to a node-local
+# mirror over http, which is what makes this default cheap rather than merely
+# convenient.
+DEFAULT_AGENT_REPO = "jomcgi/homelab"
 from faas.embervm_client import EmberVMTransportError
 from framework import log_task_exception
 
@@ -615,7 +628,12 @@ def _activity_values(turns: list[AgentTurn]) -> tuple[list[str], list[str]]:
 
 
 @mcp.tool
-async def monolith_agent_session_start(prompt: str, model: str | None = None) -> dict:
+async def monolith_agent_session_start(
+    prompt: str,
+    model: str | None = None,
+    repo: str = DEFAULT_AGENT_REPO,
+    branch: str = "main",
+) -> dict:
     """Start a voice-drivable coding agent session and queue its first turn.
 
     Args:
@@ -624,20 +642,35 @@ async def monolith_agent_session_start(prompt: str, model: str | None = None) ->
             Claude family: opus, sonnet, fable. Codex family: luna, terra,
             sol. Pi family: qwen. Omit for the claude CLI default. Later
             sends may only name models within the pinned family.
+        repo: owner/repo to check out into the guest workspace, defaulting to
+            jomcgi/homelab. Must be in the catalog. Pass an empty string for a
+            session with NO checkout, which starts faster and suits a session
+            that only talks.
+        branch: Branch to check out. Defaults to main.
     """
     try:
         model_family(model)
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
+    # Catalog-gated on the same rule the /agents route uses, and for a stronger
+    # reason here: this value reaches the guest and is interpolated into a clone
+    # URL on a credentialed egress path, so an arbitrary string would be a
+    # fetch-anything primitive carrying a real GitHub token.
+    selected_repo = repo.strip() or None
+    if selected_repo is not None and selected_repo not in REPO_CATALOG:
+        return {
+            "accepted": False,
+            "error": f"unknown repo {selected_repo}; catalog: {', '.join(REPO_CATALOG)}",
+        }
     local_session_id = str(uuid4())
     workspace = "<guest>"  # Workspace is in the guest, not the pod
     row = await asyncio.to_thread(
         _persist_session,
         local_session_id,
         workspace,
-        "main",
+        branch,
         model,
-        None,
+        selected_repo,
         discord_thread=None,
         system_prompt=voice.VOICE_INSTRUCTION,
     )
