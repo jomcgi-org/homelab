@@ -299,11 +299,13 @@ SANDBOX_PROMPT = (
     "interactive terminal: you cannot prompt mid-turn, so a question ends your "
     "turn and is read asynchronously.\n"
     "- When the session has a repo, the checkout is at /workspace/src. It is a "
-    "depth-1 single-branch clone, so history before the tip commit is absent. "
-    "git log beyond HEAD, git bisect and git blame on older lines will fail, "
-    "and unshallowing is not supported here.\n"
-    "- origin points at an internal read-only mirror, not at GitHub. The mirror "
-    "accepts pushes only under refs/agents/**.\n"
+    "single-branch blob:none partial clone, so the FULL history of that branch "
+    "is present and git log, git blame and git bisect all work. File contents "
+    "are fetched on demand, so an operation touching many old revisions pauses "
+    "while blobs download rather than failing.\n"
+    "- origin points at GitHub over https. Pushes go to the real repository, so "
+    "treat any push as publishing. The proxy attaches the credential on the way "
+    "out; you hold none.\n"
     "- Your git identity is already configured. Do not set user.name or "
     "user.email.\n"
     "- All network egress is proxied. The public internet is reachable and "
@@ -3103,6 +3105,39 @@ class ProcessManager:
             # A durable volume can contain a partial clone from a prior failure.
             shutil.rmtree(checkout_dir, ignore_errors=True)
         _ensure_cli_dir(self.workspace)
+        # Hydrate from GitHub over https, not from the git-mirror over git://.
+        #
+        # The mirror was chosen (ADR agents/050) because it needs no credential
+        # and is node-local. What disqualified it is the transport: #4389 stopped
+        # propagating half-close onto the vsock leg, and that suppression is
+        # scoped to the git-daemon port
+        # (shim.py: half_close_upstream = not host_port.endswith(":9418")), so a
+        # git:// tunnel never closes and a SECOND lane connection while it lingers
+        # wedges (#4417). That is what forced --depth=1: a blob filter defers
+        # blobs, and checkout then lazy-fetches them on exactly that second
+        # connection. Shallow-but-complete was the only single-connection shape.
+        #
+        # Over :443 the tunnel tears down normally, which is why sequential CLI
+        # HTTPS and gh both work today. So the filter becomes usable, and with it
+        # FULL HISTORY: --filter=blob:none keeps every commit and tree and defers
+        # only file contents, so git log, blame and bisect all work and blobs
+        # arrive on demand. --depth=1 is therefore gone, not merely relaxed.
+        #
+        # No credential enters the guest. github.com is a credentialed egressTo
+        # host (deploy/values.yaml): the sidecar terminates the guest's TLS with a
+        # leaf minted from the egress CA, sets Authorization itself using Basic
+        # (git-receive-pack 401s on Bearer), and originates fresh verified TLS. A
+        # guest already reaches github.com this way for gh and for push, so
+        # sourcing the clone here grants nothing it did not already hold. It also
+        # fixes private repos, which the mirror non-fatally SKIPS when it has no
+        # read token of its own.
+        #
+        # http.proxy rather than HTTPS_PROXY: apply_egress_ca_trust() runs before
+        # this and exports GIT_SSL_CAINFO into os.environ, but the proxy URL is
+        # only ever built inside the per-adapter CLI spawn envs, which this
+        # subprocess does not inherit. Passing it as git config keeps the setting
+        # on this one clone instead of leaking proxy env into every child.
+        egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
         clone_command = [
             "git",
             "clone",
@@ -3110,20 +3145,10 @@ class ProcessManager:
             "--branch",
             branch,
             "--config",
-            "core.gitProxy=%s" % GIT_PROXY_PATH,
+            "http.proxy=http://%s:%s" % (EGRESS_LOCALHOST, egress_port),
             "--single-branch",
-            "--depth=1",
-            # --depth=1 shallow clone reduces transfer from 249.40 MiB (full) to
-            # ~11.2 MiB (working tree only), saving ~37s of hydration time. Shallow
-            # clones are single-connection because the tip commit's blobs ride in the
-            # same packfile as the objects, so checkout is satisfied entirely from
-            # one fetch with no lazy blob loads on a second connection.
-            # Not using --filter=blob:none (which would reopen #4417): blob filters
-            # defer blobs, making checkout lazy-fetch them on a second connection
-            # that wedges. History is available on demand via git fetch --unshallow
-            # or --deepen=N, though such fetches also open a second connection and
-            # remain subject to #4417 until that is fixed.
-            "git://git-mirror.monolith.svc.cluster.local:9418/%s" % repo,
+            "--filter=blob:none",
+            "https://github.com/%s.git" % repo,
             checkout_dir,
         ]
         try:
