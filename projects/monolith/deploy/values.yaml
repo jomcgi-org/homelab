@@ -185,14 +185,20 @@ semgrep:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/semgrep-mcp"
 
-# goosecracker Discord agent (ADR 024): OnePasswordItem-backed `goosecracker`
-# Secret for the agent's config. The artifact tier now runs on in-cluster qwen,
-# so no OpenRouter key is needed here (any OpenRouter entry in the 1Password item
-# is unused and can be pruned).
+# Shared LLM provider keys, in the OnePasswordItem-backed `goosecracker` Secret.
+# The NAME is historical: this Secret long outlived the retired goosecracker
+# agent and now carries OPENROUTER_API_KEY, CEREBRAS_API_KEY, NVIDIA_API_KEY and
+# DEEPSEEK_API_KEY for the ADR 036 orchestrator, Grimoire extraction, and the
+# provider fallbacks. Do NOT delete it with the rest of goosecracker.
+#
+# The backing 1Password item was renamed goosecracker -> embervm-agent-secrets.
+# itemPath resolves by TITLE, so the old path breaks on the operator's next
+# reconcile; the existing Ready=True only reflects the last successful sync. The
+# Kubernetes Secret keeps its name so no consumer has to change.
 goosecracker:
   enabled: true
   onepassword:
-    itemPath: "vaults/k8s-homelab/items/goosecracker"
+    itemPath: "vaults/k8s-homelab/items/embervm-agent-secrets"
   # The monolith's own in-cluster progress endpoint base (goose cutover PR C).
   # The runner hands the guest "<this>/<session>"; the guest streams goose stdout
   # there through the fc-invoke egress funnel, and the Discord bot polls the
