@@ -1,0 +1,1813 @@
+<title>Every agent gets its own machine · ember/agents</title>
+
+<!--
+  Reference mockup, round 4, for the proposed /ember/agents scroll explainer.
+  Round 4 per feedback: copy cut to cue-card length (Joe narrates the demo),
+  lifecycle console removed, tier table compressed to three ruled lines,
+  git-mirror removed (hydration is now a clone via the egress sidecar, which
+  attaches the git token), sidecar box enlarged and its labels relocated.
+
+  Design system: ember mini-site (.ember-site, --em-* tokens), light-only.
+  Path color families stay semantic: ember = lifecycle/control, amber = data
+  in flight, frost = durable moves to/from S3, green = credentialed egress.
+-->
+
+<style>
+  /* ── tokens: verbatim from ember.css ── */
+  .ember-site {
+    --em-ground: #f7f5f0;
+    --em-panel: #ffffff;
+    --em-line: #e3dfd5;
+    --em-line-soft: #ece8df;
+    --em-ink: #20222a;
+    --em-muted: #3d434e;
+    --em-faint: #646b76;
+    --em-ember: #e0421a;
+    --em-ember-deep: #b02f0e;
+    --em-ember-dim: #f3bda8;
+    --em-frost: #3d7ec2;
+    --em-frost-deep: #2b628f;
+    --em-frost-dim: #b9d2ea;
+    --em-amber: #f2b04e;
+    --em-amber-deep: #9a6414;
+    --em-good: #2f7d55;
+    --em-good-deep: #1f6042;
+    --em-good-dim: #bfe0cd;
+    --em-on-color: #ffffff;
+    --em-track: #eceade;
+    --em-idle: #e6e2d7;
+    --em-mono:
+      ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --em-sans:
+      -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    --em-shadow:
+      0 2px 6px rgba(32, 34, 42, 0.04), 0 18px 44px rgba(32, 34, 42, 0.09);
+    --em-shadow-soft:
+      0 1px 3px rgba(32, 34, 42, 0.05), 0 10px 24px rgba(32, 34, 42, 0.06);
+
+    background: var(--em-ground);
+    color: var(--em-ink);
+    font-family: var(--em-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* the ember family is light-only; pin the ground in both viewer themes */
+  html,
+  body {
+    background: #f7f5f0 !important;
+    margin: 0;
+  }
+  * {
+    box-sizing: border-box;
+  }
+
+  /* ── topbar ── */
+  .topbar {
+    position: fixed;
+    inset: 0 0 auto 0;
+    z-index: 40;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 14px 28px;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    color: var(--em-muted);
+    pointer-events: none;
+  }
+  .topbar strong {
+    color: var(--em-ink);
+    font-weight: 600;
+  }
+  .topbar .mock {
+    color: var(--em-faint);
+    border: 1px solid var(--em-line);
+    border-radius: 5px;
+    padding: 2px 8px;
+    background: var(--em-panel);
+  }
+
+  /* ── scroll story ── */
+  .scroller {
+    height: 700vh;
+    position: relative;
+  }
+  .stage {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+  }
+
+  .hero {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 24px;
+    background: var(--em-ground);
+  }
+  .hero .kicker {
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--em-faint);
+    margin-bottom: 18px;
+  }
+  .hero h1 {
+    margin: 0;
+    font-size: clamp(38px, 6.4vw, 72px);
+    font-weight: 850;
+    letter-spacing: -0.035em;
+    line-height: 1.02;
+    max-width: 15ch;
+    text-wrap: balance;
+  }
+  .hero h1 .em {
+    color: var(--em-ember);
+  }
+  .hero .sub {
+    margin: 20px 0 0;
+    font-size: clamp(16px, 2vw, 20px);
+    line-height: 1.5;
+    color: var(--em-muted);
+    max-width: 46ch;
+  }
+  .hero .sub b {
+    color: var(--em-ink);
+    font-weight: 650;
+  }
+  .hero .stats {
+    margin-top: 22px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px 14px;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    color: var(--em-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .hero .stats b {
+    color: var(--em-ember-deep);
+    font-weight: 600;
+  }
+  .hero .stats .sep {
+    color: var(--em-line);
+  }
+  .hero .cue {
+    position: absolute;
+    bottom: 26px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--em-mono);
+    font-size: 12px;
+    color: var(--em-faint);
+    animation: cue-bob 2.2s ease-in-out infinite;
+  }
+  @keyframes cue-bob {
+    0%,
+    100% {
+      transform: translate(-50%, 0);
+    }
+    50% {
+      transform: translate(-50%, 6px);
+    }
+  }
+
+  /* ── stage grid: columns stretch to the same height, so the chat panel,
+     wire log, and diagram frame read as one aligned block ── */
+  .stagegrid {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(270px, 330px) minmax(0, 1fr);
+    align-items: stretch;
+    gap: 24px;
+    padding: 68px clamp(18px, 3.5vw, 48px) 32px;
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+
+  /* ── chat rail: the cause; the diagram is the effect ── */
+  .chat-col {
+    position: relative;
+    min-width: 0;
+  }
+  .chat {
+    width: 100%;
+    height: 100%;
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 14px;
+    box-shadow: var(--em-shadow);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .chat-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--em-line-soft);
+    font-family: var(--em-mono);
+    font-size: 12px;
+    color: var(--em-faint);
+  }
+  .chat-head .name {
+    color: var(--em-ink);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .vmchip {
+    margin-left: auto;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--em-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    border: 1px solid var(--em-line);
+    border-radius: 20px;
+    padding: 3px 11px;
+    background: var(--em-ground);
+    color: var(--em-muted);
+  }
+  .vmchip .d {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--em-idle);
+  }
+  .vmchip.awake .d {
+    background: var(--em-ember);
+    box-shadow: 0 0 6px 1px rgba(224, 66, 26, 0.5);
+  }
+  .vmchip.asleep .d {
+    background: var(--em-frost);
+  }
+  .chat-view {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+  }
+  .chat-items {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    padding: 18px 16px;
+    will-change: transform;
+  }
+  .ci {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  .msg {
+    max-width: 88%;
+    border-radius: 12px;
+    padding: 9px 13px;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .msg.you {
+    align-self: flex-end;
+    background: var(--em-ink);
+    color: var(--em-on-color);
+    border-bottom-right-radius: 4px;
+  }
+  .msg.bot {
+    align-self: flex-start;
+    background: var(--em-ground);
+    border: 1px solid var(--em-line-soft);
+    color: var(--em-ink);
+    border-bottom-left-radius: 4px;
+  }
+  .evt {
+    align-self: center;
+    font-family: var(--em-mono);
+    font-size: 11px;
+    color: var(--em-faint);
+    text-align: center;
+    line-height: 1.6;
+  }
+  .evt b {
+    color: var(--em-ember-deep);
+    font-weight: 600;
+  }
+  .evt.frost b {
+    color: var(--em-frost-deep);
+  }
+  .evt.divider {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--em-frost-deep);
+  }
+  .evt.divider::before,
+  .evt.divider::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid var(--em-line);
+  }
+
+  /* ── diagram column ── */
+  .machine-col {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+  .machine-col .dg-frame {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .machine-col .dg-frame .dg {
+    flex: 1;
+  }
+  .dg-frame {
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 14px;
+    box-shadow: var(--em-shadow);
+    padding: 16px 18px 10px;
+  }
+  .dg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 62vh;
+  }
+
+  .dg .lane-r {
+    fill: none;
+    stroke: var(--em-line);
+    stroke-dasharray: 4 5;
+  }
+  .dg .lane-s3-r {
+    fill: rgba(185, 210, 234, 0.14);
+    stroke: var(--em-frost-dim);
+    stroke-dasharray: 4 5;
+  }
+  .dg .llabel {
+    font-family: var(--em-mono);
+    font-size: 11px;
+    fill: var(--em-faint);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .dg .llabel.frost {
+    fill: var(--em-frost-deep);
+  }
+  .dg .box {
+    fill: var(--em-ground);
+    stroke: var(--em-line);
+  }
+  .dg .box.paper {
+    fill: var(--em-panel);
+  }
+  .dg .box.good-b {
+    stroke: var(--em-good);
+  }
+  .dg .box.frost-b {
+    stroke: var(--em-frost-dim);
+  }
+  .dg .box.amber-b {
+    stroke: var(--em-amber);
+  }
+  .dg .box.ember-b {
+    stroke: var(--em-ember-dim);
+  }
+  .dg .nlabel {
+    font-family: var(--em-sans);
+    font-size: 13px;
+    font-weight: 600;
+    fill: var(--em-ink);
+  }
+  .dg .nsub {
+    font-family: var(--em-mono);
+    font-size: 10.5px;
+    fill: var(--em-faint);
+  }
+  .dg .nsub.frost {
+    fill: var(--em-frost-deep);
+  }
+  .dg .cellr {
+    fill: var(--em-idle);
+    transition: fill 0.3s ease;
+  }
+
+  .dg .epath {
+    fill: none;
+    stroke-width: 2;
+  }
+  .dg .ep-ember {
+    stroke: var(--em-ember);
+    marker-end: url(#m-ember);
+  }
+  .dg .ep-amber {
+    stroke: var(--em-amber);
+    marker-end: url(#m-amber);
+  }
+  .dg .ep-frost {
+    stroke: var(--em-frost);
+    marker-end: url(#m-frost);
+  }
+  .dg .ep-good {
+    stroke: var(--em-good);
+    marker-end: url(#m-good);
+  }
+  .dg .elabel {
+    font-family: var(--em-mono);
+    font-size: 10.5px;
+  }
+  .dg .el-ember {
+    fill: var(--em-ember-deep);
+  }
+  .dg .el-amber {
+    fill: var(--em-amber-deep);
+  }
+  .dg .el-frost {
+    fill: var(--em-frost-deep);
+  }
+  .dg .el-good {
+    fill: var(--em-good-deep);
+  }
+  .dg .mk {
+    fill: none;
+    stroke-width: 1.6;
+  }
+
+  .dg .pill {
+    rx: 9;
+  }
+  .dg .pill-t {
+    font-family: var(--em-mono);
+    font-size: 10px;
+    font-weight: 600;
+    fill: var(--em-on-color);
+  }
+  .dg .swap-r {
+    rx: 4;
+  }
+  .dg .swap-t {
+    font-family: var(--em-mono);
+    font-size: 10px;
+    fill: var(--em-muted);
+  }
+  .dg .swap-t.good {
+    fill: var(--em-good-deep);
+  }
+  .dg .strike {
+    stroke: var(--em-ember-deep);
+    stroke-width: 1.4;
+  }
+
+  .dg-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    padding: 8px 4px 4px;
+    font-family: var(--em-mono);
+    font-size: 11px;
+    color: var(--em-muted);
+  }
+  .dg-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .dg-legend i {
+    width: 18px;
+    height: 0;
+    border-top: 2px solid;
+    display: inline-block;
+  }
+  .lg-ember {
+    border-color: var(--em-ember);
+  }
+  .lg-amber {
+    border-color: var(--em-amber);
+  }
+  .lg-frost {
+    border-color: var(--em-frost);
+  }
+  .lg-good {
+    border-color: var(--em-good);
+  }
+
+  /* wire log: the actual call for the arrow currently drawing, typed on
+     by scroll progress. Same color families as the paths. */
+  .wire {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-family: var(--em-mono);
+    font-size: 12px;
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 9px;
+    box-shadow: var(--em-shadow-soft);
+    padding: 9px 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    opacity: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .wire .wp {
+    color: var(--em-faint);
+    flex: none;
+  }
+  .wire .wt {
+    color: var(--em-ink);
+  }
+  .wire .wt.w-ember {
+    color: var(--em-ember-deep);
+  }
+  .wire .wt.w-amber {
+    color: var(--em-amber-deep);
+  }
+  .wire .wt.w-good {
+    color: var(--em-good-deep);
+  }
+  .wire .wt.w-frost {
+    color: var(--em-frost-deep);
+  }
+  .wire .wc {
+    color: var(--em-ember);
+    animation: wc-blink 1s steps(1) infinite;
+    flex: none;
+  }
+  @keyframes wc-blink {
+    50% {
+      opacity: 0;
+    }
+  }
+
+  /* ── post-story document ── */
+  .doc {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 20px 24px 90px;
+  }
+  .h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin: 56px 0 16px;
+    font-size: 24px;
+    font-weight: 750;
+    letter-spacing: -0.015em;
+  }
+  .h2::before {
+    content: "##";
+    font-family: var(--em-mono);
+    font-size: 16px;
+    font-weight: 400;
+    color: var(--em-ember);
+  }
+  .body {
+    margin: 0 0 14px;
+    font-size: 15.5px;
+    line-height: 1.55;
+    color: var(--em-muted);
+    max-width: 68ch;
+  }
+  .body b {
+    color: var(--em-ink);
+    font-weight: 600;
+  }
+
+  /* compact tier strip */
+  .tiers-mini {
+    margin: 0;
+    border-top: 1px solid var(--em-line);
+  }
+  .tiers-mini > div {
+    display: grid;
+    grid-template-columns: 140px minmax(0, 1fr);
+    gap: 16px;
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--em-line);
+    align-items: baseline;
+  }
+  .tiers-mini dt {
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .tiers-mini dt.ram {
+    color: var(--em-ember-deep);
+  }
+  .tiers-mini dt.disk {
+    color: var(--em-amber-deep);
+  }
+  .tiers-mini dt.s3 {
+    color: var(--em-frost-deep);
+  }
+  .tiers-mini dd {
+    margin: 0;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--em-muted);
+  }
+  .tiers-mini dd b {
+    color: var(--em-ink);
+    font-weight: 600;
+  }
+
+  /* doors + footer */
+  .doors {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 16px;
+  }
+  .door {
+    display: block;
+    text-decoration: none;
+    background: var(--em-panel);
+    border: 1px solid var(--em-line);
+    border-radius: 12px;
+    padding: 20px 22px 18px;
+    box-shadow: var(--em-shadow-soft);
+    transition:
+      border-color 0.18s ease,
+      transform 0.18s ease;
+  }
+  .door:hover {
+    border-color: var(--em-ember-dim);
+    transform: translateY(-2px);
+  }
+  .door .k {
+    font-family: var(--em-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--em-faint);
+    text-transform: uppercase;
+  }
+  .door h3 {
+    margin: 6px 0;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--em-ink);
+  }
+  .door p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--em-muted);
+  }
+  .door .go {
+    display: inline-block;
+    margin-top: 12px;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    color: var(--em-ember-deep);
+  }
+  .foot {
+    margin-top: 60px;
+    padding-top: 18px;
+    border-top: 2px solid var(--em-ember-deep);
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    color: var(--em-faint);
+  }
+
+  /* static fallback */
+  .static-story {
+    display: none;
+    padding: 90px 24px 20px;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .scroller {
+      display: none;
+    }
+    .static-story {
+      display: block;
+    }
+    .cue {
+      animation: none;
+    }
+  }
+
+  /* ── responsive ── */
+  @media (max-width: 880px) {
+    .stagegrid {
+      grid-template-columns: 1fr;
+      grid-template-rows: minmax(0, 1fr) auto;
+      padding: 60px 14px 14px;
+      gap: 12px;
+    }
+    .machine-col {
+      order: 1;
+      gap: 10px;
+    }
+    .chat-col {
+      order: 2;
+      height: 210px;
+    }
+    .chat {
+      height: 100%;
+    }
+    .msg {
+      font-size: 12.5px;
+    }
+    .evt {
+      font-size: 10px;
+    }
+    .dg {
+      max-height: 46vh;
+    }
+    .tiers-mini > div {
+      grid-template-columns: 1fr;
+      gap: 2px;
+    }
+  }
+</style>
+
+<div class="ember-site agstory">
+  <header class="topbar" id="topbar">
+    <span><strong>jomcgi.dev</strong> / ember / agents</span>
+    <span class="mock">reference mockup · round 4</span>
+  </header>
+
+  <!-- ════════ scroll story ════════ -->
+  <div class="scroller" id="scroller">
+    <div class="stage">
+      <!-- hero -->
+      <div class="hero" id="hero">
+        <div class="kicker">
+          ember / agents · how this site runs its AI agents
+        </div>
+        <h1>Every agent gets <span class="em">its own machine.</span></h1>
+        <p class="sub">
+          Each agent session runs in its own hardware-isolated
+          <b>Firecracker microVM</b>. The machine is disposable;
+          <b>the disk is the session</b>.
+        </p>
+        <div class="stats">
+          <span><b>2.5 ms</b> VM resume</span>
+          <span class="sep">·</span>
+          <span><b>20 s</b> idle → VM destroyed</span>
+          <span class="sep">·</span>
+          <span><b>0</b> real credentials inside</span>
+        </div>
+        <div class="cue">scroll &#9660;</div>
+      </div>
+
+      <!-- stage -->
+      <div class="stagegrid">
+        <div class="chat-col">
+          <div class="chat">
+            <div class="chat-head">
+              <span class="name">agent session</span>
+              <span class="vmchip" id="chat-chip"
+                ><span class="d"></span
+                ><span id="chat-chip-word">vm off</span></span
+              >
+            </div>
+            <div class="chat-view" id="chat-view">
+              <div class="chat-items" id="chat-items">
+                <div class="ci msg you" data-at="0.08">
+                  did last night's chart bump deploy?
+                </div>
+                <div class="ci evt" data-at="0.14">
+                  <b>vm awake · 2.5 ms</b>
+                </div>
+                <div class="ci evt" data-at="0.30">
+                  clone jomcgi/homelab · <b>11.2 MiB</b>
+                </div>
+                <div class="ci msg bot" data-at="0.37">
+                  Checking ArgoCD and the chart versions.
+                </div>
+                <div class="ci evt" data-at="0.50">
+                  <b>creds attached outside the vm</b>
+                </div>
+                <div class="ci msg bot" data-at="0.57">
+                  Yes. The chart moved and the rollout is healthy.
+                </div>
+                <div class="ci evt" data-at="0.71">
+                  idle 20 s · <b>vm destroyed</b> · disk kept
+                </div>
+                <div class="ci evt divider frost" data-at="0.84">
+                  +2 days · workspace in s3
+                </div>
+                <div class="ci msg you" data-at="0.87">
+                  add a regression test for that fix
+                </div>
+                <div class="ci evt frost" data-at="0.905">
+                  restored on <b>brick-3</b> · --resume
+                </div>
+                <div class="ci msg bot" data-at="0.935">
+                  Picking up where we left off.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- diagram -->
+        <div class="machine-col" id="machine">
+          <!-- wire log: the actual call for the arrow currently drawing -->
+          <div class="wire" id="wire" aria-hidden="true">
+            <span class="wp">▸</span><span class="wt" id="wire-text"></span
+            ><span class="wc">▍</span>
+          </div>
+
+          <div class="dg-frame">
+            <svg
+              class="dg"
+              viewBox="0 0 880 500"
+              role="img"
+              aria-label="Agent session architecture: the control plane places a session on a Firecracker node, the VM restores from a shared base snapshot with the session's workspace volume patched in, all egress including the git clone leaves through a credential-holding sidecar outside the VM, and parked or expired workspaces move between node scratch and SeaweedFS S3."
+            >
+              <defs>
+                <marker
+                  id="m-ember"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path
+                    class="mk"
+                    style="stroke: var(--em-ember)"
+                    d="M1,1 L7,4 L1,7"
+                  />
+                </marker>
+                <marker
+                  id="m-amber"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path
+                    class="mk"
+                    style="stroke: var(--em-amber)"
+                    d="M1,1 L7,4 L1,7"
+                  />
+                </marker>
+                <marker
+                  id="m-frost"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path
+                    class="mk"
+                    style="stroke: var(--em-frost)"
+                    d="M1,1 L7,4 L1,7"
+                  />
+                </marker>
+                <marker
+                  id="m-good"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path
+                    class="mk"
+                    style="stroke: var(--em-good)"
+                    d="M1,1 L7,4 L1,7"
+                  />
+                </marker>
+              </defs>
+
+              <!-- Grid: outside-left column x16-166; brick lane x196-666 with
+                   inside columns x220-390 (noded, scratch) and x410-642 (vm,
+                   sidecar); outside-right column x700-864 (api, github,
+                   brick-3). Rows: y64 (cp, noded, vm top); y236-340 (scratch,
+                   sidecar; api flush top, github flush bottom); y390-482
+                   (s3 lane, brick-3). -->
+
+              <!-- outside-left: control plane -->
+              <g id="g-cp">
+                <rect
+                  class="box paper"
+                  x="16"
+                  y="64"
+                  width="150"
+                  height="46"
+                  rx="8"
+                />
+                <text class="nlabel" x="91" y="83" text-anchor="middle">
+                  control plane
+                </text>
+                <text class="nsub" x="91" y="98" text-anchor="middle">
+                  elixir/otp
+                </text>
+              </g>
+
+              <!-- brick lane -->
+              <g id="g-brick">
+                <rect
+                  class="lane-r"
+                  x="196"
+                  y="28"
+                  width="470"
+                  height="330"
+                  rx="10"
+                />
+                <text class="llabel" x="212" y="50">
+                  brick-2 · firecracker node
+                </text>
+              </g>
+
+              <g id="g-noded">
+                <rect
+                  class="box"
+                  x="220"
+                  y="64"
+                  width="170"
+                  height="46"
+                  rx="8"
+                />
+                <text class="nlabel" x="305" y="83" text-anchor="middle">
+                  noded
+                </text>
+                <text class="nsub" x="305" y="98" text-anchor="middle">
+                  go daemon
+                </text>
+              </g>
+
+              <!-- the session VM -->
+              <g id="g-vm">
+                <rect
+                  class="box paper ember-b"
+                  x="410"
+                  y="64"
+                  width="232"
+                  height="124"
+                  rx="10"
+                />
+                <text class="nlabel" x="424" y="87">session vm</text>
+                <rect
+                  class="pill"
+                  id="r-pill"
+                  x="548"
+                  y="72"
+                  width="80"
+                  height="18"
+                  style="fill: var(--em-idle)"
+                />
+                <text
+                  class="pill-t"
+                  id="t-pill"
+                  x="588"
+                  y="85"
+                  text-anchor="middle"
+                  style="fill: var(--em-muted)"
+                >
+                  off
+                </text>
+                <g id="g-ram"></g>
+                <text class="nsub" x="424" y="176">
+                  shim :1027 · vsock only · no NIC
+                </text>
+              </g>
+
+              <!-- node scratch: same row as the sidecar -->
+              <g id="g-scratch">
+                <rect
+                  class="box"
+                  x="220"
+                  y="236"
+                  width="170"
+                  height="104"
+                  rx="10"
+                />
+                <text
+                  class="llabel"
+                  x="232"
+                  y="256"
+                  style="text-transform: none"
+                >
+                  node scratch · nvme
+                </text>
+                <g id="g-chip-base">
+                  <rect
+                    class="box paper ember-b"
+                    x="232"
+                    y="266"
+                    width="146"
+                    height="26"
+                    rx="6"
+                  />
+                  <text
+                    class="nsub"
+                    x="240"
+                    y="283"
+                    style="fill: var(--em-muted)"
+                  >
+                    base memfile · shared
+                  </text>
+                </g>
+                <g id="g-chip-ws">
+                  <rect
+                    class="box paper amber-b"
+                    x="232"
+                    y="300"
+                    width="146"
+                    height="26"
+                    rx="6"
+                  />
+                  <text
+                    class="nsub"
+                    x="240"
+                    y="317"
+                    style="fill: var(--em-muted)"
+                  >
+                    workspace.img · yours
+                  </text>
+                </g>
+              </g>
+
+              <!-- egress sidecar: same column as the vm, same row as scratch -->
+              <g id="g-sidecar">
+                <rect
+                  class="box paper good-b"
+                  x="410"
+                  y="236"
+                  width="232"
+                  height="104"
+                  rx="10"
+                />
+                <text class="nlabel" x="424" y="257">egress sidecar</text>
+                <text class="nsub" x="424" y="272">holds the real secrets</text>
+                <rect
+                  class="swap-r"
+                  x="422"
+                  y="284"
+                  width="208"
+                  height="20"
+                  style="fill: var(--em-track)"
+                />
+                <text class="swap-t" id="t-fake" x="428" y="298">
+                  Bearer ember-guest…dummy…
+                </text>
+                <line
+                  class="strike"
+                  id="s-fake"
+                  x1="424"
+                  y1="294"
+                  x2="620"
+                  y2="294"
+                  opacity="0"
+                />
+                <rect
+                  class="swap-r"
+                  id="r-real"
+                  x="422"
+                  y="310"
+                  width="208"
+                  height="20"
+                  style="fill: var(--em-good-dim)"
+                  opacity="0"
+                />
+                <text
+                  class="swap-t good"
+                  id="t-real"
+                  x="428"
+                  y="324"
+                  opacity="0"
+                >
+                  Bearer ●●●●●●●● · real
+                </text>
+              </g>
+
+              <!-- outside-right: the internet. Flush with the sidecar row:
+                   api top = row top, github bottom = row bottom. -->
+              <g id="g-api">
+                <rect
+                  class="box paper"
+                  x="700"
+                  y="236"
+                  width="164"
+                  height="46"
+                  rx="8"
+                />
+                <text class="nlabel" x="782" y="255" text-anchor="middle">
+                  api.anthropic.com
+                </text>
+                <text class="nsub" x="782" y="270" text-anchor="middle">
+                  tls ends at the sidecar
+                </text>
+              </g>
+              <g id="g-github">
+                <rect
+                  class="box paper"
+                  x="700"
+                  y="294"
+                  width="164"
+                  height="46"
+                  rx="8"
+                />
+                <text class="nlabel" x="782" y="313" text-anchor="middle">
+                  github.com
+                </text>
+                <text class="nsub" x="782" y="328" text-anchor="middle">
+                  clone + push
+                </text>
+              </g>
+
+              <!-- s3 lane -->
+              <g id="g-s3">
+                <rect
+                  class="lane-s3-r"
+                  x="196"
+                  y="390"
+                  width="470"
+                  height="92"
+                  rx="10"
+                />
+                <text class="llabel frost" x="212" y="412">
+                  seaweedfs s3 · bucket embervm
+                </text>
+                <g id="g-s3base">
+                  <rect
+                    class="box paper frost-b"
+                    x="220"
+                    y="424"
+                    width="130"
+                    height="30"
+                    rx="6"
+                  />
+                  <text class="nsub frost" x="232" y="443">
+                    base/ snapshots
+                  </text>
+                </g>
+                <g id="g-s3ws">
+                  <rect
+                    class="box paper frost-b"
+                    x="370"
+                    y="424"
+                    width="250"
+                    height="30"
+                    rx="6"
+                  />
+                  <text class="nsub frost" x="382" y="443">
+                    session-workspace/&lt;lineage&gt; · 7 d gc
+                  </text>
+                </g>
+              </g>
+
+              <!-- bottom-right: another brick, level with the s3 lane -->
+              <g id="g-brick3">
+                <rect
+                  class="lane-r"
+                  x="700"
+                  y="390"
+                  width="164"
+                  height="92"
+                  rx="10"
+                />
+                <text class="llabel" x="712" y="410">brick-3</text>
+                <rect
+                  class="box paper ember-b"
+                  x="712"
+                  y="418"
+                  width="140"
+                  height="52"
+                  rx="8"
+                />
+                <text class="nlabel" x="782" y="439" text-anchor="middle">
+                  fresh vm
+                </text>
+                <text class="nsub" x="782" y="455" text-anchor="middle">
+                  --resume · intact
+                </text>
+              </g>
+
+              <!-- paths (drawn per beat) -->
+              <path class="epath ep-ember" id="p-grpc" d="M166,87 L216,87" />
+              <text class="elabel el-ember" id="l-grpc" x="176" y="78">
+                gRPC
+              </text>
+
+              <path
+                class="epath ep-ember"
+                id="p-load"
+                d="M300,264 C315,235 370,215 440,192"
+              />
+              <text class="elabel el-ember" id="l-load" x="204" y="210">
+                load · 2.5 ms
+              </text>
+
+              <path
+                class="epath ep-amber"
+                id="p-patch"
+                d="M320,300 C335,258 390,220 468,192"
+              />
+              <text class="elabel el-amber" id="l-patch" x="204" y="226">
+                patch
+              </text>
+
+              <path class="epath ep-good" id="p-vsock" d="M526,188 L526,232" />
+              <text class="elabel el-good" id="l-vsock" x="534" y="212">
+                vsock
+              </text>
+
+              <path class="epath ep-good" id="p-egress" d="M642,259 L694,259" />
+              <text class="elabel el-good" id="l-egress" x="700" y="228">
+                swap → real header
+              </text>
+
+              <path class="epath ep-good" id="p-git" d="M642,317 L694,317" />
+              <text class="elabel el-good" id="l-git" x="700" y="358">
+                clone · token attached
+              </text>
+
+              <path
+                class="epath ep-frost"
+                id="p-bank"
+                d="M300,328 C310,368 380,384 418,424"
+              />
+              <text class="elabel el-frost" id="l-bank" x="200" y="378">
+                retire → export
+              </text>
+
+              <path
+                class="epath ep-frost"
+                id="p-restore"
+                d="M624,439 L706,437"
+              />
+              <text class="elabel el-frost" id="l-restore" x="630" y="470">
+                restore
+              </text>
+            </svg>
+
+            <div class="dg-legend">
+              <span><i class="lg-ember"></i> lifecycle</span>
+              <span><i class="lg-amber"></i> data in flight</span>
+              <span><i class="lg-good"></i> credentialed egress</span>
+              <span><i class="lg-frost"></i> durable, to and from s3</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- static fallback (reduced motion / no JS) -->
+  <div class="static-story">
+    <h2 style="font-size: 30px; font-weight: 800; letter-spacing: -0.02em">
+      Every agent gets its own machine.
+    </h2>
+    <p class="body" style="margin-bottom: 40px">
+      Each agent session runs in a hardware-isolated Firecracker microVM. The
+      machine is disposable; the disk is the session.
+    </p>
+    <!-- captions repeat statically; omitted in the mockup, the scrubbed
+         stage is the design surface under review -->
+  </div>
+
+  <!-- ════════ post-story document ════════ -->
+  <main class="doc">
+    <h2 class="h2">Where a session lives</h2>
+    <dl class="tiers-mini">
+      <div>
+        <dt class="ram">guest ram</dt>
+        <dd>disposable · rebuilt in <b>2.5 ms</b> · never snapshotted</dd>
+      </div>
+      <div>
+        <dt class="disk">node scratch</dt>
+        <dd>
+          shared base memfiles + <b>workspace.img</b> · what
+          <b>--resume</b> reads
+        </dd>
+      </div>
+      <div>
+        <dt class="s3">seaweedfs s3</dt>
+        <dd>retired workspaces · <b>survives the machine</b> · 7 d gc</dd>
+      </div>
+    </dl>
+    <p class="body" style="margin-top: 12px">
+      <b>Only the bottom tier is allowed to matter.</b>
+    </p>
+
+    <h2 class="h2">Keep going</h2>
+    <div class="doors">
+      <a class="door" href="#">
+        <span class="k">explainer</span>
+        <h3>How Firecracker resumes a VM</h3>
+        <p>
+          What a microVM snapshot actually contains, and how a full machine
+          comes back in ~22 ms.
+        </p>
+        <span class="go">ember/firecracker →</span>
+      </a>
+      <a class="door" href="#">
+        <span class="k">the mini-site</span>
+        <h3>Ember</h3>
+        <p>
+          The workload orchestrator all of this runs on, with live demos you can
+          wake yourself.
+        </p>
+        <span class="go">ember →</span>
+      </a>
+    </div>
+
+    <footer class="foot">
+      <span
+        >Elixir/OTP control plane · Go node daemon · Firecracker microVMs ·
+        running on this cluster</span
+      >
+      <span>jomcgi.dev</span>
+    </footer>
+  </main>
+</div>
+
+<script>
+  // ── scrub engine, fcstory grammar; one SVG diagram, each beat spotlights
+  //    boxes and draws labeled paths via stroke-dashoffset ──
+  const PHASES = {
+    heroOut: [0.0, 0.055],
+    wake: [0.07, 0.25],
+    hydrate: [0.28, 0.44],
+    creds: [0.47, 0.63],
+    park: [0.66, 0.79],
+    resume: [0.82, 0.96],
+    out: [0.96, 1.0],
+  };
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const sub = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+  const easeInOut = (p) =>
+    p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+
+  const $ = (id) => document.getElementById(id);
+  const scrollerEl = $("scroller"),
+    heroEl = $("hero"),
+    topbarEl = $("topbar");
+  const chatViewEl = $("chat-view"),
+    chatItemsEl = $("chat-items");
+  const chatChipEl = $("chat-chip"),
+    chatChipWordEl = $("chat-chip-word");
+  const chatItems = Array.from(chatItemsEl.querySelectorAll(".ci")).map(
+    (el) => ({
+      el,
+      at: parseFloat(el.dataset.at),
+      top: 0,
+      bottom: 0,
+    }),
+  );
+
+  const G = {};
+  [
+    "g-cp",
+    "g-brick",
+    "g-noded",
+    "g-vm",
+    "g-sidecar",
+    "g-scratch",
+    "g-chip-base",
+    "g-chip-ws",
+    "g-api",
+    "g-github",
+    "g-brick3",
+    "g-s3",
+    "g-s3ws",
+  ].forEach((id) => (G[id] = $(id)));
+  const rPill = $("r-pill"),
+    tPill = $("t-pill");
+  const sFake = $("s-fake"),
+    tFake = $("t-fake"),
+    rReal = $("r-real"),
+    tReal = $("t-real");
+
+  // paths + labels, lengths computed once (viewBox units, resolution-independent)
+  const P = {};
+  [
+    "grpc",
+    "load",
+    "patch",
+    "vsock",
+    "git",
+    "egress",
+    "bank",
+    "restore",
+  ].forEach((n) => {
+    const el = $("p-" + n),
+      label = $("l-" + n);
+    const len = el.getTotalLength();
+    el.style.strokeDasharray = `${len}`;
+    P[n] = { el, label, len };
+  });
+  function setPath(n, p, alpha = 1) {
+    const { el, label, len } = P[n];
+    const q = clamp(p, 0, 1);
+    el.style.strokeDashoffset = len * (1 - q);
+    el.style.opacity = q > 0.01 ? alpha : 0;
+    // The arrowhead is a marker on the whole path, so left alone it renders
+    // at the destination before the line gets there. Detach it until the
+    // draw completes; the ">" lands exactly when the line tip arrives, and
+    // the label lands with it.
+    el.style.markerEnd = q > 0.96 ? "" : "none";
+    label.style.opacity = q > 0.96 ? alpha : 0;
+  }
+  /* Dimmed boxes must stay legible on the white panel: 0.34 read as the
+     washed-out grey-on-paper look the design system vetoes. Spotlight by
+     contrast between 1.0 and 0.55, not by making the rest vanish. */
+  const DIM = 0.55,
+    GHOST = 0.28;
+  function lit(g, level) {
+    g.style.opacity = level;
+  }
+
+  // RAM cells inside the VM box: 8 x 3 grid in viewBox units
+  const ram = [];
+  {
+    const gRam = $("g-ram");
+    const x0 = 424,
+      y0 = 100,
+      cw = 22,
+      ch = 14,
+      gx = 4,
+      gy = 4;
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 8; col++) {
+        const r = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "rect",
+        );
+        r.setAttribute("class", "cellr");
+        r.setAttribute("x", x0 + col * (cw + gx));
+        r.setAttribute("y", y0 + row * (ch + gy));
+        r.setAttribute("width", cw);
+        r.setAttribute("height", ch);
+        r.setAttribute("rx", 2);
+        gRam.appendChild(r);
+        const hue = 16 + Math.random() * 9;
+        const sat = 72 + Math.random() * 12;
+        const light = 46 + Math.random() * 14;
+        ram.push({
+          el: r,
+          th: (col + 0.2 + Math.random() * 2.2) / 10.2,
+          hot: `hsl(${hue} ${sat}% ${light}%)`,
+          on: false,
+        });
+      }
+    }
+  }
+  function setRam(level) {
+    for (const c of ram) {
+      const on = level >= c.th;
+      if (on !== c.on) {
+        c.on = on;
+        c.el.style.fill = on ? c.hot : "";
+      }
+    }
+  }
+
+  function setPill(text, mode) {
+    if (tPill.textContent !== text) tPill.textContent = text;
+    const w = Math.max(56, text.length * 6.4 + 18);
+    rPill.setAttribute("width", w);
+    rPill.setAttribute("x", 628 - w);
+    tPill.setAttribute("x", 628 - w / 2);
+    rPill.style.fill =
+      mode === "run"
+        ? "var(--em-ember)"
+        : mode === "asleep"
+          ? "var(--em-frost)"
+          : "var(--em-idle)";
+    tPill.style.fill =
+      mode === "off" ? "var(--em-muted)" : "var(--em-on-color)";
+  }
+
+  let vh = 0,
+    span = 1,
+    chatViewH = 0;
+  function measure() {
+    vh = window.innerHeight;
+    span = scrollerEl.offsetHeight - vh;
+    chatViewH = chatViewEl.clientHeight;
+    for (const it of chatItems) {
+      it.top = it.el.offsetTop;
+      it.bottom = it.el.offsetTop + it.el.offsetHeight;
+    }
+  }
+
+  // Scrub-revealed chat: each item fades in over a short window of t, and the
+  // stack translates up so the newest visible item stays in view. The shift
+  // target interpolates toward the revealing item's bottom edge, so the
+  // scroll-up is continuous and fully reversible.
+  const REVEAL = 0.022;
+  function chatFrame(t) {
+    let target = 0;
+    for (const it of chatItems) {
+      const o = sub(t, it.at, it.at + REVEAL);
+      it.el.style.opacity = o;
+      it.el.style.transform = `translateY(${(1 - o) * 10}px)`;
+      if (o > 0) target = target + (it.bottom - target) * Math.min(1, o * 1.4);
+    }
+    const shift = Math.max(0, target + 16 - chatViewH);
+    chatItemsEl.style.transform = `translateY(${-shift}px)`;
+  }
+
+  // The wire log: the real call behind the arrow currently drawing. Each
+  // entry types on over [a, b] of its beat's local progress and holds until
+  // the next entry starts, so scrubbing backwards untypes it.
+  const wireEl = $("wire"),
+    wireTextEl = $("wire-text");
+  const CALLS = {
+    wake: [
+      {
+        a: 0.02,
+        b: 0.22,
+        cls: "w-ember",
+        text: "POST /v1/workloads/claude-runtime/sessions",
+      },
+      {
+        a: 0.2,
+        b: 0.45,
+        cls: "w-ember",
+        text: "PUT /snapshot/load  (base memfile)",
+      },
+      {
+        a: 0.45,
+        b: 0.58,
+        cls: "w-amber",
+        text: "PATCH /drives/volume  (workspace.img)",
+      },
+      { a: 0.58, b: 0.7, cls: "w-ember", text: "PATCH /vm  {state: Resumed}" },
+    ],
+    hydrate: [
+      { a: 0.05, b: 0.25, cls: "w-good", text: "CONNECT vsock :1025" },
+      {
+        a: 0.3,
+        b: 0.6,
+        cls: "w-good",
+        text: "git clone --depth=1 github.com/jomcgi/homelab",
+      },
+    ],
+    creds: [
+      {
+        a: 0.15,
+        b: 0.45,
+        cls: "w-good",
+        text: "CONNECT api.anthropic.com:443",
+      },
+      {
+        a: 0.55,
+        b: 0.85,
+        cls: "w-good",
+        text: "Authorization: Bearer ●●●  (swapped by the sidecar)",
+      },
+    ],
+    park: [
+      { a: 0.1, b: 0.42, cls: "w-frost", text: "idle 20 s → park" },
+      {
+        a: 0.45,
+        b: 0.75,
+        cls: "w-ember",
+        text: "destroy vm  (no snapshot taken)",
+      },
+    ],
+    resume: [
+      {
+        a: 0.04,
+        b: 0.32,
+        cls: "w-frost",
+        text: "PUT s3://embervm/session-workspace/<lineage>",
+      },
+      {
+        a: 0.42,
+        b: 0.66,
+        cls: "w-frost",
+        text: "GET s3://embervm/session-workspace/<lineage>  → brick-3",
+      },
+      {
+        a: 0.68,
+        b: 0.82,
+        cls: "w-ember",
+        text: "PUT /snapshot/load  (brick-3)",
+      },
+      {
+        a: 0.84,
+        b: 0.96,
+        cls: "",
+        text: "claude --resume  (conversation intact)",
+      },
+    ],
+  };
+  function wireFrame(t, beat, local) {
+    wireEl.style.opacity = sub(t, PHASES.wake[0], PHASES.wake[0] + 0.02);
+    const list = CALLS[beat];
+    if (!list) {
+      wireTextEl.textContent = "";
+      return;
+    }
+    let active = null;
+    for (const call of list) if (local >= call.a) active = call;
+    if (!active) {
+      wireTextEl.textContent = "";
+      return;
+    }
+    const q = sub(local, active.a, active.b);
+    const chars = Math.round(q * active.text.length);
+    wireTextEl.textContent = active.text.slice(0, chars);
+    wireTextEl.className = "wt " + active.cls;
+  }
+
+  function setChatChip(mode) {
+    const word =
+      mode === "awake"
+        ? "vm awake"
+        : mode === "asleep"
+          ? "vm asleep"
+          : "vm off";
+    if (chatChipWordEl.textContent !== word) {
+      chatChipWordEl.textContent = word;
+      chatChipEl.className = "vmchip" + (mode === "off" ? "" : " " + mode);
+    }
+  }
+
+  function frame(t) {
+    topbarEl.style.opacity = 1 - sub(t, 0.02, 0.055);
+    const ho = 1 - sub(t, PHASES.heroOut[0], PHASES.heroOut[1]);
+    heroEl.style.opacity = ho;
+    heroEl.style.transform = `translateY(${-(1 - ho) * 8}vh)`;
+    heroEl.style.pointerEvents = ho > 0.5 ? "auto" : "none";
+
+    const w = sub(t, PHASES.wake[0], PHASES.wake[1]);
+    const h = sub(t, PHASES.hydrate[0], PHASES.hydrate[1]);
+    const c = sub(t, PHASES.creds[0], PHASES.creds[1]);
+    const pk = sub(t, PHASES.park[0], PHASES.park[1]);
+    const r = sub(t, PHASES.resume[0], PHASES.resume[1]);
+
+    const beat =
+      t < PHASES.wake[0]
+        ? "pre"
+        : t < PHASES.hydrate[0]
+          ? "wake"
+          : t < PHASES.creds[0]
+            ? "hydrate"
+            : t < PHASES.park[0]
+              ? "creds"
+              : t < PHASES.resume[0]
+                ? "park"
+                : "resume";
+
+    // ── box spotlight per beat ──
+    lit(G["g-brick"], beat === "pre" ? DIM : 1);
+    lit(G["g-cp"], beat === "wake" ? 1 : DIM);
+    lit(G["g-noded"], beat === "wake" ? 1 : DIM);
+    lit(G["g-sidecar"], beat === "hydrate" || beat === "creds" ? 1 : DIM);
+    lit(G["g-github"], beat === "hydrate" ? 1 : DIM);
+    lit(G["g-api"], beat === "creds" ? 1 : DIM);
+    lit(
+      G["g-scratch"],
+      beat === "wake" || beat === "park" || (beat === "resume" && r < 0.4)
+        ? 1
+        : DIM,
+    );
+    lit(G["g-chip-base"], beat === "wake" ? 1 : 0.75);
+    lit(
+      G["g-chip-ws"],
+      beat === "hydrate" || beat === "park" || (beat === "resume" && r < 0.4)
+        ? 1
+        : 0.75,
+    );
+    lit(G["g-s3"], beat === "resume" ? 1 : DIM);
+    lit(G["g-s3ws"], beat === "resume" ? 1 : 0.75);
+    lit(
+      G["g-brick3"],
+      beat === "resume"
+        ? Math.max(GHOST, easeInOut(sub(r, 0.42, 0.62)))
+        : GHOST,
+    );
+
+    const vmDead = (beat === "park" && pk > 0.45) || beat === "resume";
+    lit(G["g-vm"], beat === "pre" ? DIM : vmDead ? 0.45 : 1);
+
+    // ── paths per beat ──
+    setPath("grpc", beat === "wake" ? sub(w, 0.02, 0.22) : 0);
+    setPath("load", beat === "wake" ? sub(w, 0.2, 0.48) : 0);
+    setPath("patch", beat === "wake" ? sub(w, 0.45, 0.7) : 0);
+    setPath(
+      "vsock",
+      beat === "hydrate" ? sub(h, 0.05, 0.25) : beat === "creds" ? 1 : 0,
+    );
+    setPath("git", beat === "hydrate" ? sub(h, 0.3, 0.6) : 0);
+    setPath("egress", beat === "creds" ? sub(c, 0.15, 0.45) : 0);
+    setPath("bank", beat === "resume" ? sub(r, 0.04, 0.32) : 0);
+    setPath("restore", beat === "resume" ? sub(r, 0.42, 0.66) : 0);
+
+    // ── credential swap ──
+    const swapped = beat === "creds" && c > 0.55;
+    sFake.style.opacity = swapped ? 1 : 0;
+    tFake.style.opacity = swapped ? 0.55 : 1;
+    rReal.style.opacity = swapped ? 1 : 0;
+    tReal.style.opacity = swapped ? 1 : 0;
+
+    // ── vm state pill ──
+    if (beat === "pre") setPill("off", "off");
+    else if (beat === "wake") {
+      if (w < 0.45) setPill("restoring", "asleep");
+      else setPill("awake · 2.5 ms", "run");
+    } else if (beat === "hydrate") setPill("awake · turn running", "run");
+    else if (beat === "creds") setPill("awake", "run");
+    else if (beat === "park")
+      setPill(
+        pk > 0.45 ? "asleep · parked" : "idle 20 s…",
+        pk > 0.45 ? "asleep" : "run",
+      );
+    else setPill("expired · 410", "off");
+
+    // ── RAM heat ──
+    let level = 0;
+    if (beat === "wake") level = easeInOut(sub(w, 0.55, 0.95));
+    else if (beat === "hydrate" || beat === "creds") level = 1;
+    else if (beat === "park") level = 1 - easeInOut(sub(pk, 0.3, 0.65));
+    setRam(level);
+
+    // ── wire log ──
+    wireFrame(
+      t,
+      beat,
+      beat === "wake"
+        ? w
+        : beat === "hydrate"
+          ? h
+          : beat === "creds"
+            ? c
+            : beat === "park"
+              ? pk
+              : beat === "resume"
+                ? r
+                : 0,
+    );
+
+    // ── chat rail ──
+    chatFrame(t);
+    setChatChip(
+      beat === "pre"
+        ? "off"
+        : beat === "wake"
+          ? w < 0.45
+            ? "off"
+            : "awake"
+          : beat === "hydrate" || beat === "creds"
+            ? "awake"
+            : beat === "park"
+              ? pk > 0.45
+                ? "asleep"
+                : "awake"
+              : r < 0.62
+                ? "off"
+                : "awake",
+    );
+  }
+
+  let ticking = false;
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      frame(clamp(window.scrollY / span, 0, 1));
+      ticking = false;
+    });
+  }
+  let resizing = false;
+  function onResize() {
+    if (resizing) return;
+    resizing = true;
+    requestAnimationFrame(() => {
+      measure();
+      frame(clamp(window.scrollY / span, 0, 1));
+      resizing = false;
+    });
+  }
+  window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("resize", onResize);
+  requestAnimationFrame(() => {
+    measure();
+    frame(clamp(window.scrollY / span, 0, 1));
+  });
+</script>
