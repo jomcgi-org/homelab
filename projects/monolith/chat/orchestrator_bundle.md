@@ -108,6 +108,7 @@ slower and less grounded, so fill every required field.
 
 Top-level projects/ directories:
 - advent_of_code
+- design-system
 - embervm
 - firecracker
 - grimoire
