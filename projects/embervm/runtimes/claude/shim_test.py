@@ -300,7 +300,7 @@ assert sys.argv[sys.argv.index("--model") + 1] == "qwen3.6-27b"
 for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
     assert flag in sys.argv
 assert sys.argv[sys.argv.index("--tools") + 1] == "read,bash,edit,write"
-assert "End every response with a single line" in sys.argv[sys.argv.index("--system-prompt") + 1]
+assert "disposable Firecracker microVM" in sys.argv[sys.argv.index("--system-prompt") + 1]
 rpc_path = os.environ.get("FAKE_PI_RPC")
 state = {"sessionId": "pi-session", "model": {"id": "qwen3.6-27b"}}
 def record(value):
@@ -814,10 +814,12 @@ def test_codex_app_server_second_turn_no_respawn(tmp_path, monkeypatch):
 
 def test_codex_resume_by_thread_id(tmp_path, monkeypatch):
     manager = _codex_manager(tmp_path, monkeypatch)
-    manager.turn("first", model="luna")
+    manager.turn("first", model="luna", system_prompt="CALLER-MARKER")
     session_id = manager.session_id
     manager.session_id = None
-    manager.turn("second", session_id=session_id, model="luna")
+    manager.turn(
+        "second", session_id=session_id, model="luna", system_prompt="CALLER-MARKER"
+    )
     assert manager.session_id == session_id
     requests = [
         json.loads(line)
@@ -836,6 +838,10 @@ def test_codex_resume_by_thread_id(tmp_path, monkeypatch):
     assert "sandboxPolicy" not in thread_start["params"]
     assert thread_resume["params"]["sandbox"] == "danger-full-access"
     assert "sandboxPolicy" not in thread_resume["params"]
+    for request in (thread_start, thread_resume):
+        instructions = request["params"]["developerInstructions"]
+        assert shim.SANDBOX_PROMPT in instructions
+        assert "CALLER-MARKER" in instructions
     manager._close_process()
 
 
@@ -1159,6 +1165,7 @@ def _parked_claude(tmp_path):
     manager.fatal_error = None
     manager.session_id = None
     manager.model = None
+    manager.system_prompt = None
     manager._process_workspace = manager.workspace
     stat = os.stat(manager.workspace)
     manager._process_workspace_identity = (stat.st_dev, stat.st_ino)
@@ -1565,7 +1572,7 @@ def test_legacy_adoption_respawns_for_workspace_change(tmp_path, monkeypatch):
     new_process = _FakeLiveProcess()
     spawn_calls = []
 
-    def fake_spawn(session_id, first_message, model):
+    def fake_spawn(session_id, first_message, model, **_kwargs):
         spawn_calls.append((session_id, first_message, model, manager.workspace))
         manager.process = new_process
 
@@ -1810,7 +1817,14 @@ def test_parked_claude_model_mismatch_respawns_with_resume(tmp_path, monkeypatch
     monkeypatch.setattr(manager, "ready", lambda: True)
 
     manager.turn("hello", session_id="sid", model="opus")
-    assert calls == [{"session_id": "sid", "first_message": "hello", "model": "opus"}]
+    assert calls == [
+        {
+            "session_id": "sid",
+            "first_message": "hello",
+            "model": "opus",
+            "system_prompt": None,
+        }
+    ]
 
 
 def test_claude_turn_timing_reports_spawn_adopt_reuse_and_remediation(
@@ -1950,6 +1964,49 @@ def test_claude_spawn_includes_include_partial_messages(tmp_path, monkeypatch):
     manager._close_process(kill=True)
 
 
+def test_claude_system_prompt_is_composed_at_spawn(tmp_path, monkeypatch):
+    args_path = tmp_path / "args.json"
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes", system_prompt="CALLER-MARKER")
+    argv = json.loads(args_path.read_text())
+    value = argv[argv.index("--append-system-prompt") + 1]
+    assert "disposable Firecracker microVM" in value
+    assert "CALLER-MARKER" in value
+    manager._close_process(kill=True)
+
+
+def test_claude_prewarm_adoption_respawns_for_system_prompt(tmp_path, monkeypatch):
+    manager = _parked_claude(tmp_path)
+    calls = []
+
+    def respawn(session_id=None, **kwargs):
+        calls.append({"session_id": session_id, **kwargs})
+        manager.process = _FakeLiveProcess()
+        manager._process_workspace = manager.workspace
+        manager.system_prompt = kwargs.get("system_prompt")
+
+    monkeypatch.setattr(manager, "_close_process", lambda **_kwargs: None)
+    monkeypatch.setattr(manager, "_spawn", respawn)
+    monkeypatch.setattr(
+        manager,
+        "_read_output",
+        lambda _process, _timeout: json.dumps(
+            {
+                "type": "result",
+                "result": "ok",
+                "terminal_reason": "end_turn",
+                "session_id": "sid",
+            }
+        ).encode(),
+    )
+    monkeypatch.setattr(manager, "_parse_line", json.loads)
+    monkeypatch.setattr(manager, "ready", lambda: True)
+
+    manager.turn("hello", session_id="sid", system_prompt="CALLER-MARKER")
+    assert calls[0]["system_prompt"] == "CALLER-MARKER"
+
+
 def test_malformed_assistant_events_are_skipped(tmp_path, monkeypatch):
     """Malformed assistant shapes do not abort the turn or poison the stream."""
     monkeypatch.setenv("FAKE_MALFORMED", "1")
@@ -2013,7 +2070,15 @@ def test_progress_pusher_collapses_rapid_events_to_latest():
     assert pushed == ["second"]
 
 
-def test_progress_token_validation():
+def test_compose_system_prompt():
+    assert shim.compose_system_prompt(None) == shim.SANDBOX_PROMPT
+    assert shim.compose_system_prompt("  ") == shim.SANDBOX_PROMPT
+    composed = shim.compose_system_prompt("X")
+    assert composed.startswith(shim.SANDBOX_PROMPT + "\n")
+    assert "X" in composed
+
+
+def test_system_prompt_validation_and_forwarding():
     class _Headers:
         def __init__(self, length):
             self.length = length
@@ -2048,9 +2113,22 @@ def test_progress_token_validation():
     assert manager.calls[0][1] == {"progress_token": "abc123"}
 
     manager = _Manager()
+    assert post({"message": "hello", "system_prompt": "  CALLER  "}, manager) == [
+        (200, {"result": "ok"})
+    ]
+    assert manager.calls[0][1] == {"system_prompt": "CALLER"}
+
+    manager = _Manager()
     assert post({"message": "hello"}, manager) == [(200, {"result": "ok"})]
     assert manager.calls[0][1] == {}
 
+    for token in ("", 123):
+        manager = _Manager()
+        responses = post({"message": "hello", "system_prompt": token}, manager)
+        assert responses == [
+            (400, {"error": "system_prompt must be a non-empty string"})
+        ]
+        assert manager.calls == []
     for token in ("", 123):
         manager = _Manager()
         responses = post({"message": "hello", "progress_token": token}, manager)
@@ -2077,9 +2155,16 @@ def test_progress_token_forwarded_to_claude_adapter(monkeypatch):
     manager.codex = FakeAdapter()
     manager.pi = FakeAdapter()
 
-    manager.turn("msg", session_id="s1", model=None, progress_token="token123")
+    manager.turn(
+        "msg",
+        session_id="s1",
+        model=None,
+        progress_token="token123",
+        system_prompt="CALLER-MARKER",
+    )
     assert len(calls) == 1
     assert calls[0][1].get("progress_token") == "token123"
+    assert calls[0][1].get("system_prompt") == "CALLER-MARKER"
 
     calls.clear()
     manager.turn("msg", session_id="s1", model=None)
@@ -3328,7 +3413,7 @@ def test_cli_crash_is_422(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch)
     original = manager._spawn
 
-    def crash_spawn(session_id=None, first_message=None, model=None):
+    def crash_spawn(session_id=None, first_message=None, model=None, **_kwargs):
         raise RuntimeError("claude crashed during turn, exit code 7")
 
     manager._spawn = crash_spawn
@@ -3611,13 +3696,16 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     prompt instead of the task, and the answers quietly get worse.
     """
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="qwen", system_prompt="CALLER-MARKER")
     argv = json.loads((tmp_path / "pi-args.jsonl").read_text().splitlines()[0])
 
     # --system-prompt REPLACES pi's default coding prompt (it does not append),
     # which is what keeps the scaffolding down to a couple of hundred tokens.
     assert "--system-prompt" in argv
-    assert shim.VOICE_PROMPT in argv[argv.index("--system-prompt") + 1]
+    system_prompt = argv[argv.index("--system-prompt") + 1]
+    assert "You are a focused coding agent." in system_prompt
+    assert shim.SANDBOX_PROMPT in system_prompt
+    assert "CALLER-MARKER" in system_prompt
 
     # Discovery of every kind is off: context files (AGENTS.md/CLAUDE.md),
     # extensions, skills and prompt templates all inject tokens we did not
