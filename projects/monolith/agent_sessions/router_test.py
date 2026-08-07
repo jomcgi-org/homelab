@@ -542,9 +542,14 @@ async def test_codex_login_gate_broker_failure_returns_login_error(monkeypatch):
 
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
 
-    result = await codex_login_gate("luna")
-    assert result["login_required"] is True
-    assert result["error"] == "broker offline"
+    assert await codex_login_gate("luna") is None
+
+
+@pytest.mark.asyncio
+async def test_codex_login_gate_unset_broker_url_proceeds(monkeypatch):
+    monkeypatch.delenv("EMBER_TOKENBROKER_URL", raising=False)
+
+    assert await codex_login_gate("luna") is None
 
 
 @pytest.mark.asyncio
