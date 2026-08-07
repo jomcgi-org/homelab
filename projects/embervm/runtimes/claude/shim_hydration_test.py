@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import os
@@ -221,6 +222,9 @@ def test_git_command_shape(manager, monkeypatch):
             "main",
             "--config",
             "http.proxy=http://127.0.0.1:1024",
+            "--config",
+            "http.https://github.com/.extraHeader=Authorization: Basic %s"
+            % shim._github_basic_optin(),
             "--single-branch",
             "--filter=blob:none",
             "https://github.com/owner/repo.git",
@@ -322,6 +326,9 @@ def test_hydration_works_for_non_default_branch(manager, monkeypatch):
         "develop",
         "--config",
         "http.proxy=http://127.0.0.1:1024",
+        "--config",
+        "http.https://github.com/.extraHeader=Authorization: Basic %s"
+        % shim._github_basic_optin(),
         "--single-branch",
         "--filter=blob:none",
         "https://github.com/owner/repo.git",
@@ -517,3 +524,61 @@ def test_no_progress_push_without_a_token(manager, monkeypatch):
     manager.turn("first", repo="owner/repo", branch="main")
 
     assert pushes == []
+
+
+def test_clone_sends_an_authorization_header_to_opt_into_injection(
+    manager, monkeypatch
+):
+    """Regression for a live 401: the clone MUST present Authorization.
+
+    The egress sidecar's injection is presence-keyed. It replaces a header the
+    guest already sent and discards the value (injectRequest: `requested :=
+    len(req.Header.Values(sec.Header)) > 0 || injectAlwaysPath(...)` then
+    `if !requested { return false }`). Sending nothing injects nothing, so
+    github.com answered 401 and git reported "could not read Username for
+    'https://github.com'". Seen in prod as
+    `"egress injected" injected=false status=401`.
+
+    injectAlwaysPaths cannot substitute: it is an exact match on req.URL.Path and
+    git's paths are per repository, so it would have to enumerate every repo.
+    """
+    monkeypatch.setenv("GH_TOKEN", "dummy-from-guest-env")
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            commands.append(command)
+        return _GitProcess()
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+    manager.turn("first", repo="owner/repo", branch="main")
+
+    configs = [
+        arg for arg in commands[0] if arg.startswith("http.") and "extraHeader" in arg
+    ]
+    assert len(configs) == 1, "clone must set exactly one extraHeader"
+    config = configs[0]
+
+    # Scoped by URL, so the opt-in is never presented to any other host.
+    assert config.startswith("http.https://github.com/.extraHeader="), (
+        "the Authorization opt-in must be scoped to github.com"
+    )
+
+    # Derived from guest env, NOT a literal in shim.py. A checked-in base64 blob
+    # reads as a credential and would drift from the dummy gh actually presents.
+    encoded = config.split("Authorization: Basic ", 1)[1]
+    assert base64.b64decode(encoded).decode() == (
+        "x-access-token:dummy-from-guest-env"
+    ), "the opt-in must be built from GH_TOKEN in the guest environment"
+
+
+def test_github_optin_is_well_formed_even_without_gh_token(monkeypatch):
+    """An absent GH_TOKEN must still yield a header, because presence is all.
+
+    Dropping the header on a missing env var would trade a loud config problem
+    for a silent 401 and an empty workspace, which is the failure mode this
+    whole path already proved is easy to miss.
+    """
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    encoded = shim._github_basic_optin()
+    assert base64.b64decode(encoded).decode() == "x-access-token:"

@@ -345,6 +345,26 @@ def _cli_privilege_kwargs():
 
 GIT_PROXY_PATH = "/tmp/ember-git-proxy"
 
+# The guest env var holding gh's login-gate dummy. Named here rather than
+# inlined because it is the SAME switch two consumers flip: gh sends it as a
+# bearer, and hydration sends it as Basic, and both exist only so the egress
+# sidecar's presence-keyed injection fires.
+GH_TOKEN_ENV = "GH_TOKEN"
+
+
+def _github_basic_optin():
+    """Return base64 for a Basic Authorization that opts into injection.
+
+    The VALUE is inert and is discarded by the sidecar, which overwrites the
+    header with the real credential. Only its PRESENCE matters, so an absent
+    GH_TOKEN still yields a well-formed header rather than dropping the opt-in
+    and taking a 401: the failure that would cause is silent hydration loss, and
+    a header with an empty token costs nothing.
+    """
+    token = os.environ.get(GH_TOKEN_ENV, "")
+    return base64.b64encode(("x-access-token:%s" % token).encode()).decode()
+
+
 # The egress CA the sidecar mints MITM leaves from, and the reserved preamble
 # name it serves that certificate on. Fetched at spawn rather than baked into
 # the guest image so a CA rotation does not require a fleet base rebuild.
@@ -3146,6 +3166,39 @@ class ProcessManager:
             branch,
             "--config",
             "http.proxy=http://%s:%s" % (EGRESS_LOCALHOST, egress_port),
+            # The LOGIN GATE DUMMY that opts this clone into credential
+            # injection, derived from the same GH_TOKEN gh already presents
+            # rather than defined here.
+            #
+            # The sidecar's injection is PRESENCE-KEYED: it replaces an
+            # Authorization header the guest already sent and DISCARDS whatever
+            # value was in it (egress-proxy injectRequest: `requested :=
+            # len(req.Header.Values(sec.Header)) > 0 || sec.injectAlwaysPath(...)`
+            # then `if !requested { return false }`). The header is an opt-in
+            # switch, never a credential, which is what stops a prompt-injected
+            # guest from authenticating as anyone else.
+            #
+            # git sends no Authorization on its first request, so nothing was
+            # injected and github.com answered 401, which git surfaces as
+            # "could not read Username for 'https://github.com'" once it falls
+            # through to an interactive prompt. gh never hit this because it
+            # always sends its own dummy. Reusing GH_TOKEN keeps the value where
+            # guest env is defined (guest-init setDefaultEnv, alongside
+            # CLAUDE_CODE_OAUTH_TOKEN) instead of adding a second, credential
+            # shaped literal to this file.
+            #
+            # injectAlwaysPaths cannot cover this instead: it is an EXACT match
+            # on req.URL.Path, and git's paths are per repository
+            # (/owner/repo.git/info/refs, /owner/repo.git/git-upload-pack), so it
+            # would have to enumerate every repo anyone might ever select.
+            #
+            # x-access-token:<token> is the Basic shape GitHub's git endpoint
+            # expects. Scoped to github.com by URL so it is never presented
+            # anywhere else, and written into the clone's config so the lazy blob
+            # fetches --filter=blob:none defers carry it too.
+            "--config",
+            "http.https://github.com/.extraHeader=Authorization: Basic %s"
+            % _github_basic_optin(),
             "--single-branch",
             "--filter=blob:none",
             "https://github.com/%s.git" % repo,
