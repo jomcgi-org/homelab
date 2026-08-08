@@ -5,6 +5,23 @@ mcp-stack:
       MCPGATEWAY_UI_ENABLED: "true"
       MCPGATEWAY_CATALOG_ENABLED: "true"
       MCPGATEWAY_TOOL_CANCELLATION_ENABLED: "true"
+    secret:
+      # Enforce OAuth on the MCP endpoint itself. Until now the JSON-RPC
+      # endpoint authenticated nobody: an unauthenticated tools/list returned
+      # all 57 tools, including monolith-agent-session-destroy, and tools/call
+      # reached dispatch. Only Cloudflare Access stood in front of it, so the
+      # protection was a property of one ingress path rather than of the
+      # gateway. The REST endpoints (/admin, /tools) already returned 401.
+      #
+      # This is also what makes a virtual server's oauth_enabled meaningful:
+      # that flag only PUBLISHES protected-resource metadata. Without
+      # enforcement the endpoint answers 200 with no WWW-Authenticate, so no
+      # client ever begins an OAuth flow.
+      #
+      # Note this is gateway-wide, not per server. mcp.jomcgi.dev tokens are
+      # issued by jomcgi.cloudflareaccess.com and DCR_ALLOWED_ISSUERS is empty,
+      # so that path may need its issuer trusted once validation is enforced.
+      MCP_REQUIRE_AUTH: "true"
     probes:
       startup:
         type: exec
