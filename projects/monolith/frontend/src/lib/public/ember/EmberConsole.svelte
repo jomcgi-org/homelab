@@ -19,6 +19,12 @@
   // /api fetches: the public tier's rule 2 (public-tier-checklist.md).
   import { onMount } from "svelte";
   import { fade } from "svelte/transition";
+  import {
+    classifyTier,
+    includedSnapshotWait,
+    phaseLabel,
+    shouldRetry,
+  } from "./console-retry.js";
 
   /** @type {{ turnstileSiteKey?: string, initialStatus?: object|null, initialSavings?: object|null, status?: object|null, running?: boolean, stopwatchMs?: number }} */
   let {
@@ -38,6 +44,11 @@
   // transiently; retry the same request under the still-ticking stopwatch so
   // it reads as one longer wake, not repeated failures. Capped at 3s.
   const RETRY_DELAYS_MS = [500, 1000, 2000, 3000];
+  // Transient failures are sub-second (in-band busy, mid-transition refusals),
+  // so all retries happen within 6.5s of delays. A slow failure stops after
+  // one attempt, capping the worst case at about 90s instead of 375+s. A
+  // legitimate cold boot can take up to 60s, so in-flight attempts continue.
+  const RETRY_WINDOW_MS = 30_000;
 
   const ORDER_COLUMNS = [
     { key: "id", label: "id", type: "bigserial" },
@@ -195,6 +206,7 @@
   // return {ok: true, ...} on success or {ok: false, permanent, error} on a
   // failure worth surfacing; a thrown error is treated as transient.
   async function fetchWithBackoff(doAttempt) {
+    const startTime = performance.now();
     let lastResult = null;
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
       try {
@@ -205,6 +217,13 @@
         lastResult = { ok: false, error: String(err) };
       }
       if (attempt < RETRY_DELAYS_MS.length) {
+        if (!shouldRetry(performance.now() - startTime, RETRY_WINDOW_MS)) {
+          return {
+            ...lastResult,
+            error:
+              "the demo took too long to answer and may be waking from cold, try again in a moment",
+          };
+        }
         await sleep(RETRY_DELAYS_MS[attempt]);
       }
     }
@@ -436,16 +455,16 @@
         status = { ...(status ?? {}), state: "serving" };
       }
       view = mode === "aggregate" ? "summary" : "orders";
-      const tier =
-        body.classification === "relight" || body.classification === "warm"
-          ? body.classification
-          : "cold";
-      if (tiers[tier] == null || body.connect_ms < tiers[tier]) {
+      const tier = classifyTier(body.classification);
+      if (
+        tier !== null &&
+        (tiers[tier] == null || body.connect_ms < tiers[tier])
+      ) {
         tiers = { ...tiers, [tier]: body.connect_ms };
       }
       runHistory = [
         ...runHistory.slice(-(SPARK_MAX - 1)),
-        { connect_ms: body.connect_ms, tier },
+        { connect_ms: body.connect_ms, tier: tier ?? "unclear" },
       ];
     } finally {
       running = false;
@@ -696,9 +715,22 @@
               <span class="fade-swap" in:fade={{ duration: 220 }}>
                 {running ? ms(stopwatchMs) : ms(lastRun?.connect_ms)}
               </span>
+              {#if running && phaseLabel(status?.state)}
+                <span class="stat-phase">{phaseLabel(status?.state)}</span>
+              {/if}
             {/key}
           </span>
         </div>
+        <!-- The completed-run attribution gets its OWN line rather than sitting
+             beside the value: the left column is 340px and .stat-row is a
+             space-between flex, so a sentence next to the number wraps and
+             pushes the whole stats card taller. The live phaseLabel above is
+             two words and does fit inline. -->
+        {#if !running && lastRun && includedSnapshotWait(lastRun)}
+          <p class="stat-note">
+            this run waited for the snapshot to finish writing
+          </p>
+        {/if}
         <div class="stat-row">
           <span class="stat-name">query</span>
           <span class="stat-value">
@@ -726,7 +758,11 @@
           <div class="spark" aria-hidden="true">
             {#each runHistory as run, i (i)}
               <span
-                class="spark-bar spark-{run.tier}"
+                class:spark-unclear={run.tier === "unclear"}
+                class:spark-cold={run.tier === "cold"}
+                class:spark-warm={run.tier === "warm"}
+                class:spark-relight={run.tier === "relight"}
+                class="spark-bar"
                 style:height="{sparkHeight(run.connect_ms)}%"
               ></span>
             {/each}
@@ -1119,6 +1155,10 @@
     background: var(--em-amber);
   }
 
+  .spark-bar.spark-unclear {
+    background: var(--em-faint);
+  }
+
   .spark-caption {
     font-family: var(--em-mono);
     font-size: 10.5px;
@@ -1147,6 +1187,21 @@
 
   .stat-value.stat-live {
     color: var(--em-ember);
+  }
+
+  .stat-phase {
+    margin-left: 6px;
+    color: var(--em-muted);
+    font-family: var(--em-mono);
+    font-size: 11px;
+    font-weight: 400;
+  }
+
+  .stat-note {
+    margin: -4px 0 0;
+    color: var(--em-faint);
+    font-size: 11px;
+    line-height: 1.35;
   }
 
   .console-header {
