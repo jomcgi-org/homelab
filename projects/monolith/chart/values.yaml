@@ -1140,6 +1140,7 @@ stars:
   gridBucket: "stars"
   gridKey: "grid.json"
   climatologyKey: "climatology.json"
+  sitesKey: "sites.json"
   s3AccessKeyId: "duckdb"
   s3SecretAccessKey: "duckdb"
 

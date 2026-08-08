@@ -93,4 +93,21 @@ describe("/public/app/stars load", () => {
 
     await expect(load({ fetch, setHeaders })).rejects.toThrow();
   });
+
+  it("retries transient backend failures once another pod can answer", async () => {
+    const setHeaders = vi.fn();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: makeHeaders(),
+        json: async () => SNAPSHOT,
+      });
+
+    await load({ fetch, setHeaders });
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 });

@@ -12,16 +12,19 @@ when the suite runs (no hour-boundary flakiness).
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from core.db import get_session
 from shared.forecast_freshness import top_of_hour
+import stars.router as stars_router
 from stars.models import Site, SiteHour, SiteMonthClimatology
 from stars.router import _HISTORY_CACHE_CONTROL, _SITES_CACHE_CONTROL, router
 
@@ -75,7 +78,16 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session):
+def client_fixture(session, monkeypatch):
+    def read_materialized_sites():
+        payload = stars_router._build_sites_from_db(
+            SimpleNamespace(headers={}), Response(), session
+        )
+        return json.dumps(payload, separators=(",", ":")).encode(), '"test"'
+
+    monkeypatch.setattr(
+        stars_router, "_read_materialized_sites", read_materialized_sites
+    )
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session

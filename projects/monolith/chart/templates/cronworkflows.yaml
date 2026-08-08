@@ -102,6 +102,8 @@ spec:
               value: {{ $.Values.stars.gridKey | quote }}
             - name: STARS_CLIMATOLOGY_S3_KEY
               value: {{ $.Values.stars.climatologyKey | quote }}
+            - name: STARS_SITES_S3_KEY
+              value: {{ $.Values.stars.sitesKey | quote }}
             {{- end }}
             {{- if .changelog }}
             # chat.changelog needs the full config list (to look up the named

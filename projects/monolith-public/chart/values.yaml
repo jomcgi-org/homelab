@@ -355,6 +355,12 @@ web:
       value: "duckdb"
     - name: S3_SECRET_ACCESS_KEY
       value: "duckdb"
+    # The stars read API serves the compact snapshot written by the Argo
+    # stars-refresh workflow, rather than hydrating stars.site_hours here.
+    - name: STARS_GRID_S3_BUCKET
+      value: "stars"
+    - name: STARS_SITES_S3_KEY
+      value: "sites.json"
     - name: ARTIFACTS_S3_BUCKET
       value: "artifacts"
   # CPU request is sized so the HPA's per-container CPU utilization is a

@@ -6,6 +6,7 @@ not pull the framework or FastAPI: standalone binaries that reuse domain code
 """
 
 import stars as _domain
+from stars.health import stars_health
 
 from framework import Module as _Module
 
@@ -14,4 +15,5 @@ MODULE = _Module(
     name="stars",
     register=_domain.register,
     register_public=_domain.register_public,
+    register_health={"stars": stars_health},
 )

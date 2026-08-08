@@ -284,8 +284,17 @@ def stars_load_grid() -> None:
 
 @app.command("stars-refresh")
 def stars_refresh() -> None:
-    """Refresh stars site clear-dark-hours scoring (one-shot of stars.refresh)."""
+    """Refresh stars forecasts and materialize the public read snapshot."""
     _run_job("stars-refresh", "stars.jobs", "refresh_handler")
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from stars.materialize import materialize_handler
+
+    logger.info("stars-materialize: starting")
+    with Session(get_engine()) as session:
+        asyncio.run(materialize_handler(session))
+    logger.info("stars-materialize: done")
 
 
 @app.command("knowledge-repo-docs-reconcile")
