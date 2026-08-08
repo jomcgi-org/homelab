@@ -422,7 +422,7 @@ use_repo(oci, "gdal_python_base", "gdal_python_base_linux_amd64", "gdal_python_b
 # PostgreSQL 16 + pgvector for e2e integration tests
 oci.pull(
     name = "pgvector_pg16",
-    digest = "sha256:6f2fedef8e4311682b3a5989a21bf527d3310ab5421258ad6e41e52955c16294",
+    digest = "sha256:84a355869251af1a3379cfc9fa7b4dbf962c03f642a4bb7b339a203925071c43",
     image = "docker.io/pgvector/pgvector",
     platforms = ["linux/amd64"],
     tag = "pg16",
