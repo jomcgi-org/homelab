@@ -285,7 +285,7 @@ servingEnvoy:
     # cloudflare-gateway tunnel Envoy pulls, so the image is already proven/cached
     # in-cluster. Bump here to move the node tier's Envoy version.
     repository: envoyproxy/envoy
-    tag: "v1.31-latest"
+    tag: "v1.39-latest@sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66"
     pullPolicy: IfNotPresent
   # The static HTTP listener pod port the edge routes to; the Envoy admin endpoint
   # (loopback-only, for /ready probes + config_dump); and the stats port declared
