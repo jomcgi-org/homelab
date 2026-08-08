@@ -2086,22 +2086,31 @@ func (s *Server) statefulVMsStatus() []*nodev1.StatefulVm {
 	}
 	live := s.statefulVMs.snapshot()
 	out := make([]*nodev1.StatefulVm, 0, len(live))
+	var lastParkMs map[string]uint64
+	var lastParkAtMs map[string]int64
+	var lastParkSeq map[string]uint64
+	if s.statefulActivator != nil {
+		lastParkMs, lastParkAtMs, lastParkSeq = s.statefulActivator.parkMeasurements()
+	}
 	for _, e := range live {
 		ip, port := e.ip, e.port
 		if s.servingNet != nil {
 			ip, port = s.servingNet.Endpoint(net.ParseIP(e.ip), e.port)
 		}
 		out = append(out, &nodev1.StatefulVm{
-			VmId:              e.vmID,
-			Workload:          e.workload,
-			Ip:                ip,
-			Port:              port,
-			Healthy:           e.healthy,
-			Generation:        e.generation,
-			LastProbeUnixMs:   e.lastProbeUnixMs,
-			CheckpointPending: e.checkpointPending,
-			CheckpointToken:   e.checkpointToken,
-			Origin:            e.origin,
+			VmId:                      e.vmID,
+			Workload:                  e.workload,
+			Ip:                        ip,
+			Port:                      port,
+			Healthy:                   e.healthy,
+			Generation:                e.generation,
+			LastProbeUnixMs:           e.lastProbeUnixMs,
+			CheckpointPending:         e.checkpointPending,
+			CheckpointToken:           e.checkpointToken,
+			Origin:                    e.origin,
+			LastActivatorParkMs:       lastParkMs[e.workload],
+			LastActivatorParkAtUnixMs: lastParkAtMs[e.workload],
+			ActivatorParkSeq:          lastParkSeq[e.workload],
 		})
 	}
 	return out

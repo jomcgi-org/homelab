@@ -22,6 +22,7 @@
   import {
     classifyTier,
     includedSnapshotWait,
+    parkedMsBreakdown,
     phaseLabel,
     shouldRetry,
   } from "./console-retry.js";
@@ -726,10 +727,24 @@
              space-between flex, so a sentence next to the number wraps and
              pushes the whole stats card taller. The live phaseLabel above is
              two words and does fit inline. -->
-        {#if !running && lastRun && includedSnapshotWait(lastRun)}
-          <p class="stat-note">
-            this run waited for the snapshot to finish writing
-          </p>
+        <!-- {#if ... as x} is NOT Svelte: `as` bindings exist only on {#each}
+             and {#await}. Bind the breakdown with {@const} inside the block
+             instead, and fall back to the bare attribution when the backend
+             could not attribute a park to this request (see the correlation
+             note in ember_public/router.py: no attribution is far better than
+             a fabricated split). -->
+        {#if !running && lastRun}
+          {@const breakdown = parkedMsBreakdown(lastRun)}
+          {#if breakdown}
+            <p class="stat-note">
+              {ms(breakdown.total)} total: {ms(breakdown.parked)} waiting for the
+              snapshot, {ms(breakdown.wake)} actually waking
+            </p>
+          {:else if includedSnapshotWait(lastRun)}
+            <p class="stat-note">
+              this run waited for the snapshot to finish writing
+            </p>
+          {/if}
         {/if}
         <div class="stat-row">
           <span class="stat-name">query</span>

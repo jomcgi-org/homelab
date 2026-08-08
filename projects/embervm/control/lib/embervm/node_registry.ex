@@ -885,7 +885,15 @@ defmodule Embervm.NodeRegistry do
         # StatefulManager adopts it (the fenced-writer rule already trusts its
         # forward generation) instead of orphan-destroying it. Absent on a pre-018
         # daemon reads :INSTANCE_ORIGIN_UNSPECIFIED == the CP-issued default.
-        origin: v.origin
+        origin: v.origin,
+        # Activator park measurements (#4481). These live on StatefulVm ONLY, not
+        # on GroupMemberVm: the demo's wake timing is a stateful-workload fact and
+        # the group lane has no equivalent caller waiting on a checkpoint. The
+        # sequence is what makes attribution clock-free (compare it either side of
+        # a request); the duration is the value being attributed.
+        activator_park_seq: v.activator_park_seq,
+        last_activator_park_ms: v.last_activator_park_ms,
+        last_activator_park_at_unix_ms: v.last_activator_park_at_unix_ms
       }
     end
   end

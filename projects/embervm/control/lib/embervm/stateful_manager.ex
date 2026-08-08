@@ -2356,7 +2356,11 @@ defmodule Embervm.StatefulManager do
   end
 
   defp adopt_live(state, instance, node_id, vm) do
-    StatefulStore.adopt_state(state.store, instance.instance_id, :serving)
+    StatefulStore.adopt_state(state.store, instance.instance_id, :serving, %{
+      last_activator_park_ms: Map.get(vm, :last_activator_park_ms, 0),
+      last_activator_park_at_unix_ms: Map.get(vm, :last_activator_park_at_unix_ms, 0),
+      last_activator_park_seq: Map.get(vm, :activator_park_seq, 0)
+    })
 
     StatefulStore.adopt_endpoint(state.store, instance.instance_id, node_id, vm.vm_id, %{
       ip: Map.get(vm, :ip),

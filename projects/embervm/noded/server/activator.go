@@ -27,8 +27,12 @@ const (
 	// The transition wait is short enough to notice a checkpoint resolve
 	// promptly, while the deadline prevents a stuck VM from pinning a client.
 	activatorInFlightPollInterval = 25 * time.Millisecond
-	activatorInFlightTimeout      = 10 * time.Second
 )
+
+// A var rather than a const for the same reason as activatorDialTimeout below:
+// the timeout branch is only reachable by waiting the whole deadline out, so a
+// test that proves it either shrinks this or costs ten seconds on every run.
+var activatorInFlightTimeout = 10 * time.Second
 
 // A guest that is paused can leave its tap reachable while swallowing SYNs, so
 // an unbounded dial sits on kernel SYN retransmit (~127s) and the caller reads

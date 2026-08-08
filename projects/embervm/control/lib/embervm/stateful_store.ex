@@ -725,6 +725,9 @@ defmodule Embervm.StatefulStore do
       snapshot_size_bytes: row.snapshot_size_bytes,
       created_at: row.created_at,
       last_active_at: row.last_active_at,
+      last_activator_park_ms: 0,
+      last_activator_park_at_unix_ms: 0,
+      last_activator_park_seq: 0,
       updated_at: row.updated_at,
       terminal_reason: row.terminal_reason
     }

@@ -29,6 +29,29 @@ export function includedSnapshotWait(body) {
 }
 
 /**
+ * Formats a parked_ms breakdown when it is present, or returns null.
+ * Returns an object { total, parked, wake } with millisecond values.
+ * Used when a measurement includes activator park time (snapshot wait).
+ * @param {object} body - the response body from POST /query
+ * @returns {object|null} - { total, parked, wake } or null if parked_ms absent
+ */
+export function parkedMsBreakdown(body) {
+  if (
+    !body ||
+    typeof body.parked_ms !== "number" ||
+    body.parked_ms === 0 ||
+    typeof body.wake_ms !== "number"
+  ) {
+    return null;
+  }
+  return {
+    total: body.parked_ms + body.wake_ms,
+    parked: body.parked_ms,
+    wake: body.wake_ms,
+  };
+}
+
+/**
  * Gates whether the next attempt starts, not the current attempt. Transient
  * failures are sub-second, such as in-band busy responses and mid-transition
  * refusals, so retries fit within the 6.5s delay window. A slow failure must
