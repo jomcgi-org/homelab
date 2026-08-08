@@ -129,4 +129,4 @@ Baseline per `docs/security.md`; nothing here touches the running system. Specs 
 | [How Amazon Web Services Uses Formal Methods (CACM 2015)](https://cacm.acm.org/research/how-amazon-web-services-uses-formal-methods/) | Small per-protocol specs written post-design; the adoption posture this pilot copies |
 | [etcd TLA+ spec and trace validation](https://github.com/etcd-io/raft/tree/main/tla) | Working example of CI-integrated trace checking against a Go implementation |
 | [Quint](https://quint-lang.org/) | Candidate friendlier surface syntax if PlusCal authoring friction is high |
-| `DECISIONS.md` (repo root) | D-R2.7.2 forget-before-kill and adoption, D12.3 quota overshoot window: the prose invariants the specs formalize |
+| [`projects/embervm/ARCHITECTURE.md`](../../../projects/embervm/ARCHITECTURE.md) | Current state and invariants. D-R2.7.2 forget-before-kill and adoption and D12.3 quota overshoot window, the prose invariants the specs formalize, were recorded in the retired root `DECISIONS.md`, readable in git history |
