@@ -44,6 +44,20 @@ authentik:
         # Public login and OIDC discovery endpoint. Admin access remains an
         # authentik policy concern and friend applications are separate routes.
         enabled: true
+        # Cloudflare terminates TLS and the tunnel forwards plain HTTP to the
+        # gateway, whose listener is HTTP:80. Without this header authentik
+        # believes it is serving over HTTP and generates http:// URLs, so the
+        # browser blocks its own API calls from the https:// page as mixed
+        # content. The login page renders and then fails with "The request
+        # failed and the interceptors did not return an alternative response",
+        # and nothing reaches the pod, because the request is never sent.
+        # cf-ingress-library routes carry the same header for the same reason.
+        filters:
+          - type: RequestHeaderModifier
+            requestHeaderModifier:
+              set:
+                - name: X-Forwarded-Proto
+                  value: https
         hostnames:
           - auth.jomcgi.dev
         parentRefs:
