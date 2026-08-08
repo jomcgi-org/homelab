@@ -519,7 +519,10 @@ def test_savings_banked_to_banked_same_generation_credits_elapsed(_savings_db):
     total = core.record_demo_pg_savings_core(
         _savings_db, state="banked", generation=7, now=t1
     )
-    assert total == 10 * 512.0
+    # Reads the rate off the constant rather than restating it: this test is
+    # about the elapsed-gap arithmetic, not the guest's footprint (which moves
+    # with the workload's memMib, see the coupling note on the constant).
+    assert total == 10 * core._DEMO_PG_SAVINGS_MIB_PER_S
 
 
 def test_savings_banked_to_banked_generation_change_credits_nothing(_savings_db):
@@ -568,7 +571,7 @@ def test_savings_sub_throttle_unchanged_sample_does_not_move_last_sample_at(
     total = core.record_demo_pg_savings_core(
         _savings_db, state="banked", generation=7, now=t2
     )
-    assert total == 6 * 512.0
+    assert total == 6 * core._DEMO_PG_SAVINGS_MIB_PER_S
 
 
 def test_postgres_status_includes_total_saved_mib_s(monkeypatch):

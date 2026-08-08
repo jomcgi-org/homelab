@@ -137,7 +137,19 @@ func postgresCommand(ctx context.Context, pgdata string) *exec.Cmd {
 		// the bootstrap createdb connects on.
 		"-c", "unix_socket_directories=/tmp",
 		"-c", "fsync=on",
-		"-c", "shared_buffers=128MB",
+		// MEMORY COUPLING: these are sized against the workload's memMib (150 MiB
+		// for demo-postgres, see chart/templates/workload-demo-postgres.yaml). The
+		// old 128MB shared_buffers was Postgres's own default and would consume
+		// almost the entire guest on its own, so it must not drift back up without
+		// memMib moving with it. Passed as -c so they apply at every start
+		// regardless of what initdb wrote into an existing volume's
+		// postgresql.conf; there is no reinit needed to pick them up.
+		//
+		// 32MB of shared buffers is ample for the demo's single small table, and
+		// maintenance_work_mem is pulled off its 64MB default so an autovacuum
+		// worker cannot claim a third of the guest.
+		"-c", "shared_buffers=32MB",
+		"-c", "maintenance_work_mem=16MB",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

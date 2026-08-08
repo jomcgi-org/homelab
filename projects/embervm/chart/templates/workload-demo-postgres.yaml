@@ -39,10 +39,26 @@ spec:
       initEnv:
         EMBER_HYPERVISOR_EPOCH: {{ .Values.hypervisorEpoch | quote }}
   resources:
-    # Same warm-peak sizing as scratch-postgres (the fc-base sizing coupling
-    # keys memMib to the shared base image, D-R3.11.1).
     vcpus: 1
-    memMib: 512
+    # Sized for what this guest actually holds, not the scratch-postgres warm
+    # peak it used to copy. The memfile is the one thing here that is FULLY
+    # allocated (the volume is a sparse cap: 2 GiB declared, ~144 MiB of real
+    # blocks), so memMib is written and read in full on every bank and every
+    # relight. It is therefore the demo's headline latency AND its per-bundle
+    # cost on the bricks' scratch.
+    #
+    # 150 MiB budget: ~25 MiB kernel, 32 MiB shared_buffers (see the matching
+    # -c flags in runtimes/postgres/guest-init/cmd/postgres_linux.go, which
+    # MUST come down with this number or Postgres cannot start), ~25 MiB of
+    # postmaster and backends, leaving ~65 MiB of page cache for a 144 MiB
+    # volume holding one small table.
+    #
+    # memMib is part of the base signature (control/lib/embervm/base_builder.ex
+    # signature/1), so moving it rebuilds this workload's base. Nothing shares
+    # that base any more: scratchPostgres.enabled is false in both the chart
+    # defaults and deploy/values.yaml (decommission tracked in #4198), so the
+    # old "keyed to the shared base image" coupling no longer binds.
+    memMib: 150
   stateful:
     # The port Postgres listens on inside the VM. Health is a TCP connect here.
     port: 5432

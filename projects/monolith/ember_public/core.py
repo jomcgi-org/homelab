@@ -265,10 +265,18 @@ def shape_pg_status(status: dict) -> dict:
 # session). Accrual is lazy on the status poll: the demo VM can only wake when
 # something connects, so two consecutive samples that are both state ==
 # "banked" with the SAME generation prove the VM slept the entire gap between
-# the samples, and that whole gap is credited at 512 MiB per second. Any other
-# transition (a generation change, or either sample not banked) credits
-# nothing, so the counter is a conservative undercount, never an overcount.
-_DEMO_PG_SAVINGS_MIB_PER_S = 512.0
+# the samples, and that whole gap is credited at the guest's full footprint.
+# Any other transition (a generation change, or either sample not banked)
+# credits nothing, so the counter is a conservative undercount, never an
+# overcount.
+#
+# COUPLING: this MUST equal the demo workload's memMib, which is the size of
+# the memory the guest is actually not holding while it sleeps. It is declared
+# in projects/embervm/chart/templates/workload-demo-postgres.yaml (resources.
+# memMib). Changing one without the other silently mis-scales every future
+# credit; the historical total was accrued at whatever the rate was then, so
+# only new accrual moves.
+_DEMO_PG_SAVINGS_MIB_PER_S = 150.0
 # Below this gap, skip the write entirely: the status endpoint is polled
 # sub-second, and a banked VM's state/generation do not change between polls,
 # so without a throttle every poll would issue an UPDATE for zero new credit.
