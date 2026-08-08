@@ -2,11 +2,11 @@ apiVersion: v2
 name: opentelemetry-operator
 description: OpenTelemetry Operator with auto-instrumentation for Python, Node.js, and Go
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: "0.145.0"
 dependencies:
   - name: opentelemetry-operator
-    version: 0.106.0
+    version: 0.120.1
     repository: https://open-telemetry.github.io/opentelemetry-helm-charts
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
