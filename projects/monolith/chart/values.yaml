@@ -238,6 +238,7 @@ jobs:
       args: ["stars-refresh"]
       schedule: "0 */3 * * *" # every 3h (was 10800s)
       concurrencyPolicy: Forbid
+      s3: true # refresh also materializes the compact sites snapshot to S3
       # ~14k met.no fetches at the ~15 req/s courtesy rate is ~15-18 min; the
       # highest external fanout in the registry. 45 min gives headroom for a slow
       # met.no day without ever overlapping the next run (Forbid + 3h schedule).
