@@ -1,7 +1,0 @@
-{{- $_ := set .Values.wsGateway "env" (list
-  (dict "name" "CF_ACCESS_TEAM" "value" .Values.wsGateway.cfAccessTeam)
-  (dict "name" "GOOGLE_API_KEY" "valueFrom" (dict "secretKeyRef" (dict "name" .Values.grimoireSecret.name "key" "google_api_key")))
-  (dict "name" "REDIS_ADDR" "value" (printf "%s-redis:%v" (include "homelab.fullname" .) .Values.redis.service.port))
-  (dict "name" "REDIS_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" .Values.grimoireSecret.name "key" "redis_password")))
-) }}
-{{- include "homelab.deployment" (dict "context" . "component" "wsGateway" "componentName" "ws-gateway") }}

@@ -1,8 +1,8 @@
 """MCP tools for the claude-routine-agent surface.
 
 Thin async wrappers that call into the corresponding operation module
-(``agent.*`` for locks/checks/routines, ``goosecracker`` for ledger lookup, or
-``chat.directives`` for the directive-autopilot surface) and serialize datetimes
+(``agent.*`` for locks/checks/routines or ``chat.directives`` for the
+directive-autopilot surface) and serialize datetimes
 / UUIDs as strings for JSON transport. The Python function names use
 underscores; FastMCP's wire identifiers use the dashed form
 (``monolith-agent-acquire-lock`` etc.).
@@ -15,7 +15,6 @@ underscores; FastMCP's wire identifiers use the dashed form
   Routine  : list_routine_jobs, claim_routine_job, complete_routine_job,
              register_routine_job, deregister_routine_job,
              trigger_routine_job  (claude_agent.routine_jobs)
-  Runs     : list_agent_threads, get_agent_thread (the goosecracker run ledger)
   Directives: chat_list_directives, chat_directive_history, chat_set_directive,
              chat_pin_directive, chat_revert_directive (introspect + tune the
              silent directive autopilot, manual writes win precedence)
@@ -35,7 +34,6 @@ from agent import notify as notify_mod
 from agent import routine_jobs
 from core.mcp_app import mcp
 import chat.api as chat_api
-import goosecracker.api as goosecracker
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -257,27 +255,6 @@ async def monolith_agent_deregister_routine_job(name: str) -> dict:
 async def monolith_agent_trigger_routine_job(name: str) -> dict:
     """Kick a routine_jobs row to immediately due by setting ``next_run_at = now()``."""
     return {"ok": routine_jobs.trigger_job(name)}
-
-
-@mcp.tool
-async def monolith_agent_list_agent_threads(state: str | None = None) -> dict:
-    """List agent runs from the ledger, newest-active first.
-
-    Optionally filter by lifecycle ``state`` such as RUNNING, COMPLETED, FAILED.
-    """
-    rows = await asyncio.to_thread(goosecracker.list_runs, state)
-    return {"threads": [goosecracker.serialize(r) for r in rows]}
-
-
-@mcp.tool
-async def monolith_agent_get_agent_thread(thread_id: str) -> dict:
-    """Get one agent run by its thread id, including its state and result.
-
-    Use this to poll a submitted run. A COMPLETED run carries its ``result`` and
-    a FAILED run carries its ``result_error``.
-    """
-    row = await asyncio.to_thread(goosecracker.get_run, thread_id)
-    return {"thread": goosecracker.serialize(row) if row else None}
 
 
 # --- Chat directive introspection + tuning (the directive-autopilot surface) --

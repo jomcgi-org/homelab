@@ -44,10 +44,8 @@ instructions: |
     are styled ad-hoc, nudge them toward one system (shadcn-style CSS-variable
     tokens: --background/--foreground/--muted/--border/--ring, a single --radius,
     thin border plus soft shadow instead of heavy boxes) rather than rewriting
-    the page. Deeper guidance, if you
-    need it, is in the files under /opt/impeccable/ (typography.md,
-    color-and-contrast.md, spatial-design.md, motion-design.md,
-    interaction-design.md, ux-writing.md) when present.
+    the page. For deeper guidance, read the repository's .impeccable.md when it
+    is present.
 
   Do NOT deploy, serve, or publish anything: the harness publishes the final
   /tmp/artifact.html after you finish. Just leave the best version of that file.

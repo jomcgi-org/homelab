@@ -2,8 +2,8 @@
 
 Everything here runs on exactly one replica at a time (the elected leader):
 the Discord bot, the outbox drain that posts rows enqueued by any replica or
-Argo job, the goosecracker orphaned-turn reclaim sweep, and the bot-coupled
-message-lock sweep. The framework invokes ``leader_start`` on acquire and
+Argo job and the bot-coupled message-lock sweep. The framework invokes
+``leader_start`` on acquire and
 ``leader_stop`` on resign/shutdown (see framework/core.py).
 """
 
@@ -93,20 +93,6 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     drain_task.add_done_callback(log_task_exception)
     tasks.append(drain_task)
     logger.info("Discord outbox drain starting")
-
-    # Reclaim goosecracker agent turns orphaned by the prior owner's death
-    # (this replica just became leader, so any turn still marked running was
-    # owned by a process that is gone). Re-dispatches them so queued replies
-    # do not wedge forever on ⏳. One-shot; non-fatal so a sweep failure never
-    # blocks startup. Runs off the loop (sync DB work) via to_thread.
-    try:
-        from chat.api import reclaim_orphaned_agent_sessions
-
-        reclaimed = await asyncio.to_thread(reclaim_orphaned_agent_sessions)
-        if reclaimed:
-            logger.info("Reclaimed %d orphaned goosecracker turn(s)", reclaimed)
-    except Exception:
-        logger.exception("goosecracker: orphaned-turn reclaim sweep failed")
 
     # Bot-coupled lock sweep (reclaims expired message locks via SKIP LOCKED).
     async def _lock_sweep_loop():

@@ -11,7 +11,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
 
 from knowledge.frontmatter import ParsedFrontmatter
-from knowledge.gardener import GARDENER_VERSION, Gardener, _slugify
+from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
 from knowledge.links import Link
 from knowledge.models import AtomRawProvenance, Chunk, Gap, Note, NoteLink, RawInput
 from knowledge.chunker import Chunk as ChunkPayload
@@ -800,12 +800,9 @@ class KnowledgeStore:
     def raws_needing_decomposition(self, limit: int = 10) -> list[RawInput]:
         """Return raws the gardener still needs to decompose, fresh first.
 
-        Lifts the exact tiering the retired in-pod gardener used (ADR 006
-        Phase 4c) so the remote claude.ai routine sees the same work queue.
-
         Tier 1 (fresh): no current-version or pre-migration provenance at all.
         Tier 2 (retriable): have a ``derived_note_id='failed'`` provenance row
-        with ``retry_count < Gardener._MAX_RETRIES`` and no successful
+        with ``retry_count < MAX_GARDENER_RETRIES`` and no successful
         current-version provenance.
 
         Returns ``(fresh + retriable)[:limit]``, preserving tier order.
@@ -854,7 +851,7 @@ class KnowledgeStore:
             select(AtomRawProvenance.raw_fk)
             .where(AtomRawProvenance.raw_fk.is_not(None))
             .where(AtomRawProvenance.derived_note_id == "failed")
-            .where(AtomRawProvenance.retry_count < Gardener._MAX_RETRIES)
+            .where(AtomRawProvenance.retry_count < MAX_GARDENER_RETRIES)
             .subquery()
         )
         retriable_stmt = (

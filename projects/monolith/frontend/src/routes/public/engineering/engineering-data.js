@@ -10,11 +10,6 @@ import {
   agentRestoreColdMs,
   agentRestoreWarmMs,
   agentFirstModelCallMs,
-  goosecrackerDispatchMs,
-  goosecrackerRootfsMs,
-  goosecrackerBootMs,
-  goosecrackerGuestInitMs,
-  goosecrackerAgentUpMs,
 } from "../../../lib/public/fcstory/metrics.js";
 
 export const intro = {
@@ -118,51 +113,13 @@ export const projects = [
       },
       {
         k: "State",
-        v: "A Postgres op-log, not etcd: a 30-day journal with 7-day terminal-task retention. The milestone log, including post-ship defect records, is DECISIONS.md at the repo root.",
+        v: "A Postgres op-log, not etcd: a 30-day journal with 7-day terminal-task retention. The current design is maintained in projects/embervm/ARCHITECTURE.md.",
       },
     ],
     links: [
       {
         label: "projects/embervm",
         href: "https://github.com/jomcgi/homelab/tree/main/projects/embervm",
-      },
-    ],
-  },
-  {
-    id: "goosecracker",
-    category: "agents",
-    title: "Goosecracker",
-    oneLiner: `A Discord command that boots a fresh Firecracker microVM, runs a coding agent inside it to build a self-contained web artifact, and serves the result sandboxed, with the whole cold start landing in ~${agentFirstModelCallMs}ms.`,
-    motivation:
-      "I wanted a make-me-a-thing button: type a prompt in Discord, get back a working hosted mini-app. The hard part is doing it both safely and fast. The agent writes and runs untrusted code, so it has to be strongly isolated, but a fresh microVM per request must not feel slow. Goosecracker is the proof that per-request hardware isolation and sub-second cold start are not a trade-off.",
-    facts: [
-      {
-        k: "Cold start",
-        v: `Dispatch to first model call is ~${agentFirstModelCallMs}ms: ${goosecrackerDispatchMs}ms dispatch, a ${
-          goosecrackerRootfsMs + goosecrackerBootMs + goosecrackerGuestInitMs
-        }ms copy-on-write microVM cold start (${goosecrackerRootfsMs}ms rootfs, ${goosecrackerBootMs}ms Firecracker boot, ~${goosecrackerGuestInitMs}ms guest init), then ${goosecrackerAgentUpMs}ms to bring the agent up. A fresh VM per request, not a warm pool.`,
-      },
-      {
-        k: "Isolation",
-        v: "Every request runs in its own Firecracker microVM with a hand-rolled init as PID 1. No shared container and no shared kernel between requests.",
-      },
-      {
-        k: "Secrets",
-        v: "The guest is vsock-only. A TLS-terminating proxy MITM-replaces a placeholder API key with the real one at the egress hop, so the sandbox can call an external model without ever holding the key.",
-      },
-      {
-        k: "Artifact",
-        v: "The agent builds a self-contained HTML artifact inside the VM and publishes it to object storage; it is served sandboxed at jomcgi.dev/artifact/<id> behind a strict CSP, with hot reload on iteration.",
-      },
-      {
-        k: "Shared substrate",
-        v: "Built on the same snapshot/restore substrate as the agent platform: the microVM, the egress sidecar, and the in-guest supervisor are reused, not one-offs.",
-      },
-    ],
-    links: [
-      {
-        label: "projects/firecracker/goosecracker",
-        href: "https://github.com/jomcgi/homelab/tree/main/projects/firecracker/goosecracker",
       },
     ],
   },

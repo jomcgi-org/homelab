@@ -12,7 +12,11 @@ We have a growing collection of D&D sourcebooks parsed via [Marker](https://gith
 
 The monolith knowledge service (`projects/monolith/knowledge/`) currently handles personal Obsidian notes — Markdown files with frontmatter, processed by the gardener into typed atoms/facts. It has no concept of structured document ingestion at the scale of a 196-page sourcebook with 2,600+ text blocks, 1,100+ section headers, and 350+ tables.
 
-Grimoire (`projects/grimoire/`) has a [detailed data architecture](../../../projects/grimoire/data-architecture.md) for D&D content, but it runs on GCP — a separate stack from the homelab knowledge graph. Maintaining two knowledge stores, two embedding pipelines, and a bridge between them adds complexity without clear benefit.
+The retired standalone Grimoire stack had a detailed data architecture for D&D
+content, but ran on GCP as a separate stack from the homelab knowledge graph.
+Maintaining two knowledge stores, two embedding pipelines, and a bridge between
+them added complexity without clear benefit. The current shape is summarized in
+[the Monolith architecture](../../../projects/monolith/grimoire/architecture.md).
 
 The question: how do we get D&D sourcebook content into the unified knowledge graph with minimal new infrastructure?
 
@@ -264,7 +268,7 @@ See [`docs/security.md`](../../../docs/security.md) for baseline. No deviations.
 
 | Resource                                                                                      | Relevance                                                                 |
 | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| [Grimoire data architecture](../../../projects/grimoire/data-architecture.md)                 | Entity types, extraction prompt guidelines — informs Gemma4 prompt design |
+| [Grimoire data architecture](../../../projects/monolith/grimoire/architecture.md)                 | Entity types, extraction prompt guidelines — informs Gemma4 prompt design |
 | [ADR 013: Gemma4-only gardener](../../decisions/agents/013-knowledge-gardener-gemma4-only.md) | Same model pipeline pattern (PydanticAI + structured output)              |
 | [Monolith knowledge models](../../../projects/monolith/knowledge/models.py)                   | Schema: Note, Chunk, NoteLink — fact notes use these directly             |
 | [Monolith frontmatter schema](../../../projects/monolith/knowledge/frontmatter.py)            | Frontmatter format fact notes must conform to                             |

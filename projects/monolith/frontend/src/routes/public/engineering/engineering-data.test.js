@@ -15,7 +15,7 @@ describe("engineering-data", () => {
   });
 
   it("every project has the required fields", () => {
-    expect(projects.length).toBe(13);
+    expect(projects.length).toBe(12);
     for (const p of projects) {
       expect(p.id, p.title).toMatch(/^[a-z0-9-]+$/);
       expect(p.title).toBeTruthy();

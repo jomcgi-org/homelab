@@ -25,7 +25,6 @@ from chat import (
     attention_log,
     whatsapp_capabilities,
     whatsapp_inbound,
-    whatsapp_session,
 )
 from chat.attention import AttentionResult
 from chat.models import ReactionEvent, WhatsappGroup, WhatsappOutbox
@@ -61,11 +60,6 @@ def client(engine, monkeypatch):
 
     # Both the handler and _lookup_enabled_group read get_engine from the module.
     monkeypatch.setattr(whatsapp_inbound, "get_engine", lambda: engine)
-    # The session-keyed steering helper opens its own session via
-    # chat.whatsapp_session.get_engine; point it at the same test engine so the
-    # real steer_or_none sees no session row and returns False rather than hitting
-    # a real DB.
-    monkeypatch.setattr(whatsapp_session, "get_engine", lambda: engine)
     # The household capability router (run before the depth split) opens its own
     # sessions to check for a pending action; point it at the test engine so an
     # engaged, keyword-free message resolves to "no capability" against SQLite
@@ -244,22 +238,13 @@ class TestAttentionRouting:
 
 
 class TestAgentHandling:
-    """Agent-shaped messages steer a live run or receive an unavailable reply."""
-
-    def test_running_session_steers_not_dispatches(self, client, engine, monkeypatch):
-        _seed_group(engine)
-        monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=True))
-        # A live run swallows the message as steering.
-        monkeypatch.setattr(whatsapp_session, "steer_or_none", lambda *a, **k: True)
-        resp = _post(client, text="bosun tweak that", message_id="S1")
-        assert resp.json()["status"] == "steering"
+    """Agent-shaped messages receive an unavailable reply."""
 
     def test_agent_gets_unavailable_reply_without_live_session(
         self, client, engine, monkeypatch
     ):
         _seed_group(engine)
         monkeypatch.setattr(attention, "needs_agent", AsyncMock(return_value=True))
-        monkeypatch.setattr(whatsapp_session, "steer_or_none", lambda *a, **k: False)
         resp = _post(client, text="bosun ship the feature", message_id="A3")
         assert resp.json()["status"] == "replied"
         rows = _outbox(engine)

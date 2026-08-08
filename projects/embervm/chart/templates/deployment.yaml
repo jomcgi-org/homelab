@@ -44,7 +44,7 @@ spec:
             {{- if .Values.servingEnvoy.enabled }}
             # The stateful (R4) TCP activator binds this range on the pod so the
             # node Envoy can reach the wake-on-connect fallback at podIP:<listenPort>
-            # (DECISIONS.md D-R4.PR-4.1). Same range the node Envoy exposes.
+            # Same range the node Envoy exposes.
             {{- $r := .Values.servingEnvoy.statefulTcpPortRange }}
             {{- range $p := untilStep (int $r.start) (int (add (int $r.end) 1)) 1 }}
             - name: state-{{ $p }}
@@ -235,7 +235,7 @@ spec:
             - name: EMBERVM_SERVING_ACTIVATOR_PORT
               value: {{ .Values.service.port | quote }}
             {{- if .Values.servingEnvoy.enabled }}
-            # Stateful (R4) activator (DECISIONS.md D-R4.PR-4.1): THIS pod binds the
+            # Stateful activator: THIS pod binds the
             # stateful TCP port range and resolves a wake-on-connect miss to the
             # workload by the LOCAL accept port. The publisher renders {this podIP,
             # workload.listenPort} as the empty-cluster fallback, so the node Envoy's

@@ -441,21 +441,6 @@ def whatsapp_morning_digest() -> None:
     )
 
 
-@app.command("evict-artifact-sessions")
-def evict_artifact_sessions() -> None:
-    """Evict goose session DBs older than the TTL (ADR 026 Phase 2 Task 2.5).
-
-    Sweeps ``s3://artifacts/<id>/sessions.db`` and deletes entries past the TTL so
-    abandoned threads' sessions do not accumulate. Artifacts are left intact.
-    S3-only, so no DB session is opened. Needs the SeaweedFS S3 env."""
-    from artifact.jobs import evict_stale_sessions_handler
-
-    configure_logging()
-    logger.info("evict-artifact-sessions: starting")
-    evict_stale_sessions_handler()
-    logger.info("evict-artifact-sessions: done")
-
-
 @app.command("semgrep-harvest-trigger")
 def semgrep_harvest_trigger() -> None:
     """Trigger the Semgrep Managed Scans (SMS) scan-perf harvest.

@@ -34,7 +34,7 @@ from knowledge.gaps import (
     undelete_gap,
     verify_gap,
 )
-from knowledge.gardener import Gardener
+from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.indexing import reindex_note_with_edits
 from knowledge.ingest_queue import IngestQueueItem, ingest_raw
@@ -312,7 +312,7 @@ def list_dead_letters(
         select(RawInput, AtomRawProvenance)
         .join(AtomRawProvenance, AtomRawProvenance.raw_fk == RawInput.id)
         .where(AtomRawProvenance.derived_note_id == "failed")
-        .where(AtomRawProvenance.retry_count >= Gardener._MAX_RETRIES)
+        .where(AtomRawProvenance.retry_count >= MAX_GARDENER_RETRIES)
     )
     results = session.exec(stmt).all()
     items = [
@@ -343,7 +343,7 @@ def replay_dead_letter(
         select(AtomRawProvenance).where(
             AtomRawProvenance.raw_fk == raw_id,
             AtomRawProvenance.derived_note_id == "failed",
-            AtomRawProvenance.retry_count >= Gardener._MAX_RETRIES,
+            AtomRawProvenance.retry_count >= MAX_GARDENER_RETRIES,
         )
     ).first()
     if prov is None:

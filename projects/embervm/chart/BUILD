@@ -24,13 +24,12 @@ helm_chart(
         # top-level keys mirror fc-invoke's proven layout.
         "sandbox.guestImage": "//projects/firecracker/sandbox/guest:image.info",
         "rootfsBuilder.image": "//projects/firecracker/substrate/rootfs-builder:image.info",
-        # Task 14b: the frozen fc-invoke semgrep guest. Distinct top-level key.
+        # Semgrep guest image. Distinct top-level key.
         "semgrep.guestImage": "//projects/firecracker/semgrep/guest:image.info",
         # R1 zip lane (ADR embervm/002): the runtime-python base image the zip
         # lane layers an adopter's archive onto. Distinct top-level key (D14a.6).
         "runtimePython.guestImage": "//projects/embervm/runtimes/python:image.info",
-        # The egress-proxy sidecar (ADR 023). Shared with fc-invoke rather than
-        # forked: same binary, same posture, one place to fix. Pinned from its
+        # The egress-proxy sidecar (ADR 023). Pinned from its
         # .info so the sidecar the daemon tunnels to is the digest CI built.
         "egress.image": "//projects/firecracker/substrate/egress-proxy:image.info",
         # Issue #4055: the runtime-claude base image, a session-class guest that

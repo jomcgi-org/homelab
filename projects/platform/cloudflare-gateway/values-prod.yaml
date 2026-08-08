@@ -43,8 +43,6 @@ tunnel:
       # private.jomcgi.dev/app/<app> via the cloudflare-ingress gateway
       # (HTTPRoutes in each chart). Their old subdomains fall through to
       # catchAll, which has no matching gateway route, so they stop resolving.
-      - hostname: grimoire.jomcgi.dev
-        service: http://grimoire-frontend.grimoire.svc.cluster.local:8080
     catchAll:
       service: http://cloudflare-ingress.envoy-gateway-system.svc.cluster.local:80
 

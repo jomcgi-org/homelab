@@ -3,13 +3,13 @@
 **Author:** Joe McGinley
 **Status:** Accepted
 **Created:** 2026-07-02
-**Relates to:** [ADR 011: Grimoire Hot-Tier Schema on Postgres](011-grimoire-hot-tier-schema.md), [ADR 010: FastMonolith Modular Framework](010-fastmonolith-modular-framework.md), [projects/grimoire/loom-mapping.md](../../../projects/grimoire/loom-mapping.md)
+**Relates to:** [ADR 011: Grimoire Hot-Tier Schema on Postgres](011-grimoire-hot-tier-schema.md), [ADR 010: FastMonolith Modular Framework](010-fastmonolith-modular-framework.md), [projects/monolith/grimoire/architecture.md](../../../projects/monolith/grimoire/architecture.md)
 
 ---
 
 ## Problem
 
-[loom-mapping.md](../../../projects/grimoire/loom-mapping.md) fixes Grimoire's target architecture: Loom (Iceberg) as the governed durable system of record, with a disposable Postgres hot tier checked out per game session. ADR 011 fixes the hot-tier schema. The implementation plan (loom-mapping §7.1) orders the build starting from the Loom side: ontology + ingest into Iceberg first, then checkout, play, check-in, monolith integration.
+[loom-mapping.md](../../../projects/monolith/grimoire/architecture.md) fixes Grimoire's target architecture: Loom (Iceberg) as the governed durable system of record, with a disposable Postgres hot tier checked out per game session. ADR 011 fixes the hot-tier schema. The implementation plan (loom-mapping §7.1) orders the build starting from the Loom side: ontology + ingest into Iceberg first, then checkout, play, check-in, monolith integration.
 
 That ordering front-loads the slowest, least iterable work. Nothing user-visible exists until three integration seams (Loom ontology, Arrow Flight checkout, check-in orchestration) all work. Meanwhile the parts that need fast iteration (the visibility model, the API surface, the ingest data shape, retrieval quality) are all hot-tier-side and testable entirely in Postgres.
 
@@ -160,7 +160,7 @@ Reader endpoints, and they are gated by construction and by test
 
 | Resource                                                                | Relevance                                                |
 | ----------------------------------------------------------------------- | -------------------------------------------------------- |
-| [loom-mapping.md](../../../projects/grimoire/loom-mapping.md)           | Target architecture this ADR defers but stays shaped for |
+| [loom-mapping.md](../../../projects/monolith/grimoire/architecture.md)           | Target architecture this ADR defers but stays shaped for |
 | [ADR 011](011-grimoire-hot-tier-schema.md)                              | The schema being promoted from hot tier to SoR           |
 | [ADR 010](010-fastmonolith-modular-framework.md)                        | Module contract Grimoire lands under                     |
-| [data-architecture.md](../../../projects/grimoire/data-architecture.md) | Original domain model (partially superseded)             |
+| [data-architecture.md](../../../projects/monolith/grimoire/architecture.md) | Original domain model (partially superseded)             |

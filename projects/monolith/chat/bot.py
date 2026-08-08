@@ -6,8 +6,6 @@ import io
 import json
 import logging
 import os
-import re
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -37,8 +35,6 @@ from chat import attention
 from chat import attention_log
 from chat import directives
 from chat import safeguards
-from chat import goosecracker
-from chat import goosecracker_progress
 from chat import orchestrator
 from chat import reply_repair_log
 from chat import summarizer
@@ -62,6 +58,7 @@ DEFAULT_AGENT_MODEL = "luna"
 # (test_agent_model_choices_match_supported_models), in a target that already
 # depends on both.
 AGENT_MODEL_CHOICES = ("luna", "terra", "sol", "opus", "sonnet", "fable", "qwen")
+AGENT_REACTION_QUEUED = "⏳"
 
 
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
@@ -186,94 +183,6 @@ def _truncate_thinking(thinking: str) -> str:
     return thinking[:THINKING_TRUNCATE_AT] + "... (truncated)"
 
 
-# Live goosecracker progress streaming (ADR 024). The guest streams goose's
-# stdout to the in-process progress buffer; the bot edits the thread message on
-# this cadence so the owner sees activity instead of a multi-minute silent wait.
-GOOSECRACKER_STREAM_INTERVAL = 1.5  # seconds between Discord edits (rate-limit safe)
-GOOSECRACKER_STREAM_TIMEOUT = 900  # stop streaming after 15 min (run is wedged)
-GOOSECRACKER_THINKING_AFTER = 4.0  # no new output for this long -> show "Thinking"
-
-# Pull the human-meaningful beats out of goose's raw stdout (which otherwise
-# echoes the entire file it writes). "Created <path> (N lines)" and the
-# goose-result "summary:" line are the only bits worth showing the owner.
-_GOOSECRACKER_WROTE_RE = re.compile(r"Created\s+\S+\s+\((\d+)\s+lines?\)")
-_GOOSECRACKER_SUMMARY_RE = re.compile(r"^\s*summary:\s*(.+?)\s*`*\s*$", re.MULTILINE)
-
-
-def _render_goosecracker_progress(snap, elapsed: int, kind: str = "agent") -> str:
-    """Render a concise live progress message from a progress snapshot.
-
-    ``snap`` is a chat.goosecracker_progress.Progress or None (nothing yet).
-    Goose's raw stdout includes the whole file it writes, which is noise, so this
-    shows only a phase line (Thinking while the model reasons quietly, Working
-    while output flows, Done on done) plus the meaningful beats extracted from the
-    stream: lines written and the goose-result summary. ``kind`` selects the copy:
-    "artifact" (the iterable HTML builder) or "agent" (the one-shot coding agent).
-    """
-    minutes, seconds = divmod(max(elapsed, 0), 60)
-    el = f"{minutes}:{seconds:02d}"
-    text = snap.text if snap else ""
-    done = snap is not None and snap.done
-    flowing = bool(text) and (time.monotonic() - snap.updated_at) < (
-        GOOSECRACKER_THINKING_AFTER
-    )
-
-    if kind == "agent":
-        header, done_line, flowing_line = (
-            "🤖 **Running agent**",
-            f"✅ Done in {el}",
-            f"⚙️ Working... ({el})",
-        )
-    else:
-        header, done_line, flowing_line = (
-            "🛠 **Building your artifact**",
-            f"✅ Built in {el} (reply here to iterate)",
-            f"⚙️ Writing the artifact... ({el})",
-        )
-
-    lines = [header]
-    if done:
-        lines.append(done_line)
-    elif flowing:
-        lines.append(flowing_line)
-    else:
-        lines.append(f"🧠 Thinking... ({el})")
-
-    # A transient retry notice (set by the runner while it rides out a flaky
-    # fc-invoke) is shown before real output flows, so the owner sees the run
-    # is waiting to start rather than a bare "Thinking".
-    notice = snap.notice if snap else ""
-    if notice and not done:
-        lines.append(notice)
-
-    wrote = _GOOSECRACKER_WROTE_RE.search(text)
-    if wrote:
-        lines.append(f"📝 Wrote {wrote.group(1)} lines")
-    summary = _GOOSECRACKER_SUMMARY_RE.search(text)
-    if summary:
-        lines.append(f"📦 {summary.group(1).strip()}")
-
-    return "\n".join(lines)[:DISCORD_MESSAGE_LIMIT]
-
-
-# ADR 035: stage-marker checklist renderer, an alternative to the raw-tail
-# renderer above for recipes that announce a structured plan. Edits gated on
-# this path use stages_version/done rather than body diffing (see
-# _should_edit_checklist), so render_checklist must stay pure and time-free:
-# identical stage state has to produce byte-identical output.
-_STAGE_EMOJI = {
-    "pending": "⬜",
-    "running": "🔄",
-    "done": "✅",
-    "failed": "❌",
-    "skipped": "⏭️",
-}
-# Leave headroom under DISCORD_MESSAGE_LIMIT before collapsing, so the
-# collapse summary line itself never pushes the render over the hard cap.
-_CHECKLIST_COLLAPSE_AT = 1900
-GOOSECRACKER_CHECKLIST_MIN_EDIT_INTERVAL = 2.0  # coalesce checklist edits
-
-
 def _format_codex_login_message(result: dict) -> str:
     """Explain the broker action needed before a Codex turn can run."""
     message = (
@@ -282,7 +191,10 @@ def _format_codex_login_message(result: dict) -> str:
     verification_url = result.get("verification_url")
     user_code = result.get("user_code")
     if verification_url and user_code:
-        return f"🔐 {message}\nApprove in your browser: {verification_url}\nUser code: `{user_code}`"
+        return (
+            f"🔐 {message}\nApprove in your browser: {verification_url}"
+            f"\nUser code: `{user_code}`"
+        )
     if result.get("pending"):
         return f"🔐 {message}"
     if result.get("error"):
@@ -292,35 +204,16 @@ def _format_codex_login_message(result: dict) -> str:
 
 @dataclass
 class AgentFlowOutcome:
-    """Result of ``start_agent_flow`` after the ADR 036 orchestrator verdict.
-
-    Exactly one of the two fields is set on success:
-
-    - ``thread`` - a goose/failopen verdict opened a session thread (the caller
-      announces it). This is today's behaviour for the failopen path.
-    - ``chat_reply`` - a chat verdict produced a conversational reply for the
-      caller to post on its own surface (no thread, no session, no checklist).
-      ``generated_files`` rides alongside it: (path, bytes) tuples the chat
-      reply produced via run_python (e.g. a chart PNG) for the caller to flush
-      as Discord attachments after posting the text.
-
-    Both ``thread`` and ``chat_reply`` are None when the flow could not start
-    (thread creation / submit failed), so a caller can still surface a failure.
-    """
+    """Result of ``start_agent_flow`` after the orchestrator verdict."""
 
     thread: "discord.Thread | None" = None
     chat_reply: str | None = None
     generated_files: list = field(default_factory=list)
-    # Directive-change proposals the chat-verdict reply recorded via
-    # propose_directive_update. Like generated_files, the tool can't post to
-    # Discord itself; the caller posts the confirm summary + reactions after
-    # chat_reply. Empty on the thread path.
     pending_proposal: list = field(default_factory=list)
 
 
 def _render_reply_guidance(verdict: "orchestrator.ChatVerdict") -> str:
-    """Render a chat verdict's reply guidance as a supplementary context block
-    for the local-Qwen concierge (ADR 036 chat-route amendment)."""
+    """Render chat-route guidance as context for the local concierge."""
     parts = []
     if verdict.context:
         parts.append(f"Context I found: {verdict.context}")
@@ -329,81 +222,6 @@ def _render_reply_guidance(verdict: "orchestrator.ChatVerdict") -> str:
     if verdict.redirect:
         parts.append(f"Possible redirect: {verdict.redirect}")
     return "\n".join(parts)
-
-
-def render_checklist(progress) -> str | None:
-    """Render a stage checklist from a progress snapshot, or None to fall back.
-
-    ``progress`` is a chat.goosecracker_progress.Progress or None. Returns
-    None when there is no stage plan to show (no snapshot yet, or a recipe
-    that never emits stage markers), which tells the caller to use the
-    original tail renderer (_render_goosecracker_progress) instead.
-
-    One line per stage, emoji by state. A failed stage's title already carries
-    its one-line reason (the marker producer puts it there), so it is rendered
-    as-is. When the full render would exceed _CHECKLIST_COLLAPSE_AT chars, the
-    oldest contiguous run of already-completed stages (done/skipped) is folded
-    into a single "N earlier stages" line; running/pending/failed stages are
-    never collapsed, since those are what the owner needs to see.
-    """
-    if progress is None or not progress.stages:
-        return None
-
-    header = "✅ **Done**" if progress.done else "🤖 **Working**"
-    lines = [header]
-    if progress.notice and not progress.done:
-        lines.append(progress.notice)
-
-    def _effective(state: str) -> str:
-        # Once the run is over no stage can still be pending or running. The
-        # recipe's terminal marker is best-effort (the local router model
-        # sometimes skips the trailing done printf), so resolve lingering
-        # stages deterministically at render time: running -> done (it was in
-        # flight when the run ended), pending -> skipped (it never started).
-        # A failed stage keeps its failed marker. This is what lets the final
-        # edit always show all stages resolved, per the ADR 035 spec.
-        if not progress.done:
-            return state
-        if state == "running":
-            return "done"
-        if state == "pending":
-            return "skipped"
-        return state
-
-    stage_lines = [
-        f"{_STAGE_EMOJI.get(_effective(s.state), '⬜')} {s.title}"
-        for s in progress.stages
-    ]
-    body = "\n".join(lines + stage_lines)
-
-    collapsed = 0
-    while len(body) > _CHECKLIST_COLLAPSE_AT and collapsed < len(progress.stages):
-        if _effective(progress.stages[collapsed].state) not in ("done", "skipped"):
-            break
-        collapsed += 1
-        summary = [f"✅ {collapsed} earlier stages"]
-        body = "\n".join(lines + summary + stage_lines[collapsed:])
-
-    return body[:DISCORD_MESSAGE_LIMIT]
-
-
-def _should_edit_checklist(
-    stages_version: int,
-    last_stages_version: int,
-    done: bool,
-    last_done: bool,
-    now: float,
-    last_edit_at: float,
-) -> bool:
-    """True when the checklist stream loop should edit the Discord message now.
-
-    Gates on stages_version/done changing (render_checklist is time-free by
-    design, so body diffing would defeat the point) and coalesces to at most
-    once per GOOSECRACKER_CHECKLIST_MIN_EDIT_INTERVAL seconds, so a burst of
-    marker updates collapses into one edit instead of one per poll.
-    """
-    changed = stages_version != last_stages_version or done != last_done
-    return changed and (now - last_edit_at) >= GOOSECRACKER_CHECKLIST_MIN_EDIT_INTERVAL
 
 
 _fact_check_agent = None
@@ -469,7 +287,7 @@ async def _stream_fact_check(message: discord.Message, agent, prompt: str) -> st
 
     Edits ``message`` on the ``STREAM_EDIT_INTERVAL`` cadence as text deltas
     arrive (so Discord rate limits are respected, mirroring ``_stream_response``
-    and the goosecracker progress stream), then a final edit with the
+    and the normal response stream), then a final edit with the
     authoritative output. Returns the final fact-check text.
     """
     streamed = ""
@@ -924,9 +742,8 @@ class ChatBot(discord.Client):
             logger.exception("Failed to acquire lock for message %s", msg_id)
             return
 
-        # A reply inside a goosecracker thread continues that agent session
-        # instead of going to the chat agent. Only threads can be goosecracker
-        # sessions, so the DB lookup is skipped for ordinary channels.
+        # A reply inside an agent thread continues that session instead of going
+        # to the chat agent. Skip the session lookup for ordinary channels.
         if isinstance(message.channel, discord.Thread):
             if await self._maybe_handle_agent_thread_reply(message):
                 return
@@ -1366,7 +1183,7 @@ class ChatBot(discord.Client):
             # ADR 036: the orchestrator wrote its telemetry row BEFORE this
             # thread existed (it decides whether to open one), so the row's
             # thread_id is null. Backfill it now that the thread id is known, so
-            # the routing verdict joins to the goosecracker_sessions run it
+            # the routing verdict joins to the agent session it
             # produced (both goose and failopen verdicts carry the row id;
             # ungranted/disabled fail-opens carry None and are skipped).
             brief_id = getattr(verdict, "brief_id", None)
@@ -1580,117 +1397,6 @@ class ChatBot(discord.Client):
             except Exception:
                 logger.exception("directives: failed to post proposal summary")
 
-    def _start_goosecracker_stream(
-        self, artifact_id: str, message: discord.Message, kind: str = "agent"
-    ) -> None:
-        """Spawn the background task that live-edits ``message`` with run output.
-
-        Fire-and-forget: the task ends itself on the run's done marker or a
-        safety timeout. Kept on the instance so it is not garbage-collected
-        mid-run, and logs any unhandled error. ``kind`` selects the progress copy
-        ("artifact" or "agent").
-        """
-        task = asyncio.create_task(
-            self._stream_goosecracker_progress(artifact_id, message, kind)
-        )
-        streams = getattr(self, "_goosecracker_streams", None)
-        if streams is None:
-            streams = set()
-            self._goosecracker_streams = streams
-        streams.add(task)
-        task.add_done_callback(streams.discard)
-
-    async def _stream_goosecracker_progress(
-        self, artifact_id: str, message: discord.Message, kind: str = "agent"
-    ) -> None:
-        """Edit ``message`` with goose's live build output until done or timeout.
-
-        Polls the in-process progress buffer (fed by the guest's stdout stream)
-        and re-renders on a fixed cadence, so Discord edits stay within rate
-        limits. This message is the run's SINGLE live message: on completion the
-        runner overwrites it in place with the final result via a durable outbox
-        edit (ADR 024), so the loop persists the message id up front and, once the
-        run is done, stops without a terminal render rather than racing that edit.
-
-        ADR 035: once a run announces a stage plan, render_checklist takes over
-        from the raw tail renderer and edits switch from "whenever the rendered
-        body changes" to stages_version/done gating (_should_edit_checklist), so
-        a burst of marker updates coalesces into one Discord edit. Runs that
-        never emit markers keep the original tail-renderer behaviour untouched.
-        """
-        # Record this run's live message id so the off-loop runner can settle the
-        # final result into it (one message, not two). Best-effort: a failure just
-        # means the runner posts the result as a new message instead.
-        try:
-            await asyncio.to_thread(
-                goosecracker.set_progress_message, artifact_id, str(message.id)
-            )
-        except Exception:
-            logger.exception(
-                "goosecracker: failed to record live message id for %s", artifact_id
-            )
-        gp = goosecracker_progress
-        start = time.monotonic()
-        last_body = message.content
-        last_stages_version = -1
-        last_done = False
-        last_edit_at = 0.0
-        while True:
-            await asyncio.sleep(GOOSECRACKER_STREAM_INTERVAL)
-            now = time.monotonic()
-            snap = gp.get(artifact_id)
-            elapsed = int(now - start)
-
-            if snap is not None and snap.done:
-                # The run is over. The runner settles the final result into THIS
-                # same message via a durable outbox edit (ADR 024), so the loop
-                # must not render a terminal checklist here: a late checklist edit
-                # would race that outbox edit and could revert the message from
-                # the result back to a resolved checklist. Just stop; the outbox
-                # owns the terminal state.
-                gp.clear(artifact_id)
-                return
-
-            checklist = render_checklist(snap)
-            if checklist is None:
-                body = _render_goosecracker_progress(snap, elapsed, kind)
-                if body != last_body:
-                    try:
-                        await message.edit(content=body)
-                        last_body = body
-                    except discord.HTTPException:
-                        logger.exception(
-                            "goosecracker: progress edit failed for %s", artifact_id
-                        )
-            elif _should_edit_checklist(
-                snap.stages_version,
-                last_stages_version,
-                snap.done,
-                last_done,
-                now,
-                last_edit_at,
-            ):
-                try:
-                    await message.edit(content=checklist)
-                    # Advance the delivered markers only after a successful
-                    # edit, so a transient HTTPException retries on the next
-                    # poll instead of marking this version delivered unseen.
-                    last_body = checklist
-                    last_edit_at = now
-                    last_stages_version = snap.stages_version
-                    last_done = snap.done
-                except discord.HTTPException:
-                    logger.exception(
-                        "goosecracker: progress edit failed for %s", artifact_id
-                    )
-
-            if elapsed >= GOOSECRACKER_STREAM_TIMEOUT:
-                logger.warning(
-                    "goosecracker: progress stream timed out for %s", artifact_id
-                )
-                gp.clear(artifact_id)
-                return
-
     async def _maybe_handle_agent_thread_reply(self, message: discord.Message) -> bool:
         """Queue an owner reply for the agent session bound to its thread.
 
@@ -1800,9 +1506,7 @@ class ChatBot(discord.Client):
                     is_bot=message.author.bot,
                 )
         except Exception:
-            logger.exception(
-                "goosecracker: failed to persist trigger message %s", message.id
-            )
+            logger.exception("agent: failed to persist trigger message %s", message.id)
 
         # Ack-first (Task 8): post the ⏳ queue reaction BEFORE start_agent_flow,
         # which runs the ADR 036 orchestrator.compile (route + submit_plan, up to
@@ -1811,7 +1515,7 @@ class ChatBot(discord.Client):
         # turn runs. Best-effort: a reaction failure must not block the run. (The
         # /agent slash path is already ack-first via interaction.response.defer.)
         try:
-            await message.add_reaction(goosecracker.REACTION_QUEUED)
+            await message.add_reaction(AGENT_REACTION_QUEUED)
         except discord.HTTPException:
             logger.exception("agent: failed to react queued on %s", message.id)
 

@@ -16,27 +16,12 @@ via the monolith knowledge MCP tools (the `homelab` connector). There is no
 vault filesystem: you never read or write files. Notes live in Postgres; you
 create them entirely through MCP tools.
 
-## Why this routine exists (read once)
-
-The original backend research drain (`research_gaps_handler` / `approve_research_gap`)
-was filesystem-based and is **unregistered dead code** after the Obsidian->Postgres
-decommission. This routine replaces it with the fileless path the gardener uses.
-
-Important consequences you must respect:
+## Write path
 
 - **Only `create-atom` is used.** It writes straight to Postgres and indexes
-  synchronously. It is the only fileless write path that works.
-- **Do NOT call `approve-research-gap`** (no longer exposed as an MCP tool) **or
-  `answer-gap`**. `answer-gap` is fileless now (ADR 006 Phase 4c) but exists for
-  Joe's own answers to `in_review` internal/hybrid gaps: it forces the
-  personal/private tier and flips the gap to `committed`, both wrong for
-  web-researched external content.
-- **Creating the atom does not flip the gap row to `committed`.** That is
-  expected for now. The gap row stays "open" in `/private/review`; that is a
-  cosmetic backlog item, not a failure. What matters is that the term now has a
-  real defining note, so the referencing wikilink resolves and the graph grows.
-  Use `list-gaps` purely as a **worklist of terms to research**, never as
-  something whose state you must update.
+  synchronously. Matching open gaps are committed automatically.
+- Do not call `answer-gap`. It is for Joe's answers to internal or hybrid gaps
+  and always creates private knowledge.
 
 ## Tools (all via the `homelab` connector, prefix `mcp__homelab__monolith-`)
 
@@ -153,4 +138,3 @@ When in doubt: `private`.
   researching them would fabricate his personal context. External only.
 - On a hard failure (repeated `create-atom` errors, tool outages), call
   `monolith-agent-notify` once with `level: "error"` and exit.
-

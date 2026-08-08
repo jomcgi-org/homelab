@@ -77,9 +77,8 @@ const (
 )
 
 // mmdsEnvCmdlinePrefix is the boot-arg token prefix noded's driver.bootArgsFor
-// appends for a STATEFUL FRESH/COLD cold boot's mmds_env (R4, D-R4.PR-7.1:
-// MMDS-lite over boot-args -- see DECISIONS.md for the full tradeoff and the
-// planned migration to a real MMDS service). Each entry rides as
+// appends for a STATEFUL FRESH/COLD cold boot's mmds_env. This MMDS-lite
+// boot-argument channel can migrate to a real MMDS service if needed. Each entry rides as
 // `ember.env.<KEY>=<base64url(value)>`; the guest process env variable name is
 // exactly <KEY> (verbatim, not further transformed), so a workload's catalog
 // entry naming e.g. POSTGRES_PASSWORD as an mmds_env key gets POSTGRES_PASSWORD

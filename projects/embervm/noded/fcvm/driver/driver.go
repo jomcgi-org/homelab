@@ -451,8 +451,8 @@ func (d *Driver) bootArgsFor(cb coldBootSpec) string {
 	// identical calls). This is a deliberate MMDS substitute: no metadata service
 	// exists yet, the workload is cluster-internal and low-stakes (a scratch
 	// datastore), and the cmdline is a few small secrets only (length + charset
-	// limits on the kernel command line rule out anything bulk). See DECISIONS.md
-	// D-R4.PR-7.1 for the full tradeoff and the migration path to a real MMDS.
+	// limits on the kernel command line rule out anything bulk). A real MMDS
+	// service remains the migration path if this channel outgrows small secrets.
 	// SECURITY: do not log mmdsEnv values anywhere in this package; only key
 	// names are safe to log (see mmdsEnvKeyNames below).
 	if len(cb.mmdsEnv) > 0 {

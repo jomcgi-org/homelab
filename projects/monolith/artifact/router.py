@@ -25,7 +25,7 @@ import os
 import re
 import secrets
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 # Artifact ids are capability URLs (unguessable id == access), so generated ids
@@ -37,10 +37,6 @@ _ID_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 # Max stored artifact size. Self-contained HTML pages are small; this bounds a
 # runaway/abusive publish and the S3 object size.
 _MAX_HTML_BYTES = 2 * 1024 * 1024
-
-# Max stored session DB size. goose SQLite DBs are modest; 32 MiB is generous
-# for a single-run session while bounding runaway storage (ADR 026 Phase 2).
-_MAX_SESSION_BYTES = 32 * 1024 * 1024
 
 # The CSP on the raw artifact response. The PRIMARY isolation is the sandboxed
 # iframe in +page.svelte: `sandbox allow-scripts` (no `allow-same-origin`) gives
@@ -127,67 +123,6 @@ def _require_valid_id(artifact_id: str) -> str:
     if not _ID_RE.match(artifact_id):
         raise HTTPException(status_code=404, detail="not found")
     return artifact_id
-
-
-# Session storage endpoints (ADR 026 Phase 2). The guest POSTs its SQLite DB
-# after a run and GETs it before resuming so Discord-thread iterations are
-# incremental. All three routes live on write_router (full monolith only); they
-# are never exposed on read_router or the public binary.
-
-
-@write_router.post("/{artifact_id}/session")
-async def put_session(artifact_id: str, request: Request) -> Response:
-    """Store the goose session DB for an artifact id.
-
-    Accepts raw ``application/octet-stream`` bytes. Returns
-    ``{"id": ..., "version": <etag>}``.
-    """
-    from artifact import s3
-
-    _require_valid_id(artifact_id)
-    body = await request.body()
-    if not body:
-        raise HTTPException(status_code=422, detail="empty session db")
-    if len(body) > _MAX_SESSION_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"session db exceeds {_MAX_SESSION_BYTES} bytes",
-        )
-    version = s3.put_session(artifact_id, body)
-    return Response(
-        content=json.dumps({"id": artifact_id, "version": version}),
-        media_type="application/json",
-    )
-
-
-@write_router.get("/{artifact_id}/session/exists")
-def session_exists(artifact_id: str) -> Response:
-    """Return ``{"exists": bool}`` using a HEAD request, no DB download."""
-    from artifact import s3
-
-    _require_valid_id(artifact_id)
-    etag = s3.head_session(artifact_id)
-    return Response(
-        content=json.dumps({"exists": etag is not None}),
-        media_type="application/json",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@write_router.get("/{artifact_id}/session")
-def get_session(artifact_id: str) -> Response:
-    """Return the raw goose session DB bytes, or 404 if no session exists."""
-    from artifact import s3
-
-    _require_valid_id(artifact_id)
-    db = s3.get_session(artifact_id)
-    if db is None:
-        raise HTTPException(status_code=404, detail="not found")
-    return Response(
-        content=db,
-        media_type="application/octet-stream",
-        headers={"Cache-Control": "no-store"},
-    )
 
 
 @read_router.get("/{artifact_id}/raw")

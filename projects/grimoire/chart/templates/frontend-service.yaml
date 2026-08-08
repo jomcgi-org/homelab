@@ -1,1 +1,0 @@
-{{- include "homelab.service" (dict "context" . "component" "frontend") }}

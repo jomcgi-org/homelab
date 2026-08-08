@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 
-from knowledge.gardener import Gardener
+from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.models import AtomRawProvenance, RawInput
 
 
@@ -91,7 +91,7 @@ def _make_dead_letter(
 class TestListDeadLetters:
     def test_returns_exhausted_raws(self, client, session):
         raw = _make_raw(session)
-        _make_dead_letter(session, raw, retry_count=Gardener._MAX_RETRIES)
+        _make_dead_letter(session, raw, retry_count=MAX_GARDENER_RETRIES)
 
         resp = client.get("/api/knowledge/dead-letter")
         assert resp.status_code == 200
@@ -102,7 +102,7 @@ class TestListDeadLetters:
         assert item["path"] == raw.path
         assert item["source"] == raw.source
         assert item["error"] == "boom"
-        assert item["retry_count"] == Gardener._MAX_RETRIES
+        assert item["retry_count"] == MAX_GARDENER_RETRIES
 
     def test_excludes_retriable(self, client, session):
         raw = _make_raw(session)
@@ -158,7 +158,7 @@ class TestReplayDeadLetterIntegration:
 
         raw = _make_raw(session)
         # Make it a dead letter (exhausted retries)
-        _make_dead_letter(session, raw, retry_count=Gardener._MAX_RETRIES)
+        _make_dead_letter(session, raw, retry_count=MAX_GARDENER_RETRIES)
 
         # Verify it is NOT eligible before replay (retry_count >= _MAX_RETRIES).
         store = KnowledgeStore(session)

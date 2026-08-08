@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from knowledge.gardener import Gardener  # re-exported (dead-letter checks)
+from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.store import KnowledgeStore  # re-exported for cross-domain typing
 
 if TYPE_CHECKING:
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "KnowledgeStore",
-    "Gardener",
+    "MAX_GARDENER_RETRIES",
     "get_store",
     "search_notes",
     "search_public_chunks",

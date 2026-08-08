@@ -2,7 +2,6 @@
 // Keys must stay in sync with registry-ids.js (checked below).
 import AgentPlatform from "./AgentPlatform.svelte";
 import EmberVm from "./EmberVm.svelte";
-import Goosecracker from "./Goosecracker.svelte";
 import KnowledgeGraph from "./KnowledgeGraph.svelte";
 import Loom from "./Loom.svelte";
 import OciModelCache from "./OciModelCache.svelte";
@@ -18,7 +17,6 @@ import { diagramIds } from "./registry-ids.js";
 export const diagrams = {
   "agent-platform": AgentPlatform,
   embervm: EmberVm,
-  goosecracker: Goosecracker,
   "knowledge-graph": KnowledgeGraph,
   loom: Loom,
   "oci-model-cache": OciModelCache,

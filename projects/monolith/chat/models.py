@@ -322,116 +322,6 @@ class WhatsappCalendarDraft(SQLModel, table=True):
     confirmed_at: datetime | None = Field(default=None)
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (running_since is intentionally NULL until a turn goes running)
-class GoosecrackerSession(SQLModel, table=True):
-    """Per-Discord-thread curated transcript for the goosecracker agent (ADR 024).
-
-    One row per thread; transcript accumulates the owner's instructions (never
-    ambient chatter or the bot's replies). Every session is an agent session
-    (conversational coding agent; an artifact is an agent run with no repo):
-    ``running`` is True while a turn is in flight; replies that arrive during a
-    run are appended to ``pending`` and dispatched as the next turn when the
-    current one finishes.
-    """
-
-    __tablename__ = "goosecracker_sessions"
-    __table_args__ = {"schema": "chat", "extend_existing": True}
-
-    discord_thread: str = Field(primary_key=True)
-    transcript: str = Field(default="")
-    # recipe/tier/repo mirror the dispatch.submit params so continue_session can
-    # re-dispatch without the caller re-supplying them.
-    recipe: str = Field(default="agent")
-    tier: str = Field(default="")
-    repo: str = Field(default="")
-    # Provider discriminator (ADR 039 Phase 4). "discord" is the original path;
-    # "whatsapp" routes reactions, the checklist, and the final result through
-    # chat.whatsapp_outbox instead of the Discord outbox. The PK (discord_thread)
-    # holds a sanitized wa-<group_jid> key for a WhatsApp session, so
-    # provider_group_jid carries the raw JID the outbox writers target.
-    # provider_trigger_message_id / provider_trigger_sender_jid are the triggering
-    # WhatsApp message + its sender JID, so the reaction lifecycle can build
-    # reactions on it. checklist_outbox_id is the outbox id of the live checklist
-    # message the run edits; it is repointed when the ~15-minute edit window
-    # closes mid-run and a fresh checklist message is posted.
-    provider: str = Field(default="discord")
-    provider_group_jid: str = Field(default="")
-    provider_trigger_message_id: str = Field(default="")
-    provider_trigger_sender_jid: str = Field(default="")
-    checklist_outbox_id: int | None = Field(default=None)
-    # Discord parent channel the /agent thread was opened from. The thread itself
-    # has no history, so the runner reads this to fetch channel-scoped context
-    # (recent messages, rolling summaries) for a conversational reply. Empty for a
-    # non-Discord (MCP) session or an artifact thread; empty means no context.
-    parent_channel_id: str = Field(default="")
-    # Conversational queue state (agent sessions only).
-    # running: a turn is currently in flight.
-    # pending: newline-joined replies queued while running=True; consumed on drain.
-    # pending_message_ids: newline-joined Discord message ids, one per queued reply
-    #   (parallel to pending), so the runner can react ⏳/👀/✅ on the exact messages.
-    running: bool = Field(default=False)
-    pending: str = Field(default="")
-    pending_message_ids: str = Field(default="")
-    # In-flight turn bookkeeping, for the reaction lifecycle and self-heal.
-    # inflight_task: the task text the currently-running turn is executing; kept so
-    #   a reclaim (startup sweep or stale-timeout) can rebuild the turn losslessly.
-    # inflight_ack_ids: Discord message ids the running turn will resolve (⏳→👀→✅).
-    # running_since: when the current turn went running (stale-timeout backstop).
-    # runner_instance: boot token of the process that owns the running turn; a
-    #   mismatch on startup means the owner died, so the turn is reclaimable.
-    inflight_task: str = Field(default="")
-    inflight_ack_ids: str = Field(default="")
-    running_since: datetime | None = Field(default=None)
-    runner_instance: str = Field(default="")
-    # Unguessable capability id the artifact is published under (ADR 024 amend).
-    # Random per thread, assigned on first publish and reused on re-publish so the
-    # live page hot-reloads at a stable but non-discoverable URL (never the
-    # enumerable Discord thread id).
-    artifact_id: str = Field(default="")
-    # Unguessable per-session capability token that keys the guest steering fetch
-    # URL (ADR 035 Phase 2 hardening), so a compromised guest cannot address
-    # another thread's steering by guessing its Discord thread id. Assigned
-    # lazily on first dispatch, same pattern as artifact_id.
-    steering_token: str = Field(default="")
-    # Discord id of the run's single live message (the "🤖 Planning…" reply the
-    # bot posts and edits in place with the stage checklist). On completion the
-    # runner overwrites this SAME message with the final result via a durable
-    # outbox edit, instead of posting a separate second message. Stored on the row
-    # so the off-loop runner (possibly another replica) can address it durably;
-    # empty means no live message (MCP session, or a race), and the runner falls
-    # back to posting the result as a new message. Rewritten per turn.
-    progress_message_id: str = Field(default="")
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class GoosecrackerSteering(SQLModel, table=True):
-    """Mid-run steering queue for goosecracker agent threads (ADR 035 Phase 2).
-
-    While a turn is running, thread participants' replies are enqueued here
-    (by the bot, ACL-gated) rather than into ``GoosecrackerSession.pending``
-    (which is drained between turns by the runner). The running guest recipe
-    polls the steering endpoint at stage boundaries and marks rows delivered
-    as it consumes them, so a re-poll never redelivers the same message.
-    """
-
-    __tablename__ = "goosecracker_steering"
-    __table_args__ = {"schema": "chat", "extend_existing": True}
-
-    id: int | None = Field(default=None, primary_key=True)
-    thread_id: str = Field(default="")
-    message_id: str = Field(default="")
-    author_id: str = Field(default="")
-    # Readable author name for attribution (ADR 039 Phase 4). WhatsApp carries a
-    # sender push name alongside the JID (which lives in author_id); Discord rows
-    # leave this "" and attribute by the user id in author_id.
-    author_name: str = Field(default="")
-    tier: str = Field(default="")
-    text: str = Field(default="")
-    delivered: bool = Field(default=False)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
 class DiscordFeatureGrant(SQLModel, table=True):
     """Generic per-server Discord bot feature ACL (ADR 029).
 
@@ -583,7 +473,7 @@ class OrchestratorBrief(SQLModel, table=True):
 
     One row per orchestrator call: chat and goose verdicts and every fail-open
     degradation. ``thread_id`` links a goose (or fell-back) verdict to its
-    ``goosecracker_sessions`` run. The orchestrator runs before the session
+    agent session. The orchestrator runs before the session
     thread exists, so the row is written with a null ``thread_id`` and
     ``orchestrator.link_thread`` backfills it once ``start_agent_flow`` creates
     the thread; it stays null for the chat route and for fail-opens that never

@@ -96,7 +96,6 @@ slower and less grounded, so fill every required field.
 
 ## Recipe catalog
 
-- agent: Routing agent for a snapshot-managed microVM thread (ADR 022): classifies the task and dispatches the matching sub-recipe.
 - artifact-build: Build a single web artifact (may use CDN libs + live https APIs); the harness publishes it to a live URL (ADR 024).
 - artifact-review: Review and polish an already-built web artifact in isolated context (ADR 024): read /tmp/artifact.html, fix real correctness and design issues IN PLACE, and re-gate that the JS still parses.
 - implement: Implementation sub-recipe: make a code or config change, commit it, and open a PR.
@@ -111,7 +110,6 @@ Top-level projects/ directories:
 - design-system
 - embervm
 - firecracker
-- grimoire
 - home-cluster
 - inference
 - mcp

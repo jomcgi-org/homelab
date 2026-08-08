@@ -69,7 +69,6 @@ Adjust the relative path depth as needed (services nested one level deeper use
 
 | Project                     | Chart path                                 |
 | --------------------------- | ------------------------------------------ |
-| `grimoire`                  | `projects/grimoire/chart`                  |
 | `mcp/context-forge-gateway` | `projects/mcp/context-forge-gateway/chart` |
 | `monolith-public`           | `projects/monolith-public/chart`           |
 

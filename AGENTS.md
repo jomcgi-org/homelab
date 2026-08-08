@@ -7,9 +7,10 @@ that implements the spec.
 
 ## Ground rules
 
-- Do NOT run `git commit`, `git push`, or any git state-changing command.
-  Leave changes uncommitted in the working tree unless your spec explicitly
-  says otherwise.
+- Leave changes uncommitted by default. When the user explicitly asks for a
+  commit or pull request, agents may create a branch, commit the scoped changes,
+  push it, and open or update the pull request. Never include unrelated working
+  tree changes.
 - Do NOT run `bazel`, `go test`, `npm test`, or full test suites on this
   machine. macOS has no matching remote executors and the results mislead.
 - You MAY run targeted `pytest` on the specific test files you edited when
@@ -45,8 +46,7 @@ that implements the spec.
 - Python deps are `@pip//package` via `aspect_rules_py`. `requirement()`
   syntax does not exist in this repo.
 - The `projects/monolith/frontend/` frontend is Svelte 5 runes only (`$props`,
-  `$derived`, `$effect`); the `projects/grimoire/frontend/` frontend is React
-  19. Match the conventions of whichever frontend the task touches. CSS is
+  `$derived`, `$effect`). CSS is
   imported from JavaScript (the route layout), never via bare `@import`
   package specifiers inside CSS: PostCSS cannot resolve them.
 - Containers are apko, never Dockerfiles: dual-arch, non-root uid 65532.

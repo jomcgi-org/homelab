@@ -179,8 +179,8 @@ kubectl taint nodes <node> embervm.jomcgi.dev/node=true:NoSchedule
 The product bar is **private Lambda on your nodepool**, not more workload
 classes. Capability rungs R0–R5 and R6 Continuity are shipped; remaining work
 is adopters (packaging, multi-node), dogfood (agents on sessions), and
-continuity polish. Full milestone candour lives in
-[DECISIONS.md](../../DECISIONS.md).
+continuity polish. The current state and remaining gaps live in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 - [x] **R0 tasks**: dispatch, fair pooling, metering and quotas, OTLP, semgrep
       cutover from fc-invoke.

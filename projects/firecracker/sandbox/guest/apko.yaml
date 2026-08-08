@@ -6,9 +6,7 @@ contents:
   packages:
     - busybox
     - ca-certificates-bundle
-    # Python compute runtime (ADR agents/044). This block duplicates
-    # projects/firecracker/goosecracker/guest/apko.yaml; keep the two lists
-    # in sync.
+    # Python compute runtime (ADR agents/044).
     # numpy is intentionally omitted: Wolfi only ships it as version-suffixed
     # package names (py3.12-numpy-2.5, etc.), not as a stable unversioned
     # name, so it is not pinned directly here. scipy and pandas still pull in

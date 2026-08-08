@@ -163,7 +163,7 @@ Three sections, in order (sibling-identical shape):
 
 - Postgres access is strictly read-only (SELECT only).
 - S3 writes are limited to the `safeguards-evals/` key prefix; never touch any
-  other object, and never `sessions.db` or other buckets.
+  other object or bucket.
 - The skill never mutates the ledger. A pardon/relabel is a human MCP action it
   recommends, not one it performs.
 - `env-failure` (a DB fault, a ledger outage) is reported, never diffed.
@@ -242,4 +242,3 @@ PR's chart bump rolls them out. A flagged label correction takes effect when a
 human runs `monolith-chat-trust-pardon`. The next `/improve-safeguards` run's
 before/after aggregates (especially the false-positive lockout rate) are the
 verdict on whether the change worked.
-

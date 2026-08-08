@@ -165,27 +165,6 @@ class RequestContext:
 
 Verdict = PlanVerdict | ChatVerdict | FailOpen
 
-# Default replan budget when ``ORCHESTRATOR_REPLAN_TIMEOUT_S`` is unset (Task 8).
-_REPLAN_TIMEOUT_DEFAULT_S = 120.0
-
-
-def _replan_timeout_s() -> float:
-    """Timeout budget for a replan call (the capped goose escape hatch, Task 7).
-
-    Reads ``ORCHESTRATOR_REPLAN_TIMEOUT_S`` (default 120s). A replan runs after
-    goose has actually opened the task and reported what it learned, so it does
-    more grounded construction work than the initial plan and gets a more
-    generous budget than the initial-compile timeout (``ORCHESTRATOR_TIMEOUT_S``,
-    default 60s, applied by ``orchestrator_client``). A malformed env value falls
-    back to the default, matching ``orchestrator_client._read_config``'s
-    float-parse guard.
-    """
-    raw = os.environ.get("ORCHESTRATOR_REPLAN_TIMEOUT_S", "")
-    try:
-        return float(raw) if raw else _REPLAN_TIMEOUT_DEFAULT_S
-    except ValueError:
-        return _REPLAN_TIMEOUT_DEFAULT_S
-
 
 def enabled() -> bool:
     """True when the orchestrator tier is configured (spec section 6).
@@ -537,7 +516,7 @@ def link_thread(brief_id: int, thread_id: str) -> None:
     to open one), so :func:`_record` writes the row with a null ``thread_id``.
     Once ``start_agent_flow`` (chat/bot.py) has created the thread, it calls this
     with the row id carried on the verdict, joining the routing verdict to the
-    ``goosecracker_sessions`` run it produced. Best-effort and idempotent: a
+    agent session it produced. Best-effort and idempotent: a
     write failure must never break the run, and an already-linked row (non-null
     ``thread_id``) is left untouched."""
     try:
@@ -721,107 +700,3 @@ async def compile(ctx: RequestContext) -> Verdict:
         None,
     )
     return verdict
-
-
-def _render_prior_plan(plan: Plan) -> str:
-    """Compact, deterministic rendering of a plan for the replan user prompt.
-
-    Lists the enabled sub-recipes, the ordered steps (id + its context), and the
-    done criteria, so the model can see what it already tried before revising it.
-    """
-    lines = [
-        "Enabled sub-recipes: " + (", ".join(plan.enabled_subrecipes) or "(none)"),
-        "",
-        "Steps (in order):",
-    ]
-    if plan.steps:
-        lines.extend(
-            f"{i + 1}. {step.sub_recipe}: {step.context}"
-            for i, step in enumerate(plan.steps)
-        )
-    else:
-        lines.append("(none)")
-    if plan.done_criteria:
-        lines.append("")
-        lines.append("Done criteria:")
-        lines.extend(f"- {c}" for c in plan.done_criteria)
-    return "\n".join(lines)
-
-
-async def replan(
-    request: str,
-    prior_plan: Plan,
-    *,
-    reason: str,
-    what_i_learned: str,
-    suggested_focus: str,
-    timeout_s: float | None = None,
-) -> Plan | None:
-    """Produce a revised :class:`Plan` after goose reported the plan misfit.
-
-    The capped host-side replan loop (``goosecracker.runner``) calls this when
-    goose emits a populated ``replan`` escape-hatch object. It re-invokes the
-    ``submit_plan`` tool call with the ORIGINAL request, a compact rendering of
-    the prior plan, and goose's replan feedback (reason / what_i_learned /
-    suggested_focus, passed as plain strings so this module never imports
-    ``goosecracker.replan``), instructing the model to produce a REVISED minimal
-    plan that addresses what was learned.
-
-    Fail-open (Design invariant 2): returns ``None`` on
-    :class:`~chat.orchestrator_client.OrchestratorUnavailable`, an unusable tool
-    result, or a plan that fails :func:`orchestrator_plan.validate_plan`, so the
-    caller finalizes with the current goose result rather than looping. Returns
-    the validated :class:`Plan` on success.
-
-    ``timeout_s`` defaults to :func:`_replan_timeout_s` (env
-    ``ORCHESTRATOR_REPLAN_TIMEOUT_S``, default 120s); an explicit value overrides
-    it (used by tests). This is a separate call OUTSIDE ``compile``: it writes no
-    telemetry row and does not touch compile's exactly-one-row-per-compile
-    accounting, so replan latency is surfaced only via a log line, never a
-    telemetry row (that would break compile's exactly-one-row tests).
-    """
-    effective_timeout_s = timeout_s if timeout_s is not None else _replan_timeout_s()
-    user = (
-        "## Original request\n\n"
-        + request.strip()
-        + "\n\n## The plan you produced (goose could not complete it as decided)\n\n"
-        + _render_prior_plan(prior_plan)
-        + "\n\n## What goose reported when it hit the escape hatch\n\n"
-        + f"Reason it stopped: {reason.strip() or '(none given)'}\n"
-        + f"What it learned: {what_i_learned.strip() or '(none given)'}\n"
-        + f"Where a revised plan should focus: {suggested_focus.strip() or '(none given)'}\n"
-        + "\n## Your task\n\n"
-        + "Produce a REVISED minimal plan that addresses what goose learned. Keep "
-        + "it minimal: only the steps the task now needs, in execution order, each "
-        + "with grounded, non-empty context. Do not repeat a sequence goose already "
-        + "reported as unworkable. Submit it with the submit_plan tool."
-    )
-
-    try:
-        plan_args, plan_resp = await orchestrator_client.call_tool(
-            plan_system_prompt(),
-            user,
-            schema=orchestrator_plan.submit_plan_schema(),
-            timeout_s=effective_timeout_s,
-        )
-    except orchestrator_client.OrchestratorUnavailable as exc:
-        logger.warning("orchestrator: replan unavailable, failing open: %s", exc)
-        return None
-
-    try:
-        plan = orchestrator_plan.plan_from_dict(plan_args)
-    except (AttributeError, TypeError) as exc:
-        logger.warning("orchestrator: replan returned an unusable object: %s", exc)
-        return None
-
-    errors = orchestrator_plan.validate_plan(plan)
-    if errors:
-        logger.warning("orchestrator: replan invalid, failing open: %s", errors)
-        return None
-    logger.info(
-        "orchestrator: replan produced a valid plan in %dms (budget %.0fs, %d steps)",
-        plan_resp.latency_ms,
-        effective_timeout_s,
-        len(plan.steps),
-    )
-    return plan

@@ -3,8 +3,7 @@
 Covers the surviving deleted_at code paths:
 
 1. gaps.discover_gaps()                        — Gap.deleted_at.is_(None) guard
-2. gaps.classify_gaps()                        — Gap.deleted_at.is_(None) guard
-3. migrate_raw_bucketing._grandfather_atoms()  — Note.deleted_at.is_(None) guard
+2. migrate_raw_bucketing._grandfather_atoms()  - Note.deleted_at.is_(None) guard
 
 (The reconciler and research_handler deleted_at guards were retired with
 the vault decommission; see ADR 006 and the fileless gap loop.)
@@ -18,7 +17,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from knowledge.gaps import GAPS_PIPELINE_VERSION, classify_gaps, discover_gaps
+from knowledge.gaps import GAPS_PIPELINE_VERSION, discover_gaps
 from knowledge.migrate_raw_bucketing import _grandfather_atoms
 from knowledge.models import AtomRawProvenance, Gap, Note, NoteLink
 
@@ -130,46 +129,7 @@ class TestDiscoverGapsDeletedAt:
 
 
 # ---------------------------------------------------------------------------
-# 2. gaps.classify_gaps — soft-deleted gaps in state='discovered' are skipped.
-# ---------------------------------------------------------------------------
-
-
-class TestClassifyGapsDeletedAt:
-    def test_soft_deleted_discovered_gap_is_not_classified(
-        self, session: Session
-    ) -> None:
-        """classify_gaps must not process gaps whose deleted_at is set."""
-        live_src = _make_note(session, "live-src")
-        _add_link(session, src_fk=live_src.id, target_id="live-term")
-        discover_gaps(session)  # creates live Gap for "live-term"
-
-        deleted_gap = Gap(
-            term="deleted-term",
-            context="",
-            note_id="deleted-term",
-            pipeline_version=GAPS_PIPELINE_VERSION,
-            state="discovered",
-            deleted_at=_NOW,
-        )
-        session.add(deleted_gap)
-        session.commit()
-
-        def classifier(term: str, _context: str) -> str:
-            return "external"
-
-        classified = classify_gaps(session, classifier=classifier)
-
-        # Only the live gap should be classified.
-        assert classified == 1
-
-        session.refresh(deleted_gap)
-        assert deleted_gap.gap_class is None
-        assert deleted_gap.state == "discovered"
-        assert deleted_gap.classified_at is None
-
-
-# ---------------------------------------------------------------------------
-# 3. migrate_raw_bucketing._grandfather_atoms — soft-deleted atom excluded.
+# 2. migrate_raw_bucketing._grandfather_atoms: soft-deleted atom excluded.
 # ---------------------------------------------------------------------------
 
 

@@ -1,11 +1,6 @@
-"""Tests for the surviving gardener constants and helpers.
+"""Tests for shared knowledge-pipeline constants and slug normalization."""
 
-The in-pod gardener decomposition was retired (ADR 006 Phase 4c); it now
-runs as a remote claude.ai routine over MCP. Only the shared constants and
-the slug helper remain in ``knowledge.gardener``.
-"""
-
-from knowledge.gardener import GARDENER_VERSION, Gardener, _slugify
+from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
 
 
 class TestSlugify:
@@ -27,4 +22,4 @@ class TestSurvivingConstants:
         assert GARDENER_VERSION == "claude-sonnet-4-6@v1"
 
     def test_max_retries_ceiling(self):
-        assert Gardener._MAX_RETRIES == 3
+        assert MAX_GARDENER_RETRIES == 3

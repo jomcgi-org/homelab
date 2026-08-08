@@ -403,12 +403,12 @@ class TestGrandfatherAtoms:
 
 
 class TestRawsNeedingDecompositionExhaustedRetries:
-    """A raw with retry_count >= Gardener._MAX_RETRIES must NOT appear in
+    """A raw with retry_count >= MAX_GARDENER_RETRIES must NOT appear in
     raws_needing_decomposition() — it belongs in the dead letter queue."""
 
     def test_exhausted_raw_is_excluded(self, tmp_path, session):
         """Raw with retry_count == _MAX_RETRIES is excluded."""
-        from knowledge.gardener import GARDENER_VERSION, Gardener
+        from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES
         from knowledge.store import KnowledgeStore
 
         raw = RawInput(
@@ -427,7 +427,7 @@ class TestRawsNeedingDecompositionExhaustedRetries:
             derived_note_id="failed",
             gardener_version=GARDENER_VERSION,
             error="too many retries",
-            retry_count=Gardener._MAX_RETRIES,
+            retry_count=MAX_GARDENER_RETRIES,
         )
         session.add(prov)
         session.commit()
@@ -439,7 +439,7 @@ class TestRawsNeedingDecompositionExhaustedRetries:
 
     def test_over_limit_raw_is_excluded(self, tmp_path, session):
         """Raw with retry_count > _MAX_RETRIES is also excluded."""
-        from knowledge.gardener import GARDENER_VERSION, Gardener
+        from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES
         from knowledge.store import KnowledgeStore
 
         raw = RawInput(
@@ -458,7 +458,7 @@ class TestRawsNeedingDecompositionExhaustedRetries:
             derived_note_id="failed",
             gardener_version=GARDENER_VERSION,
             error="over limit",
-            retry_count=Gardener._MAX_RETRIES + 5,
+            retry_count=MAX_GARDENER_RETRIES + 5,
         )
         session.add(prov)
         session.commit()
@@ -470,7 +470,7 @@ class TestRawsNeedingDecompositionExhaustedRetries:
 
     def test_under_limit_raw_is_included(self, tmp_path, session):
         """Raw with retry_count < _MAX_RETRIES IS included (retriable tier)."""
-        from knowledge.gardener import GARDENER_VERSION, Gardener
+        from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES
         from knowledge.store import KnowledgeStore
 
         raw = RawInput(
@@ -489,7 +489,7 @@ class TestRawsNeedingDecompositionExhaustedRetries:
             derived_note_id="failed",
             gardener_version=GARDENER_VERSION,
             error="transient error",
-            retry_count=Gardener._MAX_RETRIES - 1,
+            retry_count=MAX_GARDENER_RETRIES - 1,
         )
         session.add(prov)
         session.commit()

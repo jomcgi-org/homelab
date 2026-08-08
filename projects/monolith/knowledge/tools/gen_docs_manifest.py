@@ -58,8 +58,6 @@ _BLOCKLIST: frozenset[str] = frozenset(
         "projects/shared/README.md",
         # March-era standalone GCP app, slated for decommission; its runbook
         # would read as the live ingest path to an outside reader.
-        "projects/grimoire/gcp/README.md",
-        "projects/grimoire/chart/README.md",
         "projects/monolith/frontend/visual/README.md",
         "projects/platform/signoz-addons/operator/crds/README.md",
     }
@@ -181,7 +179,9 @@ def build_manifest(root: Path, paths: list[str]) -> list[dict]:
     """Manifest entries in stable sidebar order. ``order`` is the entry index."""
     ordered = sorted(paths, key=_sort_key)
     entries: list[dict] = []
-    for i, rel in enumerate(ordered):
+    for rel in ordered:
+        if not (root / rel).is_file():
+            continue
         # Strip NUL bytes (0x00) so the body is JSON-safe and storable; the docs
         # are first-party markdown, but mirror the repo_docs generator's guard.
         content = (root / rel).read_text(encoding="utf-8").replace("\x00", "")
@@ -191,7 +191,7 @@ def build_manifest(root: Path, paths: list[str]) -> list[dict]:
                 "slug": make_slug(rel),
                 "title": derive_title(content, rel),
                 "section": section_for(rel),
-                "order": i,
+                "order": len(entries),
                 "content": content,
             }
         )

@@ -21,8 +21,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 import yaml
 
 from bench import claude_code
@@ -48,6 +46,8 @@ from bench.report import render_leaderboard
 from bench.runner import _strip_code_fence, run_cell
 from bench.schema import Attempt, ResultCell, TaskSpec
 from bench.verifiers import get_verifier, verifier_source_hash
+
+logger = logging.getLogger(__name__)
 
 
 # Raw result cells (one JSON per (task, model) run) are the expensive, billed output
@@ -161,9 +161,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     # prune
     p_prune = sub.add_parser("prune", help="Delete result files for retired models")
-    p_prune.add_argument(
-        "--retired", action="store_true", help="(reserved, currently unused)"
-    )
     p_prune.add_argument("--models", default="models.yaml", help="Path to models.yaml")
     p_prune.add_argument(
         "--results",

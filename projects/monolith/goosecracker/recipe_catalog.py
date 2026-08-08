@@ -1,19 +1,10 @@
-"""Recipe catalog: single source of truth for selectable sub-recipes.
+"""Recipe catalog for selectable agent routines.
 
 This module is the one place that knows the sub-recipe id set, the human
-descriptions surfaced in the DeepSeek orchestrator's ``submit_plan`` tool
-schema, and the injected guest recipe paths those ids resolve to. Everything
-downstream (the tool schema enum, the router renderer's ``sub_recipes``
-list) derives from ``CATALOG`` rather than repeating the id set.
-
-Sub-recipe bodies are injected into ``/injected-context/`` by the runner each
-turn (not baked into the guest image), so the paths point there.
-
-The router recipe itself (``agent.yaml``) is the classifier the runtime
-router replaces; it is not a selectable sub-recipe and is intentionally
-absent here. A drift-guard test (``goosecracker/tests/recipe_catalog_test.py``)
-asserts this manifest's id set matches the checked-in guest recipes at
-``projects/firecracker/goosecracker/guest/recipes/*.yaml`` minus ``agent``.
+descriptions surfaced in the orchestrator's ``submit_plan`` tool schema, and
+their descriptions. The schema enum derives from ``CATALOG`` rather than
+repeating the id set. A drift test keeps this manifest aligned with the recipe
+YAML files in ``goosecracker/recipes``.
 """
 
 from __future__ import annotations
@@ -23,25 +14,19 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RecipeEntry:
-    """One selectable sub-recipe: its id, tool-schema description, and injected guest path."""
+    """One selectable sub-recipe and its tool-schema description."""
 
     id: str
     description: str
-    injected_path: str
 
 
 def _entry(recipe_id: str, description: str) -> RecipeEntry:
-    return RecipeEntry(
-        id=recipe_id,
-        description=description,
-        injected_path=f"/injected-context/{recipe_id}.yaml",
-    )
+    return RecipeEntry(id=recipe_id, description=description)
 
 
-# Ordered: this order is preserved in the tool schema enum and, by default,
-# in the router's rendered sub_recipes list. Keep it stable rather than
-# alphabetizing, it roughly follows the query -> plan -> implement ->
-# artifact lifecycle a session tends to move through.
+# Ordered: this order is preserved in the tool schema enum. Keep it stable
+# rather than alphabetizing, it roughly follows the query -> plan -> implement
+# -> artifact lifecycle a session tends to move through.
 CATALOG: dict[str, RecipeEntry] = {
     "query": _entry(
         "query",

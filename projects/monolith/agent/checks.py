@@ -108,9 +108,9 @@ def check_dead_letters(limit: int = 20) -> list[dict]:
     Mirrors the query used by ``GET /api/knowledge/dead-letter`` and the
     ``debug-knowledge-ingest`` skill: a raw is dead-lettered when its
     ``atom_raw_provenance`` row has ``derived_note_id = 'failed'`` and
-    ``retry_count >= Gardener._MAX_RETRIES`` (currently 3).
+    ``retry_count >= MAX_GARDENER_RETRIES``.
     """
-    from knowledge.api import Gardener
+    from knowledge.api import MAX_GARDENER_RETRIES
 
     sql = text(
         """
@@ -126,7 +126,7 @@ def check_dead_letters(limit: int = 20) -> list[dict]:
     with Session(get_engine()) as session:
         rows = session.execute(
             sql,
-            {"max_retries": Gardener._MAX_RETRIES, "limit": limit},
+            {"max_retries": MAX_GARDENER_RETRIES, "limit": limit},
         ).fetchall()
     return [
         {

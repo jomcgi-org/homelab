@@ -15,7 +15,7 @@ Security posture (ADR agents/045; public-tier checklist):
 - Public callers invoke pre-vetted functions only; there is deliberately NO
   ``/api/functions`` ingestion surface on the public tier (registration is the
   authenticated private-tier author surface, standing decision 7).
-- Public traffic is rate-limited at two layers (DECISIONS.md D-R1.3.1): a gateway
+- Public traffic is rate-limited at two layers: a gateway
   Envoy Local limit on the ``/functions/`` HTTPRoute (120/min), plus EmberVM's
   per-principal daily quota on the single ``monolith-public`` service account all
   public traffic submits as, with the function pool cap bounding concurrency.

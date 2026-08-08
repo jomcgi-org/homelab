@@ -54,13 +54,12 @@ router = APIRouter(prefix="/api/demos/firecracker", tags=["demos"])
 # Per-workload VM memory (MiB) recorded in the run config for the frontend.
 _WORKLOAD_MEM_MIB = {"semgrep": 1536, "sandbox": 512}
 
-# Agent (goose) run ledger non-terminal states: an active agent run holds
+# Agent-session non-terminal states: an active agent run holds
 # node-4 capacity, so a load test must not run concurrently with one.
-_AGENT_BUSY_STATES = ("RUNNING",)
+_AGENT_BUSY_STATES = ("running",)
 
-# Only a RUNNING row this recent counts as a live run. A goose run cannot
-# outlive its ~600s requestTimeout, but a crashed run leaves a permanent
-# RUNNING tombstone in the ledger; without this bound one orphan would block
+# Only a running row this recent counts as a live run. A crashed session can
+# leave a running tombstone; without this bound one orphan would block
 # every future load test. 30 minutes is a generous margin over the timeout.
 _AGENT_ACTIVE_WINDOW_MIN = 30
 
@@ -180,25 +179,20 @@ def _running_load_run() -> dict | None:
 
 
 def _agent_is_busy() -> bool:
-    """Return True when any goose agent run is in a non-terminal state.
+    """Return True when any recent agent session is running.
 
     ASSUMPTION: an active agent run holds node-4 capacity, so a load test must
-    not run alongside one. The goosecracker run ledger is
-    ``claude_agent.agent_threads``. In the current model the runner only ever
-    writes RUNNING (at dispatch) then COMPLETED or FAILED; the older
-    PENDING/IDLE lifecycle states are vestigial and never set, so RUNNING is the
-    sole active state that matters here.
-
-    Only a RUNNING row updated within ``_AGENT_ACTIVE_WINDOW_MIN`` counts: a
-    crashed run leaves a permanent RUNNING tombstone, and without the time bound
-    a single orphan would block every future load test. Sync; call via to_thread.
+    not run alongside one. Sessions live in
+    ``agent_sessions.agent_sessions``. Only a recently active running row
+    counts, so a crashed session cannot block every future load test.
+    Sync; call via ``asyncio.to_thread``.
     """
     with Session(get_engine()) as session:
         row = session.execute(
             text(
-                "SELECT 1 FROM claude_agent.agent_threads "
-                "WHERE state = ANY(:states) "
-                "AND last_active_at > now() - make_interval(mins => :window) "
+                "SELECT 1 FROM agent_sessions.agent_sessions "
+                "WHERE status = ANY(:states) "
+                "AND last_turn_at > now() - make_interval(mins => :window) "
                 "LIMIT 1"
             ),
             {"states": list(_AGENT_BUSY_STATES), "window": _AGENT_ACTIVE_WINDOW_MIN},

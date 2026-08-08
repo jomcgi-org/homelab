@@ -1,4 +1,4 @@
-"""Unit tests for knowledge.gaps — split_csv and edge-case coverage.
+"""Unit tests for knowledge.gaps split_csv and edge-case coverage.
 
 Gap lifecycle happy-path tests live in ``gap_lifecycle_test.py`` and
 fileless detection in ``gap_discover_fileless_test.py`` (both registered
@@ -6,7 +6,6 @@ separately in BUILD). This file fills the remaining coverage:
 
 * ``split_csv`` — all paths including None / empty / whitespace edge cases
 * ``discover_gaps`` slug-folding + type='gap' exclusion edge cases
-* ``classify_gaps`` edge cases (legacy injected-classifier helper)
 * ``list_review_queue`` return-shape / filtering guarantees
 
 Fixture style mirrors ``gap_lifecycle_test.py``: in-memory SQLite with
@@ -15,15 +14,12 @@ schema-strip (no real Postgres needed).
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from knowledge.gaps import (
     GAPS_PIPELINE_VERSION,
-    classify_gaps,
     discover_gaps,
     list_review_queue,
     split_csv,
@@ -202,71 +198,6 @@ class TestDiscoverGapsSlugFolding:
             session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalars().all()
         )
         assert len(rows) == 1
-
-
-# ---------------------------------------------------------------------------
-# classify_gaps - edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestClassifyGapsEdgeCases:
-    """Edge cases not covered by gap_lifecycle_test.py."""
-
-    def test_none_classifier_with_no_pending_gaps_returns_zero_without_warning(
-        self, session, caplog
-    ):
-        """When no discovered gaps exist and classifier is None, classify_gaps
-        must return 0 and emit no warning (the warning is conditional on
-        pending > 0)."""
-        with caplog.at_level(logging.WARNING, logger="knowledge.gaps"):
-            result = classify_gaps(session, classifier=None)
-
-        assert result == 0
-        assert not any(
-            "gaps awaiting classification" in r.getMessage() for r in caplog.records
-        )
-
-    def test_none_classifier_with_pending_gaps_logs_warning(self, session, caplog):
-        """With pending gaps and no classifier, exactly one warning is logged."""
-        src = _make_note(session, "s", title="S")
-        _add_body_link(session, src_fk=src.id, target_id="pending-term")
-        discover_gaps(session)
-
-        with caplog.at_level(logging.WARNING, logger="knowledge.gaps"):
-            result = classify_gaps(session, classifier=None)
-
-        assert result == 0
-        assert any(
-            "gaps awaiting classification" in r.getMessage() for r in caplog.records
-        )
-
-    def test_invalid_classifier_output_falls_back_to_internal(self, session, caplog):
-        """Privacy-conservative fallback: bogus classifier output -> internal."""
-        src = _make_note(session, "s", title="S")
-        _add_body_link(session, src_fk=src.id, target_id="mystery")
-        discover_gaps(session)
-
-        def classifier(term: str, _ctx: str) -> str:
-            return "bogus-class"
-
-        with caplog.at_level(logging.WARNING, logger="knowledge.gaps"):
-            count = classify_gaps(session, classifier=classifier)
-
-        assert count == 1
-        gap = session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalar_one()
-        assert gap.gap_class == "internal"
-        assert gap.state == "in_review"
-
-    def test_classify_sets_classified_at_timestamp(self, session):
-        """classified_at must be set on every classified gap."""
-        src = _make_note(session, "s", title="S")
-        _add_body_link(session, src_fk=src.id, target_id="term")
-        discover_gaps(session)
-
-        classify_gaps(session, classifier=lambda t, c: "external")
-
-        gap = session.execute(select(Gap).where(Gap.deleted_at.is_(None))).scalar_one()
-        assert gap.classified_at is not None
 
 
 # ---------------------------------------------------------------------------

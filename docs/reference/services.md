@@ -33,7 +33,6 @@ This document provides an overview of all services running in the cluster.
 | **Monolith**           | Primary application backend and frontend    | [projects/monolith](../../projects/monolith/)                                       |
 | **Monolith Public**    | Read-only public tier serving jomcgi.dev    | [projects/monolith-public](../../projects/monolith-public/)                         |
 | **EmberVM**            | Firecracker microVM orchestration for agent sandboxes | [projects/embervm](../../projects/embervm/)                               |
-| **Git Mirror**         | Hot in-cluster git mirror for Firecracker agent guests | [projects/firecracker/git-mirror](../../projects/firecracker/git-mirror/) |
 | **Inference**          | Self-hosted LLM inference (vLLM)            | [projects/inference](../../projects/inference/)                                     |
 | **Context Forge Gateway** | MCP gateway for the GitHub and monolith tool surfaces | [projects/mcp/context-forge-gateway](../../projects/mcp/context-forge-gateway/) |
 
@@ -41,7 +40,7 @@ This document provides an overview of all services running in the cluster.
 
 | Service             | Purpose                             | Location                                                                     |
 | ------------------- | ----------------------------------- | ---------------------------------------------------------------------------- |
-| **Grimoire**        | D&D knowledge management with Redis | [projects/grimoire](../../projects/grimoire/)                                   |
+| **Grimoire**        | D&D corpus, graph, campaigns, and retrieval | [Monolith Grimoire](../../projects/monolith/grimoire/architecture.md)       |
 | **OCI Model Cache** | HuggingFace model caching operator  | [projects/operators/oci-model-cache](../../projects/operators/oci-model-cache/) |
 
 ## Public Web
