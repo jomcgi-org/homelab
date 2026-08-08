@@ -65,7 +65,7 @@ tunnel:
     repository: cloudflare/cloudflared
     # Pinned deliberately (noAutoupdate: true). 2026.7.x adds startup
     # DNS/UDP/TCP connectivity prechecks and clearer connection failures.
-    tag: "2026.7.2"
+    tag: "2026.7.3@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf"
     pullPolicy: IfNotPresent
 
   # Tunnel identity (set from secret when using OnePassword)
