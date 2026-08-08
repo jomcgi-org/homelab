@@ -8,3 +8,28 @@ k8s-infra:
   presets:
     prometheus:
       enabled: true
+    # Pin the gRPC OTLP exporter. k8s-infra 0.16.0 flipped BOTH of these
+    # defaults (otlpExporter true->false, otlphttpExporter false->true), which
+    # swaps every pipeline's exporter from "otlp" to "otlphttp". The two take
+    # different endpoint syntax: otlp takes a bare host:port, otlphttp needs a
+    # full URL with a scheme. otelCollectorEndpoint above is a bare host:port
+    # on 4317 (the gRPC port), so under otlphttp every export failed with
+    # `unsupported protocol scheme` and the agents silently dropped all logs
+    # and metrics while still reporting Ready. It also crashlooped the
+    # otel-deployment, because our metrics/scraper pipeline in values-prod.yaml
+    # names the otlp exporter and the chart prepends its own, leaving a
+    # reference to an exporter that was no longer defined.
+    #
+    # Set BOTH. The chart applies its exporter block only under
+    # `if or presets.otlpExporter.enabled presets.otlphttpExporter.enabled`,
+    # so pinning otlphttpExporter to false alone disables the block entirely
+    # and renders a collector with NO exporters and no logs pipeline.
+    #
+    # Moving to otlphttp requires changing otelCollectorEndpoint to
+    # http://signoz-otel-collector.signoz.svc.cluster.local:4318 in the same
+    # change, and dropping the hardcoded exporter name in values-prod.yaml.
+    # See #4536.
+    otlpExporter:
+      enabled: true
+    otlphttpExporter:
+      enabled: false
