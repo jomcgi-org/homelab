@@ -117,8 +117,27 @@ def get_sites(
     return Response(content=body, media_type="application/json", headers=headers)
 
 
+@router.get("/map")
+def get_map(request: Request):
+    """Serve the small map-only snapshot produced by the refresh job."""
+    try:
+        body, etag = _read_materialized_object("STARS_MAP_S3_KEY", "map.json")
+    except Exception as exc:  # noqa: BLE001 - turn storage failure into 503
+        logger.exception("stars map materialized payload unavailable")
+        raise HTTPException(status_code=503, detail="stars map unavailable") from exc
+    headers = {"Cache-Control": _SITES_CACHE_CONTROL, "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json", headers=headers)
+
+
 def _read_materialized_sites() -> tuple[bytes, str]:
     """Read the precomputed sites payload from SeaweedFS."""
+    return _read_materialized_object("STARS_SITES_S3_KEY", "sites.json")
+
+
+def _read_materialized_object(key_env: str, default_key: str) -> tuple[bytes, str]:
+    """Read one bounded materialized object from SeaweedFS."""
     endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "").strip()
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT is not configured")
@@ -127,7 +146,7 @@ def _read_materialized_sites() -> tuple[bytes, str]:
     from stars.grid import _s3_client
 
     bucket = os.environ.get("STARS_GRID_S3_BUCKET", "stars")
-    key = os.environ.get("STARS_SITES_S3_KEY", "sites.json")
+    key = os.environ.get(key_env, default_key)
     try:
         obj = _s3_client().get_object(Bucket=bucket, Key=key)
     except ClientError as exc:
