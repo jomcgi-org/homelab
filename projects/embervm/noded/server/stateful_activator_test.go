@@ -361,6 +361,67 @@ func TestStatefulActivatorWaitsForInFlightDecision(t *testing.T) {
 			if result != want {
 				t.Fatalf("wait result = %v, want %v", result, want)
 			}
+			if got := a.lastParkMs[entry.workload]; got == 0 {
+				t.Errorf("last park duration = %d, want a completed park", got)
+			}
+			if got := a.lastParkAtMs[entry.workload]; got == 0 {
+				t.Errorf("last park end time = %d, want a completed park", got)
+			}
+		})
+	}
+}
+
+func TestStatefulActivatorDoesNotRecordUnservedInFlightOutcomes(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  func() (context.Context, context.CancelFunc)
+	}{
+		{
+			name: "timeout",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.Background(), func() {}
+			},
+		},
+		{
+			name: "canceled",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithCancel(context.Background())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, _, _ := newStatefulTestServer(t)
+			entry := &statefulEntry{vmID: "vm-in-flight", workload: "wl-state"}
+			s.statefulVMs.add(entry)
+			if _, ok := s.statefulVMs.beginStop(entry.vmID); !ok {
+				t.Fatal("beginStop failed")
+			}
+			a := newStatefulActivator(s)
+			ctx, cancel := tt.ctx()
+			defer cancel()
+			if tt.name == "timeout" {
+				old := activatorInFlightTimeout
+				activatorInFlightTimeout = time.Millisecond
+				t.Cleanup(func() { activatorInFlightTimeout = old })
+			} else {
+				go func() {
+					time.Sleep(2 * activatorInFlightPollInterval)
+					cancel()
+				}()
+			}
+
+			_, result := a.waitForInFlight(ctx, entry.workload)
+			if (tt.name == "timeout" && result != statefulInFlightTimeout) ||
+				(tt.name == "canceled" && result != statefulInFlightCanceled) {
+				t.Fatalf("wait result = %v", result)
+			}
+			if _, ok := a.lastParkMs[entry.workload]; ok {
+				t.Errorf("last park duration was recorded for %s", tt.name)
+			}
+			if _, ok := a.lastParkAtMs[entry.workload]; ok {
+				t.Errorf("last park end time was recorded for %s", tt.name)
+			}
 		})
 	}
 }

@@ -1210,10 +1210,25 @@ defmodule Embervm.Router do
       generation: instance.generation,
       created_at: instance.created_at,
       last_active_at: instance.last_active_at,
+      # Activator park measurements (#4481). Map.get, NOT dot access: these are
+      # additive fields, so an instance recorded before this shipped (or by a
+      # pre-#4481 daemon) simply does not carry the keys, and dot access would
+      # raise KeyError on the whole status read rather than degrade to null.
+      # Zero means "never measured" on the wire (proto3 scalars have no
+      # presence), so it maps to nil rather than a misleading 0ms.
+      last_park_ms: positive_or_nil(Map.get(instance, :last_activator_park_ms)),
+      last_park_at: positive_or_nil(Map.get(instance, :last_activator_park_at_unix_ms)),
+      park_seq: positive_or_nil(Map.get(instance, :activator_park_seq)),
       updated_at: instance.updated_at,
       terminal_reason: instance.terminal_reason
     }
   end
+
+  # nil for an absent or non-positive measurement. proto3 scalars carry no
+  # presence, so a daemon that has never recorded a park reports 0, which must
+  # read as "no measurement" rather than as a real zero-millisecond wait.
+  defp positive_or_nil(value) when is_integer(value) and value > 0, do: value
+  defp positive_or_nil(_), do: nil
 
   # Whether `workload` is a STATEFUL-class workload in the catalog. Resolves the
   # catalog module + table from app-env so a request test can inject a fake without

@@ -257,6 +257,9 @@ def shape_pg_status(status: dict) -> dict:
         "volume_bytes": status.get("volume_bytes"),
         "healthy": instance.get("healthy"),
         "last_active_at": instance.get("last_active_at"),
+        "last_park_ms": instance.get("last_park_ms"),
+        "last_park_at": instance.get("last_park_at"),
+        "park_seq": instance.get("park_seq"),
         "created_at": instance.get("created_at"),
     }
 

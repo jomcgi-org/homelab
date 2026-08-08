@@ -1644,6 +1644,31 @@ message StatefulVm {
   // (empty in Fork A). generation is already carried above (field 6, the volume
   // generation), so it is not duplicated here.
   string grant_id = 11;
+  // last_activator_park_ms is the duration in milliseconds of the most recent
+  // activator park for this workload that ended in the connection being served
+  // (splice or wake outcomes), or 0 if no such park has been recorded. This is
+  // a best-effort measurement per workload; multiple connections in flight could
+  // potentially record parks, so this is the most recent park, not provably
+  // the one that belongs to any particular caller. Include in NodeStatus so the
+  // control plane can correlate it with POST /query requests that fell within
+  // the park window.
+  uint64 last_activator_park_ms = 12;
+
+  // last_activator_park_at_unix_ms is the unix millisecond timestamp when the
+  // most recent park ended (i.e., when the decision was made to splice or wake).
+  // Zero if no park has been recorded. Diagnostic detail only. Correlation uses
+  // activator_park_seq instead, without relying on cross-host clock agreement.
+  int64 last_activator_park_at_unix_ms = 13;
+
+  // activator_park_seq is a per-workload counter that increments each time a
+  // park completes on a served outcome (splice or wake). Used to detect whether
+  // a park completed during a request window without relying on cross-host clock
+  // agreement. A sequence increase between two status reads proves a park
+  // happened in that window. This is a best-effort attribution (two visitors
+  // on the same bank both see the increment) so the UI must not present it as
+  // exact; the observation proves a park occurred, not that this specific
+  // request caused it.
+  uint64 activator_park_seq = 14;
 }
 
 // StatefulBundle is the ONE banked stateful bundle for a workload on node disk,

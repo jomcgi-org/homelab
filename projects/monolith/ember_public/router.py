@@ -169,12 +169,58 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
     finally:
         core.release_query_slot()
 
+    parked_ms = None
+    wake_ms = None
+    if core.EMBERVM_URL:
+        try:
+            # The post-roundtrip read uses the uncached fetch_demo_pg_status()
+            # to ensure a fresh sequence value; the 500ms pre-roundtrip cache
+            # cannot be relied on for coherency since the roundtrip takes ~900ms.
+            after = core.shape_pg_status(await core.fetch_demo_pg_status())
+            # `before` is the RAW control-plane payload (park_seq is nested under
+            # its instance map); `after` has been through shape_pg_status, which
+            # lifts those to the top level. Shape both or the comparison silently
+            # reads None on one side and never attributes anything.
+            before_seq = core.shape_pg_status(before or {}).get("park_seq")
+            after_seq = after.get("park_seq")
+            park_ms = after.get("last_park_ms")
+            # The sequence counter proves a park completed inside this request's
+            # window, but it does NOT prove that park belonged to this request:
+            # two visitors colliding on the same bank both see the same sequence
+            # increment. So this is best-effort attribution and the UI must not
+            # present it as exact.
+            #
+            # One known bias: before_seq comes from the CACHED pre-query read (up
+            # to _STATUS_CACHE_TTL_S stale), so the comparison window can start up
+            # to that much earlier than the request actually did, and a park that
+            # ended just before we arrived can be attributed to us. Reading it
+            # uncached would tighten the window but would put an unbounded
+            # control-plane read in front of the query semaphore, which is exactly
+            # what the cache exists to prevent. The bias is toward over-attributing
+            # a wait we did not pay, never toward hiding one we did; with the
+            # ~150 MiB memfile a bank now completes in well under a second, so the
+            # overlap is small and the UI labels the split as approximate anyway.
+            if (
+                isinstance(before_seq, int)
+                and before_seq > 0
+                and isinstance(after_seq, int)
+                and after_seq > before_seq
+                and isinstance(park_ms, (int, float))
+                and park_ms > 0
+            ):
+                parked_ms = park_ms
+                wake_ms = max(0, result["connect_ms"] - park_ms)
+        except Exception as exc:  # noqa: BLE001 - attribution is fail-soft
+            logger.warning("demo-postgres park attribution failed: %s", exc)
+
     return {
         **result,
         "total_ms": (perf_counter() - started) * 1000,
         "classification": core.classify_wake(before),
         "phase_before": (before or {}).get("state"),
         "generation": (before or {}).get("generation"),
+        "parked_ms": parked_ms,
+        **({"wake_ms": wake_ms} if wake_ms is not None else {}),
         "error": None,
     }
 

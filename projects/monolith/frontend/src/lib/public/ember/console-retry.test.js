@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyTier,
   includedSnapshotWait,
+  parkedMsBreakdown,
   phaseLabel,
   shouldRetry,
 } from "./console-retry.js";
@@ -60,6 +61,29 @@ describe("includedSnapshotWait", () => {
     [undefined, false],
   ])("returns %s for %s", (body, expected) => {
     expect(includedSnapshotWait(body)).toBe(expected);
+  });
+});
+
+describe("parkedMsBreakdown", () => {
+  it("returns a breakdown for valid data", () => {
+    expect(parkedMsBreakdown({ parked_ms: 300, wake_ms: 550 })).toEqual({
+      total: 850,
+      parked: 300,
+      wake: 550,
+    });
+  });
+
+  it.each([
+    [null, "missing body"],
+    [{}, "missing parked_ms"],
+    [{ parked_ms: 0, wake_ms: 10 }, "zero parked_ms"],
+    [{ parked_ms: 10 }, "missing wake_ms"],
+  ])("returns null for %s", (body) => {
+    expect(parkedMsBreakdown(body)).toBeNull();
+  });
+
+  it("calculates total as parked plus wake", () => {
+    expect(parkedMsBreakdown({ parked_ms: 125, wake_ms: 375 }).total).toBe(500);
   });
 });
 

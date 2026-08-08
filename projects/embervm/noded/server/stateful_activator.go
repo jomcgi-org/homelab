@@ -41,18 +41,24 @@ const (
 type statefulActivator struct {
 	server *Server
 
-	mu      sync.Mutex
-	flights map[string]*statefulActivatorFlight
-	boots   int
-	parked  map[string]int
-	wakes   []time.Time
+	mu           sync.Mutex
+	flights      map[string]*statefulActivatorFlight
+	boots        int
+	parked       map[string]int
+	wakes        []time.Time
+	lastParkMs   map[string]uint64
+	lastParkAtMs map[string]int64
+	lastParkSeq  map[string]uint64
 }
 
 func newStatefulActivator(s *Server) *statefulActivator {
 	return &statefulActivator{
-		server:  s,
-		flights: make(map[string]*statefulActivatorFlight),
-		parked:  make(map[string]int),
+		server:       s,
+		flights:      make(map[string]*statefulActivatorFlight),
+		parked:       make(map[string]int),
+		lastParkMs:   make(map[string]uint64),
+		lastParkAtMs: make(map[string]int64),
+		lastParkSeq:  make(map[string]uint64),
 	}
 }
 
@@ -227,12 +233,41 @@ func (a *statefulActivator) complete(workload string, flight *statefulActivatorF
 	a.mu.Unlock()
 }
 
+// These bounded maps (one entry per workload) are never pruned because the
+// workload set is static and small, so memory growth is bounded by workload
+// count, not request volume.
+func (a *statefulActivator) parkMeasurements() (map[string]uint64, map[string]int64, map[string]uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	lastParkMs := make(map[string]uint64, len(a.lastParkMs))
+	lastParkAtMs := make(map[string]int64, len(a.lastParkAtMs))
+	lastParkSeq := make(map[string]uint64, len(a.lastParkSeq))
+	for workload, duration := range a.lastParkMs {
+		lastParkMs[workload] = duration
+	}
+	for workload, endedAt := range a.lastParkAtMs {
+		lastParkAtMs[workload] = endedAt
+	}
+	for workload, seq := range a.lastParkSeq {
+		lastParkSeq[workload] = seq
+	}
+	return lastParkMs, lastParkAtMs, lastParkSeq
+}
+
 // waitForInFlight waits for a stop transition to expose a safe decision. A
 // checkpoint token means wake must claim and abort the paused VM, a removed
 // entry means wake must relight or cold-boot, and a cleared guard permits the
 // existing live VM to be spliced. The bounded fallback preserves the
 // node-local activator's escape hatch when a transition gets stuck.
 func (a *statefulActivator) waitForInFlight(ctx context.Context, workload string) (*statefulEntry, statefulInFlightWaitResult) {
+	started := time.Now()
+	recordPark := func() {
+		a.mu.Lock()
+		a.lastParkMs[workload] = uint64(time.Since(started) / time.Millisecond)
+		a.lastParkAtMs[workload] = time.Now().UnixMilli()
+		a.lastParkSeq[workload]++
+		a.mu.Unlock()
+	}
 	deadline := time.NewTimer(activatorInFlightTimeout)
 	defer deadline.Stop()
 	poll := time.NewTicker(activatorInFlightPollInterval)
@@ -248,12 +283,18 @@ func (a *statefulActivator) waitForInFlight(ctx context.Context, workload string
 		return nil, statefulInFlightPending
 	}
 	if entry, result := check(); result != statefulInFlightPending {
+		if result == statefulInFlightSplice || result == statefulInFlightWake {
+			recordPark()
+		}
 		return entry, result
 	}
 	for {
 		select {
 		case <-poll.C:
 			if entry, result := check(); result != statefulInFlightPending {
+				if result == statefulInFlightSplice || result == statefulInFlightWake {
+					recordPark()
+				}
 				return entry, result
 			}
 		case <-deadline.C:

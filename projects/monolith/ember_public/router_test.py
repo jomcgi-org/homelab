@@ -11,6 +11,7 @@ demos/firecracker_api_test.py.
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -100,6 +101,90 @@ def test_postgres_status_shapes_control_plane_payload(monkeypatch):
     assert body["pair_valid"] is True
     assert body["healthy"] is True
     assert body["last_active_at"] == "2026-07-17T10:00:00Z"
+
+
+def test_shape_pg_status_includes_park_fields():
+    shaped = core.shape_pg_status(
+        _pg_status_payload(
+            instance={
+                "healthy": True,
+                "last_active_at": None,
+                "last_park_ms": 321,
+                "last_park_at": 1_728_000_000_123,
+                "park_seq": 4,
+            }
+        )
+    )
+    assert shaped["last_park_ms"] == 321
+    assert shaped["last_park_at"] == 1_728_000_000_123
+    assert shaped["park_seq"] == 4
+
+
+def _query_result(connect_ms=850.0):
+    return {
+        "connect_ms": connect_ms,
+        "query_ms": 12.0,
+        "mode": "aggregate",
+        "statements": [],
+        "inserted": None,
+        "rows": [],
+        "breakdown": [],
+        "total_orders": 0,
+        "total_revenue": 0.0,
+        "postmaster_start": "2026-07-17T08:00:00+00:00",
+    }
+
+
+def _patch_query_roundtrip(monkeypatch, statuses):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+    status_iter = iter(statuses)
+
+    async def fake_status():
+        return next(status_iter)
+
+    monkeypatch.setattr(core, "cached_demo_pg_status", fake_status)
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", lambda *_: _query_result())
+
+
+def test_postgres_query_correlates_park_when_sequence_increases(monkeypatch):
+    _patch_query_roundtrip(
+        monkeypatch,
+        [
+            _pg_status_payload(state="banked", instance={"park_seq": 1}),
+            _pg_status_payload(instance={"last_park_ms": 300, "park_seq": 2}),
+        ],
+    )
+
+    body = _client().post("/api/ember/postgres/query", json={}).json()
+    assert body["parked_ms"] == 300
+    assert body["wake_ms"] == 550.0
+
+
+def test_postgres_query_skips_park_when_sequence_unchanged(monkeypatch):
+    _patch_query_roundtrip(
+        monkeypatch,
+        [
+            _pg_status_payload(state="banked"),
+            _pg_status_payload(instance={"last_park_ms": 300, "park_seq": 1}),
+        ],
+    )
+
+    body = _client().post("/api/ember/postgres/query", json={}).json()
+    assert body["parked_ms"] is None
+    assert "wake_ms" not in body
+
+
+def test_postgres_query_handles_missing_sequence(monkeypatch):
+    _patch_query_roundtrip(
+        monkeypatch,
+        [_pg_status_payload(state="banked"), _pg_status_payload(state="serving")],
+    )
+
+    body = _client().post("/api/ember/postgres/query", json={}).json()
+    assert body["parked_ms"] is None
+    assert "wake_ms" not in body
 
 
 def test_postgres_status_reports_live_presence(monkeypatch):
