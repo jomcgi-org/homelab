@@ -77,6 +77,12 @@
   // uuid -> walk row, so a marker click can recover the full record.
   const index = new Map();
 
+  // Map init failed: either the (~1 MB) maplibre chunk did not load or the
+  // browser refused a WebGL context. The map is the only view of the walks, so
+  // without this the page renders its controls over a blank rectangle and a
+  // dead map is indistinguishable from a slow one.
+  let mapError = $state(false);
+
   let selected = $state(null); // selected walk (light list row), or null
   // The light corpus omits summary + hourly windows; the card fetches them per
   // walk on selection from /app/hikes/walk/{uuid}. detail = {summary, windows}.
@@ -254,7 +260,6 @@
   });
 
   onMount(() => {
-    let cleanup = () => {};
     let destroyed = false;
 
     (async () => {
@@ -359,25 +364,38 @@
           }
         }
       });
+    })().catch((err) => {
+      // Rejects if the maplibre chunk failed to load or the Map constructor
+      // threw, which it does when the browser hands out no WebGL context.
+      // Unhandled, both leave the container blank forever with nothing logged.
+      // Errors raised later from map event callbacks are outside this chain.
+      if (destroyed) return;
+      console.error("hikes map failed to initialise", err);
+      mapError = true;
+    });
 
-      cleanup = () => {
-        index.clear();
-        map?.remove();
-        map = null;
-        layerReady = false;
-        lastFitKey = null;
-      };
-    })();
-
+    // Teardown runs whether or not init got far enough to build the map, so a
+    // throw partway through cannot strand a live map instance.
     return () => {
       destroyed = true;
-      cleanup();
+      index.clear();
+      map?.remove();
+      map = null;
+      layerReady = false;
+      lastFitKey = null;
     };
   });
 </script>
 
 <div class="map-wrap" class:panel-open={selected}>
   <div class="map" bind:this={mapContainer}></div>
+
+  {#if mapError}
+    <p class="map-error" role="status">
+      The map could not be loaded. It needs WebGL, which some browsers restrict.
+      Try reloading, or open this page in another browser.
+    </p>
+  {/if}
 
   {#if selected}
     <aside class="card">
@@ -461,13 +479,16 @@
     </aside>
   {/if}
 
-  <!-- Effort legend: the colour ramp that tints the markers. -->
-  <div class="legend">
-    <span class="legend-title">Effort</span>
-    <span class="legend-bar" aria-hidden="true"></span>
-    <span class="legend-ends"><span>Gentle</span><span>Strenuous</span></span>
-    <span class="legend-note">distance + ascent + time</span>
-  </div>
+  <!-- Effort legend: the colour ramp that tints the markers. Pointless next to
+       a map that never came up, so it goes with it. -->
+  {#if !mapError}
+    <div class="legend">
+      <span class="legend-title">Effort</span>
+      <span class="legend-bar" aria-hidden="true"></span>
+      <span class="legend-ends"><span>Gentle</span><span>Strenuous</span></span>
+      <span class="legend-note">distance + ascent + time</span>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -547,6 +568,25 @@
   .map :global(.maplibregl-ctrl-attrib-inner) {
     font-family: var(--mono);
     font-size: 10px;
+  }
+
+  /* Map-failed notice: centred in the dead map area, same paper/ink treatment
+     as the legend and card so it reads as part of the page, not a crash. */
+  .map-error {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 3;
+    max-width: min(320px, calc(100% - 32px));
+    padding: 14px 16px;
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ink);
+    text-align: center;
   }
 
   /* Walk detail card: a hard-shadow paper card (neobrutalist), top-right and
