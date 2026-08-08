@@ -644,8 +644,11 @@ def test_router_start_non_codex_models_enqueue_without_broker(
     assert calls == []
 
 
-def test_router_start_codex_login_required_does_not_enqueue(client, monkeypatch):
+def test_router_start_codex_login_required_preserves_session_and_watches(
+    client, session, monkeypatch
+):
     calls = []
+    watched = []
 
     async def broker_request(method, path):
         calls.append((method, path))
@@ -656,7 +659,19 @@ def test_router_start_codex_login_required_does_not_enqueue(client, monkeypatch)
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda *args, **kwargs: pytest.fail("login-required session was persisted"),
+        lambda local, workspace, branch, model, repo: store.create_session(
+            session, local, workspace, branch, model, repo
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router.watch_for_login",
+        lambda grant, callback: watched.append((grant, callback)),
     )
 
     body = client.post(
@@ -667,6 +682,11 @@ def test_router_start_codex_login_required_does_not_enqueue(client, monkeypatch)
     assert body["login_required"] is True
     assert body["verification_url"] == "https://example.test"
     assert body["user_code"] == "CODE"
+    assert body["session_id"]
+    assert body["turn"] == 1
+    row = store.get_session(session, body["session_id"])
+    assert row.discord_thread is None
+    assert watched and watched[0][0] == "codex-cluster"
     assert calls == [
         ("GET", "/grants/codex-cluster/login/status"),
         ("POST", "/grants/codex-cluster/login/start"),

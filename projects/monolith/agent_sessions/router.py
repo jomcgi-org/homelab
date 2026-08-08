@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
 from agent_sessions import model_family, store
-from agent_sessions.codex_login import codex_login_gate
+from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
     _clear_ember_bindings_for,
@@ -295,9 +295,6 @@ async def start_session(request: StartRequest) -> dict:
         model_family(request.model)
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
-    login = await codex_login_gate(request.model)
-    if login is not None:
-        return {"accepted": False, **login}
     row = await asyncio.to_thread(
         _persist_session,
         str(uuid4()),
@@ -311,6 +308,15 @@ async def start_session(request: StartRequest) -> dict:
     )
     # Queued from the UI, so its result does not get echoed to Discord.
     _mark_ui_originated(row.id, turn)
+    login = await codex_login_gate(request.model)
+    if login is not None:
+
+        async def resume() -> None:
+            await asyncio.to_thread(_set_session_status, row.id, "running")
+            _schedule_next_message(row.id)
+
+        watch_for_login(login.get("grant", "codex-cluster"), resume)
+        return {"accepted": False, **login, "session_id": row.id, "turn": turn}
     _schedule_next_message(row.id)
     return {"accepted": True, "session_id": row.id, "turn": turn}
 
