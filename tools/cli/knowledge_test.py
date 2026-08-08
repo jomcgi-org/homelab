@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from knowledge.gardener import Gardener
+from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.models import AtomRawProvenance, RawInput
 from knowledge.router import get_embedding_client
 from tools.cli.main import app
@@ -159,7 +159,7 @@ def _fake_embed_override():
 class TestDeadLetters:
     def test_lists_dead_letters(self, runner, session):
         raw = _make_raw(session)
-        _make_dead_letter(session, raw, retry_count=Gardener._MAX_RETRIES)
+        _make_dead_letter(session, raw, retry_count=MAX_GARDENER_RETRIES)
         result = runner.invoke(app, ["knowledge", "dead-letters"])
         assert result.exit_code == 0
         assert "raw/test.md" in result.output
@@ -172,7 +172,7 @@ class TestDeadLetters:
 
     def test_json_output(self, runner, session):
         raw = _make_raw(session)
-        _make_dead_letter(session, raw, retry_count=Gardener._MAX_RETRIES)
+        _make_dead_letter(session, raw, retry_count=MAX_GARDENER_RETRIES)
         result = runner.invoke(app, ["knowledge", "dead-letters", "--json"])
         assert result.exit_code == 0
         assert '"items"' in result.output
@@ -181,7 +181,7 @@ class TestDeadLetters:
 class TestReplay:
     def test_replays_dead_letter(self, runner, session):
         raw = _make_raw(session)
-        _make_dead_letter(session, raw, retry_count=Gardener._MAX_RETRIES)
+        _make_dead_letter(session, raw, retry_count=MAX_GARDENER_RETRIES)
         result = runner.invoke(app, ["knowledge", "replay", str(raw.id)])
         assert result.exit_code == 0
         assert "Replayed" in result.output
