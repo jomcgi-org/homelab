@@ -157,7 +157,7 @@ tunnel:
     transparentProxy:
       enabled: false
       port: 15001
-      iptablesImage: "docker.io/istio/proxyv2:1.20.0"
+      iptablesImage: "docker.io/istio/proxyv2:1.30.3@sha256:485c87f71654b14e89911a9424a208d92b347b59c2bfefdc9707aaa83fe5618e"
     securityContext:
       runAsUser: 65534
       runAsNonRoot: true
