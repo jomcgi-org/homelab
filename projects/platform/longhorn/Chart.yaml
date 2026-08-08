@@ -2,12 +2,12 @@ apiVersion: v2
 name: longhorn
 description: Longhorn distributed block storage system for Kubernetes
 type: application
-version: 1.0.1
+version: 1.0.2
 appVersion: "1.8.1"
 
 dependencies:
   - name: longhorn
-    version: 1.8.1
+    version: 1.12.0
     repository: https://charts.longhorn.io
   - name: cf-ingress
     version: 0.1.0
