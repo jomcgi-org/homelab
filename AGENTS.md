@@ -6,21 +6,33 @@ leave a clean, reviewable diff.
 
 ## Ground rules
 
-- Leave changes uncommitted by default. When the user explicitly asks for a
-  commit or pull request, agents may create a branch, commit the scoped changes,
-  push it, and open or update the pull request. Never include unrelated working
-  tree changes.
-- For work expected to produce a commit or pull request, create a dedicated git
-  worktree and branch before editing. Do not develop directly in the primary
-  checkout. Read-only investigation and changes the user explicitly wants left
-  uncommitted are exempt.
+- Read-only investigation may run in the primary checkout. Any task that modifies
+  tracked files MUST be performed in a dedicated git worktree on a new branch.
+  Never modify tracked files in the primary checkout.
+- Before editing, verify that the current directory is a linked worktree, the
+  branch is dedicated to the task, and the primary checkout has not been
+  modified by the task.
+- Every completed code, configuration, or documentation change MUST be committed,
+  pushed, and delivered as a GitHub pull request. Never finish a modifying task
+  with only local or uncommitted changes.
+- Open the pull request as ready for review when validation passes and the change
+  is complete. Open it as a draft when validation is incomplete, CI is failing,
+  or an open question remains.
+- The final response for a modifying task MUST include the pull request URL and
+  state whether the pull request is draft or ready for review.
+- If authentication, permissions, or remote access prevent creating the pull
+  request, stop and report the blocker. Do not fall back to modifying the primary
+  checkout or leaving an uncommitted implementation.
+- Never include unrelated working tree changes in the branch, commit, or pull
+  request.
 - Do NOT run `bazel`, `go test`, `npm test`, or full test suites on this
   machine. macOS has no matching remote executors and the results mislead.
 - You MAY run targeted `pytest` on the specific test files you edited when
   the code under test is pure Python and hermetic (no cluster, no network
   services, no bazel). Iterate until they pass. Treat a local pass as
   advisory: the orchestrator's `ci` run on Linux is the gate.
-- When done, print a short summary of files changed and any open questions.
+- When done, print a short summary of files changed, the pull request URL and
+  state, and any open questions.
 
 ## Test-writing traps (each of these has cost a review round)
 
