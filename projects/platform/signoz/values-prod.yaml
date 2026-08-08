@@ -206,8 +206,13 @@ k8s-infra:
               - k8sattributes
               - resourcedetection
               - batch
-            exporters:
-              - otlp
+            # No exporters key on purpose. The chart appends the exporter its
+            # presets render, so naming a transport here pins something upstream
+            # owns. k8s-infra 0.16.0 flipped presets.otlpExporter to false and
+            # otlphttpExporter to true, which left this list referencing an
+            # "otlp" exporter that no longer existed and crash-looped the
+            # collector. Omitting it follows whichever transport the chart
+            # enables.
 
 # signoz subchart configuration
 # NOTE: k8s-infra is a sibling subchart (not nested inside signoz). Configure
