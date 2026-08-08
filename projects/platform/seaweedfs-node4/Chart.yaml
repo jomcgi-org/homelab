@@ -2,12 +2,12 @@ apiVersion: v2
 name: seaweedfs-node4
 description: Second SeaweedFS volume server pinned to node-4 (capacity + SeaweedFS-layer replica target)
 type: application
-version: 1.0.0
+version: 1.0.1
 appVersion: "3.73"
 
 dependencies:
   - name: seaweedfs
-    version: "4.0.0"
+    version: "4.40.0"
     repository: https://seaweedfs.github.io/seaweedfs/helm
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
