@@ -33,6 +33,10 @@ forbidden, each run has a two-hour deadline, failed runs retry twice, successful
 pods are removed promptly, and failed workflow state remains available for one
 day.
 
+The main Renovate scan requests and limits memory at 4 GiB. The repository has
+more than 500 extracted dependencies, and a 2 GiB limit was repeatedly killed
+during registry metadata resolution.
+
 Package lifecycle scripts and plugins are disabled. Two repository-owned
 maintenance commands are explicitly allowlisted: wrapper chart version bumps
 and regeneration of compiled Python requirement locks. Renovate targets only
