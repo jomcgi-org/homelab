@@ -1,0 +1,89 @@
+# The Ember OIDC provider remains intentionally unconfigured here. ADR 032
+# requires Ember's object-authorization matrix to land before SSO is admitted.
+
+authentik:
+  authentik:
+    existingSecret:
+      secretName: authentik-secrets
+    postgresql:
+      host: authentik-pg-rw
+      name: authentik
+      user: authentik
+      port: 5432
+  global:
+    env:
+      - name: AUTHENTIK_POSTGRESQL__PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: authentik-pg-app
+            key: password
+  server:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    metrics:
+      enabled: true
+    route:
+      main:
+        # Enable only after the local installation and break-glass path are
+        # verified. The route uses the shared Cloudflare Gateway when enabled.
+        enabled: false
+        hostnames:
+          - auth.jomcgi.dev
+        parentRefs:
+          - name: cloudflare-ingress
+            namespace: envoy-gateway-system
+  worker:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 768Mi
+  postgresql:
+    enabled: false
+
+  additionalObjects:
+    - apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      metadata:
+        name: authentik-pg
+        labels:
+          app.kubernetes.io/name: authentik-postgresql
+          app.kubernetes.io/part-of: authentik
+      spec:
+        instances: 1
+        storage:
+          size: 20Gi
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        bootstrap:
+          initdb:
+            database: authentik
+            owner: authentik
+        monitoring:
+          enablePodMonitor: true
+
+    - apiVersion: onepassword.com/v1
+      kind: OnePasswordItem
+      metadata:
+        name: authentik-secrets
+        namespace: authentik
+        labels:
+          app.kubernetes.io/name: authentik
+          app.kubernetes.io/part-of: authentik
+      spec:
+        itemPath: vaults/k8s-homelab/items/authentik
+
