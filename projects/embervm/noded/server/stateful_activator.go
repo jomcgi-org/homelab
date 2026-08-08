@@ -18,6 +18,22 @@ type statefulActivatorFlight struct {
 	err   error
 }
 
+type statefulInFlightWaitResult uint8
+
+const (
+	statefulInFlightSplice statefulInFlightWaitResult = iota
+	statefulInFlightWake
+	statefulInFlightTimeout
+	statefulInFlightCanceled
+	// statefulInFlightPending is the poll loop's internal "not decided yet"
+	// sentinel and is never returned to a caller. It is deliberately distinct
+	// from statefulInFlightWake: folding the two together makes a resolved
+	// transition (the token appeared, or the entry was removed) look identical
+	// to a transition still in progress, so the wait spins to its deadline
+	// instead of handing straight over to the wake path.
+	statefulInFlightPending
+)
+
 // statefulActivator is noded's node-local opaque-L4 wake path. The accepted
 // port identifies the workload, so each eligible workload has exactly one
 // in-flight relight and its parked connections independently splice once the
@@ -102,9 +118,23 @@ func (a *statefulActivator) handle(ctx context.Context, conn net.Conn, listenPor
 		return
 	}
 
-	if live, token, ok := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload); ok && token == "" {
-		a.splice(ctx, conn, live)
-		return
+	if live, token, inFlight, ok := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload); ok && token == "" {
+		if !inFlight {
+			a.splice(ctx, conn, live)
+			return
+		}
+		live, result := a.waitForInFlight(ctx, reg.Workload)
+		switch result {
+		case statefulInFlightSplice:
+			a.splice(ctx, conn, live)
+			return
+		case statefulInFlightTimeout:
+			a.forwardToControlPlane(ctx, conn, listenPort)
+			return
+		case statefulInFlightCanceled:
+			_ = conn.Close()
+			return
+		}
 	}
 
 	flight, leader, ok := a.join(reg.Workload)
@@ -197,14 +227,67 @@ func (a *statefulActivator) complete(workload string, flight *statefulActivatorF
 	a.mu.Unlock()
 }
 
+// waitForInFlight waits for a stop transition to expose a safe decision. A
+// checkpoint token means wake must claim and abort the paused VM, a removed
+// entry means wake must relight or cold-boot, and a cleared guard permits the
+// existing live VM to be spliced. The bounded fallback preserves the
+// node-local activator's escape hatch when a transition gets stuck.
+func (a *statefulActivator) waitForInFlight(ctx context.Context, workload string) (*statefulEntry, statefulInFlightWaitResult) {
+	deadline := time.NewTimer(activatorInFlightTimeout)
+	defer deadline.Stop()
+	poll := time.NewTicker(activatorInFlightPollInterval)
+	defer poll.Stop()
+	check := func() (*statefulEntry, statefulInFlightWaitResult) {
+		entry, token, inFlight, ok := a.server.statefulVMs.byWorkloadCheckpoint(workload)
+		if !ok || token != "" {
+			return nil, statefulInFlightWake
+		}
+		if !inFlight {
+			return entry, statefulInFlightSplice
+		}
+		return nil, statefulInFlightPending
+	}
+	if entry, result := check(); result != statefulInFlightPending {
+		return entry, result
+	}
+	for {
+		select {
+		case <-poll.C:
+			if entry, result := check(); result != statefulInFlightPending {
+				return entry, result
+			}
+		case <-deadline.C:
+			return nil, statefulInFlightTimeout
+		case <-ctx.Done():
+			return nil, statefulInFlightCanceled
+		}
+	}
+}
+
 func (a *statefulActivator) wake(ctx context.Context, reg workloadEntry) (*statefulEntry, error) {
-	if live, token, ok := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload); ok {
+	for {
+		live, token, inFlight, ok := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload)
+		if !ok {
+			break
+		}
 		if token == "" {
-			return live, nil
+			if !inFlight {
+				return live, nil
+			}
+			resumed, result := a.waitForInFlight(ctx, reg.Workload)
+			switch result {
+			case statefulInFlightSplice:
+				return resumed, nil
+			case statefulInFlightTimeout:
+				return nil, fmt.Errorf("noded: stateful workload %q remained in transition", reg.Workload)
+			case statefulInFlightCanceled:
+				return nil, ctx.Err()
+			}
+			continue
 		}
 		e, claimed := a.server.statefulVMs.claimResolve(live.vmID, token)
 		if !claimed {
-			if resumed, resumedToken, found := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload); found && resumedToken == "" {
+			if resumed, resumedToken, resumedInFlight, found := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload); found && resumedToken == "" && !resumedInFlight {
 				return resumed, nil
 			}
 			return nil, fmt.Errorf("noded: checkpoint resolve raced for stateful workload %q", reg.Workload)
@@ -212,8 +295,8 @@ func (a *statefulActivator) wake(ctx context.Context, reg workloadEntry) (*state
 		if _, err := a.server.abortCheckpoint(ctx, e, token, 0); err != nil {
 			return nil, err
 		}
-		resumed, resumedToken, ok := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload)
-		if !ok || resumedToken != "" {
+		resumed, resumedToken, resumedInFlight, ok := a.server.statefulVMs.byWorkloadCheckpoint(reg.Workload)
+		if !ok || resumedToken != "" || resumedInFlight {
 			return nil, fmt.Errorf("noded: checkpoint abort for stateful workload %q did not restore a live VM", reg.Workload)
 		}
 		return resumed, nil

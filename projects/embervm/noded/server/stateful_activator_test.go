@@ -283,3 +283,84 @@ func TestStatefulActivatorWakeFailureForwardsToControlPlane(t *testing.T) {
 		t.Errorf("stateful wake calls = claims:%d restores:%d, want 0:0", driver.claims, driver.restores)
 	}
 }
+
+func TestStatefulActivatorWaitsForInFlightDecision(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*statefulRegistry, *statefulEntry)
+	}{
+		{
+			name: "token appears and wakes",
+			mutate: func(reg *statefulRegistry, entry *statefulEntry) {
+				reg.markCheckpointed(entry.vmID, "checkpoint-token")
+			},
+		},
+		{
+			name: "entry disappears and wakes",
+			mutate: func(reg *statefulRegistry, entry *statefulEntry) {
+				reg.remove(entry.vmID)
+			},
+		},
+		{
+			name: "guard clears and splices",
+			mutate: func(reg *statefulRegistry, entry *statefulEntry) {
+				reg.clearInFlight(entry.vmID)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, _, _ := newStatefulTestServer(t)
+			entry := &statefulEntry{vmID: "vm-in-flight", workload: "wl-state"}
+			s.statefulVMs.add(entry)
+			if _, ok := s.statefulVMs.beginStop(entry.vmID); !ok {
+				t.Fatal("beginStop failed")
+			}
+			a := newStatefulActivator(s)
+			go func() {
+				time.Sleep(2 * activatorInFlightPollInterval)
+				tt.mutate(s.statefulVMs, entry)
+			}()
+
+			got, result := a.waitForInFlight(context.Background(), entry.workload)
+			want := statefulInFlightWake
+			if tt.name == "guard clears and splices" {
+				want = statefulInFlightSplice
+				if got != entry {
+					t.Fatalf("wait entry = %p, want %p", got, entry)
+				}
+			}
+			if result != want {
+				t.Fatalf("wait result = %v, want %v", result, want)
+			}
+		})
+	}
+}
+
+func TestSpliceTCPBoundsGuestDial(t *testing.T) {
+	client, peer := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = peer.Close()
+	})
+
+	// context.Background() deliberately carries NO deadline, so the only thing
+	// that can bound this dial is activatorDialTimeout itself. Passing a context
+	// that already had a deadline would be honoured by an unbounded dial too, so
+	// the test would pass against the regression it exists to catch. 192.0.2.1
+	// is TEST-NET-1: it black-holes the SYN rather than refusing it, which is
+	// what a paused guest does.
+	restore := activatorDialTimeout
+	activatorDialTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { activatorDialTimeout = restore })
+
+	started := time.Now()
+	err := spliceTCP(context.Background(), client, "192.0.2.1:5432")
+	if err == nil {
+		t.Fatal("spliceTCP succeeded against a black-hole address")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("spliceTCP dial took %s, want it bounded by activatorDialTimeout", elapsed)
+	}
+}

@@ -271,18 +271,22 @@ func (r *statefulRegistry) byWorkload(workload string) (*statefulEntry, bool) {
 	return nil, false
 }
 
-// byWorkloadCheckpoint returns the workload's live entry and its checkpoint
-// token under the registry lock, so the activator can decide whether it must
-// claim and abort a paused checkpoint before splicing.
-func (r *statefulRegistry) byWorkloadCheckpoint(workload string) (*statefulEntry, string, bool) {
+// byWorkloadCheckpoint returns the workload's live entry, checkpoint token, and
+// stop-in-flight guard under the registry lock, so the activator can decide
+// whether it must claim and abort a paused checkpoint before splicing. The
+// entry guard is read while holding e.mu, with r.mu held first.
+func (r *statefulRegistry) byWorkloadCheckpoint(workload string) (e *statefulEntry, token string, inFlight bool, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, e := range r.vms {
-		if e.workload == workload {
-			return e, e.checkpointToken, true
+	for _, entry := range r.vms {
+		if entry.workload == workload {
+			entry.mu.Lock()
+			inFlight = entry.inFlight
+			entry.mu.Unlock()
+			return entry, entry.checkpointToken, inFlight, true
 		}
 	}
-	return nil, "", false
+	return nil, "", false, false
 }
 
 // snapshotRefInUse reports whether any LIVE stateful VM was relit from the given

@@ -24,7 +24,21 @@ const (
 	activatorWakeMax    = 30
 	activatorWakeWindow = time.Minute
 	activatorBodyMax    = 8 << 20
+	// The transition wait is short enough to notice a checkpoint resolve
+	// promptly, while the deadline prevents a stuck VM from pinning a client.
+	activatorInFlightPollInterval = 25 * time.Millisecond
+	activatorInFlightTimeout      = 10 * time.Second
 )
+
+// A guest that is paused can leave its tap reachable while swallowing SYNs, so
+// an unbounded dial sits on kernel SYN retransmit (~127s) and the caller reads
+// it as a hang. Bound only the dial so an unreachable guest fails fast; once
+// connected, a splice is a long-lived connection and must not be capped by this
+// timeout. A var rather than a const purely so the test can shrink it: proving
+// the bound requires a context with NO deadline of its own (a context that
+// already carries one would be honoured by the unbounded dial too, and the test
+// would pass against the very regression it exists to catch).
+var activatorDialTimeout = 10 * time.Second
 
 var activatorDeniedHeaders = map[string]struct{}{
 	"content-length":      {},
@@ -299,7 +313,9 @@ func allowedHeaders(headers http.Header) http.Header {
 }
 
 func spliceTCP(ctx context.Context, client net.Conn, address string) error {
-	guest, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	dialCtx, cancel := context.WithTimeout(ctx, activatorDialTimeout)
+	defer cancel()
+	guest, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", address)
 	if err != nil {
 		return err
 	}
