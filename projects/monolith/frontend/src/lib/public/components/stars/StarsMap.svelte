@@ -105,6 +105,9 @@
   let map = null;
   let layerReady = false;
   let didFit = false;
+  // Keep prepared GeoJSON by input array and visual state. Mode switches should
+  // swap already-built features, not synchronously walk every site again.
+  const visualCache = new WeakMap();
 
   // The relative-normalization ceiling for the current feature set, restamped on
   // every plottable(). Drives the historical 0..100 percentile that both the
@@ -380,11 +383,28 @@
     };
   }
 
+  function visualData(cacheKey) {
+    let byState = visualCache.get(sites);
+    if (!byState) {
+      byState = new Map();
+      visualCache.set(sites, byState);
+    }
+    const cached = byState.get(cacheKey);
+    if (cached) return cached;
+    const rows = plottable();
+    const prepared = { points: pointFC(rows), cells: cellFC(rows) };
+    byState.set(cacheKey, prepared);
+    return prepared;
+  }
+
   function pushData() {
     if (!map) return;
-    const rows = plottable();
-    map.getSource(SOURCE_ID)?.setData(pointFC(rows));
-    map.getSource(CELL_SOURCE)?.setData(cellFC(rows));
+    const nightKeyValue = [...(activeNights ?? [])].sort().join(",");
+    const hourKey = Math.floor(nowMs / 3_600_000);
+    const cacheKey = `${mode}|${darknessMode}|${hourKey}|${nightKeyValue}`;
+    const prepared = visualData(cacheKey);
+    map.getSource(SOURCE_ID)?.setData(prepared.points);
+    map.getSource(CELL_SOURCE)?.setData(prepared.cells);
   }
 
   // The box heatmap and the point markers are mutually exclusive: when heat is
