@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/bazelbuild/bazel-gazelle v0.47.0
-	github.com/cloudflare/cloudflare-go v0.115.0
+	github.com/cloudflare/cloudflare-go v0.117.0
 	github.com/envoyproxy/go-control-plane v0.14.0
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
 	github.com/google/go-containerregistry v0.20.6
