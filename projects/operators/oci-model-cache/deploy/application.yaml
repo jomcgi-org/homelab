@@ -9,7 +9,7 @@ spec:
     # Chart from OCI registry (pushed by CI via Bazel helm_push)
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: oci-model-cache-operator
-      targetRevision: 0.2.9
+      targetRevision: 0.2.10
       helm:
         valueFiles:
           - $values/projects/operators/oci-model-cache/deploy/values.yaml
