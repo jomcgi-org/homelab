@@ -96,6 +96,28 @@ func enableGroupActivatorWorkload(s *Server, workload string, listenPort, guestP
 	}})
 }
 
+// waitForGroupActivatorParked polls the group activator's parked count for the
+// workload under the mutex until it reaches expected, or times out. This ensures
+// the test does not release the restore handler before all concurrent clients have
+// actually been admitted and are parked waiting for that release, rather than
+// being scheduled but not yet in the group activator's join() critical section.
+func waitForGroupActivatorParked(t *testing.T, a *groupActivator, workload string, expected int) {
+	t.Helper()
+	timeout := time.Now().Add(5 * time.Second)
+	for {
+		a.mu.Lock()
+		current := a.parked[workload]
+		a.mu.Unlock()
+		if current >= expected {
+			return
+		}
+		if time.Now().After(timeout) {
+			t.Fatalf("timeout waiting for %d parked clients on %q, got %d", expected, workload, current)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func addGroupActivatorBundle(s *Server, driver *fakeGroupMemberDriver, setID, groupInstanceID, memberName, pinnedIP string, port uint32) {
 	driver.mu.Lock()
 	driver.banked[setID+"/"+memberName] = true
@@ -264,6 +286,11 @@ func TestGroupActivatorSingleFlight(t *testing.T) {
 		conns = append(conns, groupActivatorConn(t, listenPort))
 	}
 	<-driver.restoreStarted
+	// Wait for all 8 clients to reach the group activator and be parked. restoreStarted
+	// only proves the FIRST restore started; stragglers may not yet have called join()
+	// and incremented a.parked[workload]. Do not release the restore gate until all
+	// are actually admitted, so the single-flight assertion holds.
+	waitForGroupActivatorParked(t, s.groupActivator, "scratch-k8s", clients)
 	close(driver.releaseRestore)
 	for _, conn := range conns {
 		groupActivatorRoundTrip(t, conn, "all group clients")

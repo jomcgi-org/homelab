@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
@@ -53,6 +54,28 @@ func activatorRequest(t *testing.T, handler http.Handler, workload, path, body s
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+// waitForActivatorParked polls the activator's parked count under the mutex until
+// it reaches expected, or times out. This ensures the test does not release the
+// health handler before all concurrent requests have actually been admitted and
+// are parked waiting for that release, rather than being scheduled but not yet
+// in the activator's join() critical section.
+func waitForActivatorParked(t *testing.T, a *activator, expected int) {
+	t.Helper()
+	timeout := time.Now().Add(5 * time.Second)
+	for {
+		a.mu.Lock()
+		current := a.parked
+		a.mu.Unlock()
+		if current >= expected {
+			return
+		}
+		if time.Now().After(timeout) {
+			t.Fatalf("timeout waiting for %d parked requests, got %d", expected, current)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func TestActivatorStragglerProxiesLiveVM(t *testing.T) {
@@ -201,6 +224,11 @@ func TestActivatorSingleFlight(t *testing.T) {
 		}()
 	}
 	<-healthStarted
+	// Wait for all 8 requests to reach the activator and be parked. healthStarted
+	// only proves the FIRST request reached the health handler; stragglers may not
+	// yet have called join() and incremented a.parked. Do not release the health
+	// gate until all are actually admitted, so the single-flight assertion holds.
+	waitForActivatorParked(t, s.activator, requests)
 	close(releaseHealth)
 	for i := 0; i < requests; i++ {
 		rec := <-responses
