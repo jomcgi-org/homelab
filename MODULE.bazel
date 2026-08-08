@@ -363,7 +363,7 @@ oci.toolchains(name = "custom_crane")
 # Base image for GO Containers.
 oci.pull(
     name = "distroless_base",
-    digest = "sha256:9e9b50d2048db3741f86a48d939b4e4cc775f5889b3496439343301ff54cdba8",
+    digest = "sha256:f4a335ca209e1d2ee873102c17c389ad0142e3d5b21aee2817e9cc9c01d87d20",
     image = "gcr.io/distroless/base",
     platforms = [
         "linux/amd64",
@@ -380,7 +380,7 @@ use_repo(
 
 oci.pull(
     name = "python_base",
-    digest = "sha256:59a458b76b4e8896031cd559576eac7d6cb53a69b38ba819fb26518536368d86",
+    digest = "sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03",
     image = "ubuntu",
     platforms = [
         "linux/arm64/v8",
@@ -422,7 +422,7 @@ use_repo(oci, "gdal_python_base", "gdal_python_base_linux_amd64", "gdal_python_b
 # PostgreSQL 16 + pgvector for e2e integration tests
 oci.pull(
     name = "pgvector_pg16",
-    digest = "sha256:6f2fedef8e4311682b3a5989a21bf527d3310ab5421258ad6e41e52955c16294",
+    digest = "sha256:84a355869251af1a3379cfc9fa7b4dbf962c03f642a4bb7b339a203925071c43",
     image = "docker.io/pgvector/pgvector",
     platforms = ["linux/amd64"],
     tag = "pg16",
