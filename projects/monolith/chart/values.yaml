@@ -243,15 +243,15 @@ jobs:
       # met.no day without ever overlapping the next run (Forbid + 3h schedule).
       activeDeadlineSeconds: 2700
       suspend: false
-      # 512Mi is comfortable now that the refresh fetches + persists in batches
-      # (stars/jobs.py REFRESH_BATCH_SIZE) instead of holding the whole ~14k-site
-      # grid in memory at once, which OOMed this pod.
+      # Refresh fetches + persists in batches, while materialization uses scalar
+      # columns instead of ORM hydration. Keep a 1GiB ceiling as headroom for
+      # the full ~14k-site snapshot and JSON serialization.
       resources:
         requests:
           cpu: 250m
-          memory: 512Mi
+          memory: 1Gi
         limits:
-          memory: 512Mi
+          memory: 1Gi
     - name: knowledge-repo-docs-reconcile
       replaces: knowledge.repo_docs_reconcile
       args: ["knowledge-repo-docs-reconcile"]
