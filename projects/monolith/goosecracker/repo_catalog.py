@@ -1,6 +1,6 @@
 """Repo catalog: descriptions of the hydratable repos, for repo selection.
 
-The DeepSeek orchestrator (ADR 036) picks the goose brief's ``repo`` from the
+The orchestrator picks the agent brief's ``repo`` from the
 invoker's ADR 029 grants. Names alone (jomcgi/homelab, weave-hand/loom) are a
 weak signal, so this module carries a one-line description per registered repo
 and renders the invoker-scoped menu that the route prompt injects into its user
@@ -8,13 +8,11 @@ message. It rides in the user message (never the byte-stable system bundle)
 because the granted set is per-invoker: a scope-specific list in the cached
 system prefix would break the provider prefix cache.
 
-The ids MUST track the git-mirror's registered repos
-(``projects/firecracker/git-mirror/deploy/values.yaml``). The two sets are
-allowed to drift gracefully in one direction only: a repo in a grant but not
-here still appears in the menu with a generic description (a grant is never
-hidden from selection), while a repo here but not on the mirror simply cannot
-hydrate. Seed descriptions are hand-written; a future routine may regenerate
-them from each repo's README/CLAUDE.md.
+The ids are the allowlist used by agent-session creation. A repo in a grant but
+not here still appears in the orchestrator menu with a generic description, but
+session creation rejects it until an entry is added. Seed descriptions are
+hand-written; a future routine may regenerate them from each repo's
+README/CLAUDE.md.
 """
 
 from __future__ import annotations

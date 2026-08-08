@@ -4,10 +4,10 @@ Personal monorepo. Dev tooling and deployment for my projects.
 
 ## Systems
 
-- [**EmberVM**](projects/embervm/): Firecracker microVM orchestrator. An Elixir control plane and a forked Go node daemon run task, session, and serving workload classes with fail-closed quotas and one quota-capped public serving route. The milestone log, including post-ship defect records, is [DECISIONS.md](DECISIONS.md).
-- [**Firecracker substrate**](projects/firecracker/): a fresh microVM per request, vsock-only network boundary, no secrets in the guest. Measured on this hardware: ~25 ms from request to a warm semgrep scan starting, ~144 ms from trigger to a cold agent's first LLM call. Development is frozen: EmberVM's node daemon began as a fork of this substrate and all new work lands there. It still runs the goose agent in production until that migrates to EmberVM's session class.
+- [**EmberVM**](projects/embervm/): Firecracker microVM orchestrator. An Elixir control plane and a Go node daemon run task, session, serving, stateful, and composite workloads. See its [current architecture](projects/embervm/ARCHITECTURE.md).
+- [**Firecracker components**](projects/firecracker/): guest images and shared host/guest utilities retained by EmberVM after the original fc-invoke daemon was retired.
 - [**Knowledge pipeline**](projects/monolith/knowledge/): an on-cluster LLM decomposes markdown into structured facts, embeds them, and stores them in pgvector. Searchable via MCP tools and a SvelteKit frontend.
-- [**Agent platform**](docs/agents.md): AI agents in sandboxed microVMs with RBAC-scoped tool access, orchestrated from the monolith. See the [orchestrator ADR](docs/decisions/agents/007-agent-orchestrator.md).
+- [**Agent platform**](projects/embervm/ARCHITECTURE.md): AI agents in sandboxed microVM sessions, with the monolith providing the user-facing control plane.
 - [**Discord bot**](projects/monolith/chat/): LLM-powered chat with vision, web search, knowledge graph context, and a per-user trust ledger ([ADR chat/003](docs/decisions/chat/003-trust-safety-safeguards.md)).
 - [**OCI Model Cache**](projects/operators/oci-model-cache/): Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
 - [**Sextant**](projects/sextant/): code generator that turns YAML state-machine specs into type-safe Go for operators. Invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.

@@ -67,7 +67,7 @@
   }
 
   // Same accordion idea for the nested project tree, but keyed by the full
-  // dotted path (e.g. "firecracker/goosecracker") since groups can nest to
+  // dotted path (e.g. "monolith/knowledge") since groups can nest to
   // arbitrary depth. Every ancestor of the active doc starts expanded.
   const PROJECTS_PREFIX = "projects/";
   /** @type {Record<string, boolean>} */

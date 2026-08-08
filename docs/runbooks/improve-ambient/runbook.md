@@ -15,8 +15,7 @@ taxonomy, and drafts PRs editing the responsible lever (the ambient prompt, the
 agent-reply voice prompt, or the attention gate) or staging a channel directive,
 each with evidence tied to specific episodes.
 
-Sister skill to improve-recipes (agent-run mechanics) and improve-artifacts
-(design quality). This one owns the human-reviewed code levers; the directive
+This runbook owns the human-reviewed code levers; the directive
 autopilot (`chat/autopilot_job.py`, ADR chat/001) owns the autonomous,
 self-validating directive levers in the background. Design rationale:
 `docs/decisions/chat/001-improve-ambient-loop.md`.
@@ -39,9 +38,9 @@ before the column was populated), reactions fall back to a `channel_id` plus
 time-after-engage window (`AMBIENT_WINDOW_MINUTES`, default 30) and
 `reaction_match` is `"time-window-heuristic"`; overlapping episodes in that
 channel can then share signal. Human follow-up is always window-based (there is
-no exact "did a human follow up" link). The agent-thread match is likewise
-heuristic: `claude_agent.agent_threads` carries no channel or trigger key, only
-its own `session_id`, so an episode is tied to the nearest agent thread created
+no exact "did a human follow up" link). The agent-session match is likewise
+heuristic: `agent_sessions.agent_sessions` carries the Discord thread but no
+parent channel or trigger key, so an episode is tied to the nearest session created
 closest in time around the engage (`AMBIENT_AGENT_WINDOW_MINUTES`, default 5,
 with 2 min of pre-engage slack for clock skew). The Opus
 deep-read (`fetch-episode`) resolves ambiguity per episode; do not over-trust a
@@ -282,4 +281,3 @@ Prompt and gate edits ship with the MONOLITH image: the merged PR's chart bump
 rolls them out. Channel directive proposals land as inactive rows and take
 effect on a human 👍 in Discord. The next `/improve-ambient` run's before/after
 aggregates are the verdict on whether the change worked.
-

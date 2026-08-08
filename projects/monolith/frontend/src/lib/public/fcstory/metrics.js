@@ -55,17 +55,6 @@ export const agentRestoreColdMs = 28;
 // sandbox demo): dispatch + microVM restore + guest init + agent bring-up.
 export const agentFirstModelCallMs = 140;
 
-// Goosecracker's cold-start breakdown (a fresh microVM per request, not a
-// warm pool): dispatch, copy-on-write rootfs, Firecracker boot, guest init,
-// then bringing the coding agent up. These five figures sum to
-// agentFirstModelCallMs (10 + 35 + 28 + ~20 + 50 = 143, rounded to the same
-// ~140ms headline so the diagram and the prose never disagree).
-export const goosecrackerDispatchMs = 10;
-export const goosecrackerRootfsMs = 35;
-export const goosecrackerBootMs = 28;
-export const goosecrackerGuestInitMs = 20;
-export const goosecrackerAgentUpMs = 50;
-
 // ---- Semgrep scan-guest figures (measured fc-invoke semgrep workload runs,
 // visible live on the /ember/firecracker demos Semgrep tab: snapshot_restore
 // ~21.9ms, ~0.72s wall for a single Pro taint scan vs a ~6.7s cold start.

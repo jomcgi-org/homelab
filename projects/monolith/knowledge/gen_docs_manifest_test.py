@@ -21,15 +21,15 @@ def test_derive_title_falls_back_to_basename():
 
 def test_derive_title_readme_falls_back_to_parent_dir():
     assert (
-        derive_title("no heading", "projects/firecracker/goosecracker/README.md")
-        == "goosecracker"
+        derive_title("no heading", "projects/monolith/knowledge/README.md")
+        == "knowledge"
     )
 
 
 def test_should_index_allowlist():
     # Included: project READMEs (any depth) and the whole ADR tree (incl. index).
     assert _should_index("projects/firecracker/README.md")
-    assert _should_index("projects/firecracker/goosecracker/README.md")
+    assert _should_index("projects/monolith/knowledge/README.md")
     assert _should_index("docs/decisions/index.md")
     assert _should_index("docs/decisions/agents/001-background-agents.md")
     assert _should_index("docs/decisions/docs/002-x.md")
@@ -56,8 +56,8 @@ def test_make_slug():
     )
     assert make_slug("projects/firecracker/README.md") == "projects/firecracker"
     assert (
-        make_slug("projects/firecracker/goosecracker/README.md")
-        == "projects/firecracker/goosecracker"
+        make_slug("projects/monolith/knowledge/README.md")
+        == "projects/monolith/knowledge"
     )
 
 
@@ -119,6 +119,11 @@ def test_build_manifest_strips_nul_bytes(tmp_path: Path):
     entry = build_manifest(tmp_path, ["docs/n.md"])[0]
     assert "\x00" not in entry["content"]
     assert entry["content"] == "# N\n\nbefore"
+
+
+def test_build_manifest_skips_deleted_tracked_path(tmp_path: Path):
+    entries = build_manifest(tmp_path, ["docs/deleted.md"])
+    assert entries == []
 
 
 def test_manifest_json_round_trips(tmp_path: Path):

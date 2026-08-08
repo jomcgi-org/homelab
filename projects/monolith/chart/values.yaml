@@ -84,24 +84,6 @@ jobs:
           memory: 512Mi
         limits:
           memory: 1Gi
-    # ADR 026 Phase 2 Task 2.5: evict goose session DBs (s3://artifacts/<id>/
-    # sessions.db) past their TTL so abandoned threads do not accumulate storage.
-    # Artifacts are left intact. S3-only, light; daily is ample.
-    - name: evict-artifact-sessions
-      args: ["evict-artifact-sessions"]
-      schedule: "0 4 * * *" # daily 04:00 UTC
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 300
-      suspend: false
-      # artifact.s3 needs SEAWEEDFS_S3_ENDPOINT (creds default to the
-      # auth-open duckdb keys); without it the job raises at startup.
-      s3: true
-      resources:
-        requests:
-          cpu: 100m
-          memory: 256Mi
-        limits:
-          memory: 512Mi
     # knowledge.layout: FA2 graph layout, ~2.7GiB peak / 1 core / ~3 min,
     # measured live. It recomputes the WHOLE graph every run with no
     # change-detection, but the graph (notes + links) is static for days at a
@@ -997,7 +979,8 @@ semgrep:
   onepassword:
     itemPath: ""
 
-# Goosecracker's secret remains available to the Grimoire extract workflow.
+# Shared provider secret. The values key and Kubernetes Secret retain their
+# historical name to avoid a coordinated rename across consumers.
 goosecracker:
   enabled: false
   onepassword:

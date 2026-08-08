@@ -1,3 +1,0 @@
-{{- $annotations := dict "checksum/nginx-config" (include (print $.Template.BasePath "/nginx-configmap.yaml") . | sha256sum) }}
-{{- $_ := set .Values.frontend "podAnnotations" (merge (default dict .Values.frontend.podAnnotations) $annotations) }}
-{{- include "homelab.deployment" (dict "context" . "component" "frontend") }}

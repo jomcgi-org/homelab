@@ -1,4 +1,4 @@
-"""artifact: goosecracker live artifacts (ADR 024).
+"""Agent-built live artifacts.
 
 Agent-built, self-contained HTML pages published to ``s3://artifacts/<id>`` and
 served at ``jomcgi.dev/artifact/<id>``. The monolith mediates every write (the

@@ -1,7 +1,6 @@
 """Tests for chat.acl: the generic Discord feature-grant ACL (ADR 029).
 
-DB-backed tests run against in-memory SQLite with the chat schema stripped,
-mirroring chat.goosecracker_test.
+DB-backed tests run against in-memory SQLite with the chat schema stripped.
 """
 
 from unittest.mock import patch

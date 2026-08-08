@@ -27,7 +27,7 @@ metadata:
 # for real needs either a control-plane metrics exporter (turning the
 # embervm.stateful.wake span's failure outcome into a counter) or a
 # spanmetrics-processor bridge from the SigNoz trace pipeline, neither of which
-# exists yet. FLAGGED FOR JOE in DECISIONS.md (D-R4.PR-10.1).
+# exists yet.
 #
 # The wake failure IS observable TODAY via the embervm.stateful.wake span
 # (ember.wake_ms, ember.workload) and the "embervm stateful wake failed" /

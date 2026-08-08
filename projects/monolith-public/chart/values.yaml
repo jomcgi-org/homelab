@@ -43,8 +43,7 @@ serviceAccount:
   # monolith-public SA has ZERO Kubernetes RBAC (no Role/ClusterRoleBindings), so
   # the token grants no K8s API power, it only proves "I am monolith-public" to
   # EmberVM (which the /functions surface already trusts, quota-capped). A
-  # per-component audience-scoped projected token is a hardening follow-up
-  # (DECISIONS.md D-R1.3.3).
+  # per-component audience-scoped projected token is a hardening follow-up.
   automount: true
   annotations: {}
   name: ""
@@ -662,8 +661,8 @@ cfIngress:
       unit: Minute
     # Rate limit for the public FaaS invocation route (/functions/*, Task 13).
     # Envoy Local (per-gateway, shared across clients) coarse burst cap, layered
-    # ON TOP of the EmberVM per-principal daily quota (the real abuse backstop;
-    # DECISIONS.md D-R1.3.1). og-image is low-volume (one fetch per social share),
+    # ON TOP of the EmberVM per-principal daily quota (the real abuse backstop).
+    # og-image is low-volume (one fetch per social share),
     # so 120/min is generous; lower it if abuse appears.
     functionsRateLimit:
       requests: 120

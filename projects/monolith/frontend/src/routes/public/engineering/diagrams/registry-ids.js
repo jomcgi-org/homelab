@@ -3,7 +3,6 @@
 export const diagramIds = [
   "agent-platform",
   "embervm",
-  "goosecracker",
   "knowledge-graph",
   "loom",
   "oci-model-cache",

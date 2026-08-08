@@ -26,8 +26,7 @@ metadata:
 # standing decision). Wiring this for real needs EITHER a control-plane metrics
 # exporter for the volume ledger (Embervm.StatefulStore.get_volume/2's
 # allocated_bytes + the workload's declared cap, turned into a gauge) OR a generic
-# CRD-status-to-metrics bridge. Neither exists yet. FLAGGED FOR JOE in DECISIONS.md
-# (D-R4.PR-10.1) as a recorded follow-on.
+# CRD-status-to-metrics bridge. Neither exists yet.
 #
 # Until the metrics pipeline lands, check watermark manually via `kubectl get
 # workload <name> -o jsonpath='{.status.stateful.volumeBytes}'` against the

@@ -1173,8 +1173,8 @@ defmodule Embervm.OpLog.SQLite do
   # kind by construction. principal/tenant instead ride the op's own top-level
   # fields (the workload owner, populated by the Task 9 appender), exactly
   # like every other op kind, so project_usage stays a pure function of the op
-  # and kill-and-restart rebuild equivalence holds (see D-R3.2.1 in
-  # DECISIONS.md). This charges usage.request_count only: live-seconds
+  # and kill-and-restart rebuild equivalence holds. This charges
+  # usage.request_count only: live-seconds
   # (vcpu/gb-seconds over the alive interval) are DEFERRED to the Task 9+
   # lifecycle/sweeper machinery that has the resource shape (serving_instances
   # carries no vcpu/memMib columns to accrue against here). Serving compute is

@@ -11,7 +11,6 @@ js_library(
     ],
     visibility = [
         "//:__pkg__",
-        "//projects/grimoire/frontend:__pkg__",
         "//projects/monolith/frontend:__pkg__",
     ],
 )

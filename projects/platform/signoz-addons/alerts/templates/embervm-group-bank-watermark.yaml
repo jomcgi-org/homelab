@@ -33,8 +33,7 @@ metadata:
 # that alert is the live safety net today. This per-workload set-size watermark
 # needs EITHER a control-plane metrics exporter for the banked-set bytes (the
 # group_banked op's summed member snapshot bytes, turned into a gauge) OR a generic
-# CRD-status-to-metrics bridge. Neither exists yet. FLAGGED FOR JOE in DECISIONS.md
-# (D-R5.PR-6.1) as a recorded follow-on.
+# CRD-status-to-metrics bridge. Neither exists yet.
 #
 # Until the metrics pipeline lands, the live node-level floor is
 # embervm-snapshot-disk-usage (filesystem watermark, composite-aware by

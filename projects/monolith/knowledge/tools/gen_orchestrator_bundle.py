@@ -5,8 +5,8 @@ single committed markdown file the ADR 036 orchestrator client sends as the
 stable prefix of its `system` message (so provider prompt caching applies):
 
 1. The hand-written base prompt (``projects/monolith/chat/orchestrator_prompt.md``).
-2. A recipe catalog: one ``- <name>: <description>`` line per guest recipe
-   YAML under ``projects/firecracker/goosecracker/guest/recipes/*.yaml``,
+2. A recipe catalog: one ``- <name>: <description>`` line per recipe YAML
+   under ``projects/monolith/goosecracker/recipes/*.yaml``,
    sorted by recipe name (the filename stem).
 3. A repo structure digest: the sorted top-level entries under ``projects/``
    and the sorted category list under ``docs/decisions/``.
@@ -43,7 +43,7 @@ from pathlib import Path
 
 BUNDLE_REL = "projects/monolith/chat/orchestrator_bundle.md"
 PROMPT_REL = "projects/monolith/chat/orchestrator_prompt.md"
-RECIPES_DIR_REL = "projects/firecracker/goosecracker/guest/recipes"
+RECIPES_DIR_REL = "projects/monolith/goosecracker/recipes"
 PROJECTS_DIR_REL = "projects"
 DECISIONS_DIR_REL = "docs/decisions"
 
@@ -70,8 +70,7 @@ def recipe_catalog_entries(root: Path, recipe_paths: list[str]) -> list[str]:
     """One ``name: description`` entry per recipe, sorted by name.
 
     Description falls back to title if a recipe ever omits ``description``
-    (none currently do, per inspection of every file under
-    guest/recipes/*.yaml); a recipe missing BOTH fields is skipped rather than
+    (none currently do); a recipe missing both fields is skipped rather than
     emitting a blank catalog line.
     """
     entries: dict[str, str] = {}
@@ -89,14 +88,14 @@ def recipe_catalog_entries(root: Path, recipe_paths: list[str]) -> list[str]:
 
 def _git_ls_files(root: Path) -> list[str]:
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=root,
         capture_output=True,
         text=True,
         check=True,
         timeout=120,
     )
-    return [p for p in result.stdout.split("\0") if p]
+    return [p for p in result.stdout.split("\0") if p and (root / p).is_file()]
 
 
 def iter_recipe_paths(all_paths: list[str]) -> list[str]:

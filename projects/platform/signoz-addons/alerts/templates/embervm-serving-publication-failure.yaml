@@ -25,7 +25,7 @@ metadata:
 # embervm.serving.publish_flush span (ember.ack_ok = false) in SigNoz traces. A
 # UNIFIED metric-based publication-failure alert covering both modes is a recorded
 # follow-on (it needs a control-plane metrics pipeline or a spanmetrics processor so
-# ember.ack_ok becomes a metric series). FLAGGED FOR JOE in DECISIONS.md.
+# ember.ack_ok becomes a metric series).
 #
 # STAT NAME: written against the standard Envoy Prometheus exposition
 # (envoy_cluster_update_rejected, per envoy_cluster_name). CONFIRM the exact scraped

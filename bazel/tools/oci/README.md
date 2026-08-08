@@ -78,13 +78,13 @@ Wraps a `go_binary` in a distroless OCI image. Builds both `amd64` and `arm64`
 slices and combines them into an `oci_image_index`.
 
 ```python
-# projects/grimoire/api/BUILD
+# projects/example/api/BUILD
 load("//bazel/tools/oci:go_image.bzl", "go_image")
 
 go_image(
     name = "image",
     binary = ":api",
-    repository = "ghcr.io/jomcgi/homelab/projects/grimoire/api",
+    repository = "ghcr.io/jomcgi/homelab/projects/example/api",
 )
 ```
 
@@ -218,15 +218,15 @@ Convenience wrapper around `apko_image` for Vite or React frontends. Stages a
 `pkg_tar strip_prefix` limitations with Bazel tree artifacts.
 
 ```python
-# projects/grimoire/frontend/BUILD
+# projects/example/frontend/BUILD
 load("//bazel/tools/oci:apko_nginx_frontend.bzl", "apko_nginx_frontend")
 
 apko_nginx_frontend(
     name = "image",
     dist = ":build",     # js_run_binary with out_dirs = ["dist"]
     config = "apko.yaml",
-    contents = "@grimoire_frontend_lock//:contents",
-    repository = "ghcr.io/jomcgi/homelab/projects/grimoire/frontend",
+    contents = "@example_frontend_lock//:contents",
+    repository = "ghcr.io/jomcgi/homelab/projects/example/frontend",
 )
 ```
 

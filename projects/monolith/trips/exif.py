@@ -1,12 +1,4 @@
-"""EXIF extraction for the trips backfill.
-
-Ported from projects/trips/tools/publish-trip-images so the monolith backfill
-re-derives the same GPS / timestamp / optics fields the old NATS pipeline
-produced, without depending on the (soon-to-be-retired) standalone service.
-
-``extract_exif`` does PIL file I/O; the numeric helpers are pure and unit
-tested directly.
-"""
+"""Extract GPS, timestamp, and camera optics fields from trip photos."""
 
 import logging
 import math

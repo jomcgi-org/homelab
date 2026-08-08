@@ -33,17 +33,17 @@ path was used ("exact" or "time-window-heuristic").
 
 Each record also carries ``withheld_reason``: why the engage produced no
 in-channel reply, disambiguating the silent paths that a null
-``reply_message_id`` alone cannot. One of ``agent_thread`` (routed to the goose
-guest), ``no_reply`` (the model chose silence), ``send_gate`` (the
+``reply_message_id`` alone cannot. One of ``agent_thread`` (routed to an agent
+session), ``no_reply`` (the model chose silence), ``send_gate`` (the
 post-generation gate vetoed the drafted reply), ``empty_reply`` (no content),
 ``locked_out`` (the author is trust-locked-out, so a would-be engage was
 suppressed to a brig emoji; ADR chat/003), or null when a reply was sent.
 Records from before the column existed are null
 even when suppressed, so scope any rate over it to the current window.
-The agent-thread match is likewise a nearest-in-time heuristic
-(``_AGENT_WINDOW_MINUTES``): ``claude_agent.agent_threads`` carries no channel
-or trigger-message key, only a ``session_id`` (the run's own Discord thread), so
-an episode is tied to the agent thread created closest in time around the engage
+The agent-session match is likewise a nearest-in-time heuristic
+(``_AGENT_WINDOW_MINUTES``): ``agent_sessions.agent_sessions`` carries the
+Discord thread but no parent-channel or trigger-message key, so an episode is
+tied to the session created closest in time around the engage
 (a tight window after, with 2 min of pre-engage slack for clock skew).
 
 eval JSON contract (written by put-eval, one key per episode under
@@ -114,10 +114,10 @@ SELECT
     LEFT(m.content, 500)        AS trigger_content,
     m.is_bot                    AS trigger_is_bot,
     at.session_id               AS agent_session_id,
-    at.state                    AS agent_state,
-    at.recipe                   AS agent_recipe,
+    at.status                   AS agent_state,
+    at.model                    AS agent_model,
     LEFT(at.result, 400)        AS agent_result_head,
-    at.result_error             AS agent_result_error,
+    at.terminal_reason          AS agent_terminal_reason,
     at.created_at               AS agent_created_at,
     rx.reaction_counts          AS reaction_counts,
     rx.net_reaction             AS net_reaction,
@@ -127,14 +127,21 @@ SELECT
 FROM chat.attention_decision ad
 LEFT JOIN chat.messages m
        ON m.discord_message_id = ad.message_id
--- Nearest-in-time agent thread after the engage (heuristic: agent_threads has
--- no channel/trigger key, only its own session_id). See module docstring.
+-- Nearest-in-time agent session around the engage. See module docstring.
 LEFT JOIN LATERAL (
-    SELECT t.session_id, t.state, t.recipe, t.result, t.result_error, t.created_at
-    FROM claude_agent.agent_threads t
-    WHERE t.created_at >= ad.created_at - make_interval(mins => 2)
-      AND t.created_at <= ad.created_at + make_interval(mins => :agent_window)
-    ORDER BY ABS(EXTRACT(EPOCH FROM (t.created_at - ad.created_at)))
+    SELECT s.local_session_id AS session_id, s.status, s.model,
+           turn.result_text AS result, turn.terminal_reason, s.created_at
+    FROM agent_sessions.agent_sessions s
+    LEFT JOIN LATERAL (
+        SELECT t.result_text, t.terminal_reason
+        FROM agent_sessions.agent_turns t
+        WHERE t.session_id = s.id
+        ORDER BY t.seq DESC
+        LIMIT 1
+    ) turn ON TRUE
+    WHERE s.created_at >= ad.created_at - make_interval(mins => 2)
+      AND s.created_at <= ad.created_at + make_interval(mins => :agent_window)
+    ORDER BY ABS(EXTRACT(EPOCH FROM (s.created_at - ad.created_at)))
     LIMIT 1
 ) at ON TRUE
 -- Reactions on Bosun's reply, aggregated to per-emoji add counts and an overall
@@ -298,12 +305,20 @@ ORDER BY created_at, id
 """
 
 _FETCH_AGENT_SQL = """
-SELECT session_id, state, recipe, tier, task, result, result_error,
-       created_at, completed_at
-FROM claude_agent.agent_threads
-WHERE created_at >= :engage_at - make_interval(mins => 2)
-  AND created_at <= :engage_at + make_interval(mins => :agent_window)
-ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - :engage_at)))
+SELECT s.local_session_id AS session_id, s.status, s.model, s.repo,
+       turn.prompt, turn.result_text, turn.terminal_reason, s.created_at,
+       s.last_turn_at
+FROM agent_sessions.agent_sessions s
+LEFT JOIN LATERAL (
+    SELECT t.prompt, t.result_text, t.terminal_reason
+    FROM agent_sessions.agent_turns t
+    WHERE t.session_id = s.id
+    ORDER BY t.seq DESC
+    LIMIT 1
+) turn ON TRUE
+WHERE s.created_at >= :engage_at - make_interval(mins => 2)
+  AND s.created_at <= :engage_at + make_interval(mins => :agent_window)
+ORDER BY ABS(EXTRACT(EPOCH FROM (s.created_at - :engage_at)))
 LIMIT 1
 """
 

@@ -1,36 +1,14 @@
-"""Gap discovery, classification, review queue, and answer capture.
+"""Gap discovery, review, and answer capture.
 
-A "gap" is an unresolved ``[[wikilink]]`` — a body-text reference whose
-target note does not (yet) exist in the graph. The four functions in this
-module together drive the gap lifecycle:
-
-    discover_gaps  → ingest unresolved links into the gaps table
-    classify_gaps  → route each gap to external/internal/hybrid/parked
-    list_review_queue  → enumerate gaps awaiting a user answer
-    answer_gap     → accept a user answer, emit a personal-tier atom
-
-All four are pure-ish functions taking an open ``Session``; the caller
-owns the session lifecycle. This matches the rest of the knowledge
-module (``store.py``, ``gardener.py``).
-
-Design notes:
-    * ``classifier`` is an injected callable — the real Claude-backed
-      classifier is wired in separately (Task 3). Leaving it ``None`` is
-      a no-op: gaps stay at ``state='discovered'`` until a real classifier
-      lands. The "privacy-conservative default" in the design doc is about
-      classifier output under uncertainty — not the absence of a
-      classifier. Local inference has zero privacy cost; only external
-      research does.
-    * Consolidation never mutates committed atoms — ``answer_gap``
-      creates a brand-new atom directly in Postgres (fileless).
+A gap is an unresolved body-text wikilink. Discovery writes unresolved terms
+to Postgres, remote routines classify them through MCP, and review endpoints
+capture or audit answers.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Callable
-
 from sqlalchemy import func
 from sqlmodel import Session, select
 
@@ -81,6 +59,7 @@ class GapAnswerInvalidError(GapError):
 
 
 GAPS_PIPELINE_VERSION = "gaps@v1"
+_VALID_GAP_CLASSES = frozenset({"external", "internal", "hybrid", "parked"})
 
 
 def split_csv(value: str | None) -> list[str] | None:
@@ -93,19 +72,6 @@ def split_csv(value: str | None) -> list[str] | None:
     parts = [s.strip() for s in value.split(",") if s.strip()]
     return parts or None
 
-
-# Privacy-conservative fallback used only when a real classifier returns an
-# invalid class — route uncertain output to the user (internal), not the web.
-# This is NOT used when classifier is absent (that path is a no-op).
-_DEFAULT_GAP_CLASS = "internal"
-
-# Classes that are ready for user attention after classification. Internal/
-# hybrid await an answer via `answer_gap`; external is drained by the research
-# routine. Retained for the legacy in-pod `classify_gaps` helper only.
-_USER_REVIEW_CLASSES = {"internal", "hybrid", "external"}
-
-# Valid classifier outputs — mirrors the CHECK constraint on gaps.gap_class.
-_VALID_GAP_CLASSES = frozenset({"external", "internal", "hybrid", "parked"})
 
 # Non-terminal gap states the commit hook is allowed to close. A gap in one
 # of these states is still "open" (awaiting research or a user answer); once
@@ -334,84 +300,6 @@ def discover_gaps(session: Session) -> int:
             backfilled,
         )
     return inserted
-
-
-def classify_gaps(
-    session: Session,
-    classifier: Callable[[str, str], str] | None = None,
-) -> int:
-    """Classify every ``state='discovered'`` gap.
-
-    ``classifier`` receives ``(term, context)`` and returns one of
-    ``external``, ``internal``, ``hybrid``, ``parked``. If the classifier
-    returns an invalid value, falls back to ``internal``
-    (privacy-conservative under classifier uncertainty).
-
-    When ``classifier`` is ``None``, this is a no-op: gaps stay at
-    ``state='discovered'`` because no classifier is wired in yet. A
-    warning is logged when pending gaps exist so the absence is visible.
-    The review queue only populates once a real classifier lands (Task 3).
-
-    State transitions (real-classifier path):
-        * ``internal`` / ``hybrid`` → ``in_review`` (ready for user answer)
-        * ``external`` → ``in_review`` (drained by the research routine)
-        * ``parked`` → ``classified`` (queryable, not budget-consuming)
-
-    Returns the number of gaps classified. When ``classifier`` is ``None``,
-    returns 0.
-    """
-    if classifier is None:
-        pending = session.execute(
-            select(func.count()).select_from(Gap).where(Gap.state == "discovered")
-        ).scalar_one()
-        if pending:
-            logger.warning(
-                "gaps.classify_gaps: %d gaps awaiting classification but no "
-                "classifier is wired; leaving them at state='discovered'",
-                pending,
-            )
-        return 0
-
-    rows = (
-        session.execute(
-            select(Gap).where(Gap.deleted_at.is_(None), Gap.state == "discovered")
-        )
-        .scalars()
-        .all()
-    )
-
-    classified = 0
-    now = datetime.now(timezone.utc)
-    for gap in rows:
-        gap_class = classifier(gap.term, gap.context)
-        if gap_class not in _VALID_GAP_CLASSES:
-            logger.warning(
-                "gaps.classify_gaps: classifier returned invalid class %r "
-                "for gap id=%d; defaulting to internal (privacy-conservative)",
-                gap_class,
-                gap.id,
-            )
-            gap_class = _DEFAULT_GAP_CLASS
-
-        gap.gap_class = gap_class
-        gap.classified_at = now
-        if gap_class in _USER_REVIEW_CLASSES:
-            gap.state = "in_review"
-        else:
-            gap.state = "classified"
-        classified += 1
-
-    if classified:
-        # TODO(task-3): chunk commits (e.g. every 25 gaps) once the real
-        # model-backed classifier is wired in. A 100-gap batch × 20s/call holds a
-        # 2000s transaction; risks idle_in_transaction_session_timeout and loses
-        # progress on crash.
-        session.commit()
-        logger.info(
-            "gaps.classify_gaps: classified %d gaps",
-            classified,
-        )
-    return classified
 
 
 # Terminal states for the audit queue. A gap in one of these states had

@@ -6,8 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from chat import goosecracker_progress as gp
-from chat.router import internal_router, router
+from chat.router import router
 
 
 @pytest.fixture
@@ -58,52 +57,3 @@ class TestBackfillEndpoint:
         with patch("chat.router.run_backfill", new_callable=AsyncMock):
             resp = client.post("/api/chat/backfill")
         assert resp.status_code == 202
-
-
-@pytest.fixture
-def internal_client():
-    app = FastAPI()
-    app.include_router(internal_router)
-    return TestClient(app)
-
-
-class TestProgressEndpointRestoresNewlines:
-    """Regression: the guest streams goose stdout one line per POST with the
-    trailing newline stripped, so each chunk is a complete line with no newline.
-    The endpoint must restore the newline or marker lines are never parsed into
-    stages (they get held as an incomplete fragment forever) and the live
-    checklist never renders. This replays the real guest format."""
-
-    def test_line_per_post_markers_parse_into_stages(self, internal_client):
-        rid = "test-progress-newline"
-        gp.clear(rid)
-        for line in ["::stages::1", "::stage::0::running::Answering"]:
-            resp = internal_client.post(
-                f"/internal/goosecracker/progress/{rid}", json={"chunk": line}
-            )
-            assert resp.status_code == 204
-        snap = gp.get(rid)
-        assert snap is not None
-        assert len(snap.stages) == 1
-        assert snap.stages[0].index == 0
-        assert snap.stages[0].state == "running"
-        assert snap.stages[0].title == "Answering"
-        # A following done marker (also its own newline-less POST) resolves it.
-        internal_client.post(
-            f"/internal/goosecracker/progress/{rid}",
-            json={"chunk": "::stage::0::done::Answering"},
-        )
-        snap = gp.get(rid)
-        assert snap.stages[0].state == "done"
-        gp.clear(rid)
-
-    def test_non_marker_line_still_reaches_text(self, internal_client):
-        rid = "test-progress-text"
-        gp.clear(rid)
-        internal_client.post(
-            f"/internal/goosecracker/progress/{rid}", json={"chunk": "wrote 12 lines"}
-        )
-        snap = gp.get(rid)
-        assert snap is not None
-        assert "wrote 12 lines" in snap.text
-        gp.clear(rid)

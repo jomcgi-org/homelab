@@ -44,7 +44,7 @@ data:
       cds_config:
         resource_api_version: V3
         ads: {}
-      # LDS (R4, DECISIONS.md D-R4.PR-3.1): the R3 HTTP listener + connection
+      # LDS: the static HTTP listener and connection
       # manager below stay STATIC (byte-identical, no churn), but Envoy ALSO
       # subscribes to LDS on the ADS stream so the control plane can add and remove
       # per-workload stateful tcp_proxy listeners dynamically. Static and dynamic

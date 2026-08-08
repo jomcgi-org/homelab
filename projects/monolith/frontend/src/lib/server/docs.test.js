@@ -18,9 +18,9 @@ const MANIFEST = [
     order: 0,
   },
   {
-    path: "projects/firecracker/goosecracker/README.md",
-    slug: "projects/firecracker/goosecracker",
-    title: "Goosecracker",
+    path: "projects/monolith/knowledge/README.md",
+    slug: "projects/monolith/knowledge",
+    title: "Knowledge",
     section: "Projects",
     order: 1,
   },
@@ -98,12 +98,12 @@ describe("resolveDocHref", () => {
   it("rewrites a relative link to a published doc into a /docs slug", () => {
     expect(
       resolveDocHref(
-        "goosecracker/README.md",
-        "projects/firecracker/README.md",
+        "knowledge/README.md",
+        "projects/monolith/README.md",
         pathIndex,
       ),
     ).toEqual({
-      href: "/docs/projects/firecracker/goosecracker",
+      href: "/docs/projects/monolith/knowledge",
     });
     // from a sibling ADR up to another category
     expect(
@@ -118,12 +118,12 @@ describe("resolveDocHref", () => {
   it("preserves a fragment when rewriting", () => {
     expect(
       resolveDocHref(
-        "goosecracker/README.md#deploy",
-        "projects/firecracker/README.md",
+        "knowledge/README.md#deploy",
+        "projects/monolith/README.md",
         pathIndex,
       ),
     ).toEqual({
-      href: "/docs/projects/firecracker/goosecracker#deploy",
+      href: "/docs/projects/monolith/knowledge#deploy",
     });
   });
 
@@ -141,13 +141,9 @@ describe("resolveDocHref", () => {
 
   it("resolves a README doc via its directory alias", () => {
     expect(
-      resolveDocHref(
-        "..",
-        "projects/firecracker/goosecracker/README.md",
-        pathIndex,
-      ),
+      resolveDocHref("..", "projects/monolith/knowledge/README.md", pathIndex),
     ).toEqual({
-      href: "/docs/projects/firecracker",
+      href: "/docs/projects/monolith",
     });
   });
 
@@ -169,14 +165,14 @@ describe("buildSidebar", () => {
     const firecracker = s.projects[0];
     expect(firecracker.slug).toBe("projects/firecracker");
     expect(firecracker.title).toBe("Firecracker");
-    expect(firecracker.children.map((c) => c.slug)).toEqual([
-      "projects/firecracker/goosecracker",
-    ]);
-    expect(firecracker.children[0].children).toEqual([]);
+    expect(firecracker.children).toEqual([]);
 
     const monolith = s.projects[1];
     expect(monolith.slug).toBe("projects/monolith");
-    expect(monolith.children).toEqual([]);
+    expect(monolith.children.map((c) => c.slug)).toEqual([
+      "projects/monolith/knowledge",
+    ]);
+    expect(monolith.children[0].children).toEqual([]);
 
     expect(s.decisions.index.slug).toBe("decisions");
     expect(s.decisions.categories.map((c) => c.name)).toEqual([
@@ -216,7 +212,7 @@ describe("renderDoc", () => {
     "",
     "## Section One",
     "",
-    "See [goosecracker](goosecracker/README.md), [internal plan](plans/secret.md) and [home](https://example.com).",
+    "See [knowledge](knowledge/README.md), [internal plan](plans/secret.md) and [home](https://example.com).",
     "",
     "### Sub Heading",
     "",
@@ -230,12 +226,12 @@ describe("renderDoc", () => {
   ].join("\n");
 
   const { html, toc } = renderDoc(
-    { path: "projects/firecracker/README.md", content },
+    { path: "projects/monolith/README.md", content },
     pathIndex,
   );
 
   it("rewrites intra-doc links to /docs slugs", () => {
-    expect(html).toContain('href="/docs/projects/firecracker/goosecracker"');
+    expect(html).toContain('href="/docs/projects/monolith/knowledge"');
   });
 
   it("strips links to unpublished docs but keeps the text", () => {

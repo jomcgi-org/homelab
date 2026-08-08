@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 from chat.bot import (
     _format_codex_login_message,
-    _render_goosecracker_progress,
     download_image_attachments,
     should_respond,
 )
@@ -38,9 +37,6 @@ def test_format_codex_login_message_error():
         )
         == "🔐 Try again.\nBroker error: broker offline"
     )
-
-
-from chat.goosecracker_progress import Progress
 
 
 class TestShouldRespond:
@@ -196,26 +192,3 @@ class TestDownloadImageAttachments:
         assert len(result) == 1
         assert result[0]["description"] == "A sunset"
         vision_client.describe.assert_called_once()
-
-
-class TestRenderGoosecrackerProgress:
-    def test_notice_shown_before_output_flows(self):
-        """A retry notice surfaces while the run waits, alongside Thinking."""
-        snap = Progress(text="", notice="⏳ fc-invoke busy; retrying")
-        body = _render_goosecracker_progress(snap, elapsed=3, kind="agent")
-        assert "🤖 **Running agent**" in body
-        assert "🧠 Thinking" in body
-        assert "⏳ fc-invoke busy; retrying" in body
-
-    def test_notice_suppressed_once_done(self):
-        """A done run shows its result line, not a stale retry notice."""
-        snap = Progress(text="", done=True, notice="⏳ fc-invoke busy; retrying")
-        body = _render_goosecracker_progress(snap, elapsed=5, kind="agent")
-        assert "✅ Done in 0:05" in body
-        assert "retrying" not in body
-
-    def test_no_notice_renders_plain_thinking(self):
-        """Without a notice the render is unchanged (bare Thinking)."""
-        body = _render_goosecracker_progress(Progress(), elapsed=2, kind="agent")
-        assert "🧠 Thinking" in body
-        assert "⏳" not in body

@@ -137,7 +137,7 @@ Verified this session:
   project that happened to need it first.
 - Plural consumers already exist, so a dedicated package is not speculative
   generality. `monolith-public` is a separate chart serving jomcgi.dev, and
-  `projects/grimoire/frontend` is a separate React app (its own `apko.yaml`,
+  the retired standalone Grimoire frontend is a separate React app (its own `apko.yaml`,
   own `package.json`) already wired into the same pnpm workspace
   (`pnpm-workspace.yaml` lists it alongside `projects/monolith/frontend`); it
   could consume the token layer even though it cannot consume Svelte
@@ -149,7 +149,7 @@ Verified this session:
   alias (`src/lib`, unconfigured, no custom Vite alias exists today) no
   longer resolves it. The contract becomes a first-class pnpm workspace
   package (an entry added to `pnpm-workspace.yaml`'s `packages` list next to
-  `projects/grimoire/frontend` and `projects/monolith/frontend`), consumed the
+  the retired standalone Grimoire frontend and `projects/monolith/frontend`), consumed the
   same way those two packages already depend on each other: a `js_library`
   Bazel target linked through `npm_link_all_packages`, not a raw filegroup.
   Every `$lib/...` import of a moved file becomes a package-specifier import
@@ -248,7 +248,7 @@ graph TB
     T -.overridden inside scope, never at :root.-> B
     T -.overridden inside scope, never at :root.-> E
     T -.overridden inside scope, never at :root.-> G
-    subgraph "projects/monolith/frontend + projects/grimoire/frontend (consumers)"
+    subgraph "projects/monolith/frontend (consumers)"
         Surface1["Public tier surfaces"]
         Surface2["Ember / fcstory surfaces"]
         Surface3["Grimoire surfaces"]
@@ -336,7 +336,7 @@ Two more, on where the contract physically lives:
   direct cause of the ownership ambiguity that produced the `--accent`
   collision in finding 1. While the tokens are monolith frontend source,
   changing them reads as a monolith change with no visible signal that a
-  second project (`monolith-public`, and potentially `projects/grimoire/frontend`)
+  second project (`monolith-public`, and potentially the retired standalone Grimoire frontend)
   depends on them too.
 
 ---
@@ -362,7 +362,7 @@ already gets.
 | Contract token names leak an implicit opinion one theme disagrees with (e.g. a shadow token assumes an offset that ember's soft shadow can't express) | Medium | Low | Keep the contract's vocabulary about roles (surface, ink, spacing, border weight, shadow), not values; each theme supplies its own value shape. The mechanism that actually catches a leak, rather than discouraging it, is the `jomcgi.dev/design` gallery rendering each primitive under all three theme scopes side by side, so a token that only works for one theme is visible immediately instead of surfacing when someone builds an ember page |
 | Migrating `design-system.css` / `tokens.css` off unscoped `:root` risks a visual regression on pages that unintentionally depend on the current collision's resolution order | Low | Medium | Grimoire's scoped-override pattern is proven in production today; land the namespace fix behind the existing hermetic visual regression suite (`docs/decisions/tooling/010-hermetic-visual-regression.md`) |
 | Scope creep: "standardize the contract" is read as license to also standardize appearance | Medium | Medium | This ADR explicitly rejects visual convergence; GitHub issues for the contract work should scope to tokens and primitives only |
-| Extracting `projects/design-system/` as a new pnpm workspace package breaks `$lib`-relative imports or the Bazel `js_library` graph mid-migration | Medium | Medium | Migration is incremental (package exists and is consumed before every theme moves its CSS in); land behind the existing hermetic visual regression suite; `projects/grimoire/frontend` already proves cross-package pnpm/Bazel wiring works in this repo |
+| Extracting `projects/design-system/` as a new pnpm workspace package breaks `$lib`-relative imports or the Bazel `js_library` graph mid-migration | Medium | Medium | Migration is incremental (package exists and is consumed before every theme moves its CSS in); land behind the existing hermetic visual regression suite; the retired standalone Grimoire frontend already proves cross-package pnpm/Bazel wiring works in this repo |
 | Moving code is mistaken for decoupling `monolith` and `monolith-public` releases | Low | Low | Stated explicitly in this ADR: the two charts still share an image and bump together; the move buys ownership clarity, not independent deploys |
 
 ---

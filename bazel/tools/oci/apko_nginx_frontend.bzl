@@ -47,8 +47,8 @@ def apko_nginx_frontend(
             name = "image",
             dist = ":build",
             config = "apko.yaml",
-            contents = "@grimoire_frontend_lock//:contents",
-            repository = "ghcr.io/jomcgi/homelab/projects/grimoire/frontend",
+            contents = "@example_frontend_lock//:contents",
+            repository = "ghcr.io/jomcgi/homelab/projects/example/frontend",
         )
     """
 

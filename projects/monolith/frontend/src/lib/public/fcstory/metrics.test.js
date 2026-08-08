@@ -9,11 +9,6 @@ import {
   agentRestoreWarmMs,
   agentRestoreColdMs,
   agentFirstModelCallMs,
-  goosecrackerDispatchMs,
-  goosecrackerRootfsMs,
-  goosecrackerBootMs,
-  goosecrackerGuestInitMs,
-  goosecrackerAgentUpMs,
   semgrepRestoreMs,
   semgrepScanSec,
   semgrepColdStartSec,
@@ -44,11 +39,6 @@ describe("fcstory metrics: derived exports are sane", () => {
       agentRestoreWarmMs,
       agentRestoreColdMs,
       agentFirstModelCallMs,
-      goosecrackerDispatchMs,
-      goosecrackerRootfsMs,
-      goosecrackerBootMs,
-      goosecrackerGuestInitMs,
-      goosecrackerAgentUpMs,
     ]) {
       expect(Number.isInteger(v)).toBe(true);
       expect(v).toBeGreaterThan(0);

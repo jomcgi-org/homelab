@@ -1,6 +1,5 @@
 """Additional coverage for ChatBot -- on_message(), on_ready(), streaming response."""
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,7 +9,6 @@ import pytest
 from pydantic_ai import (
     PartDeltaEvent,
     TextPartDelta,
-    ThinkingPartDelta,
 )
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
@@ -356,21 +354,6 @@ class TestStreamResponseContext:
 # ---------------------------------------------------------------------------
 # ChatBot._maybe_handle_agent_thread_reply -- owner-only agent-session routing
 # ---------------------------------------------------------------------------
-
-
-def _make_goosecracker_mock(**overrides) -> MagicMock:
-    """A chat.bot.goosecracker stand-in for an agent thread mid-turn."""
-    mock = MagicMock()
-    mock.is_goosecracker_thread = MagicMock(return_value=True)
-    mock.session_scope = MagicMock(return_value="homelab")
-    mock.is_owner = MagicMock(return_value=False)
-    mock.build_roast = AsyncMock(return_value="Nice try.")
-    mock.continue_session = MagicMock(return_value={"action": "steering"})
-    mock.REACTION_RUNNING = "\U0001f440"
-    mock.REACTION_QUEUED = "⏳"
-    for key, value in overrides.items():
-        setattr(mock, key, value)
-    return mock
 
 
 class TestAgentSessionReplyOwnership:
@@ -1698,8 +1681,8 @@ class TestStartAgentFlowOrchestrator:
     ):
         """A PlanVerdict opens a thread and submits the RAW prompt.
 
-        The plan itself is no longer consumed: its only reader was the retired
-        goosecracker runner, which delivered it to the guest via injectedContext.
+        The plan itself is no longer consumed: its retired executor delivered it
+        to the guest via injectedContext.
         Agent sessions take the prompt alone, so a PlanVerdict now behaves
         exactly like a FailOpen here. Kept as a regression test that a non-chat
         verdict still opens a thread rather than silently doing nothing."""

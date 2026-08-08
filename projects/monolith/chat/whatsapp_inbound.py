@@ -21,10 +21,9 @@ Reuse seams:
 - Reply text: the in-monolith chat agent (``chat.agent.create_agent``) run
   non-streamed; ``result.output`` is the full text.
 
-Agent dispatch is unavailable on WhatsApp. An engaged message for a group with a
-live session still steers it (``whatsapp_session.steer_or_none``, attributed per
-author); otherwise agent-shaped work receives an honest unavailable reply. The
-in-monolith chat reply still runs with the shared chat agent's full toolset.
+Agent dispatch is unavailable on WhatsApp. Agent-shaped work receives an honest
+unavailable reply. The in-monolith chat reply still runs with the shared chat
+agent's full toolset.
 """
 
 from __future__ import annotations
@@ -39,7 +38,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from core.db import get_engine
-from chat import attention, attention_log, whatsapp_capabilities, whatsapp_session
+from chat import attention, attention_log, whatsapp_capabilities
 from chat.models import Message, ReactionEvent, WhatsappGroup, WhatsappOutbox
 from chat.whatsapp_outbox import enqueue_media, enqueue_message, enqueue_reaction
 
@@ -61,7 +60,7 @@ _MEDIA_MIME_BY_EXT = {
 }
 
 # /internal so it stays off the public HTTPRoute (in-cluster only, reached by the
-# gateway across the cluster network), like the goosecracker progress sink.
+# gateway across the cluster network).
 router = APIRouter(prefix="/internal/whatsapp", tags=["whatsapp"])
 
 # The bot's trigger name: a message containing it (case-insensitive) engages even
@@ -353,22 +352,6 @@ async def inbound(
     )
     if not engage:
         return {"status": "ignored"}
-
-    session_key = whatsapp_session.wa_session_key(body.group_jid)
-
-    # A live group run: an engaged message steers it rather than starting a new
-    # task (spec 4c), attributed to the WhatsApp author (JID + push name). The
-    # running check and steering insert are atomic under the row lock.
-    steered = await asyncio.to_thread(
-        whatsapp_session.steer_or_none,
-        session_key,
-        message_id=body.message_id,
-        sender_jid=body.sender_jid,
-        sender_name=body.sender_name,
-        text=body.text,
-    )
-    if steered:
-        return {"status": "steering"}
 
     # Household capabilities (spec section 5): a record/schedule/reminder intent,
     # or a follow-up resolving a pending confirmation/clarification, is handled

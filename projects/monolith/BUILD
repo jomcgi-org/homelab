@@ -135,12 +135,6 @@ py_venv_binary(
         # 036); the "chat/**/*.py" glob does not capture the .md, so ship it
         # explicitly or every escalation fails open with FileNotFoundError.
         "chat/orchestrator_bundle.md",
-        # goosecracker.runner injects the guest sub-recipe bodies into
-        # /injected-context each turn (they are no longer baked into the guest
-        # image), reading them from runfiles via Path(__file__).parents[2] /
-        # "firecracker/goosecracker/guest/recipes". Ship the source YAMLs into
-        # runfiles as data or every agent run fails with FileNotFoundError.
-        "//projects/firecracker/goosecracker/guest:recipe_yamls",
         "knowledge/repo_docs_manifest.ndjson",
         # loadtest_corpus.load_corpus reads these committed .sample files at
         # runtime via Path(__file__).parent; the "demos/**/*.py" glob does not
@@ -174,10 +168,6 @@ py_venv_binary(
         # must ship in the jobs image too (data on :main does not propagate to
         # this separate binary).
         "campsites/catalog.json",
-        # A scheduled routine can dispatch a goosecracker run, which reaches
-        # goosecracker.runner and reads the injected sub-recipe bodies from
-        # runfiles; ship them here too (data on :main does not propagate here).
-        "//projects/firecracker/goosecracker/guest:recipe_yamls",
     ],
     imports = ["."],  # keep
     main = "app/jobs_main.py",
@@ -256,8 +246,8 @@ py_venv_binary(
 )
 
 # Stdlib-only generator for the ADR 036 orchestrator baked context bundle.
-# Concatenates chat/orchestrator_prompt.md, the guest recipe catalog under
-# projects/firecracker/goosecracker/guest/recipes/*.yaml, and a repo structure
+# Concatenates chat/orchestrator_prompt.md, the recipe catalog under
+# goosecracker/recipes/*.yaml, and a repo structure
 # digest into the committed chat/orchestrator_bundle.md, byte-deterministic (git
 # ls-files driven, no timestamps) so the orchestrator's system-message prefix
 # stays cache-stable across escalations. Run via
@@ -273,7 +263,7 @@ py_venv_binary(
 
 # Per-package libraries. Splitting :monolith_backend by subtree means a
 # change under grimoire/ invalidates grimoire's tests, not all 354. The
-# four packages in the agent/chat/goosecracker/home import cycle share one
+# The packages in the agent/chat/home import cycle share one
 # target because Bazel deps must be acyclic; everything else is a DAG.
 py_library(
     name = "pkg_core",
@@ -2122,7 +2112,6 @@ py_venv_binary(
         "chat/orchestrator_bundle.md",
         "knowledge/repo_docs_manifest.ndjson",
         "worldcup/ratings/elo_2026.json",
-        "//projects/firecracker/goosecracker/guest:recipe_yamls",
     ] + glob(["demos/loadtest_corpus/**/*.sample"]),
     imports = ["."],  # keep
     main = "app/main_domain.py",
@@ -2851,19 +2840,6 @@ py_test(
 )
 
 py_test(
-    name = "chat_whatsapp_session_test",
-    srcs = ["chat/whatsapp_session_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "chat_whatsapp_timeparse_test",
     srcs = ["chat/whatsapp_timeparse_test.py"],
     imports = ["."],
@@ -2920,19 +2896,6 @@ py_test(
 )
 
 py_test(
-    name = "chat_goosecracker_test",
-    srcs = ["chat/goosecracker_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "chat_orchestrator_bundle_test",
     srcs = ["chat/orchestrator_bundle_test.py"],
     # The test reads both the hand-written base prompt and the committed
@@ -2951,18 +2914,6 @@ py_test(
         ":pkg_cyclegroup",
         ":pkg_knowledge",
         "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "chat_goosecracker_steering_test",
-    srcs = ["chat/goosecracker_steering_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlmodel",
     ],
 )
 
@@ -3061,26 +3012,6 @@ py_test(
 )
 
 py_test(
-    name = "chat_goosecracker_progress_test",
-    srcs = ["chat/goosecracker_progress_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "chat_goosecracker_progress_stages_test",
-    srcs = ["chat/goosecracker_progress_stages_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "chat_web_search_test",
     srcs = ["chat/web_search_test.py"],
     imports = ["."],
@@ -3165,20 +3096,6 @@ py_test(
         "@pip//pydantic_ai_slim",
         "@pip//pytest",
         "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "chat_bot_checklist_render_test",
-    srcs = ["chat/bot_checklist_render_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//discord_py",
-        "@pip//pydantic_ai_slim",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
     ],
 )
 
@@ -5245,8 +5162,8 @@ py_test(
     ],
 )
 
-# goosecracker artifact service (ADR 024): TestClient unit tests for the publish
-# + read endpoints (S3 faked) and the S3 helper (boto3 mocked).
+# Artifact service: TestClient unit tests for the publish and read endpoints
+# (S3 faked) and the S3 helper (boto3 mocked).
 py_test(
     name = "artifact_router_test",
     srcs = ["artifact/router_test.py"],
@@ -5262,44 +5179,6 @@ py_test(
 py_test(
     name = "artifact_s3_test",
     srcs = ["artifact/s3_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_artifact",
-        "@pip//boto3",
-        "@pip//pytest",
-    ],
-)
-
-# ADR 026 Phase 2: session DB storage + HTTP endpoints (goose resume on Discord
-# thread reply). session_router_test covers the three write_router endpoints and
-# verifies they are absent from read_router (full-monolith-only invariant).
-py_test(
-    name = "artifact_session_router_test",
-    srcs = ["artifact/session_router_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_artifact",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "artifact_session_s3_test",
-    srcs = ["artifact/session_s3_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_artifact",
-        "@pip//boto3",
-        "@pip//pytest",
-    ],
-)
-
-# ADR 026 Phase 2 Task 2.5: session eviction batch job handler.
-py_test(
-    name = "artifact_jobs_test",
-    srcs = ["artifact/jobs_test.py"],
     imports = ["."],
     deps = [
         ":pkg_artifact",
@@ -5766,19 +5645,6 @@ py_test(
 py_test(
     name = "knowledge_gap_model_test",
     srcs = ["knowledge/gap_model_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_gap_lifecycle_test",
-    srcs = ["knowledge/gap_lifecycle_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
@@ -6864,55 +6730,6 @@ bdd_test(
     ],
 )
 
-bdd_test(
-    name = "goosecracker_bdd_ledger_test",
-    srcs = [
-        "goosecracker/tests/__init__.py",
-        "goosecracker/tests/bdd_ledger_test.py",
-        "goosecracker/tests/conftest.py",
-    ],
-)
-
-py_test(
-    name = "goosecracker_sessions_test",
-    srcs = ["goosecracker/tests/sessions_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "goosecracker_tiers_test",
-    srcs = ["goosecracker/tests/tiers_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "goosecracker_runner_test",
-    srcs = ["goosecracker/tests/runner_test.py"],
-    # runner._subrecipe_bodies() reads the checked-in guest recipe YAMLs from
-    # runfiles (Path(__file__).parents[2]) to inject them each turn; the loader
-    # test exercises that read, so ship the recipes as data (same filegroup
-    # goosecracker_router_render_test uses) or the test hits FileNotFoundError.
-    data = ["//projects/firecracker/goosecracker/guest:recipe_yamls"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        # Task 6: _run_one_turn imports goosecracker.router_render (yaml.safe_dump)
-        # when a Plan is present; router_render_test already declares this same dep.
-        "@pip//pyyaml",
-    ],
-)
-
 py_test(
     name = "goosecracker_repo_catalog_test",
     srcs = ["goosecracker/tests/repo_catalog_test.py"],
@@ -6926,34 +6743,11 @@ py_test(
 py_test(
     name = "goosecracker_recipe_catalog_test",
     srcs = ["goosecracker/tests/recipe_catalog_test.py"],
-    # The drift-guard test reads the real, checked-in guest recipe YAMLs at
-    # projects/firecracker/goosecracker/guest/recipes/*.yaml via
-    # Path(__file__).parents[3], to assert the monolith manifest's id set
-    # matches them. Ship them as data (via the guest package's public
-    # recipe_yamls filegroup) so they land in the same runfiles tree the
-    # test's own parents-relative path walk resolves against.
-    data = ["//projects/firecracker/goosecracker/guest:recipe_yamls"],
+    data = glob(["goosecracker/recipes/*.yaml"]),
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
         "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "goosecracker_router_render_test",
-    srcs = ["goosecracker/tests/router_render_test.py"],
-    # The parse + drift-guard tests read the real, checked-in guest recipe
-    # YAMLs at projects/firecracker/goosecracker/guest/recipes/*.yaml via
-    # Path(__file__).parents[3] (same idiom as goosecracker_recipe_catalog_test),
-    # so ship them as data (the guest package's recipe_yamls filegroup) to land
-    # in the same runfiles tree the parents-relative path walk resolves against.
-    data = ["//projects/firecracker/goosecracker/guest:recipe_yamls"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
-        "@pip//pyyaml",
     ],
 )
 
@@ -7117,9 +6911,6 @@ semgrep_target_test(
         "tainted-path-traversal-stdlib-fastapi",
         # validate_image opens in-memory bytes, not a path; false positive (mirrors :main).
         "tainted-path-traversal-pillow-fastapi",
-        # TODO: fix trips/backfill/main.py logger name to use "monolith." prefix.
-        # semgrep-core does not honour inline # nosemgrep, so excluded here until fixed.
-        "logger-name-missing-monolith-prefix",  # keep
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":trips_backfill",

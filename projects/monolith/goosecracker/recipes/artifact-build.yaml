@@ -109,9 +109,7 @@ instructions: |
     and used through uk-* / data-uk-* attributes) is a good default. If you do,
     follow its attribute API exactly so the components actually initialize.
   The test: if someone could glance at it and say "an AI made this", redesign it.
-  For deeper guidance on a specific dimension you may read the files under
-  /opt/impeccable/ (typography.md, color-and-contrast.md, spatial-design.md,
-  motion-design.md, interaction-design.md, ux-writing.md) if they are present.
+  For deeper guidance, read the repository's .impeccable.md when it is present.
 
   When the file is written, emit your result as the LAST thing you write, using
   EXACTLY this format, nothing after the closing marker:

@@ -25,8 +25,7 @@ metadata:
 # management API), but turning "count of stateful_cold_booted ops with
 # reason=generation_mismatch in the last N minutes" into an alertable metric needs
 # either a control-plane metrics exporter or an op-log-to-metrics bridge, neither of
-# which exists yet. FLAGGED FOR JOE in DECISIONS.md (D-R4.PR-10.1) as a recorded
-# follow-on.
+# which exists yet.
 #
 # Until the metrics pipeline lands, investigate a suspected pairing regression by
 # querying the op-log directly (stateful_cold_booted rows with a generation_mismatch

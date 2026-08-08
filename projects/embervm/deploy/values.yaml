@@ -66,8 +66,7 @@ auth:
     # The PUBLIC tier (Task 13): monolith-public runs in its own namespace as its
     # own fullname-prefixed SA, so jomcgi.dev/functions/<name> submits as this
     # principal. All public FaaS traffic shares this one SA, so the daily quota
-    # below caps the entire public surface (the in-repo backpressure backstop in
-    # lieu of a Cloudflare-edge rate limit; see monolith DECISIONS.md D-R1.3.1).
+    # below caps the entire public surface as the in-repo backpressure backstop.
     - system:serviceaccount:monolith-public:monolith-public
 
 # Metering, audit, and quotas (Task 12). Quota is left OFF in R0 (opt-in, empty =
@@ -79,7 +78,7 @@ auth:
 usageAdmins:
   - system:serviceaccount:embervm:embervm-embervm
 
-# Public FaaS rate-limit backstop (Task 13, DECISIONS.md D-R1.3.1). All public
+# Public FaaS rate-limit backstop. All public
 # jomcgi.dev/functions/<name> traffic submits as the single monolith-public SA,
 # so a daily vCPU-second budget on that one principal caps the whole public
 # surface. og-image bills ~0.05 vCPU-s/invoke, so 3600/day is ~72k invokes/day;
@@ -389,7 +388,7 @@ warmthS3Gc:
 egress:
   enabled: true
   internal:
-    # THREE deliberate holes in the split-horizon guardrail. Matching is an exact
+    # TWO deliberate holes in the split-horizon guardrail. Matching is an exact
     # case-insensitive host compare against BOTH the requested host:port and the
     # resolved ip:port, so a name and its address are both accepted and pinning
     # the resolved IP is what defeats SSRF-by-name and DNS rebinding. No
@@ -399,9 +398,6 @@ egress:
     #
     # inference: the pi adapter drives the in-cluster Qwen model on this exact
     # host:port.
-    # git-mirror: workspace hydration (ADR agents/050). Anonymous read-only
-    # upload-pack plus receive-pack restricted to refs/agents/** by the mirror's
-    # pre-receive hook; no credential exists on this path.
     # monolith.monolith.svc.cluster.local:8091
     # Monolith progress-ingest (8091): mid-turn visibility, write-only single route
     # (ADR 051). Port 8091 only; the main API on 8000 stays deny. Token-bearer auth
@@ -409,7 +405,6 @@ egress:
     # partial_text), not network access.
     allowlist:
       - inference.inference.svc.cluster.local:8080
-      - git-mirror.monolith.svc.cluster.local:9418
       - monolith.monolith.svc.cluster.local:8091
   # The claude runtime's subscription OAuth token. The sidecar SETS the
   # Authorization header on requests to api.anthropic.com and originates the

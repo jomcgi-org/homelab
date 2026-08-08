@@ -8,7 +8,7 @@
 // connection manager stay STATIC in the bootstrap (byte-identical to R3); the
 // only listeners rendered here are the R4 stateful TCP-proxy listeners the
 // control plane publishes per workload, served dynamically over LDS on the same
-// ADS stream (DECISIONS.md D-R4.PR-3.1). A document with no `listeners` renders
+// ADS stream. A document with no `listeners` renders
 // exactly the R3 three-type snapshot (proven by a regression test). Keeping the
 // translation pure (stdlib + go-control-plane only) makes it unit-testable on a
 // workstation without an Envoy or a running server.

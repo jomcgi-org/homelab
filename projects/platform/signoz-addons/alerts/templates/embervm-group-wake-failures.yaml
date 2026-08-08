@@ -18,8 +18,8 @@ metadata:
 # that reliably proxies for "a composite group wake failed." This is the group
 # generalization of embervm-stateful-wake-failures.
 #
-# THIS IS A PLACEHOLDER (threshold-0 dry-run), NOT a live alert, per the D-R3.10.1
-# discipline: the query below is written against the closest structurally-related
+# THIS IS A PLACEHOLDER (threshold-0 dry-run), NOT a live alert. The query below
+# is written against the closest structurally-related
 # signal that DOES flow to SigNoz today (the `group-<listenPort>` tcp_proxy listener's
 # cumulative connection count staying flat, envoy_tcp_downstream_cx_total delta == 0,
 # while the workload is presumably being retried), but that signal is an
@@ -27,8 +27,7 @@ metadata:
 # IDENTICAL to a group whose wakes keep failing (both show zero new connections).
 # Firing this for real needs either a control-plane metrics exporter (turning the
 # GroupWakeManager wake failure outcome into a counter) or a spanmetrics-processor
-# bridge from the SigNoz trace pipeline, neither of which exists yet. FLAGGED FOR JOE
-# in DECISIONS.md (D-R5.PR-6.1).
+# bridge from the SigNoz trace pipeline, neither of which exists yet.
 #
 # The wake failure IS observable TODAY via the embervm.group.{create,relight,
 # fresh_boot} spans (ember.workload, ember.reason, per-member ember.was_relight) and

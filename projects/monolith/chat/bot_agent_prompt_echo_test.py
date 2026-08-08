@@ -63,7 +63,6 @@ def _make_bot() -> ChatBot:
 async def test_handle_agent_command_starts_session_after_prompt_echo():
     """The owner starts an EmberVM session after the prompt echo and intro."""
     bot = _make_bot()
-    bot._start_goosecracker_stream = MagicMock()
 
     interaction = MagicMock()
     interaction.guild_id = 555
@@ -104,4 +103,3 @@ async def test_handle_agent_command_starts_session_after_prompt_echo():
     start_session.assert_awaited_once_with(
         str(thread.id), "add a health check", "jomcgi/homelab", model="luna"
     )
-    bot._start_goosecracker_stream.assert_not_called()

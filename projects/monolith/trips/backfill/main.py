@@ -38,7 +38,7 @@ from trips import exif, transform
 from trips.models import Trip, TripPoint
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("trips.backfill")
+logger = logging.getLogger("monolith.trips.backfill")
 
 app = typer.Typer(help="Backfill the trips Postgres schema from S3 image EXIF.")
 
@@ -170,14 +170,8 @@ def _extract_photo_points(
 ) -> list[dict]:
     """Download images, pull EXIF, return photo point dicts (GPS only).
 
-    This deliberately calls exif.extract_exif / transform directly rather than
-    trips.ingest.build_point: build_point raises on no-GPS (the backfill skips
-    those silently) and emits a final TripPoint-shaped dict with elevation left
-    None, whereas the backfill carries an intermediate "key/lat/lng/timestamp/
-    optics" shape so it can dedupe and batch the NRCan elevation lookup and merge
-    gap points before constructing rows. The EXIF/transform core is already the
-    shared one (post-Task-1: exif.py + transform.py back both paths), so reusing
-    build_point here would tangle the flow without removing the real duplication.
+    The intermediate shape allows GPS-less photos to be skipped and coordinates
+    to be deduplicated before the batched elevation lookup.
     """
 
     def work(key: str):
