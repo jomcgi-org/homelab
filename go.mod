@@ -3,7 +3,7 @@ module github.com/jomcgi/homelab
 go 1.25.0
 
 require (
-	github.com/bazelbuild/bazel-gazelle v0.47.0
+	github.com/bazelbuild/bazel-gazelle v0.52.2
 	github.com/cloudflare/cloudflare-go v0.117.0
 	github.com/envoyproxy/go-control-plane v0.14.0
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
