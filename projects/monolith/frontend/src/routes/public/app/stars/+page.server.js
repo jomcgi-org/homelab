@@ -9,6 +9,31 @@ import {
 } from "../../../../lib/cache-headers.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
+const RETRY_DELAYS_MS = [100, 300];
+
+function retryableStatus(status) {
+  return [500, 502, 503, 504].includes(status);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchStars(fetch) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const res = await fetch(`${API_BASE}/api/stars/sites`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!retryableStatus(res.status) || attempt >= RETRY_DELAYS_MS.length) {
+        return res;
+      }
+    } catch (err) {
+      if (attempt >= RETRY_DELAYS_MS.length) throw err;
+    }
+    await delay(RETRY_DELAYS_MS[attempt]);
+  }
+}
 
 // SSR-only: the browser never calls /api/stars/* directly (that surface is not
 // exposed publicly). This load runs server-side in the same pod and the CDN
@@ -16,9 +41,7 @@ const API_BASE = process.env.API_BASE || "http://localhost:8000";
 // on a 30 min timer (invalidateAll) in the page, not from a client-side poll
 // (the refresh job runs 3-hourly).
 export async function load({ fetch, setHeaders }) {
-  const res = await fetch(`${API_BASE}/api/stars/sites`, {
-    signal: AbortSignal.timeout(10_000),
-  });
+  const res = await fetchStars(fetch);
   if (!res.ok) {
     throw error(503, "stars sites unavailable");
   }

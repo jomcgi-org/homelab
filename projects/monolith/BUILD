@@ -5113,6 +5113,17 @@ py_test(
 )
 
 py_test(
+    name = "stars_health_test",
+    srcs = ["stars/health_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_stars",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "hikes_walkhighlands_test",
     srcs = ["hikes/walkhighlands_test.py"],
     imports = ["."],

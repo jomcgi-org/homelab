@@ -26,20 +26,22 @@ climatology are unchanged; this only widens the live layer's fallback.
 
 Reached only from SvelteKit SSR (``http://localhost:8000`` in the same pod);
 the /app/stars page is the public surface and the CDN fans out to viewers, per
-ADR 002. Conditional GETs short-circuit with a 304 via ETag.
+ADR 002. The live sites payload is materialized by the Argo stars-refresh job
+and read from SeaweedFS here. Conditional GETs short-circuit with a 304 via
+ETag.
 
-The read-time hour filter (``hour_time >= top_of_hour(now)``) is the source of
-truth for "future windows": the endpoint never trusts the table to be already
-pruned. The hourly prune job is housekeeping only, so a stale row that has not
-been pruned yet is still excluded here.
+The Argo materializer applies the read-time hour filter
+(``hour_time >= top_of_hour(now)``) before publishing. The web endpoint serves
+that compact snapshot and never hydrates the forecast table.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
 from core.db import get_session
@@ -101,10 +103,54 @@ def _iso(value: datetime | None) -> str | None:
 @router.get("/sites")
 def get_sites(
     request: Request,
+):
+    """Serve the compact forecast snapshot materialized by the Argo job."""
+    try:
+        body, etag = _read_materialized_sites()
+    except Exception as exc:  # noqa: BLE001 - turn storage failure into 503
+        logger.exception("stars sites materialized payload unavailable")
+        raise HTTPException(status_code=503, detail="stars sites unavailable") from exc
+
+    headers = {"Cache-Control": _SITES_CACHE_CONTROL, "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json", headers=headers)
+
+
+def _read_materialized_sites() -> tuple[bytes, str]:
+    """Read the precomputed sites payload from SeaweedFS."""
+    endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "").strip()
+    if not endpoint:
+        raise RuntimeError("SEAWEEDFS_S3_ENDPOINT is not configured")
+
+    from botocore.exceptions import ClientError
+    from stars.grid import _s3_client
+
+    bucket = os.environ.get("STARS_GRID_S3_BUCKET", "stars")
+    key = os.environ.get("STARS_SITES_S3_KEY", "sites.json")
+    try:
+        obj = _s3_client().get_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "NoSuchBucket", "404", "NotFound"):
+            raise RuntimeError(f"missing materialized object {bucket}/{key}") from exc
+        raise
+    body = obj["Body"].read()
+    # The Argo materializer validates the object before publishing it. Keep the
+    # web path to one bounded bytes buffer and return it without ORM hydration
+    # or JSON parse/serialize churn.
+    etag = obj.get("ETag", "").strip('"')
+    if not etag:
+        raise RuntimeError("materialized stars payload has no ETag")
+    return body, f'"artifact-{etag}"'
+
+
+def _build_sites_from_db(
+    request: Request,
     response: Response,
     session: Session = Depends(get_session),
 ):
-    """All dark-sky sites with their upcoming clear-dark hours. SSR-only, CDN-cached."""
+    """Build the payload in the Argo materializer, never in the web pod."""
     now = datetime.now(timezone.utc)
     cutoff = top_of_hour(now)
 
