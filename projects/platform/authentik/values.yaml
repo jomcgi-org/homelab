@@ -41,9 +41,9 @@ authentik:
       enabled: true
     route:
       main:
-        # Enable only after the local installation and break-glass path are
-        # verified. The route uses the shared Cloudflare Gateway when enabled.
-        enabled: false
+        # Public login and OIDC discovery endpoint. Admin access remains an
+        # authentik policy concern and friend applications are separate routes.
+        enabled: true
         hostnames:
           - auth.jomcgi.dev
         parentRefs:
