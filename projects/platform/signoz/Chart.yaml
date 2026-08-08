@@ -2,14 +2,14 @@ apiVersion: v2
 name: signoz
 description: A Helm chart wrapper for SigNoz
 type: application
-version: 0.1.2
+version: 0.1.3
 appVersion: "0.128.0"
 dependencies:
   - name: signoz
     version: 0.128.0
     repository: https://charts.signoz.io
   - name: k8s-infra
-    version: 0.15.0
+    version: 0.16.0
     repository: https://charts.signoz.io
   - name: cf-ingress
     version: 0.1.0
