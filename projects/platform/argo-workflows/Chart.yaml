@@ -2,12 +2,12 @@ apiVersion: v2
 name: argo-workflows
 description: Argo Workflows engine, namespace-scoped to 'argo' - off-pod batch job execution for the monolith
 type: application
-version: 1.0.0
+version: 1.0.1
 appVersion: "v4.0.6"
 
 dependencies:
   - name: argo-workflows
-    version: "1.0.16"
+    version: "1.0.23"
     repository: https://argoproj.github.io/argo-helm
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
