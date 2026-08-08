@@ -61,13 +61,23 @@ jobs:
   dbSecretName: monolith-pg-app
   dbSecretKey: uri
   cronWorkflows:
+    # worldcup.refresh cut over to Argo 2026-06-22, then the tournament it
+    # models resolved on 2026-06-28: all 72 group fixtures finished and
+    # qualification went final (16 eliminated / 32 qualified). The sim
+    # early-exits with nothing left to simulate, so every run since has been a
+    # no-op, confirmed live by fixtures.updated_at and qualification.computed_at
+    # both frozen at 2026-06-28T04:30Z (~1950 runs, zero writes). MANUAL-ONLY
+    # per the idiom below: suspended, not deleted, because the standings page
+    # still serves the stored rows and deleting the entry would tear down the
+    # CronWorkflow they are read through. Hand-submit it if fixtures are ever
+    # reloaded for the next tournament.
     - name: worldcup-sim
       replaces: worldcup.refresh
       args: ["worldcup-sim"]
-      schedule: "*/30 * * * *"
+      schedule: "0 0 1 1 *"
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 600
-      suspend: false # worldcup.refresh cut over to Argo 2026-06-22
+      suspend: true
       resources:
         requests:
           cpu: 250m
@@ -118,14 +128,19 @@ jobs:
     # stats_rollup counts cluster resources via the in-cluster K8s API, so it
     # runs under the dedicated least-privilege monolith-stats SA (defined in the
     # argo-workflows platform chart) instead of the shared executor SA. Also
-    # needs ClickHouse for GPU metrics. 2-min cadence (was 120s); per-run pod
-    # overhead ~10s is fine.
+    # needs ClickHouse for GPU metrics. 5-min cadence (was 2-min, originally
+    # 120s): a rollup of counters nobody reads sub-minute did not justify 720
+    # pods/day at ~10s per-run overhead. Deadline widened 120 -> 240s because
+    # the old 120 was only ~6-12x a normal 10-20s run, so a brief upstream
+    # stall tripped it: on 2026-08-07 05:36-05:55Z this job failed 5 times on
+    # "active longer than the specified deadline" while the work itself was
+    # fine. Kept under the 5-min interval so Forbid never perpetually skips.
     - name: observability-stats-rollup
       replaces: observability.stats_rollup
       args: ["observability-stats-rollup"]
-      schedule: "*/2 * * * *"
+      schedule: "*/5 * * * *"
       concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 120
+      activeDeadlineSeconds: 240
       suspend: false
       serviceAccountName: monolith-stats
       env:
@@ -363,14 +378,29 @@ jobs:
     # private dashboard reads a single row instead of doing a live ~235-resource
     # scan on every request. Cluster reads run under the dedicated least-privilege
     # monolith-stats SA (same as observability-stats-rollup). SIGNOZ_API_KEY is the
-    # 1Password key cloned into monolith-workflows by Kyverno. Every minute, to
-    # match the frontend's 60s refresh.
+    # 1Password key cloned into monolith-workflows by Kyverno.
+    #
+    # 2-min cadence (was every minute). The binding constraint is NOT the
+    # frontend's 60s poll (private/+page.svelte) but cluster_snapshot.py's
+    # _STALE_FALLBACK_SECS = 600: past 10 minutes the reader abandons the row
+    # and does the live ~235-resource scan per request rather than serve a
+    # stale "all healthy". 2 min sits well inside that, so the dashboard shows
+    # at most 2-min-old data and the fallback never trips. Do NOT stretch this
+    # past ~5 min: crossing the 600s floor makes every dashboard request a full
+    # live scan, which is far worse than the cron it would be saving.
+    # Halving the cadence drops 1440 -> 720 pods/day, the single biggest source
+    # of workflow pod churn in this registry. Deadline widened 120 -> 240s for
+    # the same reason as observability-stats-rollup: this job failed 5 times in
+    # the 2026-08-07 05:36-05:55Z stall purely on the deadline. That deadline
+    # deliberately exceeds the 2-min interval, so under Forbid a slow run skips
+    # the next window: at a 600s staleness budget, one skipped window (4-min-old
+    # data) beats a run killed at 120s that writes nothing at all.
     - name: home-cluster-snapshot-refresh
       replaces: home.cluster_snapshot_refresh
       args: ["home-cluster-snapshot-refresh"]
-      schedule: "* * * * *"
+      schedule: "*/2 * * * *"
       concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 120
+      activeDeadlineSeconds: 240
       suspend: false
       serviceAccountName: monolith-stats
       env:
