@@ -1,9 +1,9 @@
 dependencies:
 - name: argo-cd
   repository: https://argoproj.github.io/argo-helm
-  version: 8.5.3
+  version: 8.6.4
 - name: cf-ingress
   repository: file://../cf-ingress-library
   version: 0.1.0
-digest: sha256:a58da0f86f41348c5e8b55a94407ccff028d5a5f3cadbc78964cdd0cf6d16c0f
-generated: "2026-06-12T19:32:04.544223877Z"
+digest: sha256:c1d35856157992c500d57194d0e61ee46ff5444ac2fba632d0cdf53e0f890654
+generated: "2026-08-08T07:50:05.829442301Z"
