@@ -1,9 +1,8 @@
 # AGENTS.md
 
 Instructions for coding agents (Codex workers, Claude implementers) working
-in this repo or a worktree of it. The orchestrator that dispatched you
-reviews your diff, runs CI, and commits; your job is a clean working tree
-that implements the spec.
+in this repo or a worktree of it. Keep work scoped to the requested change and
+leave a clean, reviewable diff.
 
 ## Ground rules
 
@@ -11,6 +10,10 @@ that implements the spec.
   commit or pull request, agents may create a branch, commit the scoped changes,
   push it, and open or update the pull request. Never include unrelated working
   tree changes.
+- For work expected to produce a commit or pull request, create a dedicated git
+  worktree and branch before editing. Do not develop directly in the primary
+  checkout. Read-only investigation and changes the user explicitly wants left
+  uncommitted are exempt.
 - Do NOT run `bazel`, `go test`, `npm test`, or full test suites on this
   machine. macOS has no matching remote executors and the results mislead.
 - You MAY run targeted `pytest` on the specific test files you edited when
