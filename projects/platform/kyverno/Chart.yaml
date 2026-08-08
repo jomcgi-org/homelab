@@ -2,12 +2,12 @@ apiVersion: v2
 name: kyverno
 description: Kyverno policy engine with ClusterPolicies for GHCR secret management
 type: application
-version: 1.0.4
+version: 1.0.5
 appVersion: "3.5.2"
 
 dependencies:
   - name: kyverno
-    version: 3.5.2
+    version: 3.8.2
     repository: https://kyverno.github.io/kyverno
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
