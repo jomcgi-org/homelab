@@ -43,3 +43,18 @@ secret:
 httpRoute:
   enabled: true
   hostname: mcp.jomcgi.dev
+
+# friends.jomcgi.dev reaches exactly one virtual server, "friends-empty",
+# which is deliberately empty: tools/list returns [] so the hostname exposes
+# nothing even though MCP_REQUIRE_AUTH is off and no Cloudflare Access
+# application covers it. It exists to test whether a Claude connector can
+# complete an OAuth flow against authentik, via the virtual server's own
+# oauth_enabled / oauth_config, without spending Zero Trust seats.
+#
+# Do not add tools to that virtual server while it is unauthenticated.
+scopedRoutes:
+  - name: friends
+    enabled: true
+    hostname: friends.jomcgi.dev
+    tier: public
+    serverId: "5853c9310afc49699c96be8608a99cb7"

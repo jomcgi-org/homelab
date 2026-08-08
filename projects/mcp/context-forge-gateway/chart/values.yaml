@@ -101,6 +101,18 @@ httpRoute:
     name: cloudflare-ingress
     namespace: envoy-gateway-system
 
+# Per-tier hostnames, each scoped to exactly one virtual server. See
+# templates/httproute-scoped.yaml for why these must never route "/".
+# serverId is a Context Forge runtime object id, so a recreated virtual
+# server needs this value updated. That coupling is one of the reasons this
+# pattern does not scale past the experiment it was added for.
+scopedRoutes: []
+#  - name: friends
+#    enabled: true
+#    hostname: friends.jomcgi.dev
+#    tier: public
+#    serverId: "<virtual server uuid>"
+
 # Periodic tool-catalog refresh. CF does not auto-discover new monolith MCP
 # tools (its health-gated auto-refresh never fires for the SSE monolith gateway,
 # whose last_seen never advances under the streamablehttp health tick), so a
