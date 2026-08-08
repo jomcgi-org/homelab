@@ -156,21 +156,37 @@ def _build_sites_from_db(
 
     # Static site metadata, keyed by site id, joined into each row group at read
     # time. Sourced from the stars.sites table (light-pollution grid, ADR 006).
-    by_id = {site.id: site for site in session.exec(select(Site)).all()}
+    by_id = {
+        site.id: site
+        for site in session.exec(
+            select(
+                Site.id, Site.name, Site.lat, Site.lon, Site.altitude_m, Site.lp_zone
+            )
+        ).all()
+    }
 
     # Read-time correctness filter: only hours at or after the current clock
     # hour. The prune job is best-effort housekeeping; the endpoint must not
     # trust the table to be already pruned.
-    rows = session.exec(select(SiteHour).where(SiteHour.hour_time >= cutoff)).all()
+    rows = session.exec(
+        select(
+            SiteHour.site_id,
+            SiteHour.hour_time,
+            SiteHour.cloud_area_fraction,
+            SiteHour.sun_elevation_deg,
+            SiteHour.fetched_at,
+        ).where(SiteHour.hour_time >= cutoff)
+    ).all()
 
-    by_site: dict[str, list[SiteHour]] = {}
+    # Keep only the five scalar fields needed by the response. The previous
+    # implementation hydrated ~340k SQLModel objects, which OOM-killed both the
+    # web pod and the 512 MiB materializer job.
+    by_site: dict[str, list[tuple[datetime, float, float]]] = {}
     max_fetched: datetime | None = None
-    for row in rows:
-        if row.fetched_at is not None and (
-            max_fetched is None or row.fetched_at > max_fetched
-        ):
-            max_fetched = row.fetched_at
-        by_site.setdefault(row.site_id, []).append(row)
+    for site_id, hour_time, cloud, sun, fetched_at in rows:
+        if fetched_at is not None and (max_fetched is None or fetched_at > max_fetched):
+            max_fetched = fetched_at
+        by_site.setdefault(site_id, []).append((hour_time, cloud, sun))
 
     # Track, across all sites, whether any site has a true-dark hour (sun < -12,
     # cloud-independent) and whether any kept hour exists at all (< -10). These
@@ -198,12 +214,9 @@ def _build_sites_from_db(
         # always >= the dark count. In a normal (dark) night they are equal; only
         # in the midsummer no-true-dark window does twilight exceed dark.
         clear_twilight = [
-            h
-            for h in hours
-            if is_twilight_hour(h.sun_elevation_deg)
-            and h.cloud_area_fraction < CLEAR_CLOUD_MAX_PCT
+            h for h in hours if is_twilight_hour(h[2]) and h[1] < CLEAR_CLOUD_MAX_PCT
         ]
-        clear_hours = [h for h in clear_twilight if is_dark_hour(h.sun_elevation_deg)]
+        clear_hours = [h for h in clear_twilight if is_dark_hour(h[2])]
         clear_dark_hours = len(clear_hours)
         clear_twilight_hours = len(clear_twilight)
 
@@ -212,9 +225,9 @@ def _build_sites_from_db(
         # twilight) at all tonight" is a sky-geometry question, not a cloud one.
         # Every kept row is already below the -10 floor, but check explicitly so
         # the mode stays correct even against unexpected rows.
-        if any(is_dark_hour(h.sun_elevation_deg) for h in hours):
+        if any(is_dark_hour(h[2]) for h in hours):
             any_dark_hour = True
-        if any(is_twilight_hour(h.sun_elevation_deg) for h in hours):
+        if any(is_twilight_hour(h[2]) for h in hours):
             any_twilight_hour = True
 
         # The site's upcoming clear windows in chronological order, capped at
@@ -228,11 +241,11 @@ def _build_sites_from_db(
         # headlines above carry the magnitudes.
         best_hours = [
             {
-                "time": _iso(h.hour_time),
-                "cloud_area_fraction": h.cloud_area_fraction,
-                "dark": is_dark_hour(h.sun_elevation_deg),
+                "time": _iso(h[0]),
+                "cloud_area_fraction": h[1],
+                "dark": is_dark_hour(h[2]),
             }
-            for h in sorted(clear_twilight, key=lambda h: h.hour_time)[:_DISPLAY_HOURS]
+            for h in sorted(clear_twilight, key=lambda h: h[0])[:_DISPLAY_HOURS]
         ]
         sites.append(
             {
