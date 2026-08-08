@@ -1,0 +1,11 @@
+apiVersion: v2
+name: authentik-homelab
+description: Homelab deployment wrapper for the official authentik chart
+type: application
+version: 0.1.0
+appVersion: "2026.5.6"
+dependencies:
+  - name: authentik
+    version: 2026.5.6
+    repository: https://charts.goauthentik.io
+

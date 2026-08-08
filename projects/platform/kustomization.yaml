@@ -5,6 +5,7 @@ resources:
   - ./argocd
   - ./argo-workflows # Namespace-scoped (monolith-workflows ns) batch-job executor for the monolith
   - ./atlas-operator/deploy
+  - ./authentik
   - ./cert-manager
   - ./cilium # CNI; manual-sync-disabled until the Cilium cutover window (ADR platform/012)
   - ./cloudnative-pg/deploy
