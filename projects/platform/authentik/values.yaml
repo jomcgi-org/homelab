@@ -92,6 +92,12 @@ authentik:
       metadata:
         name: authentik-secrets
         namespace: authentik
+        annotations:
+          # The operator runs AUTO_RESTART=false, and both pods read this
+          # secret through envFrom, which is evaluated only at container
+          # start. Without this, rotating a field updates the Secret and
+          # changes nothing in the running process, with no error anywhere.
+          operator.1password.io/auto-restart: "true"
         labels:
           app.kubernetes.io/name: authentik
           app.kubernetes.io/part-of: authentik
