@@ -2,11 +2,11 @@ apiVersion: v2
 name: argocd
 description: local argocd
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: "2.13.2"
 dependencies:
   - name: argo-cd
-    version: 8.5.3
+    version: 8.6.4
     repository: https://argoproj.github.io/argo-helm
   - name: cf-ingress
     version: 0.1.0
