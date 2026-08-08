@@ -1,0 +1,16 @@
+apiVersion: v2
+name: renovate
+description: Self-hosted Renovate dependency updates on Argo Workflows
+type: application
+version: 0.1.0
+appVersion: "44.14.10"
+maintainers:
+  - name: jomcgi
+keywords:
+  - renovate
+  - dependencies
+  - argo-workflows
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"

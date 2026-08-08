@@ -49,6 +49,7 @@ commits.
 | [`node-traffic-shaper/`](node-traffic-shaper/) | Caps inbound bandwidth on a node's uplink with CAKE so a bulk download can't starve latency-sensitive control-plane traffic. |
 | [`nvidia-gpu-operator/`](nvidia-gpu-operator/) | GPU driver management and device-plugin configuration for the inference nodes.                                               |
 | [`argo-workflows/`](argo-workflows/)           | Namespace-scoped Argo Workflows engine for off-pod batch job execution, used by the monolith's job scheduler.                |
+| [`renovate/`](renovate/)                       | Daily self-hosted dependency updates, executed as an Argo CronWorkflow with credentials sourced from 1Password.              |
 
 Most components have their own README with configuration detail; where one doesn't
 exist yet, the `application.yaml`/`Chart.yaml` in that directory is the source of truth.

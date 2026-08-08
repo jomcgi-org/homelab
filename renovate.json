@@ -8,20 +8,94 @@
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
   "dependencyDashboard": true,
-  "dependencyDashboardTitle": "Upstream chart and dependency drift",
-  "labels": ["dependencies", "upstream-chart"],
+  "dependencyDashboardTitle": "Dependency updates and lock maintenance",
+  "labels": ["dependencies"],
+  "timezone": "America/Vancouver",
   "schedule": ["before 6am on monday"],
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,
-  "enabledManagers": ["argocd", "helmv3"],
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "enabledManagers": [
+    "argocd",
+    "bazel-module",
+    "bazelisk",
+    "custom.regex",
+    "dockerfile",
+    "github-actions",
+    "gomod",
+    "helm-values",
+    "helmv3",
+    "kubernetes",
+    "npm",
+    "pep621"
+  ],
   "argocd": {
-    "fileMatch": ["projects/.+/application\\.yaml$"]
+    "managerFilePatterns": ["/projects/.+/application\\.yaml$/"]
   },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update the self-hosted Renovate runner image.",
+      "managerFilePatterns": ["/projects/platform/renovate/values\\.yaml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+tag: \\\"?(?<currentValue>[^\\s\\\"]+)\\\"?"
+      ],
+      "versioningTemplate": "docker"
+    }
+  ],
   "packageRules": [
+    {
+      "description": "Identify upstream chart updates in the broader dependency stream.",
+      "matchManagers": ["argocd", "helmv3"],
+      "addLabels": ["upstream-chart"]
+    },
+    {
+      "description": "Keep committed Helm lock files and subchart archives synchronized.",
+      "matchManagers": ["helmv3"],
+      "postUpdateOptions": ["helmUpdateSubChartArchives"],
+      "postUpgradeTasks": {
+        "commands": [
+          "bash projects/platform/renovate/scripts/bump-renovated-chart.sh {{{packageFileDir}}}"
+        ],
+        "fileFilters": [
+          "**/Chart.yaml",
+          "**/Chart.lock",
+          "**/application.yaml",
+          "**/charts/*.tgz"
+        ],
+        "executionMode": "update"
+      }
+    },
+    {
+      "description": "Regenerate Bazel's compiled Python requirement locks after pyproject updates.",
+      "matchManagers": ["pep621"],
+      "postUpgradeTasks": {
+        "commands": ["bazel/tools/format/update-python-requirements.sh"],
+        "fileFilters": ["pyproject.toml", "bazel/requirements/*.txt"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "Bump the Renovate wrapper chart when its runner image changes.",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["ghcr.io/renovatebot/renovate"],
+      "postUpgradeTasks": {
+        "commands": [
+          "bash projects/platform/renovate/scripts/bump-renovated-chart.sh projects/platform/renovate"
+        ],
+        "fileFilters": [
+          "projects/platform/renovate/Chart.yaml",
+          "projects/platform/renovate/values.yaml"
+        ],
+        "executionMode": "update"
+      }
+    },
     {
       "description": "First-party charts are owned by chart-version-bot, never Renovate.",
       "matchDepNames": [
         "monolith",
+        "mcp-stack",
         "agent-platform",
         "cluster-agents",
         "lakehouse",
@@ -39,15 +113,16 @@
       "enabled": false
     },
     {
-      "description": "Keep upstream chart majors as separate, clearly labelled PRs so a human can judge them in isolation.",
-      "matchManagers": ["argocd", "helmv3"],
-      "matchUpdateTypes": ["major"],
-      "addLabels": ["major-upgrade"],
-      "separateMajorMinor": true
+      "description": "Patch and minor updates may merge only after release-age checks and required CI pass.",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
     },
     {
-      "description": "Never automerge. A human reads the changelog and decides.",
-      "matchManagers": ["argocd", "helmv3"],
+      "description": "Keep major upgrades as separate, clearly labelled PRs for human review.",
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major-upgrade"],
       "automerge": false
     }
   ]
