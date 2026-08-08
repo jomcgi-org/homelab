@@ -2,13 +2,13 @@ apiVersion: v2
 name: cert-manager
 description: X.509 certificate management for Kubernetes
 type: application
-version: 1.0.0
+version: 1.0.1
 appVersion: "v1.19.1"
 
 dependencies:
   - name: cert-manager
     repository: oci://quay.io/jetstack/charts
-    version: v1.19.1
+    version: v1.21.1
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
   org.opencontainers.image.url: "https://github.com/jomcgi/homelab"

@@ -2,13 +2,13 @@ apiVersion: v2
 name: cilium
 description: Cilium eBPF CNI, encryption, and network policy for the cluster
 type: application
-version: 1.0.0
+version: 1.0.1
 appVersion: "1.19.5"
 
 dependencies:
   - name: cilium
     repository: oci://quay.io/cilium/charts
-    version: 1.19.5
+    version: 1.20.0
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
   org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
