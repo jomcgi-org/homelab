@@ -145,7 +145,7 @@
     historyLoading = true;
     historyError = false;
     try {
-      const res = await fetch(`/app/stars/history`);
+      const res = await fetch(`/app/stars/history-map`);
       if (!res.ok) throw new Error(`history ${res.status}`);
       const payload = await res.json();
       historyAllSites = payload.sites ?? [];
@@ -220,6 +220,13 @@
   let agoLabel = $derived(formatAgo(data.snapshot?.fetched_at, nowMs));
 
   onMount(() => {
+    // Warm the tiny historical visual payload after the live page has mounted.
+    // Historical mode then swaps instantly for most visitors without putting
+    // its request on the critical path.
+    const warmHistory = () => loadHistory();
+    const idle = window.requestIdleCallback
+      ? window.requestIdleCallback(warmHistory, { timeout: 2000 })
+      : window.setTimeout(warmHistory, 1000);
     // Live updates: re-run the SSR load every 30 min (the refresh job runs
     // 3-hourly). Same pattern as /app/hikes.
     const refresh = setInterval(() => {
@@ -231,6 +238,11 @@
     // sub-minute resolution.
     const clockTick = setInterval(() => (nowMs = Date.now()), 5 * 60_000);
     return () => {
+      if (window.cancelIdleCallback && typeof idle === "number") {
+        window.cancelIdleCallback(idle);
+      } else {
+        window.clearTimeout(idle);
+      }
       clearInterval(refresh);
       clearInterval(clockTick);
     };

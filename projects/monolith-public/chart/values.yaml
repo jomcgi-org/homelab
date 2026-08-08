@@ -363,6 +363,8 @@ web:
       value: "sites.json"
     - name: STARS_MAP_S3_KEY
       value: "map.json"
+    - name: STARS_HISTORY_MAP_S3_KEY
+      value: "history-map.json"
     - name: ARTIFACTS_S3_BUCKET
       value: "artifacts"
   # CPU request is sized so the HPA's per-container CPU utilization is a

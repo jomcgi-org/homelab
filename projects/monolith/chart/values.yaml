@@ -1143,6 +1143,7 @@ stars:
   climatologyKey: "climatology.json"
   sitesKey: "sites.json"
   mapKey: "map.json"
+  historyMapKey: "history-map.json"
   s3AccessKeyId: "duckdb"
   s3SecretAccessKey: "duckdb"
 
