@@ -1,0 +1,44 @@
+image:
+  repository: ghcr.io/renovatebot/renovate
+  # renovate: datasource=docker depName=ghcr.io/renovatebot/renovate
+  tag: "44.14.10-full"
+  pullPolicy: IfNotPresent
+
+schedule: "0 4 * * *"
+timezone: America/Vancouver
+suspend: false
+startingDeadlineSeconds: 3600
+activeDeadlineSeconds: 7200
+
+onepassword:
+  itemPath: vaults/k8s-homelab/items/renovate-github
+  secretName: renovate-github
+  tokenKey: RENOVATE_TOKEN
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 2Gi
+    ephemeral-storage: 1Gi
+  limits:
+    memory: 2Gi
+    ephemeral-storage: 4Gi
+
+workspace:
+  sizeLimit: 4Gi
+
+apkoLockMaintenance:
+  schedule: "0 1 * * 1"
+  timezone: America/Vancouver
+  suspend: false
+  startingDeadlineSeconds: 3600
+  activeDeadlineSeconds: 14400
+  resources:
+    requests:
+      cpu: 500m
+      memory: 4Gi
+      ephemeral-storage: 4Gi
+    limits:
+      memory: 4Gi
+      ephemeral-storage: 16Gi
+  workspaceSizeLimit: 16Gi

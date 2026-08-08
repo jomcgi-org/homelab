@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: renovate-apko-lock-maintenance
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: renovate
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  maintain.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    branch="renovate/apko-lock-maintenance"
+    repo="https://github.com/jomcgi/homelab.git"
+    workspace="/tmp/apko-maintenance"
+    askpass="/tmp/renovate-git-askpass"
+
+    cat >"$askpass" <<'ASKPASS'
+    #!/bin/sh
+    case "$1" in
+      *Username*) printf '%s\n' 'x-access-token' ;;
+      *) printf '%s\n' "$RENOVATE_TOKEN" ;;
+    esac
+    ASKPASS
+    chmod 0700 "$askpass"
+    trap 'rm -f "$askpass"' EXIT
+    export GIT_ASKPASS="$askpass"
+    export GIT_TERMINAL_PROMPT=0
+
+    git clone --depth=1 --branch main "$repo" "$workspace"
+    cd "$workspace"
+    git checkout -B "$branch"
+
+    while IFS= read -r -d '' config; do
+      echo "Refreshing ${config}"
+      bazel run @rules_apko//apko -- lock "$config"
+    done < <(
+      find projects buck2 -type f \( -name apko.yaml -o -name 'apko-*.yaml' \) -print0
+    )
+
+    ./bazel/tools/format/run-generators.sh
+
+    if git diff --quiet; then
+      echo "All apko locks are current"
+      exit 0
+    fi
+
+    git config user.name "renovate[bot]"
+    git config user.email "renovate[bot]@users.noreply.github.com"
+    git add -A
+    git commit -m "chore(deps): refresh apko locks"
+
+    if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+      git fetch origin "$branch"
+      lease="$(git rev-parse FETCH_HEAD)"
+      git push --force-with-lease="refs/heads/${branch}:${lease}" origin "HEAD:refs/heads/${branch}"
+    else
+      git push origin "HEAD:refs/heads/${branch}"
+    fi
+
+    node --input-type=module <<'NODE'
+    const token = process.env.RENOVATE_TOKEN;
+    const api = "https://api.github.com";
+    const owner = "jomcgi";
+    const repo = "homelab";
+    const branch = "renovate/apko-lock-maintenance";
+    const headers = {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    };
+
+    async function request(path, options = {}) {
+      const response = await fetch(`${api}${path}`, { headers, ...options });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(`${options.method || "GET"} ${path}: ${response.status} ${JSON.stringify(body)}`);
+      }
+      return body;
+    }
+
+    const pulls = await request(`/repos/${owner}/${repo}/pulls?state=open&head=${owner}:${encodeURIComponent(branch)}`);
+    const pull = pulls[0] || await request(`/repos/${owner}/${repo}/pulls`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: "chore(deps): refresh apko locks",
+        head: branch,
+        base: "main",
+        body: "Weekly refresh of resolved Wolfi packages in every committed apko lock. Generated on Linux with the repository's rules_apko toolchain.",
+      }),
+    });
+
+    await request(`/repos/${owner}/${repo}/issues/${pull.number}/labels`, {
+      method: "POST",
+      body: JSON.stringify({ labels: ["dependencies"] }),
+    });
+
+    if (!pull.auto_merge) {
+      const mutation = `mutation($pullRequestId: ID!) {
+        enablePullRequestAutoMerge(input: {
+          pullRequestId: $pullRequestId,
+          mergeMethod: REBASE
+        }) { pullRequest { number } }
+      }`;
+      const graph = await request("/graphql", {
+        method: "POST",
+        body: JSON.stringify({ query: mutation, variables: { pullRequestId: pull.node_id } }),
+      });
+      if (graph.errors?.length) {
+        throw new Error(`enable auto-merge: ${JSON.stringify(graph.errors)}`);
+      }
+    }
+    console.log(`apko lock PR ready: ${pull.html_url}`);
+    NODE

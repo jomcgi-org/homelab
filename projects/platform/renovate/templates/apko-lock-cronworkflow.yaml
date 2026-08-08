@@ -1,0 +1,89 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: renovate-apko-lock-maintenance
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: renovate
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  schedules:
+    - {{ .Values.apkoLockMaintenance.schedule | quote }}
+  timezone: {{ .Values.apkoLockMaintenance.timezone | quote }}
+  concurrencyPolicy: Forbid
+  suspend: {{ .Values.apkoLockMaintenance.suspend }}
+  startingDeadlineSeconds: {{ .Values.apkoLockMaintenance.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  workflowSpec:
+    entrypoint: maintain
+    serviceAccountName: argo-workflow
+    activeDeadlineSeconds: {{ .Values.apkoLockMaintenance.activeDeadlineSeconds }}
+    retryStrategy:
+      limit: "1"
+      retryPolicy: OnFailure
+      backoff:
+        duration: 2m
+        factor: "2"
+        maxDuration: 10m
+    ttlStrategy:
+      secondsAfterCompletion: 3600
+      secondsAfterSuccess: 3600
+      secondsAfterFailure: 86400
+    podGC:
+      strategy: OnWorkflowSuccess
+    podMetadata:
+      annotations:
+        otel.injected-by: kyverno/inject-otel-env-vars
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 12021
+      runAsGroup: 12021
+      fsGroup: 12021
+      seccompProfile:
+        type: RuntimeDefault
+    templates:
+      - name: maintain
+        container:
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/bash
+          args:
+            - /opt/renovate-apko/maintain.sh
+          env:
+            - name: RENOVATE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.onepassword.secretName }}
+                  key: {{ .Values.onepassword.tokenKey }}
+            - name: HOME
+              value: /tmp/home
+            - name: XDG_CACHE_HOME
+              value: /tmp/cache
+            - name: BAZELISK_HOME
+              value: /tmp/cache/bazelisk
+          resources:
+            {{- toYaml .Values.apkoLockMaintenance.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            - name: workspace
+              mountPath: /tmp
+            - name: script
+              mountPath: /opt/renovate-apko
+              readOnly: true
+    volumes:
+      - name: workspace
+        emptyDir:
+          sizeLimit: {{ .Values.apkoLockMaintenance.workspaceSizeLimit }}
+      - name: script
+        configMap:
+          name: renovate-apko-lock-maintenance
+          defaultMode: 0555

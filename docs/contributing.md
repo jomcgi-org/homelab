@@ -159,8 +159,11 @@ is what makes chart version collisions between concurrent PRs detectable
 (see [ADR platform/011](decisions/platform/011-idempotent-chart-publish-missed-bump-detection.md)).
 Any PR whose code must deploy bumps its chart version in the same PR; a
 missed bump fails the main-branch image push loudly with the fix command.
-Renovate opens weekly PRs for upstream chart drift; upgrades are judged
-against changelogs before merge, never auto-merged.
+Renovate opens weekly dependency PRs. Patch and minor upgrades may rebase-merge
+automatically after a three-day release age and all required checks pass. Major
+upgrades remain isolated for changelog review. A sibling Argo CronWorkflow
+refreshes the committed apko locks weekly and uses the same CI-gated auto-merge
+policy.
 
 ## Testing Philosophy
 
