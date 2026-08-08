@@ -8,7 +8,7 @@ from uuid import uuid4
 from sqlmodel import Session
 
 from agent_sessions import model_family, store
-from agent_sessions.codex_login import codex_login_gate
+from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.mcp import (
     _load_session_row,
     _persist_pending_message,
@@ -34,9 +34,6 @@ async def start_session_for_thread(
     if repo is not None and repo not in REPO_CATALOG:
         raise ValueError(f"unknown repo {repo}; catalog: {', '.join(REPO_CATALOG)}")
     model_family(model)
-    login = await codex_login_gate(model)
-    if login is not None:
-        return login
     row = await asyncio.to_thread(
         _persist_session,
         str(uuid4()),
@@ -47,6 +44,17 @@ async def start_session_for_thread(
         discord_thread=thread_id,
     )
     await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
+    login = await codex_login_gate(model)
+    if login is not None:
+        # Keep the thread binding and original prompt durable while the owner
+        # approves the device code. The watcher starts this exact pending turn
+        # once the broker reports granted.
+        async def resume() -> None:
+            await asyncio.to_thread(_set_session_status, row.id, "running")
+            _schedule_next_message(row.id)
+
+        watch_for_login(login.get("grant", "codex-cluster"), resume)
+        return login
     _schedule_next_message(row.id)
     return row.id
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -11,6 +13,10 @@ from agent_sessions import mcp
 
 _DEFAULT_GRANT = mcp._DEFAULT_GRANT
 logger = logging.getLogger(__name__)
+
+_LOGIN_POLL_INTERVAL = 5
+_LOGIN_TIMEOUT = 15 * 60
+_login_watch_tasks: set[asyncio.Task] = set()
 
 
 async def codex_login_gate(
@@ -67,3 +73,38 @@ async def codex_login_gate(
         "grant": grant,
         "message": "Approve the Codex login in your browser within about 15 minutes.",
     }
+
+
+def watch_for_login(grant: str, on_granted: Callable[[], Awaitable[None]]) -> None:
+    """Run a single approval watcher and invoke ``on_granted`` once.
+
+    The device flow belongs to the broker, so callers that had to pause a
+    session need a small bridge from the broker's eventual state change back to
+    their pending work. Keep the task strongly referenced until it finishes.
+    """
+
+    async def wait() -> None:
+        deadline = asyncio.get_running_loop().time() + _LOGIN_TIMEOUT
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                status = await mcp._broker_request(
+                    "GET", f"/grants/{grant}/login/status"
+                )
+            except Exception as exc:
+                logger.warning("Could not poll Codex login status: %s", exc)
+            else:
+                state = status.get("state")
+                if state == "granted":
+                    await on_granted()
+                    return
+                if state == "failed":
+                    logger.error("Codex broker login failed: %s", status.get("detail"))
+                    return
+            await asyncio.sleep(_LOGIN_POLL_INTERVAL)
+
+    task = asyncio.create_task(wait())
+    _login_watch_tasks.add(task)
+    task.add_done_callback(_login_watch_tasks.discard)
+    task.add_done_callback(
+        lambda done: done.exception() if not done.cancelled() else None
+    )
