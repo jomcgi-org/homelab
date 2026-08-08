@@ -13,7 +13,7 @@ from sqlmodel import Session
 
 from core.db import get_engine
 from stars.grid import _s3_client
-from stars.router import _build_sites_from_db
+from stars.router import _build_sites_from_db, get_history
 
 logger = logging.getLogger("monolith.stars.materialize")
 
@@ -27,6 +27,7 @@ def _materialize_sync() -> int:
     response = Response()
     with Session(get_engine()) as session:
         payload = _build_sites_from_db(request, response, session)
+        history_payload = get_history(request, response, session)
     if not isinstance(payload, dict):
         raise RuntimeError("stars site builder returned a conditional response")
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -47,12 +48,35 @@ def _materialize_sync() -> int:
         ],
     }
     map_body = json.dumps(map_payload, separators=(",", ":")).encode("utf-8")
+    history_map_payload = {
+        "sites": [
+            {
+                "id": site["id"],
+                "name": site["name"],
+                "lat": site["lat"],
+                "lon": site["lon"],
+                "clear": site["clear"],
+                "dark": site["dark"],
+            }
+            for site in history_payload.get("sites", [])
+        ]
+    }
+    history_map_body = json.dumps(history_map_payload, separators=(",", ":")).encode(
+        "utf-8"
+    )
     _s3_client().put_object(
         Bucket=bucket,
         Key=key,
         Body=body,
         ContentType="application/json",
         CacheControl="public, max-age=0, s-maxage=1800, stale-if-error=86400",
+    )
+    _s3_client().put_object(
+        Bucket=bucket,
+        Key=os.environ.get("STARS_HISTORY_MAP_S3_KEY", "history-map.json"),
+        Body=history_map_body,
+        ContentType="application/json",
+        CacheControl="public, max-age=0, s-maxage=31536000, stale-if-error=604800",
     )
     _s3_client().put_object(
         Bucket=bucket,
@@ -71,6 +95,7 @@ def _materialize_sync() -> int:
     logger.info(
         "stars map materialized: %d bytes, s3://%s/%s", len(map_body), bucket, map_key
     )
+    logger.info("stars history map materialized: %d bytes", len(history_map_body))
     return len(body)
 
 

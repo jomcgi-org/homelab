@@ -131,6 +131,24 @@ def get_map(request: Request):
     return Response(content=body, media_type="application/json", headers=headers)
 
 
+@router.get("/history-map")
+def get_history_map(request: Request):
+    """Serve the compact historical map snapshot produced by the refresh job."""
+    try:
+        body, etag = _read_materialized_object(
+            "STARS_HISTORY_MAP_S3_KEY", "history-map.json"
+        )
+    except Exception as exc:  # noqa: BLE001 - turn storage failure into 503
+        logger.exception("stars history map materialized payload unavailable")
+        raise HTTPException(
+            status_code=503, detail="stars history map unavailable"
+        ) from exc
+    headers = {"Cache-Control": _HISTORY_CACHE_CONTROL, "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json", headers=headers)
+
+
 def _read_materialized_sites() -> tuple[bytes, str]:
     """Read the precomputed sites payload from SeaweedFS."""
     return _read_materialized_object("STARS_SITES_S3_KEY", "sites.json")
