@@ -32,12 +32,12 @@ Public apps served by the monolith at [jomcgi.dev/app](https://jomcgi.dev/app):
 
 ## Infrastructure patterns
 
-See [docs/security.md](docs/security.md) for the defense-in-depth model, [projects/firecracker/STPA.md](projects/firecracker/STPA.md) and [projects/monolith/STPA.md](projects/monolith/STPA.md) for hazard analyses, and [docs/observability.md](docs/observability.md) for automatic instrumentation.
+See [docs/security.md](docs/security.md) for the defense-in-depth model, [projects/monolith/STPA.md](projects/monolith/STPA.md) for the hazard analysis, and [docs/observability.md](docs/observability.md) for automatic instrumentation.
 
 | Area           | Approach                                                                                   |
 | -------------- | ------------------------------------------------------------------------------------------ |
 | Ingress        | Cloudflare Tunnel only; nothing exposed directly                                           |
-| Untrusted code | Firecracker microVMs (fc-invoke + EmberVM), STPA hazard models colocated with each system  |
+| Untrusted code | Firecracker microVMs (EmberVM), STPA hazard model colocated with the monolith              |
 | Networking     | Cilium eBPF CNI: WireGuard pod-to-pod encryption, network policy, Hubble metrics, no sidecars |
 | Observability  | SigNoz: unified metrics, logs, traces. Kyverno auto-injects OTEL env vars                  |
 | Policy         | Kyverno enforces non-root (uid 65532), read-only filesystems                               |

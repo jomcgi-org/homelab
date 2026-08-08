@@ -2,7 +2,7 @@
   "version": "v1",
   "config": {
     "name": "projects/firecracker/sandbox/guest/apko.yaml",
-    "checksum": "sha256-IH8d9xEag3MClXmCE6Sc36DjIMcPLHsmhf5ppHU/MRo="
+    "checksum": "sha256-D+J246qWHp0KDAXIvxa9vGCk5UB9h54mYlHFROEmb8Q="
   },
   "contents": {
     "keyring": [

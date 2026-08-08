@@ -150,5 +150,5 @@ indefinitely, which is a small data-minimization improvement.
 | Resource | Relevance |
 | -------- | --------- |
 | [ADR 001](001-embervm-beam-firecracker-workload-orchestrator.md) | The op-log state model, audit role, `ra` tier, and R6 facade this policy must not foreclose |
-| `projects/embervm/DECISIONS.md` | R0 execution decisions, including the D12 known gaps this closes or scopes |
+| [`projects/embervm/ARCHITECTURE.md`](../../../projects/embervm/ARCHITECTURE.md) | Current state and invariants. The R0 execution decisions and the D12 known gaps this closes or scopes were recorded in the retired `DECISIONS.md` milestone log, readable in git history |
 | [Raft dissertation, log compaction](https://raft.github.io/) | The snapshot-replaces-prefix semantics the marker preserves cheaply |
