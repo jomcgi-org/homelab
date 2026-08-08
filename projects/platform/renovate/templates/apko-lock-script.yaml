@@ -34,8 +34,18 @@ data:
     git checkout -B "$branch"
 
     while IFS= read -r -d '' config; do
+      lock="${config%.yaml}.lock.json"
+      if [[ ! -f "$lock" ]]; then
+        echo "Skipping ${config}: no committed ${lock}"
+        continue
+      fi
       echo "Refreshing ${config}"
-      bazel run @rules_apko//apko -- lock "$config"
+      # The repository registers an ARM64 execution platform for OCaml. Force
+      # the local AMD64 platform first so rules_apko selects an executable that
+      # matches this workflow pod.
+      bazel run \
+        --extra_execution_platforms=//bazel/tools/platforms:linux_x86_64 \
+        @rules_apko//apko -- lock "$config"
     done < <(
       find projects buck2 -type f \( -name apko.yaml -o -name 'apko-*.yaml' \) -print0
     )
