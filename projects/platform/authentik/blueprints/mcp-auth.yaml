@@ -68,3 +68,71 @@ entries:
             authentik_stages_authenticator_webauthn.authenticatorwebauthnstage,
             [name, default-authenticator-webauthn-setup],
           ]
+
+  # ── 5. Name the monolith as a token audience ────────────────────────────
+  # Context Forge's ACL is tool-granular: it decides whether you may CALL a
+  # tool, never what the tool returns. For the monolith to scope its own
+  # results it must know the caller, and the only verifiable way to tell it is
+  # to forward the caller's token (see mcp PR #4565; a header would just ask
+  # the monolith to believe us).
+  #
+  # But that token's `aud` names only the OAuth client, so the monolith would
+  # be accepting a credential minted for somebody else. RFC 8693 token exchange
+  # is the correct fix and Context Forge implements it (keyed by
+  # gateway+user+audience), but authentik does not advertise the token-exchange
+  # grant, so it is unavailable.
+  #
+  # `aud` is permitted to be an array (RFC 7519 4.1.3), and authentik merges
+  # scope-mapping claims OVER the standard fields, for access tokens too:
+  #
+  #     id_dict.pop("claims"); id_dict.update(self.claims)     # to_dict()
+  #     final = self.to_dict(); final["azp"] = provider.client_id  # to_access_token()
+  #
+  # So one mapping makes the monolith a named audience. `azp` is set after the
+  # merge and still identifies the client, so "who requested this" survives.
+  #
+  # The client id MUST stay first in the list: Context Forge validates with
+  # PyJWT, which matches on any element, so this stays backwards compatible and
+  # api_audience needs no change. If this expression ever fails, authentik
+  # falls back to aud = client_id, which is exactly today's behaviour.
+  #
+  # Scope is `openid` deliberately. A dedicated scope would never be evaluated,
+  # because the client only requests `openid profile email`.
+  #
+  # This is weaker than real token exchange and the difference is worth stating:
+  # exchange mints a SEPARATE token per audience, so a backend cannot replay it
+  # elsewhere. One multi-audience token is a single bearer credential valid at
+  # both. That replay path is closed at the network layer instead, by the
+  # CiliumNetworkPolicy in the monolith chart.
+  - model: authentik_providers_oauth2.scopemapping
+    id: mcp-audience
+    identifiers:
+      name: "MCP: multi-audience"
+    attrs:
+      name: "MCP: multi-audience"
+      scope_name: openid
+      description: "Adds the monolith as a second token audience so it can validate calls it receives."
+      expression: |
+        return {"aud": [provider.client_id, "https://private.jomcgi.dev"]}
+
+  # Binding REPLACES the provider's mapping list rather than appending, so the
+  # three managed defaults are restated. Omitting them would strip email,
+  # profile and the groups claim that team_mapping depends on.
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: mcp-friends
+    attrs:
+      property_mappings:
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-openid],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-email],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-profile],
+          ]
+        - !KeyOf mcp-audience
