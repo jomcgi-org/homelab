@@ -1,19 +1,24 @@
 {{- /*
-Scoped HTTPRoutes: one hostname per trust tier, each reaching exactly ONE
-virtual server.
+Scoped HTTPRoutes: one hostname per trust tier, reaching only the virtual
+server surface, never the gateway root.
 
-The gateway's own /mcp endpoint serves the FULL tool catalogue and does not
-authenticate (MCP_REQUIRE_AUTH is false; only Cloudflare Access guards it at
-the edge). So a tier hostname must never route PathPrefix "/", or it inherits
-that endpoint. Each route below is an allowlist: two rules, nothing else, and
-every other path on the hostname finds no route and 404s at the gateway.
+The gateway's own /mcp endpoint serves the FULL tool catalogue, so a tier
+hostname must never route PathPrefix "/". Each route is an allowlist: two
+rules, and every other path on the hostname finds no route and 404s.
 
-This is deliberately scaffolding. Routing is a poor authorization mechanism:
-it cannot express "this principal gets servers A and B", it needs one route
-per server, and it bakes a runtime UUID into the chart. The durable shape is
-a single path-transparent route per tier with MCP_REQUIRE_AUTH on and
-Context Forge teams doing the scoping. Until then, an empty virtual server
-plus a one-path allowlist is safe by construction.
+These rules are deliberately path-TRANSPARENT rather than rewriting /mcp onto
+/servers/<id>/mcp. RFC 9728 derives the protected-resource metadata URL from
+the resource path, and Context Forge builds that URL from the request path it
+receives. Under a rewrite the client asks for
+/.well-known/oauth-protected-resource/mcp while the server publishes
+/.well-known/oauth-protected-resource/servers/<id>/mcp, so OAuth discovery
+fails before the client ever contacts the authorization server. Transparency
+is a protocol requirement here, not a preference.
+
+Isolation therefore comes from authorization, not routing: MCP_REQUIRE_AUTH
+plus per-server oauth_enabled, with Context Forge teams scoping which
+principal sees which server. That is also what lets a new virtual server be an
+API object rather than a deploy.
 */}}
 {{- range .Values.scopedRoutes }}
 {{- if .enabled }}
@@ -32,10 +37,8 @@ spec:
   hostnames:
     - {{ .hostname | quote }}
   rules:
-    # OAuth discovery. MCP clients fetch the protected-resource document to
-    # find the authorization server, so it must resolve on THIS hostname or
-    # the client cannot start the flow. Served unrewritten; these documents
-    # are public by design.
+    # OAuth discovery. Must resolve on THIS hostname, unrewritten, or the
+    # client cannot find the authorization server. Public by design.
     - matches:
         - path:
             type: PathPrefix
@@ -50,24 +53,18 @@ spec:
         - name: {{ $.Release.Name }}-mcp-stack-mcpgateway
           port: 80
 
-    # The tier's MCP endpoint, rewritten onto its single virtual server.
-    # ReplacePrefixMatch (not ReplaceFullPath) so any suffix the transport
-    # appends survives the rewrite.
+    # Virtual servers, addressed by their real path so client and server agree
+    # on the resource identity.
     - matches:
         - path:
             type: PathPrefix
-            value: /mcp
+            value: /servers/
       filters:
         - type: RequestHeaderModifier
           requestHeaderModifier:
             set:
               - name: X-Forwarded-Proto
                 value: https
-        - type: URLRewrite
-          urlRewrite:
-            path:
-              type: ReplacePrefixMatch
-              replacePrefixMatch: /servers/{{ .serverId }}/mcp
       backendRefs:
         - name: {{ $.Release.Name }}-mcp-stack-mcpgateway
           port: 80

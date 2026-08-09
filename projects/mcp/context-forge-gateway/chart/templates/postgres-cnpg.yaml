@@ -1,0 +1,38 @@
+{{- /*
+CloudNativePG cluster backing Context Forge, replacing the mcp-stack chart's
+bundled postgres:17 Deployment.
+
+CNPG generates the credentials into a <name>-app Secret whose keys (host,
+port, dbname, user, password) are exactly the defaults mcp-stack's
+postgres.external.*Key values expect, so the two compose with no key mapping.
+The password is never committed.
+
+No backup policy on purpose. This database holds one gateway registration and
+a tool catalogue that a CronJob already rebuilds from the upstream MCP server,
+so restoring from scratch is both faster and better tested than restoring from
+a backup. If durable state ever lands here (issued API tokens, teams, per-user
+config) that reasoning expires and this needs a barmanObjectStore.
+*/}}
+{{- if .Values.cnpg.enabled }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.cnpg.name }}
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.cnpg.instances }}
+  storage:
+    size: {{ .Values.cnpg.storage.size }}
+    {{- with .Values.cnpg.storage.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.cnpg.database }}
+      owner: {{ .Values.cnpg.owner }}
+  resources:
+    {{- toYaml .Values.cnpg.resources | nindent 4 }}
+  monitoring:
+    enablePodMonitor: {{ .Values.cnpg.monitoring.enablePodMonitor }}
+{{- end }}
