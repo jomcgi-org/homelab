@@ -49,9 +49,17 @@ mcp-stack:
         memory: 768Mi
   migration:
     enabled: false
+  # Bundled postgres:17 Deployment replaced by a CloudNativePG cluster
+  # (see chart/templates/postgres-cnpg.yaml). CNPG's -app secret keys match
+  # mcp-stack's external.*Key defaults, so no key mapping is needed.
   postgres:
-    persistence:
-      storageClassName: longhorn
+    enabled: false
+    external:
+      enabled: true
+      existingSecret: context-forge-pg-app
+
+cnpg:
+  enabled: true
 
 secret:
   itemPath: "vaults/k8s-homelab/items/context-forge"
@@ -74,4 +82,3 @@ scopedRoutes:
     enabled: true
     hostname: friends.jomcgi.dev
     tier: public
-    serverId: "5853c9310afc49699c96be8608a99cb7"

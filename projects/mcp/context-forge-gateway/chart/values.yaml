@@ -5,7 +5,7 @@ mcp-stack:
   mcpContextForge:
     image:
       repository: ghcr.io/ibm/mcp-context-forge
-      tag: "v1.0.0-RC1"
+      tag: "v1.0.7"
       pullPolicy: IfNotPresent
     replicaCount: 1
     hpa:
@@ -59,7 +59,7 @@ mcp-stack:
   migration:
     image:
       repository: ghcr.io/ibm/mcp-context-forge
-      tag: "v1.0.0-RC1"
+      tag: "v1.0.7"
       pullPolicy: IfNotPresent
 
   redis: # nosemgrep: no-inline-subchart — bundled by mcp-stack upstream chart
@@ -91,6 +91,28 @@ secret:
 # layer instead.
 networkPolicy:
   enabled: false
+
+# CloudNativePG cluster backing the gateway, replacing mcp-stack's bundled
+# postgres:17 Deployment. See templates/postgres-cnpg.yaml for why there is
+# no backup policy.
+cnpg:
+  enabled: false
+  name: context-forge-pg
+  database: mcpgateway
+  owner: mcpgateway
+  instances: 1
+  storage:
+    size: 10Gi
+    storageClass: longhorn
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  monitoring:
+    enablePodMonitor: true
 
 # HTTPRoute for external access via Cloudflare Tunnel.
 # Auth handled at edge by Cloudflare Access Managed OAuth (ADR 011).
@@ -129,7 +151,7 @@ toolRefresh:
   gatewayName: monolith
   image:
     repository: ghcr.io/ibm/mcp-context-forge
-    tag: "v1.0.0-RC1"
+    tag: "v1.0.7"
     pullPolicy: IfNotPresent
   resources:
     requests:
