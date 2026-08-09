@@ -78,16 +78,35 @@ auth:
 usageAdmins:
   - system:serviceaccount:embervm:embervm-embervm
 
-# Public FaaS rate-limit backstop. All public
-# jomcgi.dev/functions/<name> traffic submits as the single monolith-public SA,
-# so a daily vCPU-second budget on that one principal caps the whole public
-# surface. og-image bills ~0.05 vCPU-s/invoke, so 3600/day is ~72k invokes/day;
-# the function pool cap (4 concurrent VMs) bounds burst. The private monolith SA
-# stays unlimited (omitted from the map). Raise/lower this as real public traffic
-# warrants; a burst-per-second edge rule is the follow-up if abuse appears.
+# DISABLED (2026-08-09). This used to carry a 3600 daily vCPU-second budget on
+# the monolith-public SA as the public FaaS backstop. It is removed because it
+# protected nothing here and could only ever deny.
+#
+# What actually bounds the fleet is the per-workload `cap`, enforced in
+# Dispatcher.drain_loop independently of the caller: no set of callers can put
+# more concurrent VMs on a workload than its cap, so demo traffic cannot starve
+# the cluster no matter who sends it. A daily vCPU-second budget adds nothing on
+# top of that, because vCPU-seconds are not a cost this cluster pays; the
+# machines are bought and running either way.
+#
+# What it DID add was a failure mode: all public traffic submits as this single
+# SA, so the budget was one shared FCFS bucket. One visitor draining it denies
+# every other visitor until the day rolls over.
+#
+# Measured before removing (control plane, 23h uptime, zero restarts, a full
+# daily quota window): denials were
+# %{quota: 0, principal_share: 0, cap: 0, no_capacity: 7, stale_capacity: 0}
+# with queue_depth 0 on both bazel-query and semgrep, 562 warm hits / 3 misses.
+# The quota had never fired, and `cap: 0` says the workload cap had never even
+# been reached, so two callers have never contended for the same workload.
+#
+# An empty map is quota OFF, not deny-all: the gate is opt-in, and the chart
+# template omits EMBERVM_QUOTA_VCPU_SECONDS entirely when the map is empty.
+# Re-arm this only if `cap` or `principal_share` denials go nonzero, which is the
+# point at which contention actually exists; note that a per-principal budget
+# still cannot be fair between anonymous visitors, since they all share this SA.
 quota:
-  dailyVcpuSecondsPerPrincipal:
-    "system:serviceaccount:monolith-public:monolith-public": 3600
+  dailyVcpuSecondsPerPrincipal: {}
 
 # OpenTelemetry tracing to SigNoz (Task 13), OTLP/gRPC on 4317 (the same
 # collector fc-invoke exports to). Turns on the exporter via config/runtime.exs.
