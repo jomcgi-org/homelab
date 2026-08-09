@@ -28,6 +28,7 @@ def create_session(
     *,
     discord_thread: str | None = None,
     system_prompt: str | None = None,
+    workflow_id: str | None = None,
 ) -> AgentSession:
     row = AgentSession(
         local_session_id=local_session_id,
@@ -38,6 +39,7 @@ def create_session(
         model=model,
         progress_token=secrets.token_urlsafe(32),
         system_prompt=system_prompt,
+        workflow_id=workflow_id,
     )
     session.add(row)
     session.commit()

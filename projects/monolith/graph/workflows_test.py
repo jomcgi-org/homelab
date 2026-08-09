@@ -33,8 +33,9 @@ def run(monkeypatch, turns, heads=None):
     monkeypatch.setattr(
         workflows,
         "_queued_session",
-        lambda key, prompt, model, repo, branch: (
-            calls.append((key, prompt, model, repo, branch)) or next(sessions)
+        lambda key, prompt, model, repo, branch, workflow_id: (
+            calls.append((key, prompt, model, repo, branch, workflow_id))
+            or next(sessions)
         ),
     )
     return calls
@@ -121,10 +122,12 @@ def test_queue_receives_a_workflow_not_a_step(monkeypatch):
     binds if what is enqueued is a workflow. Enqueuing the step directly left
     the codex cap unenforced."""
     enqueued = []
+    arguments = []
 
     class RecordingQueue:
         def enqueue(self, function, *args):
             enqueued.append(function)
+            arguments.append(args)
 
             class Handle:
                 def get_result(self):
@@ -133,9 +136,26 @@ def test_queue_receives_a_workflow_not_a_step(monkeypatch):
             return Handle()
 
     monkeypatch.setattr(workflows, "codex_queue", lambda: RecordingQueue())
-    workflows._queued_session("k-1", "p", "luna", "jomcgi/homelab", "main")
+    workflows._queued_session("k-1", "p", "luna", "jomcgi/homelab", "main", "wf-123")
     assert enqueued == [workflows.start_session_workflow]
     assert enqueued[0] is not workflows.start_agent_session
+    assert arguments == [("k-1", "p", "luna", "jomcgi/homelab", "main", "wf-123")]
+
+
+def test_start_session_workflow_forwards_workflow_id(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        workflows,
+        "start_agent_session",
+        lambda *args: calls.append(args) or 101,
+    )
+
+    result = workflows.start_session_workflow.__wrapped__(
+        "k-1", "p", "luna", "jomcgi/homelab", "main", "wf-123"
+    )
+
+    assert result == 101
+    assert calls == [("k-1", "p", "luna", "jomcgi/homelab", "main", "wf-123")]
 
 
 def test_empty_commit_sha_is_not_success(monkeypatch):
@@ -160,7 +180,7 @@ def test_reviewer_has_no_lineage_argument(monkeypatch):
         },
     )
     workflow("task", "jomcgi/homelab", "main")
-    assert len(calls[1]) == 5
+    assert len(calls[1]) == 6
     assert all("lineage" not in str(value) for value in calls[1])
 
 

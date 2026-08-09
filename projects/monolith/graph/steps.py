@@ -7,7 +7,9 @@ from dbos import DBOS
 
 
 @DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
-def start_agent_session(session_key, prompt, model, repo, branch) -> int:
+def start_agent_session(
+    session_key, prompt, model, repo, branch, workflow_id: str
+) -> int:
     """Start (or re-attach to) one agent session.
 
     ``session_key`` must be DETERMINISTIC for a given workflow and node. Steps
@@ -17,7 +19,9 @@ def start_agent_session(session_key, prompt, model, repo, branch) -> int:
     """
     from agent_sessions.api import start_session_for_graph
 
-    return start_session_for_graph(session_key, prompt, model, repo, branch)
+    return start_session_for_graph(
+        session_key, prompt, model, repo, branch, workflow_id=workflow_id
+    )
 
 
 @DBOS.step()
