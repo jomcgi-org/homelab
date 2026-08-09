@@ -35,8 +35,11 @@ CLIENT_ID=${CLIENT_ID:?set CLIENT_ID to the authentik OAuth2 provider client id}
 ADMIN_EMAIL=${ADMIN_EMAIL:-joe@jomcgi.dev}
 
 POD=$(kubectl get pod -n "$NS" -l app=context-forge-gateway-mcp-stack-mcpgateway \
-  -o jsonpath='{.items[0].metadata.name}')
-[ -n "$POD" ] || { echo "no gateway pod found" >&2; exit 1; }
+	-o jsonpath='{.items[0].metadata.name}')
+[ -n "$POD" ] || {
+	echo "no gateway pod found" >&2
+	exit 1
+}
 echo "gateway pod: $POD"
 
 # Short-lived admin JWT, minted inside the pod so the signing key never leaves it.
@@ -45,16 +48,16 @@ run "cd /app && python3 -m mcpgateway.utils.create_jwt_token -u '$ADMIN_EMAIL' -
 trap 'kubectl exec -n "$NS" "$POD" -- rm -f /tmp/.pv_tok /tmp/.pv_body >/dev/null 2>&1 || true' EXIT
 
 api() { # api METHOD PATH [JSON]
-  local method=$1 path=$2 body=${3:-}
-  if [ -n "$body" ]; then
-    local b64
-    b64=$(printf '%s' "$body" | base64 | tr -d '\n')
-    run "echo '$b64' | base64 -d > /tmp/.pv_body && curl -sS -X $method \
+	local method=$1 path=$2 body=${3:-}
+	if [ -n "$body" ]; then
+		local b64
+		b64=$(printf '%s' "$body" | base64 | tr -d '\n')
+		run "echo '$b64' | base64 -d > /tmp/.pv_body && curl -sS -X $method \
       -H \"Authorization: Bearer \$(cat /tmp/.pv_tok)\" -H 'Content-Type: application/json' \
       --data @/tmp/.pv_body http://localhost:4444$path"
-  else
-    run "curl -sS -X $method -H \"Authorization: Bearer \$(cat /tmp/.pv_tok)\" http://localhost:4444$path"
-  fi
+	else
+		run "curl -sS -X $method -H \"Authorization: Bearer \$(cat /tmp/.pv_tok)\" http://localhost:4444$path"
+	fi
 }
 
 # ── 1. Team ────────────────────────────────────────────────────────────────
@@ -65,11 +68,11 @@ teams=teams.get('teams', teams) if isinstance(teams, dict) else teams
 print(next((t['id'] for t in teams if t.get('name')=='$TEAM_NAME'), ''))
 ")
 if [ -z "$TEAM_ID" ]; then
-  TEAM_ID=$(api POST /teams/ "{\"name\":\"$TEAM_NAME\",\"description\":\"Full monolith catalogue. Mapped from the authentik group of the same name.\",\"visibility\":\"private\"}" \
-    | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-  echo "created team $TEAM_NAME -> $TEAM_ID"
+	TEAM_ID=$(api POST /teams/ "{\"name\":\"$TEAM_NAME\",\"description\":\"Full monolith catalogue. Mapped from the authentik group of the same name.\",\"visibility\":\"private\"}" |
+		python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+	echo "created team $TEAM_NAME -> $TEAM_ID"
 else
-  echo "team $TEAM_NAME already exists -> $TEAM_ID"
+	echo "team $TEAM_NAME already exists -> $TEAM_ID"
 fi
 
 # ── 2. Trusted external IdP ────────────────────────────────────────────────
@@ -98,15 +101,15 @@ read -r -d '' PROVIDER <<JSON || true
 JSON
 
 if api GET /auth/sso/admin/providers/authentik | grep -q '"id"'; then
-  api PUT /auth/sso/admin/providers/authentik "$PROVIDER" >/dev/null
-  echo "updated sso provider 'authentik'"
+	api PUT /auth/sso/admin/providers/authentik "$PROVIDER" >/dev/null
+	echo "updated sso provider 'authentik'"
 else
-  api POST /auth/sso/admin/providers "$PROVIDER" >/dev/null
-  echo "created sso provider 'authentik'"
+	api POST /auth/sso/admin/providers "$PROVIDER" >/dev/null
+	echo "created sso provider 'authentik'"
 fi
 
 echo
 echo "── resulting sso_providers row ──"
 kubectl exec -n "$NS" context-forge-pg-1 -- psql -U postgres -d mcpgateway -x \
-  -c "select name, issuer, api_audience, trusted_for_api_auth, team_mapping from sso_providers;" 2>/dev/null \
-  | grep -v '^Defaulted' || true
+	-c "select name, issuer, api_audience, trusted_for_api_auth, team_mapping from sso_providers;" 2>/dev/null |
+	grep -v '^Defaulted' || true
