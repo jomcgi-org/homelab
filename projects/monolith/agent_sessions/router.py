@@ -137,6 +137,7 @@ def _session_payload(
         "workspace": row.workspace,
         "branch": row.branch,
         "repo": row.repo,
+        "workflow_id": row.workflow_id,
         "model": row.model,
         "status": row.status,
         "title": row.title or _fallback_title(first_turn_prompt, first_pending_prompt),

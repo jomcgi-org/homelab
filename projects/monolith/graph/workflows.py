@@ -21,15 +21,25 @@ POLL_INTERVAL_SECONDS = 5
 
 @DBOS.workflow()
 def start_session_workflow(
-    key: str, prompt: str, model: str, repo: str, branch: str
+    key: str,
+    prompt: str,
+    model: str,
+    repo: str,
+    branch: str,
+    workflow_id: str | None = None,
 ) -> int:
     """Queue-able wrapper around the session-start step.
 
     DBOS queues enqueue WORKFLOWS, not steps, so the concurrency cap only
     applies if what we enqueue is a workflow. Enqueuing the step directly would
     not be gated by the queue at all.
+
+    The workflow_id is passed explicitly because DBOS.workflow_id inside this
+    function is the queued session workflow's id, not the caller's run id. The
+    parent's id must be threaded from the caller, not read from context, or the
+    session would record the wrong parent link.
     """
-    return start_agent_session(key, prompt, model, repo, branch)
+    return start_agent_session(key, prompt, model, repo, branch, workflow_id)
 
 
 def session_key(suffix: str) -> str:
@@ -46,9 +56,16 @@ def session_key(suffix: str) -> str:
     return f"{workflow_id}-{suffix}"
 
 
-def _queued_session(key: str, prompt: str, model: str, repo: str, branch: str) -> int:
+def _queued_session(
+    key: str,
+    prompt: str,
+    model: str,
+    repo: str,
+    branch: str,
+    workflow_id: str,
+) -> int:
     handle = codex_queue().enqueue(
-        start_session_workflow, key, prompt, model, repo, branch
+        start_session_workflow, key, prompt, model, repo, branch, workflow_id
     )
     return handle.get_result()
 
@@ -114,6 +131,7 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
             config.implementer_model(),
             repo,
             branch,
+            workflow_id,
         )
         implementer_turn = _await_turn(
             implementer_session_id, 0, config.turn_timeout_seconds()
@@ -163,6 +181,7 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
         config.reviewer_model(),
         repo,
         branch,
+        workflow_id,
     )
     reviewer_turn = _await_turn(reviewer_session_id, 0, config.turn_timeout_seconds())
     return {

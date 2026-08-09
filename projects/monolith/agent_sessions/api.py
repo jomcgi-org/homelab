@@ -21,7 +21,12 @@ from goosecracker.api import REPO_CATALOG
 
 
 def start_session_for_graph(
-    local_session_id: str, prompt: str, model: str, repo: str, branch: str
+    local_session_id: str,
+    prompt: str,
+    model: str,
+    repo: str,
+    branch: str,
+    workflow_id: str | None = None,
 ) -> int:
     """Create and schedule a graph-owned session through the normal session path.
 
@@ -43,7 +48,14 @@ def start_session_for_graph(
         existing = store.get_session_by_local_id(session, local_session_id)
     if existing is not None and existing.id is not None:
         return existing.id
-    row = _persist_session(local_session_id, "<guest>", branch, model, repo)
+    row = _persist_session(
+        local_session_id,
+        "<guest>",
+        branch,
+        model,
+        repo,
+        workflow_id=workflow_id,
+    )
     assert row.id is not None
     _persist_pending_message(row.id, prompt, model)
     try:

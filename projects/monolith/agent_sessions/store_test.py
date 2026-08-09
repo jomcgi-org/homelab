@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -87,6 +88,31 @@ def test_create_session_persists_optional_system_prompt(monkeypatch, tmp_path):
 
             assert prompted.system_prompt == "X"
             assert unprompted.system_prompt is None
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_create_session_persists_and_queries_workflow_id(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            linked = store.create_session(
+                session,
+                "linked",
+                "<guest>",
+                "main",
+                workflow_id="wf-123",
+            )
+            unlinked = store.create_session(session, "unlinked", "<guest>", "main")
+
+            assert linked.workflow_id == "wf-123"
+            assert unlinked.workflow_id is None
+            queried = session.exec(
+                select(AgentSession).where(AgentSession.workflow_id == "wf-123")
+            ).one()
+            assert queried.id == linked.id
+            indexes = inspect(engine).get_indexes("agent_sessions")
+            assert any("workflow_id" in index["column_names"] for index in indexes)
     finally:
         _restore_schemas(schemas)
 

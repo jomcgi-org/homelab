@@ -49,3 +49,27 @@ def test_read_branch_head_raises_on_server_error(monkeypatch):
 
     with pytest.raises(httpx.HTTPStatusError):
         steps.read_branch_head.__wrapped__("jomcgi/homelab", "graph/wf-1")
+
+
+def test_start_agent_session_forwards_workflow_id(monkeypatch):
+    import agent_sessions.api as api
+
+    calls = []
+
+    def fake_start_session(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 101
+
+    monkeypatch.setattr(api, "start_session_for_graph", fake_start_session)
+
+    result = steps.start_agent_session.__wrapped__(
+        "test-key", "prompt", "luna", "jomcgi/homelab", "main", workflow_id="wf-abc"
+    )
+
+    assert result == 101
+    assert calls == [
+        (
+            ("test-key", "prompt", "luna", "jomcgi/homelab", "main"),
+            {"workflow_id": "wf-abc"},
+        )
+    ]

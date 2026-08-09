@@ -143,13 +143,21 @@ def test_list_sessions_title_falls_back_to_pending_prompt(client, session):
 
 
 def test_list_sessions_exposes_ember_binding(client, session):
-    _session(session, "bound", ember_session_id="s-abc123")
+    _session(
+        session,
+        "bound",
+        ember_session_id="s-abc123",
+        workflow_id="wf-123",
+    )
     _session(session, "unbound")
 
     body = client.get("/api/agents/sessions").json()
     bindings = {item["local_session_id"]: item["ember_session_id"] for item in body}
     assert bindings["bound"] == "s-abc123"
     assert bindings["unbound"] is None
+    workflow_ids = {item["local_session_id"]: item["workflow_id"] for item in body}
+    assert workflow_ids["bound"] == "wf-123"
+    assert workflow_ids["unbound"] is None
 
 
 def test_list_session_vms_maps_control_plane_states(client, monkeypatch):

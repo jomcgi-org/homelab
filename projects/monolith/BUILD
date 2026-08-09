@@ -4377,6 +4377,17 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_api_test",
+    srcs = ["agent_sessions/api_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_sessions_progress_ingest_test",
     srcs = ["agent_sessions/progress_ingest_test.py"],
     imports = ["."],
