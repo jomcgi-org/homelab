@@ -104,17 +104,30 @@ def _bazel_demo_workspace_impl(repository_ctx):
     # and expose it under both arch names via filegroups for apko_image's
     # multiarch_tars label-suffixing (_amd64 / _arm64).
     #
-    # `tar -C root .` archives root/'s CONTENTS (opt/abseil, opt/distdir) at the
-    # tar root, so the layer unpacks to /opt/abseil + /opt/distdir in-image. Plain
-    # portable flags only (matching k3s_archive's genrule): GNU-only extras like
-    # --sort are avoided so the rule fetches on either GNU or BSD tar.
+    # The tar archives root/'s CONTENTS (opt/abseil, opt/distdir) at the tar
+    # root, so the layer unpacks to /opt/abseil + /opt/distdir in-image.
+    #
+    # It MUST be byte-reproducible across machines. A plain `tar -C root .`
+    # records readdir order and the extraction-time mtimes, and because this
+    # runs in a REPOSITORY RULE it re-executes on every runner that fetches the
+    # repo fresh. That made the layer, and therefore the embervm image digest,
+    # depend on which runner happened to build it: main kept reusing a warm
+    # runner whose output_base already had this repo, so its digest looked
+    # stable across commits, while any PR that landed on a cold runner produced
+    # a different digest for identical sources. The missed-bump guard then
+    # failed the PR for a rebuild that never happened (issue #4594).
+    #
+    # Determinism without GNU-only flags, so the rule still fetches under BSD
+    # tar: pin every mtime with `touch -t`, feed tar a LC_ALL=C sorted member
+    # list on stdin (`-T -`, supported by GNU tar and bsdtar) instead of
+    # --sort, and use --numeric-owner so no name lookup leaks in.
     tar_result = repository_ctx.execute([
-        "tar",
-        "-C",
-        "root",
-        "-cf",
-        "layer.tar",
-        ".",
+        "sh",
+        "-c",
+        "cd root && " +
+        "find . -exec touch -h -t 197001010000 {} + && " +
+        "find . -print | LC_ALL=C sort | " +
+        "tar --numeric-owner -cf ../layer.tar -T -",
     ])
     if tar_result.return_code != 0:
         fail("bazel_demo_workspace: tar of staged root/ failed (%d): %s" % (
