@@ -747,6 +747,7 @@ click==8.3.1 \
     #   click-default-group
     #   click-option-group
     #   cligj
+    #   dbos
     #   rasterio
     #   semgrep
     #   sqlite-utils
@@ -903,6 +904,12 @@ dateparser==1.4.0 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   htmldate
+dbos==2.29.0 \
+    --hash=sha256:49104b64b8917dc3d321704f1d20058486c86129420b96b910f1e725fbdebca6 \
+    --hash=sha256:ae6015bba43b5842a4a99abcc7826ca00c758af767ebaf79e6304c0b4f58ec46
+    # via
+    #   -c bazel/requirements/runtime.txt
+    #   -r bazel/requirements/runtime.txt
 dbus-fast==2.46.4 \
     --hash=sha256:018c7d878857599e3478c56575aa2ed9ff52eb7a88c5118685db8e033b3916e9 \
     --hash=sha256:0cc59b9d6ee59ab58d8cdc58f19a4e5ad6451392d215933eedd4482925e8ecf1 \
@@ -1280,7 +1287,7 @@ googleapis-common-protos==1.72.0 \
     #   -r bazel/requirements/runtime.txt
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-greenlet==3.3.2 ; platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64' \
+greenlet==3.3.2 \
     --hash=sha256:02b0a8682aecd4d3c6c18edf52bc8e51eacdd75c8eac52a790a210b06aa295fd \
     --hash=sha256:18cb1b7337bca281915b3c5d5ae19f4e76d35e1df80f4ad3c1a7be91fadf1082 \
     --hash=sha256:1a9172f5bf6bd88e6ba5a84e0a68afeac9dc7b6b412b245dd64f52d83c81e55b \
@@ -3198,6 +3205,7 @@ psycopg[binary]==3.3.3 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+    #   dbos
 psycopg-binary==3.3.3 ; implementation_name != 'pypy' \
     --hash=sha256:05f32239aec25c5fb15f7948cffdc2dc0dac098e48b80a140e4ba32b572a2e7d \
     --hash=sha256:07c7211f9327d522c9c47560cae00a4ecf6687f4e02d779d035dd3177b41cb12 \
@@ -3784,6 +3792,7 @@ python-dateutil==2.9.0.post0 \
     #   -r bazel/requirements/runtime.txt
     #   botocore
     #   dateparser
+    #   dbos
     #   htmldate
     #   icalendar
     #   jsii
@@ -3927,6 +3936,7 @@ pyyaml==6.0.3 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   copier
+    #   dbos
     #   fastmcp
     #   huggingface-hub
     #   jinja2-ansible-filters
@@ -4470,7 +4480,7 @@ soupsieve==2.8.4 \
     #   --override bazel/requirements/overrides.txt
     #   -r bazel/requirements/runtime.txt
     #   beautifulsoup4
-sqlalchemy==2.0.48 \
+sqlalchemy[asyncio]==2.0.48 \
     --hash=sha256:01f6bbd4308b23240cf7d3ef117557c8fd097ec9549d5d8a52977544e35b40ad \
     --hash=sha256:07edba08061bc277bfdc772dd2a1a43978f5a45994dd3ede26391b405c15221e \
     --hash=sha256:10853a53a4a00417a00913d270dddda75815fcb80675874285f41051c094d7dd \
@@ -4537,6 +4547,7 @@ sqlalchemy==2.0.48 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+    #   dbos
     #   sqlmodel
 sqlite-fts4==1.0.3 \
     --hash=sha256:0359edd8dea6fd73c848989e1e2b1f31a50fe5f9d7272299ff0e8dbaa62d035f \
@@ -5142,6 +5153,7 @@ websockets==16.0 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
+    #   dbos
     #   fastmcp
     #   google-genai
     #   uvicorn

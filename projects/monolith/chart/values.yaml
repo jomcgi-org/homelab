@@ -987,6 +987,30 @@ goosecracker:
   onepassword:
     itemPath: ""
 
+# Graph: DBOS-backed composition of agent sessions into deterministic workflows
+# (ADR agents/038). DBOS is an in-process library, not a service, and stores its
+# workflow state in a `dbos` schema inside the existing monolith database, so
+# enabling this adds no new deployment and no second database.
+#
+# Launched on the LEADER replica only in this first version, so two replicas do
+# not both run the recovery loop. Private tier only: the module is registered in
+# modules_private and never in modules_public.
+graph:
+  enabled: false
+  # The cheap implementer lane and the reviewer that gates it. The reviewer is
+  # never below Opus: ADR 038 decision 5 floors anything assessable only by
+  # reading, and a review is exactly that.
+  implementerModel: "luna"
+  reviewerModel: "opus"
+  # Hard bound on retry. The adjudicator (a later slice) may choose WITHIN this
+  # budget but can never extend it, which is what keeps "retry N times" a
+  # budget rather than a suggestion.
+  maxAttempts: 2
+  turnTimeoutSeconds: 1800
+  # Concurrent Codex dispatches. Three concurrent dispatches have been killed
+  # before, so this stays at 2 until there is evidence it can go higher.
+  codexConcurrency: 2
+
 # Knowledge gardener: LLM-driven decomposition of raw vault notes into
 # typed knowledge artifacts via the claude Code CLI. Uses CLAUDE_CODE_OAUTH_TOKEN
 # from the litellm-claude-auth 1Password item (same token as goose agents).
