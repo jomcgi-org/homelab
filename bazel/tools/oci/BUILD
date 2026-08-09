@@ -1,12 +1,5 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
-# Detect CI builds to conditionally apply branch tags
-config_setting(
-    name = "ci_build",
-    values = {"define": "CI=true"},
-    visibility = ["//visibility:public"],
-)
-
 # Export push template for apko_push rule
 exports_files(
     [

@@ -68,9 +68,11 @@ by the low-level `oci_image_info` rule.
 | `repository` | File | Plain-text file containing the OCI repository URL (no trailing newline)     |
 | `image_tags` | File | Text file with one tag per line; first line is the primary tag used by Helm |
 
-The primary tag format is `YYYY.MM.DD.HH.MM.SS-shortsha` (the `STABLE_IMAGE_TAG`
-stamp variable). CI builds also write a second line with the branch name
-(`STABLE_BRANCH_TAG`). Local builds write only the timestamp tag.
+The tag format is `YYYY.MM.DD.HH.MM.SS-shortsha` (the `STABLE_IMAGE_TAG` stamp
+variable), and it is the only tag written. CI builds used to append a second
+line carrying the branch name for ArgoCD Image Updater tag filtering; there is
+no Image Updater in this cluster, and charts deploy by `repository@digest`, so
+the tag is a registry-facing alias rather than the deployed reference.
 
 ## `go_image`
 

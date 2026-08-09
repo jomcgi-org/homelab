@@ -33,59 +33,17 @@ auto_version=$(
 # because volatile-status.txt is the binding constraint there, not this key.
 base_image_tag=$(TZ=UTC git show -s --format=%cd --date=format-local:%Y.%m.%d.%H.%M.%S HEAD)-${git_short_sha}
 
-# Get branch name (sanitized for Docker tags)
-# Check multiple CI environment variables for branch name
-if [ -n "${GITHUB_REF_NAME:-}" ]; then
-	# GitHub Actions provides this directly
-	branch="${GITHUB_REF_NAME}"
-elif [ -n "${GIT_BRANCH:-}" ]; then
-	# BuildBuddy and Jenkins provide this
-	branch="${GIT_BRANCH}"
-elif [ -n "${GITHUB_REF:-}" ]; then
-	# GitHub webhook events provide refs/heads/branch-name
-	# Extract branch name from refs/heads/ or refs/pull/
-	if [[ "${GITHUB_REF}" == refs/heads/* ]]; then
-		branch="${GITHUB_REF#refs/heads/}"
-	elif [[ "${GITHUB_REF}" == refs/pull/* ]]; then
-		# For pull requests, use PR branch name if available
-		branch="${GITHUB_HEAD_REF:-pr-${GITHUB_REF#refs/pull/}}"
-	else
-		branch="${GITHUB_REF}"
-	fi
-elif [ -n "${BUILDKITE_BRANCH:-}" ]; then
-	# Buildkite CI
-	branch="${BUILDKITE_BRANCH}"
-elif [ -n "${CIRCLE_BRANCH:-}" ]; then
-	# CircleCI
-	branch="${CIRCLE_BRANCH}"
-elif [ -n "${CI_COMMIT_BRANCH:-}" ]; then
-	# GitLab CI
-	branch="${CI_COMMIT_BRANCH}"
-else
-	# Fallback to git command (may fail in detached HEAD state)
-	branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-fi
-
-# Debug output when CI is set (only visible in build logs)
-if [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]; then
-	>&2 echo "workspace_status.sh: Detected branch '${branch}' from environment"
-	>&2 echo "  GITHUB_REF_NAME=${GITHUB_REF_NAME:-<not set>}"
-	>&2 echo "  GIT_BRANCH=${GIT_BRANCH:-<not set>}"
-	>&2 echo "  GITHUB_REF=${GITHUB_REF:-<not set>}"
-fi
-# Sanitize: replace / with - and convert to lowercase
-branch_tag=$(echo "${branch}" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
-
-# Add dev- prefix for non-main branches (for ArgoCD Image Updater filtering)
-if [ "${branch}" = "main" ]; then
-	image_tag="${base_image_tag}"
-else
-	image_tag="dev-${base_image_tag}"
-fi
+# No branch-derived stamp value is emitted. STABLE_BRANCH_TAG (a sanitized
+# branch name published as a second image tag) and the `dev-` prefix applied to
+# STABLE_IMAGE_TAG off main both existed for one consumer: ArgoCD Image Updater
+# tag filtering. This cluster has no Image Updater, and charts deploy images by
+# repository@digest (bazel/helm/images.bzl), so neither value ever reached a
+# running workload. CI also no longer pushes images off main (buildbuddy.yaml),
+# which left the CI-env branch-detection cascade that used to live here feeding
+# nothing but a debug echo.
 
 cat <<EOF
 STABLE_GIT_COMMIT ${git_commit}
 STABLE_MONOREPO_VERSION ${auto_version}
-STABLE_IMAGE_TAG ${image_tag}
-STABLE_BRANCH_TAG ${branch_tag}
+STABLE_IMAGE_TAG ${base_image_tag}
 EOF

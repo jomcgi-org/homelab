@@ -240,24 +240,13 @@ oci_image_index(
     ],
 )
 
-# Stamped tags for CI (branch + timestamp)
+# One tag per push: the timestamped build tag. The branch-name tag this used to
+# carry under --define=CI=true is gone (see bazel/tools/oci/apko_image.bzl); it
+# was also listed FIRST here, so head -1 handed helm values a branch name for
+# this one image while every macro-built image got the timestamp.
 expand_template(
-    name = "image_stamped_tags_ci",
-    out = "image_stamped_ci.tags.txt",
-    stamp_substitutions = {
-        "{STABLE_BRANCH_TAG}": "{{STABLE_BRANCH_TAG}}",
-        "{STABLE_IMAGE_TAG}": "{{STABLE_IMAGE_TAG}}",
-    },
-    template = [
-        "{STABLE_BRANCH_TAG}",
-        "{STABLE_IMAGE_TAG}",
-    ],
-)
-
-# Stamped tags for local builds (timestamp only)
-expand_template(
-    name = "image_stamped_tags_local",
-    out = "image_stamped_local.tags.txt",
+    name = "image_stamped_tags",
+    out = "image_stamped.tags.txt",
     stamp_substitutions = {
         "{STABLE_IMAGE_TAG}": "{{STABLE_IMAGE_TAG}}",
     },
@@ -267,10 +256,7 @@ expand_template(
 oci_push(
     name = "image.push",
     image = ":image",
-    remote_tags = select({
-        "//bazel/tools/oci:ci_build": "image_stamped_tags_ci",
-        "//conditions:default": "image_stamped_tags_local",
-    }),
+    remote_tags = "image_stamped_tags",
     repository = "ghcr.io/jomcgi/homelab/bazel/tools/image",
     visibility = ["//bazel/images:__pkg__"],
 )

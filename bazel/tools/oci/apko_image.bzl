@@ -181,26 +181,17 @@ def apko_image(
     push_image = name
     use_oci_push = True
 
-    # Create stamped tags file for CI builds (branch + timestamp)
+    # One tag per push: the timestamped build tag, which is also what helm
+    # values read via `head -1`. A second branch-name tag used to be applied
+    # under --define=CI=true; its only documented consumer was ArgoCD Image
+    # Updater filtering, and this cluster has no Image Updater. Charts deploy by
+    # repository@digest (bazel/helm/images.bzl), so a tag is never the deployed
+    # reference.
     expand_template(
-        name = name + "_stamped_tags_ci",
-        out = name + "_stamped_ci.tags.txt",
+        name = name + "_stamped_tags",
+        out = name + "_stamped.tags.txt",
         template = [
-            "{STABLE_IMAGE_TAG}",  # Timestamp (primary — used by helm values via head -1)
-            "{STABLE_BRANCH_TAG}",  # Branch name (e.g., "main")
-        ],
-        stamp_substitutions = {
-            "{STABLE_BRANCH_TAG}": "{{STABLE_BRANCH_TAG}}",
-            "{STABLE_IMAGE_TAG}": "{{STABLE_IMAGE_TAG}}",
-        },
-    )
-
-    # Create stamped tags file for local builds (timestamp only)
-    expand_template(
-        name = name + "_stamped_tags_local",
-        out = name + "_stamped_local.tags.txt",
-        template = [
-            "{STABLE_IMAGE_TAG}",
+            "{STABLE_IMAGE_TAG}",  # Timestamp: YYYY.MM.DD.HH.MM.SS-shortsha
         ],
         stamp_substitutions = {
             "{STABLE_IMAGE_TAG}": "{{STABLE_IMAGE_TAG}}",
@@ -214,10 +205,7 @@ def apko_image(
             name = name + ".push",
             image = ":" + push_image,
             repository = _repository,
-            remote_tags = select({
-                "//bazel/tools/oci:ci_build": name + "_stamped_tags_ci",
-                "//conditions:default": name + "_stamped_tags_local",
-            }),
+            remote_tags = name + "_stamped_tags",
             visibility = visibility,
         )
     else:
@@ -225,10 +213,7 @@ def apko_image(
             name = name + ".push",
             image = push_image,
             repository = _repository,
-            remote_tags = select({
-                "//bazel/tools/oci:ci_build": name + "_stamped_tags_ci",
-                "//conditions:default": name + "_stamped_tags_local",
-            }),
+            remote_tags = name + "_stamped_tags",
             visibility = visibility,
         )
 
@@ -239,7 +224,7 @@ def apko_image(
     oci_image_info(
         name = name + ".info",
         repository = _repository,
-        image_tags = name + "_stamped_ci.tags.txt",
+        image_tags = name + "_stamped.tags.txt",
         image_digest = ":" + name + ".digest",
         image = ":" + name,
         visibility = ["//visibility:public"],
