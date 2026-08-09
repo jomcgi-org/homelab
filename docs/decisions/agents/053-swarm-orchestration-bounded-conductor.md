@@ -70,8 +70,10 @@ The conductor must not:
 The conductor is the least-privileged actor in the system: a read-only
 reconciliation snapshot in, a typed amendment proposal out, no credential of
 any kind, no git push, no BuildBuddy key, no k8s access, no EmberVM control
-plane access. This is stricter than ADR 038 decision 8's orchestrator, which
-already held no credentials; at feature scale the conductor also reads more
+plane access. ADR 038 decision 8 constrained what its orchestrator may own
+(attempt counters, concurrency limits, merge authority, the graph's edges)
+without enumerating credentials; this ADR makes the zero-credential floor
+explicit, because at feature scale the conductor also reads more
 untrusted surface (multi-component CI logs, cross-slice review findings,
 issue and PR text across the whole feature), so the privilege floor has to
 stay at zero rather than merely low.
@@ -120,11 +122,11 @@ migration story for every deploy that lands mid-feature. Short-lived nodes
 plus an external ledger sidestep the problem instead of solving it, which is
 the cheaper and more auditable shape.
 
-The amendment prohibition in decision 1 reads "mutate outside the amendment
-protocol", not "mutate" without qualification: `ADD_NODE` and
-`INVALIDATE_NODE` are typed amendments that do change the running DAG, by
-design. What is prohibited is a conductor write that bypasses the validator
-and the plan-version mechanism, not the act of changing the plan at all.
+Decision 1's prohibition is on *silently* mutating a running DAG, not on
+mutation as such: `ADD_NODE` and `INVALIDATE_NODE` are typed amendments that
+do change the running DAG, by design. What is prohibited is a conductor
+write that bypasses the validator and the plan-version mechanism, not the
+act of changing the plan at all.
 
 ### 3. Evidence ladder: three rungs, one PR
 
@@ -182,8 +184,12 @@ serve rung 2:
   computes an affected-target floor deterministically from the diff
   (changed files mapped to owning Bazel packages). The plan may only add to
   that floor (opt-in Semgrep, extra suites, adjacent packages); it may never
-  subtract below it. Security-sensitive paths, the set `docs/security.md`
-  names, force Semgrep into the floor regardless of what the plan requests.
+  subtract below it. Security-sensitive paths force Semgrep into the floor
+  regardless of what the plan requests; the path set is an explicit list
+  maintained in the validator's own policy config, seeded from the concerns
+  `docs/security.md`'s review checklist covers (auth boundaries, RBAC,
+  ingress, secrets), since `docs/security.md` itself names concerns, not
+  paths.
 - **Scope travels in the control-plane-supplied `env` of the
   `ExecuteWorkflow` request, never in the commit.** An agent that could set
   its own evidence scope by editing a file in its own commit would be
@@ -236,7 +242,9 @@ body without modification:
 ### 6. Dependencies and relationships
 
 Merge stays a deterministic, concurrency-1, gated operation, unchanged from
-ADR 038 decision 6, through the ADR 027 (Draft) implementer/reviewer split.
+ADR 038 (the `concurrency=1` merge queue is decision 2's primitive; the gate
+itself is decision 6), through the ADR 027 (Draft) implementer/reviewer
+split.
 ADR 027 is the floor for any delivery this graph produces: the merge queue
 this design assumes exists, but as of this ADR nothing yet enqueues to it,
 and that dependency is explicit rather than assumed.
@@ -352,4 +360,4 @@ structurally cannot merge) and 047 (per-principal egress, once implemented).
 | [ADR 047 - Per-Principal Egress Credentials and the Broker Identity Envelope](047-per-principal-egress-credential-broker.md) | The capability broker backing every node's credentials; Draft, revised in parallel. |
 | [GitHub issue #4584](https://github.com/jomcgi/homelab/issues/4584) | Design discussion this ADR records, and the incremental delivery work breakdown this ADR deliberately does not duplicate. |
 | #4118 | The false-green CI mode behind the `Executed N out of M`, N > 0 verdict rule in decision 3. |
-| #4578 | Guest cleanup on cancellation, composed with this design's compensating session-delete steps. |
+| #4578 | The ADR 038 graph-layer build issue; its body carries the cancellation-does-not-reap-the-guest work item this design's compensating session-delete steps compose with. |

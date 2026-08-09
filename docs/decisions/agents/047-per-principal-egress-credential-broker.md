@@ -143,7 +143,7 @@ Issue #4584's design discussion on the graph engine's capability track surfaced
 three questions the original decision left implicit: who a minted capability is
 *for* when the triggering party is not the human at a keyboard, how a grant
 reaches the broker in the first place, and which identity plane a machine
-principal authenticates against. These extend decisions 4 through 6 below; they
+principal authenticates against. These extend decisions 4 through 6 above; they
 do not revise them. The identity envelope (decision 4) and the `Resolve(principal,
 host)` resolver (decision 6) are exactly the seam this update plugs into, the
 same way ADR 048 already plugged a second provider's credential shape into that
@@ -212,8 +212,9 @@ Impersonation is acceptable at a provider boundary only when all three hold:
   ledger distinguishes.
 
 **10. Grants attach at session create, minted per node at admission, revoked at
-lease reap.** The create-session API gains a grant set; today `StartRequest`
-carries only `restore_lineage` and the broker's own credential catalog is static
+lease reap.** The create-session API gains a grant set; today the request body
+posted to the EmberVM control plane's create-session endpoint carries only
+`restore_lineage` and the broker's own credential catalog is static
 env config with no caller identity in scope at request time. Under this update,
 each node's capabilities become short-lived leases minted when the node is
 admitted, tied to the node rather than the session as a whole, and revoked when
@@ -262,20 +263,26 @@ are worth stating here rather than rediscovering:
 
 **13. The forcing function for why no real credential may ever reach a guest,
 stated once rather than re-derived per provider.** EmberVM snapshots capture
-guest memory, and a restore is memory-identical to the state at bank time
-([ADR 027 (embervm) - Snapshot Modes as a Workload Property](../embervm/027-snapshot-modes-workload-property.md),
-line 139). Any real credential resident in guest memory at bank time is
+guest memory, and a restore is memory-identical to the state at bank time. The
+"a snapshot at rest is a leak amplifier" reasoning in
+[ADR 027 (embervm) - Snapshot Modes as a Workload Property](../embervm/027-snapshot-modes-workload-property.md)
+(line 139) was written about the filesystem workspace tier's capture manifest,
+but as decision 3 above already argues, it applies without modification to the
+memory snapshot. Any real credential resident in guest memory at bank time is
 therefore resident in every later warm restore and every lineage descendant of
 that snapshot, not just the session that first held it. This is the same
 reasoning decision 3 already applies to the Anthropic leg; this update states it
 as the general boundary this whole broker exists to hold, because decisions 8
 through 12 add more capability types crossing that boundary, and each one
-inherits the constraint rather than re-earning it. The existing presence-keyed
-injection at the egress proxy (the sidecar injects a real value only when it
-sees a placeholder present, superseding an earlier placeholder-substitution
-primitive that was rejected because a placeholder was itself URL-spliceable and
-therefore guest-forgeable) remains the only place a real credential is allowed
-to exist on the request path. Nothing in this update opens a second one.
+inherits the constraint rather than re-earning it. The existing
+destination-keyed injection at the egress proxy remains the only place a real
+credential is allowed to exist on the request path: when the request's
+destination matches a catalog entry's `egressTo`, the sidecar deletes whatever
+the guest sent in that header and sets the real value itself, so nothing the
+guest writes can trigger, suppress, or reach an injection (the earlier
+placeholder-substitution primitive was removed precisely because its trigger
+was guest-controllable and a placeholder was URL-spliceable). Nothing in this
+update opens a second one.
 
 Implementation for decisions 8 through 12 is issue #4584 item 17 (the identity
 envelope, the grant set, and broker caller authz) plus item 18 (the k8s-read
