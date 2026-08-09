@@ -914,6 +914,9 @@ cdHealth:
   # main's CI red for longer than this trips it. Red is only a fault once it
   # persists; a run being actively fixed must not page.
   ciRedWindowSeconds: 3600
+  # How often the private tier recomputes cd health and writes the latch. The
+  # public reader treats a row older than 2.5x this as a dead writer.
+  probeIntervalSeconds: 300
 
 chat:
   enabled: false

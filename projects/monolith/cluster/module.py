@@ -5,9 +5,14 @@ not pull the framework or FastAPI: standalone binaries that reuse domain code
 (e.g. trips_backfill, the knowledge tools) glob only their own sources.
 """
 
-from cluster.cd_health import cd_health
-
 from framework import Module as _Module
+
+
+async def _leader_start(app):
+    """Start the cd probe writer (lazy import keeps __init__ light)."""
+    from cluster.cd_leader import leader_start  # noqa: PLC0415
+
+    return await leader_start(app)
 
 
 def _register_mcp() -> None:
@@ -18,9 +23,11 @@ def _register_mcp() -> None:
 MODULE = _Module(
     name="cluster",
     register_mcp=_register_mcp,
-    # The cd component lives here rather than in a domain of its own: this
-    # domain already owns the k8s and ArgoCD read surface, and a new module
-    # would mint a domain image and a MONOLITH_DOMAINS parity obligation for
-    # something that mounts no routes. See cd_health.py and issue #4597.
-    register_health={"cd": cd_health},
+    # This domain COMPUTES cd health (it owns the k8s and ArgoCD read surface)
+    # but does not serve it. The check runs here on a leader-elected loop and
+    # writes the platform_probe latch; the component that reports it is
+    # registered on home.module, which composes into the public tier that
+    # UptimeRobot actually polls. See core/platform_probe.py for why the
+    # handoff exists at all.
+    leader_start=_leader_start,
 )

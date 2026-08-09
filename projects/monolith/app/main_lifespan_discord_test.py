@@ -79,7 +79,7 @@ class TestSingletons:
             await _start_singletons(app)
 
         assert (
-            len(created) == 6
+            len(created) == 7
         )  # bot + outbox + ships + agent_sessions + lock sweeps + title refresh
 
     @pytest.mark.asyncio
@@ -100,7 +100,9 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        assert len(created) == 3  # ships + agent_sessions sweep + title refresh
+        assert (
+            len(created) == 4
+        )  # ships + agent_sessions sweep + title refresh + cd probe
 
     @pytest.mark.asyncio
     async def test_stop_singletons_closes_and_cancels(self):
