@@ -22,13 +22,18 @@ def _dbos():
     instance = runtime.init_dbos()
     if instance is None:
         raise HTTPException(status_code=503, detail="Graph DBOS is not configured")
+    if not runtime.is_launched():
+        # A follower replica: the router is mounted everywhere but DBOS only
+        # launches on the leader. Submitting here would target an unlaunched
+        # runtime, so say so rather than failing obscurely downstream.
+        raise HTTPException(
+            status_code=503, detail="Graph DBOS is not launched on this replica"
+        )
     return instance
 
 
 @router.post("/runs")
 def start_run(request: RunRequest) -> dict:
-    if not config.enabled():
-        raise HTTPException(status_code=503, detail="Graph workflows are disabled")
     if request.repo not in REPO_CATALOG:
         raise HTTPException(status_code=400, detail=f"unknown repo {request.repo}")
     from graph.workflows import implement_then_review
@@ -68,9 +73,15 @@ def list_runs() -> list[dict]:
 @router.post("/runs/{workflow_id}/cancel")
 def cancel_run(workflow_id: str) -> dict:
     _dbos().cancel_workflow(workflow_id)
-    # Guest-session cleanup is a follow-up, and an issue should be filed. Cancel
-    # does not silently pretend that the guest session has been reaped.
-    return {"workflow_id": workflow_id, "cancelled": True}
+    # Cancelling the workflow does NOT reap the guest session it started, and
+    # parked sessions count against the live capacity cap, so a cancelled graph
+    # can still deny creates cluster-wide. The compensating control-plane delete
+    # is tracked in #4578. Reported honestly rather than claiming a clean stop.
+    return {
+        "workflow_id": workflow_id,
+        "cancelled": True,
+        "guest_session_reaped": False,
+    }
 
 
 def _status_payload(status) -> dict:

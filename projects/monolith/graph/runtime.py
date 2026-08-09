@@ -27,6 +27,17 @@ def init_dbos():
     return _dbos
 
 
+def is_launched() -> bool:
+    """True only on a replica that actually launched DBOS.
+
+    DBOS launches on the LEADER only, but every replica serves the router, so a
+    request can land on a follower. Constructing a DBOS instance there and
+    calling start_workflow on it would submit against an unlaunched runtime, so
+    callers gate on this instead of on init_dbos() returning non-None.
+    """
+    return _launched
+
+
 def launch() -> None:
     global _launched
     instance = init_dbos()
