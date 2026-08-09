@@ -5,13 +5,18 @@ mcp-stack:
       MCPGATEWAY_UI_ENABLED: "true"
       MCPGATEWAY_CATALOG_ENABLED: "true"
       MCPGATEWAY_TOOL_CANCELLATION_ENABLED: "true"
-    secret:
-      # 1.0.x enables SSRF protection by default and blocks RFC 1918
-      # destinations, which rejects gateway registration for any in-cluster
-      # MCP server with `loc=('body','url') type=value_error`. Allow only the
-      # k3s pod and service CIDRs rather than flipping
-      # SSRF_ALLOW_PRIVATE_NETWORKS, so RFC 1918 stays blocked everywhere else.
+      # 1.0.x enables SSRF protection with ssrf_allow_private_networks false,
+      # so RFC 1918 destinations are refused and registering any in-cluster MCP
+      # server fails with a masked 422 (the real cause appears only in the log
+      # as `loc=('body','url') type=value_error`). Allowlist just the k3s pod
+      # and service CIDRs so RFC 1918 stays blocked everywhere else.
+      #
+      # This MUST live in config, not secret. The chart emits this key into
+      # BOTH the gateway ConfigMap and the gateway Secret, and the deployment's
+      # envFrom order is [secret, configMap, secret], so a value set only in
+      # the first secret is shadowed by the ConfigMap default of "[]".
       SSRF_ALLOWED_NETWORKS: '["10.42.0.0/16", "10.43.0.0/16"]'
+    secret:
       # Enforce OAuth on the MCP endpoint itself. Until now the JSON-RPC
       # endpoint authenticated nobody: an unauthenticated tools/list returned
       # all 57 tools, including monolith-agent-session-destroy, and tools/call
