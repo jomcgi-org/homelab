@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+
+import httpx
 from dbos import DBOS
 
 
@@ -44,7 +47,22 @@ def poll_turn(session_id: int, after_seq: int) -> dict | None:
         return {
             "seq": turn.seq,
             "result_text": turn.result_text,
-            "commit_sha": turn.commit_sha,
             "terminal_reason": turn.terminal_reason,
             "cost_usd": turn.cost_usd,
         }
+
+
+@DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
+def read_branch_head(repo: str, branch: str) -> str | None:
+    """Read a pushed branch head from GitHub, independently of the agent claim."""
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = f"https://api.github.com/repos/{repo}/git/ref/heads/{branch}"
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(url, headers=headers)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.json()["object"]["sha"]

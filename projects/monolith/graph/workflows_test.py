@@ -17,12 +17,20 @@ def workflow(*args):
     return workflows.implement_then_review.__wrapped__(*args)
 
 
-def run(monkeypatch, turns):
+def run(monkeypatch, turns, heads=None):
     sessions = iter(turns)
     calls = []
+    if heads is None:
+        heads = [
+            turns[session].get("commit_sha")
+            for session in sorted(turns)
+            if session < 200
+        ]
+    branch_heads = iter(heads)
     monkeypatch.setattr(workflows, "codex_queue", lambda: Queue())
     monkeypatch.setattr(workflows, "start_agent_session", lambda *args: 0)
     monkeypatch.setattr(workflows, "_await_turn", lambda session, *_: turns[session])
+    monkeypatch.setattr(workflows, "read_branch_head", lambda *_: next(branch_heads))
     monkeypatch.setattr(
         workflows,
         "_queued_session",
@@ -44,6 +52,8 @@ def test_commit_on_first_attempt_goes_to_review(monkeypatch):
     result = workflow("task", "jomcgi/homelab", "main")
     assert result["status"] == "review"
     assert result["attempts"] == 1
+    assert result["commit_sha"] == "abc"
+    assert result["work_branch"] == "claude/graph-unknown"
     assert len(calls) == 2
 
 
@@ -121,6 +131,27 @@ def test_reviewer_has_no_lineage_argument(monkeypatch):
     workflow("task", "jomcgi/homelab", "main")
     assert len(calls[1]) == 5
     assert all("lineage" not in str(value) for value in calls[1])
+
+
+def test_routes_on_github_head_not_turn_commit(monkeypatch):
+    """The turn CLAIMS a commit; GitHub says the branch was never pushed. The
+    graph must believe GitHub. Routing on the turn field is what made the
+    reviewer unreachable, because AgentTurn.commit_sha is never written."""
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            102: {"commit_sha": "def", "result_text": "done", "cost_usd": 1},
+        },
+        heads=[None, None],
+    )
+    result = workflow("task", "jomcgi/homelab", "main")
+    assert result["status"] == "escalated"
+    assert result["reviewer_session_id"] is None
+    assert result["commit_sha"] is None
+    # Two implementer attempts, and never a reviewer, despite both turns
+    # self-reporting a commit sha.
+    assert len(calls) == 2
 
 
 def test_session_keys_are_deterministic_and_distinct(monkeypatch):

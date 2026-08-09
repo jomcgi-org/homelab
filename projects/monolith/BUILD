@@ -1571,6 +1571,7 @@ py_library(
         ":pkg_framework",
         "@pip//dbos",
         "@pip//fastapi",
+        "@pip//httpx",
         "@pip//pydantic",
         "@pip//sqlmodel",
     ],
@@ -4349,6 +4350,17 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_graph",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "graph_steps_test",
+    srcs = ["graph/steps_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_graph",
+        "@pip//httpx",
         "@pip//pytest",
     ],
 )
