@@ -6596,6 +6596,17 @@ py_test(
 )
 
 py_test(
+    name = "core_platform_probe_test",
+    srcs = ["core/platform_probe_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "cluster_cd_health_test",
     srcs = ["cluster/cd_health_test.py"],
     imports = ["."],

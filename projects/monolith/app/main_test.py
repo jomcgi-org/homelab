@@ -206,7 +206,9 @@ async def test_lifespan_creates_one_background_task_on_startup():
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
 
-    assert len(created_tasks) == 3  # ships + agent_sessions sweep + title refresh
+    assert (
+        len(created_tasks) == 4
+    )  # ships + agent_sessions sweep + title refresh + cd probe
 
 
 @pytest.mark.asyncio
@@ -229,7 +231,9 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
             await _start_singletons(app)
             await _stop_singletons(app)
 
-    assert len(mock_tasks) == 3  # ships + agent_sessions sweep + title refresh
+    assert (
+        len(mock_tasks) == 4
+    )  # ships + agent_sessions sweep + title refresh + cd probe
     for task in mock_tasks:
         task.cancel.assert_called_once()
 
@@ -252,7 +256,9 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
-            assert len(mock_tasks) == 3  # ships + agent_sessions sweep + title refresh
+            assert (
+                len(mock_tasks) == 4
+            )  # ships + agent_sessions sweep + title refresh + cd probe
             for task in mock_tasks:
                 task.cancel.assert_not_called()
             await _stop_singletons(app)
@@ -511,7 +517,7 @@ async def test_lifespan_creates_four_tasks_when_discord_token_set():
                 await _start_singletons(app)
 
     assert (
-        len(created_tasks) == 6
+        len(created_tasks) == 7
     )  # bot + outbox + ships + agent_sessions + lock sweeps + title refresh
 
 

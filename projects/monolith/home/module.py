@@ -7,7 +7,14 @@ not pull the framework or FastAPI: standalone binaries that reuse domain code
 
 import home as _domain
 
+from core.platform_probe import probe_health
+
 from framework import Module as _Module
+
+# 2.5x the writer's default 300s cadence, so one slow or missed cycle never
+# flaps the endpoint but a dead writer still surfaces. Same reasoning as the
+# ember synthetic components.
+_CD_STALENESS_S = 750.0
 
 
 async def _startup(app):
@@ -24,4 +31,10 @@ MODULE = _Module(
     register=_domain.register,
     register_public=_domain.register_public,
     startup=_startup,
+    # cd platform health is REPORTED here, not computed here. The cluster
+    # domain computes it privately and writes the platform_probe latch; this
+    # module is in both the private and public registries, so registering the
+    # reader here is what puts the component on the tier UptimeRobot polls.
+    # The public tier needs no new privilege to serve it, which is the point.
+    register_health={"cd": probe_health("cd", _CD_STALENESS_S)},
 )

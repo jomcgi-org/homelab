@@ -477,6 +477,7 @@ async def test_start_bot_when_ready_not_scheduled_when_no_token():
 
     # Ships ingest plus the agent_sessions sweep and title refresh (no bot;
     # scheduler loop removed).
-    assert len(created_tasks) == 3, (
-        f"Expected 3 tasks without a bot token, got {len(created_tasks)}"
+    # 4 not 3: cd-probe (cluster) writes the platform_probe latch, see core/platform_probe.py
+    assert len(created_tasks) == 4, (
+        f"Expected 4 tasks without a bot token, got {len(created_tasks)}"
     )
