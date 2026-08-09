@@ -1,91 +1,137 @@
 actions:
-  # Format check - runs formatters, gazelle, and the doc-index manifests,
-  # auto-commits fixes on PR branches. Runs in parallel with Test and Push images
-  - name: "Format check"
+  # pr-checks — the ONLY gating action on a PR. Formatting, tests, image builds
+  # and the pre-merge missed-chart-bump guard all run on ONE runner.
+  #
+  # Why one action and not four: 99% of this repo's CI_RUNNER download is cold
+  # starts, a VM snapshot restored out of the cache at spin-up. Cold rate tracks
+  # workspace size, not run count: "Format check", "Test" and "Push images" each
+  # ran ~747 times in the 7 days to 2026-08-09 with cold rates of 20%, 56% and
+  # 62%, because each kept its OWN bazel output_base warm and the big ones are
+  # likelier to be evicted AND dearer to restore. One shared workspace is
+  # touched every time instead of a third of the time.
+  #
+  # REQUIRED status check. Renaming it breaks the GitHub ruleset, which matches
+  # by exact name; change both together or every PR blocks.
+  - name: "pr-checks"
     container_image: "ubuntu-24.04"
-    max_retries: 2
+    max_retries: 1
     resource_requests:
-      memory: "8GB"
-      disk: "20GB"
+      cpu: "6"
+      memory: "10GB"
+      disk: "120GB"
     triggers:
-      push:
-        branches:
-          - "main"
       pull_request:
         branches:
           - "*"
         merge_with_base: false
     steps:
       - run: |
-          # Skip automated commits to avoid loops
+          # errexit is LOAD-BEARING. A BuildBuddy step is one shell script and
+          # the action's status is the LAST command's, so without -e a failing
+          # `bazel test` followed by a passing image build reports GREEN. That
+          # was structurally impossible while these were separate actions.
+          # -u catches a typo'd variable rather than expanding it to empty and
+          # silently skipping a guard, so optional secrets use ${VAR:-}.
+          set -eu
+
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
+
+          # Authenticate Docker Hub so rules_oci base-image manifest fetches
+          # (ubuntu, osgeo/gdal, python_base, ...) are not subject to the
+          # anonymous ~100-pull/6h quota, which 429s and aborts the build.
+          if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${DOCKERHUB_USERNAME:-}" --password-stdin
+          fi
+
+          # ---- 1. format, generators, drift auto-commit -------------------
+          # The ci-format-bot guard skips THIS STAGE ONLY, never the run. The
+          # old standalone action could `exit 0` here because that ended only
+          # the format check; doing the same now would skip the tests, and the
+          # bot's commit is frequently the head that ends up merged.
           AUTHOR="$(git log -1 --format='%an')"
           if [ "$AUTHOR" = "ci-format-bot" ]; then
-            echo "Skipping automated commit from $AUTHOR"
-            exit 0
+            echo "HEAD is the ci-format-bot commit; formatting just ran, going straight to tests."
+          else
+            # :run_generators runs every doc/config generator (incl. the
+            # KG-ingest + public-docs manifests), so drift is auto-committed
+            # below rather than hard-failing. Single source of truth for the
+            # list: run-generators.sh, which local pre-commit also uses.
+            bazel run //bazel/tools/format:format --config=ci
+
+            # Validate grep-based generate scripts against bazel query
+            ./bazel/images/validate-generate-scripts.sh
+
+            # Enforce linear, non-duplicated Atlas migration versions. A
+            # duplicate version or a migration added below the current head
+            # wedges the WHOLE migration pipeline at apply time; atlas migrate
+            # validate does not catch either.
+            ./bazel/tools/format/check-migration-ordering.sh
+
+            # Wrangler Pages (Cloudflare) fails with error 8000111 when commits
+            # in the deployed branch contain non-ASCII characters.
+            ./bazel/tools/git/check-commit-msg-ascii.sh --all origin/main
+
+            # Hook scripts referenced from .claude/settings.json must exist and
+            # be executable; a 644 script exits 126 in sessions, enforcing
+            # nothing.
+            ./bazel/tools/hooks/validate-hooks-executable.sh
+
+            # The root README's structural claims must stay real. Runs on the
+            # full checkout (a sandboxed bazel test cannot list projects/* on
+            # RBE); the pure logic is pinned by a bazel test.
+            python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
+
+            if git diff --exit-code; then
+              echo "All files formatted correctly"
+            else
+              # Auto-commit, then STOP. This head is superseded and the push
+              # below starts a fresh pr-checks that runs everything. Stopping
+              # is itself a saving: the old layout let Test and Push images
+              # grind through a head already known to be dead.
+              echo "Auto-committing formatting fixes..."
+              current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+              git config user.name "ci-format-bot"
+              git config user.email "ci-format-bot@users.noreply.github.com"
+              git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi/homelab.git"
+              git add -u
+              git commit -m "style: auto-format"
+              git push origin HEAD:"$current_branch"
+              echo "Pushed to $current_branch; stopping so the new head runs the full pipeline."
+              exit 0
+            fi
           fi
 
-          # Run all formatters, generators, and gazelle in a single Bazel invocation.
-          # The :run_generators command runs every doc/config generator (incl. the
-          # KG-ingest + public-docs manifests), so any drift is picked up by the
-          # auto-commit below instead of hard-failing. Same list local pre-commit
-          # runs via fast-format.sh (single source of truth: run-generators.sh).
-          bazel run //bazel/tools/format:format --config=ci
+          # ---- 2. tests ---------------------------------------------------
+          # -future excludes future-feature BDD specs (executable specs for
+          # not-yet-built features): those are intentionally red.
+          bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 
-          # Validate grep-based generate scripts against bazel query
-          ./bazel/images/validate-generate-scripts.sh
+          # ---- 3. images build, and the missed-chart-bump guard -----------
+          # PR branches publish nothing. `bazel build` proves the images build
+          # while --remote_download_minimal leaves the layers at rest in CAS;
+          # `bazel run` would stage all ~24 images' runfiles on the runner
+          # before any command executes, which was 3.5 TB/week (PR #4586).
+          bazel build //bazel/images:push_all --config=ci
 
-          # Enforce linear, non-duplicated Atlas migration versions. A duplicate
-          # version or a migration added below the current head wedges the WHOLE
-          # migration pipeline at apply time; atlas migrate validate does not
-          # catch either, so guard it here (origin/main is fetched in CI).
-          ./bazel/tools/format/check-migration-ordering.sh
+          # Charts only. Off main push.sh.tpl publishes nothing, so this exists
+          # to run bazel/helm/check-missed-bump.sh, the pre-merge guard that
+          # stops a chart whose images changed from merging un-bumped.
+          bazel run //bazel/images:push_charts --config=ci --stamp
 
-          # Reject non-ASCII characters in commit messages.
-          # Wrangler Pages (Cloudflare) fails with error 8000111 when commits
-          # in the deployed branch contain non-ASCII characters (smart quotes,
-          # em-dashes, arrows, etc.). Check all commits since origin/main.
-          ./bazel/tools/git/check-commit-msg-ascii.sh --all origin/main
+          # ---- 4. rendered-manifest diff PR comment -----------------------
+          # Hard-fails on newly introduced duplicate env var names within a
+          # container (the phantom-OutOfSync class: the API server collapses
+          # duplicates on apply, so the ArgoCD diff never converges).
+          ./bazel/helm/ci-diff-manifests.sh
 
-          # Hook scripts referenced from .claude/settings.json must exist and be
-          # executable; a 644 script exits 126 in sessions and enforces nothing.
-          ./bazel/tools/hooks/validate-hooks-executable.sh
-
-          # The root README's structural claims must stay real: no links to
-          # deleted projects, no new top-level projects/* dir left unmentioned.
-          # Runs on the full checkout (a sandboxed bazel test cannot list
-          # projects/* on RBE); the pure logic is pinned by a bazel test.
-          python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
-
-          # Check for formatting changes
-          if git diff --exit-code; then
-            echo "All files formatted correctly"
-            exit 0
-          fi
-
-          # On main, fail — formatting must be correct before merge
-          current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-          if [ "$current_branch" = "main" ]; then
-            echo "ERROR: Code not formatted or BUILD files out of sync."
-            echo "Run 'format' locally to fix."
-            git --no-pager diff
-            exit 1
-          fi
-
-          # On PR branches, auto-commit formatting fixes
-          echo "Auto-committing formatting fixes..."
-          git config user.name "ci-format-bot"
-          git config user.email "ci-format-bot@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi/homelab.git"
-          git add -u
-          git commit -m "style: auto-format"
-          git push origin HEAD:"$current_branch"
-          echo "Formatting fixes pushed to $current_branch"
-
-  # Test — runs in parallel with Push images (no dependency between them).
-  # Format check, Test, and Push images are all REQUIRED status checks in the
-  # GitHub ruleset (strict: the branch must be up to date with main), so a red
-  # Push images blocks merge; it carries the pre-merge missed-chart-bump guard.
-  - name: "Test"
+  # deploy — main only. Same one-runner reasoning as pr-checks.
+  #
+  # Ordering is deliberate: formatting, then tests, then publish. Tests GATE the
+  # push, which is a behaviour change. Previously "Test" and "Push images" ran
+  # in parallel on main, so a red or flaky test did not stop a deploy. Shipping
+  # code whose tests failed is the worse failure mode, so a flake here should be
+  # handled by re-running the action, not by making the result advisory.
+  - name: "deploy"
     container_image: "ubuntu-24.04"
     max_retries: 1
     resource_requests:
@@ -96,46 +142,51 @@ actions:
       push:
         branches:
           - "main"
-      pull_request:
-        branches:
-          - "*"
-        merge_with_base: false
     steps:
       - run: |
-          # Authenticate Docker Hub so rules_oci base-image manifest fetches
-          # (ubuntu, osgeo/gdal, python_base, ...) are not subject to the
-          # anonymous ~100-pull/6h quota, which 429s and aborts the build.
-          # DOCKERHUB_USERNAME / DOCKERHUB_TOKEN set in BuildBuddy Settings → Secrets.
-          if [ -n "$DOCKERHUB_TOKEN" ]; then
-            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          # See pr-checks: errexit is load-bearing, and here it is what stops a
+          # failed test from publishing images anyway.
+          set -eu
+
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
+
+          if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${DOCKERHUB_USERNAME:-}" --password-stdin
           fi
 
-          # -future excludes future-feature BDD specs (executable specs for
-          # not-yet-built features): those are intentionally red and must not
-          # gate merges. The non-required "BDD future features" action runs them.
+          # ---- 1. formatting must already be correct ----------------------
+          # No auto-commit on main: fail with the fix instead.
+          AUTHOR="$(git log -1 --format='%an')"
+          if [ "$AUTHOR" = "ci-format-bot" ]; then
+            echo "HEAD is the ci-format-bot commit; formatting just ran, going straight to tests."
+          else
+            bazel run //bazel/tools/format:format --config=ci
+            ./bazel/images/validate-generate-scripts.sh
+            ./bazel/tools/format/check-migration-ordering.sh
+            # Near-vacuous on main (origin/main is at or behind HEAD, and a bad
+            # message would have failed the PR), but kept so this change stays
+            # purely structural rather than quietly dropping a guard.
+            ./bazel/tools/git/check-commit-msg-ascii.sh --all origin/main
+            ./bazel/tools/hooks/validate-hooks-executable.sh
+            python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
+
+            if ! git diff --exit-code; then
+              echo "ERROR: Code not formatted or BUILD files out of sync."
+              echo "Run 'format' locally to fix."
+              git --no-pager diff
+              exit 1
+            fi
+          fi
+
+          # ---- 2. tests ---------------------------------------------------
           bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 
-          # OCaml multi-arch shard (ADR 006/008): the example/test ladder again,
-          # targeting linux/arm64. Toolchain resolution routes ocaml actions to
-          # the BuildBuddy cloud arm64 pool (the platform carries Arch: arm64);
-          # the sysroot builds from source on that pool, no cross-compilation.
-          # Test actions run there too (Bazel selects a test execution platform
-          # matching the target platform's constraints). cc_library-dependent
-          # examples are tagged no-arm64 until a C++ toolchain targeting
-          # aarch64 exists.
-          #
-          # TEMPORARILY DISABLED 2026-06-16: BuildBuddy's cloud arm64 pool is
-          # mis-routing Arch: arm64 actions onto x86_64 executors (the driver's
-          # arch guard fails loudly: "sysroot was built on aarch64 but this
-          # action is executing on x86_64"). Confirmed environmental, not a code
-          # regression: main was green on this same shard at ~03:21 UTC, then the
-          # pool degraded ~04:36 UTC, failing on rotating innocent targets (hmap,
-          # fmt, atd). Re-enable once the pool routes correctly again (the
-          # //bazel/ocaml/platforms:executor_arch_probe_arm64 probe is the gate).
-          # bazel test //bazel/ocaml/... --config=ci \
-          #   --platforms=//bazel/ocaml/platforms:linux_aarch64 \
-          #   --build_tests_only \
-          #   --test_tag_filters=-external,-no-arm64
+          # ---- 3. publish -------------------------------------------------
+          # push.sh.tpl decides per chart whether to publish, and skips a
+          # version already in the registry, so a re-run is idempotent.
+          bazel run //bazel/images:push_all --config=ci --stamp
+
+
 
   # TEMPORARILY DISABLED 2026-08-09: BuildBuddy asked us to cut Workflows cache
   # traffic, and this action is pure runner cost. It normally no-ops (no
@@ -217,90 +268,6 @@ actions:
   # missed-chart-bump guard (bazel/helm/check-missed-bump.sh), so a chart whose
   # images changed without a version bump cannot merge. Do NOT rename this
   # action: it is a required check in the GitHub ruleset by this exact name.
-  - name: "Push images"
-    container_image: "ubuntu-24.04"
-    max_retries: 1
-    resource_requests:
-      cpu: "6"
-      memory: "10GB"
-      disk: "120GB"
-    triggers:
-      push:
-        branches:
-          - "main"
-      pull_request:
-        branches:
-          - "*"
-        merge_with_base: false
-    steps:
-      - run: |
-          # GHCR_TOKEN set in BuildBuddy Settings → Secrets
-          echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
-
-          # Authenticate Docker Hub too: rules_oci base-image fetches (ubuntu,
-          # osgeo/gdal, python_base, ...) hit the anonymous ~100-pull/6h quota
-          # and 429 without this. DOCKERHUB_USERNAME / DOCKERHUB_TOKEN set in
-          # BuildBuddy Settings → Secrets.
-          if [ -n "$DOCKERHUB_TOKEN" ]; then
-            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-          fi
-
-          # "Am I main?" MUST be decided the same way push.sh.tpl decides
-          # whether to publish a chart, which is `git rev-parse --abbrev-ref
-          # HEAD`. If the two layers disagree we get a torn state: images pushed
-          # but no chart published, or a main merge that pushes neither.
-          #
-          # Deliberately NOT a SHA comparison against origin/main. That looks
-          # more robust but fails the wrong way: when a second merge lands while
-          # this run is in flight, origin/main has moved, the SHAs differ, and
-          # main would quietly take the PR path and never push its images.
-          #
-          # Anything that is not an unambiguous non-main branch (a detached
-          # "HEAD", an unreadable ref) falls through to the full push, which is
-          # exactly the pre-existing behaviour, so an ambiguous checkout can
-          # only ever cost bytes, never a missed publish.
-          BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-          if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "HEAD" ] || [ "$BRANCH" = "unknown" ]; then
-            bazel run //bazel/images:push_all --config=ci --stamp
-          else
-            # PR branches publish nothing: push.sh.tpl takes the PR path for
-            # charts, and PR image tags had no consumer (charts deploy by
-            # repository@digest, and the `dev-` tag's documented consumer,
-            # ArgoCD Image Updater, does not exist in this cluster).
-            #
-            # `bazel run` stages every command's runfiles on the runner before
-            # any command runs, so push_all pulled all ~24 images' layers out of
-            # CAS on every PR push even at a ~99% action-cache hit rate. That was
-            # 3.5 TB/week, 29% of this repo's entire BuildBuddy download volume.
-            # `bazel build` proves the same graph builds while
-            # --remote_download_minimal leaves the layers at rest in CAS.
-            bazel build //bazel/images:push_all --config=ci
-
-            # Charts only, which is what carries the pre-merge
-            # missed-chart-bump guard (bazel/helm/check-missed-bump.sh). The
-            # guard is digest-content based, so it does not need the images to
-            # have been pushed, only built.
-            bazel run //bazel/images:push_charts --config=ci --stamp
-          fi
-
-  # Manifest diff — renders Helm manifests from main and PR, posts diff as PR comment
-  # Runs in parallel with other actions (no depends_on). Mostly informational,
-  # but hard-fails on newly introduced duplicate env var names within a
-  # container (the phantom-OutOfSync class: the API server collapses
-  # duplicates on apply, so the ArgoCD diff never converges).
-  - name: "Manifest diff"
-    container_image: "ubuntu-24.04"
-    max_retries: 1
-    resource_requests:
-      disk: "20GB"
-    triggers:
-      pull_request:
-        branches:
-          - "*"
-        merge_with_base: false
-    steps:
-      - run: ./bazel/helm/ci-diff-manifests.sh
-
 
   # TEMPORARILY DISABLED 2026-08-09: same reason as "BDD future features". This
   # action already early-exits on PRs when nothing under buck2/** changed, but
