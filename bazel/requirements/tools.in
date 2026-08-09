@@ -1,5 +1,22 @@
 # Tools that are run manually for developmer tasks or run by Bazel
 # but not used by tests or at runtime.
+#
+# tools.txt has NO pip_compile Bazel target (see ../requirements/BUILD, which
+# only defines runtime.txt and all.txt), so nothing regenerates it for you and
+# it silently drifts. Regenerate it with the command recorded in its own
+# header, which is:
+#
+#   uv pip compile bazel/requirements/tools.in \
+#     -c bazel/requirements/runtime.txt \
+#     --overrides=bazel/requirements/overrides.txt \
+#     -o bazel/requirements/tools.txt
+#
+# Both flags matter. Without `-c runtime.txt` these tools resolve standalone,
+# which is a resolution no build ever performs: all.in pulls `-r tools.in` into
+# all.txt, where runtime.txt's pins constrain them. Without `--overrides` the
+# security floors do not apply here at all. Dropping `-c` in particular lets the
+# unbounded `mcp>=1.28.1` override float to a new major, because tools.in has no
+# fastmcp to cap it the way all.txt does.
 # Floor raised to 9.14.1 for CVE-2026-34726 / CVE-2026-34730 (template root
 # escape and _external_data path traversal).
 copier>=9.14.1
