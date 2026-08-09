@@ -1,21 +1,46 @@
 # ── Context Forge Gateway ──────────────────────────────────────────────────
 mcp-stack:
   mcpContextForge:
-    config:
-      MCPGATEWAY_UI_ENABLED: "true"
-      MCPGATEWAY_CATALOG_ENABLED: "true"
-      MCPGATEWAY_TOOL_CANCELLATION_ENABLED: "true"
+    # Everything we set deliberately goes in extraEnv, NOT config or secret.
+    #
+    # config/secret render into a ConfigMap and a Secret consumed via envFrom.
+    # The mcp-stack pod template carries only labels, no annotations block, so
+    # there is no checksum to change and editing either object does not roll the
+    # deployment. The process keeps the old value indefinitely while Git, the
+    # ConfigMap and `kubectl rollout status` all look correct. SSO_ENABLED was
+    # set to "true", stayed false in the process for the whole session, and the
+    # rollout reported success throughout, because the deployment genuinely was
+    # at its desired state.
+    #
+    # extraEnv renders inside the pod template, so changing a value changes the
+    # pod spec and ArgoCD rolls it. Kubernetes `env` also takes precedence over
+    # `envFrom`, which closes the second trap: the chart emits some keys into
+    # BOTH the ConfigMap and the Secret, and the envFrom order
+    # [secret, configMap, secret] silently shadowed SSRF_ALLOWED_NETWORKS back
+    # to its default. Values here cannot be shadowed by either.
+    #
+    # Rule of thumb: if we bothered to set it, it must take effect, so it
+    # belongs here.
+    extraEnv:
+      - name: MCPGATEWAY_UI_ENABLED
+        value: "true"
+      - name: MCPGATEWAY_CATALOG_ENABLED
+        value: "true"
+      - name: MCPGATEWAY_TOOL_CANCELLATION_ENABLED
+        value: "true"
       # 1.0.x enables SSRF protection with ssrf_allow_private_networks false,
       # so RFC 1918 destinations are refused and registering any in-cluster MCP
       # server fails with a masked 422 (the real cause appears only in the log
       # as `loc=('body','url') type=value_error`). Allowlist just the k3s pod
       # and service CIDRs so RFC 1918 stays blocked everywhere else.
       #
-      # This MUST live in config, not secret. The chart emits this key into
-      # BOTH the gateway ConfigMap and the gateway Secret, and the deployment's
-      # envFrom order is [secret, configMap, secret], so a value set only in
-      # the first secret is shadowed by the ConfigMap default of "[]".
-      SSRF_ALLOWED_NETWORKS: '["10.42.0.0/16", "10.43.0.0/16"]'
+      # Previously this had to live in config rather than secret, because the
+      # chart emits the key into BOTH objects and the envFrom order
+      # [secret, configMap, secret] shadowed it back to the ConfigMap default
+      # of "[]". As extraEnv it outranks every envFrom source, so the ordering
+      # no longer matters.
+      - name: SSRF_ALLOWED_NETWORKS
+        value: '["10.42.0.0/16", "10.43.0.0/16"]'
       # Mounts the /auth/sso router, which is the only way to manage the
       # sso_providers row that makes authentik a trusted issuer for the root
       # /mcp endpoint. Defaults to false, and while false the admin API 404s.
@@ -25,8 +50,8 @@ mcp-stack:
       # either way. It gates router mounting (main.py) and the browser SSO flow
       # only. Those endpoints live outside the Cloudflare Access bypass, so they
       # stay behind Access on mcp.jomcgi.dev.
-      SSO_ENABLED: "true"
-    secret:
+      - name: SSO_ENABLED
+        value: "true"
       # Enforce OAuth on the MCP endpoint itself. Until now the JSON-RPC
       # endpoint authenticated nobody: an unauthenticated tools/list returned
       # all 57 tools, including monolith-agent-session-destroy, and tools/call
@@ -42,7 +67,13 @@ mcp-stack:
       # Note this is gateway-wide, not per server. mcp.jomcgi.dev tokens are
       # issued by jomcgi.cloudflareaccess.com and DCR_ALLOWED_ISSUERS is empty,
       # so that path may need its issuer trusted once validation is enforced.
-      MCP_REQUIRE_AUTH: "true"
+      #
+      # This is not a secret, and as the switch that decides whether the MCP
+      # endpoint authenticates anyone at all, it is the last value that should
+      # be able to sit unapplied in a ConfigMap while the process runs without
+      # it.
+      - name: MCP_REQUIRE_AUTH
+        value: "true"
     probes:
       startup:
         type: exec
