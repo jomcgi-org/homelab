@@ -1,4 +1,49 @@
 {{- if .Values.httpRoute.enabled }}
+{{- if .Values.httpRoute.rootMcp.enabled }}
+{{- /*
+RFC 9728 discovery for the ROOT /mcp endpoint, served by Envoy.
+
+Context Forge implements protected-resource metadata ONLY per virtual server:
+  /.well-known/oauth-protected-resource/mcp  -> 404 "Expected: .../servers/{id}/mcp"
+  /.well-known/oauth-protected-resource      -> 404 "deprecated"
+and the root /mcp 401 carries a bare `WWW-Authenticate: Bearer` with no
+`resource_metadata` parameter. An MCP client therefore has no way to discover
+the authorization server, and dead-ends on the 401 no matter how it is routed.
+
+So Envoy supplies the two missing pieces: this document, and the pointer to it
+(the ResponseHeaderModifier on the /mcp rule below). Context Forge still does
+the actual token validation, via an sso_providers row with
+trusted_for_api_auth=true, and still filters the tool list per caller from
+tools.visibility / tools.team_id. Nothing here grants access; it only tells the
+client where to go and get a token.
+
+`resource` MUST equal the URL clients actually connect to, because RFC 9728
+clients compare it against the endpoint they are talking to. That is why this
+is a static document rather than a rewrite onto a virtual-server path: under a
+rewrite Context Forge would publish /servers/<uuid>/mcp while the client
+connected to /mcp, and the two would disagree.
+*/}}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: {{ include "context-forge.fullname" . }}-root-resource-metadata
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+spec:
+  directResponse:
+    contentType: application/json
+    statusCode: 200
+    body:
+      type: Inline
+      inline: |
+        {{- $meta := dict
+              "resource" (printf "https://%s/mcp" .Values.httpRoute.hostname)
+              "authorization_servers" (list .Values.httpRoute.rootMcp.authorizationServer)
+              "bearer_methods_supported" (list "header")
+              "scopes_supported" .Values.httpRoute.rootMcp.scopes }}
+        {{ toJson $meta }}
+---
+{{- end }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -12,6 +57,49 @@ spec:
   hostnames:
     - {{ .Values.httpRoute.hostname | quote }}
   rules:
+    {{- if .Values.httpRoute.rootMcp.enabled }}
+    # Discovery document for the root MCP endpoint. Exact match, so it wins over
+    # both the /mcp prefix and the catch-all regardless of rule ordering.
+    # Cloudflare Access must bypass this path or the client never reaches it.
+    - matches:
+        - path:
+            type: Exact
+            value: /.well-known/oauth-protected-resource/mcp
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: {{ include "context-forge.fullname" . }}-root-resource-metadata
+
+    # The root MCP endpoint. The ResponseHeaderModifier replaces Context Forge's
+    # bare `WWW-Authenticate: Bearer` with one carrying the resource_metadata
+    # pointer, which is what makes discovery work without the client having to
+    # guess the well-known path. It is set on every response from this rule,
+    # including 200s; clients ignore the header on success.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /mcp
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Forwarded-Proto
+                value: https
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: WWW-Authenticate
+                value: >-
+                  Bearer resource_metadata="https://{{ .Values.httpRoute.hostname }}/.well-known/oauth-protected-resource/mcp"
+      backendRefs:
+        - name: context-forge-gateway-mcp-stack-mcpgateway
+          port: 80
+    {{- end }}
+
+    # Everything else: admin UI, REST API, static assets. Stays behind the
+    # hostname-wide Cloudflare Access application.
     - matches:
         - path:
             type: PathPrefix

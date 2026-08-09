@@ -122,6 +122,30 @@ httpRoute:
   gatewayRef:
     name: cloudflare-ingress
     namespace: envoy-gateway-system
+  # RFC 9728 discovery for the ROOT /mcp endpoint, so one central endpoint can
+  # serve every caller and Context Forge filters the tool list per identity
+  # (tools.visibility + tools.team_id) instead of per URL. Context Forge only
+  # publishes protected-resource metadata for virtual servers, so Envoy serves
+  # the document and injects the pointer. See templates/httproute.yaml.
+  #
+  # Requires, and is useless without, all three of:
+  #   1. a Cloudflare Access application over `<hostname>/mcp` and
+  #      `<hostname>/.well-known/oauth-protected-resource` with a Bypass policy,
+  #      or the client is challenged at the edge and never reaches Envoy;
+  #   2. an sso_providers row in Context Forge with trusted_for_api_auth=true,
+  #      issuer matching authorizationServer, and api_audience set to the
+  #      authentik client_id (authentik mints `aud` = client_id, ignoring
+  #      RFC 8707 `resource`);
+  #   3. tools carrying visibility=team and a team_id, otherwise every
+  #      authenticated caller sees the whole catalogue.
+  rootMcp:
+    enabled: false
+    # OIDC issuer URL, with trailing slash, exactly as the token's `iss` claim.
+    authorizationServer: ""
+    scopes:
+      - openid
+      - profile
+      - email
 
 # Per-tier hostnames, each scoped to exactly one virtual server. See
 # templates/httproute-scoped.yaml for why these must never route "/".
