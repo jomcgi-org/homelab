@@ -904,6 +904,17 @@ knowledge:
     seed: 42
     nodeSizeScale: 0.005
 
+# cd health component (issue #4597): the `cd` entry in the deep /api/health
+# response, which UptimeRobot polls offsite. Tunables live here so changing what
+# pages does not need a rebuild.
+cdHealth:
+  # An ArgoCD app not Synced+Healthy for longer than this trips the component.
+  # Long enough that a normal rollout never pages.
+  syncGraceSeconds: 900
+  # main's CI red for longer than this trips it. Red is only a fault once it
+  # persists; a run being actively fixed must not page.
+  ciRedWindowSeconds: 3600
+
 chat:
   enabled: false
   llamaCppUrl: ""
