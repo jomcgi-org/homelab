@@ -67,6 +67,47 @@ mcp-stack:
       # sufficient.
       - name: SSO_API_TOKEN_AUTH_ENABLED
         value: "true"
+      # Forward the caller's authentik token to upstream gateways, so the
+      # monolith can learn WHO is calling and scope its own results.
+      #
+      # Context Forge's ACL is tool-granular: it decides whether you may call
+      # search_knowledge, never what search_knowledge returns. Without this the
+      # monolith sees every invocation as "the gateway" and cannot distinguish
+      # an admin from a friend, so per-caller data scoping is impossible and
+      # tiers would have to be built from separate tools per audience.
+      #
+      # Deliberately a TOKEN and not a header. Context Forge also supports
+      # PROXY_USER_HEADER-style identity injection, but that asks the monolith
+      # to believe a header, so anything able to reach the monolith in-cluster
+      # could claim to be anyone. A forwarded RS256 token is verifiable: the
+      # monolith checks it against authentik's JWKS and trusts authentik, not
+      # us. A compromised gateway cannot forge a signature.
+      #
+      # The forwarding happens because the monolith gateway has no gateway-level
+      # auth (gateways.auth_type is empty), which selects this branch in
+      # passthrough_headers.py:
+      #
+      #   # When gateway has no auth, pass through client's Authorization
+      #   client_auth = request_headers_lower.get("authorization")
+      #
+      # DEFAULT_PASSTHROUGH_HEADERS stays empty, so Authorization is the only
+      # thing forwarded, via that branch rather than an allowlist.
+      #
+      # INERT until the monolith validates the token. Enabling it alone changes
+      # no behaviour; it is the prerequisite for the monolith-side work.
+      #
+      # Two properties to keep in mind:
+      #  - the token's `aud` is the MCP client id, not the monolith, so the
+      #    monolith must validate `iss` strictly and knowingly accept that
+      #    audience. RFC 8693 token exchange is the correct fix and Context
+      #    Forge implements it (services/token_exchange_cache.py, keyed by
+      #    gateway+user+audience), but authentik does not advertise the
+      #    token-exchange grant, so it is unavailable here.
+      #  - this setting is global, not per gateway. Every gateway registered
+      #    later also receives the caller's token, and a token you hand a
+      #    backend is a token that backend can replay.
+      - name: ENABLE_HEADER_PASSTHROUGH
+        value: "true"
       # Enforce OAuth on the MCP endpoint itself. Until now the JSON-RPC
       # endpoint authenticated nobody: an unauthenticated tools/list returned
       # all 57 tools, including monolith-agent-session-destroy, and tools/call
