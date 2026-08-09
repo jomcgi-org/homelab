@@ -74,13 +74,13 @@ merged-or-useful output per unit of review attention.
 
 Eight decisions. The first is a prerequisite for every other one.
 
-**1. A session terminates with a structured, guest-pushed verdict.** A new
-`agent_sessions.session_verdict` row records `outcome` (one of `succeeded`,
-`needs_fix`, `blocked`, `abandoned`), plus `pr_number`, `commit_sha`,
-`ci_status`, `failing_target`, and a free-text `detail`. The guest pushes it on
+**1. A session terminates with a structured, guest-pushed verdict, and the
+verdict is a claim, not evidence.** A new `agent_sessions.session_verdict` row
+records `outcome` (one of `succeeded`, `needs_fix`, `blocked`, `abandoned`), plus
+`pr_number`, `commit_sha`, and a free-text `detail`. The guest pushes it on
 terminal exit over the same path ADR 051 established for mid-turn progress
 (`agent_sessions/progress_ingest.py`), so this is an extension of a proven
-channel, not new transport. Two properties matter:
+channel, not new transport. Three properties matter:
 
 - **It is emitted by the guest, not inferred by the caller.** Grading a run by
   parsing `result_text` would put an unreliable parser in the measurement path,
@@ -91,13 +91,23 @@ channel, not new transport. Two properties matter:
   connection is the most fragile possible edge, and a dropped connection has
   already lost a billed turn once (#4229). With a pushed verdict, a node
   submits and then durably waits for an event.
+- **It says the session finished; it does not decide whether the work is good.**
+  The verdict unblocks the workflow and supplies pointers (`pr_number`,
+  `commit_sha`). CI state is then read by a deterministic step from the GitHub
+  checks API and BuildBuddy, keyed on that commit. This split is deliberate and
+  it is the difference between a design that works and one that is trivially
+  gamed: the guest is the least-trusted component in the system, running a model
+  on attacker-influenceable input, and it is also the component whose output is
+  being graded. A guest that reports `succeeded` when CI is red would skip the
+  retry path and spend the one resource this ADR calls scarce. Routing is decided
+  by a CI exit code, so a CI exit code is what the engine must read. This repo's
+  standing rule, that completion claims are verified rather than trusted, applies
+  to agents at least as much as to people.
 
 **2. DBOS Transact is the graph engine; the graph runs in-process in the
 monolith.** DBOS is an MIT-licensed library, not a service: it checkpoints
 workflow and step state to Postgres and recovers mid-graph after a process
-restart. That last property is decisive here, because the monolith pod rolls on
-every chart bump, which in this repo is constant. The three requirements map
-directly onto its primitives:
+restart. The three requirements map directly onto its primitives:
 
 | Requirement                       | DBOS primitive                                                       |
 | --------------------------------- | -------------------------------------------------------------------- |
@@ -106,17 +116,38 @@ directly onto its primitives:
 | serialize merges across agents    | a queue with `concurrency=1`                                          |
 | cap concurrent Codex dispatches   | a second queue with `concurrency=2`                                  |
 | wait for a session verdict        | `DBOS.recv(timeout_seconds=...)`, durable across restarts            |
-| wait out a CI run                 | `DBOS.sleep()`, durable across restarts                              |
+| wait out a CI run                 | poll step on the checks API, `DBOS.sleep()` between polls            |
 
 It adds one `@pip` dependency and one system database on the existing
-`monolith-pg` CNPG cluster. The dependency floors are already satisfied: `dbos`
+`monolith-pg` CNPG cluster (provisioned as a CNPG `Database` CR, not by letting
+the library create it). The dependency floors are already satisfied: `dbos`
 2.29.0 requires `sqlalchemy[asyncio]>=2.0.43` (repo pins 2.0.48),
 `psycopg[binary]>=3.1` (repo pins 3.3.3), and Python `>=3.10` (repo is 3.13), so
 adopting it does not move any existing pin.
 
-The merge step must carry an idempotency key (`SetWorkflowID`). Recovery replays
-a workflow from its last checkpoint, and "merge PR #4571" is the one step in
-this graph where running twice is materially worse than not running at all.
+Three constraints have to be designed for rather than assumed away, because the
+naive reading of "it recovers after a restart" is wrong in ways that bite exactly
+here:
+
+- **Recovery is scoped to `(executor_id, app_version)`.** `dbos/_recovery.py`
+  filters pending workflows by both. A deploy that changes workflow code changes
+  the app version, and the new pod will not adopt workflows checkpointed under
+  the old one. With graphs spanning hours and multiple deploys a day, version
+  stranding is the common case, not the corner case. So `DBOS__APPVERSION` is
+  pinned deliberately and rolled only when a graph change is intended to strand,
+  and stranded workflows need an explicit adoption path, not silence. The restart
+  the library survives for free is the same-code restart (OOM, reschedule), which
+  is worth having but is not the chart-bump roll on its own.
+- **Cross-executor failover is a Conductor feature.** DBOS Inc's hosted control
+  plane detects a dead worker and recovers its workflows. Self-hosted, that is
+  our job: a sweeper that reclaims workflows whose executor is gone. Naming this
+  now avoids the LangGraph mistake of leaning on a capability that turns out to
+  sit behind a commercial boundary.
+- **Steps are at-least-once, and a rolling update runs two pods at once.** Every
+  externally-visible step (session dispatch, PR open, merge) carries an
+  idempotency key via `SetWorkflowID` and asserts remote state before acting.
+  Merge is the most expensive to double-fire; session dispatch is the most
+  likely.
 
 **3. The work queue becomes the graph's entry point, and nodes dispatch EmberVM
 sessions.** The `claude_agent.work_queue` table holds pending work items exactly
@@ -126,10 +157,30 @@ an EmberVM session through the existing `agent_sessions` transport and waits on
 the decision-1 verdict. The queue remains the single choke point: rate limits,
 dedup, kill switch, and audit all live in one place.
 
-Node-to-node handoff passes `ember_lineage_id`, not a text summary. Because a
-lineage handle survives VM expiry, a reviewer node inherits the implementer's
-actual workspace rather than re-hydrating the repo and reading a description of
-what happened.
+Node-to-node handoff passes `ember_lineage_id` rather than a text summary,
+**within a trust tier only**. Because a lineage handle survives VM expiry, a
+retry node inherits the previous attempt's actual workspace instead of
+re-hydrating and reading a description of what happened. That is a real win for
+implementer-to-implementer continuity.
+
+**The reviewer does not inherit the implementer's workspace.** It hydrates fresh
+from the mirror and reviews the pushed branch. Handing the reviewer the
+implementer's environment would let a prompt-injected implementer prepare the
+room its own auditor works in: a planted `CLAUDE.md`, `AGENTS.md`, git hook, or
+tool config in that workspace is *instructions to the reviewer's CLI* the moment
+the lineage is restored. The 027 split still stops the reviewer's credentials
+being used for a push, but APPROVE authority is exactly what an injection would
+target, and the entire containment story in this ADR terminates in "an
+adversarial reviewer". An auditor that inherits the auditee's environment is not
+independent. Lineage handoff is therefore a same-role optimization, and the
+cross-role boundary is a fresh hydration.
+
+Two consequences follow. EmberVM's 6h `maxLifetime` retires the volume, so a
+review backlog longer than that breaks even same-role handoff; the fallback is
+fresh hydration plus a branch checkout, and the graph must treat a denied restore
+as an ordinary path rather than an error. And because restore can be denied for
+reasons unrelated to the work (unknown lineage, live heir, concurrent restore),
+denial routes to re-hydration, never to a `needs_fix` verdict.
 
 **4. Feeders produce work items; they are decoupled from execution.** A feeder is
 any producer that writes queue rows: scheduled sweeps (loom code-health register
@@ -208,13 +259,23 @@ takes that role, confined to two seams:
 
 - **Planner.** It reads the goal ledger and the verdict ledger, selects a graph
   shape from a registered catalog, parameterizes it, and writes a `work_queue`
-  row. It chooses among graphs; it does not invent control flow.
+  row. It chooses among graphs; it does not invent control flow. **Its parameters
+  are schema-validated and clamped**: `task_class` from a fixed enum, repo from an
+  allowlist, retry counts capped at the engine's own maximum. Without clamping,
+  "parameterize the graph" is control flow by configuration, since a planner that
+  can set N or pick the tier floor is steering routing without ever touching an
+  edge.
 - **Adjudicator.** Specific in-graph decision points are genuinely judgment and
   have no machine oracle: "is this CI failure the agent's fault or a known
   flake?", "is this diff in scope for the task as specified?". These become an
   `adjudicate` node whose output is constrained to an enum, so the deterministic
   graph switches on a *value* the model returned rather than the model
-  performing a jump.
+  performing a jump. The enum needs an **infrastructure arm** alongside
+  agent-fault and flake: `no_capacity`, broker quota exhaustion, and ENOSPC all
+  recur in this cluster, and collapsing them into "agent fault" would burn the
+  attempt budget on failures no retry can fix. Synchronous dispatch failures
+  (a 429 at submit) are better handled one layer down by DBOS step retries and
+  never reach the adjudicator at all.
 
 What the orchestrator model must never own: attempt counters, concurrency
 limits, merge authority, or the edges themselves. Those stay in DBOS. Three
@@ -233,14 +294,19 @@ reasons, in increasing order of severity:
    bad work, which still faces CI and an adversarial reviewer.
 
 **Constant work toward goals is a reconcile loop, not a long-running agent.** The
-orchestrator runs as a DBOS workflow that observes desired state (open goals)
-against actual state (merged PRs, ledger verdicts), enqueues the diff, durably
-sleeps, and repeats. This is the same control-loop shape the cluster already runs
-on, and it buys the properties an unbounded agent loop cannot: it survives pod
-rolls mid-tick, it has a per-tick step and token budget, its context is the
-ledger rather than an ever-growing transcript, and pausing it is one row. An
-agent that "just keeps going" has none of those and drifts once its context
-fills.
+orchestrator observes desired state (open goals) against actual state (merged
+PRs, ledger verdicts), enqueues the diff, and stops. This is the same control-loop
+shape the cluster already runs on, and it buys the properties an unbounded agent
+loop cannot: it survives pod rolls mid-tick, it has a per-tick step and token
+budget, its context is the ledger rather than an ever-growing transcript, and
+pausing it is one row. An agent that "just keeps going" has none of those and
+drifts once its context fills.
+
+Each tick is a **separate scheduled workflow**, not one infinite workflow that
+sleeps in a loop. A never-terminating workflow accumulates step history that
+retention cannot collect and that recovery has to replay past on every restart,
+so the loop that is supposed to run forever becomes the one thing that cannot.
+Per-tick workflows have identical semantics with bounded history.
 
 | Aspect          | Today                              | Decided                                                                         |
 | --------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
@@ -248,8 +314,8 @@ fills.
 | Goal pursuit    | none (every run human-initiated)   | cheap-model reconcile loop: observe ledger, enqueue diff, sleep, repeat         |
 | Who routes      | n/a                                | DBOS owns edges/counters/merges; the model only selects graphs and returns enums |
 | Composition     | none (one session, one chain)      | DBOS workflow graph: retry, branch, fan-out, join                               |
-| Session outcome | prose in `result_text`             | structured guest-pushed verdict row                                             |
-| Node handoff    | n/a                                | `ember_lineage_id`, so the next node inherits the live workspace                |
+| Session outcome | prose in `result_text`             | structured guest-pushed verdict (a claim) + CI read from the checks API         |
+| Node handoff    | n/a                                | `ember_lineage_id` within a role; the reviewer always hydrates fresh            |
 | Shared resource | uncoordinated                      | DBOS queues: merges at concurrency 1, Codex dispatch capped                     |
 | Model routing   | one tier per session               | per-task-class implementer floor; judgment work never below Opus                |
 | Merge path      | human merges everything            | 027 gate: reviewer app APPROVE/REQUEST_CHANGES, rebase-merge on green           |
@@ -274,12 +340,11 @@ graph TB
 
     subgraph graph["one workflow instance: engine owns every edge"]
       WF --> IMPL["node: implement<br/>EmberVM session, Luna<br/>queue: codex, concurrency 2"]
-      IMPL --> V1{verdict}
-      V1 -->|needs_fix| ADJ["node: adjudicate<br/>cheap model, enum output<br/>agent-fault or flake?"]
-      ADJ -->|"retry (attempt < N)"| IMPL
-      ADJ -->|"escalate (or attempt = N)"| ESC[escalate to human]
-      V1 -->|blocked| ESC
-      V1 -->|succeeded| REV["node: review<br/>EmberVM session, Opus<br/>inherits ember_lineage_id"]
+      IMPL --> CI["step: read CI<br/>checks API, keyed on commit_sha<br/>(machine oracle, not the guest)"]
+      CI -->|red| ADJ["node: adjudicate<br/>cheap model, enum output<br/>agent-fault / flake / infra"]
+      ADJ -->|"retry (attempt < N)<br/>inherits lineage: same role"| IMPL
+      ADJ -->|"escalate, infra, or attempt = N"| ESC[escalate to human]
+      CI -->|green| REV["node: review<br/>EmberVM session, Opus<br/>FRESH hydration, no lineage"]
       REV -->|APPROVE| MERGE["node: merge<br/>queue: merge, concurrency 1<br/>idempotency key"]
       REV -->|REQUEST_CHANGES| IMPL
     end
@@ -324,6 +389,43 @@ chose a library over the CRD for the reasons in Alternatives.
 
 ---
 
+## Build order and operational requirements
+
+Four things are prerequisites rather than follow-ups, because the design is
+unsound without them.
+
+**ADR 027 is a hard dependency and is still Draft.** Every containment argument
+here terminates in the implementer/reviewer split and `agent-review/gate`, and
+none of `jomcgi-implementer`, `jomcgi-reviewer`, or that gate exists in code
+today. Until 027 ships, an autonomous graph has no merge gate to route through,
+so 027 lands first. This ADR is Accepted as a design; it is not buildable ahead
+of its floor.
+
+**Cancellation must propagate into the guest.** A `DBOS.recv` timeout unblocks
+the workflow but does nothing to the session, which keeps running or parks. In
+this cluster parked sessions count against the live capacity cap and deny new
+creates with a 429, so a single stuck graph degrades the substrate for
+everything else, including human-triggered work. Every timeout, cancel, and
+terminal path therefore carries a compensating step that issues a control-plane
+session delete, plus a sweeper for lineages whose owning workflow is gone. This
+is the failure mode most likely to be discovered the expensive way.
+
+**Quota is an admission decision, not a retry outcome.** The Codex broker can be
+exhausted (the exit-42 condition), and a graph that retries into a quota wall
+records agent failures that are really infrastructure failures, poisoning the
+routing statistics in decision 7. The drain checks quota before dispatch and
+holds the row rather than burning attempts against it.
+
+**A stuck graph must be debuggable without a hosted dashboard.** DBOS's
+operational UI is Conductor; self-hosted we have the admin API and the system
+tables. Minimum bar before this runs unattended: a workflow list-and-cancel
+surface in the existing `/agents` console, a SigNoz span per node, and a runbook
+entry. Given how much of this repo's operational practice is "read the
+dashboard", shipping an autonomous graph with no way to see it stuck would be out
+of character and would go wrong quietly.
+
+---
+
 ## Alternatives Considered
 
 ### Graph engine
@@ -340,41 +442,79 @@ chose a library over the CRD for the reasons in Alternatives.
   the Enterprise tier. Adopting it for the licensed capability would repeat the
   authentik DCR mistake of designing around an enterprise-gated feature.
 
-  Decision 8 introduces a model into planning and adjudication, which is the case
-  LangGraph is built for, so the first objection deserves re-testing rather than
-  restating. It survives: the model there returns a graph selection or an enum,
-  both of which are *values* consumed by a deterministic switch. Nothing about
-  that needs a graph framework, and the checkpoint-granularity and licensing
-  objections are untouched by it. The point at which LangGraph would genuinely
-  earn re-evaluation is if the model needed to interleave with most edges and
-  synthesize state between them, which decision 8 deliberately forecloses.
+  Two honesty notes on that rejection. First, decision 1 partly dissolves the
+  checkpoint-granularity objection: once a node is submit-plus-durable-wait, no
+  engine is holding a 30 minute node, and LangGraph's interrupt/resume covers
+  that shape. The objection is therefore about the shape we would have had, not
+  the shape we chose, and the licensing and fit objections have to stand on their
+  own. They do. Second, decision 8 introduces a model into planning and
+  adjudication, which is the case LangGraph is built for, so the fit objection
+  deserves re-testing rather than restating. It survives: the model returns a
+  graph selection or an enum, both *values* consumed by a deterministic switch,
+  and nothing about that needs a graph framework. The point at which LangGraph
+  would genuinely earn re-evaluation is if the model needed to interleave with
+  most edges and synthesize state between them, which decision 8 deliberately
+  forecloses.
 - **Temporal.** Rejected. Adopted in [ADR 015](015-temporal-orchestration-substrate.md)
   and removed on 2026-06-14. Re-adoption needs a reason 015 did not have, and the
-  self-host footprint (server, Cassandra or MySQL, workers) is the opposite of
-  what this repo wants for a graph of six node types.
+  server-plus-workers footprint is the opposite of what this repo wants for a
+  graph of six node types. (Temporal self-hosts fine on Postgres, so the storage
+  engine is not the objection; the deployment surface is.)
 - **Restate, Hatchet.** Rejected for now. Both are credible and Postgres-friendly,
   Hatchet especially so, but both are a new service plus workers to deploy,
   image-build, and eventually decommission. That is strictly more infrastructure
   than Argo, which is already installed.
-- **Argo Workflows DAG** (v4.0.8, already running in `monolith-workflows`).
-  Rejected, narrowly, and worth revisiting if the graph grows. It gives
-  `retryStrategy`, `when:`, and `synchronization` mutex/semaphore declaratively
-  for zero new dependencies. Against it: run state lives in etcd, which ADR 022
-  named as a ceiling; the install is deliberately namespace-scoped
-  (`singleNamespace: true`, Roles not ClusterRoles) so a DAG cannot reach beyond
-  `monolith-workflows`; the graph would be YAML at arm's length from the Python
-  that owns session state; and the current `values.yaml` explicitly frames Argo as
-  "a dumb stateless executor" with the monolith as orchestrator, which this would
-  reverse.
+- **Argo Workflows DAG** (v4.0.8, already running in `monolith-workflows`). This
+  is the strongest alternative and deserves the honest version of the argument,
+  because it costs zero new dependencies, this repo already submits Argo
+  workflows from Python via Hera (`hera==7.0.0`, `cluster/kubernetes.py:386`), and
+  `retryStrategy` / `when:` / `synchronization` give three of our requirements
+  declaratively.
+
+  **The decisive objection is that the substrate underneath got roughly three
+  orders of magnitude faster, which moved orchestration overhead from noise to
+  dominant.** [ADR 019](019-substrate-executor-agentworkflow.md) decision 1
+  justified Argo on precisely this axis: "For tens-of-seconds-to-minutes jobs at
+  low volume, Argo's reconcile overhead is noise against the job duration", with
+  the routing rule "long job: yes, overhead is noise. Short job: Argo's overhead
+  is a large fraction." That premise was sound when dispatching a node meant a
+  cold pod, measured in [ADR 026](026-fast-microvm-starts-and-stateful-artifact-iteration.md)
+  at 5 to 7 seconds. It does not survive EmberVM: a warm restore is **2.5ms
+  load-to-resume** (`projects/embervm/ARCHITECTURE.md:581`).
+
+  An Argo node is a pod. Putting Argo in front of EmberVM pays a pod schedule,
+  seconds and highly variable under node pressure, in order to make an HTTP call
+  to a runtime whose entire value proposition is that it does not cold start.
+  That is not a tuning problem, it is an ordering problem: the orchestrator would
+  become the slowest part of a system built to be fast. Argo's `http` template
+  avoids the per-node pod, but still pays the controller reconcile floor per
+  node, which is the same objection one layer down. DBOS's per-node overhead is a
+  Postgres write on a cluster the process is already connected to.
+
+  This is also why Argo keeps the CronWorkflows and loses the agent graph: for a
+  nightly batch job measured in minutes, reconcile overhead genuinely is noise,
+  and ADR 019's original reasoning still holds there unchanged.
+
+  Two weaker objections are worth naming and discarding, so they are not mistaken
+  for load-bearing. The namespace-scoped install (`singleNamespace: true`, Roles
+  not ClusterRoles) constrains nothing this graph needs, since nodes speak HTTP to
+  the monolith and the EmberVM control plane rather than to the API server. And
+  the etcd ceiling ADR 022 named was about indefinitely-idle threads churning
+  status; a bounded run-to-completion pipeline at review-limited volume is Argo's
+  home case, not its failure case.
+
 - **Hand-rolled Postgres state machine.** Rejected as the default, though it was
-  the initial instinct. `graph_runs` / `graph_nodes` tables reusing the
-  `SELECT ... FOR UPDATE SKIP LOCKED` lease pattern already proven in
-  `agent_sessions/store.py`, plus `agent/locks.py` for the merge mutex, is
-  perhaps 400 lines and zero new dependencies. DBOS is that code, already
-  written, tested, and MIT. The residual argument for hand-rolling is dependency
-  minimalism, which decision 2 answers: DBOS is a library, so the exit cost is
-  swapping a driver while keeping the Postgres tables, not decommissioning a
-  cluster.
+  the initial instinct. `graph_runs` / `graph_nodes` tables using the
+  `SELECT ... FOR UPDATE SKIP LOCKED` lease pattern this repo already runs in
+  four places (`chat/store.py:714`, `agent/routine_jobs.py:100`,
+  `knowledge/ingest_queue.py:128`, `scheduler/service.py:39`), plus
+  `agent/locks.py` for the merge mutex, is perhaps 400 lines and zero new
+  dependencies. DBOS is that code, already written, tested, and MIT.
+
+  The honest exit cost, if DBOS is later abandoned, is **domain tables survive;
+  workflow code and in-flight state do not.** That is more than "swap a driver"
+  and much less than decommissioning a Temporal cluster, which is the comparison
+  that matters given this repo's lineage of orchestration reversals.
 
 ### Queue and routing (unchanged from 2026-07-02)
 
@@ -472,6 +612,11 @@ Baseline `docs/security.md`; inherits 023 (no credentials in guests), 027
 | Judgment work silently degrades on the cheap lane                                     | Medium     | High   | judgment classes floor at Opus by policy, not by hope; demoted on first bad cohort                                                  |
 | Feedback loop gamed by its own semantics (reviewer soft-approves to keep throughput)  | Low        | Medium | reviewer prompt is adversarial and verdict-forced; Joe spot-checks merged agent PRs                                                  |
 | DBOS system database drifts or bloats on `monolith-pg`                                | Low        | Low    | same CNPG cluster and backup path as application data; workflow retention configured, not unbounded                                 |
+| A deploy strands in-flight workflows under the old `app_version` and they never resume | High      | High   | pin `DBOS__APPVERSION` deliberately; stranded-workflow adoption is an explicit operation with an alert, never silent                 |
+| A timed-out graph leaves an EmberVM session parked, denying creates cluster-wide      | High       | High   | compensating session-delete step on every terminal path; sweeper for lineages whose owning workflow is gone                          |
+| Prompt-injected implementer prepares the workspace its reviewer then restores         | Medium     | High   | reviewer hydrates fresh from the mirror; lineage handoff is same-role only (decision 3)                                             |
+| Guest reports `succeeded` when CI is red, skipping retry and spending reviewer time   | Medium     | High   | verdict is a claim; CI state read by a deterministic step from the checks API keyed on `commit_sha` (decision 1)                    |
+| Retries burn attempts against a quota wall and get recorded as agent failures         | High       | Medium | quota checked at admission, not discovered by retry; infrastructure arm on the adjudicate enum                                       |
 
 ---
 
