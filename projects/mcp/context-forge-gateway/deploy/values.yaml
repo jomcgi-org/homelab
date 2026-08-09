@@ -16,6 +16,16 @@ mcp-stack:
       # envFrom order is [secret, configMap, secret], so a value set only in
       # the first secret is shadowed by the ConfigMap default of "[]".
       SSRF_ALLOWED_NETWORKS: '["10.42.0.0/16", "10.43.0.0/16"]'
+      # Mounts the /auth/sso router, which is the only way to manage the
+      # sso_providers row that makes authentik a trusted issuer for the root
+      # /mcp endpoint. Defaults to false, and while false the admin API 404s.
+      #
+      # This does NOT gate the auth path itself: verify_credentials.py resolves
+      # the trusted provider straight from the table, so tokens would validate
+      # either way. It gates router mounting (main.py) and the browser SSO flow
+      # only. Those endpoints live outside the Cloudflare Access bypass, so they
+      # stay behind Access on mcp.jomcgi.dev.
+      SSO_ENABLED: "true"
     secret:
       # Enforce OAuth on the MCP endpoint itself. Until now the JSON-RPC
       # endpoint authenticated nobody: an unauthenticated tools/list returned
