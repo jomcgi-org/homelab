@@ -1,0 +1,24 @@
+{{- /*
+Custom authentik blueprints, mounted from a ConfigMap.
+
+The upstream chart discovers and applies every key ending in `.yaml` from each
+ConfigMap listed under `authentik.blueprints.configMaps`, so the files in
+../blueprints/ are the reviewable source of truth and authentik's worker
+reconciles them. That is the declarative alternative to clicking through the
+admin UI, and it survives a database rebuild the way clicked config does not.
+
+Blueprint entries match on `identifiers`, so re-application is idempotent and a
+re-applied entry updates in place rather than creating duplicates.
+*/}}
+{{- $files := .Files.Glob "blueprints/*.yaml" }}
+{{- if $files }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-mcp-blueprints
+  labels:
+    app.kubernetes.io/name: authentik
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+{{ ($files.AsConfig) | indent 2 }}
+{{- end }}

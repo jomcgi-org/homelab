@@ -1,0 +1,70 @@
+version: 1
+metadata:
+  name: homelab - MCP auth
+  labels:
+    blueprints.goauthentik.io/description: |
+      Group, application gate and MFA enforcement for the central MCP endpoint.
+      Context Forge maps the group name below onto one of its teams via the
+      sso_providers team_mapping, and filters the tool catalogue from team
+      membership, so this group is the thing that decides who sees which tools.
+entries:
+  # ── 1. The group entitlements hang off ──────────────────────────────────
+  # The name is load-bearing: it must match the key in Context Forge's
+  # sso_providers.team_mapping, because authentik emits group NAMES (not ids)
+  # in the `groups` claim of the default profile scope.
+  - model: authentik_core.group
+    id: homelab-admin
+    identifiers:
+      name: homelab-admin
+    attrs:
+      is_superuser: false
+
+  # ── 2. Membership ───────────────────────────────────────────────────────
+  # `attrs` REPLACES a many-to-many rather than merging into it, so the
+  # existing "authentik Admins" membership has to be restated here or applying
+  # this blueprint would silently strip it and lock the only human account out
+  # of the authentik admin interface.
+  - model: authentik_core.user
+    identifiers:
+      username: akadmin
+    attrs:
+      groups:
+        - !Find [authentik_core.group, [name, authentik Admins]]
+        - !KeyOf homelab-admin
+
+  # ── 3. Gate the MCP application ─────────────────────────────────────────
+  # Until this exists the application has ZERO policy bindings, which in
+  # authentik means every authenticated account may authorize it. That was
+  # tolerable while akadmin was the only human account and the virtual servers
+  # were empty; it is not once the catalogue is attached.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, mcp-friends]]
+      group: !KeyOf homelab-admin
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+
+  # ── 4. Make the existing MFA stage actually enforce ─────────────────────
+  # authentik's own default-authentication-flow blueprint already creates and
+  # binds `default-authentication-mfa-validation`, but with no attrs at all, so
+  # it sits at the model default `not_configured_action: skip`. A user with no
+  # registered device passes straight through: the stage is present and
+  # enforces nothing.
+  #
+  # `configure` is deliberate over `deny`: it enrols a device inline on first
+  # login instead of locking out an account that has none yet. Recovery if
+  # WebAuthn enrolment misbehaves is `kubectl exec ... -- ak shell`, which is
+  # how the akadmin password was fixed earlier.
+  - model: authentik_stages_authenticator_validate.authenticatorvalidatestage
+    identifiers:
+      name: default-authentication-mfa-validation
+    attrs:
+      not_configured_action: configure
+      configuration_stages:
+        - !Find [
+            authentik_stages_authenticator_webauthn.authenticatorwebauthnstage,
+            [name, default-authenticator-webauthn-setup],
+          ]
