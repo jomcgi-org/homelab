@@ -35,4 +35,5 @@
 
   --code-bg: #f2f1ee; /* inline code + fenced blocks in rendered markdown */
   --dot-idle: #c2beb6; /* history sessions carry no status color */
+  --scrim-bg: rgba(27, 26, 24, 0.45); /* mobile new-session sheet scrim */
 }
