@@ -23,14 +23,35 @@ from goosecracker.api import REPO_CATALOG
 def start_session_for_graph(
     local_session_id: str, prompt: str, model: str, repo: str, branch: str
 ) -> int:
-    """Create and schedule a graph-owned session through the normal session path."""
+    """Create and schedule a graph-owned session through the normal session path.
+
+    ``local_session_id`` is the caller's IDEMPOTENCY KEY, not a fresh uuid. DBOS
+    steps are at-least-once, so a retried step that minted a new id each time
+    would leave one live agent session per attempt, each burning a Codex slot.
+    A repeat call with the same key returns the existing session untouched.
+
+    Safe to call from a non-async thread. DBOS executes sync steps on a worker
+    thread with no running event loop, where ``_schedule_next_message`` cannot
+    ``asyncio.create_task``; the leader's orphan sweep (every 5s) picks the
+    pending message up instead, so scheduling here is an optimisation rather
+    than the liveness mechanism.
+    """
     if repo not in REPO_CATALOG:
         raise ValueError(f"unknown repo {repo}; catalog: {', '.join(REPO_CATALOG)}")
     model_family(model)
+    with Session(get_engine()) as session:
+        existing = store.get_session_by_local_id(session, local_session_id)
+    if existing is not None and existing.id is not None:
+        return existing.id
     row = _persist_session(local_session_id, "<guest>", branch, model, repo)
-    _persist_pending_message(row.id, prompt, model)
-    _schedule_next_message(row.id)
     assert row.id is not None
+    _persist_pending_message(row.id, prompt, model)
+    try:
+        _schedule_next_message(row.id)
+    except RuntimeError:
+        # No running event loop: this is a DBOS worker thread. The orphan sweep
+        # will claim and execute the pending message within ~5s.
+        pass
     return row.id
 
 

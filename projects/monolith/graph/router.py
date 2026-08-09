@@ -85,9 +85,13 @@ def cancel_run(workflow_id: str) -> dict:
 
 
 def _status_payload(status) -> dict:
+    # `error` is a live exception object (e.g. DBOSMaxStepRetriesExceeded), which
+    # pydantic cannot serialize: returning it raw turned every failed run's
+    # status into a 500, hiding the very failure the caller was asking about.
+    error = getattr(status, "error", None)
     return {
         "workflow_id": status.workflow_id,
         "status": status.status,
         "result": getattr(status, "output", None),
-        "error": getattr(status, "error", None),
+        "error": None if error is None else f"{type(error).__name__}: {error}",
     }

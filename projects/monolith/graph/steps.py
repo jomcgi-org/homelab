@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from uuid import uuid4
-
 from dbos import DBOS
 
 
 @DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
-def start_agent_session(prompt, model, repo, branch) -> int:
+def start_agent_session(session_key, prompt, model, repo, branch) -> int:
+    """Start (or re-attach to) one agent session.
+
+    ``session_key`` must be DETERMINISTIC for a given workflow and node. Steps
+    are at-least-once, so minting a uuid here meant every retry created another
+    live session holding another Codex slot, which is exactly the
+    externally-visible-step hazard ADR 038 decision 2 calls out.
+    """
     from agent_sessions.api import start_session_for_graph
 
-    return start_session_for_graph(str(uuid4()), prompt, model, repo, branch)
+    return start_session_for_graph(session_key, prompt, model, repo, branch)
 
 
 @DBOS.step()
