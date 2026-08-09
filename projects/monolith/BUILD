@@ -1557,7 +1557,11 @@ py_library(
     name = "pkg_graph",
     srcs = glob(
         ["graph/**/*.py"],
-        exclude = ["**/*_test.py", "**/test_*.py", "*/tests/**/*.py"],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
     ),
     imports = ["."],
     visibility = ["//:__subpackages__"],
@@ -4311,28 +4315,42 @@ py_test(
     name = "graph_config_test",
     srcs = ["graph/config_test.py"],
     imports = ["."],
-    deps = [":pkg_graph", "@pip//pytest"],
+    deps = [
+        ":pkg_graph",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
     name = "graph_policy_test",
     srcs = ["graph/policy_test.py"],
     imports = ["."],
-    deps = [":pkg_graph", "@pip//pytest"],
+    deps = [
+        ":pkg_graph",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
     name = "graph_router_test",
     srcs = ["graph/router_test.py"],
     imports = ["."],
-    deps = [":pkg_graph", "@pip//fastapi", "@pip//httpx", "@pip//pytest"],
+    deps = [
+        ":pkg_graph",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
     name = "graph_workflows_test",
     srcs = ["graph/workflows_test.py"],
     imports = ["."],
-    deps = [":pkg_graph", "@pip//pytest"],
+    deps = [
+        ":pkg_graph",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
