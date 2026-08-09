@@ -146,6 +146,10 @@ fi
 if [[ "$FRESH_DIGESTS" != "$PUB_DIGESTS" ]]; then
 	{
 		echo "ERROR: ${CHART_NAME} ${CHART_VERSION} is already published, but its pinned image digests differ from the published chart (an image was rebuilt)."
+		echo ""
+		echo "Which images differ (< published, > freshly built):"
+		diff <(printf '%s\n' "$PUB_DIGESTS") <(printf '%s\n' "$FRESH_DIGESTS") | sed 's/^/  /' || true
+		echo ""
 		echo "This PR will NOT deploy until the chart version is bumped."
 		echo ""
 		echo "Fix: in a fresh worktree run"
