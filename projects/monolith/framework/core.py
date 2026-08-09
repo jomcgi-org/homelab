@@ -86,7 +86,13 @@ PRIVATE_PROFILE = Profile(
     mcp_enabled=True,
     otel_enabled=True,
     static_frontend=True,
-    deep_health=False,
+    # The confined monolith serves the deep /api/health route too. It used to
+    # opt out, which silently made every private-tier register_health component
+    # dead code: the component composes fine and the endpoint that would run it
+    # does not exist (the cd component shipped in #4599 and never executed).
+    # A private tier serving this route is already established and tested,
+    # since domain_profile() below has always set it.
+    deep_health=True,
     leader_singletons=True,
 )
 
