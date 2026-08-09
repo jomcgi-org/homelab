@@ -52,6 +52,21 @@ mcp-stack:
       # stay behind Access on mcp.jomcgi.dev.
       - name: SSO_ENABLED
         value: "true"
+      # The other half of external-IdP bearer auth, and the one that actually
+      # gates it. SSO_ENABLED only mounts the /auth/sso router; this is what
+      # lets a token minted by a trusted provider authenticate an MCP request:
+      #
+      #   if not getattr(settings, "sso_api_token_auth_enabled", False):
+      #       return None
+      #
+      # runs before the token is even decoded, so with it false the whole
+      # external path is dead and every authentik token 401s as "Invalid token"
+      # with no verify_credentials log line to explain why. Its own description
+      # says each provider must ALSO set trusted_for_api_auth, which the
+      # provisioning script does: both halves are required, neither is
+      # sufficient.
+      - name: SSO_API_TOKEN_AUTH_ENABLED
+        value: "true"
       # Enforce OAuth on the MCP endpoint itself. Until now the JSON-RPC
       # endpoint authenticated nobody: an unauthenticated tools/list returned
       # all 57 tools, including monolith-agent-session-destroy, and tools/call
