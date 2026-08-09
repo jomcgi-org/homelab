@@ -2,6 +2,13 @@
 # requires Ember's object-authorization matrix to land before SSO is admitted.
 
 authentik:
+  # Custom blueprints from ../blueprints/, rendered into a ConfigMap by
+  # templates/blueprints-configmap.yaml. The chart discovers every key ending
+  # in `.yaml` and authentik's worker applies them, so groups, policy bindings
+  # and stage configuration are reviewable in Git rather than clicked.
+  blueprints:
+    configMaps:
+      - authentik-mcp-blueprints
   authentik:
     existingSecret:
       secretName: authentik-secrets
