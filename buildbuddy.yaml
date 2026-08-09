@@ -43,7 +43,39 @@ actions:
             echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${DOCKERHUB_USERNAME:-}" --password-stdin
           fi
 
-          # ---- 1. format, generators, drift auto-commit -------------------
+          # ORDER IS LOAD-BEARING: everything that analyses //... runs BEFORE the
+          # format stage. `:format` runs gazelle, which generates BUILD files for
+          # packages that have none committed, and some of them do not analyse
+          # (projects/mcp/context-forge-gateway/deploy/BUILD gets a dep on
+          # //projects/mcp/context-forge-gateway/chart:chart, visible only to
+          # //overlays). Those files are UNTRACKED, so `git diff` still reports a
+          # clean tree and `git add -u` never commits them. While Format check and
+          # Test were separate actions that damage died with the Format check
+          # runner; in one runner it would poison the very next bazel test //....
+          # ---- 1. tests ---------------------------------------------------
+          # -future excludes future-feature BDD specs (executable specs for
+          # not-yet-built features): those are intentionally red.
+          bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+
+          # ---- 2. images build, and the missed-chart-bump guard -----------
+          # PR branches publish nothing. `bazel build` proves the images build
+          # while --remote_download_minimal leaves the layers at rest in CAS;
+          # `bazel run` would stage all ~24 images' runfiles on the runner
+          # before any command executes, which was 3.5 TB/week (PR #4586).
+          bazel build //bazel/images:push_all --config=ci
+
+          # Charts only. Off main push.sh.tpl publishes nothing, so this exists
+          # to run bazel/helm/check-missed-bump.sh, the pre-merge guard that
+          # stops a chart whose images changed from merging un-bumped.
+          bazel run //bazel/images:push_charts --config=ci --stamp
+
+          # ---- 3. rendered-manifest diff PR comment -----------------------
+          # Hard-fails on newly introduced duplicate env var names within a
+          # container (the phantom-OutOfSync class: the API server collapses
+          # duplicates on apply, so the ArgoCD diff never converges).
+          ./bazel/helm/ci-diff-manifests.sh
+
+          # ---- 4. format, generators, drift auto-commit -------------------
           # The ci-format-bot guard skips THIS STAGE ONLY, never the run. The
           # old standalone action could `exit 0` here because that ended only
           # the format check; doing the same now would skip the tests, and the
@@ -84,10 +116,8 @@ actions:
             if git diff --exit-code; then
               echo "All files formatted correctly"
             else
-              # Auto-commit, then STOP. This head is superseded and the push
-              # below starts a fresh pr-checks that runs everything. Stopping
-              # is itself a saving: the old layout let Test and Push images
-              # grind through a head already known to be dead.
+              # Auto-commit the drift. The push makes a new head, which runs a
+              # fresh pr-checks; this one is finished either way.
               echo "Auto-committing formatting fixes..."
               current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
               git config user.name "ci-format-bot"
@@ -96,33 +126,9 @@ actions:
               git add -u
               git commit -m "style: auto-format"
               git push origin HEAD:"$current_branch"
-              echo "Pushed to $current_branch; stopping so the new head runs the full pipeline."
-              exit 0
+              echo "Pushed to $current_branch; the new head runs the full pipeline."
             fi
           fi
-
-          # ---- 2. tests ---------------------------------------------------
-          # -future excludes future-feature BDD specs (executable specs for
-          # not-yet-built features): those are intentionally red.
-          bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
-
-          # ---- 3. images build, and the missed-chart-bump guard -----------
-          # PR branches publish nothing. `bazel build` proves the images build
-          # while --remote_download_minimal leaves the layers at rest in CAS;
-          # `bazel run` would stage all ~24 images' runfiles on the runner
-          # before any command executes, which was 3.5 TB/week (PR #4586).
-          bazel build //bazel/images:push_all --config=ci
-
-          # Charts only. Off main push.sh.tpl publishes nothing, so this exists
-          # to run bazel/helm/check-missed-bump.sh, the pre-merge guard that
-          # stops a chart whose images changed from merging un-bumped.
-          bazel run //bazel/images:push_charts --config=ci --stamp
-
-          # ---- 4. rendered-manifest diff PR comment -----------------------
-          # Hard-fails on newly introduced duplicate env var names within a
-          # container (the phantom-OutOfSync class: the API server collapses
-          # duplicates on apply, so the ArgoCD diff never converges).
-          ./bazel/helm/ci-diff-manifests.sh
 
   # deploy — main only. Same one-runner reasoning as pr-checks.
   #
@@ -154,7 +160,15 @@ actions:
             echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${DOCKERHUB_USERNAME:-}" --password-stdin
           fi
 
-          # ---- 1. formatting must already be correct ----------------------
+          # Same ordering rule as pr-checks: bazel test //... runs BEFORE the
+          # format stage, because gazelle inside :format writes untracked BUILD
+          # files that do not all analyse. The format check still gates the
+          # publish below, which is the only ordering constraint that matters
+          # here.
+          # ---- 1. tests ---------------------------------------------------
+          bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+
+          # ---- 2. formatting must already be correct ----------------------
           # No auto-commit on main: fail with the fix instead.
           AUTHOR="$(git log -1 --format='%an')"
           if [ "$AUTHOR" = "ci-format-bot" ]; then
@@ -177,9 +191,6 @@ actions:
               exit 1
             fi
           fi
-
-          # ---- 2. tests ---------------------------------------------------
-          bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 
           # ---- 3. publish -------------------------------------------------
           # push.sh.tpl decides per chart whether to publish, and skips a
