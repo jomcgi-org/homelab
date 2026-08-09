@@ -152,11 +152,7 @@ js_run_binary(
     # path is unchanged.
     out_dirs = ["build_public"],
     tool = ":vite",
-    visibility = [
-        "//projects/monolith:__pkg__",
-        # The hermetic visual-regression capture boots this app bundle.
-        "//projects/monolith/frontend/visual:__pkg__",
-    ],
+    visibility = ["//projects/monolith:__pkg__"],
 )
 
 # Validate the frontend builds in CI without going through py3_image's
