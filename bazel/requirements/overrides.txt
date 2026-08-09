@@ -35,14 +35,21 @@ opentelemetry-exporter-otlp-proto-http>=1.25.0
 # all.txt lock; pyjwt 2.13 is API-compatible for mcp's JWT verification.
 pyjwt[crypto]==2.13.0
 
-# --- Security floors (Dependabot CVE remediation, 2026-07-11) ---
+# --- Security floors (Dependabot CVE remediation, 2026-07-11; last swept
+# 2026-08-09) ---
 # These packages are transitive (or loosely-constrained direct) deps that a
 # plain recompile would leave at their vulnerable pins, so we force the first
 # patched version as an override. Each maps to open Dependabot alerts; drop an
 # entry once the upstream constraint naturally floats past it.
-aiohttp>=3.14.1
+#
+# NOTE: editing this file does NOT regenerate the locks. The pre-commit hook
+# `Update Python requirements` is filtered to `files: pyproject\.toml$`, so a
+# floor raised here stays inert until `bazel run //bazel/requirements:runtime`
+# and `:requirements.all` are run by hand (and `tools.txt` recompiled, see its
+# header).
+aiohttp>=3.14.3
 authlib>=1.6.12
-cryptography>=48.0.1
+cryptography>=50.0.0
 dulwich>=1.2.5
 idna>=3.15
 mako>=1.3.12
