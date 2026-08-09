@@ -1191,3 +1191,17 @@ cfIngress:
     rateLimit:
       requests: 100
       unit: Minute
+
+# Cilium policies for this chart. See templates/cilium-policy.yaml.
+ciliumPolicy:
+  # Deny monolith -> Context Forge egress, so a forwarded multi-audience
+  # identity token cannot be replayed back at the gateway. Uses egressDeny, so
+  # it denies only what it names and cannot default-deny anything else.
+  #
+  # Default false: merging is inert, and a deploy override opts in after
+  # confirming there is no legitimate monolith -> mcp traffic with
+  # `hubble observe --from-namespace monolith --to-namespace mcp`.
+  tokenReplayDeny:
+    enabled: false
+    gatewayNamespace: mcp
+    gatewayPodLabel: context-forge-gateway-mcp-stack-mcpgateway

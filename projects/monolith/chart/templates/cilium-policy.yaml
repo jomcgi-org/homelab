@@ -1,0 +1,58 @@
+{{- /*
+Token-replay containment for forwarded MCP identity tokens.
+
+Context Forge forwards the caller's authentik access token to this service so
+tools can scope their own results (mcp PR #4565), and authentik names the
+monolith as a second audience so the token can be validated here rather than
+merely believed. That pair is deliberately chosen over header-based identity,
+which would ask this service to trust anything able to reach it in-cluster.
+
+The residual weakness is inherent to multi-audience tokens: exchange (RFC 8693)
+would mint a SEPARATE token per audience so a backend could not reuse it
+elsewhere, but authentik does not advertise the token-exchange grant. One
+multi-audience token is a single bearer credential valid at BOTH Context Forge
+and here, so a compromised monolith could present it back to the gateway and act
+as the user.
+
+That is a network property, so it is closed on the network. This denies the
+monolith egress to the gateway's API, which it has no reason to call: federation
+runs the other way, gateway -> monolith.
+
+Uses `egressDeny`, NOT `egress`, and the distinction is load-bearing. A plain
+`egress` rule makes the selected endpoints default-deny for ALL other egress,
+which on the monolith would take out Postgres, the object store, and every
+outbound integration. `egressDeny` denies only what it names and leaves
+everything else alone, so this file cannot cause an outage by omission.
+
+Gated and default-false in chart/values.yaml, matching the monolith-public
+policy convention, so merging is inert until a deploy override opts in. Before
+flipping it, confirm there is genuinely no monolith -> mcp traffic:
+
+    hubble observe --from-namespace monolith --to-namespace mcp --last 200
+*/}}
+{{- if .Values.ciliumPolicy.tokenReplayDeny.enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-no-token-replay
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Deny the monolith egress to the Context Forge API, so a forwarded
+    multi-audience identity token cannot be replayed back at the gateway.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: monolith
+  egressDeny:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: {{ .Values.ciliumPolicy.tokenReplayDeny.gatewayNamespace }}
+            app: {{ .Values.ciliumPolicy.tokenReplayDeny.gatewayPodLabel }}
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "4444"
+              protocol: TCP
+{{- end }}
