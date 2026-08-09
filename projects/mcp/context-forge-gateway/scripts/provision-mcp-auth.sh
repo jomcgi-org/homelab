@@ -19,14 +19,6 @@
 # Idempotent: every step is create-or-update, so it is safe to run repeatedly
 # and safe to run after a database rebuild.
 #
-# PREREQUISITE: the running pod must have SSO_ENABLED=true, which mounts the
-# /auth/sso router. Setting it in deploy/values.yaml is NOT enough on its own:
-# it lands in the gateway ConfigMap, the mcp-stack chart puts no checksum
-# annotation on the pod template, so nothing rolls the pod and the process keeps
-# the old value. `kubectl rollout status` still reports success, because the
-# deployment really is at its desired state. This script asserts the live value
-# rather than trusting the manifest.
-#
 # Usage: CLIENT_ID=<authentik client id> ./provision-mcp-auth.sh
 set -euo pipefail
 
@@ -54,57 +46,65 @@ echo "gateway pod: $POD"
 
 run() { kubectl exec -n "$NS" "$POD" -- sh -c "$1"; }
 
-# Assert the PROCESS env, not the manifest. A ConfigMap change without a pod
-# restart leaves these disagreeing, and every API call below would 404.
+# Assert the PROCESS env, not the manifest. Config set only in the ConfigMap
+# does not roll this deployment (the mcp-stack pod template has no annotations
+# block, so there is no checksum to change), and `kubectl rollout status` still
+# reports success because the deployment really is at its desired state.
 live_sso=$(run 'printf %s "${SSO_ENABLED:-unset}"')
 [ "$live_sso" = "true" ] || die "pod has SSO_ENABLED=$live_sso, so /auth/sso is not mounted.
-The ConfigMap may already say true: a ConfigMap edit does not roll this
-deployment. Restart it and re-run:
+Set it under mcpContextForge.extraEnv (NOT config) so the pod rolls, or restart:
   kubectl rollout restart deploy/context-forge-gateway-mcp-stack-mcpgateway -n $NS"
 
 # Short-lived admin JWT, minted inside the pod so the signing key never leaves it.
 run "cd /app && python3 -m mcpgateway.utils.create_jwt_token -u '$ADMIN_EMAIL' --admin -e 10 2>/dev/null | tail -1 > /tmp/.pv_tok"
-trap 'kubectl exec -n "$NS" "$POD" -- rm -f /tmp/.pv_tok /tmp/.pv_body >/dev/null 2>&1 || true' EXIT
+API_BODY=$(mktemp)
+trap 'rm -f "$API_BODY"; kubectl exec -n "$NS" "$POD" -- rm -f /tmp/.pv_tok /tmp/.pv_body /tmp/.pv_out >/dev/null 2>&1 || true' EXIT
 
-# Writes the response body to stdout and the HTTP status to $API_STATUS, so
-# callers can fail on anything non-2xx instead of parsing an error page as data.
+# api sets $API_STATUS and writes the response body to $API_BODY.
+#
+# It deliberately does NOT print the body on stdout: callers would then wrap it
+# in $(...), which runs the function in a subshell and silently discards
+# API_STATUS. That is exactly how an earlier version of this script reported
+# "HTTP :" against a perfectly healthy 200. Status and body are also fetched in
+# two steps rather than with a `-w '\n%{http_code}'` sentinel, because splitting
+# on a trailing newline is fragile through kubectl exec.
 API_STATUS=""
 api() { # api METHOD PATH [JSON]
-	local method=$1 path=$2 body=${3:-} out
+	local method=$1 path=$2 body=${3:-}
 	if [ -n "$body" ]; then
 		local b64
 		b64=$(printf '%s' "$body" | base64 | tr -d '\n')
-		out=$(run "echo '$b64' | base64 -d > /tmp/.pv_body && curl -sS -X $method \
+		API_STATUS=$(run "echo '$b64' | base64 -d > /tmp/.pv_body && curl -sS -X $method \
       -H \"Authorization: Bearer \$(cat /tmp/.pv_tok)\" -H 'Content-Type: application/json' \
-      --data @/tmp/.pv_body -w '\n%{http_code}' http://localhost:4444$path")
+      --data @/tmp/.pv_body -o /tmp/.pv_out -w '%{http_code}' http://localhost:4444$path")
 	else
-		out=$(run "curl -sS -X $method -H \"Authorization: Bearer \$(cat /tmp/.pv_tok)\" \
-      -w '\n%{http_code}' http://localhost:4444$path")
+		API_STATUS=$(run "curl -sS -X $method -H \"Authorization: Bearer \$(cat /tmp/.pv_tok)\" \
+      -o /tmp/.pv_out -w '%{http_code}' http://localhost:4444$path")
 	fi
-	API_STATUS=${out##*$'\n'}
-	printf '%s' "${out%$'\n'*}"
+	run "cat /tmp/.pv_out" >"$API_BODY"
 }
 
 api_ok() { # api_ok METHOD PATH [JSON] -- dies unless 2xx
-	local resp
-	resp=$(api "$@")
+	api "$@"
 	case "$API_STATUS" in
-	2*) printf '%s' "$resp" ;;
-	*) die "$1 $2 returned HTTP $API_STATUS: $(printf '%s' "$resp" | head -c 300)" ;;
+	2*) ;;
+	*) die "$1 $2 returned HTTP ${API_STATUS:-<none>}: $(head -c 300 "$API_BODY")" ;;
 	esac
 }
 
 # ── 1. Team ────────────────────────────────────────────────────────────────
-TEAM_ID=$(api_ok GET /teams/ | python3 -c "
+api_ok GET /teams/
+TEAM_ID=$(python3 -c "
 import json,sys
 teams=json.load(sys.stdin)
 teams=teams.get('teams', teams) if isinstance(teams, dict) else teams
 print(next((t['id'] for t in teams if t.get('name')=='$TEAM_NAME'), ''))
-")
+" <"$API_BODY")
+
 if [ -z "$TEAM_ID" ]; then
-	TEAM_ID=$(api_ok POST /teams/ \
-		"{\"name\":\"$TEAM_NAME\",\"description\":\"Full monolith catalogue. Mapped from the authentik group of the same name.\",\"visibility\":\"private\"}" |
-		python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+	api_ok POST /teams/ \
+		"{\"name\":\"$TEAM_NAME\",\"description\":\"Full monolith catalogue. Mapped from the authentik group of the same name.\",\"visibility\":\"private\"}"
+	TEAM_ID=$(python3 -c "import json,sys; print(json.load(sys.stdin)['id'])" <"$API_BODY")
 	echo "created team $TEAM_NAME -> $TEAM_ID"
 else
 	echo "team $TEAM_NAME already exists -> $TEAM_ID"
@@ -136,12 +136,12 @@ read -r -d '' PROVIDER <<JSON || true
 }
 JSON
 
-api GET /auth/sso/admin/providers/authentik >/dev/null
+api GET /auth/sso/admin/providers/authentik
 if [ "$API_STATUS" = "200" ]; then
-	api_ok PUT /auth/sso/admin/providers/authentik "$PROVIDER" >/dev/null
+	api_ok PUT /auth/sso/admin/providers/authentik "$PROVIDER"
 	echo "updated sso provider 'authentik'"
 else
-	api_ok POST /auth/sso/admin/providers "$PROVIDER" >/dev/null
+	api_ok POST /auth/sso/admin/providers "$PROVIDER"
 	echo "created sso provider 'authentik'"
 fi
 
