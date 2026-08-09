@@ -233,13 +233,22 @@ actions:
             echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
           fi
 
-          # "Am I main?" is decided by SHA, not by `git rev-parse --abbrev-ref
-          # HEAD`, which returns "HEAD" on a detached checkout (same reasoning
-          # as the Buck2 rules action). If origin/main is unresolvable the
-          # comparison fails to "none", which takes the PR path: that publishes
-          # nothing, so an unresolvable ref can never push a half-known tree.
-          git fetch origin main --quiet 2>/dev/null || true
-          if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main 2>/dev/null || echo none)" ]; then
+          # "Am I main?" MUST be decided the same way push.sh.tpl decides
+          # whether to publish a chart, which is `git rev-parse --abbrev-ref
+          # HEAD`. If the two layers disagree we get a torn state: images pushed
+          # but no chart published, or a main merge that pushes neither.
+          #
+          # Deliberately NOT a SHA comparison against origin/main. That looks
+          # more robust but fails the wrong way: when a second merge lands while
+          # this run is in flight, origin/main has moved, the SHAs differ, and
+          # main would quietly take the PR path and never push its images.
+          #
+          # Anything that is not an unambiguous non-main branch (a detached
+          # "HEAD", an unreadable ref) falls through to the full push, which is
+          # exactly the pre-existing behaviour, so an ambiguous checkout can
+          # only ever cost bytes, never a missed publish.
+          BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+          if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "HEAD" ] || [ "$BRANCH" = "unknown" ]; then
             bazel run //bazel/images:push_all --config=ci --stamp
           else
             # PR branches publish nothing: push.sh.tpl takes the PR path for

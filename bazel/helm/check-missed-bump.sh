@@ -13,7 +13,7 @@
 # with a stubbed helm. It is content-stable (compares manifest digests, not the
 # build-timestamped tags) and reads those digests straight from the chart
 # values, so it needs no registry access and does not require the fresh images
-# to have been pushed. A chart with no pinned digest fails OPEN, but an
+# to have been pushed. A chart with nothing digest-pinned fails OPEN, but an
 # unpublished version is only "nothing to assert" when this PR itself carries
 # the bump. When
 # origin/main's Chart.yaml claims the SAME unpublished version, main's publish
@@ -58,12 +58,18 @@ REPOSITORY="${REPOSITORY:?REPOSITORY env required}"
 # and every lookup would have failed to UNRESOLVED, silently fail-opening the
 # guard on every PR. Reading the pinned digest needs no registry at all.
 #
-# A ghcr image whose values carry no `digest:` (a chart published before digest
-# pinning) yields UNRESOLVED, which the caller treats as "skip", not "fail".
+# A ghcr image with no `digest:` is pinned by tag only (e.g. a floating
+# `tag: main` that helm_images_values does not inject into). Those are SKIPPED
+# rather than failing the whole chart open. They were never comparable: the old
+# crane-based check resolved the identical `repo:tag` ref on both the fresh and
+# the published side, so it always got the same answer and could not detect
+# drift. Letting one of them suppress the chart would lose the real check on
+# its digest-pinned siblings, which is what oci-model-cache-operator (pinned
+# oci-model-cache alongside a tag-only hf2oci) would have done.
 _image_digests() {
 	"$HELM" show values "$@" 2>/dev/null | awk '
     function flush() {
-      if (repo != "") { print repo "\t" (digest == "" ? "UNRESOLVED" : digest) }
+      if (repo != "") { print repo "\t" digest }
       repo = ""; digest = ""
     }
     /^[[:space:]]*repository:[[:space:]]*/ { flush(); repo=$2 }
@@ -72,6 +78,10 @@ _image_digests() {
 		while IFS="$(printf '\t')" read -r repo digest; do
 			case "$repo" in
 			ghcr.io/jomcgi/*)
+				if [[ -z "$digest" ]]; then
+					echo "check-missed-bump: ${repo} is pinned by tag only (no digest in values); not comparable, skipping it." >&2
+					continue
+				fi
 				printf '%s=%s\n' "$repo" "$digest"
 				;;
 			esac
@@ -125,15 +135,11 @@ fi
 FRESH_DIGESTS=$(_image_digests "$CHART_TGZ") || FRESH_DIGESTS=""
 PUB_DIGESTS=$(_image_digests "${REPOSITORY}/${CHART_NAME}" --version "${CHART_VERSION}") || PUB_DIGESTS=""
 
-# Fail open on any unresolved or empty digest set: a chart that predates digest
-# pinning must not wedge a PR. The version-scoped detector on main is the
-# backstop for these.
-if [[ "$FRESH_DIGESTS" == *UNRESOLVED* ]] || [[ "$PUB_DIGESTS" == *UNRESOLVED* ]]; then
-	echo "check-missed-bump: WARNING: could not resolve all image digests for ${CHART_NAME}; skipping (fail open)." >&2
-	exit 0
-fi
+# Fail open when either side has nothing digest-pinned to compare (a chart with
+# only third-party or tag-only images, or one published before digest pinning).
+# The version-scoped detector on main is the backstop for these.
 if [[ -z "$FRESH_DIGESTS" ]] || [[ -z "$PUB_DIGESTS" ]]; then
-	echo "check-missed-bump: no ghcr.io/jomcgi images pinned in ${CHART_NAME}; nothing to check."
+	echo "check-missed-bump: no digest-pinned ghcr.io/jomcgi images to compare in ${CHART_NAME}; nothing to check."
 	exit 0
 fi
 
