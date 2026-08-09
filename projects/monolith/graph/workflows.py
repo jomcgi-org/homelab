@@ -66,13 +66,23 @@ def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
 
 
 def _escalated(
-    attempt: int, session_id: int | None, turn: dict | None, branch_name: str
+    attempt: int,
+    session_id: int | None,
+    turn: dict | None,
+    branch_name: str,
+    branch_head: str | None = None,
 ) -> dict:
+    # commit_sha stays None on escalation: nothing was verified for review.
+    # branch_head carries the last observed remote head so a triager can see
+    # the branch is non-empty (e.g. a push that became visible only after a
+    # timed-out attempt, which per-attempt freshness deliberately refuses to
+    # claim as this run's success).
     return {
         "status": "escalated",
         "attempts": attempt,
         "implementer_session_id": session_id,
         "commit_sha": None,
+        "branch_head": branch_head,
         "work_branch": branch_name,
         "reviewer_session_id": None,
         "review_text": None,
@@ -115,12 +125,25 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
             break
         if action == "escalate":
             return _escalated(
-                attempt, implementer_session_id, implementer_turn, branch_name
+                attempt,
+                implementer_session_id,
+                implementer_turn,
+                branch_name,
+                branch_head=head_sha,
             )
-        previous_failure = (
-            f"The branch {branch_name} was not found on the remote after the "
-            "turn completed, so the work was not pushed. Push it this time."
-        )
+        if head_sha:
+            previous_failure = (
+                f"The branch {branch_name} exists on the remote but its head "
+                f"did not move during your turn (still {head_sha}). Your work "
+                "was not committed and pushed. Add your changes as a new "
+                "commit on top of that branch and push it this time."
+            )
+        else:
+            previous_failure = (
+                f"The branch {branch_name} was not found on the remote after "
+                "the turn completed, so the work was not pushed. Push it this "
+                "time."
+            )
 
     if commit_sha is None:
         # Defensive: next_action should have escalated already. Never fall
