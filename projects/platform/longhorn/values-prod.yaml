@@ -17,6 +17,11 @@ cfIngress:
 
 longhorn:
   preUpgradeChecker:
+    # Upstream explicitly recommends disabling the pre-upgrade hook Job under
+    # ArgoCD, so this is deliberate and should stay false. The version guardrail
+    # itself is NOT disabled by this: upgradeVersionCheck stays at its upstream
+    # default of true, and longhorn-manager runs with --upgrade-version-check,
+    # performing the check after the DaemonSet pods start instead.
     jobEnabled: false
 
   defaultSettings:
@@ -32,3 +37,15 @@ longhorn:
 
     # Default to single replica for homelab workloads
     defaultReplicaCount: 1
+
+    # Migrate volume engine images automatically, one volume per node at a time.
+    # Upstream leaves this null, which means Longhorn's built-in default of 0
+    # applies, and 0 disables engine migration entirely. A chart bump moves only
+    # the longhorn-manager control plane; each volume keeps running its existing
+    # engine image until this reconciler moves it. Engine compatibility is a
+    # bounded window (the image advertises cliAPIVersion / cliAPIMinVersion), so
+    # leaving engines pinned across several manager upgrades eventually puts them
+    # outside the range a newer manager accepts, and those volumes stop
+    # attaching. Setting this before the staged 1.8.1 -> 1.9.2 -> 1.10.2 ->
+    # 1.11.3 upgrade means engines roll along with each step. See issue #4576.
+    concurrentAutomaticEngineUpgradePerNodeLimit: 1
