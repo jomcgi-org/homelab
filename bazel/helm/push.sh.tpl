@@ -244,8 +244,19 @@ elif [[ "$CAN_VERSION" == "true" ]]; then
     # registry/resolution hiccup, but fails CLOSED when origin/main claims this
     # same version and it never shows up in the registry: that is the
     # rebase-merge collision signature (another PR claimed the version first
-    # and this branch's bump hunks were, or would be, silently dropped). A
-    # guard failure exits non-zero and errexit aborts the push with the fix.
+    # and this branch's bump hunks were, or would be, silently dropped).
+    #
+    # ADVISORY, not blocking (2026-08-09). Two reasons. First, it currently
+    # produces a false block: projects/embervm/runtimes/bazel builds to a
+    # different digest on a PR branch than on main for identical inputs, so the
+    # guard fires on PRs that change nothing relevant (issue #4594),
+    # and bumping the chart does not help because the next PR build differs
+    # again. Second, ADR platform/009 decision 1 retires this guard outright:
+    # once the chart version is written post-merge, "merge code, then a
+    # follow-up publish deploys it" is the normal flow and there is no
+    # pre-merge bump to miss. Blocking every PR on a known-false signal in the
+    # window before that lands is the wrong trade. The comparison still RUNS
+    # and still prints which digests differ, so the signal is not lost.
     if [[ -n "$CHECK_MISSED_BUMP" ]] && [[ -f "$CHECK_MISSED_BUMP" ]] && \
        [[ -n "$ABS_CHART_DIR" ]] && [[ -f "${ABS_CHART_DIR}/Chart.yaml" ]]; then
       GUARD_CHART_NAME=$(grep '^name:' "${ABS_CHART_DIR}/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
@@ -268,7 +279,8 @@ elif [[ "$CAN_VERSION" == "true" ]]; then
         # the child's environment.
         env HELM="$HELM" CRANE="$CRANE" REPOSITORY="$REPOSITORY" \
           MAIN_CHART_VERSION="$MAIN_CHART_VERSION" \
-          bash "$CHECK_MISSED_BUMP" "$GUARD_CHART_NAME" "$CURRENT_VERSION" "$CHART_TGZ" "$GUARD_PROJECT_DIR"
+          bash "$CHECK_MISSED_BUMP" "$GUARD_CHART_NAME" "$CURRENT_VERSION" "$CHART_TGZ" "$GUARD_PROJECT_DIR" \
+          || echo "check-missed-bump: ADVISORY ONLY, not failing the build (see the comment above)." >&2
       fi
     fi
   fi
