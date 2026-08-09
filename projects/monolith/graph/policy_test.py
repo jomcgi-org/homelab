@@ -76,6 +76,14 @@ def test_prompt_builders():
         ("  verdict: request_changes  \n", "request_changes"),
         ("\n VERDICT: blocked \n", "blocked"),
         ("VERDICT: MAYBE", "unparseable"),
+        ("**VERDICT: APPROVE**", "approve"),
+        ("VERDICT: APPROVE.", "approve"),
+        ("VERDICT:APPROVE", "approve"),
+        ("- VERDICT: APPROVE", "approve"),
+        ("## VERDICT: BLOCKED", "blocked"),
+        ("Looks good.\n\nVERDICT: APPROVE\n```\n", "approve"),
+        ("VERDICT: APPROVE\nVERDICT: APPROVE", "approve"),
+        ("VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE", "unparseable"),
     ],
 )
 def test_parse_review_verdict(text, expected):

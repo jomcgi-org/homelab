@@ -87,7 +87,33 @@ def test_exhausted_attempts_escalate_without_reviewer(monkeypatch):
     assert result["status"] == "escalated"
     assert result["reviewer_session_id"] is None
     assert result["review_verdict"] is None
+    assert result["branch_head"] is None
     assert len(calls) == 2
+
+
+def test_preexisting_unmoved_branch_retries_then_escalates_with_branch_head(
+    monkeypatch,
+):
+    """A branch left behind by an earlier run (or a push that became visible
+    late) must not count as this attempt's success, but the escalation must
+    surface the observed head so a triager can see the branch is non-empty,
+    and the retry feedback must describe an unmoved branch, not a missing one.
+    """
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+            102: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+        },
+        heads=["abc", "abc", "abc", "abc"],
+    )
+    result = workflow("task", "jomcgi/homelab", "main")
+    assert result["status"] == "escalated"
+    assert result["commit_sha"] is None
+    assert result["branch_head"] == "abc"
+    retry_prompt = calls[1][1]
+    assert "did not move" in retry_prompt
+    assert "not found" not in retry_prompt
 
 
 def test_queue_receives_a_workflow_not_a_step(monkeypatch):
