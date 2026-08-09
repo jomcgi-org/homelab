@@ -21,11 +21,10 @@ def run(monkeypatch, turns, heads=None):
     sessions = iter(turns)
     calls = []
     if heads is None:
-        heads = [
-            turns[session].get("commit_sha")
-            for session in sorted(turns)
-            if session < 200
-        ]
+        heads = []
+        for session in sorted(turns):
+            if session < 200:
+                heads.extend([None, turns[session].get("commit_sha")])
     branch_heads = iter(heads)
     monkeypatch.setattr(workflows, "codex_queue", lambda: Queue())
     monkeypatch.setattr(workflows, "start_agent_session", lambda *args: 0)
@@ -46,13 +45,18 @@ def test_commit_on_first_attempt_goes_to_review(monkeypatch):
         monkeypatch,
         {
             101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
-            201: {"commit_sha": None, "result_text": "review", "cost_usd": 2},
+            201: {
+                "commit_sha": None,
+                "result_text": "review\nVERDICT: APPROVE",
+                "cost_usd": 2,
+            },
         },
     )
     result = workflow("task", "jomcgi/homelab", "main")
     assert result["status"] == "review"
     assert result["attempts"] == 1
     assert result["commit_sha"] == "abc"
+    assert result["review_verdict"] == "approve"
     assert result["work_branch"] == "claude/graph-unknown"
     assert len(calls) == 2
 
@@ -82,6 +86,7 @@ def test_exhausted_attempts_escalate_without_reviewer(monkeypatch):
     result = workflow("task", "jomcgi/homelab", "main")
     assert result["status"] == "escalated"
     assert result["reviewer_session_id"] is None
+    assert result["review_verdict"] is None
     assert len(calls) == 2
 
 
@@ -143,7 +148,7 @@ def test_routes_on_github_head_not_turn_commit(monkeypatch):
             101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
             102: {"commit_sha": "def", "result_text": "done", "cost_usd": 1},
         },
-        heads=[None, None],
+        heads=[None, None, None, None],
     )
     result = workflow("task", "jomcgi/homelab", "main")
     assert result["status"] == "escalated"
@@ -176,3 +181,16 @@ def test_session_keys_are_deterministic_and_distinct(monkeypatch):
         workflows.session_key("review"),
     ]
     assert len(set(keys)) == 3
+
+
+def test_unparseable_reviewer_reply_is_returned_without_crashing(monkeypatch):
+    run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {"commit_sha": None, "result_text": "looks good", "cost_usd": 1},
+        },
+        heads=[None, "abc"],
+    )
+    result = workflow("task", "jomcgi/homelab", "main")
+    assert result["review_verdict"] == "unparseable"

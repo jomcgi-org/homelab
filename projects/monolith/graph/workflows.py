@@ -3,7 +3,13 @@ from __future__ import annotations
 from dbos import DBOS
 
 from graph import config
-from graph.policy import implementer_prompt, next_action, reviewer_prompt, work_branch
+from graph.policy import (
+    implementer_prompt,
+    next_action,
+    parse_review_verdict,
+    reviewer_prompt,
+    work_branch,
+)
 from graph.queues import codex_queue
 from graph.steps import poll_turn, read_branch_head, start_agent_session
 
@@ -70,6 +76,7 @@ def _escalated(
         "work_branch": branch_name,
         "reviewer_session_id": None,
         "review_text": None,
+        "review_verdict": None,
         "cost_usd": _cost(turn),
     }
 
@@ -90,6 +97,7 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
 
     while attempt < max_attempts:
         attempt += 1
+        prior_sha = read_branch_head(repo, branch_name)
         implementer_session_id = _queued_session(
             session_key(f"implement-{attempt}"),
             implementer_prompt(task, branch_name, previous_failure),
@@ -101,7 +109,7 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
             implementer_session_id, 0, config.turn_timeout_seconds()
         )
         head_sha = read_branch_head(repo, branch_name)
-        action = next_action(attempt, max_attempts, head_sha)
+        action = next_action(attempt, max_attempts, head_sha, prior_sha)
         if action == "review":
             commit_sha = head_sha
             break
@@ -142,6 +150,9 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
         "work_branch": branch_name,
         "reviewer_session_id": reviewer_session_id,
         "review_text": reviewer_turn.get("result_text") if reviewer_turn else None,
+        "review_verdict": parse_review_verdict(
+            reviewer_turn.get("result_text") if reviewer_turn else None
+        ),
         "cost_usd": _cost(implementer_turn) + _cost(reviewer_turn),
     }
 
