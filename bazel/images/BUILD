@@ -47,7 +47,6 @@ multirun(
         "//projects/firecracker/substrate/rootfs-builder:image.push",
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",
-        "//projects/monolith/frontend/visual:visual_chromium.push",
         "//projects/monolith/frontend:image.push",
         "//projects/monolith/frontend:image_public.push",
         "//projects/monolith/whatsapp:image.push",

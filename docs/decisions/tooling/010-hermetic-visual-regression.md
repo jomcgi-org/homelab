@@ -1,10 +1,17 @@
 # ADR 010: Hermetic Bazel-native public-page visual regression
 
 **Author:** Joe McGinley
-**Status:** Accepted
+**Status:** Deprecated (visual regression removed 2026-08-09)
 **Created:** 2026-06-20
 
 ---
+
+> **Deprecated 2026-08-09.** The visual regression suite was removed: it had stopped
+> providing a usable signal, and its BuildBuddy action plus the `:capture` builds behind it
+> cost ~176 GB/week of cache traffic (1.5% of the repo's total) while BuildBuddy was asking
+> us to cut volume. Nothing replaces it; public-page rendering is covered by the BDD specs
+> and by review. The rationale below is kept as the record of why the hermetic design was
+> chosen, in case the capability is rebuilt.
 
 ## Problem
 

@@ -4,4 +4,3 @@ packages:
   - bazel/tools
   - projects/design-system
   - projects/monolith/frontend
-  - projects/monolith/frontend/visual
