@@ -55,7 +55,7 @@ training data. Design and rejected alternatives:
 | Path                                                                                       | What it is                                                                                 |
 | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
 | `app/`                                                                                     | FastAPI entrypoint, app wiring, lifespan, logging, OpenTelemetry setup                     |
-| `frontend/`                                                                                | SvelteKit app: public website, private app UIs, visual regression tests                    |
+| `frontend/`                                                                                | SvelteKit app: public website, private app UIs                    |
 | `chart/`                                                                                   | Helm chart for the service (templates, migrations, dashboards)                             |
 | `deploy/`                                                                                  | ArgoCD Application, Helm values, and GitOps wiring for this cluster                        |
 | `knowledge/`                                                                               | The knowledge graph: notes, raw capture ingest, chunking, gap tracking, gardener           |

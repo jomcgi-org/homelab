@@ -67,6 +67,10 @@ change that cuts the average 10% is worth less than one that stops a single
 
 ## Where the bytes are
 
+**Stale as of 2026-08-09**: this is the 2026-07-28 baseline split, kept for
+comparison. `Visual regression`, `Buck2 rules` and `BDD future features` no
+longer run, and the `Push images` split has changed. Re-measure before using it.
+
 From the baseline snapshot, by source (7 day totals):
 
 | Share | Source |
@@ -87,52 +91,79 @@ not about the bazel graph.
 `ci test` runs `bazel test //... --config=ci` on a hosted worker, so it shares
 every `--config=ci` flag with PR CI. Any flag fix lands on both lanes at once.
 
+## What the bytes actually are (settled 2026-08-09, do not relitigate)
+
+Two findings reframe everything above, and both are measured, not inferred.
+
+**`cacheStats.totalDownloadSizeBytes` is not the bazel client's download.** The
+client-side scorecard for a 299 GB invocation totals **1.8 MB** of CAS reads.
+The figure aggregates *remote executors fetching action inputs*. So the metric
+tracks `actions executed remotely x input tree size`, and every client-download
+flag (`--remote_download_minimal`, `--experimental_fetch_all_coverage_outputs`,
+`--remote_download_outputs=all`) is aimed at the wrong layer.
+
+**`CI_RUNNER` is 47.7% of all traffic and 99% of it is cold starts.** A warm
+runner reports under 100 MB; a cold one restores a VM snapshot from the cache
+and averages 1.6 to 5.5 GB. Cold rate tracks *workspace size*, not run count:
+`Format check`, `Test` and `Push images` all ran ~747 times with cold rates of
+20%, 56%, 62%. A bigger `output_base` is likelier to be evicted locally *and*
+costs more to restore. Each action has its own runner pool, so the repo keeps
+several near-identical workspaces warm in parallel.
+
+Corollary that keeps catching people: **an early-exit guard cannot save a cold
+start.** The runner spins up, restores its snapshot, and only then runs step one.
+`Format check`'s `ci-format-bot` author guard and `Buck2 rules`' `git diff` gate
+both prove this: they exit in 1 to 5 seconds and still cost GBs.
+
+## Refuted, do not retry
+
+- **`--remote_local_fallback` is not the cause of the tail.** A 299 GB
+  invocation ran **4** local actions out of 761 processes; a 360 GB one ran 57
+  of 15,225. Mass local fallback would show thousands. Leave the flag in.
+- **`--experimental_fetch_all_coverage_outputs` and Visual regression's
+  `--remote_download_outputs=all`** were levers 4 and 5. Both are client-side,
+  so both are rounding errors. Visual regression is gone anyway (#4588).
+- **The `ci-format-bot` auto-commit is not worth excluding.** Its commits
+  triggered 166 GB over 7 days, but 108.8 GB of that is `HOSTED_BAZEL` (local
+  `ci test` on bot-authored commits), leaving ~0.5% on the CI side. BuildBuddy
+  has no author, commit-message or path trigger filter, so there is no
+  mechanism regardless.
+- **Auto-cancellation is already on.** `allow_concurrent_runs` defaults to
+  `false`. Superseded runs still cost their cold start, which is paid at
+  spin-up before cancellation can land. Nothing to tune.
+
+## Landed
+
+| PR | change | measured |
+|----|--------|----------|
+| #4586 | PR branches build images instead of `bazel run push_all` | `CI run push_all` 1.8 GB -> 155 MB per run, 12x |
+| #4587 | disabled `Buck2 rules` + `BDD future features` | 1,012 spin-ups, 558 GB/wk |
+| #4588 | removed the visual regression suite | ~176 GB/wk |
+
+`bazel run` stages every command's runfiles on the runner *before any command
+executes*, which is why #4586 mattered: a 99% action-cache-hit push still
+dragged all ~24 images out of CAS.
+
 ## Candidate levers
 
-Ranked by expected bytes saved. Everything below the first line is a
-**hypothesis that must be confirmed against a real invocation** before you act
-on it. Confirm by opening the outlier invocation and reading its timing and
-cache scorecard, exactly like `ci-triage` insists on quoting a real failure
-before naming a cause.
+Ranked by expected bytes saved. Everything here is a **hypothesis that must be
+confirmed against a real invocation** before you act on it.
 
-1. **Whatever causes the bimodal tail.** p50 of 2 bytes next to a max of
-   392 GB is a switch flipping, not a gradual cost. Two config-level suspects,
-   both currently enabled for `--config=ci`:
-   - `common:ci --remote_local_fallback` (`bazel/tools/preset.bazelrc`). When a
-     remote call fails, Bazel re-runs actions locally, and local execution has
-     to materialize every input that `--remote_download_minimal` was avoiding.
-     This fits the signature precisely.
-   - `build:ci --experimental_remote_cache_eviction_retries=5`
-     (`bazel/remote.bazelrc`). Retrying an evicted action refetches inputs.
-
-   Neither is confirmed. Check a 200 GB+ invocation for local-fallback spawns
-   or eviction retries before touching either, and note that
-   `--remote_local_fallback` exists so a cache blip does not fail the build, so
-   removing it trades bytes for red builds.
-
-2. **`bazel run //bazel/images:push_all --config=ci --stamp`** (13.1% directly,
-   plus most of the `Push images` runner's 22.7%). Two compounding problems:
-   `bazel run` must materialize outputs on the runner, so image layers round
-   trip CAS to runner to GHCR and `--remote_download_minimal` cannot help; and
-   `--stamp` makes stamp-aware actions non-cacheable remotely, which the long
-   comment in `.bazelrc` documents from PR#4038. Ask whether the image tag can
-   come from a build setting instead of a stamp, and whether PRs need to push
-   images at all or only need the missed-chart-bump guard.
-
-3. **Five workflow actions fire on every PR push**, roughly 84 runs each per
-   day. `Buck2 rules` (2.9%) and `BDD future features` (2.1%) mostly no-op but
-   still pay runner cold-start traffic. An early exit on a `git diff` check
-   saves the bazel traffic, though not the runner spin.
-
-4. **`common --experimental_fetch_all_coverage_outputs`**
-   (`bazel/tools/preset.bazelrc`). Its own comment says it downloads coverage
-   files even when `--remote_download_minimal` would skip them on test cache
-   hits. It is set globally rather than scoped away from `:ci`. Cheap to scope,
-   but measure the delta rather than assuming it.
-
-5. **`Visual regression` uses `--remote_download_outputs=all` twice**
-   (1.0% plus 0.5%). Narrowing to `--remote_download_regex` for the PNGs only
-   is a contained change.
+1. **Collapse the remaining actions into one runner per push.** The largest
+   lever left. `Test` (2.1 TB, 56% cold) and `Push images` (2.5 TB, 62% cold)
+   keep separate, near-identical `output_base`s warm. One shared workspace is
+   touched more often and has a smaller total warm footprint. Note the trap:
+   required status checks are matched by exact name, so deleting an action
+   without editing the ruleset blocks every PR, and the deleting PR cannot merge
+   because it removes the checks required on itself. Flip the ruleset while the
+   PR is open and its new check is green.
+2. **Push only the images whose content changed, on main.** Worth ~2% now that
+   PRs no longer push, and it is the only lever here that can break a deploy by
+   skipping a push that was needed. Low priority.
+3. **Fewer redundant pushes.** 1,396 runs in 7 days were superseded within 10
+   minutes by another run of the same action on the same branch. The strict
+   "up to date with main" rule forces `update-branch` on every open PR whenever
+   anything merges. This is policy, not config.
 
 ## Running a cycle
 
