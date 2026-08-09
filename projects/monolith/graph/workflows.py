@@ -3,9 +3,9 @@ from __future__ import annotations
 from dbos import DBOS
 
 from graph import config
-from graph.policy import implementer_prompt, next_action, reviewer_prompt
+from graph.policy import implementer_prompt, next_action, reviewer_prompt, work_branch
 from graph.queues import codex_queue
-from graph.steps import poll_turn, start_agent_session
+from graph.steps import poll_turn, read_branch_head, start_agent_session
 
 # How long to wait between polls for a session's next turn. Each sleep is a
 # durable checkpoint, so the interval also sets how much wait is re-done after a
@@ -59,12 +59,15 @@ def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
     return None
 
 
-def _escalated(attempt: int, session_id: int | None, turn: dict | None) -> dict:
+def _escalated(
+    attempt: int, session_id: int | None, turn: dict | None, branch_name: str
+) -> dict:
     return {
         "status": "escalated",
         "attempts": attempt,
         "implementer_session_id": session_id,
         "commit_sha": None,
+        "work_branch": branch_name,
         "reviewer_session_id": None,
         "review_text": None,
         "cost_usd": _cost(turn),
@@ -73,6 +76,11 @@ def _escalated(attempt: int, session_id: int | None, turn: dict | None) -> dict:
 
 @DBOS.workflow()
 def implement_then_review(task: str, repo: str, branch: str) -> dict:
+    try:
+        workflow_id = DBOS.workflow_id
+    except Exception:  # noqa: BLE001 - no workflow context
+        workflow_id = None
+    branch_name = work_branch(workflow_id or "unknown")
     max_attempts = max(1, config.max_attempts())
     attempt = 0
     previous_failure = None
@@ -84,7 +92,7 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
         attempt += 1
         implementer_session_id = _queued_session(
             session_key(f"implement-{attempt}"),
-            implementer_prompt(task, previous_failure),
+            implementer_prompt(task, branch_name, previous_failure),
             config.implementer_model(),
             repo,
             branch,
@@ -92,21 +100,26 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
         implementer_turn = _await_turn(
             implementer_session_id, 0, config.turn_timeout_seconds()
         )
-        turn_commit = implementer_turn.get("commit_sha") if implementer_turn else None
-        action = next_action(attempt, max_attempts, turn_commit)
+        head_sha = read_branch_head(repo, branch_name)
+        action = next_action(attempt, max_attempts, head_sha)
         if action == "review":
-            commit_sha = turn_commit
+            commit_sha = head_sha
             break
         if action == "escalate":
-            return _escalated(attempt, implementer_session_id, implementer_turn)
+            return _escalated(
+                attempt, implementer_session_id, implementer_turn, branch_name
+            )
         previous_failure = (
-            "The implementer produced no commit before the turn completed."
+            f"The branch {branch_name} was not found on the remote after the "
+            "turn completed, so the work was not pushed. Push it this time."
         )
 
     if commit_sha is None:
         # Defensive: next_action should have escalated already. Never fall
         # through into the reviewer without a commit to review.
-        return _escalated(attempt, implementer_session_id, implementer_turn)
+        return _escalated(
+            attempt, implementer_session_id, implementer_turn, branch_name
+        )
 
     # The reviewer gets a FRESH session (ADR 038 decision 3). It is never
     # handed the implementer's lineage: a prompt-injected implementer could
@@ -115,7 +128,7 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
     # prepare its auditor's room.
     reviewer_session_id = _queued_session(
         session_key("review"),
-        reviewer_prompt(task, branch, commit_sha),
+        reviewer_prompt(task, branch_name, commit_sha),
         config.reviewer_model(),
         repo,
         branch,
@@ -126,6 +139,7 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
         "attempts": attempt,
         "implementer_session_id": implementer_session_id,
         "commit_sha": commit_sha,
+        "work_branch": branch_name,
         "reviewer_session_id": reviewer_session_id,
         "review_text": reviewer_turn.get("result_text") if reviewer_turn else None,
         "cost_usd": _cost(implementer_turn) + _cost(reviewer_turn),
