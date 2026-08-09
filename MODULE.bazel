@@ -27,10 +27,6 @@ bazel_dep(name = "aspect_rules_js", version = "3.0.0-rc4")
 bazel_dep(name = "aspect_rules_ts", version = "3.8.3")
 bazel_dep(name = "aspect_rules_esbuild", version = "0.25.0")
 
-# Vendored Playwright browser binaries for the hermetic visual-regression
-# capture (ADR tooling/010). 0.5.3 is the BCR-published top.
-bazel_dep(name = "rules_playwright", version = "0.5.3")
-
 # We have to take a dependency on rules_python in order to set bootstrap=script
 # for transitive dependencies, even if there are no Python rules used in this repo.
 # See .bazelrc
@@ -292,19 +288,6 @@ npm.npm_translate_lock(
 )
 use_repo(npm, "npm")
 
-# Vendored Playwright chromium for the hermetic visual-regression capture (ADR
-# tooling/010). playwright_version MUST match the @playwright/test pinned in
-# pnpm-lock.yaml (1.55.1 / chromium rev 1187). rules_playwright 0.5.3 defaults
-# browsers_download_urls to the dead playwright.azureedge.net; cdn.playwright.dev
-# is the live mirror (307s to the blob backend, which Bazel follows).
-playwright = use_extension("@rules_playwright//playwright:extensions.bzl", "playwright")
-playwright.repo(
-    name = "playwright",
-    browsers_download_urls = ["https://cdn.playwright.dev/dbazure/download/playwright"],
-    playwright_version = "1.55.1",
-)
-use_repo(playwright, "playwright")
-
 rules_ts_ext = use_extension(
     "@aspect_rules_ts//ts:extensions.bzl",
     "ext",
@@ -490,10 +473,6 @@ apko.translate_lock(
     lock = "//projects/monolith/frontend:apko.lock.json",
 )
 apko.translate_lock(
-    name = "visual_chromium_lock",
-    lock = "//projects/monolith/frontend/visual:apko.lock.json",
-)
-apko.translate_lock(
     name = "rootfs_builder_lock",
     lock = "//projects/firecracker/substrate/rootfs-builder:apko.lock.json",
 )
@@ -553,7 +532,7 @@ apko.translate_lock(
     name = "embervm_runtime_claude_lock",
     lock = "//projects/embervm/runtimes/claude:apko.lock.json",
 )
-use_repo(apko, "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "visual_chromium_lock", "whatsapp_lock")
+use_repo(apko, "embervm_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_guest_lock", "semgrep_guest_lock", "whatsapp_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
