@@ -35,6 +35,11 @@ dependencies = [
     # Argo Workflows Python SDK: build Workflow specs to submit batch jobs to
     # the monolith-workflows Argo controller (off-pod job execution).
     "hera",
+    # DBOS Transact: durable, Postgres-checkpointed workflows used to compose
+    # agent sessions into deterministic graphs (ADR agents/038). In-process
+    # library, not a service; its system tables live in the `dbos` schema of the
+    # existing monolith database.
+    "dbos",
     "jinja2~=3.1",
     "python-multipart>=0.0.31",
     "apscheduler~=3.10",

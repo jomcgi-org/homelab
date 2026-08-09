@@ -200,6 +200,18 @@ goosecracker:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/embervm-agent-secrets"
 
+# Graph layer (ADR agents/038): the first working example of composing agent
+# sessions into a durable DBOS workflow (implement, then review, across two
+# sessions). Enabled here because the chart default is false and a chart default
+# never arms anything in prod.
+#
+# Deliberately stops short of merging. ADR 027's implementer/reviewer gate is
+# still Draft and `agent-review/gate` does not exist in code, so nothing
+# autonomous may land on main yet; the merge queue is declared at concurrency 1
+# and left unused until it does.
+graph:
+  enabled: true
+
 # Taken offline 2026-06-14 for the ADR 006 Phase 4 transition: with the
 # gardener paused, the raw export / file moves can be done as a controlled
 # one-off, and the gardener stays down until the CLI-based version (Phase 4a-ii)

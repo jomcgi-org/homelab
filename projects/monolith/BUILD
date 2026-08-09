@@ -10,6 +10,7 @@
 # gazelle:exclude ember_public
 # gazelle:exclude e2e
 # gazelle:exclude framework
+# gazelle:exclude graph
 # gazelle:exclude knowledge
 # gazelle:exclude notes
 # gazelle:exclude scripts
@@ -96,6 +97,7 @@ _BACKEND_SRCS = glob(
         "grimoire/**/*.py",
         "grimoire_chat/**/*.py",
         "faas/**/*.py",
+        "graph/**/*.py",
     ],
     exclude = [
         # pytest discovers both *_test.py (sibling convention) and
@@ -1552,6 +1554,25 @@ py_library(
 )
 
 py_library(
+    name = "pkg_graph",
+    srcs = glob(
+        ["graph/**/*.py"],
+        exclude = ["**/*_test.py", "**/test_*.py", "*/tests/**/*.py"],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_core",
+        ":pkg_framework",
+        "@pip//dbos",
+        "@pip//fastapi",
+        "@pip//pydantic",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_library(
     name = "pkg_dr_jobs",
     srcs = glob(
         [
@@ -1705,6 +1726,7 @@ py_library(
             "grimoire/**/*.py",
             "grimoire_chat/**/*.py",
             "faas/**/*.py",
+            "graph/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -1727,6 +1749,7 @@ py_library(
     ),  # keep
     visibility = ["//:__subpackages__"],
     deps = [
+        "@pip//dbos",
         "@pip//astral",
         "@pip//beautifulsoup4",
         "@pip//boto3",
@@ -4282,6 +4305,34 @@ py_test(
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
+)
+
+py_test(
+    name = "graph_config_test",
+    srcs = ["graph/config_test.py"],
+    imports = ["."],
+    deps = [":pkg_graph", "@pip//pytest"],
+)
+
+py_test(
+    name = "graph_policy_test",
+    srcs = ["graph/policy_test.py"],
+    imports = ["."],
+    deps = [":pkg_graph", "@pip//pytest"],
+)
+
+py_test(
+    name = "graph_router_test",
+    srcs = ["graph/router_test.py"],
+    imports = ["."],
+    deps = [":pkg_graph", "@pip//fastapi", "@pip//httpx", "@pip//pytest"],
+)
+
+py_test(
+    name = "graph_workflows_test",
+    srcs = ["graph/workflows_test.py"],
+    imports = ["."],
+    deps = [":pkg_graph", "@pip//pytest"],
 )
 
 py_test(

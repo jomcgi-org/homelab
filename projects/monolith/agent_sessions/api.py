@@ -20,6 +20,20 @@ from core.db import get_engine
 from goosecracker.api import REPO_CATALOG
 
 
+def start_session_for_graph(
+    local_session_id: str, prompt: str, model: str, repo: str, branch: str
+) -> int:
+    """Create and schedule a graph-owned session through the normal session path."""
+    if repo not in REPO_CATALOG:
+        raise ValueError(f"unknown repo {repo}; catalog: {', '.join(REPO_CATALOG)}")
+    model_family(model)
+    row = _persist_session(local_session_id, "<guest>", branch, model, repo)
+    _persist_pending_message(row.id, prompt, model)
+    _schedule_next_message(row.id)
+    assert row.id is not None
+    return row.id
+
+
 async def start_session_for_thread(
     thread_id: str, prompt: str, repo: str | None, model: str = "luna"
 ) -> int | dict:
