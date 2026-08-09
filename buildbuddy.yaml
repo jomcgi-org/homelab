@@ -168,7 +168,28 @@ actions:
           # ---- 1. tests ---------------------------------------------------
           bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 
-          # ---- 2. formatting must already be correct ----------------------
+          # PUBLISH BEFORE THE FORMAT CHECK, deliberately. Under `set -e` a
+          # formatter hiccup aborts everything after it, and on 2026-08-09 that
+          # took main's first consolidated deploy down before it pushed
+          # anything: a cold runner could not materialise prettier or rustfmt
+          # ("entry_point '.../prettier.cjs' not found", "cannot locate binary
+          # ...rustfmt"). Formatting is the flakiest stage here, because it
+          # shells out to a pile of external tools, and it is the one with no
+          # bearing on whether the images are correct.
+          #
+          # The old layout got this right by accident: "Format check" and
+          # "Push images" were separate actions, so a formatter failure never
+          # blocked a deploy. Publishing first restores that property while
+          # keeping the check FATAL, so unformatted main still turns the action
+          # red. Tests still gate the publish, which is deliberate: bad code
+          # must not ship, whereas a missing formatter binary must not stop a
+          # good build from shipping.
+          # ---- 2. publish -------------------------------------------------
+          # push.sh.tpl decides per chart whether to publish, and skips a
+          # version already in the registry, so a re-run is idempotent.
+          bazel run //bazel/images:push_all --config=ci --stamp
+
+          # ---- 3. formatting must already be correct ----------------------
           # No auto-commit on main: fail with the fix instead.
           AUTHOR="$(git log -1 --format='%an')"
           if [ "$AUTHOR" = "ci-format-bot" ]; then
@@ -191,13 +212,6 @@ actions:
               exit 1
             fi
           fi
-
-          # ---- 3. publish -------------------------------------------------
-          # push.sh.tpl decides per chart whether to publish, and skips a
-          # version already in the registry, so a re-run is idempotent.
-          bazel run //bazel/images:push_all --config=ci --stamp
-
-
 
   # TEMPORARILY DISABLED 2026-08-09: BuildBuddy asked us to cut Workflows cache
   # traffic, and this action is pure runner cost. It normally no-ops (no
