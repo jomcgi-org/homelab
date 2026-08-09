@@ -3,6 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-07-27
+**Revised:** 2026-08-09 (delegation model, grant sets, and machine-principal identity decided; see Update below)
 **Amends:** [023 - Egress Secret Proxy for Agent Sandboxes](023-egress-secret-proxy.md) (decision 6's credential provisioning, decision 3's env-placeholder primitive already superseded in code by header injection, and the risk table's "per-node shared catalog" row)
 
 ---
@@ -135,3 +136,148 @@ Baseline: `docs/security.md`. Deviations and security-relevant properties beyond
 | `projects/embervm/chart/templates/_noded-pod.tpl` | `EGRESS_LISTEN` binding (line 320) and the per-catalog-entry env-var wiring (lines 357-365) this decision moves off of |
 | `projects/embervm/deploy/values.yaml:279-292` | Today's single shared credential, and its "shared with the monolith gardener" note |
 | `docs/security.md` | Security baseline |
+
+## Update (2026-08-09): delegation model, grant sets, and machine-principal identity
+
+Issue #4584's design discussion on the graph engine's capability track surfaced
+three questions the original decision left implicit: who a minted capability is
+*for* when the triggering party is not the human at a keyboard, how a grant
+reaches the broker in the first place, and which identity plane a machine
+principal authenticates against. These extend decisions 4 through 6 below; they
+do not revise them. The identity envelope (decision 4) and the `Resolve(principal,
+host)` resolver (decision 6) are exactly the seam this update plugs into, the
+same way ADR 048 already plugged a second provider's credential shape into that
+seam.
+
+**8. Delegation, not impersonation, is the default relationship between the
+triggering human and the credential a node runs with.** Authority is one chain:
+human trigger, then run, then plan node, then grant. Every minted capability is
+`intersection(triggering human's allowed scopes, node's declared capabilities)`,
+computed and enforced by deterministic broker policy, never by the node's own
+judgment. The agent never presents the human's credential. It holds a derived,
+attenuated credential under a distinct actor identity (a GitHub App bot identity
+per [ADR 027](027-agent-github-app-roles.md), or a per-capability k8s
+ServiceAccount for the resolver added in decision 10 below); the ledger records
+subject (the human) and actor (the node) as separate fields on every grant.
+
+Impersonation, presenting the human's own credential unmodified, was rejected
+for this default case on three grounds, not one:
+
+- **Audit.** A ledger entry recorded under the human's own identity cannot
+  distinguish "the human did this" from "a node acting for the human did this."
+  Attribution collapses to the one thing decision 4's identity envelope exists
+  to keep distinct.
+- **Revocation granularity.** A shared credential revokes all-or-nothing:
+  killing one runaway node's access means killing the human's own access too,
+  or not killing anything.
+- **The adversarial review gate.** [ADR 027](027-agent-github-app-roles.md)
+  gave the implementer and reviewer roles separate GitHub App bot identities
+  specifically so the implementer cannot approve its own work; the whole point
+  is that `jomcgi-implementer[bot]` cannot exercise `jomcgi-reviewer[bot]`'s
+  capabilities. If both roles instead ran under the triggering human's own
+  identity, that separation dissolves: implementer and reviewer become the same
+  actor wearing two labels, and the gate becomes self-approval by construction.
+  Delegation with distinct actor identities per node is what lets a multi-node
+  plan preserve that gate at all.
+
+This distinction is dormant today, because the only trigger is the operator, and
+one principal delegating to itself is not yet a case that can go wrong. It
+becomes load-bearing the moment a second principal class can trigger runs: the
+`mcp-friends` group referenced in issue #4584 already exists as a group, and a
+guest-triggered run under it must be bounded by that guest's own allowed scopes,
+not silently inherit the operator's.
+
+**9. Impersonation remains acceptable, but only as a bounded per-provider
+fallback, never as a second default.** [ADR 048](048-codex-oauth-token-broker.md)
+is the live instance: guest Codex traffic presents to OpenAI as the single
+subscription-holder identity the broker owns, because a ChatGPT subscription
+grant has no delegation primitive to attenuate. That decision stands unchanged;
+this update states the general rule it is one instance of, so the next provider
+that forces the same shape is a recognized case rather than a fresh debate.
+Impersonation is acceptable at a provider boundary only when all three hold:
+
+- The provider offers no delegation primitive at all (ADR 048's Problem section
+  is the worked example: subscription OAuth, not an API key that could be
+  scoped and minted per caller).
+- No internal gate depends on actor distinction at that boundary. Model
+  inference has no approval semantics, so one shared external identity costs
+  nothing internally. GitHub does have an internal gate (decision 8's third
+  bullet), which is exactly why GitHub stays delegated always and is never a
+  candidate for this fallback, regardless of what any individual provider's
+  API supports.
+- The broker ledger still records which node drew each lease, with per-node
+  budgets, so internal audit and rate control stay per-actor even though the
+  external service sees one shared identity. The fallback narrows what the
+  external party can distinguish; it does not narrow what this repo's own
+  ledger distinguishes.
+
+**10. Grants attach at session create, minted per node at admission, revoked at
+lease reap.** The create-session API gains a grant set; today `StartRequest`
+carries only `restore_lineage` and the broker's own credential catalog is static
+env config with no caller identity in scope at request time. Under this update,
+each node's capabilities become short-lived leases minted when the node is
+admitted, tied to the node rather than the session as a whole, and revoked when
+the node reaches a terminal state. Composing lease reap with guest cleanup
+(issue #4578) means revocation has exactly one place to happen, not a second
+cleanup path that can drift out of sync with the first. The broker gains two
+things it does not have today: caller authz (so a `Resolve` call carries and
+checks who is asking, not just what they are asking for) and dynamic lease
+minting (so a grant is computed per admission against decision 8's intersection
+rule, not read verbatim from a static catalog entry).
+
+**11. The machine principal is a k8s ServiceAccount, authenticated through the
+TokenReview edge that already exists; Authentik stays the human identity plane
+and gains no new role.** Authentik authenticates the trigger (Discord, the
+`/agents` console) and hosts the decision inbox where a `human_decision` node
+surfaces for approval; it has no client-credentials grant type in use in this
+cluster and no RFC 8693 token exchange, so there is no IdP-native place to
+record "node N is acting for human H under grant G." That record lives in
+broker policy code and the ledger instead, which is where authority decisions
+belong given the constraint, not a gap to be closed by adding a second identity
+system for machines. A k8s ServiceAccount, verified the same way the k8s-read
+capability (decision 12) verifies one, already gives every node a real,
+short-lived, audience-bound machine identity with no new plumbing.
+
+**12. k8s reads are a typed brokered capability, not ambient RBAC on a shared
+identity.** A dedicated read-only ServiceAccount carries an explicit resource
+list (`get`/`list`/`watch` only, named resources, no wildcard), and callers
+receive short-lived, audience-bound tokens minted per request via the
+TokenRequest API rather than a long-lived mounted token. The apiserver egress
+rule attaches only for the duration of the capability's lease, following the
+same lease-scoped shape as decision 10. Principal reads (the console backend
+querying cluster state for a human) and node reads (a guest reading state
+through the egress proxy) are the same capability; they differ in who may
+request it and which surface consumes the result, not in the RBAC shape
+underneath. Two constraints from this repo's own history apply unchanged and
+are worth stating here rather than rediscovering:
+
+- Cilium enforces egress policy after the destination address is already
+  service-DNAT'd, so the rule has to target the apiserver's real port, 6443,
+  not 443; targeting 443 fails as a silent dial timeout rather than a readable
+  deny ([PR #4294](https://github.com/jomcgi/homelab/pull/4294)).
+- ServiceAccount verbs and the code that consumes them have to land in the same
+  PR. A verb missing from the role fails at runtime as `Forbidden`, which
+  surfaces in dashboards as a generic 5xx, not as an obviously RBAC-shaped
+  error.
+
+**13. The forcing function for why no real credential may ever reach a guest,
+stated once rather than re-derived per provider.** EmberVM snapshots capture
+guest memory, and a restore is memory-identical to the state at bank time
+([ADR 027 (embervm) - Snapshot Modes as a Workload Property](../embervm/027-snapshot-modes-workload-property.md),
+line 139). Any real credential resident in guest memory at bank time is
+therefore resident in every later warm restore and every lineage descendant of
+that snapshot, not just the session that first held it. This is the same
+reasoning decision 3 already applies to the Anthropic leg; this update states it
+as the general boundary this whole broker exists to hold, because decisions 8
+through 12 add more capability types crossing that boundary, and each one
+inherits the constraint rather than re-earning it. The existing presence-keyed
+injection at the egress proxy (the sidecar injects a real value only when it
+sees a placeholder present, superseding an earlier placeholder-substitution
+primitive that was rejected because a placeholder was itself URL-spliceable and
+therefore guest-forgeable) remains the only place a real credential is allowed
+to exist on the request path. Nothing in this update opens a second one.
+
+Implementation for decisions 8 through 12 is issue #4584 item 17 (the identity
+envelope, the grant set, and broker caller authz) plus item 18 (the k8s-read
+capability); this ADR records why those shapes were chosen, not their delivery
+order.
