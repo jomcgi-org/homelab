@@ -1,6 +1,0 @@
-{
-  "labels": "//absl/strings:strings (3b8f9c2)\n//absl/strings:string_view (3b8f9c2)\n//absl/base:core_headers (3b8f9c2)\n//absl/base:config (null)\n//absl/strings/BUILD.bazel (null)",
-  "truncated": false,
-  "analyzed_line": "Analyzed target //absl/strings:strings (0 packages loaded, 0 targets configured).",
-  "wall_ms": 312
-}
