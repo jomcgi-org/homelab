@@ -1,10 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
   enterTranscript,
+  MOBILE_MEDIA_QUERY,
   MOBILE_VIEW_LIST,
   MOBILE_VIEW_TRANSCRIPT,
   returnToList,
-  transitionMobileView,
 } from "./mobile-view.js";
 
 describe("mobile agent views", () => {
@@ -29,14 +29,7 @@ describe("mobile agent views", () => {
     expect(returnToList(state)).toEqual({ ...state, view: MOBILE_VIEW_LIST });
   });
 
-  test("transitions only respond to mobile view actions", () => {
-    const state = { view: MOBILE_VIEW_LIST };
-    expect(transitionMobileView(state, "select-session").view).toBe(
-      MOBILE_VIEW_TRANSCRIPT,
-    );
-    expect(
-      transitionMobileView({ view: MOBILE_VIEW_TRANSCRIPT }, "back").view,
-    ).toBe(MOBILE_VIEW_LIST);
-    expect(transitionMobileView(state, "unknown")).toBe(state);
+  test("uses the shared mobile media query", () => {
+    expect(MOBILE_MEDIA_QUERY).toBe("(max-width: 760px)");
   });
 });
