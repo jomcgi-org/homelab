@@ -137,66 +137,78 @@ actions:
           #   --build_tests_only \
           #   --test_tag_filters=-external,-no-arm64
 
-  # BDD future features — runs the `future`-tagged BDD specs: executable specs
-  # for features that are designed but not built yet (step 3 of the /ship
-  # lifecycle, "merge failing BDD tests"). This action is INFORMATIONAL and must
-  # NOT be listed as a required status check in GitHub branch protection, so a
-  # red run never blocks merge. Semantics:
-  #   - red   = specs failing -> feature is mid-build (the expected state).
-  #   - green = every future spec passes -> the feature is done: drop
-  #             `future = True` from the bdd_test target to promote the spec
-  #             back into the gating "Test" action.
-  # With no future-tagged specs in the tree, this no-ops green.
-  - name: "BDD future features"
-    container_image: "ubuntu-24.04"
-    max_retries: 1
-    resource_requests:
-      cpu: "6"
-      memory: "10GB"
-      disk: "120GB"
-    triggers:
-      push:
-        branches:
-          - "main"
-      pull_request:
-        branches:
-          - "*"
-        merge_with_base: false
-    steps:
-      - run: |
-          # Cheap pre-check: the bazel query below loads the whole graph, and
-          # that load is the entire cost of this action in its normal state (no
-          # future-tagged specs exist). `future = True` on a bdd_test appends
-          # the `future` tag (projects/monolith/bdd_test.bzl), and a raw
-          # tags = ["future"] on any test rule would too, so match either to
-          # stay a superset of what the query selects.
-          #
-          # Deliberately no `set -e` here: this action is designed around an
-          # expected non-zero exit (a red future spec is the normal signal), and
-          # it is informational, never a required check. That is also why a grep
-          # proxy is acceptable here when it would not be for a gating action.
-          if ! git grep -qE '(^[[:space:]]*future[[:space:]]*=[[:space:]]*True|"future")' -- '*BUILD' '*BUILD.bazel'; then
-            echo "No future-tagged specs; skipping BDD future features."
-            exit 0
-          fi
+  # TEMPORARILY DISABLED 2026-08-09: BuildBuddy asked us to cut Workflows cache
+  # traffic, and this action is pure runner cost. It normally no-ops (no
+  # future-tagged specs exist, so it exits in ~1s), but it still paid a runner
+  # spin-up on every PR push: 506 PR runs in the 7 days to 2026-08-09, 230.2 GB,
+  # 16% of them cold at 1.9 GB each. An early-exit guard cannot help, because a
+  # cold start is paid at spin-up, before the first step runs. It is not a
+  # required status check, so nothing is blocked by its absence.
+  #
+  # Cost of the gap: a future-tagged spec that starts passing is not flagged
+  # automatically, so promoting it back into the gating "Test" action (dropping
+  # `future = True`) becomes a manual step. Re-enable by uncommenting.
+  # # BDD future features — runs the `future`-tagged BDD specs: executable specs
+  # # for features that are designed but not built yet (step 3 of the /ship
+  # # lifecycle, "merge failing BDD tests"). This action is INFORMATIONAL and must
+  # # NOT be listed as a required status check in GitHub branch protection, so a
+  # # red run never blocks merge. Semantics:
+  # #   - red   = specs failing -> feature is mid-build (the expected state).
+  # #   - green = every future spec passes -> the feature is done: drop
+  # #             `future = True` from the bdd_test target to promote the spec
+  # #             back into the gating "Test" action.
+  # # With no future-tagged specs in the tree, this no-ops green.
+  # - name: "BDD future features"
+  #   container_image: "ubuntu-24.04"
+  #   max_retries: 1
+  #   resource_requests:
+  #     cpu: "6"
+  #     memory: "10GB"
+  #     disk: "120GB"
+  #   triggers:
+  #     push:
+  #       branches:
+  #         - "main"
+  #     pull_request:
+  #       branches:
+  #         - "*"
+  #       merge_with_base: false
+  #   steps:
+  #     - run: |
+  #         # Cheap pre-check: the bazel query below loads the whole graph, and
+  #         # that load is the entire cost of this action in its normal state (no
+  #         # future-tagged specs exist). `future = True` on a bdd_test appends
+  #         # the `future` tag (projects/monolith/bdd_test.bzl), and a raw
+  #         # tags = ["future"] on any test rule would too, so match either to
+  #         # stay a superset of what the query selects.
+  #         #
+  #         # Deliberately no `set -e` here: this action is designed around an
+  #         # expected non-zero exit (a red future spec is the normal signal), and
+  #         # it is informational, never a required check. That is also why a grep
+  #         # proxy is acceptable here when it would not be for a gating action.
+  #         if ! git grep -qE '(^[[:space:]]*future[[:space:]]*=[[:space:]]*True|"future")' -- '*BUILD' '*BUILD.bazel'; then
+  #           echo "No future-tagged specs; skipping BDD future features."
+  #           exit 0
+  #         fi
+  #
+  #         # grep '^//' keeps only real target labels. The bb CLI interleaves its
+  #         # own operational log lines (connection warnings, a capabilities JSON
+  #         # blob) into stdout, which transient proxy resets make frequent; without
+  #         # this filter that noise lands in $TARGETS and `bazel test` then chokes
+  #         # on log text as target names ("invalid target name"), failing the step
+  #         # for a network blip rather than a real spec result.
+  #         TARGETS="$(bazel query 'attr(tags, "\bfuture\b", tests(//...))' 2>/dev/null | grep '^//' || true)"
+  #         if [ -z "$TARGETS" ]; then
+  #           echo "No future-feature BDD specs (nothing tagged 'future'). Nothing to run."
+  #           exit 0
+  #         fi
+  #         echo "Future-feature BDD specs:"
+  #         echo "$TARGETS"
+  #         # Unquoted on purpose: $TARGETS is a newline/space-separated label list.
+  #         # A non-zero exit here is the expected red-while-building signal and is
+  #         # non-blocking (this is not a required check).
+  #         bazel test $TARGETS --config=ci --deleted_packages=bazel/tools/python
 
-          # grep '^//' keeps only real target labels. The bb CLI interleaves its
-          # own operational log lines (connection warnings, a capabilities JSON
-          # blob) into stdout, which transient proxy resets make frequent; without
-          # this filter that noise lands in $TARGETS and `bazel test` then chokes
-          # on log text as target names ("invalid target name"), failing the step
-          # for a network blip rather than a real spec result.
-          TARGETS="$(bazel query 'attr(tags, "\bfuture\b", tests(//...))' 2>/dev/null | grep '^//' || true)"
-          if [ -z "$TARGETS" ]; then
-            echo "No future-feature BDD specs (nothing tagged 'future'). Nothing to run."
-            exit 0
-          fi
-          echo "Future-feature BDD specs:"
-          echo "$TARGETS"
-          # Unquoted on purpose: $TARGETS is a newline/space-separated label list.
-          # A non-zero exit here is the expected red-while-building signal and is
-          # non-blocking (this is not a required check).
-          bazel test $TARGETS --config=ci --deleted_packages=bazel/tools/python
 
   # Push images — runs in parallel with Test (no dependency).
   # Images are pushed on main only. PR branches build them (verifying the build
@@ -404,81 +416,91 @@ actions:
 
           ./projects/monolith/frontend/visual/report-to-pr.sh
 
-  # Buck2 rules — builds & tests the Buck2 image/helm rules under buck2/**
-  # (the Buck2 counterparts to bazel/helm + bazel/tools/oci; originally
-  # consumed by the `loom` repo as an external cell, since decommissioned).
-  # homelab is otherwise a Bazel repo, so this action self-installs the pinned
-  # buck2 release and checks out the buck2 prelude submodule before building.
-  # Local execution only (no buck2 RE yet).
-  # Keep BUCK2_RELEASE aligned with buck2/README.md.
-  - name: "Buck2 rules"
-    container_image: "ubuntu-24.04"
-    max_retries: 1
-    resource_requests:
-      cpu: "4"
-      memory: "8GB"
-      disk: "30GB"
-    triggers:
-      push:
-        branches:
-          - "main"
-      pull_request:
-        branches:
-          - "*"
-        merge_with_base: false
-    steps:
-      # POSIX sh-safe (no `pipefail` — the runner shell may be dash). apt is run
-      # with sudo only when not already root, so it works regardless of how the
-      # BuildBuddy runner is provisioned.
-      - run: |
-          set -eu
-          # This action must always run on main, so a merge cannot land an
-          # unverified Buck2 tree. On PR branches, the path list MUST stay a
-          # SUPERSET of the real inputs: too broad only costs a redundant
-          # (cache-hit) build, too narrow silently skips real work.
-          #
-          # "Am I main?" is decided by SHA, not by `git rev-parse --abbrev-ref
-          # HEAD`. That returns "HEAD" on a detached checkout, and on main the
-          # path diff against origin/main is empty by construction, so a branch
-          # name test that degraded would silently skip this action on main
-          # forever. A SHA comparison cannot degrade that way, and if
-          # origin/main is unresolvable the diff errors non-zero and the action
-          # runs, which is the safe direction.
-          git fetch origin main --quiet 2>/dev/null || true
-          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main 2>/dev/null || echo none)" ] && \
-             git diff --quiet origin/main HEAD -- buck2 prelude .buckconfig buildbuddy.yaml; then
-            echo "No Buck2-relevant changes vs origin/main; skipping Buck2 rules."
-            exit 0
-          fi
+  # TEMPORARILY DISABLED 2026-08-09: same reason as "BDD future features". This
+  # action already early-exits on PRs when nothing under buck2/** changed, but
+  # the runner spin-up is paid regardless: 506 PR runs in the 7 days to
+  # 2026-08-09, 327.5 GB, 30% of them cold at 1.6 GB each. Not a required check.
+  #
+  # Cost of the gap: buck2/** is unverified while this is off. That is the
+  # cheapest coverage in the repo to lose, because the Buck2 rules exist as
+  # counterparts to bazel/helm + bazel/tools/oci for the `loom` repo, which is
+  # decommissioned. Re-enable by uncommenting if buck2/** is worked on again.
+  # # Buck2 rules — builds & tests the Buck2 image/helm rules under buck2/**
+  # # (the Buck2 counterparts to bazel/helm + bazel/tools/oci; originally
+  # # consumed by the `loom` repo as an external cell, since decommissioned).
+  # # homelab is otherwise a Bazel repo, so this action self-installs the pinned
+  # # buck2 release and checks out the buck2 prelude submodule before building.
+  # # Local execution only (no buck2 RE yet).
+  # # Keep BUCK2_RELEASE aligned with buck2/README.md.
+  # - name: "Buck2 rules"
+  #   container_image: "ubuntu-24.04"
+  #   max_retries: 1
+  #   resource_requests:
+  #     cpu: "4"
+  #     memory: "8GB"
+  #     disk: "30GB"
+  #   triggers:
+  #     push:
+  #       branches:
+  #         - "main"
+  #     pull_request:
+  #       branches:
+  #         - "*"
+  #       merge_with_base: false
+  #   steps:
+  #     # POSIX sh-safe (no `pipefail` — the runner shell may be dash). apt is run
+  #     # with sudo only when not already root, so it works regardless of how the
+  #     # BuildBuddy runner is provisioned.
+  #     - run: |
+  #         set -eu
+  #         # This action must always run on main, so a merge cannot land an
+  #         # unverified Buck2 tree. On PR branches, the path list MUST stay a
+  #         # SUPERSET of the real inputs: too broad only costs a redundant
+  #         # (cache-hit) build, too narrow silently skips real work.
+  #         #
+  #         # "Am I main?" is decided by SHA, not by `git rev-parse --abbrev-ref
+  #         # HEAD`. That returns "HEAD" on a detached checkout, and on main the
+  #         # path diff against origin/main is empty by construction, so a branch
+  #         # name test that degraded would silently skip this action on main
+  #         # forever. A SHA comparison cannot degrade that way, and if
+  #         # origin/main is unresolvable the diff errors non-zero and the action
+  #         # runs, which is the safe direction.
+  #         git fetch origin main --quiet 2>/dev/null || true
+  #         if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main 2>/dev/null || echo none)" ] && \
+  #            git diff --quiet origin/main HEAD -- buck2 prelude .buckconfig buildbuddy.yaml; then
+  #           echo "No Buck2-relevant changes vs origin/main; skipping Buck2 rules."
+  #           exit 0
+  #         fi
+  #
+  #         SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
+  #
+  #         # zstd/curl to fetch+decompress the buck2 release (best-effort — the
+  #         # runner already ships them). No C toolchain is needed on the runner:
+  #         # build actions run on BuildBuddy RE (BUCK_PREFER_REMOTE below), where
+  #         # the example Rust binary compiles/links against the RE container's
+  #         # toolchain.
+  #         (command -v zstd >/dev/null 2>&1 && command -v curl >/dev/null 2>&1) || \
+  #           ($SUDO apt-get update -qq && $SUDO apt-get install -y -qq zstd curl) || true
+  #
+  #         # Install the pinned buck2 release (x86_64 linux runner).
+  #         BUCK2_RELEASE="2026-05-18"
+  #         url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
+  #         curl -fsSL "$url" -o /tmp/buck2.zst
+  #         zstd -df /tmp/buck2.zst -o /tmp/buck2
+  #         chmod +x /tmp/buck2
+  #
+  #         # The buck2 prelude is a submodule excluded from the Bazel checkout.
+  #         git submodule update --init --recursive prelude
+  #
+  #         # Prefer RE for every action that can run remotely (so Rust links on the
+  #         # RE container); apko genrules opt out (network) and run on the runner.
+  #         export BUCK_PREFER_REMOTE=true
+  #         # The BuildBuddy runner can reuse a VM snapshot carrying a stale buck2
+  #         # daemon whose buck-out was reset between runs, which aborts the build
+  #         # with "Failed to stat buck-out/v2: ENOENT". Kill any leftover daemon so
+  #         # we always start fresh.
+  #         /tmp/buck2 killall 2>/dev/null || true
+  #         /tmp/buck2 --version
+  #         /tmp/buck2 build //buck2/...
+  #         /tmp/buck2 test  //buck2/...
 
-          SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
-
-          # zstd/curl to fetch+decompress the buck2 release (best-effort — the
-          # runner already ships them). No C toolchain is needed on the runner:
-          # build actions run on BuildBuddy RE (BUCK_PREFER_REMOTE below), where
-          # the example Rust binary compiles/links against the RE container's
-          # toolchain.
-          (command -v zstd >/dev/null 2>&1 && command -v curl >/dev/null 2>&1) || \
-            ($SUDO apt-get update -qq && $SUDO apt-get install -y -qq zstd curl) || true
-
-          # Install the pinned buck2 release (x86_64 linux runner).
-          BUCK2_RELEASE="2026-05-18"
-          url="https://github.com/facebook/buck2/releases/download/${BUCK2_RELEASE}/buck2-x86_64-unknown-linux-gnu.zst"
-          curl -fsSL "$url" -o /tmp/buck2.zst
-          zstd -df /tmp/buck2.zst -o /tmp/buck2
-          chmod +x /tmp/buck2
-
-          # The buck2 prelude is a submodule excluded from the Bazel checkout.
-          git submodule update --init --recursive prelude
-
-          # Prefer RE for every action that can run remotely (so Rust links on the
-          # RE container); apko genrules opt out (network) and run on the runner.
-          export BUCK_PREFER_REMOTE=true
-          # The BuildBuddy runner can reuse a VM snapshot carrying a stale buck2
-          # daemon whose buck-out was reset between runs, which aborts the build
-          # with "Failed to stat buck-out/v2: ENOENT". Kill any leftover daemon so
-          # we always start fresh.
-          /tmp/buck2 killall 2>/dev/null || true
-          /tmp/buck2 --version
-          /tmp/buck2 build //buck2/...
-          /tmp/buck2 test  //buck2/...
