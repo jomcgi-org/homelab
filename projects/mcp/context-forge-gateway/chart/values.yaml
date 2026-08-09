@@ -142,6 +142,15 @@ httpRoute:
     enabled: false
     # OIDC issuer URL, with trailing slash, exactly as the token's `iss` claim.
     authorizationServer: ""
+    # Context Forge virtual server that /mcp is rewritten onto. Required, because
+    # the ROOT endpoint cannot authenticate an external IdP token (see
+    # templates/httproute.yaml for the call graph); only the per-virtual-server
+    # path can. Clients never see this id.
+    #
+    # It is a runtime object id, so a rebuilt gateway database regenerates it and
+    # this value goes stale. scripts/provision-mcp-auth.sh owns creating that
+    # server and prints the id, so the two are updated together.
+    serverId: ""
     scopes:
       - openid
       - profile

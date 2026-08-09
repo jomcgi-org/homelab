@@ -144,6 +144,11 @@ httpRoute:
   rootMcp:
     enabled: true
     authorizationServer: https://auth.jomcgi.dev/application/o/mcp-friends/
+    # The "homelab-admin" virtual server, carrying the full monolith catalogue.
+    # One server is enough: list_server_tools filters per caller from
+    # tools.visibility and team membership, so entitlements are expressed as
+    # tags on tools rather than as a server (and a URL) per tier.
+    serverId: a9e472d2d61949169a5894ed37f067e1
 
 # friends.jomcgi.dev reaches exactly one virtual server, "friends-empty",
 # which is deliberately empty: tools/list returns [] so the hostname exposes

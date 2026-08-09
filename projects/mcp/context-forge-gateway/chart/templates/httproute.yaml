@@ -72,11 +72,30 @@ spec:
             kind: HTTPRouteFilter
             name: {{ include "context-forge.fullname" . }}-root-resource-metadata
 
-    # The root MCP endpoint. The ResponseHeaderModifier replaces Context Forge's
-    # bare `WWW-Authenticate: Bearer` with one carrying the resource_metadata
-    # pointer, which is what makes discovery work without the client having to
-    # guess the well-known path. It is set on every response from this rule,
-    # including 200s; clients ignore the header on success.
+    # The root MCP endpoint, rewritten onto a virtual server.
+    #
+    # Context Forge's ROOT /mcp cannot authenticate an external IdP token at
+    # all: auth_middleware -> get_current_user -> verify_jwt_token_cached, which
+    # only accepts internally-minted JWTs. The dispatcher that consults trusted
+    # SSO providers, verify_credentials_cached -> _maybe_verify_external, is
+    # never reached from this path, so SSO_API_TOKEN_AUTH_ENABLED and
+    # trusted_for_api_auth are both honoured by code nothing here calls. Same in
+    # upstream main as of v1.0.7.
+    #
+    # The per-virtual-server path is a different code path entirely:
+    # streamablehttp_transport calls verify_oauth_access_token itself against
+    # server.oauth_config, bypassing get_current_user. That one works, proven
+    # end to end. So rewrite onto it.
+    #
+    # The rewrite is only safe because Envoy owns both halves of discovery. A
+    # naive rewrite breaks RFC 9728: Context Forge would advertise
+    # /servers/<id>/mcp while the client connected to /mcp, and clients compare
+    # those. Here the directResponse above declares `resource` as the /mcp URL,
+    # and the ResponseHeaderModifier below overrides Context Forge's pointer, so
+    # the client only ever sees /mcp and the two agree.
+    #
+    # Audience still resolves: authentik mints aud = client_id, and the
+    # transport falls back to oauth_config.client_id when `resource` is unset.
     - matches:
         - path:
             type: PathPrefix
@@ -87,6 +106,11 @@ spec:
             set:
               - name: X-Forwarded-Proto
                 value: https
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /servers/{{ required "httpRoute.rootMcp.serverId is required when rootMcp is enabled" .Values.httpRoute.rootMcp.serverId }}/mcp
         - type: ResponseHeaderModifier
           responseHeaderModifier:
             set:
