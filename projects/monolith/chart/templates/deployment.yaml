@@ -269,6 +269,12 @@ spec:
                   key: GITHUB_TOKEN
             {{- end }}
             {{- end }}
+            # cd health component thresholds (issue #4597). Values, not code
+            # constants, so retuning what pages does not need a rebuild.
+            - name: CD_HEALTH_SYNC_GRACE_S
+              value: {{ .Values.cdHealth.syncGraceSeconds | quote }}
+            - name: CD_HEALTH_CI_RED_WINDOW_S
+              value: {{ .Values.cdHealth.ciRedWindowSeconds | quote }}
             {{- if .Values.whatsapp.enabled }}
             # WhatsApp inbound bearer token (ADR 039 spec section 2). The monolith
             # validates the gateway's forwarded requests against it; the same

@@ -119,6 +119,37 @@ class KubernetesClient:
         )
         return len(result.get("items", []))
 
+    async def list_argocd_app_health(self, namespace: str = "argocd") -> list[dict]:
+        """Return {name, sync, health, finished_at} for every ArgoCD Application.
+
+        One list call rather than N gets, because the cd health component reads
+        every app on each probe. `finished_at` is the last sync operation's
+        finish time, which is what dates a fault: an app that has been
+        not-Synced since a timestamp is distinguishable from one mid-rollout.
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        result = await custom.list_namespaced_custom_object(
+            group="argoproj.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="applications",
+        )
+        apps = []
+        for item in result.get("items", []):
+            status = item.get("status") or {}
+            apps.append(
+                {
+                    "name": (item.get("metadata") or {}).get("name", "?"),
+                    "sync": (status.get("sync") or {}).get("status"),
+                    "health": (status.get("health") or {}).get("status"),
+                    "finished_at": (status.get("operationState") or {}).get(
+                        "finishedAt"
+                    ),
+                }
+            )
+        return apps
+
     async def get_argocd_app_status(
         self, name: str, namespace: str = "argocd"
     ) -> dict | None:
