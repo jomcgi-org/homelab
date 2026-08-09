@@ -73,6 +73,7 @@ HELM_PUSH=$(
 )
 
 PUSH_TARGETS=$(echo -e "${OCI_PUSH}\n${HELM_PUSH}" | grep -v '^$' | LC_ALL=C sort)
+CHART_TARGETS=$(echo -e "${HELM_PUSH}" | grep -v '^$' | LC_ALL=C sort)
 
 if [ -z "$PUSH_TARGETS" ]; then
 	echo "No push targets found"
@@ -121,6 +122,27 @@ while IFS= read -r target; do
 done <<<"$PUSH_TARGETS"
 
 # Close the target
+cat >>"$BUILD_FILE" <<'FOOTER'
+    ],
+    jobs = 0,  # 0 means unlimited parallelism
+    visibility = ["//visibility:public"],
+)
+
+# Charts only. `bazel run` has to materialise every command's runfiles on the
+# runner before any command executes, so running push_all drags all ~24 images'
+# layers out of CAS even when every action is a cache hit. Off main nothing may
+# publish anyway (push.sh.tpl takes the PR path), so PR CI runs this subset: it
+# carries the pre-merge missed-chart-bump guard at chart-sized cost, while the
+# images are proven to build with `bazel build //bazel/images:push_all`.
+multirun(
+    name = "push_charts",
+    commands = [
+FOOTER
+
+while IFS= read -r target; do
+	echo "        \"$target\"," >>"$BUILD_FILE"
+done <<<"$CHART_TARGETS"
+
 cat >>"$BUILD_FILE" <<'FOOTER'
     ],
     jobs = 0,  # 0 means unlimited parallelism

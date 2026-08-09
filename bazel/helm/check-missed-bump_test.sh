@@ -4,14 +4,16 @@
 # The script under test compares the ghcr.io/jomcgi image digests pinned in a
 # freshly built chart against the published chart of the same version and fails
 # (exit 1) only when the version is already published AND the digests differ.
-# helm and crane are stubbed so no network or real binaries are needed. The
+# helm is stubbed so no network or real binaries are needed. The
 # stubs key their behaviour off env vars set per case:
 #   STUB_CHART_RC     exit code of `helm show chart` (0 = published)
 #   STUB_FRESH_TAG    tag `helm show values <tgz>` reports (the PR build)
 #   STUB_PUB_TAG      tag `helm show values ... --version` reports (published)
-#   STUB_FRESH_DIGEST digest crane maps STUB_FRESH_TAG to
-#   STUB_PUB_DIGEST   digest crane maps STUB_PUB_TAG to
-#   STUB_UNRESOLVED_TAG a tag crane fails to resolve (forces UNRESOLVED)
+#   STUB_FRESH_DIGEST digest pinned in the fresh chart's values
+#   STUB_PUB_DIGEST   digest pinned in the published chart's values
+#   STUB_FRESH_NO_DIGEST / STUB_PUB_NO_DIGEST
+#                     omit `digest:` from that side's values, as a chart
+#                     published before digest pinning would (forces UNRESOLVED)
 #   STUB_NO_IMAGES    if set, `helm show values` pins no images
 set -o errexit -o nounset -o pipefail
 
@@ -54,29 +56,18 @@ case "$sub" in
     exit "${STUB_CHART_RC:-0}" ;;
   "show values")
     [[ -n "${STUB_NO_IMAGES:-}" ]] && exit 0
-    if [[ "$*" == *--version* ]]; then tag="${STUB_PUB_TAG}"; else tag="${STUB_FRESH_TAG}"; fi
-    printf 'image:\n  repository: ghcr.io/jomcgi/homelab/projects/foo/backend\n  tag: %s\n' "$tag" ;;
+    if [[ "$*" == *--version* ]]; then
+      tag="${STUB_PUB_TAG}"; digest="${STUB_PUB_DIGEST:-p}"; nodigest="${STUB_PUB_NO_DIGEST:-}"
+    else
+      tag="${STUB_FRESH_TAG}"; digest="${STUB_FRESH_DIGEST:-f}"; nodigest="${STUB_FRESH_NO_DIGEST:-}"
+    fi
+    printf 'image:\n  repository: ghcr.io/jomcgi/homelab/projects/foo/backend\n  tag: %s\n' "$tag"
+    # A chart published before digest pinning emits repository+tag only.
+    [[ -n "$nodigest" ]] || printf '  digest: sha256:%s\n' "$digest" ;;
   *) exit 0 ;;
 esac
 EOF
 chmod +x "$STUB_HELM"
-
-STUB_CRANE="$TMP/crane"
-cat >"$STUB_CRANE" <<'EOF'
-#!/usr/bin/env bash
-# args: digest <ref>
-ref="${2:-}"
-tag="${ref##*:}"
-if [[ -n "${STUB_UNRESOLVED_TAG:-}" && "$tag" == "${STUB_UNRESOLVED_TAG}" ]]; then
-  exit 1
-fi
-case "$tag" in
-  "${STUB_FRESH_TAG:-__f}") echo "sha256:${STUB_FRESH_DIGEST:-f}" ;;
-  "${STUB_PUB_TAG:-__p}")   echo "sha256:${STUB_PUB_DIGEST:-p}" ;;
-  *) echo "sha256:deadbeef" ;;
-esac
-EOF
-chmod +x "$STUB_CRANE"
 
 FAKE_TGZ="$TMP/foo.tgz"
 : >"$FAKE_TGZ"
@@ -84,7 +75,7 @@ FAKE_TGZ="$TMP/foo.tgz"
 run_check() {
 	# Echoes exit code; stdout+stderr captured in $TMP/out.
 	set +e
-	env HELM="$STUB_HELM" CRANE="$STUB_CRANE" \
+	env HELM="$STUB_HELM" \
 		REPOSITORY="oci://ghcr.io/jomcgi/homelab/charts" \
 		"$@" \
 		bash "$SCRIPT" foo 1.2.3 "$FAKE_TGZ" projects/foo >"$TMP/out" 2>&1
@@ -134,10 +125,22 @@ rc=$(run_check STUB_CHART_RC=1 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
 	STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
 expect "unpublished passes" 0 "$rc" "not published yet"
 
-# 4. A digest cannot be resolved -> FAIL OPEN (never block on registry flake).
+# 4. Published chart predates digest pinning (repository+tag, no digest) ->
+# FAIL OPEN. Never block a PR on a chart we cannot compare content-wise.
 rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
-	STUB_UNRESOLVED_TAG=fresh STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
-expect "unresolved fails open" 0 "$rc" "fail open"
+	STUB_PUB_NO_DIGEST=1 STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
+expect "unpinned published chart fails open" 0 "$rc" "fail open"
+
+# 4b. Same on the fresh side.
+rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
+	STUB_FRESH_NO_DIGEST=1 STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
+expect "unpinned fresh chart fails open" 0 "$rc" "fail open"
+
+# 4c. Identical digests behind DIFFERENT tags still pass: the tag is not the
+# comparison, and after the PR-push removal the fresh tag is not in ghcr at all.
+rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=never-pushed STUB_PUB_TAG=pub \
+	STUB_FRESH_DIGEST=same STUB_PUB_DIGEST=same)
+expect "unpushed fresh tag still compares" 0 "$rc" "digests match"
 
 # 5. No ghcr.io/jomcgi images pinned -> OK, nothing to compare.
 rc=$(run_check STUB_CHART_RC=0 STUB_NO_IMAGES=1)

@@ -1,0 +1,1328 @@
+{
+  "bucket_interval": {
+    "count": "4",
+    "type": "INTERVAL_TYPE_HOUR"
+  },
+  "buckets": [
+    {
+      "action_cache_hits": 2310,
+      "action_cache_misses": 915,
+      "bucket_start": "2026-08-02T16:00:00+00:00",
+      "builds": 56,
+      "download_bytes": 70259502335,
+      "upload_bytes": 220240731
+    },
+    {
+      "action_cache_hits": 34197,
+      "action_cache_misses": 7742,
+      "bucket_start": "2026-08-02T20:00:00+00:00",
+      "builds": 494,
+      "download_bytes": 493807653418,
+      "upload_bytes": 1896753135
+    },
+    {
+      "action_cache_hits": 21577,
+      "action_cache_misses": 3435,
+      "bucket_start": "2026-08-03T00:00:00+00:00",
+      "builds": 262,
+      "download_bytes": 181207289466,
+      "upload_bytes": 392140972
+    },
+    {
+      "action_cache_hits": 15287,
+      "action_cache_misses": 4030,
+      "bucket_start": "2026-08-03T04:00:00+00:00",
+      "builds": 290,
+      "download_bytes": 247568255953,
+      "upload_bytes": 509124511
+    },
+    {
+      "action_cache_hits": 10591,
+      "action_cache_misses": 5268,
+      "bucket_start": "2026-08-03T08:00:00+00:00",
+      "builds": 376,
+      "download_bytes": 470565460525,
+      "upload_bytes": 725929758
+    },
+    {
+      "action_cache_hits": 10302,
+      "action_cache_misses": 5256,
+      "bucket_start": "2026-08-03T12:00:00+00:00",
+      "builds": 390,
+      "download_bytes": 93133795259,
+      "upload_bytes": 145963100
+    },
+    {
+      "action_cache_hits": 4524,
+      "action_cache_misses": 1876,
+      "bucket_start": "2026-08-03T16:00:00+00:00",
+      "builds": 97,
+      "download_bytes": 84773870807,
+      "upload_bytes": 185762870
+    },
+    {
+      "action_cache_hits": 806,
+      "action_cache_misses": 587,
+      "bucket_start": "2026-08-03T20:00:00+00:00",
+      "builds": 38,
+      "download_bytes": 16779105558,
+      "upload_bytes": 2102607
+    },
+    {
+      "action_cache_hits": 8539,
+      "action_cache_misses": 3463,
+      "bucket_start": "2026-08-04T00:00:00+00:00",
+      "builds": 210,
+      "download_bytes": 100522977166,
+      "upload_bytes": 319344766
+    },
+    {
+      "action_cache_hits": 3780,
+      "action_cache_misses": 2026,
+      "bucket_start": "2026-08-04T04:00:00+00:00",
+      "builds": 119,
+      "download_bytes": 27115050023,
+      "upload_bytes": 204763870
+    },
+    {
+      "action_cache_hits": 3802,
+      "action_cache_misses": 1909,
+      "bucket_start": "2026-08-04T08:00:00+00:00",
+      "builds": 104,
+      "download_bytes": 35253291399,
+      "upload_bytes": 144994299
+    },
+    {
+      "action_cache_hits": 3117,
+      "action_cache_misses": 2512,
+      "bucket_start": "2026-08-04T12:00:00+00:00",
+      "builds": 145,
+      "download_bytes": 280583369763,
+      "upload_bytes": 268535444
+    },
+    {
+      "action_cache_hits": 10225,
+      "action_cache_misses": 7077,
+      "bucket_start": "2026-08-04T16:00:00+00:00",
+      "builds": 334,
+      "download_bytes": 444579037194,
+      "upload_bytes": 1249386295
+    },
+    {
+      "action_cache_hits": 25402,
+      "action_cache_misses": 11786,
+      "bucket_start": "2026-08-04T20:00:00+00:00",
+      "builds": 469,
+      "download_bytes": 575762907977,
+      "upload_bytes": 2106303070
+    },
+    {
+      "action_cache_hits": 11193,
+      "action_cache_misses": 5176,
+      "bucket_start": "2026-08-05T00:00:00+00:00",
+      "builds": 258,
+      "download_bytes": 209201822369,
+      "upload_bytes": 679829010
+    },
+    {
+      "action_cache_hits": 22561,
+      "action_cache_misses": 6866,
+      "bucket_start": "2026-08-05T04:00:00+00:00",
+      "builds": 558,
+      "download_bytes": 441233726240,
+      "upload_bytes": 593794019
+    },
+    {
+      "action_cache_hits": 8704,
+      "action_cache_misses": 2888,
+      "bucket_start": "2026-08-05T08:00:00+00:00",
+      "builds": 231,
+      "download_bytes": 88421721958,
+      "upload_bytes": 103495623
+    },
+    {
+      "action_cache_hits": 3132,
+      "action_cache_misses": 939,
+      "bucket_start": "2026-08-05T12:00:00+00:00",
+      "builds": 46,
+      "download_bytes": 27941258708,
+      "upload_bytes": 174904737
+    },
+    {
+      "action_cache_hits": 6823,
+      "action_cache_misses": 3120,
+      "bucket_start": "2026-08-05T16:00:00+00:00",
+      "builds": 221,
+      "download_bytes": 138626798762,
+      "upload_bytes": 250479164
+    },
+    {
+      "action_cache_hits": 1089,
+      "action_cache_misses": 446,
+      "bucket_start": "2026-08-05T20:00:00+00:00",
+      "builds": 37,
+      "download_bytes": 26224358097,
+      "upload_bytes": 3885436
+    },
+    {
+      "action_cache_hits": 3169,
+      "action_cache_misses": 3879,
+      "bucket_start": "2026-08-06T00:00:00+00:00",
+      "builds": 274,
+      "download_bytes": 224952324945,
+      "upload_bytes": 233845829
+    },
+    {
+      "action_cache_hits": 3568,
+      "action_cache_misses": 1972,
+      "bucket_start": "2026-08-06T04:00:00+00:00",
+      "builds": 153,
+      "download_bytes": 254179472329,
+      "upload_bytes": 94949555
+    },
+    {
+      "action_cache_hits": 1303,
+      "action_cache_misses": 1552,
+      "bucket_start": "2026-08-06T08:00:00+00:00",
+      "builds": 108,
+      "download_bytes": 127166713291,
+      "upload_bytes": 7186049
+    },
+    {
+      "action_cache_hits": 1498,
+      "action_cache_misses": 1757,
+      "bucket_start": "2026-08-06T12:00:00+00:00",
+      "builds": 151,
+      "download_bytes": 138179514307,
+      "upload_bytes": 28677184
+    },
+    {
+      "action_cache_hits": 18750,
+      "action_cache_misses": 33526,
+      "bucket_start": "2026-08-06T16:00:00+00:00",
+      "builds": 239,
+      "download_bytes": 970697591063,
+      "upload_bytes": 15626495723
+    },
+    {
+      "action_cache_hits": 9087,
+      "action_cache_misses": 8862,
+      "bucket_start": "2026-08-06T20:00:00+00:00",
+      "builds": 263,
+      "download_bytes": 431316305180,
+      "upload_bytes": 866328676
+    },
+    {
+      "action_cache_hits": 11597,
+      "action_cache_misses": 8505,
+      "bucket_start": "2026-08-07T00:00:00+00:00",
+      "builds": 367,
+      "download_bytes": 312938168284,
+      "upload_bytes": 971452097
+    },
+    {
+      "action_cache_hits": 353499,
+      "action_cache_misses": 13638,
+      "bucket_start": "2026-08-07T04:00:00+00:00",
+      "builds": 500,
+      "download_bytes": 619523102184,
+      "upload_bytes": 1864229939
+    },
+    {
+      "action_cache_hits": 196177,
+      "action_cache_misses": 8098,
+      "bucket_start": "2026-08-07T12:00:00+00:00",
+      "builds": 167,
+      "download_bytes": 649878507567,
+      "upload_bytes": 750711880
+    },
+    {
+      "action_cache_hits": 116375,
+      "action_cache_misses": 8893,
+      "bucket_start": "2026-08-07T16:00:00+00:00",
+      "builds": 373,
+      "download_bytes": 251611382450,
+      "upload_bytes": 1248553498
+    },
+    {
+      "action_cache_hits": 55457,
+      "action_cache_misses": 3878,
+      "bucket_start": "2026-08-07T20:00:00+00:00",
+      "builds": 185,
+      "download_bytes": 166463779127,
+      "upload_bytes": 627318082
+    },
+    {
+      "action_cache_hits": 50906,
+      "action_cache_misses": 11352,
+      "bucket_start": "2026-08-08T00:00:00+00:00",
+      "builds": 485,
+      "download_bytes": 626906715175,
+      "upload_bytes": 1168055307
+    },
+    {
+      "action_cache_hits": 499175,
+      "action_cache_misses": 37786,
+      "bucket_start": "2026-08-08T04:00:00+00:00",
+      "builds": 1221,
+      "download_bytes": 1351443118307,
+      "upload_bytes": 6508851573
+    },
+    {
+      "action_cache_hits": 166472,
+      "action_cache_misses": 5996,
+      "bucket_start": "2026-08-08T08:00:00+00:00",
+      "builds": 302,
+      "download_bytes": 119133092372,
+      "upload_bytes": 738537342
+    },
+    {
+      "action_cache_hits": 176920,
+      "action_cache_misses": 10230,
+      "bucket_start": "2026-08-08T16:00:00+00:00",
+      "builds": 525,
+      "download_bytes": 354560395207,
+      "upload_bytes": 1385036499
+    },
+    {
+      "action_cache_hits": 71307,
+      "action_cache_misses": 6917,
+      "bucket_start": "2026-08-08T20:00:00+00:00",
+      "builds": 347,
+      "download_bytes": 188718011337,
+      "upload_bytes": 1011797920
+    },
+    {
+      "action_cache_hits": 12823,
+      "action_cache_misses": 972,
+      "bucket_start": "2026-08-09T00:00:00+00:00",
+      "builds": 77,
+      "download_bytes": 55817513372,
+      "upload_bytes": 4127436
+    },
+    {
+      "action_cache_hits": 38246,
+      "action_cache_misses": 8477,
+      "bucket_start": "2026-08-09T04:00:00+00:00",
+      "builds": 506,
+      "download_bytes": 478085562931,
+      "upload_bytes": 2185172299
+    },
+    {
+      "action_cache_hits": 18471,
+      "action_cache_misses": 5005,
+      "bucket_start": "2026-08-09T08:00:00+00:00",
+      "builds": 132,
+      "download_bytes": 190484662553,
+      "upload_bytes": 2048277522
+    },
+    {
+      "action_cache_hits": 10020,
+      "action_cache_misses": 925,
+      "bucket_start": "2026-08-09T12:00:00+00:00",
+      "builds": 33,
+      "download_bytes": 20079652094,
+      "upload_bytes": 140575609
+    },
+    {
+      "action_cache_hits": 3526,
+      "action_cache_misses": 1046,
+      "bucket_start": "2026-08-09T16:00:00+00:00",
+      "builds": 55,
+      "download_bytes": 35654855784,
+      "upload_bytes": 164255989
+    }
+  ],
+  "by_role": {
+    "CI": {
+      "download_bytes": 4789119368310,
+      "download_transferred_bytes": 2489775071119,
+      "invocations": 5897,
+      "upload_bytes": 48999366446,
+      "upload_transferred_bytes": 21255472816
+    },
+    "CI_RUNNER": {
+      "download_bytes": 5789067575150,
+      "download_transferred_bytes": 2290281446737,
+      "invocations": 4730,
+      "upload_bytes": 71243274,
+      "upload_transferred_bytes": 13226565
+    },
+    "HOSTED_BAZEL": {
+      "download_bytes": 1567621501254,
+      "download_transferred_bytes": 724717110284,
+      "invocations": 784,
+      "upload_bytes": 46386066,
+      "upload_transferred_bytes": 11525432
+    },
+    "LOCAL": {
+      "download_bytes": 0,
+      "download_transferred_bytes": 0,
+      "invocations": 2,
+      "upload_bytes": 92700,
+      "upload_transferred_bytes": 92700
+    }
+  },
+  "by_source": [
+    {
+      "command": "test",
+      "download_bytes": 2846260421863,
+      "download_share": 0.23434096090176082,
+      "invocations": 1412,
+      "pattern": "//...",
+      "role": "CI",
+      "upload_bytes": 40984860941
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 2536445467012,
+      "download_share": 0.20883298782106935,
+      "invocations": 744,
+      "pattern": "Push images",
+      "role": "CI_RUNNER",
+      "upload_bytes": 1545601
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 2052193112445,
+      "download_share": 0.16896307246951014,
+      "invocations": 746,
+      "pattern": "Test",
+      "role": "CI_RUNNER",
+      "upload_bytes": 51620226
+    },
+    {
+      "command": "remote test //...",
+      "download_bytes": 1499066968796,
+      "download_share": 0.12342257624262234,
+      "invocations": 651,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 329364
+    },
+    {
+      "command": "run",
+      "download_bytes": 1409052023685,
+      "download_share": 0.1160113820416982,
+      "invocations": 767,
+      "pattern": "//bazel/images:push_all",
+      "role": "CI",
+      "upload_bytes": 6475018632
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 560972192752,
+      "download_share": 0.04618648444074069,
+      "invocations": 743,
+      "pattern": "Format check",
+      "role": "CI_RUNNER",
+      "upload_bytes": 3641948
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 347173520798,
+      "download_share": 0.02858381328655764,
+      "invocations": 744,
+      "pattern": "Buck2 rules",
+      "role": "CI_RUNNER",
+      "upload_bytes": 2419429
+    },
+    {
+      "command": "test",
+      "download_bytes": 338810824924,
+      "download_share": 0.027895288030123224,
+      "invocations": 8,
+      "pattern": "//... and 1 more",
+      "role": "CI",
+      "upload_bytes": 13987076
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 233937572431,
+      "download_share": 0.019260765843282537,
+      "invocations": 744,
+      "pattern": "BDD future features",
+      "role": "CI_RUNNER",
+      "upload_bytes": 6945096
+    },
+    {
+      "command": "build",
+      "download_bytes": 129258473728,
+      "download_share": 0.01064222890689955,
+      "invocations": 306,
+      "pattern": "//projects/monolith/frontend/visual:capture",
+      "role": "CI",
+      "upload_bytes": 51337514
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 46802681889,
+      "download_share": 0.003853401945373927,
+      "invocations": 505,
+      "pattern": "Visual regression",
+      "role": "CI_RUNNER",
+      "upload_bytes": 3216732
+    },
+    {
+      "command": "test",
+      "download_bytes": 33574177102,
+      "download_share": 0.0027642603828987506,
+      "invocations": 13,
+      "pattern": "//projects/embervm/tokenbroker/...",
+      "role": "CI",
+      "upload_bytes": 560757641
+    },
+    {
+      "command": "workflow run",
+      "download_bytes": 11543027823,
+      "download_share": 0.0009503713050919771,
+      "invocations": 504,
+      "pattern": "Manifest diff",
+      "role": "CI_RUNNER",
+      "upload_bytes": 1854242
+    },
+    {
+      "command": "remote test //projects/platform/signoz:template_test",
+      "download_bytes": 10289679020,
+      "download_share": 0.0008471794254649381,
+      "invocations": 2,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote build //bazel/erlang:mix_test_smoke",
+      "download_bytes": 9458513537,
+      "download_share": 0.000778747135693257,
+      "invocations": 38,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 623646
+    },
+    {
+      "command": "remote test //projects/embervm/noded/...",
+      "download_bytes": 9224518632,
+      "download_share": 0.0007594816494915676,
+      "invocations": 11,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote test //projects/monolith:agent_sessions_mcp_test",
+      "download_bytes": 8311222268,
+      "download_share": 0.0006842872836198188,
+      "invocations": 8,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 45194305
+    },
+    {
+      "command": "test",
+      "download_bytes": 7101604095,
+      "download_share": 0.0005846958749041281,
+      "invocations": 10,
+      "pattern": "//projects/embervm/noded/...",
+      "role": "CI",
+      "upload_bytes": 724553520
+    },
+    {
+      "command": "remote test //projects/embervm/runtimes/claude:shim_test",
+      "download_bytes": 6619704633,
+      "download_share": 0.0005450196800922687,
+      "invocations": 21,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 154560
+    },
+    {
+      "command": "remote test //projects/monolith/frontend:test",
+      "download_bytes": 6205703510,
+      "download_share": 0.0005109337544921348,
+      "invocations": 2,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote test //projects/embervm/noded/server/...",
+      "download_bytes": 5657076831,
+      "download_share": 0.0004657637123745375,
+      "invocations": 6,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 27318
+    },
+    {
+      "command": "test",
+      "download_bytes": 5616730064,
+      "download_share": 0.0004624418448196808,
+      "invocations": 18,
+      "pattern": "//projects/embervm/runtimes/claude:shim_test",
+      "role": "CI",
+      "upload_bytes": 2098792
+    },
+    {
+      "command": "remote test //tools/cli:knowledge_test",
+      "download_bytes": 5488903511,
+      "download_share": 0.00045191751014226115,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 28365
+    },
+    {
+      "command": "test",
+      "download_bytes": 3652144804,
+      "download_share": 0.0003006917835584223,
+      "invocations": 2,
+      "pattern": "//projects/firecracker/substrate/egress-proxy/...",
+      "role": "CI",
+      "upload_bytes": 34411887
+    },
+    {
+      "command": "test",
+      "download_bytes": 3085799233,
+      "download_share": 0.0002540628931409647,
+      "invocations": 4,
+      "pattern": "//projects/monolith:agent_sessions_mcp_test",
+      "role": "CI",
+      "upload_bytes": 285470
+    },
+    {
+      "command": "remote test //projects/embervm/tokenbroker/...",
+      "download_bytes": 2904064013,
+      "download_share": 0.00023910009994138209,
+      "invocations": 13,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "build",
+      "download_bytes": 2655903922,
+      "download_share": 0.0002186683524682032,
+      "invocations": 38,
+      "pattern": "//bazel/erlang:mix_test_smoke",
+      "role": "CI",
+      "upload_bytes": 5963087
+    },
+    {
+      "command": "test",
+      "download_bytes": 2571277271,
+      "download_share": 0.00021170079231070456,
+      "invocations": 1,
+      "pattern": "//projects/embervm/runtimes/claude/...",
+      "role": "CI",
+      "upload_bytes": 9275369
+    },
+    {
+      "command": "test",
+      "download_bytes": 1610950403,
+      "download_share": 0.0001326342672315983,
+      "invocations": 3,
+      "pattern": "//projects/embervm/runtimes/claude:shim_test and 1 more",
+      "role": "CI",
+      "upload_bytes": 493191
+    },
+    {
+      "command": "remote test //projects/embervm/noded/server:server_test",
+      "download_bytes": 1585152007,
+      "download_share": 0.00013051020969212445,
+      "invocations": 7,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote build //projects/embervm/tokenbroker/internal/provider/codexchatgpt:codexchatgpt_test",
+      "download_bytes": 1073152001,
+      "download_share": 8.835574888940789e-5,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "build",
+      "download_bytes": 1054399139,
+      "download_share": 8.681177080961514e-5,
+      "invocations": 3,
+      "pattern": "//projects/embervm/tokenbroker/internal/provider/codexchatgp",
+      "role": "CI",
+      "upload_bytes": 146714
+    },
+    {
+      "command": "test",
+      "download_bytes": 811248026,
+      "download_share": 6.679242717293675e-5,
+      "invocations": 2,
+      "pattern": "//projects/embervm/runtimes/claude:cleartext_lane_guard_test",
+      "role": "CI",
+      "upload_bytes": 44418
+    },
+    {
+      "command": "test",
+      "download_bytes": 809892166,
+      "download_share": 6.668079524607311e-5,
+      "invocations": 1,
+      "pattern": "//... and 4 more",
+      "role": "CI",
+      "upload_bytes": 163359
+    },
+    {
+      "command": "test",
+      "download_bytes": 808177578,
+      "download_share": 6.653962819179224e-5,
+      "invocations": 3,
+      "pattern": "//... and 5 more",
+      "role": "CI",
+      "upload_bytes": 478047
+    },
+    {
+      "command": "test",
+      "download_bytes": 771829396,
+      "download_share": 6.354697585700105e-5,
+      "invocations": 2,
+      "pattern": "//projects/monolith:agent_sessions_mcp_test and 2 more",
+      "role": "CI",
+      "upload_bytes": 474534
+    },
+    {
+      "command": "remote build //projects/embervm/tokenbroker/internal/provider/codexchatgpt:codexchatgpt",
+      "download_bytes": 770186473,
+      "download_share": 6.341170919216945e-5,
+      "invocations": 2,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 19337
+    },
+    {
+      "command": "test",
+      "download_bytes": 690656019,
+      "download_share": 5.686373386701827e-5,
+      "invocations": 5,
+      "pattern": "//projects/embervm/noded/server:server_test",
+      "role": "CI",
+      "upload_bytes": 24295104
+    },
+    {
+      "command": "build",
+      "download_bytes": 438858487,
+      "download_share": 3.61325052175507e-5,
+      "invocations": 5,
+      "pattern": "@pi_coding_agent//:tar_amd64",
+      "role": "CI",
+      "upload_bytes": 3689601
+    },
+    {
+      "command": "remote test //projects/embervm/runtimes/claude/...",
+      "download_bytes": 294912001,
+      "download_share": 2.4280969220155056e-5,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "build",
+      "download_bytes": 241560494,
+      "download_share": 1.988838331343271e-5,
+      "invocations": 1,
+      "pattern": "//projects/embervm/tokenbroker/internal/broker:broker_test",
+      "role": "CI",
+      "upload_bytes": 133775
+    },
+    {
+      "command": "remote test //projects/embervm/tokenbroker/internal/broker:broker_test",
+      "download_bytes": 233472002,
+      "download_share": 1.9222434065441712e-5,
+      "invocations": 2,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote build //projects/embervm/tokenbroker/internal/broker:broker_test",
+      "download_bytes": 217088001,
+      "download_share": 1.7873491253229772e-5,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote build //projects/embervm/proto/embervm/node/v1:node_go_src",
+      "download_bytes": 106496001,
+      "download_share": 8.768127826546477e-6,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "test",
+      "download_bytes": 95251626,
+      "download_share": 7.84234548351161e-6,
+      "invocations": 2,
+      "pattern": "//projects/embervm/tokenbroker/internal/broker:broker_test",
+      "role": "CI",
+      "upload_bytes": 137772
+    },
+    {
+      "command": "remote test //projects/embervm/tokenbroker/image:image_lock_test",
+      "download_bytes": 90112002,
+      "download_share": 7.4191851790003996e-6,
+      "invocations": 2,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "run",
+      "download_bytes": 56399571,
+      "download_share": 4.6435419475552296e-6,
+      "invocations": 147,
+      "pattern": "//projects/monolith/frontend/visual:diff_bin",
+      "role": "CI",
+      "upload_bytes": 3369755
+    },
+    {
+      "command": "test",
+      "download_bytes": 49126513,
+      "download_share": 4.044729770242708e-6,
+      "invocations": 6,
+      "pattern": "//projects/embervm/noded/server/...",
+      "role": "CI",
+      "upload_bytes": 36495564
+    },
+    {
+      "command": "build",
+      "download_bytes": 22573035,
+      "download_share": 1.8585041170992658e-6,
+      "invocations": 1,
+      "pattern": "//projects/embervm/proto/embervm/node/v1:node_go_src",
+      "role": "CI",
+      "upload_bytes": 44805
+    },
+    {
+      "command": "test",
+      "download_bytes": 10342660,
+      "download_share": 8.515415047979988e-7,
+      "invocations": 1,
+      "pattern": "//projects/embervm/noded/fcvm/driver/...",
+      "role": "CI",
+      "upload_bytes": 9995728
+    },
+    {
+      "command": "remote build @pi_coding_agent//:tar_amd64",
+      "download_bytes": 8192005,
+      "download_share": 6.74471776604155e-7,
+      "invocations": 5,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote test //projects/embervm/runtimes/claude:cleartext_lane_guard_test",
+      "download_bytes": 8192003,
+      "download_share": 6.744716119382944e-7,
+      "invocations": 2,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "test",
+      "download_bytes": 4756950,
+      "download_share": 3.9165363274523577e-7,
+      "invocations": 2,
+      "pattern": "//projects/monolith/frontend:test",
+      "role": "CI",
+      "upload_bytes": 222027
+    },
+    {
+      "command": "remote test //projects/firecracker/substrate/egress-proxy/...",
+      "download_bytes": 4096002,
+      "download_share": 3.3723584713561235e-7,
+      "invocations": 2,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote build //projects/embervm/tokenbroker/image:all",
+      "download_bytes": 4096001,
+      "download_share": 3.3723576480268204e-7,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "test",
+      "download_bytes": 2298464,
+      "download_share": 1.8923927628714733e-7,
+      "invocations": 1,
+      "pattern": "//projects/monolith:agent_sessions_mcp_test and 4 more",
+      "role": "CI",
+      "upload_bytes": 237680
+    },
+    {
+      "command": "run",
+      "download_bytes": 1343804,
+      "download_share": 1.1063932105605037e-7,
+      "invocations": 692,
+      "pattern": "//bazel/tools/format:format",
+      "role": "CI",
+      "upload_bytes": 40898064
+    },
+    {
+      "command": "test",
+      "download_bytes": 98488,
+      "download_share": 8.108805638447488e-9,
+      "invocations": 2,
+      "pattern": "//projects/embervm/tokenbroker/image:image_lock_test",
+      "role": "CI",
+      "upload_bytes": 74101
+    },
+    {
+      "command": "test",
+      "download_bytes": 91604,
+      "download_share": 7.542025746327915e-9,
+      "invocations": 1,
+      "pattern": "//projects/monolith:agent_sessions_mcp_test and 1 more",
+      "role": "CI",
+      "upload_bytes": 120962
+    },
+    {
+      "command": "test",
+      "download_bytes": 58158,
+      "download_share": 4.788318559832965e-9,
+      "invocations": 1,
+      "pattern": "//projects/embervm/noded/server:server_test and 2 more",
+      "role": "CI",
+      "upload_bytes": 201734
+    },
+    {
+      "command": "test",
+      "download_bytes": 45626,
+      "download_share": 3.7565222774328354e-9,
+      "invocations": 1,
+      "pattern": "//projects/monolith:agent_sessions_transport_test and 1 more",
+      "role": "CI",
+      "upload_bytes": 124519
+    },
+    {
+      "command": "test",
+      "download_bytes": 10886,
+      "download_share": 8.962762791420209e-10,
+      "invocations": 1,
+      "pattern": "//tools/cli:knowledge_test",
+      "role": "CI",
+      "upload_bytes": 70184
+    },
+    {
+      "command": "test",
+      "download_bytes": 9103,
+      "download_share": 7.494766644341187e-10,
+      "invocations": 1,
+      "pattern": "//projects/monolith:graph_policy_test and 3 more",
+      "role": "CI",
+      "upload_bytes": 55751
+    },
+    {
+      "command": "test",
+      "download_bytes": 7439,
+      "download_share": 6.124746684307821e-10,
+      "invocations": 1,
+      "pattern": "//projects/platform/signoz:template_test and 1 more",
+      "role": "CI",
+      "upload_bytes": 38686
+    },
+    {
+      "command": "test",
+      "download_bytes": 1207,
+      "download_share": 9.937584686059335e-11,
+      "invocations": 1,
+      "pattern": "//bazel/tools/ci:ci_test",
+      "role": "CI",
+      "upload_bytes": 5748
+    },
+    {
+      "command": "test",
+      "download_bytes": 777,
+      "download_share": 6.397268683569266e-11,
+      "invocations": 1,
+      "pattern": "//projects/platform/signoz:template_test",
+      "role": "CI",
+      "upload_bytes": 36542
+    },
+    {
+      "command": "remote test //projects/monolith:graph_policy_test",
+      "download_bytes": 1,
+      "download_share": 8.233293029046674e-14,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote test //bazel/tools/ci:ci_test",
+      "download_bytes": 1,
+      "download_share": 8.233293029046674e-14,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "remote test //projects/embervm/noded/fcvm/driver/...",
+      "download_bytes": 1,
+      "download_share": 8.233293029046674e-14,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 9171
+    },
+    {
+      "command": "remote test //projects/monolith:agent_sessions_transport_test",
+      "download_bytes": 1,
+      "download_share": 8.233293029046674e-14,
+      "invocations": 1,
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "upload_bytes": 0
+    },
+    {
+      "command": "query",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 2076,
+      "pattern": "",
+      "role": "CI",
+      "upload_bytes": 0
+    },
+    {
+      "command": "build",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 350,
+      "pattern": "@multitool//tools/helm",
+      "role": "CI",
+      "upload_bytes": 14765311
+    },
+    {
+      "command": "test",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 1,
+      "pattern": "//projects/embervm/noded/server:server_test",
+      "role": "LOCAL",
+      "upload_bytes": 26866
+    },
+    {
+      "command": "",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 3,
+      "pattern": "",
+      "role": "CI",
+      "upload_bytes": 0
+    },
+    {
+      "command": "run",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 1,
+      "pattern": "",
+      "role": "CI",
+      "upload_bytes": 0
+    },
+    {
+      "command": "build",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 1,
+      "pattern": "//projects/embervm/tokenbroker/image:all",
+      "role": "CI",
+      "upload_bytes": 2841
+    },
+    {
+      "command": "test",
+      "download_bytes": 0,
+      "download_share": 0.0,
+      "invocations": 1,
+      "pattern": "//projects/embervm/noded/...",
+      "role": "LOCAL",
+      "upload_bytes": 65834
+    }
+  ],
+  "captured_at": "2026-08-09T16:48:47Z",
+  "concentration": {
+    "invocations": 11413,
+    "max_bytes": 360663783818,
+    "p50_bytes": 3.0,
+    "p90_bytes": 1982464001.0,
+    "p99_bytes": 17752064001.0,
+    "top_shares": {
+      "1%": {
+        "bytes": 4576187865451,
+        "invocations": 114,
+        "share": 0.37677095652225695
+      },
+      "10%": {
+        "bytes": 10909322463338,
+        "invocations": 1141,
+        "share": 0.8981964858902305
+      },
+      "5%": {
+        "bytes": 9094343561039,
+        "invocations": 571,
+        "share": 0.748763954448579
+      }
+    },
+    "total_bytes": 12145808444714
+  },
+  "per_day": {
+    "download_bytes": 1735115492102.0,
+    "upload_bytes": 7016726926.571428
+  },
+  "repo": "https://github.com/jomcgi/homelab",
+  "schema": 2,
+  "top_invocations": [
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 360663783818,
+      "invocation_id": "de6ee4ee-7e69-4483-8283-bd404d987cf8",
+      "pattern": "//...",
+      "role": "CI",
+      "success": false,
+      "upload_bytes": 8837069409,
+      "url": "https://app.buildbuddy.io/invocation/de6ee4ee-7e69-4483-8283-bd404d987cf8"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 352068922119,
+      "invocation_id": "bcede2a3-b445-4080-bf5a-9aaa0f1d3fb7",
+      "pattern": "//...",
+      "role": "CI",
+      "success": false,
+      "upload_bytes": 6680325311,
+      "url": "https://app.buildbuddy.io/invocation/bcede2a3-b445-4080-bf5a-9aaa0f1d3fb7"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 299313864872,
+      "invocation_id": "a8c50228-0c5b-4cc0-94ae-d3db48baed23",
+      "pattern": "//... and 1 more",
+      "role": "CI",
+      "success": false,
+      "upload_bytes": 7417171,
+      "url": "https://app.buildbuddy.io/invocation/a8c50228-0c5b-4cc0-94ae-d3db48baed23"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 214240760890,
+      "invocation_id": "746e3fa2-9576-4ad2-8d21-68dcb9e82f68",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 2567214125,
+      "url": "https://app.buildbuddy.io/invocation/746e3fa2-9576-4ad2-8d21-68dcb9e82f68"
+    },
+    {
+      "branch": "fable-sprint/monolith-dead-code",
+      "command": "test",
+      "download_bytes": 184686387119,
+      "invocation_id": "72665ce2-2398-4bbc-9009-218a601a198d",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 34251678,
+      "url": "https://app.buildbuddy.io/invocation/72665ce2-2398-4bbc-9009-218a601a198d"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 156623930970,
+      "invocation_id": "18b6d4ff-11a0-4afb-9523-7866116b312e",
+      "pattern": "//...",
+      "role": "CI",
+      "success": false,
+      "upload_bytes": 86427092,
+      "url": "https://app.buildbuddy.io/invocation/18b6d4ff-11a0-4afb-9523-7866116b312e"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 94979250059,
+      "invocation_id": "244fc3fe-f657-426a-b03c-765e3669923c",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 72952764,
+      "url": "https://app.buildbuddy.io/invocation/244fc3fe-f657-426a-b03c-765e3669923c"
+    },
+    {
+      "branch": "update/semgrep-20260803",
+      "command": "test",
+      "download_bytes": 90771045487,
+      "invocation_id": "c4bc1fb3-b001-467d-9b50-41977c923c48",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 528484877,
+      "url": "https://app.buildbuddy.io/invocation/c4bc1fb3-b001-467d-9b50-41977c923c48"
+    },
+    {
+      "branch": "fix/pnpm-frozen-lockfile",
+      "command": "test",
+      "download_bytes": 86102231970,
+      "invocation_id": "b25cd8b5-f81a-4246-9940-744766ccc989",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 21747824,
+      "url": "https://app.buildbuddy.io/invocation/b25cd8b5-f81a-4246-9940-744766ccc989"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 85146619140,
+      "invocation_id": "f65e32c6-cbe8-4466-b636-6f5bfb9127bd",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 439851088,
+      "url": "https://app.buildbuddy.io/invocation/f65e32c6-cbe8-4466-b636-6f5bfb9127bd"
+    },
+    {
+      "branch": "fix/pnpm-frozen-lockfile",
+      "command": "workflow run",
+      "download_bytes": 54255616001,
+      "invocation_id": "5bae1aa5-0b6d-4e5d-a902-584c2fb6e08a",
+      "pattern": "Test",
+      "role": "CI_RUNNER",
+      "success": true,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/5bae1aa5-0b6d-4e5d-a902-584c2fb6e08a"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 54242786882,
+      "invocation_id": "99d7a135-6c0c-40ee-aa63-6aeaae6e6e93",
+      "pattern": "//...",
+      "role": "CI",
+      "success": false,
+      "upload_bytes": 130536858,
+      "url": "https://app.buildbuddy.io/invocation/99d7a135-6c0c-40ee-aa63-6aeaae6e6e93"
+    },
+    {
+      "branch": "feat/async-session-create",
+      "command": "workflow run",
+      "download_bytes": 52134440982,
+      "invocation_id": "92261439-c95c-48e3-9e0f-11b03c94df8d",
+      "pattern": "Test",
+      "role": "CI_RUNNER",
+      "success": true,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/92261439-c95c-48e3-9e0f-11b03c94df8d"
+    },
+    {
+      "branch": "main",
+      "command": "remote test //...",
+      "download_bytes": 50849925517,
+      "invocation_id": "edbf6fbc-78a8-476a-9fe8-dac5701a428a",
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "success": true,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/edbf6fbc-78a8-476a-9fe8-dac5701a428a"
+    },
+    {
+      "branch": "main",
+      "command": "remote test //...",
+      "download_bytes": 50018415989,
+      "invocation_id": "f5cb57aa-1fea-4f73-b0e6-a5b1315264e9",
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "success": false,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/f5cb57aa-1fea-4f73-b0e6-a5b1315264e9"
+    },
+    {
+      "branch": "main",
+      "command": "remote test //...",
+      "download_bytes": 43847680001,
+      "invocation_id": "ef179827-5e59-497b-807e-14f7db3cb62e",
+      "pattern": "",
+      "role": "HOSTED_BAZEL",
+      "success": false,
+      "upload_bytes": 0,
+      "url": "https://app.buildbuddy.io/invocation/ef179827-5e59-497b-807e-14f7db3cb62e"
+    },
+    {
+      "branch": "main",
+      "command": "test",
+      "download_bytes": 41773813084,
+      "invocation_id": "f0b78158-a6e8-452b-8681-4304d3740007",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 1043850944,
+      "url": "https://app.buildbuddy.io/invocation/f0b78158-a6e8-452b-8681-4304d3740007"
+    },
+    {
+      "branch": "feat/codex-login-preflight",
+      "command": "test",
+      "download_bytes": 41258659790,
+      "invocation_id": "9c7ceffd-81fc-43ec-89b7-39e490f3a9c8",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 57565911,
+      "url": "https://app.buildbuddy.io/invocation/9c7ceffd-81fc-43ec-89b7-39e490f3a9c8"
+    },
+    {
+      "branch": "claude/new-session-ga9moa",
+      "command": "test",
+      "download_bytes": 40398624143,
+      "invocation_id": "9c368d5a-ad9f-4fd8-a75a-fbb25e0bc168",
+      "pattern": "//...",
+      "role": "CI",
+      "success": false,
+      "upload_bytes": 20803746,
+      "url": "https://app.buildbuddy.io/invocation/9c368d5a-ad9f-4fd8-a75a-fbb25e0bc168"
+    },
+    {
+      "branch": "feat/agents-repo-plumbing",
+      "command": "test",
+      "download_bytes": 38971232008,
+      "invocation_id": "5384d9b1-febd-4aac-9039-31e02af49bd6",
+      "pattern": "//...",
+      "role": "CI",
+      "success": true,
+      "upload_bytes": 22960255,
+      "url": "https://app.buildbuddy.io/invocation/5384d9b1-febd-4aac-9039-31e02af49bd6"
+    }
+  ],
+  "totals": {
+    "download_bytes": 12145808444714,
+    "download_transferred_bytes": 5504773628140,
+    "invocations": 11413,
+    "upload_bytes": 49117088486,
+    "upload_transferred_bytes": 21280317513
+  },
+  "truncated": false,
+  "window": {
+    "after": "2026-08-02T16:48:36Z",
+    "before": "2026-08-09T16:48:36Z",
+    "days": 7.0
+  }
+}

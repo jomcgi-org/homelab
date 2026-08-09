@@ -199,11 +199,12 @@ actions:
           bazel test $TARGETS --config=ci --deleted_packages=bazel/tools/python
 
   # Push images — runs in parallel with Test (no dependency).
-  # PR images are tagged with the source branch name (not "main") so they do not
-  # touch the main rollout. This ensures image builds are verified before merge.
+  # Images are pushed on main only. PR branches build them (verifying the build
+  # before merge) and push only the charts; see the step below for why.
   # REQUIRED status check: on PR branches each helm push runs the pre-merge
   # missed-chart-bump guard (bazel/helm/check-missed-bump.sh), so a chart whose
-  # images changed without a version bump cannot merge.
+  # images changed without a version bump cannot merge. Do NOT rename this
+  # action: it is a required check in the GitHub ruleset by this exact name.
   - name: "Push images"
     container_image: "ubuntu-24.04"
     max_retries: 1
@@ -232,7 +233,34 @@ actions:
             echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
           fi
 
-          bazel run //bazel/images:push_all --config=ci --stamp
+          # "Am I main?" is decided by SHA, not by `git rev-parse --abbrev-ref
+          # HEAD`, which returns "HEAD" on a detached checkout (same reasoning
+          # as the Buck2 rules action). If origin/main is unresolvable the
+          # comparison fails to "none", which takes the PR path: that publishes
+          # nothing, so an unresolvable ref can never push a half-known tree.
+          git fetch origin main --quiet 2>/dev/null || true
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main 2>/dev/null || echo none)" ]; then
+            bazel run //bazel/images:push_all --config=ci --stamp
+          else
+            # PR branches publish nothing: push.sh.tpl takes the PR path for
+            # charts, and PR image tags had no consumer (charts deploy by
+            # repository@digest, and the `dev-` tag's documented consumer,
+            # ArgoCD Image Updater, does not exist in this cluster).
+            #
+            # `bazel run` stages every command's runfiles on the runner before
+            # any command runs, so push_all pulled all ~24 images' layers out of
+            # CAS on every PR push even at a ~99% action-cache hit rate. That was
+            # 3.5 TB/week, 29% of this repo's entire BuildBuddy download volume.
+            # `bazel build` proves the same graph builds while
+            # --remote_download_minimal leaves the layers at rest in CAS.
+            bazel build //bazel/images:push_all --config=ci
+
+            # Charts only, which is what carries the pre-merge
+            # missed-chart-bump guard (bazel/helm/check-missed-bump.sh). The
+            # guard is digest-content based, so it does not need the images to
+            # have been pushed, only built.
+            bazel run //bazel/images:push_charts --config=ci --stamp
+          fi
 
   # Manifest diff — renders Helm manifests from main and PR, posts diff as PR comment
   # Runs in parallel with other actions (no depends_on). Mostly informational,

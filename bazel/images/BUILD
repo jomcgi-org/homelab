@@ -63,3 +63,22 @@ multirun(
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],
 )
+
+# Charts only. `bazel run` has to materialise every command's runfiles on the
+# runner before any command executes, so running push_all drags all ~24 images'
+# layers out of CAS even when every action is a cache hit. Off main nothing may
+# publish anyway (push.sh.tpl takes the PR path), so PR CI runs this subset: it
+# carries the pre-merge missed-chart-bump guard at chart-sized cost, while the
+# images are proven to build with `bazel build //bazel/images:push_all`.
+multirun(
+    name = "push_charts",
+    commands = [
+        "//projects/embervm/chart:chart.push",
+        "//projects/monolith-public/chart:chart.push",
+        "//projects/monolith/chart:chart.push",
+        "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
+        "//projects/platform/signoz-addons/dashboard-sidecar:chart.push",
+    ],
+    jobs = 0,  # 0 means unlimited parallelism
+    visibility = ["//visibility:public"],
+)

@@ -10,10 +10,12 @@
 #
 # This is the same digest-content check push.sh.tpl runs post-merge on main,
 # factored out so it can also run pre-merge on a PR branch and be unit tested
-# with stubbed helm/crane. It is deliberately content-stable (compares manifest
-# digests, not the build-timestamped tags). An unresolved digest fails OPEN (a
-# transient registry error must not wedge a PR), but an unpublished version is
-# only "nothing to assert" when this PR itself carries the bump. When
+# with a stubbed helm. It is content-stable (compares manifest digests, not the
+# build-timestamped tags) and reads those digests straight from the chart
+# values, so it needs no registry access and does not require the fresh images
+# to have been pushed. A chart with no pinned digest fails OPEN, but an
+# unpublished version is only "nothing to assert" when this PR itself carries
+# the bump. When
 # origin/main's Chart.yaml claims the SAME unpublished version, main's publish
 # is either still in flight or has failed; that is the state a rebase-merge
 # version collision leaves behind (two PRs claimed the same version, the
@@ -22,12 +24,11 @@
 # fails CLOSED rather than let another unverifiable PR merge on top.
 #
 # Usage:
-#   HELM=/path/helm CRANE=/path/crane REPOSITORY=oci://ghcr.io/... \
+#   HELM=/path/helm REPOSITORY=oci://ghcr.io/... \
 #     check-missed-bump.sh <chart_name> <chart_version> <fresh_chart_tgz> <project_dir>
 #
 # Env:
 #   HELM                path to the helm binary (required)
-#   CRANE               path to the crane binary (required)
 #   REPOSITORY          OCI chart repository (required), e.g. oci://ghcr.io/jomcgi/homelab/charts
 #   MAIN_CHART_VERSION  the chart version origin/main's Chart.yaml claims
 #                       (optional; empty disables the fail-closed collision path)
@@ -41,37 +42,37 @@ CHART_TGZ="${3:?fresh chart .tgz required}"
 PROJECT_DIR="${4:?project_dir required}"
 
 HELM="${HELM:?HELM env required}"
-CRANE="${CRANE:?CRANE env required}"
 REPOSITORY="${REPOSITORY:?REPOSITORY env required}"
-
-# Resolve one repo:tag to its manifest digest, retrying to absorb ghcr
-# propagation lag / transient rate limits. A genuinely gone tag ends UNRESOLVED,
-# which the caller treats as "skip", not "fail".
-_crane_digest() {
-	local ref="$1" i d
-	for i in 1 2 3; do
-		if d=$("$CRANE" digest "$ref" 2>/dev/null) && [[ -n "$d" ]]; then
-			printf '%s' "$d"
-			return 0
-		fi
-		if [[ $i -lt 3 ]]; then sleep 3; fi
-	done
-	printf 'UNRESOLVED'
-}
 
 # Emit sorted "repo=digest" lines for each ghcr.io/jomcgi image pinned in a
 # chart. Args pass straight to `helm show values` (a .tgz path, or
-# "REPO/NAME --version X"). The pinned tag embeds a build timestamp so it
-# changes every build even for identical content; resolving it to the manifest
-# digest gives a content-stable identity to compare.
+# "REPO/NAME --version X").
+#
+# The digest is read straight out of the chart values, where helm_images_values
+# (bazel/helm/images.bzl) pins it next to repository and tag, and where the
+# templates read it: charts deploy `repository@digest`. It used to be obtained
+# by resolving the pinned `tag:` through `crane digest`, which was equivalent
+# but required the fresh build's images to ALREADY BE IN THE REGISTRY. That
+# coupled the guard to PR image pushes: with those gone (buildbuddy.yaml builds
+# images on PRs instead of pushing them), the fresh tag no longer exists in ghcr
+# and every lookup would have failed to UNRESOLVED, silently fail-opening the
+# guard on every PR. Reading the pinned digest needs no registry at all.
+#
+# A ghcr image whose values carry no `digest:` (a chart published before digest
+# pinning) yields UNRESOLVED, which the caller treats as "skip", not "fail".
 _image_digests() {
 	"$HELM" show values "$@" 2>/dev/null | awk '
-    /^[[:space:]]*repository:[[:space:]]*/ { repo=$2 }
-    /^[[:space:]]*tag:[[:space:]]*/ && repo!="" { print repo"\t"$2; repo="" }' |
-		while IFS="$(printf '\t')" read -r repo tag; do
+    function flush() {
+      if (repo != "") { print repo "\t" (digest == "" ? "UNRESOLVED" : digest) }
+      repo = ""; digest = ""
+    }
+    /^[[:space:]]*repository:[[:space:]]*/ { flush(); repo=$2 }
+    /^[[:space:]]*digest:[[:space:]]*/ && repo!="" { digest=$2 }
+    END { flush() }' |
+		while IFS="$(printf '\t')" read -r repo digest; do
 			case "$repo" in
 			ghcr.io/jomcgi/*)
-				printf '%s=%s\n' "$repo" "$(_crane_digest "${repo}:${tag}")"
+				printf '%s=%s\n' "$repo" "$digest"
 				;;
 			esac
 		done | sort
@@ -124,8 +125,9 @@ fi
 FRESH_DIGESTS=$(_image_digests "$CHART_TGZ") || FRESH_DIGESTS=""
 PUB_DIGESTS=$(_image_digests "${REPOSITORY}/${CHART_NAME}" --version "${CHART_VERSION}") || PUB_DIGESTS=""
 
-# Fail open on any unresolved or empty digest set: a registry hiccup must not
-# block a PR. The version-scoped detector on main is the backstop for these.
+# Fail open on any unresolved or empty digest set: a chart that predates digest
+# pinning must not wedge a PR. The version-scoped detector on main is the
+# backstop for these.
 if [[ "$FRESH_DIGESTS" == *UNRESOLVED* ]] || [[ "$PUB_DIGESTS" == *UNRESOLVED* ]]; then
 	echo "check-missed-bump: WARNING: could not resolve all image digests for ${CHART_NAME}; skipping (fail open)." >&2
 	exit 0
