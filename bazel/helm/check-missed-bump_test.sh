@@ -13,7 +13,8 @@
 #   STUB_PUB_DIGEST   digest pinned in the published chart's values
 #   STUB_FRESH_NO_DIGEST / STUB_PUB_NO_DIGEST
 #                     omit `digest:` from that side's values, as a chart
-#                     published before digest pinning would (forces UNRESOLVED)
+#                     published before digest pinning would
+#   STUB_TAG_ONLY_SIBLING add a second ghcr image pinned by floating tag only
 #   STUB_NO_IMAGES    if set, `helm show values` pins no images
 set -o errexit -o nounset -o pipefail
 
@@ -63,7 +64,10 @@ case "$sub" in
     fi
     printf 'image:\n  repository: ghcr.io/jomcgi/homelab/projects/foo/backend\n  tag: %s\n' "$tag"
     # A chart published before digest pinning emits repository+tag only.
-    [[ -n "$nodigest" ]] || printf '  digest: sha256:%s\n' "$digest" ;;
+    [[ -n "$nodigest" ]] || printf '  digest: sha256:%s\n' "$digest"
+    # A sibling image pinned by a floating tag with no digest (hf2oci-style).
+    [[ -z "${STUB_TAG_ONLY_SIBLING:-}" ]] ||
+      printf 'sidecar:\n  image:\n    repository: ghcr.io/jomcgi/homelab/bazel/tools/hf2oci\n    tag: main\n' ;;
   *) exit 0 ;;
 esac
 EOF
@@ -129,12 +133,25 @@ expect "unpublished passes" 0 "$rc" "not published yet"
 # FAIL OPEN. Never block a PR on a chart we cannot compare content-wise.
 rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
 	STUB_PUB_NO_DIGEST=1 STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
-expect "unpinned published chart fails open" 0 "$rc" "fail open"
+expect "unpinned published chart fails open" 0 "$rc" "nothing to check"
 
 # 4b. Same on the fresh side.
 rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
 	STUB_FRESH_NO_DIGEST=1 STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
-expect "unpinned fresh chart fails open" 0 "$rc" "fail open"
+expect "unpinned fresh chart fails open" 0 "$rc" "nothing to check"
+
+# 4d. A tag-only sibling (no digest) must NOT suppress the chart: the
+# digest-pinned image alongside it still has to catch drift. This is the
+# oci-model-cache-operator shape, and getting it wrong silently disables the
+# guard for every chart that carries one floating-tag image.
+rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
+	STUB_TAG_ONLY_SIBLING=1 STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
+expect "tag-only sibling still detects drift" 1 "$rc" "will NOT deploy"
+
+# 4e. ...and still passes when the pinned digests match.
+rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
+	STUB_TAG_ONLY_SIBLING=1 STUB_FRESH_DIGEST=same STUB_PUB_DIGEST=same)
+expect "tag-only sibling still passes on match" 0 "$rc" "digests match"
 
 # 4c. Identical digests behind DIFFERENT tags still pass: the tag is not the
 # comparison, and after the PR-push removal the fresh tag is not in ghcr at all.
