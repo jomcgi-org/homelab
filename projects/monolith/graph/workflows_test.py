@@ -26,8 +26,8 @@ def run(monkeypatch, turns):
     monkeypatch.setattr(
         workflows,
         "_queued_session",
-        lambda prompt, model, repo, branch: (
-            calls.append((prompt, model, repo, branch)) or next(sessions)
+        lambda key, prompt, model, repo, branch: (
+            calls.append((key, prompt, model, repo, branch)) or next(sessions)
         ),
     )
     return calls
@@ -92,7 +92,7 @@ def test_queue_receives_a_workflow_not_a_step(monkeypatch):
             return Handle()
 
     monkeypatch.setattr(workflows, "codex_queue", lambda: RecordingQueue())
-    workflows._queued_session("p", "luna", "jomcgi/homelab", "main")
+    workflows._queued_session("k-1", "p", "luna", "jomcgi/homelab", "main")
     assert enqueued == [workflows.start_session_workflow]
     assert enqueued[0] is not workflows.start_agent_session
 
@@ -119,5 +119,29 @@ def test_reviewer_has_no_lineage_argument(monkeypatch):
         },
     )
     workflow("task", "jomcgi/homelab", "main")
-    assert len(calls[1]) == 4
+    assert len(calls[1]) == 5
     assert all("lineage" not in str(value) for value in calls[1])
+
+
+def test_session_keys_are_deterministic_and_distinct(monkeypatch):
+    """Steps are at-least-once, so the session key is the idempotency key. A
+    retried step that minted a fresh uuid left one live agent session per
+    attempt, each holding a Codex slot."""
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": None, "result_text": "no", "cost_usd": 0},
+            102: {"commit_sha": "abc", "result_text": "done", "cost_usd": 0},
+            201: {"commit_sha": None, "result_text": "review", "cost_usd": 0},
+        },
+    )
+    workflow("task", "jomcgi/homelab", "main")
+    keys = [call[0] for call in calls]
+    # One key per node, stable across a re-run of the same workflow, and the
+    # reviewer never shares a key with an implementer attempt.
+    assert keys == [
+        workflows.session_key("implement-1"),
+        workflows.session_key("implement-2"),
+        workflows.session_key("review"),
+    ]
+    assert len(set(keys)) == 3

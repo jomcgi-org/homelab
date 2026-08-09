@@ -14,18 +14,36 @@ POLL_INTERVAL_SECONDS = 5
 
 
 @DBOS.workflow()
-def start_session_workflow(prompt: str, model: str, repo: str, branch: str) -> int:
+def start_session_workflow(
+    key: str, prompt: str, model: str, repo: str, branch: str
+) -> int:
     """Queue-able wrapper around the session-start step.
 
     DBOS queues enqueue WORKFLOWS, not steps, so the concurrency cap only
     applies if what we enqueue is a workflow. Enqueuing the step directly would
     not be gated by the queue at all.
     """
-    return start_agent_session(prompt, model, repo, branch)
+    return start_agent_session(key, prompt, model, repo, branch)
 
 
-def _queued_session(prompt: str, model: str, repo: str, branch: str) -> int:
-    handle = codex_queue().enqueue(start_session_workflow, prompt, model, repo, branch)
+def session_key(suffix: str) -> str:
+    """Deterministic idempotency key for one node of the current workflow.
+
+    Reading DBOS.workflow_id raises outside a workflow context, so this degrades
+    to a stable placeholder rather than exploding: the key only has to be
+    consistent across retries OF THE SAME RUN.
+    """
+    try:
+        workflow_id = DBOS.workflow_id
+    except Exception:  # noqa: BLE001 - no workflow context
+        workflow_id = None
+    return f"{workflow_id}-{suffix}"
+
+
+def _queued_session(key: str, prompt: str, model: str, repo: str, branch: str) -> int:
+    handle = codex_queue().enqueue(
+        start_session_workflow, key, prompt, model, repo, branch
+    )
     return handle.get_result()
 
 
@@ -65,6 +83,7 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
     while attempt < max_attempts:
         attempt += 1
         implementer_session_id = _queued_session(
+            session_key(f"implement-{attempt}"),
             implementer_prompt(task, previous_failure),
             config.implementer_model(),
             repo,
@@ -95,6 +114,7 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
     # read as instructions, so an inherited workspace would let the auditee
     # prepare its auditor's room.
     reviewer_session_id = _queued_session(
+        session_key("review"),
         reviewer_prompt(task, branch, commit_sha),
         config.reviewer_model(),
         repo,
