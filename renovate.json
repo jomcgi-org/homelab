@@ -16,6 +16,13 @@
   "prHourlyLimit": 2,
   "minimumReleaseAge": "3 days",
   "internalChecksFilter": "strict",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"],
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null,
+    "prCreation": "immediate"
+  },
   "enabledManagers": [
     "argocd",
     "bazel-module",
