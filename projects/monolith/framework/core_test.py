@@ -116,7 +116,10 @@ def test_private_tier_mounts_register_not_register_public():
     assert "/api/m/ping" in paths
     assert "/api/m/public-ping" not in paths
     assert "/healthz" in paths
-    assert "/api/health" not in paths  # private profile has no deep health
+    # The private tier serves the deep route too. It used to opt out, which
+    # made every private-tier register_health component dead code: the
+    # component composes and the endpoint that would run it does not exist.
+    assert "/api/health" in paths
 
 
 def test_public_tier_mounts_register_public_only():
