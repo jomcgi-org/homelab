@@ -1,9 +1,11 @@
 <script>
   import { onMount, tick } from "svelte";
   import { pushState } from "$app/navigation";
+  import { page } from "$app/stores";
   import { renderAgentMarkdown } from "./markdown.js";
   import {
     enterTranscript,
+    MOBILE_MEDIA_QUERY,
     MOBILE_VIEW_LIST,
     MOBILE_VIEW_TRANSCRIPT,
     returnToList,
@@ -411,7 +413,7 @@
       pushState("", { agentsMobileView: MOBILE_VIEW_TRANSCRIPT });
       mobileHistoryEntry = true;
       tick().then(() => {
-        if (isMobileViewport()) focusProgrammatically(titleEl);
+        if (isMobileViewport()) titleEl?.focus({ preventScroll: true });
       });
     }
   }
@@ -419,15 +421,8 @@
   function isMobileViewport() {
     return (
       typeof window !== "undefined" &&
-      window.matchMedia("(max-width: 760px)").matches
+      window.matchMedia(MOBILE_MEDIA_QUERY).matches
     );
-  }
-
-  function focusProgrammatically(element) {
-    if (!element) return;
-    element.classList.add("programmatic-focus");
-    element.focus({ preventScroll: true });
-    setTimeout(() => element.classList.remove("programmatic-focus"), 0);
   }
 
   function returnToSessionList() {
@@ -438,15 +433,15 @@
     }
     tick().then(() => {
       if (!isMobileViewport()) return;
-      focusProgrammatically(
-        document.getElementById(`agent-session-${String(selectedId)}`),
-      );
+      document
+        .getElementById(`agent-session-${String(selectedId)}`)
+        ?.focus({ preventScroll: true });
     });
   }
 
   function closeNewPanel() {
     showNewPanel = false;
-    tick().then(() => focusProgrammatically(newButtonEl));
+    tick().then(() => newButtonEl?.focus({ preventScroll: true }));
   }
 
   function openNewPanel() {
@@ -583,13 +578,15 @@
       selectedId = null;
       detail = null;
       await loadSessions();
+      returnToSessionList();
     } catch (error) {
       errorMessage = error.message;
     }
   }
 
   $effect(() => {
-    if (selectedId == null && sessions.length) selectSession(sessions[0]);
+    if (selectedId == null && sessions.length && !isMobileViewport())
+      selectSession(sessions[0]);
   });
 
   $effect(() => {
@@ -598,20 +595,27 @@
 
   onMount(() => {
     const handleKeydown = (event) => {
-      if (event.key === "Escape" && showNewPanel) {
+      if (event.key === "Escape" && !event.isComposing && showNewPanel) {
         event.preventDefault();
         closeNewPanel();
       }
     };
     const handlePopstate = () => {
-      if (mobileView === MOBILE_VIEW_TRANSCRIPT) {
+      const nextView = $page.state?.agentsMobileView;
+      if (nextView === MOBILE_VIEW_TRANSCRIPT) {
+        mobileHistoryEntry = true;
+        mobileView = enterTranscript({ view: mobileView }).view;
+        tick().then(() => {
+          if (isMobileViewport()) titleEl?.focus({ preventScroll: true });
+        });
+      } else {
         mobileHistoryEntry = false;
         mobileView = returnToList({ view: mobileView }).view;
         tick().then(() => {
           if (isMobileViewport()) {
-            focusProgrammatically(
-              document.getElementById(`agent-session-${String(selectedId)}`),
-            );
+            document
+              .getElementById(`agent-session-${String(selectedId)}`)
+              ?.focus({ preventScroll: true });
           }
         });
       }
@@ -802,14 +806,14 @@
   </aside>
 
   <section class="transcript" aria-label="Agent transcript">
+    <button
+      class="mobile-back"
+      type="button"
+      aria-label="Back to agent sessions"
+      onclick={returnToSessionList}>← back</button
+    >
     {#if selectedSession}
       <header class="transcript-head">
-        <button
-          class="mobile-back"
-          type="button"
-          aria-label="Back to agent sessions"
-          onclick={returnToSessionList}>← back</button
-        >
         <div class="head-main">
           <h1
             class="session-title"
@@ -1015,12 +1019,7 @@
       aria-label="Close new session panel"
       onclick={closeNewPanel}
     ></button>
-    <section
-      class="new-panel"
-      role="dialog"
-      aria-modal="true"
-      aria-label="New session"
-    >
+    <section class="new-panel" role="dialog" aria-label="New session">
       <div class="eyebrow">new session</div>
       <form
         onsubmit={(event) => {
@@ -1161,11 +1160,15 @@
   <label class="model-select-label">
     <span class="sr-only">Model</span>
     <select
+      class="mono"
       aria-label="Model"
       value={current}
       onchange={(event) => choose(event.currentTarget.value)}
     >
       <option value="">default</option>
+      {#if current && !MODELS.includes(current)}
+        <option value={current}>{current}</option>
+      {/if}
       {#each MODELS as model}<option value={model}>{model}</option>{/each}
     </select>
   </label>
@@ -1231,9 +1234,6 @@
   .steps summary:focus-visible {
     outline: 2px solid var(--info);
     outline-offset: 1px;
-  }
-  .programmatic-focus:focus {
-    outline: none;
   }
   .sidebar {
     min-height: 0;
@@ -1886,13 +1886,14 @@
       opacity: 0.35;
     }
   }
+  /* Matches MOBILE_MEDIA_QUERY in mobile-view.js */
   @media (max-width: 760px) {
     .console {
       grid-template-columns: 1fr;
     }
     .sidebar {
       border-right: 0;
-      border-bottom: 1px solid var(--line);
+      border-bottom: 0;
     }
     .console.mobile-transcript .sidebar {
       display: none;
@@ -1910,6 +1911,7 @@
     }
     .transcript-head {
       justify-content: flex-start;
+      flex-wrap: wrap;
     }
     .transcript-head .head-main {
       flex: 1;
@@ -1954,8 +1956,7 @@
     .new-button,
     .destroy-button,
     .quiet-button,
-    .send-button,
-    .chip {
+    .send-button {
       min-height: 44px;
     }
     .collapse-button {
@@ -1979,7 +1980,6 @@
       grid-template-columns: 1fr;
     }
     .sidebar-collapsed .sidebar {
-      max-height: none;
       border-bottom: 0;
     }
     .transcript-head,
