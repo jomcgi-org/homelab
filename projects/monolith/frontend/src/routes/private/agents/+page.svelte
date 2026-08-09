@@ -1,6 +1,13 @@
 <script>
-  import { tick } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { pushState } from "$app/navigation";
   import { renderAgentMarkdown } from "./markdown.js";
+  import {
+    enterTranscript,
+    MOBILE_VIEW_LIST,
+    MOBILE_VIEW_TRANSCRIPT,
+    returnToList,
+  } from "./mobile-view.js";
   import { statusClass, statusLabel, vmRunning, vmState } from "./status.js";
   import "./agents-theme.css";
 
@@ -11,6 +18,7 @@
   const ATTENTION_MS = 60 * 60 * 1000;
 
   let selectedId = $state(null);
+  let mobileView = $state(MOBILE_VIEW_LIST);
   let sidebarCollapsed = $state(false);
   if (typeof window !== "undefined") {
     try {
@@ -30,6 +38,10 @@
   let sending = $state(false);
   let creating = $state(false);
   let showNewPanel = $state(false);
+  let newButtonEl = $state(null);
+  let newPromptEl = $state(null);
+  let titleEl = $state(null);
+  let mobileHistoryEntry = false;
   let showAllHistory = $state(false);
   let repos = $state([]);
   let branches = $state([]);
@@ -394,6 +406,51 @@
     loadDetail(id, requestSequence);
     const session = sessions.find((item) => String(item.id) === String(id));
     composerModel = session?.model || "";
+    if (isMobileViewport() && mobileView === MOBILE_VIEW_LIST) {
+      mobileView = enterTranscript({ view: mobileView }).view;
+      pushState("", { agentsMobileView: MOBILE_VIEW_TRANSCRIPT });
+      mobileHistoryEntry = true;
+      tick().then(() => {
+        if (isMobileViewport()) focusProgrammatically(titleEl);
+      });
+    }
+  }
+
+  function isMobileViewport() {
+    return (
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 760px)").matches
+    );
+  }
+
+  function focusProgrammatically(element) {
+    if (!element) return;
+    element.classList.add("programmatic-focus");
+    element.focus({ preventScroll: true });
+    setTimeout(() => element.classList.remove("programmatic-focus"), 0);
+  }
+
+  function returnToSessionList() {
+    mobileView = returnToList({ view: mobileView }).view;
+    if (mobileHistoryEntry) {
+      mobileHistoryEntry = false;
+      history.back();
+    }
+    tick().then(() => {
+      if (!isMobileViewport()) return;
+      focusProgrammatically(
+        document.getElementById(`agent-session-${String(selectedId)}`),
+      );
+    });
+  }
+
+  function closeNewPanel() {
+    showNewPanel = false;
+    tick().then(() => focusProgrammatically(newButtonEl));
+  }
+
+  function openNewPanel() {
+    showNewPanel = true;
   }
 
   function toggleSidebar() {
@@ -504,7 +561,7 @@
       if (!response.ok || body.accepted === false)
         throw new Error(body.error || "Session was not created");
       creating = false;
-      showNewPanel = false;
+      closeNewPanel();
       newSession = { prompt: "", model: "", repo: "", branch: "" };
       branches = [];
       await loadSessions();
@@ -533,6 +590,38 @@
 
   $effect(() => {
     if (selectedId == null && sessions.length) selectSession(sessions[0]);
+  });
+
+  $effect(() => {
+    if (showNewPanel) tick().then(() => newPromptEl?.focus());
+  });
+
+  onMount(() => {
+    const handleKeydown = (event) => {
+      if (event.key === "Escape" && showNewPanel) {
+        event.preventDefault();
+        closeNewPanel();
+      }
+    };
+    const handlePopstate = () => {
+      if (mobileView === MOBILE_VIEW_TRANSCRIPT) {
+        mobileHistoryEntry = false;
+        mobileView = returnToList({ view: mobileView }).view;
+        tick().then(() => {
+          if (isMobileViewport()) {
+            focusProgrammatically(
+              document.getElementById(`agent-session-${String(selectedId)}`),
+            );
+          }
+        });
+      }
+    };
+    window.addEventListener("keydown", handleKeydown);
+    window.addEventListener("popstate", handlePopstate);
+    return () => {
+      window.removeEventListener("keydown", handleKeydown);
+      window.removeEventListener("popstate", handlePopstate);
+    };
   });
 
   $effect(() => {
@@ -622,7 +711,11 @@
 
 <svelte:head><title>Agents</title></svelte:head>
 
-<main class:sidebar-collapsed={sidebarCollapsed} class="console">
+<main
+  class:sidebar-collapsed={sidebarCollapsed}
+  class:mobile-transcript={mobileView === MOBILE_VIEW_TRANSCRIPT}
+  class="console"
+>
   <aside class="sidebar" aria-label="Agent sessions">
     <div class="side-head">
       <div class="side-head-left">
@@ -641,7 +734,9 @@
       <button
         class="new-button"
         type="button"
-        onclick={() => (showNewPanel = !showNewPanel)}>+ new</button
+        bind:this={newButtonEl}
+        onclick={() => (showNewPanel ? closeNewPanel() : openNewPanel())}
+        >+ new</button
       >
     </div>
 
@@ -709,8 +804,21 @@
   <section class="transcript" aria-label="Agent transcript">
     {#if selectedSession}
       <header class="transcript-head">
+        <button
+          class="mobile-back"
+          type="button"
+          aria-label="Back to agent sessions"
+          onclick={returnToSessionList}>← back</button
+        >
         <div class="head-main">
-          <h1 class="session-title" title={headerTitle}>{headerTitle}</h1>
+          <h1
+            class="session-title"
+            title={headerTitle}
+            tabindex="-1"
+            bind:this={titleEl}
+          >
+            {headerTitle}
+          </h1>
           <div class="session-context mono">
             {formatRepoContext(selectedSession)} · {selectedSession.model ||
               "luna"} · {shortId(selectedSession)}
@@ -901,7 +1009,18 @@
   </section>
 
   {#if showNewPanel}
-    <section class="new-panel">
+    <button
+      class="new-panel-scrim"
+      type="button"
+      aria-label="Close new session panel"
+      onclick={closeNewPanel}
+    ></button>
+    <section
+      class="new-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-label="New session"
+    >
       <div class="eyebrow">new session</div>
       <form
         onsubmit={(event) => {
@@ -912,6 +1031,7 @@
         <label
           >prompt<textarea
             bind:value={newSession.prompt}
+            bind:this={newPromptEl}
             rows="7"
             placeholder="what should the agent do?"
             onkeydown={(e) => {
@@ -973,10 +1093,8 @@
           </select>
         </label>
         <div class="new-actions">
-          <button
-            type="button"
-            class="quiet-button"
-            onclick={() => (showNewPanel = false)}>cancel</button
+          <button type="button" class="quiet-button" onclick={closeNewPanel}
+            >cancel</button
           ><button
             class="send-button"
             type="submit"
@@ -997,6 +1115,7 @@
   <button
     class:chosen={String(selectedId) === String(session.id)}
     class="session-row"
+    id={`agent-session-${String(session.id)}`}
     type="button"
     aria-label={`${sessionTitle(session)}: ${statusLabel(session)}`}
     onclick={() => selectSession(session)}
@@ -1039,6 +1158,17 @@
       >
     {/each}
   </div>
+  <label class="model-select-label">
+    <span class="sr-only">Model</span>
+    <select
+      aria-label="Model"
+      value={current}
+      onchange={(event) => choose(event.currentTarget.value)}
+    >
+      <option value="">default</option>
+      {#each MODELS as model}<option value={model}>{model}</option>{/each}
+    </select>
+  </label>
 {/snippet}
 
 <style>
@@ -1057,7 +1187,7 @@
     --size-body-mono: 12.5px;
     --size-body: 14px;
     color-scheme: light;
-    height: 100vh;
+    height: 100dvh;
     display: grid;
     grid-template-columns: 300px minmax(0, 1fr);
     background: var(--page-bg);
@@ -1101,6 +1231,9 @@
   .steps summary:focus-visible {
     outline: 2px solid var(--info);
     outline-offset: 1px;
+  }
+  .programmatic-focus:focus {
+    outline: none;
   }
   .sidebar {
     min-height: 0;
@@ -1625,12 +1758,17 @@
     top: 0;
     right: 0;
     width: min(360px, 100vw);
-    height: 100vh;
+    height: 100dvh;
     overflow: auto;
     background: var(--panel-bg);
     border-left: 1px solid var(--line-strong);
     padding: 20px;
     box-shadow: -2px 0 12px rgba(0, 0, 0, 0.07);
+  }
+  .new-panel-scrim,
+  .mobile-back,
+  .model-select-label {
+    display: none;
   }
   .new-panel form {
     display: grid;
@@ -1753,9 +1891,89 @@
       grid-template-columns: 1fr;
     }
     .sidebar {
-      max-height: 42vh;
       border-right: 0;
       border-bottom: 1px solid var(--line);
+    }
+    .console.mobile-transcript .sidebar {
+      display: none;
+    }
+    .console:not(.mobile-transcript) .transcript {
+      display: none;
+    }
+    .mobile-back {
+      display: block;
+      min-height: 44px;
+      padding: 0 8px;
+      border: 0;
+      color: var(--info);
+      background: transparent;
+    }
+    .transcript-head {
+      justify-content: flex-start;
+    }
+    .transcript-head .head-main {
+      flex: 1;
+    }
+    .new-panel-scrim {
+      display: block;
+      position: fixed;
+      z-index: 2;
+      inset: 0;
+      width: 100%;
+      min-height: 100%;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: var(--scrim-bg);
+    }
+    .new-panel {
+      z-index: 3;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      top: auto;
+      width: 100%;
+      height: auto;
+      max-height: 85dvh;
+      overflow: auto;
+      border-left: 0;
+      border-top: 1px solid var(--line-strong);
+      border-radius: 10px 10px 0 0;
+    }
+    .model-chips {
+      display: none;
+    }
+    .model-select-label {
+      display: block;
+      flex: 1;
+    }
+    .model-select-label select {
+      min-height: 44px;
+    }
+    .collapse-button,
+    .new-button,
+    .destroy-button,
+    .quiet-button,
+    .send-button,
+    .chip {
+      min-height: 44px;
+    }
+    .collapse-button {
+      min-width: 44px;
+    }
+    .steps summary {
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+    }
+    .session-row {
+      min-height: 56px;
+    }
+    .search-label input,
+    .new-panel select,
+    .history-toggle,
+    .search-result {
+      min-height: 44px;
     }
     .sidebar-collapsed {
       grid-template-columns: 1fr;
