@@ -79,6 +79,15 @@ secret:
 httpRoute:
   enabled: true
   hostname: mcp.jomcgi.dev
+  # One central MCP endpoint at mcp.jomcgi.dev/mcp, authenticated by authentik
+  # and filtered per identity by Context Forge, rather than a virtual server
+  # (and therefore a UUID) per trust tier. A Cloudflare Access application with
+  # a Bypass policy covers /mcp and /.well-known/oauth-protected-resource; the
+  # hostname-wide application still guards /admin, /tools and /gateways, so the
+  # control plane keeps its edge layer while the data plane uses OAuth.
+  rootMcp:
+    enabled: true
+    authorizationServer: https://auth.jomcgi.dev/application/o/mcp-friends/
 
 # friends.jomcgi.dev reaches exactly one virtual server, "friends-empty",
 # which is deliberately empty: tools/list returns [] so the hostname exposes
