@@ -19,6 +19,12 @@ sh_test(
     data = [":check-missed-bump.sh"],
 )
 
+sh_test(
+    name = "chart_version_test",
+    srcs = ["chart-version_test.sh"],
+    data = [":chart-version.sh"],
+)
+
 sh_binary(
     name = "validate_manifests",
     srcs = ["ci-validate-manifests.sh"],

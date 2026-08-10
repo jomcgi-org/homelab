@@ -68,7 +68,27 @@ while IFS= read -r dir; do
 done <<<"$DEP_DIRS"
 
 # --- Find conventional commits since last version ---
+#
+# The serial component is derived from the COMMIT, never from "read the current
+# version and add one". Publishing moved post-merge (ADR platform/009 decision
+# 1), and BuildBuddy exempts the default branch from superseded-run
+# cancellation, so two merges in quick succession run two CONCURRENT publishes.
+# Both read the same Chart.yaml, so a +1 scheme makes both compute the SAME next
+# version: the first publishes it, and the second then no-ops against the
+# idempotent registry check, so its images ship under no version at all. That is
+# the silent non-deploy ADR platform/011 exists to prevent.
+#
+# Counting qualifying commits instead makes the version a function of HEAD. A
+# later commit necessarily contains the earlier one, so its count is strictly
+# greater and the two cannot collide however the jobs interleave.
+#
+# Commits are walked OLDEST FIRST (--reverse) because the minor/major boundary
+# is positional: after a feat, the patch component counts commits AFTER that
+# feat, so the boundary index has to be known as the walk proceeds.
 BUMP="none"
+COMMIT_COUNT=0
+MINOR_BOUNDARY=-1 # index of the first commit to force minor-or-higher
+MAJOR_BOUNDARY=-1 # index of the first commit to force major
 
 while IFS= read -r subject; do
 	[[ -z "$subject" ]] && continue
@@ -78,6 +98,9 @@ while IFS= read -r subject; do
 	*"ci-format-bot"* | *"chart-version-bot"*) continue ;;
 	esac
 
+	INDEX="$COMMIT_COUNT"
+	COMMIT_COUNT=$((COMMIT_COUNT + 1))
+
 	# Check for breaking change (! before colon)
 	# Pre-1.0: breaking changes bump minor (semver allows breaking changes in 0.x)
 	# Post-1.0: breaking changes bump major
@@ -85,24 +108,28 @@ while IFS= read -r subject; do
 	if [[ "$subject" =~ $BREAKING_RE ]]; then
 		IFS='.' read -r CUR_MAJOR _ _ <<<"$CURRENT_VERSION"
 		if [[ "$CUR_MAJOR" -ge 1 ]]; then
+			[[ "$MAJOR_BOUNDARY" -lt 0 ]] && MAJOR_BOUNDARY="$INDEX"
 			BUMP="major"
 		else
-			BUMP="minor"
+			[[ "$MINOR_BOUNDARY" -lt 0 ]] && MINOR_BOUNDARY="$INDEX"
+			[[ "$BUMP" != "major" ]] && BUMP="minor"
 		fi
-		break # Can't go higher
+		# No `break`: the walk must reach HEAD to count every qualifying commit.
+		continue
 	fi
 
 	# Check commit type
 	TYPE=$(echo "$subject" | sed -E -n 's/^([a-z]+)(\([^)]*\))?:.*/\1/p')
 	case "$TYPE" in
 	feat)
+		[[ "$MINOR_BOUNDARY" -lt 0 ]] && MINOR_BOUNDARY="$INDEX"
 		[[ "$BUMP" != "major" ]] && BUMP="minor"
 		;;
 	fix | perf | refactor | style | docs | test | ci | build | chore | revert)
 		[[ "$BUMP" == "none" ]] && BUMP="patch"
 		;;
 	esac
-done < <(git log --format='%an|||%s' "${VERSION_COMMIT}..HEAD" -- "${GIT_PATHS[@]}" 2>/dev/null |
+done < <(git log --reverse --format='%an|||%s' "${VERSION_COMMIT}..HEAD" -- "${GIT_PATHS[@]}" 2>/dev/null |
 	grep -v '^\(ci-format-bot\|chart-version-bot\)|||' |
 	sed 's/^[^|]*|||//')
 
@@ -113,20 +140,23 @@ if [[ "$BUMP" == "none" ]]; then
 	exit 0
 fi
 
+# The serial is the number of qualifying commits AFTER the boundary. The last
+# commit in the range is the boundary itself when nothing followed it, which is
+# why this is (count - 1 - boundary) and not (count - boundary).
 IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT_VERSION"
 case "$BUMP" in
 major)
 	MAJOR=$((MAJOR + 1))
 	MINOR=0
-	PATCH=0
+	PATCH=$((COMMIT_COUNT - 1 - MAJOR_BOUNDARY))
 	;;
 minor)
 	MINOR=$((MINOR + 1))
-	PATCH=0
+	PATCH=$((COMMIT_COUNT - 1 - MINOR_BOUNDARY))
 	;;
-patch) PATCH=$((PATCH + 1)) ;;
+patch) PATCH=$((PATCH + COMMIT_COUNT)) ;;
 esac
 
 NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-echo >&2 "INFO: Bumping ${CURRENT_VERSION} -> ${NEW_VERSION} (${BUMP})"
+echo >&2 "INFO: Bumping ${CURRENT_VERSION} -> ${NEW_VERSION} (${BUMP}, ${COMMIT_COUNT} commit(s))"
 echo "$NEW_VERSION"
