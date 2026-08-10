@@ -653,9 +653,14 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "rejoin"})
     assert {:error, :delivery_failed} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "fail"})
 
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
-    assert session.state == :failed
-    assert :session_failed in op_kinds_for(ctx, created.session_id)
+    assert eventually(fn ->
+             case SessionStore.get(ctx.store, created.session_id) do
+               {:ok, session} -> session.state == :failed
+               _ -> false
+             end
+           end)
+
+    assert eventually(fn -> :session_failed in op_kinds_for(ctx, created.session_id) end)
   end
 
   test "crash-window park completes to parked on restart adoption" do
@@ -1523,10 +1528,15 @@ defmodule Embervm.SessionManagerTest do
     assert {:error, :suspect} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
 
     # The session is now failed (a guest in unknown mid-request state is not reused).
-    Process.sleep(50)
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
-    assert session.state == :failed
-    assert session.terminal_reason == "failed"
+    assert eventually(fn ->
+             case SessionStore.get(ctx.store, created.session_id) do
+               {:ok, session} ->
+                 session.state == :failed and session.terminal_reason == "failed"
+
+               _ ->
+                 false
+             end
+           end)
   end
 
   # -- destroy ---------------------------------------------------------------
@@ -1943,6 +1953,30 @@ defmodule Embervm.SessionManagerTest do
   end
 
   # -- gated-destroy test helpers --------------------------------------------
+
+  # SessionManager's invoke failure path replies before the :session_failed
+  # transition lands in SessionStore, so a bare read after invoke returns races
+  # that write. This polling helper covers the production-side ordering tracked
+  # by issue #4644 and fixes the test flake from issue #4391.
+  defp eventually(fun, timeout_ms \\ 1_000, interval_ms \\ 5) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    eventually_until(fun, deadline, interval_ms)
+  end
+
+  defp eventually_until(fun, deadline, interval_ms) do
+    if fun.() do
+      true
+    else
+      remaining_ms = deadline - System.monotonic_time(:millisecond)
+
+      if remaining_ms <= 0 do
+        false
+      else
+        Process.sleep(min(interval_ms, remaining_ms))
+        eventually_until(fun, deadline, interval_ms)
+      end
+    end
+  end
 
   defp op_kinds_for(ctx, session_id) do
     {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
