@@ -516,7 +516,7 @@ imgproxy:
     maxUnavailable: 1
   image:
     repository: darthsim/imgproxy
-    tag: v3.25.0
+    tag: v3.25.0@sha256:617e4355d5d0ec6255fdb0bae55a106703b32bee7309e257e280647b85b0bda9
     pullPolicy: IfNotPresent
   containerPort: 8080
   portName: http

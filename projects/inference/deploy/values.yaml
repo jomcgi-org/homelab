@@ -300,7 +300,7 @@ embeddings:
   enabled: true
   image:
     repository: ghcr.io/ggml-org/llama.cpp
-    tag: "server-cuda-b8643"
+    tag: "server-cuda-b8643@sha256:ee54620034076d53fee9cd6acf8483902becd3d66acf77acc6ecfe5eefddaecb"
     pullPolicy: IfNotPresent
   modelVolume:
     enabled: true
