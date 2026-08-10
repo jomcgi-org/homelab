@@ -11,29 +11,32 @@
  * through size, never through washout (see .impeccable.md).
  */
 .console {
-  --page-bg: #f4f3f0; /* chrome: sidebar, new-session drawer */
-  --panel-bg: #ffffff; /* working surfaces: transcript, inputs */
-  --text: #1b1a18;
-  --text-soft: #3a3835; /* response body */
-  --muted: #63605a; /* meta lines; 5.9:1 on white, AA for body text */
-  --line: #e3e1dc; /* hairline dividers */
-  --line-strong: #c7c3bb; /* control borders */
-  --hover: #edebe6;
-
-  --ink: #22211e; /* solid buttons + selected model chips */
+  --page-bg: #eef0f2;
+  --panel-bg: #ffffff;
+  --text: #14171a;
+  --text-soft: #3d434a;
+  --muted: #5f6971;
+  --line: #dfe3e6;
+  --line-strong: #c3c9ce;
+  --hover: #e6e9eb;
+  --ink: #1c2024;
   --ink-text: #ffffff;
-
-  --ok: #2e6b41; /* running / working; 5.6:1 on white */
-  --ok-soft: #e7f0e9;
-  --attn: #8f6212; /* warn; text-safe amber */
-  --attn-soft: #f6eedd;
-  --info: #33608c; /* needs input + focus ring */
-  --info-soft: #e8eff7;
-  --err: #9d3a30;
-  --err-bg: #faf1ef;
-  --err-line: #e4c1bc;
-
-  --code-bg: #f2f1ee; /* inline code + fenced blocks in rendered markdown */
-  --dot-idle: #c2beb6; /* history sessions carry no status color */
-  --scrim-bg: rgba(27, 26, 24, 0.45); /* mobile new-session sheet scrim */
+  --ok: #0a7c3c;
+  --ok-soft: #dcf2e5;
+  --attn: #b25e00;
+  --attn-soft: #fdeed8;
+  --info: #1e5fc4;
+  --info-soft: #e3edfc;
+  --err: #c62f22;
+  --err-bg: #fdeae7;
+  --err-line: #f0b9b1;
+  --code-bg: #eef0f2;
+  --dot-idle: #c3c9ce;
+  --font-ui:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --size-meta: 11.5px;
+  --size-body-mono: 12.5px;
+  --size-body: 14px;
+  --scrim-bg: rgba(20, 23, 26, 0.45);
 }
