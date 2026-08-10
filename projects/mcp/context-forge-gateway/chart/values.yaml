@@ -220,6 +220,16 @@ previewAuth:
   clientID: preview-friends
   # k8s Secret synced from 1Password, holding key `client-secret`.
   clientSecretName: preview-oidc-client
+  # Groups permitted to use a token here, matched against the `groups` claim
+  # rather than the projected header, because a claim inside a verified
+  # signature cannot be forged by a caller. Empty would render an invalid
+  # policy (values requires at least one entry), which fails closed at
+  # admission rather than opening the route.
+  #
+  # These are authentik group NAMES. Renaming a group there stops matching
+  # here, and the symptom is a 403 after a fully successful login.
+  allowedGroups:
+    - homelab-admin
   # This host only. The apex would attach the session cookies to every other
   # tier including the public site. Widen only when a second preview host
   # exists, and note widening is the safe direction while narrowing is not.

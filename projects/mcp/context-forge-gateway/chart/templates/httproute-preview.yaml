@@ -218,4 +218,50 @@ spec:
           - claim: email
             header: X-Auth-Email
         recomputeRoute: true
+  # Authorization decides on the CLAIM, not on the header projected above.
+  #
+  # The distinction matters and is the whole point of this block. A header can
+  # be sent by a caller; a claim is carried inside a signature Envoy just
+  # verified, so it cannot be forged at all. The listener strip in
+  # projects/platform/cloudflare-gateway makes X-Auth-Email safe to READ, but
+  # "safe to read given a separate policy elsewhere" is a weaker property than
+  # "unforgeable by construction". Enforcement uses the stronger one, and the
+  # header stays for what it is actually good at: telling a page who is looking
+  # at it.
+  #
+  # defaultAction Deny means a token that validates but carries no matching
+  # group is rejected, rather than falling through to whatever the route would
+  # otherwise serve. That is what makes this a second, independent gate rather
+  # than a restatement of authentik's own application policy binding: authentik
+  # decides who may obtain a token, this decides who may use one here, and a
+  # misconfiguration on either side fails closed on its own.
+  #
+  # `groups` is an ARRAY of group NAMES (not ids) from authentik's default
+  # profile scope mapping, which is why valueType is StringArray. Renaming a
+  # group in authentik silently stops matching here, and the symptom is a 403
+  # after a completely successful login.
+  #
+  # THIS SHAPE IS THE PROTOTYPE FOR PER-PREVIEW AUTHORIZATION. `values` is a
+  # static list, so a per-preview rule cannot be expressed at this API level:
+  # it would need one SecurityPolicy per live preview, which is a
+  # per-invocation Kubernetes object and breaks EmberVM invariant 8. The
+  # EmberVM control plane is already the sole xDS writer, so it can publish
+  # this same rule shape per preview vhost with that preview's subject as the
+  # static value: static per vhost, dynamic across vhosts, no Kubernetes object
+  # per preview. Proving the mechanism here is what makes that safe to build.
+  authorization:
+    defaultAction: Deny
+    rules:
+      - name: allow-preview-groups
+        action: Allow
+        principal:
+          jwt:
+            provider: authentik
+            claims:
+              - name: groups
+                valueType: StringArray
+                values:
+                  {{- range .Values.previewAuth.allowedGroups }}
+                  - {{ . | quote }}
+                  {{- end }}
 {{- end }}
