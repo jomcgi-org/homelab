@@ -8,6 +8,7 @@
     groupSessions,
     groupSummary,
     isGroupExpanded as groupIsExpanded,
+    runRowModel,
     shortWorkflowId,
   } from "./grouping.js";
   import {
@@ -22,6 +23,9 @@
   import "./run-view.css";
   import RunView from "./RunView.svelte";
   import MasterView from "./MasterView.svelte";
+  import StateIcon from "./StateIcon.svelte";
+  import { nodeIconKey, nodeStateClass } from "./dag.js";
+  import { fmtCost } from "./run-format.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
 
   let { data } = $props();
@@ -1499,14 +1503,29 @@
 {/snippet}
 
 {#snippet sessionGroup(entry, active)}
+  {@const run = runRowModel(entry, runs)}
   <div class="session-group">
     <button
       class="group-header group-main"
       type="button"
+      title={entry.workflowId}
       onclick={() => selectRun(entry.workflowId)}
     >
-      <span class="group-id mono">{shortWorkflowId(entry.workflowId)}</span>
-      <span class="group-summary">{groupSummary(entry.counts)}</span>
+      {#if run}
+        <span class="ic-strip run-shape-strip" aria-hidden="true">
+          {#each run.shape ?? [] as node (node.key)}
+            <StateIcon icon={nodeIconKey(node)} class={nodeStateClass(node)} />
+          {/each}
+        </span>
+        <span class="group-run-title">{firstLine(run.title)}</span>
+        <span class="group-run-meta mono">
+          {P.stateWords[run.state] || run.state}{#if fmtCost(run.cost_usd)}
+            {P.punct.dot} {fmtCost(run.cost_usd)}{/if}
+        </span>
+      {:else}
+        <span class="group-id mono">{shortWorkflowId(entry.workflowId)}</span>
+        <span class="group-summary">{groupSummary(entry.counts)}</span>
+      {/if}
     </button>
     <button
       class="group-header group-chevron"
@@ -1791,6 +1810,27 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .run-shape-strip {
+    width: auto;
+    height: 1.05em;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    overflow: hidden;
+  }
+  .group-run-title {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .group-run-meta {
+    flex: 0 0 auto;
+    color: var(--muted);
+    text-align: right;
   }
   .group-id {
     flex: 0 0 auto;

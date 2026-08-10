@@ -31,10 +31,7 @@ export function groupSessions(sessions) {
 
     const key = String(workflowId);
     const members = groups.get(key);
-    if (members.length === 1 || emittedGroups.has(key)) {
-      if (members.length === 1) entries.push({ kind: "session", session });
-      continue;
-    }
+    if (emittedGroups.has(key)) continue;
 
     emittedGroups.add(key);
     const counts = {};
@@ -56,6 +53,19 @@ export function groupSummary(counts) {
   return SUMMARY_ORDER.filter((status) => counts?.[status] > 0)
     .map((status) => `${counts[status]} ${status}`)
     .join(" · ");
+}
+
+export function runRowModel(entry, runs) {
+  const run = (runs ?? []).find(
+    (candidate) => String(candidate?.workflow_id) === String(entry?.workflowId),
+  );
+  if (!run) return null;
+  return {
+    title: run.title,
+    state: run.state,
+    cost_usd: run.cost_usd,
+    shape: run.shape,
+  };
 }
 
 // Workflow ids are time ordered (a ULID's leading characters are its

@@ -3,6 +3,7 @@ import {
   groupSessions,
   groupSummary,
   isGroupExpanded,
+  runRowModel,
   shortWorkflowId,
 } from "./grouping.js";
 
@@ -38,10 +39,17 @@ describe("groupSessions", () => {
     ]);
   });
 
-  it("keeps a workflow with one session flat", () => {
+  it("groups a workflow with one session", () => {
     const session = { id: "one", workflow_id: 42 };
 
-    expect(groupSessions([session])).toEqual([{ kind: "session", session }]);
+    expect(groupSessions([session])).toEqual([
+      {
+        kind: "group",
+        workflowId: "42",
+        sessions: [session],
+        counts: { completed: 1 },
+      },
+    ]);
   });
 
   it("groups shared workflows at their first member position", () => {
@@ -80,6 +88,56 @@ describe("groupSummary", () => {
     expect(
       groupSummary({ completed: 1, running: 3, warn: 0, working: 0 }),
     ).toBe("3 running · 1 completed");
+  });
+});
+
+describe("runRowModel", () => {
+  const entry = { kind: "group", workflowId: "wf-1" };
+
+  it("joins a matching master run", () => {
+    const shape = [{ key: "plan", kind: "task", state: "running" }];
+    expect(
+      runRowModel(entry, [
+        {
+          workflow_id: "wf-1",
+          title: "Ship the fix",
+          state: "running",
+          cost_usd: 1.25,
+          shape,
+        },
+      ]),
+    ).toEqual({
+      title: "Ship the fix",
+      state: "running",
+      cost_usd: 1.25,
+      shape,
+    });
+  });
+
+  it("returns null when the workflow is not in the master list", () => {
+    expect(runRowModel(entry, [{ workflow_id: "other" }])).toBeNull();
+  });
+
+  it("returns null for an empty master list", () => {
+    expect(runRowModel(entry, [])).toBeNull();
+  });
+
+  it("keeps an absent shape absent", () => {
+    expect(
+      runRowModel(entry, [
+        {
+          workflow_id: "wf-1",
+          title: "Shape pending",
+          state: "queued",
+          cost_usd: 0,
+        },
+      ]),
+    ).toEqual({
+      title: "Shape pending",
+      state: "queued",
+      cost_usd: 0,
+      shape: undefined,
+    });
   });
 });
 
