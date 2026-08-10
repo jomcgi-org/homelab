@@ -9,6 +9,13 @@ export async function POST({ params, request }) {
         headers: {
           "Content-Type":
             request.headers.get("content-type") || "application/json",
+          ...(request.headers.get("Cf-Access-Authenticated-User-Email")
+            ? {
+                "Cf-Access-Authenticated-User-Email": request.headers.get(
+                  "Cf-Access-Authenticated-User-Email",
+                ),
+              }
+            : {}),
         },
         body: await request.text(),
         signal: AbortSignal.timeout(10000),
