@@ -66,6 +66,21 @@ def test_prompt_builders():
     )
 
 
+def test_implementer_prompt_contains_rationale_trailer_instruction():
+    prompt = implementer_prompt("t", "b", None)
+    assert "RATIONALE" in prompt
+    assert "- deviation:" in prompt
+
+
+def test_implementer_retry_appends_previous_failure_after_rationale():
+    prompt = implementer_prompt("t", "b", "x")
+    assert prompt.index("RATIONALE") < prompt.index("Previous attempt failed")
+
+
+def test_reviewer_prompt_does_not_contain_rationale_trailer_instruction():
+    assert "RATIONALE" not in reviewer_prompt("t", "b", "sha")
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
