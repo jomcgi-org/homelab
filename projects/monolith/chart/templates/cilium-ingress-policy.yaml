@@ -1,0 +1,123 @@
+{{- /*
+Allowlist ingress to the monolith app pod, so an in-cluster workload cannot
+reach the API and forge the X-Auth-Email identity header.
+
+Why ingress: here and not egressDeny. The sibling cilium-policy.yaml
+deliberately uses egressDeny because it denies only what it names and so
+cannot cause an outage by omission. This file makes the opposite trade on
+purpose: ingress: makes the selected endpoint default-deny for ALL other
+ingress, which is the only shape that actually closes header forgery from an
+arbitrary pod. That is precisely why it is gated default-false and why the
+allowlist below is exhaustive rather than illustrative. A caller omitted here
+fails as a silent dial timeout, not a readable deny (see PR #4294).
+
+The selector picks one pod carrying three containers. The monolith pod runs
+backend (containerPort 8000, named api), progress-ingest (8091, named
+progress) and frontend (3000, named http). One pod is one Cilium endpoint, so
+an ingress rule default-denies all three ports at once. That is why a policy
+about the API must also allowlist 3000 and 8091.
+
+Service ports and container ports coincide here (3000, 8000, 8091), but the
+rule is written against the pod ports on purpose. Cilium enforces policy after
+service DNAT, so a rule naming a service port that differed from its
+targetPort would silently fail to match.
+
+fromEntities: [host, health] is mandatory, not optional. kubelet probes
+originate from the node. Once any ingress rule selects the endpoint it becomes
+default-deny and the pod never goes Ready without this. The backend has a
+readiness probe on api every 5s and liveness every 10s; progress-ingest has
+liveness on progress every 20s.
+
+Provenance of each allowlist entry:
+  - envoy-gateway-system to 3000 AND 8000: the monolith-private HTTPRoute has
+    backendRefs to both monolith:3000 and monolith:8000, and monolith-github-webhook
+    routes to monolith:8000. The 8000 entry is easy to miss because the private
+    console reaches the backend over API_BASE=http://localhost:8000 (same pod,
+    so it never crosses a Cilium boundary) and short Hubble windows therefore
+    show no gateway traffic to 8000 at all.
+  - mcp to 8000: Context Forge federates to the monolith API. Observed live.
+  - monolith-workflows to 8000: Argo Workflows POST to MONOLITH_INTERNAL_URL
+    (http://monolith.monolith.svc.cluster.local:8000), set in chart/values.yaml.
+    These are periodic and short-lived, so they do not appear in a short Hubble
+    window; they come from config, not observation.
+  - monolith component: whatsapp to 8000: the whatsapp gateway posts to
+    whatsapp.monolithInboundUrl, which is .../8000/internal/whatsapp/inbound.
+    Selected by pod label rather than by opening the whole namespace.
+  - embervm to 8091: the guest egress-proxy sidecar in the noded brick pods
+    forwards guest progress to /ingest/progress.
+
+What this does NOT close, and what was already closed. EmberVM session guests
+were the originally suspected forger and they are not one: a task/session claim
+boots with no NIC at all (projects/embervm/noded/fcvm/driver/driver.go:971,
+vsock only), and their single channel is the egress proxy, which runs
+internal.default: deny with a two-entry allowlist that deliberately excludes
+port 8000. This policy is about any OTHER in-cluster workload. Also note that
+as of today no handler authorizes on X-Auth-Email: the only consumer is
+agent_sessions/router.py, which records it as the triggered_by attribution
+column. So this is insurance taken out before the preview authorization work
+starts keying on that header, not a fix for a live privilege escalation.
+
+Before flipping the gate, confirm the allowlist against live traffic with
+`hubble observe --to-namespace monolith --last 500`, remembering that periodic
+callers (Argo workflows, the hourly jobs) will not show up in a short window.
+*/}}
+{{- if .Values.ciliumPolicy.ingress.enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-api-ingress
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Allowlist ingress to the monolith app pod so an in-cluster workload cannot
+    reach the API and forge the X-Auth-Email identity header.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: monolith
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: app
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: envoy-gateway-system
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: mcp
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monolith-workflows
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: monolith
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: whatsapp
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: embervm
+      toPorts:
+        - ports:
+            - port: "8091"
+              protocol: TCP
+    - fromEntities:
+        - host
+        - health
+{{- end }}
