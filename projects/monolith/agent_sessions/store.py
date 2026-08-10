@@ -57,6 +57,12 @@ def get_session_by_local_id(session: Session, local_id: str) -> AgentSession | N
     ).first()
 
 
+def sessions_for_workflow(session: Session, workflow_id: str) -> list[AgentSession]:
+    return session.exec(
+        select(AgentSession).where(AgentSession.workflow_id == workflow_id)
+    ).all()
+
+
 def get_session_by_discord_thread(
     session: Session, thread_id: str
 ) -> AgentSession | None:

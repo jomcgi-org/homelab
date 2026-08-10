@@ -10,13 +10,16 @@ from sqlmodel import Session
 from agent_sessions import model_family, store
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.mcp import (
+    _clear_ember_bindings_for,
     _load_session_row,
     _persist_pending_message,
     _persist_session,
     _schedule_next_message,
     _set_session_status,
+    _transport,
 )
 from core.db import get_engine
+from faas.embervm_client import EmberVMTransportError
 from goosecracker.api import REPO_CATALOG
 
 
@@ -65,6 +68,45 @@ def start_session_for_swarm(
         # will claim and execute the pending message within ~5s.
         pass
     return row.id
+
+
+def _sessions_for_workflow(workflow_id: str):
+    with Session(get_engine()) as db_session:
+        return store.sessions_for_workflow(db_session, workflow_id)
+
+
+def _is_gone_error(exc: EmberVMTransportError) -> bool:
+    detail = str(exc).lower()
+    return "404" in detail or "not found" in detail or "not_found" in detail
+
+
+async def reap_sessions_for_workflow(workflow_id: str) -> dict:
+    """Destroy and unbind every guest session owned by a swarm workflow.
+
+    Every list keys on the MONOLITH session id, never the EmberVM id, so a
+    caller reading the summary can look each one up in /agents directly. One
+    session failing never stops the others: a cancelled run that leaves even
+    one guest alive keeps burning a slot against the live-capacity cap.
+    """
+    rows = await asyncio.to_thread(_sessions_for_workflow, workflow_id)
+    summary: dict[str, list] = {"reaped": [], "failed": [], "skipped": []}
+    for row in rows:
+        ember_session_id = row.ember_session_id
+        if ember_session_id is None:
+            summary["skipped"].append(row.id)
+            continue
+        try:
+            try:
+                await _transport.destroy_session(ember_session_id)
+            except EmberVMTransportError as exc:
+                # An already-gone session is the goal state, not a failure.
+                if not _is_gone_error(exc):
+                    raise
+            await asyncio.to_thread(_clear_ember_bindings_for, ember_session_id)
+            summary["reaped"].append(row.id)
+        except Exception as exc:  # noqa: BLE001 - one bad session must not stop the rest
+            summary["failed"].append({"session_id": row.id, "error": str(exc)})
+    return summary
 
 
 async def start_session_for_thread(

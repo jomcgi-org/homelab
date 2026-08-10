@@ -72,3 +72,63 @@ def test_follower_replica_returns_503(monkeypatch):
     )
     assert response.status_code == 503
     assert "not launched" in response.json()["detail"]
+
+
+def test_cancel_reaps_after_dbos_cancel(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    events = []
+
+    class FakeDBOS:
+        def cancel_workflow(self, workflow_id):
+            events.append(("cancel", workflow_id))
+
+    async def reap(workflow_id):
+        events.append(("reap", workflow_id))
+        return {
+            "reaped": ["ember-1"],
+            "failed": [],
+            "skipped": [4],
+        }
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr("agent_sessions.api.reap_sessions_for_workflow", reap)
+    response = client().post("/api/swarm/runs/wf-1/cancel")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "workflow_id": "wf-1",
+        "cancelled": True,
+        "guest_sessions": {
+            "reaped": ["ember-1"],
+            "failed": [],
+            "skipped": [4],
+        },
+    }
+    assert events == [("cancel", "wf-1"), ("reap", "wf-1")]
+
+
+def test_cancel_reports_reap_failure_without_failing(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+
+    class FakeDBOS:
+        def cancel_workflow(self, workflow_id):
+            assert workflow_id == "wf-1"
+
+    async def reap(_workflow_id):
+        return {
+            "reaped": [],
+            "failed": [{"session_id": "ember-1", "error": "boom"}],
+            "skipped": [],
+        }
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr("agent_sessions.api.reap_sessions_for_workflow", reap)
+    response = client().post("/api/swarm/runs/wf-1/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["cancelled"] is True
+    assert response.json()["guest_sessions"]["failed"] == [
+        {"session_id": "ember-1", "error": "boom"}
+    ]

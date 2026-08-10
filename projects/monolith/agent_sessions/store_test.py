@@ -117,6 +117,21 @@ def test_create_session_persists_and_queries_workflow_id(monkeypatch, tmp_path):
         _restore_schemas(schemas)
 
 
+def test_sessions_for_workflow_returns_only_matching_rows(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            matching = store.create_session(
+                session, "matching", "<guest>", "main", workflow_id="wf-1"
+            )
+            store.create_session(
+                session, "other", "<guest>", "main", workflow_id="wf-2"
+            )
+            assert store.sessions_for_workflow(session, "wf-1") == [matching]
+    finally:
+        _restore_schemas(schemas)
+
+
 def test_write_progress_sync_stores_activities(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     activities = [{"type": "tool", "name": "shell"}]
