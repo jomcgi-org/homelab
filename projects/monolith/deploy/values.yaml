@@ -338,3 +338,33 @@ scratchPostgres:
   demoListenPort: 5401
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
+
+# Arm the API ingress allowlist (issue #4628, policy added inert in PR #4640).
+#
+# This is the opt-in the gated template was waiting for, so unlike the PR that
+# added it, this one DOES take effect: the CiliumNetworkPolicy renders and the
+# app pod becomes default-deny for every source the allowlist does not name.
+# The allowlist lives in chart/templates/cilium-ingress-policy.yaml, which
+# carries the provenance of each entry.
+#
+# Evidence the allowlist is complete, gathered before flipping this:
+#   - a repo-wide config audit of everything that dials the monolith service
+#   - an independent second audit that found no missing entry
+#   - a 65-minute `hubble observe` window, 151264 flows, whose complete set of
+#     pod sources into the app pod was exactly envoy-gateway-system (3000,
+#     8000), mcp (8000) and monolith-workflows (8000), plus the host entity for
+#     kubelet probes. No world, remote-node or kube-apiserver source appeared,
+#     which is why no extra fromEntities are needed.
+#
+# Two entries are allowlisted from config but were NOT observed in that window,
+# deliberately: embervm -> 8091 (no agent session ran) and the whatsapp gateway
+# -> 8000 (no inbound message). Absence of traffic is not evidence they are
+# wrong, and dropping them would break those paths the next time they run.
+#
+# If something was still missed it fails as a SILENT dial timeout, not a
+# readable deny (PR #4294). First check on any post-merge weirdness:
+#   kubectl -n kube-system exec <cilium-pod> -c cilium-agent -- \
+#     cilium-dbg monitor --type drop
+ciliumPolicy:
+  ingress:
+    enabled: true
