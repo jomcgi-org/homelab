@@ -30,6 +30,8 @@ def start_session_workflow(
     repo: str,
     branch: str,
     workflow_id: str | None = None,
+    node_key: str | None = None,
+    node_attempt: int | None = None,
 ) -> int:
     """Queue-able wrapper around the session-start step.
 
@@ -42,7 +44,16 @@ def start_session_workflow(
     parent's id must be threaded from the caller, not read from context, or the
     session would record the wrong parent link.
     """
-    return start_agent_session(key, prompt, model, repo, branch, workflow_id)
+    return start_agent_session(
+        key,
+        prompt,
+        model,
+        repo,
+        branch,
+        workflow_id,
+        node_key,
+        node_attempt,
+    )
 
 
 def session_key(suffix: str) -> str:
@@ -66,9 +77,19 @@ def _queued_session(
     repo: str,
     branch: str,
     workflow_id: str,
+    node_key: str | None = None,
+    node_attempt: int | None = None,
 ) -> int:
     handle = codex_queue().enqueue(
-        start_session_workflow, key, prompt, model, repo, branch, workflow_id
+        start_session_workflow,
+        key,
+        prompt,
+        model,
+        repo,
+        branch,
+        workflow_id,
+        node_key,
+        node_attempt,
     )
     return handle.get_result()
 
@@ -150,6 +171,8 @@ def implement_then_review(
             repo,
             branch,
             workflow_id,
+            node_key="implement",
+            node_attempt=attempt,
         )
         implementer_turn = _await_turn(
             implementer_session_id, 0, plan["turn_timeout_seconds"]
@@ -200,6 +223,8 @@ def implement_then_review(
         repo,
         branch,
         workflow_id,
+        node_key="review",
+        node_attempt=1,
     )
     reviewer_turn = _await_turn(reviewer_session_id, 0, plan["turn_timeout_seconds"])
     return {

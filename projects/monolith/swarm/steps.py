@@ -28,7 +28,14 @@ def pin_plan(budget_usd: float | None = None) -> dict:
 
 @DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
 def start_agent_session(
-    session_key, prompt, model, repo, branch, workflow_id: str
+    session_key,
+    prompt,
+    model,
+    repo,
+    branch,
+    workflow_id: str,
+    node_key: str | None = None,
+    node_attempt: int | None = None,
 ) -> int:
     """Start (or re-attach to) one agent session.
 
@@ -40,7 +47,14 @@ def start_agent_session(
     from agent_sessions.api import start_session_for_swarm
 
     return start_session_for_swarm(
-        session_key, prompt, model, repo, branch, workflow_id=workflow_id
+        session_key,
+        prompt,
+        model,
+        repo,
+        branch,
+        workflow_id=workflow_id,
+        node_key=node_key,
+        node_attempt=node_attempt,
     )
 
 

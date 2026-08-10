@@ -18,6 +18,8 @@ class AgentSession(SQLModel, table=True):
     # The DBOS workflow that owns this session, or None for hand-started,
     # Discord, and MCP sessions.
     workflow_id: str | None = Field(default=None, index=True)
+    node_key: str | None = Field(default=None)
+    node_attempt: int | None = Field(default=None)
     # The email of the human who triggered the session, projected from the
     # X-Auth-Email header. NULL for Discord, MCP, and workflow-started sessions.
     triggered_by: str | None = Field(default=None)

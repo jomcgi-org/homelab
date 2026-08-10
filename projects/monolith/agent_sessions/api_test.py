@@ -33,6 +33,8 @@ def test_start_session_for_swarm_retry_preserves_original_workflow_id(
             "jomcgi/homelab",
             "main",
             workflow_id="wf-1",
+            node_key="implement",
+            node_attempt=2,
         )
         second_id = api.start_session_for_swarm(
             "test-key",
@@ -48,6 +50,8 @@ def test_start_session_for_swarm_retry_preserves_original_workflow_id(
             row = session.get(AgentSession, first_id)
             assert row is not None
             assert row.workflow_id == "wf-1"
+            assert row.node_key == "implement"
+            assert row.node_attempt == 2
     finally:
         for table in SQLModel.metadata.tables.values():
             if table.name in schemas:

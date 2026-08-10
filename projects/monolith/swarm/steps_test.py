@@ -86,6 +86,10 @@ def test_start_agent_session_forwards_workflow_id(monkeypatch):
     assert calls == [
         (
             ("test-key", "prompt", "luna", "jomcgi/homelab", "main"),
-            {"workflow_id": "wf-abc"},
+            {
+                "workflow_id": "wf-abc",
+                "node_key": None,
+                "node_attempt": None,
+            },
         )
     ]

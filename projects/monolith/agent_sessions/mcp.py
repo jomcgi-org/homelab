@@ -169,6 +169,8 @@ def _persist_session(
     system_prompt: str | None = None,
     workflow_id: str | None = None,
     triggered_by: str | None = None,
+    node_key: str | None = None,
+    node_attempt: int | None = None,
 ) -> AgentSession:
     with Session(get_engine()) as db_session:
         return store.create_session(
@@ -182,6 +184,8 @@ def _persist_session(
             system_prompt=system_prompt,
             workflow_id=workflow_id,
             triggered_by=triggered_by,
+            node_key=node_key,
+            node_attempt=node_attempt,
         )
 
 

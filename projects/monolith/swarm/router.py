@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import logging
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from swarm import config, runtime
 from goosecracker.api import REPO_CATALOG
 
 router = APIRouter(prefix="/api/swarm", tags=["swarm"])
+logger = logging.getLogger(__name__)
 
 
 class RunRequest(BaseModel):
@@ -82,7 +86,7 @@ def list_runs() -> list[dict]:
 
 
 @router.post("/runs/{workflow_id}/cancel")
-async def cancel_run(workflow_id: str) -> dict:
+async def cancel_run(workflow_id: str, request: Request) -> dict:
     dbos = _dbos()
     # cancel_children: sessions are not created inline. The workflow enqueues
     # start_session_workflow as a CHILD on the codex queue, so cancelling only
@@ -98,6 +102,23 @@ async def cancel_run(workflow_id: str) -> dict:
     from agent_sessions.api import reap_sessions_for_workflow
 
     guest_sessions = await reap_sessions_for_workflow(workflow_id)
+    actor = request.headers.get("Cf-Access-Authenticated-User-Email") or "operator"
+    try:
+        await dbos.update_workflow_attributes_async(
+            workflow_id,
+            {
+                "cancelled_by": {
+                    "actor": actor,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+    except Exception:  # noqa: BLE001 - cancellation must not fail on metadata
+        logger.warning(
+            "failed to record cancellation actor for workflow %s",
+            workflow_id,
+            exc_info=True,
+        )
     return {
         "workflow_id": workflow_id,
         "cancelled": True,

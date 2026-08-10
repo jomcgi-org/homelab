@@ -139,6 +139,8 @@ def _session_payload(
         "branch": row.branch,
         "repo": row.repo,
         "workflow_id": row.workflow_id,
+        "node_key": row.node_key,
+        "node_attempt": row.node_attempt,
         "triggered_by": row.triggered_by,
         "model": row.model,
         "status": row.status,
