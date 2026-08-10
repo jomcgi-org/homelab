@@ -15,10 +15,12 @@ one arch-independent tar layer the apko_image consumes via `multiarch_tars`:
     filename + sha256, so the upstream filenames MUST be preserved exactly.
 
 The repo rule stages both under a single `root/` dir laid out exactly as the in-image
-tree (root/opt/abseil, root/opt/distdir), then tars it IN THE REPOSITORY RULE with a
-trivial `tar -C root .` (repo rules run outside the sandbox on the real staged tree,
-so there is no $(location)/genrule-prerequisite plumbing and no sandbox symlinks to
-dereference). It exposes the single resulting `layer.tar` under `:tar_amd64` /
+tree (root/opt/abseil, root/opt/distdir), then tars it IN THE REPOSITORY RULE via
+stage_layer_tar.sh (repo rules run outside the sandbox on the real staged tree, so
+there is no $(location)/genrule-prerequisite plumbing and no sandbox symlinks to
+dereference). That script pins every field a tar would otherwise take from the
+building machine; see its header, and #4594 for what drifted.
+It exposes the single resulting `layer.tar` under `:tar_amd64` /
 `:tar_arm64` filegroups plus a `:tar` alias tagged `multiarch_tar`, mirroring
 k3s_archive: apko_image appends `_amd64` / `_arm64` to the base label, so the image
 references `@bazel_demo_workspace//:tar`. The content is IDENTICAL across arches
@@ -97,7 +99,7 @@ def _bazel_demo_workspace_impl(repository_ctx):
     # anchor is only legal if that exact file is a declared prerequisite (it was
     # not, so analysis failed), and any dirname-counting anchor can silently place
     # the layer at the wrong depth. A repository rule runs OUTSIDE the sandbox on
-    # the real staged tree, so `tar -C root .` is exact and needs no $(location),
+    # the real staged tree, so archiving root/ is exact and needs no $(location),
     # no prerequisite plumbing, and no symlink dereferencing (root/ holds real
     # files, not sandbox symlinks). The content is arch-independent (Abseil source
     # + dep archives), so both per-arch tars are byte-identical; we produce ONE tar
@@ -107,28 +109,20 @@ def _bazel_demo_workspace_impl(repository_ctx):
     # The tar archives root/'s CONTENTS (opt/abseil, opt/distdir) at the tar
     # root, so the layer unpacks to /opt/abseil + /opt/distdir in-image.
     #
-    # It MUST be byte-reproducible across machines. A plain `tar -C root .`
-    # records readdir order and the extraction-time mtimes, and because this
-    # runs in a REPOSITORY RULE it re-executes on every runner that fetches the
-    # repo fresh. That made the layer, and therefore the embervm image digest,
-    # depend on which runner happened to build it: main kept reusing a warm
-    # runner whose output_base already had this repo, so its digest looked
-    # stable across commits, while any PR that landed on a cold runner produced
-    # a different digest for identical sources. The missed-bump guard then
-    # failed the PR for a rebuild that never happened (issue #4594).
+    # It MUST be byte-reproducible across machines. This runs in a REPOSITORY
+    # RULE, so it re-executes on every runner that fetches the repo fresh, and
+    # anything machine-derived it records becomes a different embervm image
+    # digest per runner. That is issue #4594: the missed-bump guard failed PRs
+    # for a rebuild that never happened.
     #
-    # Determinism without GNU-only flags, so the rule still fetches under BSD
-    # tar: pin every mtime with `touch -t`, feed tar a LC_ALL=C sorted member
-    # list on stdin (`-T -`, supported by GNU tar and bsdtar) instead of
-    # --sort, and use --numeric-owner so no name lookup leaks in.
-    tar_result = repository_ctx.execute([
-        "sh",
-        "-c",
-        "cd root && " +
-        "find . -exec touch -h -t 197001010000 {} + && " +
-        "find . -print | LC_ALL=C sort | " +
-        "tar --numeric-owner -cf ../layer.tar -T -",
-    ])
+    # The archiving itself lives in stage_layer_tar.sh so it can be unit tested,
+    # which is what the first attempt at this lacked: #4598 sorted the member
+    # list but left tar recursing into the directories in that list, so the
+    # sort was inert and the layer stayed in readdir order (and held 13113
+    # entries for 1601 unique paths). Referencing the script by Label also makes
+    # the repo re-fetch when the archiving changes.
+    layer_script = repository_ctx.path(Label("//bazel/tools/http:stage_layer_tar.sh"))
+    tar_result = repository_ctx.execute(["sh", str(layer_script), "root", "layer.tar"])
     if tar_result.return_code != 0:
         fail("bazel_demo_workspace: tar of staged root/ failed (%d): %s" % (
             tar_result.return_code,
