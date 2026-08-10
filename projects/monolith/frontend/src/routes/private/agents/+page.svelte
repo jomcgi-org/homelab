@@ -7,6 +7,7 @@
     groupSessions,
     groupSummary,
     isGroupExpanded as groupIsExpanded,
+    shortWorkflowId,
   } from "./grouping.js";
   import {
     enterTranscript,
@@ -1196,7 +1197,7 @@
       aria-expanded={isGroupExpanded(entry, active)}
       onclick={() => toggleGroup(entry, active)}
     >
-      <span class="group-id mono">{entry.workflowId.slice(0, 8)}</span>
+      <span class="group-id mono">{shortWorkflowId(entry.workflowId)}</span>
       <span class="group-summary">{groupSummary(entry.counts)}</span>
       <span class="group-toggle" aria-hidden="true"
         >{isGroupExpanded(entry, active) ? "▾" : "▸"}</span

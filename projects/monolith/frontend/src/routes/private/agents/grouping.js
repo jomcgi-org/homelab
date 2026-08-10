@@ -58,6 +58,17 @@ export function groupSummary(counts) {
     .join(" · ");
 }
 
+// Workflow ids are time ordered (a ULID's leading characters are its
+// timestamp) or carry a producer prefix, so the LEADING characters are
+// exactly the part two different runs share. Taking the head collapses
+// swarm-smoke-1 and swarm-smoke-2 to the same "swarm-sm", which was visible
+// against live data. The tail is the part that distinguishes them, and the
+// leading ellipsis keeps a fragment from reading as a whole id.
+export function shortWorkflowId(workflowId) {
+  const id = String(workflowId ?? "");
+  return id.length <= 8 ? id : `…${id.slice(-8)}`;
+}
+
 export function isGroupExpanded(entry, { active, selectedId, expanded }) {
   const explicit = expanded?.[entry.workflowId];
   if (typeof explicit === "boolean") return explicit;
