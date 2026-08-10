@@ -48,43 +48,13 @@ while (( $# > 0 )); do
   esac
 done
 
-# Resolve one repo:tag to its manifest digest, retrying a few times. The fresh
-# tags are pushed moments earlier in this same push_all run, so a first read can
-# race ghcr propagation, and a burst of reads across all charts can hit
-# transient rate limits (observed: monolith resolved but monolith-public did not
-# in the same run under the same auth). Retry with backoff; a genuinely gone tag
-# (an old published version whose image was GC'd) still ends UNRESOLVED, which
-# the caller treats as "skip", not "fail".
-_crane_digest() {
-  local ref="$1" i d
-  for i in 1 2 3; do
-    if d=$("$CRANE" digest "$ref" 2>/dev/null) && [[ -n "$d" ]]; then
-      printf '%s' "$d"
-      return 0
-    fi
-    if [[ $i -lt 3 ]]; then sleep 3; fi
-  done
-  printf 'UNRESOLVED'
-}
-
-# Emit sorted "repo=digest" lines for each ghcr.io/jomcgi image pinned in a
-# chart. Args are passed straight to `helm show values` (a .tgz path, or
-# "REPO/NAME --version X"). The pinned tag embeds a build timestamp so it
-# changes every build even for identical content; resolving it to the manifest
-# digest gives a content-stable identity to compare. UNRESOLVED tags let the
-# caller skip rather than false-fail on a transient registry error.
-_image_digests() {
-  "$HELM" show values "$@" 2>/dev/null | awk '
-    /^[[:space:]]*repository:[[:space:]]*/ { repo=$2 }
-    /^[[:space:]]*tag:[[:space:]]*/ && repo!="" { print repo"\t"$2; repo="" }' |
-    while IFS="$(printf '\t')" read -r repo tag; do
-      case "$repo" in
-        ghcr.io/jomcgi/*)
-          printf '%s=%s\n' "$repo" "$(_crane_digest "${repo}:${tag}")"
-          ;;
-      esac
-    done | sort
-}
+# Digest comparison used to live here, as a pair of helpers that resolved each
+# chart's pinned image TAGS through `crane digest`. Both are gone: the only
+# caller now runs check-missed-bump.sh, which reads the pinned digest out of the
+# chart values and so needs no registry read at all. See the call site for why
+# the registry round trip was unfixable on main (it raced the image pushes in
+# the same multirun and fell open to a warning). CRANE is still resolved above
+# because the PR-side call site passes it through.
 
 # Fail the push with the exact bump command. Reads CHART_NAME / CHART_VERSION /
 # ABS_CHART_DIR / CHART_DIR (all set before this is ever called). bump-chart.sh
@@ -150,21 +120,41 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
         # is enough, so a missed bump surfaces in minutes instead of later as an
         # OutOfSync mystery or a rollout that silently never happened.
 
-        # (1) Image-content detector: resolve the pinned image tags in the fresh
-        # chart and the already-published chart to their manifest digests and
-        # compare. This is INDEPENDENT of the bazel dependency query (2), which
-        # can silently under-scope when `deps(...)` drops a package under
-        # --keep_going (an image's external closure failing to preload) and then
-        # report "no bump needed" for a real image change (this is exactly how a
-        # frontend change once merged with no bump and never deployed). Digest
-        # equality is content-stable, so this fails closed on any image change.
-        if [[ -x "$CRANE" ]]; then
-          FRESH_DIGESTS=$(_image_digests "$CHART_TGZ") || FRESH_DIGESTS=""
-          PUB_DIGESTS=$(_image_digests "${REPOSITORY}/${CHART_NAME}" --version "${CHART_VERSION}") || PUB_DIGESTS=""
-          if [[ "$FRESH_DIGESTS" == *UNRESOLVED* ]] || [[ "$PUB_DIGESTS" == *UNRESOLVED* ]]; then
-            echo "WARNING: could not resolve all image digests for ${CHART_NAME}; relying on the version-scoped detector only." >&2
-          elif [[ -n "$FRESH_DIGESTS" ]] && [[ -n "$PUB_DIGESTS" ]] && [[ "$FRESH_DIGESTS" != "$PUB_DIGESTS" ]]; then
-            _fail_missed_bump "its pinned image digests differ from the published chart (an image was rebuilt)"
+        # (1) Image-content detector: compare the image digests pinned in the
+        # fresh chart against the published chart of the same version. This is
+        # INDEPENDENT of the bazel dependency query (2), which can silently
+        # under-scope when `deps(...)` drops a package under --keep_going (an
+        # image's external closure failing to preload) and then report "no bump
+        # needed" for a real image change (this is exactly how a frontend change
+        # once merged with no bump and never deployed). Digest equality is
+        # content-stable, so this fails closed on any image change.
+        #
+        # It runs check-missed-bump.sh, the SAME script the PR-side guard uses,
+        # which reads the digests straight out of the chart values instead of
+        # resolving the pinned tags through the registry.
+        #
+        # The registry-resolving version this replaces could not be trusted on
+        # main. push_all is a multirun with `jobs = 0`, so a chart's push runs
+        # CONCURRENTLY with the image pushes that create the very tags it was
+        # resolving. Retries only covered ghcr propagation, not an image push
+        # that had not started, and an unresolved tag downgraded the detector to
+        # a warning, leaving only the commit-message detector, which cannot see
+        # a digest change at all. Observed on main at aa0de91: "could not
+        # resolve all image digests for signoz-dashboard-sidecar; relying on the
+        # version-scoped detector only" (issue #4592). Reading the pinned digest
+        # needs no registry, so there is no race to lose.
+        if [[ -n "$CHECK_MISSED_BUMP" ]] && [[ -f "$CHECK_MISSED_BUMP" ]]; then
+          if [[ -f "${ABS_CHART_DIR}/application.yaml" ]]; then
+            GUARD_PROJECT_DIR="$CHART_DIR"
+          else
+            GUARD_PROJECT_DIR=$(dirname "$CHART_DIR")
+          fi
+          # MAIN_CHART_VERSION is deliberately unset: that path exists for a PR
+          # whose version is not published yet, and this branch only runs when
+          # the version IS published.
+          if ! env HELM="$HELM" REPOSITORY="$REPOSITORY" \
+            bash "$CHECK_MISSED_BUMP" "$CHART_NAME" "$CHART_VERSION" "$CHART_TGZ" "$GUARD_PROJECT_DIR"; then
+            exit 1
           fi
         fi
 
