@@ -154,6 +154,7 @@ while [[ "$attempt" -le "$TRIES" ]]; do
 
 	if [[ "$CHANGED" -eq 0 ]]; then
 		echo "Nothing to write back; main already carries every published version."
+		rm -rf "$RECORD_DIR"
 		exit 0
 	fi
 
@@ -177,6 +178,7 @@ Written back by write-back-versions.sh (ADR platform/009 decision 1)."
 
 	if git push --quiet origin HEAD:main; then
 		echo "Write-back pushed on attempt ${attempt}."
+		rm -rf "$RECORD_DIR"
 		exit 0
 	fi
 
