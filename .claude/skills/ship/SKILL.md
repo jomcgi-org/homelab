@@ -103,7 +103,7 @@ Closing the issue is how "shipped" is recorded.
 
 - [ ] `ci` green on the worktree
 - [ ] PR body contains `Closes #<this issue>` (or the parent, if a sub-issue)
-- [ ] Chart bumped if the change must deploy (`bazel/tools/git/bump-chart.sh projects/<svc>`), else `n/a: reason`
+- [ ] No chart version in the diff (`Chart.yaml` `version:` / `targetRevision:` are written post-merge)
 - [ ] Branch up to date with main (strict checks; rebase if BEHIND)
 - [ ] `reviewer` agent run on the full diff; findings acted on or answered
 - [ ] Human review requested

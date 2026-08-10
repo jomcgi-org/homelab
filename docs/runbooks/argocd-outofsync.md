@@ -38,7 +38,7 @@ This has recurred at least three times: whenever git values and the OCI chart di
 
 **Cause:** a code merge without a chart version bump republishes the SAME chart version with new image tags. ArgoCD's last sync operation succeeded against what it pulled at the time, but the pull is mutated underneath it, so the diff never converges. This is largely prevented since the idempotent-publish change in `bazel/helm/push.sh.tpl`, but can still surface if a merge slips through without a version bump.
 
-**Fix:** if main CI's Push images action fails with a missed-bump error, run `bazel/tools/git/bump-chart.sh <projects/<svc>>` and open the bump PR. A trailing version bump is the actual fix, not another sync.
+**Fix:** since ADR platform/009 decision 1 there is no bump PR to open, because PRs carry no chart version. The version is computed and published on main and then committed back by `chart-version-bot`. If a merge has not deployed, check whether that write-back commit landed: `git log --author=chart-version-bot -3 origin/main`. If main CI's publish went green but the write-back did not, the chart is in the registry and main simply does not reference it yet, so re-run the action rather than opening a bump PR. Another sync is not the fix in either case.
 
 ## Duplicate env var name in a container
 

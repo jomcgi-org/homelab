@@ -51,12 +51,18 @@ so always `gh pr merge --rebase` (or `--auto --rebase`).
 other PR merging puts every open PR into `BEHIND`, where auto-merge will not
 fire. Fix it with `gh pr update-branch <number> --rebase` and let CI re-run.
 
-This is deliberate, not friction to route around. The re-run makes the
-missed-chart-bump guard re-check against post-merge main, and that is the only
-point where a rebase-merge version collision is detectable: two PRs claiming the
-same chart version means the loser's bump is silently dropped. If
-`mergeStateStatus` is `BEHIND`, update the branch. Never try to bypass the strict
-check.
+This is deliberate, not friction to route around. It is what guarantees a PR was
+tested against **current** main, so a semantic conflict between two PRs that are
+individually green cannot break main. A GitHub merge queue would provide the
+same guarantee without the re-runs, but merge queues need an organisation-owned
+repository and this one is user-owned, so the strict check is the only mechanism
+available. If `mergeStateStatus` is `BEHIND`, update the branch. Never try to
+bypass the strict check.
+
+This rationale used to be about chart versions: the re-run let the
+missed-chart-bump guard catch two PRs claiming the same version. That reason is
+gone, because PRs no longer carry a version at all (see below). The
+tested-against-current-main reason is the live one.
 
 ## Auto-merge
 
@@ -74,16 +80,20 @@ Use background Bash or `Monitor` for CI waits. Sleep-chained polling is blocked.
 
 ## Chart bumps
 
-Any PR whose code must deploy needs the chart bump in the **same** PR:
+**Do not bump a chart version in a PR.** Since ADR platform/009 decision 1 the
+version is an output of merging, not an input on the branch: a PR that edits
+`chart/Chart.yaml` `version:` or `deploy/application.yaml` `targetRevision:` is
+fighting the publish job, and two PRs that both edit those lines conflict on
+rebase for no reason.
 
-```bash
-bazel/tools/git/bump-chart.sh projects/<service>
-```
+After the merge, main's publish computes the next version from the merged
+history, pushes the OCI chart, and commits both lines back as
+`chart-version-bot`. So a deploying change lands in two commits: yours, then the
+write-back. `bump-chart.sh` is retired.
 
-It moves `chart/Chart.yaml` `version` and `deploy/application.yaml`
-`targetRevision` together, numbering from the origin/main tip so concurrent
-sessions cannot pick the same version. Without it the merge fails the `Push
-images` action with the exact fix command.
+The practical consequence for "is it live yet": the deploy starts when the
+write-back commit lands, not when your PR merges. If nothing has rolled out,
+check for that commit on main before assuming the deploy failed.
 
 ## Done means live
 

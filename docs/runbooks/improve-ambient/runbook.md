@@ -182,8 +182,9 @@ before opening the PR:
 python3 -c "import ast; ast.parse(open('projects/monolith/chat/agent.py').read())"
 ```
 
-Bump the monolith chart in the same PR (prompt/gate edits deploy via the
-monolith image): `bazel/tools/git/bump-chart.sh projects/monolith`.
+Do not bump the monolith chart. Prompt and gate edits deploy via the monolith
+image, and the chart version for that is written back to main after the merge
+(ADR platform/009 decision 1), so the PR carries no version.
 
 ## 8. PR body template
 

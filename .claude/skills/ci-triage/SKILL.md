@@ -69,9 +69,12 @@ platforms are wrong.
   `no-hardcoded-image-digest` each encode a real production incident. See
   `projects/monolith/CLAUDE.md` for the first three. Fix the code, do not silence
   the rule.
-- **`Push images` failing on merge.** The change needed a chart bump that the PR
-  did not carry. The action prints the exact `bazel/tools/git/bump-chart.sh`
-  command.
+- **`Push images` failing on merge.** No longer a missed bump: PRs do not carry
+  chart versions (ADR platform/009 decision 1). Read the failing stage. If it is
+  the write-back (`write-back-versions.sh`), the charts published but main does
+  not reference them yet, so nothing deploys until it is resolved; re-running the
+  action is safe and idempotent. If it is the publish itself, treat it as a
+  normal build failure.
 - **Generated files drifting.** `ci regen` runs the committed generators (home
   cluster kustomization, doc manifests, routes, orchestrator bundle). If CI
   auto-commits a regen you did not run, that is the format bot, not a failure.

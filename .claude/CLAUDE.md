@@ -114,7 +114,6 @@ ci regen        # generators and gazelle, only when inputs changed
 ci test         # 1:1 with the buildbuddy.yaml Test action
 
 helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml  # NEVER helm install
-bazel/tools/git/bump-chart.sh projects/<svc>   # Chart.yaml + targetRevision together
 ```
 
 `ci test` runs the exact Workflows Test argv through BuildBuddy Remote Bazel, so
@@ -128,16 +127,17 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 
 ## Gotchas
 
-- **Deploys are triggered by chart version, not by image tags.** There is no
-  ArgoCD Image Updater. CI rebuilds dual-arch images with a build-time-pinned
-  tag, and ArgoCD only picks them up when the chart version moves. So any PR
-  whose code must deploy carries `bazel/tools/git/bump-chart.sh projects/<svc>`
-  in the same PR; it moves `Chart.yaml` and `deploy/application.yaml`
-  `targetRevision` together, numbered from the origin/main tip so concurrent
-  sessions cannot collide. Bumping one without the other means ArgoCD keeps
-  deploying the old chart with stale digests. A legacy chart-version-bot still
-  auto-bumps PR branches but is being retired (ADR platform/009), so do not rely
-  on it.
+- **Deploys are triggered by chart version, not by image tags, and the version
+  is written AFTER merge.** There is no ArgoCD Image Updater. CI rebuilds
+  dual-arch images with a build-time-pinned tag, and ArgoCD only picks them up
+  when the chart version moves. Since ADR platform/009 decision 1 that move
+  happens on `main`, not on the branch: **a PR must not touch `Chart.yaml`
+  `version:` or `deploy/application.yaml` `targetRevision:` at all.** Main's
+  publish computes the next version from the merged history, pushes the OCI
+  chart, and commits both lines back as `chart-version-bot`. So a deploying PR
+  now carries no bump, and the deploy lands one commit after the merge rather
+  than in it. If a change has not rolled out, check that write-back commit
+  landed before assuming a missed bump.
 - **Never hand-pin `@sha256:` digests in values files.** Bazel
   `helm_images_values` deep-merges pinned tags at build time. Hand-pinned digests
   go stale after the next CI rebuild and turn into `ImagePullBackOff`. Semgrep
