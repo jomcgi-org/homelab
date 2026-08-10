@@ -603,7 +603,7 @@ defmodule Embervm.SessionManagerTest do
 
     {:ok, created_row} = SessionStore.get(ctx.store, created.session_id)
     assert created_row.volume_node_id == "node-4"
-    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
     assert_receive {:retired, ^session_id}, 1_000
   end
 
@@ -1057,9 +1057,11 @@ defmodule Embervm.SessionManagerTest do
   # INSTANCE dial place_create actually placed on.
   test "cold restore dials the placed INSTANCE, never the bare node name" do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
+    parent = self()
 
     strict_channel_fun = fn node ->
       Agent.update(dialed, &[node | &1])
+      send(parent, {:dialed, node})
 
       case node do
         "node-4/inst-a" -> {:ok, :fake_channel}
@@ -1103,7 +1105,15 @@ defmodule Embervm.SessionManagerTest do
     put_brick(ctx, wl, "inst-a", [])
 
     {:ok, original} = SessionManager.create(ctx.mgr, wl, "p1")
-    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    {:ok, :destroying} = SessionManager.destroy(ctx.mgr, original.session_id)
+
+    # Destroy now returns at intent, so the teardown dials AFTER this call. Wait
+    # for the specific dial that would otherwise leak into the restore's window
+    # (retire_session_volume runs in a spawn and dials the bare node name,
+    # because this lineage has no session_volumes fact locating it). Waiting on
+    # the event rather than on a timer keeps the boundary deterministic: a fixed
+    # sleep would silently reintroduce the leak on a slow machine.
+    assert_receive {:dialed, "node-4"}, 1_000
     Agent.update(dialed, fn _ -> [] end)
 
     assert {:ok, restored} = SessionManager.create(ctx.mgr, wl, "p1", original.session_id)
@@ -1396,6 +1406,17 @@ defmodule Embervm.SessionManagerTest do
     assert :session_destroyed in op_kinds_for(ctx, created.session_id)
   end
 
+  test "banked session destruction is synchronous and evicts" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-banked-destroy")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-banked-destroy", "p1")
+    bank_session(ctx, created.session_id)
+
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+  end
+
   test "destroyed parked persistence session fires node-owned retirement" do
     parent = self()
     ctx = start_stack(
@@ -1515,9 +1536,9 @@ defmodule Embervm.SessionManagerTest do
     put_session_workload(ctx, "wl-d")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-d", "p1")
 
-    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
 
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    session = wait_for_state(ctx, created.session_id, :destroyed)
     assert session.state == :destroyed
 
     # The process is gone.
@@ -1539,6 +1560,28 @@ defmodule Embervm.SessionManagerTest do
     assert {:error, :not_found} = SessionManager.destroy(ctx.mgr, "s-nope")
   end
 
+  test "failed live teardown stays destroying and reconcile retries it" do
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        destroy_fun: fn _ch, _vm ->
+          attempt = Agent.get_and_update(attempts, fn n -> {n, n + 1} end)
+          {:ok, %{teardown_confirmed: attempt > 0}}
+        end
+      )
+
+    put_session_workload(ctx, "wl-retry-destroy")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-retry-destroy", "p1")
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :destroying).state == :destroying
+
+    report_session_vm(ctx, created.session_id, "wl-retry-destroy")
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+  end
+
   # -- node-confirmed destroy (ADR embervm/014 decision 5, gated) -------------
 
   test "gated: destroy with a confirming node records destroying then destroyed" do
@@ -1553,9 +1596,9 @@ defmodule Embervm.SessionManagerTest do
     put_session_workload(ctx, "wl-ncd")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-ncd", "p1")
 
-    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
 
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    session = wait_for_state(ctx, created.session_id, :destroyed)
     assert session.state == :destroyed
 
     kinds = op_kinds_for(ctx, created.session_id)

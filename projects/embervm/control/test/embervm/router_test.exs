@@ -80,6 +80,8 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
     def destroy(_srv, "s-live"), do: {:ok, :destroyed}
+    def destroy(_srv, "s-destroying"), do: {:ok, :destroying}
+    def destroy(_srv, "s-error"), do: {:error, :backend_down}
     def destroy(_srv, _id), do: {:error, :not_found}
   end
 
@@ -872,8 +874,16 @@ defmodule Embervm.RouterTest do
   test "DELETE /v1/sessions/:id destroys (management auth)" do
     with_session_fakes()
 
-    assert req(:delete, "/v1/sessions/s-live", auth("good")).status == 200
+    destroyed = req(:delete, "/v1/sessions/s-live", auth("good"))
+    assert destroyed.status == 200
+    assert json(destroyed.body)["state"] == "destroyed"
+
+    destroying = req(:delete, "/v1/sessions/s-destroying", auth("good"))
+    assert destroying.status == 202
+    assert json(destroying.body)["state"] == "destroying"
+
     assert req(:delete, "/v1/sessions/s-nope", auth("good")).status == 404
+    assert req(:delete, "/v1/sessions/s-error", auth("good")).status == 500
     # Management auth required.
     assert req(:delete, "/v1/sessions/s-live").status == 401
   end
