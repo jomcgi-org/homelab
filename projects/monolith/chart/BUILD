@@ -36,3 +36,20 @@ helm_chart(
     publish = True,
     visibility = ["//overlays:__subpackages__"],
 )
+
+load("//bazel/tools/pytest:defs.bzl", "py_test")
+
+py_test(
+    name = "chart_env_vars_test",
+    srcs = ["chart_env_vars_test.py"],
+    data = [
+        "values.yaml",
+        "Chart.yaml",
+        "Chart.lock",
+        "//projects/monolith/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob(["templates/**/*", "charts/**/*", "migrations/**/*"]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+)
