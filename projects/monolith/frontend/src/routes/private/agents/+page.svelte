@@ -4,6 +4,11 @@
   import { page } from "$app/stores";
   import { renderAgentMarkdown } from "./markdown.js";
   import {
+    groupSessions,
+    groupSummary,
+    isGroupExpanded as groupIsExpanded,
+  } from "./grouping.js";
+  import {
     enterTranscript,
     MOBILE_MEDIA_QUERY,
     MOBILE_VIEW_LIST,
@@ -66,6 +71,7 @@
   let renderedPending = $state({});
   let vms = $state({});
   let turnsEl = $state(null);
+  let expandedGroups = $state({});
 
   const selectedSession = $derived(
     sessions.find((session) => String(session.id) === String(selectedId)) ??
@@ -75,6 +81,7 @@
   const activeSessions = $derived(
     sessions.filter((session) => isActive(session)).sort(compareSessions),
   );
+  const activeEntries = $derived(groupSessions(activeSessions));
   const historySessions = $derived(
     sessions.filter((session) => !isActive(session)).sort(compareSessions),
   );
@@ -86,6 +93,7 @@
   const visibleHistorySessions = $derived(
     showAllHistory ? historySessions : recentHistorySessions,
   );
+  const historyEntries = $derived(groupSessions(visibleHistorySessions));
   const visibleSearchResults = $derived(searchResults ?? []);
   const hasActiveSessions = $derived(
     sessions.some((session) => isActive(session)) ||
@@ -103,6 +111,18 @@
 
   function isActive(session) {
     return session?.status === "running" || Number(session?.pending_count) > 0;
+  }
+
+  function isGroupExpanded(entry, active) {
+    return groupIsExpanded(entry, {
+      active,
+      selectedId,
+      expanded: expandedGroups,
+    });
+  }
+
+  function toggleGroup(entry, active) {
+    expandedGroups[entry.workflowId] = !isGroupExpanded(entry, active);
   }
 
   function compareSessions(a, b) {
@@ -801,15 +821,23 @@
           Active <span>{activeSessions.length}</span>
         </div>
         <div class="session-list">
-          {#each activeSessions as session (session.id)}
-            {@render sessionRow(session)}
+          {#each activeEntries as entry (entry.kind === "group" ? "wf:" + entry.workflowId : entry.session.id)}
+            {#if entry.kind === "group"}
+              {@render sessionGroup(entry, true)}
+            {:else}
+              {@render sessionRow(entry.session)}
+            {/if}
           {/each}
         </div>
       {/if}
       <div class="group-title history-title">Recent</div>
       <div class="session-list">
-        {#each visibleHistorySessions as session (session.id)}
-          {@render sessionRow(session)}
+        {#each historyEntries as entry (entry.kind === "group" ? "wf:" + entry.workflowId : entry.session.id)}
+          {#if entry.kind === "group"}
+            {@render sessionGroup(entry, false)}
+          {:else}
+            {@render sessionRow(entry.session)}
+          {/if}
         {:else}<div class="empty">
             {activeSessions.length ? "No recent sessions" : "No sessions yet"}
           </div>{/each}
@@ -1160,6 +1188,30 @@
   </button>
 {/snippet}
 
+{#snippet sessionGroup(entry, active)}
+  <div class="session-group">
+    <button
+      class="group-header"
+      type="button"
+      aria-expanded={isGroupExpanded(entry, active)}
+      onclick={() => toggleGroup(entry, active)}
+    >
+      <span class="group-id mono">{entry.workflowId.slice(0, 8)}</span>
+      <span class="group-summary">{groupSummary(entry.counts)}</span>
+      <span class="group-toggle" aria-hidden="true"
+        >{isGroupExpanded(entry, active) ? "▾" : "▸"}</span
+      >
+    </button>
+    {#if isGroupExpanded(entry, active)}
+      <div class="group-members">
+        {#each entry.sessions as session (session.id)}
+          {@render sessionRow(session)}
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
 {#snippet modelPicker(current, choose)}
   <div class="model-chips" role="group" aria-label="Model">
     <button
@@ -1319,7 +1371,8 @@
   .quiet-button:hover,
   .collapse-button:hover,
   .session-row:hover,
-  .search-result:hover {
+  .search-result:hover,
+  .group-header:hover {
     background: var(--hover);
   }
   .session-row.chosen {
@@ -1390,6 +1443,42 @@
     min-height: 0;
     display: grid;
     gap: 2px;
+  }
+  .session-group {
+    min-width: 0;
+  }
+  .group-header {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid transparent;
+    color: var(--muted);
+    background: transparent;
+    text-align: left;
+    font-size: var(--size-meta);
+    white-space: nowrap;
+  }
+  .group-id,
+  .group-summary {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .group-id {
+    flex: 0 0 auto;
+  }
+  .group-summary {
+    min-width: 0;
+    flex: 1;
+  }
+  .group-toggle {
+    flex: 0 0 auto;
+  }
+  .group-members {
+    padding-left: 10px;
   }
   .session-row,
   .search-result {
