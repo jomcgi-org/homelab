@@ -277,12 +277,21 @@ def _publish_vm_map(new_map: dict[str, dict], error: str | None) -> None:
 
 
 async def _run_vm_refresher() -> None:
-    try:
-        while True:
+    while True:
+        try:
             await _refresh_cp_state()
-            await asyncio.sleep(_vm_state_cache.refresh_interval)
-    except asyncio.CancelledError:
-        raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one bad poll must not end the loop
+            # A dead refresher is invisible: subscribers keep receiving the 15s
+            # heartbeat so the connection looks healthy, no message ever
+            # arrives so the client's fallback never engages, and the snapshot
+            # endpoint sees a non-None task and stops refreshing too. The chips
+            # freeze and every surface reports fine. Publishing the outage is
+            # what makes the failure look like a failure.
+            logger.exception("agent VM refresher iteration failed")
+            _publish_vm_map({}, error=str(exc))
+        await asyncio.sleep(_vm_state_cache.refresh_interval)
 
 
 async def _start_refresher() -> None:
@@ -290,12 +299,19 @@ async def _start_refresher() -> None:
     cache.subscriber_count += 1
     if cache.change_event is None:
         cache.change_event = asyncio.Event()
+    # Create the task BEFORE awaiting anything. With the await first, the
+    # check and the set straddled a suspension point: two subscribers
+    # connecting together both saw task is None and both assigned, so the
+    # first task lost its only reference. Unreachable, uncancellable, and
+    # polling the control plane once a second until the pod restarts.
+    # Deployment is 1 replica with HPA to 3, so worst case is 3 refreshers.
     if cache.task is None or cache.task.done():
-        # Deployment is 1 replica with HPA to 3, so worst case is 3
-        # refreshers at 1s interval (acceptable). Lazy start ensures idle
-        # consoles produce zero control-plane traffic.
-        await _refresh_cp_state()
         cache.task = asyncio.create_task(_run_vm_refresher())
+    # Give the first subscriber real data before it yields its snapshot. The
+    # task refreshes too, so this can duplicate one poll on first connect,
+    # which is harmless where a duplicated task was not.
+    if not cache.initialized:
+        await _refresh_cp_state()
 
 
 async def _stop_refresher() -> None:
@@ -311,18 +327,38 @@ async def _stop_refresher() -> None:
         pass
 
 
+def _vm_frame() -> str:
+    """One SSE data frame, carrying the same payload as the snapshot endpoint.
+
+    Kept identical to `/vms` on purpose: two surfaces describing the same
+    state with different fields is how a client ends up unable to tell an
+    empty map from an outage on one of them.
+    """
+    body: dict = {"vms": _vm_state_cache.cache_map}
+    if _vm_state_cache.last_error:
+        body["error"] = _vm_state_cache.last_error
+    return f"data: {json.dumps(body)}\n\n"
+
+
 @router.get("/vms/stream")
 async def stream_session_vms() -> StreamingResponse:
     async def generate():
-        await _start_refresher()
+        # Inside the try, not before it. _start_refresher increments the
+        # subscriber count as its first statement and then awaits, and
+        # Starlette cancels this generator at its innermost await on client
+        # disconnect. Started outside, a client that vanished during that
+        # first refresh (a wedged control plane can hold it ~20s) left the
+        # count permanently above zero, so every later stop returned early
+        # and the refresher polled forever with nobody watching.
         cache = _vm_state_cache
         try:
+            await _start_refresher()
             last_generation = cache.generation
-            yield f"data: {json.dumps({'vms': cache.cache_map})}\n\n"
+            yield _vm_frame()
             while True:
                 if cache.generation != last_generation:
                     last_generation = cache.generation
-                    yield f"data: {json.dumps({'vms': cache.cache_map})}\n\n"
+                    yield _vm_frame()
                     continue
                 event = cache.change_event
                 try:
@@ -334,7 +370,7 @@ async def stream_session_vms() -> StreamingResponse:
                     continue
                 if cache.generation != last_generation:
                     last_generation = cache.generation
-                    yield f"data: {json.dumps({'vms': cache.cache_map})}\n\n"
+                    yield _vm_frame()
         finally:
             await _stop_refresher()
 
@@ -361,7 +397,11 @@ async def list_session_vms() -> dict:
     """
     cache = _vm_state_cache
     stale = time.monotonic() - cache.last_refreshed_at >= cache.refresh_interval
-    if cache.task is None and (not cache.initialized or stale):
+    # `task.done()` matters as much as `task is None`: a refresher that died
+    # is not None, so testing only for None let a crashed task freeze this
+    # endpoint too, and the fallback stopped falling back.
+    owned = cache.task is not None and not cache.task.done()
+    if not owned and (not cache.initialized or stale):
         await _refresh_cp_state()
     body = {"vms": cache.cache_map}
     if cache.last_error:

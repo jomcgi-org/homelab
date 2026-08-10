@@ -53,6 +53,11 @@ def reset_vm_state_cache():
     ask for it.
     """
     cache = agent_router._vm_state_cache
+    # task is dropped rather than cancelled, which is safe only because every
+    # test that starts a refresher does so inside asyncio.run, whose loop
+    # teardown cancels outstanding tasks. A session-scoped loop, or driving
+    # the stream through TestClient (its portal loop outlives the call),
+    # would strand the task instead. Cancel here if either becomes true.
     cache.cache_map = {}
     cache.last_refreshed_at = 0.0
     cache.subscriber_count = 0
@@ -200,7 +205,11 @@ def test_list_session_vms_maps_control_plane_states(client, monkeypatch):
         }
 
     monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
-    asyncio.run(agent_router._refresh_cp_state())
+    # Deliberately NOT pre-refreshed. The autouse fixture leaves the cache
+    # uninitialized, so this exercises the on-demand refresh inside the
+    # endpoint, which is the whole reason the snapshot route survives a
+    # broken stream. Pre-populating here would let that branch be deleted
+    # with every test still green.
     body = client.get("/api/agents/vms").json()
     assert body["vms"]["s-run"]["state"] == "awake"
     assert body["vms"]["s-park"]["state"] == "asleep"
