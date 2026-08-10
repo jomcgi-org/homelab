@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from dbos import DBOS
 
-from graph import config
-from graph.policy import (
+from swarm import config
+from swarm.policy import (
     implementer_prompt,
     next_action,
     parse_review_verdict,
     reviewer_prompt,
     work_branch,
 )
-from graph.queues import codex_queue
-from graph.steps import poll_turn, read_branch_head, start_agent_session
+from swarm.queues import codex_queue
+from swarm.steps import poll_turn, read_branch_head, start_agent_session
 
 # How long to wait between polls for a session's next turn. Each sleep is a
 # durable checkpoint, so the interval also sets how much wait is re-done after a
