@@ -61,6 +61,14 @@ exec_filegroup(
     src = "//projects/monolith/frontend:build",
 )
 
+# Module config.py files for chart validation test.
+filegroup(
+    name = "module_configs",
+    srcs = glob(["*/config.py"]),
+    visibility = ["//projects/monolith/chart:__pkg__"],
+)
+
+
 # Shared source closure for the monolith binaries. Both the API server
 # (:main / :image) and the batch-jobs entrypoint (:jobs / :jobs_image) glob the
 # same tree so their image dependency layers are byte-identical: Bazel caches
