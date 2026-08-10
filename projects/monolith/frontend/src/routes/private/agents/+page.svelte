@@ -684,7 +684,14 @@
   // Subscribe to the shared VM state stream. A slow poll is only a fallback
   // after the stream has failed repeatedly.
   $effect(() => {
-    const source = new EventSource("/agents/vms/stream");
+    // The literal /private path, matching private/chat, NOT the short
+    // /agents form the other fetches here use. The /private prefix is added
+    // by the reroute hook inside this Node process, long after the gateway
+    // has picked an HTTPRoute rule, so a short path reaches Envoy as
+    // /agents/... , matches the catch-all, and never gets the long timeout
+    // the stream needs. Envoy then resets it at its 15s default and
+    // EventSource reconnects forever, roughly four times a minute.
+    const source = new EventSource("/private/agents/vms/stream");
     let failures = 0;
     let fallbackInterval;
 
@@ -706,7 +713,14 @@
     };
     source.onerror = () => {
       failures += 1;
-      if (failures >= 3) startFallback();
+      // A fatal error (non-200, or a content type that is not
+      // text/event-stream, which is what an expired Cloudflare Access
+      // session returns) closes the source permanently and fires exactly
+      // ONE error. Counting to three never gets there, so the case the
+      // fallback exists for was the one case it could not cover.
+      if (source.readyState === EventSource.CLOSED || failures >= 3) {
+        startFallback();
+      }
     };
 
     return () => {
