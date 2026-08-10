@@ -17,6 +17,18 @@ IndexError escapes and aborts blueprints_discovery for the ENTIRE /blueprints
 tree. One malformed tag in one file silently stops every blueprint in the
 instance from reconciling, including authentik's own bundled defaults.
 
+Note the asymmetry in why each rejected form is rejected, because the two are
+NOT the same kind of problem:
+
+  - 1 element is authentik's actual contract. It raises IndexError and takes
+    down discovery. This is the bug the guard exists for.
+  - 3 or more elements is a LINT, not authentik's contract. The constructor
+    reads only value[0] and value[1], so extra elements are silently ignored
+    and discovery is unaffected. We still reject it, because a third element
+    is almost certainly an authoring mistake and silence is the worst outcome,
+    but do not read the failure message as "authentik rejects this". It does
+    not.
+
 This test guards against that by:
 1. Discovering all blueprints/*.yaml files and parsing them
 2. Building YAML AST without constructing objects, so we can inspect node shapes
@@ -40,6 +52,17 @@ def _assert_env_arity_node(node, label):
         return
 
     if isinstance(node, yaml.MappingNode):
+        # A mapping-form !Env matches neither isinstance branch in authentik's
+        # constructor, so `key` is never set and it does NOT break discovery: it
+        # surfaces much later as an AttributeError when the blueprint is applied.
+        # Catching it here moves that from apply time to CI, which is the whole
+        # point of this guard.
+        if node.tag == "!Env":
+            mark = node.start_mark
+            raise AssertionError(
+                f"{label}: !Env must be a scalar or a 2-element sequence, got a "
+                f"mapping at line {mark.line + 1}, column {mark.column + 1}"
+            )
         for key, value in node.value:
             _assert_env_arity_node(key, label)
             _assert_env_arity_node(value, label)
@@ -152,7 +175,13 @@ metadata:
 
 
 def test_env_sequence_form_too_many_elements_invalid():
-    """Sequence form !Env [K, default, extra] with 3+ elements is invalid."""
+    """Sequence form !Env [K, default, extra] is rejected as a LINT, not by authentik.
+
+    authentik reads only value[0] and value[1], so a third element is silently
+    ignored and discovery keeps working. We reject it anyway because it is
+    almost certainly an authoring mistake, but unlike the 1-element case this
+    is our rule, not authentik's.
+    """
     yaml_text = """
 version: 1
 metadata:
@@ -166,3 +195,22 @@ metadata:
     # Verify the error message names the issue
     assert "!Env sequence form must have exactly 2 elements" in str(exc_info.value)
     assert "got 3" in str(exc_info.value)
+
+
+def test_env_mapping_form_invalid():
+    """Mapping form !Env is rejected here rather than at apply time.
+
+    It does not raise IndexError, so it does not break discovery the way the
+    1-element sequence does. It fails later, when the blueprint is applied.
+    """
+    yaml_text = """
+version: 1
+metadata:
+  secret: !Env
+    key: MY_SECRET
+    default: fallback
+"""
+    with pytest.raises(AssertionError) as exc_info:
+        _parse_and_check_blueprint(yaml_text, "test_env_mapping_form_invalid")
+
+    assert "must be a scalar or a 2-element sequence" in str(exc_info.value)
