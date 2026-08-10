@@ -653,14 +653,21 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "rejoin"})
     assert {:error, :delivery_failed} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "fail"})
 
-    assert eventually(fn ->
-             case SessionStore.get(ctx.store, created.session_id) do
-               {:ok, session} -> session.state == :failed
-               _ -> false
-             end
-           end)
+    # Wait for the async write, then assert on the real values rather than on the
+    # poll's boolean, so a timeout still reports the state it actually observed
+    # (`:running` is the symptom in #4391). The op rides the same transition as
+    # the state, so one wait covers both assertions.
+    _ =
+      eventually(fn ->
+        case SessionStore.get(ctx.store, created.session_id) do
+          {:ok, session} -> session.state == :failed
+          _ -> false
+        end
+      end)
 
-    assert eventually(fn -> :session_failed in op_kinds_for(ctx, created.session_id) end)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :failed
+    assert :session_failed in op_kinds_for(ctx, created.session_id)
   end
 
   test "crash-window park completes to parked on restart adoption" do
@@ -1528,15 +1535,19 @@ defmodule Embervm.SessionManagerTest do
     assert {:error, :suspect} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
 
     # The session is now failed (a guest in unknown mid-request state is not reused).
-    assert eventually(fn ->
-             case SessionStore.get(ctx.store, created.session_id) do
-               {:ok, session} ->
-                 session.state == :failed and session.terminal_reason == "failed"
+    # Same async write as the rejoin test above, so wait for it and then assert on
+    # the real values, which keeps the failure message diagnostic.
+    _ =
+      eventually(fn ->
+        case SessionStore.get(ctx.store, created.session_id) do
+          {:ok, session} -> session.state == :failed
+          _ -> false
+        end
+      end)
 
-               _ ->
-                 false
-             end
-           end)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :failed
+    assert session.terminal_reason == "failed"
   end
 
   # -- destroy ---------------------------------------------------------------
