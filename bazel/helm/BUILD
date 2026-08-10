@@ -11,6 +11,7 @@ exports_files([
     "helm-template-test.sh",
     "push.sh.tpl",
     "render-manifests.sh",
+    "write-back-versions.sh",
 ])
 
 sh_test(
@@ -23,6 +24,12 @@ sh_test(
     name = "chart_version_test",
     srcs = ["chart-version_test.sh"],
     data = [":chart-version.sh"],
+)
+
+sh_test(
+    name = "write_back_versions_test",
+    srcs = ["write-back-versions_test.sh"],
+    data = [":write-back-versions.sh"],
 )
 
 sh_binary(
