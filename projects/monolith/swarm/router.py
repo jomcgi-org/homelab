@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
@@ -35,6 +36,19 @@ def _dbos():
             status_code=503, detail="Swarm DBOS is not launched on this replica"
         )
     return instance
+
+
+def _server_app_version() -> str:
+    return os.environ.get("APP_VERSION", os.environ.get("GIT_SHA", "unknown"))
+
+
+def _session_rows(workflow_id: str):
+    from agent_sessions import store
+    from core.db import get_engine
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        return store.sessions_for_workflow(session, workflow_id)
 
 
 @router.post("/runs")
@@ -73,16 +87,27 @@ def start_run(request: RunRequest) -> dict:
 
 @router.get("/runs/{workflow_id}")
 def get_run(workflow_id: str) -> dict:
-    status = _dbos().retrieve_workflow(workflow_id).get_status()
-    return _status_payload(status)
+    from swarm.view import compose_run
+
+    dbos = _dbos()
+    try:
+        result = compose_run(
+            dbos, workflow_id, _session_rows(workflow_id), _server_app_version()
+        )
+    except Exception as exc:  # DBOS uses a runtime-specific missing-workflow error.
+        if "not found" in str(exc).lower() or "non-existent" in str(exc).lower():
+            raise HTTPException(status_code=404, detail="workflow not found") from exc
+        raise
+    if result is None:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    return result
 
 
 @router.get("/runs")
-def list_runs() -> list[dict]:
-    return [
-        _status_payload(status)
-        for status in _dbos().list_workflows(limit=50, sort_desc=True)
-    ]
+def list_runs(active: bool = True) -> dict:
+    from swarm.view import compose_master
+
+    return compose_master(_dbos(), active, {}, _server_app_version())
 
 
 @router.post("/runs/{workflow_id}/cancel")
@@ -123,17 +148,4 @@ async def cancel_run(workflow_id: str, request: Request) -> dict:
         "workflow_id": workflow_id,
         "cancelled": True,
         "guest_sessions": guest_sessions,
-    }
-
-
-def _status_payload(status) -> dict:
-    # `error` is a live exception object (e.g. DBOSMaxStepRetriesExceeded), which
-    # pydantic cannot serialize: returning it raw turned every failed run's
-    # status into a 500, hiding the very failure the caller was asking about.
-    error = getattr(status, "error", None)
-    return {
-        "workflow_id": status.workflow_id,
-        "status": status.status,
-        "result": getattr(status, "output", None),
-        "error": None if error is None else f"{type(error).__name__}: {error}",
     }

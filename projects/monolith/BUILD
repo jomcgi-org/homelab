@@ -2209,6 +2209,26 @@ py_test(
 )
 
 py_test(
+    name = "view_test",
+    srcs = ["swarm/view_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "tier_test",
+    srcs = ["swarm/tier_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "frontend_test",
     srcs = ["app/frontend_test.py"],
     imports = ["."],
