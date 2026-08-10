@@ -168,6 +168,7 @@ def _persist_session(
     discord_thread: str | None = None,
     system_prompt: str | None = None,
     workflow_id: str | None = None,
+    triggered_by: str | None = None,
 ) -> AgentSession:
     with Session(get_engine()) as db_session:
         return store.create_session(
@@ -180,6 +181,7 @@ def _persist_session(
             discord_thread=discord_thread,
             system_prompt=system_prompt,
             workflow_id=workflow_id,
+            triggered_by=triggered_by,
         )
 
 

@@ -92,6 +92,33 @@ def test_create_session_persists_optional_system_prompt(monkeypatch, tmp_path):
         _restore_schemas(schemas)
 
 
+def test_create_session_persists_normalized_triggered_by(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            triggered = store.create_session(
+                session,
+                "triggered",
+                "<guest>",
+                "main",
+                triggered_by="  EXAMPLE@EXAMPLE.COM  ",
+            )
+            untriggered = store.create_session(
+                session, "untriggered", "<guest>", "main"
+            )
+            blank = store.create_session(
+                session, "blank", "<guest>", "main", triggered_by="   "
+            )
+
+            assert triggered.triggered_by == "example@example.com"
+            assert untriggered.triggered_by is None
+            # Whitespace-only must land as NULL, not "". An empty string passes a
+            # NULL check but matches no caller, so it would own rows nobody reads.
+            assert blank.triggered_by is None
+    finally:
+        _restore_schemas(schemas)
+
+
 def test_create_session_persists_and_queries_workflow_id(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     try:

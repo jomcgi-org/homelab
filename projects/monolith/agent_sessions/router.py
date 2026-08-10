@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
@@ -139,6 +139,7 @@ def _session_payload(
         "branch": row.branch,
         "repo": row.repo,
         "workflow_id": row.workflow_id,
+        "triggered_by": row.triggered_by,
         "model": row.model,
         "status": row.status,
         "title": row.title or _fallback_title(first_turn_prompt, first_pending_prompt),
@@ -477,32 +478,35 @@ def get_session_detail(
 
 
 @router.post("/sessions")
-async def start_session(request: StartRequest) -> dict:
-    if request.repo is not None and request.repo not in REPO_CATALOG:
+async def start_session(request: Request, start_request: StartRequest) -> dict:
+    triggered_by = request.headers.get("x-auth-email")
+    triggered_by = triggered_by.strip().lower() or None if triggered_by else None
+    if start_request.repo is not None and start_request.repo not in REPO_CATALOG:
         return {
             "accepted": False,
             "error": (
-                f"unknown repo {request.repo}; catalog: {', '.join(REPO_CATALOG)}"
+                f"unknown repo {start_request.repo}; catalog: {', '.join(REPO_CATALOG)}"
             ),
         }
     try:
-        model_family(request.model)
+        model_family(start_request.model)
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
     row = await asyncio.to_thread(
         _persist_session,
         str(uuid4()),
-        request.workspace,
-        request.branch,
-        request.model,
-        request.repo,
+        start_request.workspace,
+        start_request.branch,
+        start_request.model,
+        start_request.repo,
+        triggered_by=triggered_by,
     )
     turn = await asyncio.to_thread(
-        _persist_pending_message, row.id, request.prompt, request.model
+        _persist_pending_message, row.id, start_request.prompt, start_request.model
     )
     # Queued from the UI, so its result does not get echoed to Discord.
     _mark_ui_originated(row.id, turn)
-    login = await codex_login_gate(request.model)
+    login = await codex_login_gate(start_request.model)
     if login is not None:
 
         async def resume() -> None:

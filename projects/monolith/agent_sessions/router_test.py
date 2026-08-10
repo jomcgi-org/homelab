@@ -446,8 +446,8 @@ def test_get_session_not_found(client):
 def test_start_session_happy_path(client, session, monkeypatch):
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo: store.create_session(
-            session, local, workspace, branch, model, repo
+        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
+            session, local, workspace, branch, model, repo, **kwargs
         ),
     )
     monkeypatch.setattr(
@@ -466,8 +466,8 @@ def test_start_session_happy_path(client, session, monkeypatch):
 def test_start_session_persists_repo(client, session, monkeypatch):
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo: store.create_session(
-            session, local, workspace, branch, model, repo
+        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
+            session, local, workspace, branch, model, repo, **kwargs
         ),
     )
     monkeypatch.setattr(
@@ -486,6 +486,59 @@ def test_start_session_persists_repo(client, session, monkeypatch):
     assert body["accepted"] is True
     assert row.repo == "jomcgi/homelab"
     assert client.get("/api/agents/sessions").json()[0]["repo"] == "jomcgi/homelab"
+
+
+def test_start_session_persists_triggered_by_header(client, session, monkeypatch):
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_session",
+        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
+            session, local, workspace, branch, model, repo, **kwargs
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
+
+    response = client.post(
+        "/api/agents/sessions",
+        json={"prompt": "Hello"},
+        headers={"X-Auth-Email": "  EXAMPLE@EXAMPLE.COM  "},
+    )
+
+    assert response.status_code == 200
+    session_id = response.json()["session_id"]
+    assert session.get(AgentSession, session_id).triggered_by == "example@example.com"
+    assert client.get("/api/agents/sessions").json()[0]["triggered_by"] == (
+        "example@example.com"
+    )
+
+
+def test_start_session_without_triggered_by_header_succeeds(
+    client, session, monkeypatch
+):
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_session",
+        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
+            session, local, workspace, branch, model, repo, **kwargs
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
+
+    response = client.post("/api/agents/sessions", json={"prompt": "Hello"})
+
+    assert response.status_code == 200
+    session_id = response.json()["session_id"]
+    assert session.get(AgentSession, session_id).triggered_by is None
 
 
 def test_start_session_rejects_unknown_repo(client):
@@ -796,8 +849,10 @@ def test_router_start_non_codex_models_enqueue_without_broker(
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, selected_model, repo: store.create_session(
-            session, local, workspace, branch, selected_model, repo
+        lambda local, workspace, branch, selected_model, repo, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, selected_model, repo, **kwargs
+            )
         ),
     )
     monkeypatch.setattr(
@@ -835,8 +890,8 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo: store.create_session(
-            session, local, workspace, branch, model, repo
+        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
+            session, local, workspace, branch, model, repo, **kwargs
         ),
     )
     monkeypatch.setattr(
@@ -937,8 +992,8 @@ def test_start_session_marks_message_ui_originated(client, session, monkeypatch)
     mcp._ui_originated.clear()
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo: store.create_session(
-            session, local, workspace, branch, model, repo
+        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
+            session, local, workspace, branch, model, repo, **kwargs
         ),
     )
     monkeypatch.setattr(
