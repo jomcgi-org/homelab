@@ -28,7 +28,7 @@ def start_session_for_swarm(
     branch: str,
     workflow_id: str | None = None,
 ) -> int:
-    """Create and schedule a graph-owned session through the normal session path.
+    """Create and schedule a swarm-owned session through the normal session path.
 
     ``local_session_id`` is the caller's IDEMPOTENCY KEY, not a fresh uuid. DBOS
     steps are at-least-once, so a retried step that minted a new id each time
