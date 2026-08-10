@@ -87,6 +87,11 @@ fi
 # --- 3. owner is pinned, not the building user ------------------------------
 # GNU tar prints the pair as "0/0"; bsdtar prints uid and gid as separate
 # columns. Accept either, and print the offending line if neither holds.
+#
+# This case can only distinguish pinned from unpinned when the test runs as a
+# non-root uid, since an unpinned tar run as root also records 0. That holds
+# where it matters: the layer this guards recorded uid 1001 when it drifted, so
+# the CI executor is not root.
 OWNER_LINE=$(tar -tvf "$TMP/forward.tar" | head -1)
 if grep -qE '(^|[[:space:]])0/0([[:space:]]|$)' <<<"$OWNER_LINE" ||
 	awk '{exit !($3 == 0 && $4 == 0)}' <<<"$OWNER_LINE"; then
@@ -107,6 +112,31 @@ if [[ "$MTIME" == "1970" || "$MTIME" == "0" ]]; then
 	pass "mtimes are pinned to the epoch"
 else
 	fail "mtime is not pinned, got: $MTIME"
+fi
+
+# --- 4b. modes survive ------------------------------------------------------
+# The staged tree carries an executable script, and the script under test
+# deliberately does NOT normalise modes. Without this assertion the executable
+# staged above is decorative: a future blanket chmod would strip the bit and
+# every other case would still pass.
+if [[ -x "$EXTRACT/opt/abseil/run.sh" ]]; then
+	pass "the executable bit survives archiving"
+else
+	fail "the executable bit was stripped from opt/abseil/run.sh"
+fi
+
+# --- 4c. the epoch is UTC, not the builder's local midnight -----------------
+# `touch -t` reads its argument as LOCAL time, so without a TZ pin the same
+# tree staged in two timezones stores different mtimes and therefore different
+# bytes. Uses a POSIX offset string rather than a zone name so it does not
+# depend on tzdata being present.
+TZSHIFT="$TMP/tzshift"
+stage_tree "$TZSHIFT" zeta mid alpha rules_cc platforms
+TZ='XXX-10' sh "$SCRIPT" "$TZSHIFT" "$TMP/tzshift.tar"
+if cmp -s "$TMP/tzshift.tar" "$TMP/forward.tar"; then
+	pass "the archive is identical regardless of the builder's timezone"
+else
+	fail "the builder's timezone changes the archive bytes"
 fi
 
 # --- 5. an empty staged root is refused, not silently archived --------------
