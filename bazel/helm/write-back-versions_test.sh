@@ -44,9 +44,15 @@ new_env() {
 	local name="$1" version="$2"
 	local origin="$TMP/${name}.git" seed="$TMP/${name}-seed" clone="$TMP/${name}"
 
-	git init --quiet --bare "$origin"
+	# --initial-branch is load-bearing on BOTH repos. Without it the branch name
+	# comes from the ambient init.defaultBranch, which is `main` on a configured
+	# dev machine and `master` in the CI sandbox. The bare repo's HEAD then
+	# points at a ref that never gets created, the clone comes up with no
+	# working tree at all ("remote HEAD refers to nonexistent ref"), and the
+	# later cases push commits built on nothing.
+	git init --quiet --bare --initial-branch=main "$origin"
 	mkdir -p "$seed/projects/demo/chart" "$seed/projects/demo/deploy"
-	git -C "$seed" init --quiet
+	git -C "$seed" init --quiet --initial-branch=main
 	git -C "$seed" config user.email "t@e.com"
 	git -C "$seed" config user.name "t"
 	printf 'name: demo\nversion: %s\n' "$version" >"$seed/projects/demo/chart/Chart.yaml"
@@ -65,7 +71,6 @@ new_env() {
 	YAML
 	git -C "$seed" add -A
 	git -C "$seed" commit --quiet -m "chore: seed ${version}"
-	git -C "$seed" branch -M main
 	git -C "$seed" push --quiet "$origin" main
 
 	git clone --quiet "$origin" "$clone"
