@@ -24,6 +24,20 @@ actions:
         branches:
           - "*"
         merge_with_base: false
+      # Merge queue. GitHub pushes each queued candidate to a temporary
+      # gh-readonly-queue/<base>/pr-<n>-<sha> branch and waits for the REQUIRED
+      # checks to report on it. Those arrive as PUSH events, not pull_request
+      # ones, so without this trigger the queue would wait forever on a check
+      # that never runs, which blocks every merge in the repo. A BuildBuddy
+      # branch pattern's `*` matches across `/`, so one entry covers every base.
+      #
+      # Scoped to the queue prefix deliberately: a bare "*" here would run
+      # pr-checks on every push to every feature branch, on top of the
+      # pull_request run, which is the opposite of why the queue is being
+      # enabled.
+      push:
+        branches:
+          - "gh-readonly-queue/*"
     steps:
       - run: |
           # errexit is LOAD-BEARING. A BuildBuddy step is one shell script and
