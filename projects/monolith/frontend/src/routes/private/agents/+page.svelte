@@ -18,6 +18,9 @@
   } from "./mobile-view.js";
   import { statusClass, statusLabel, vmRunning, vmState } from "./status.js";
   import "./agents-theme.css";
+  import "./run-view.css";
+  import RunView from "./RunView.svelte";
+  import MasterView from "./MasterView.svelte";
 
   let { data } = $props();
 
@@ -37,6 +40,12 @@
     }
   }
   let sessions = $state(data.sessions ?? []);
+  let runs = $state([]);
+  let runMaster = $state({ runs: [], queues: [] });
+  let selectedRunId = $state(null);
+  let runDetail = $state(null);
+  let runError = $state(false);
+  let runRequestSequence = 0;
   let detail = $state(null);
   let searchQuery = $state("");
   let searchResults = $state(null);
@@ -78,6 +87,11 @@
     sessions.find((session) => String(session.id) === String(selectedId)) ??
       detail?.session ??
       null,
+  );
+  const hasRuns = $derived(runs.length > 0);
+  const runNeedsAttention = $derived(runs.filter((run) => run.needs).length);
+  const runSpend = $derived(
+    runs.reduce((total, run) => total + Number(run.cost_usd || 0), 0),
   );
   const activeSessions = $derived(
     sessions.filter((session) => isActive(session)).sort(compareSessions),
@@ -343,6 +357,7 @@
       if (!response.ok) throw new Error("Unable to refresh sessions");
       const body = await response.json();
       sessions = Array.isArray(body) ? body : (body.sessions ?? []);
+      await loadRuns();
       errorMessage = null;
       if (
         selectedId != null &&
@@ -353,6 +368,111 @@
       }
     } catch (error) {
       errorMessage = error.message;
+    }
+  }
+
+  async function loadRuns() {
+    try {
+      const response = await fetch("/agents/runs");
+      if (!response.ok) throw new Error("swarm runs unavailable");
+      const body = await response.json();
+      runMaster = body.master ?? body;
+      runs = runMaster.runs ?? [];
+      runError = false;
+    } catch {
+      runError = true;
+    }
+  }
+
+  async function loadRunDetail(id, sequence = runRequestSequence) {
+    if (id == null) return;
+    try {
+      const response = await fetch(`/agents/runs/${encodeURIComponent(id)}`);
+      if (!response.ok) throw new Error("swarm run unavailable");
+      const body = await response.json();
+      if (
+        sequence === runRequestSequence &&
+        String(selectedRunId) === String(id)
+      ) {
+        runDetail = {
+          ...body,
+          run: body.run ?? body,
+          view: body.view ?? {
+            engine_tier: "live",
+            now: new Date().toISOString(),
+            snapshot_age_seconds: 0,
+          },
+          sessions: body.sessions ?? sessions,
+        };
+      }
+    } catch {
+      runError = true;
+      if (
+        sequence === runRequestSequence &&
+        String(selectedRunId) === String(id)
+      ) {
+        if (runDetail?.run) {
+          runDetail = {
+            ...runDetail,
+            view: {
+              ...runDetail.view,
+              engine_tier: "stale",
+              snapshot_age_seconds: Math.max(
+                1,
+                Number(runDetail.view?.snapshot_age_seconds || 0) + 1,
+              ),
+            },
+          };
+        } else {
+          runDetail = {
+            run: null,
+            sessions,
+            view: {
+              engine_tier: "absent",
+              now: new Date().toISOString(),
+              snapshot_age_seconds: null,
+            },
+          };
+        }
+      }
+    }
+  }
+
+  function selectRun(runOrId) {
+    const id = typeof runOrId === "object" ? runOrId?.workflow_id : runOrId;
+    if (id == null) return;
+    requestSequence += 1;
+    selectedRunId = id;
+    selectedId = null;
+    detail = null;
+    runDetail = null;
+    runRequestSequence += 1;
+    loadRunDetail(id, runRequestSequence);
+    if (isMobileViewport() && mobileView === MOBILE_VIEW_LIST) {
+      mobileView = enterTranscript({ view: mobileView }).view;
+      pushState(`?run=${encodeURIComponent(id)}`, {
+        agentsRunId: id,
+        agentsMobileView: MOBILE_VIEW_TRANSCRIPT,
+      });
+      mobileHistoryEntry = true;
+    } else {
+      pushState(`?run=${encodeURIComponent(id)}`, { agentsRunId: id });
+    }
+  }
+
+  function selectRuns() {
+    selectedId = null;
+    selectedRunId = null;
+    runDetail = null;
+    if (isMobileViewport() && mobileView === MOBILE_VIEW_LIST) {
+      mobileView = enterTranscript({ view: mobileView }).view;
+      pushState("/private/agents", {
+        agentsRunId: null,
+        agentsMobileView: MOBILE_VIEW_TRANSCRIPT,
+      });
+      mobileHistoryEntry = true;
+    } else {
+      pushState("/private/agents", { agentsRunId: null });
     }
   }
 
@@ -423,6 +543,8 @@
     if (id == null) return;
     requestSequence += 1;
     selectedId = id;
+    selectedRunId = null;
+    runDetail = null;
     detail = null;
     renderedPending = {};
     searchResults = null;
@@ -431,11 +553,16 @@
     composerModel = session?.model || "";
     if (isMobileViewport() && mobileView === MOBILE_VIEW_LIST) {
       mobileView = enterTranscript({ view: mobileView }).view;
-      pushState("", { agentsMobileView: MOBILE_VIEW_TRANSCRIPT });
+      pushState("/private/agents", {
+        agentsRunId: null,
+        agentsMobileView: MOBILE_VIEW_TRANSCRIPT,
+      });
       mobileHistoryEntry = true;
       tick().then(() => {
         if (isMobileViewport()) titleEl?.focus({ preventScroll: true });
       });
+    } else {
+      pushState("/private/agents", { agentsRunId: null });
     }
   }
 
@@ -605,16 +732,28 @@
     }
   }
 
-  $effect(() => {
-    if (selectedId == null && sessions.length && !isMobileViewport())
-      selectSession(sessions[0]);
-  });
+  async function cancelRun(id) {
+    if (!id || !window.confirm("Cancel this swarm run?")) return;
+    try {
+      const response = await fetch(
+        `/agents/runs/${encodeURIComponent(id)}/cancel`,
+        { method: "POST" },
+      );
+      if (!response.ok) throw new Error("Run could not be cancelled");
+      await Promise.all([loadRuns(), loadRunDetail(id, runRequestSequence)]);
+    } catch (error) {
+      errorMessage = error.message;
+    }
+  }
 
   $effect(() => {
     if (showNewPanel) tick().then(() => newPromptEl?.focus());
   });
 
   onMount(() => {
+    loadRuns();
+    const linkedRun = new URLSearchParams(window.location.search).get("run");
+    if (linkedRun) selectRun(linkedRun);
     const handleKeydown = (event) => {
       if (event.key === "Escape" && !event.isComposing && showNewPanel) {
         event.preventDefault();
@@ -622,6 +761,11 @@
       }
     };
     const handlePopstate = () => {
+      const linkedRun = new URLSearchParams(window.location.search).get("run");
+      if (linkedRun) {
+        selectRun(linkedRun);
+        return;
+      }
       const nextView = $page.state?.agentsMobileView;
       if (nextView === MOBILE_VIEW_TRANSCRIPT) {
         mobileHistoryEntry = true;
@@ -658,6 +802,7 @@
 
   $effect(() => {
     selectedId;
+    selectedRunId;
     sessions;
     detail;
     const hasClaimed = detail?.pending_queue?.some(
@@ -690,6 +835,8 @@
     const pollInterval = hasActiveSessions ? 2000 : 15000;
     const interval = setInterval(async () => {
       await loadSessions();
+      if (selectedRunId != null)
+        await loadRunDetail(selectedRunId, runRequestSequence);
       if (selectedId != null)
         await loadDetail(selectedId, requestSequence, true);
     }, pollInterval);
@@ -817,6 +964,19 @@
         {:else}<div class="empty">No matching turns</div>{/each}
       </div>
     {:else}
+      {#if runs.length}
+        <button class="run-row" type="button" onclick={selectRuns}>
+          <span class="run-title">runs</span>
+          <span class="run-sub mono"
+            >{runs.length} in flight {#if runNeedsAttention}
+              · <span class="needs-tag"
+                >{runNeedsAttention} needs attention</span
+              >{/if}</span
+          >
+          {#if runSpend}<span class="run-cost mono">${runSpend.toFixed(2)}</span
+            >{/if}
+        </button>
+      {/if}
       {#if activeSessions.length}
         <div class="group-title">
           Active <span>{activeSessions.length}</span>
@@ -863,7 +1023,17 @@
       aria-label="Back to agent sessions"
       onclick={returnToSessionList}>← back</button
     >
-    {#if selectedSession}
+    {#if selectedRunId}
+      {#if runDetail?.run}
+        <RunView
+          run={runDetail.run}
+          view={runDetail.view}
+          sessions={runDetail.sessions ?? sessions}
+          onSelectSession={selectSession}
+          onCancel={() => cancelRun(selectedRunId)}
+        />
+      {:else}<div class="empty blank-state">Loading run…</div>{/if}
+    {:else if selectedSession}
       <header class="transcript-head">
         <div class="head-main">
           <h1
@@ -1059,7 +1229,7 @@
         </div>
       </form>
     {:else}
-      <div class="empty blank-state">Select a session or create a new one</div>
+      <MasterView master={runMaster} />
     {/if}
   </section>
 

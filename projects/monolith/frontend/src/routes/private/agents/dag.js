@@ -1,0 +1,57 @@
+export function computeRanks(nodes) {
+  const byKey = new Map(nodes.map((node) => [node.key, node]));
+  const memo = new Map();
+  const rankOf = (node) => {
+    if (memo.has(node.key)) return memo.get(node.key);
+    memo.set(node.key, 0);
+    const deps = (node.deps || []).map((key) => byKey.get(key)).filter(Boolean);
+    const rank = deps.length ? Math.max(...deps.map(rankOf)) + 1 : 0;
+    memo.set(node.key, rank);
+    return rank;
+  };
+  const groups = [];
+  nodes.forEach((node) => (groups[rankOf(node)] ||= []).push(node));
+  return groups;
+}
+
+export function isWide(run) {
+  return (
+    computeRanks(run.nodes).some((group) => group.length > 1) ||
+    run.nodes.some((node) => node.kind === "expansion")
+  );
+}
+
+export function nodeIconKey(node) {
+  if (node.state === "blocked")
+    return node.blocked_on?.kind === "human" ? "blocked_human" : "blocked_dep";
+  if (node.kind === "expansion") return "expansion";
+  if (node.kind === "gate")
+    return node.state === "passed" ? "gate_passed" : "gate";
+  return (
+    {
+      done: "done",
+      running: "running",
+      queued: "queued",
+      future: "future",
+      escalated: "escalated",
+      failed: "failed",
+      cancelled: "cancelled",
+      waiting: "gate",
+      refused: "gate",
+    }[node.state] || "future"
+  );
+}
+
+export function nodeStateClass(node) {
+  if (node.state === "blocked")
+    return node.blocked_on?.kind === "human" ? "g-blocked-h" : "g-blocked-d";
+  return `g-${node.state}${node.state === "running" ? " pulse" : ""}`;
+}
+
+export function pipClass(attempt) {
+  return attempt.state === "done"
+    ? "pip"
+    : attempt.state === "running"
+      ? "pip run"
+      : "pip bad";
+}
