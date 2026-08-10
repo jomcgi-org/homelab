@@ -82,7 +82,7 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
         # async, matching the real DBOS API: the sync cancel_workflow raises
         # from a running event loop (check_async), so a sync fake would let a
         # production-breaking handler pass its tests.
-        async def cancel_workflow_async(self, workflow_id, cancel_children=False):
+        async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
             events.append(("cancel", workflow_id, cancel_children))
 
     async def reap(workflow_id):
@@ -115,7 +115,7 @@ def test_cancel_reports_reap_failure_without_failing(monkeypatch):
     monkeypatch.setenv("SWARM_ENABLED", "true")
 
     class FakeDBOS:
-        async def cancel_workflow_async(self, workflow_id, cancel_children=False):
+        async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
             assert workflow_id == "wf-1"
             assert cancel_children is True
 

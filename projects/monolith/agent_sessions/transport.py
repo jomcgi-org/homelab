@@ -364,7 +364,15 @@ class EmberVmShimTransport:
             # instead can be fooled by a 500 whose URL or body merely contains
             # "404" or "not found", and would then treat a LIVE session as
             # reaped, leaking the capacity slot they meant to reclaim.
-            if exc.response.status_code in (403, 404, 410):
+            #
+            # 403 is deliberately NOT in this set, unlike the invoke path where
+            # it does imply a dead session. DELETE is a management-auth route
+            # authenticated with the pod ServiceAccount, not the session's own
+            # capability token, so its only 403 is "service account not
+            # permitted". That fails EVERY destroy at once, and calling it gone
+            # would report the whole fleet reaped while every VM stays alive.
+            # The control plane's destroy handler answers 200, 404, or 500.
+            if exc.response.status_code in (404, 410):
                 raise EmberSessionGone(_status_error_detail(exc)) from exc
             raise EmberVMTransportError(_status_error_detail(exc)) from exc
         except httpx.TransportError as exc:
