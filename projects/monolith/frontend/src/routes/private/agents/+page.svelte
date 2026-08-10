@@ -71,6 +71,7 @@
   let sending = $state(false);
   let creating = $state(false);
   let showNewPanel = $state(false);
+  let newPanelMode = $state("session");
   let newButtonEl = $state(null);
   let newPromptEl = $state(null);
   let titleEl = $state(null);
@@ -88,6 +89,7 @@
     repo: "",
     branch: "",
   });
+  let newRun = $state({ budget: "", idempotencyKey: "" });
   let errorMessage = $state(
     data.error ? "Unable to load agent sessions" : null,
   );
@@ -624,6 +626,8 @@
   }
 
   function openNewPanel() {
+    newPanelMode = "session";
+    newRun.idempotencyKey = crypto.randomUUID();
     showNewPanel = true;
   }
 
@@ -740,6 +744,55 @@
       branches = [];
       await loadSessions();
       selectSession(body.session_id);
+    } catch (error) {
+      errorMessage = error.message;
+      creating = false;
+    }
+  }
+
+  async function createRun() {
+    if (
+      !newSession.prompt.trim() ||
+      !newSession.repo ||
+      !newSession.branch ||
+      creating
+    )
+      return;
+    if (
+      newRun.budget !== "" &&
+      (!Number.isFinite(Number(newRun.budget)) || Number(newRun.budget) <= 0)
+    ) {
+      errorMessage = P.labels.budgetPositive;
+      return;
+    }
+    creating = true;
+    errorMessage = null;
+    try {
+      const requestBody = {
+        task: newSession.prompt.trim(),
+        repo: newSession.repo,
+        branch: newSession.branch,
+        idempotency_key: newRun.idempotencyKey,
+      };
+      if (newRun.budget !== "") requestBody.budget_usd = Number(newRun.budget);
+      const response = await fetch("/agents/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+      const body = await response.json();
+      // detail first: the swarm endpoint raises FastAPI HTTPExceptions, which
+      // serialise as {detail}, so the useful reasons ("unknown repo x",
+      // "budget_usd must be positive") live there and never in {error}.
+      if (!response.ok)
+        throw new Error(body.detail || body.error || P.labels.runCreateFailed);
+      creating = false;
+      closeNewPanel();
+      newSession = { prompt: "", model: "", repo: "", branch: "" };
+      newRun = { budget: "", idempotencyKey: "" };
+      branches = [];
+      await loadRuns();
+      selectRun(body.workflow_id);
     } catch (error) {
       errorMessage = error.message;
       creating = false;
@@ -1282,16 +1335,32 @@
       aria-label="Close new session panel"
       onclick={closeNewPanel}
     ></button>
-    <section class="new-panel" role="dialog" aria-label="New session">
-      <div class="eyebrow">new session</div>
+    <section
+      class="new-panel"
+      role="dialog"
+      aria-label={newPanelMode === "run"
+        ? P.labels.newRun
+        : P.labels.newSession}
+    >
+      <div class="eyebrow">
+        {newPanelMode === "run" ? P.labels.newRun : P.labels.newSession}
+      </div>
+      <div class="field mode-field">
+        <span class="field-label">{P.labels.mode}</span>
+        <select bind:value={newPanelMode}>
+          <option value="session">{P.labels.sessionMode}</option>
+          <option value="run">{P.labels.runMode}</option>
+        </select>
+      </div>
       <form
         onsubmit={(event) => {
           event.preventDefault();
-          createSession();
+          if (newPanelMode === "run") createRun();
+          else createSession();
         }}
       >
         <label
-          >prompt<textarea
+          >{newPanelMode === "run" ? P.labels.task : "prompt"}<textarea
             bind:value={newSession.prompt}
             bind:this={newPromptEl}
             rows="7"
@@ -1305,20 +1374,24 @@
                 newSession.prompt.trim()
               ) {
                 e.preventDefault();
-                createSession();
+                if (newPanelMode === "run") createRun();
+                else createSession();
               }
             }}></textarea></label
         >
-        <div class="field">
-          <span class="field-label">model</span>
-          {@render modelPicker(newSession.model, (model) => {
-            newSession.model = model;
-          })}
-        </div>
+        {#if newPanelMode === "session"}
+          <div class="field">
+            <span class="field-label">model</span>
+            {@render modelPicker(newSession.model, (model) => {
+              newSession.model = model;
+            })}
+          </div>
+        {/if}
         <label
           >repo<select
             class="mono"
             bind:value={newSession.repo}
+            required={newPanelMode === "run"}
             disabled={repoLoading}
             onchange={() => {
               newSession.branch = "";
@@ -1328,7 +1401,11 @@
             {#if repoLoading}
               <option value="">loading repos</option>
             {:else}
-              <option value="">none (scratch workspace)</option>
+              {#if newPanelMode === "session"}
+                <option value="">none (scratch workspace)</option>
+              {:else}
+                <option value="">{P.labels.selectRepo}</option>
+              {/if}
               {#each repos as repo}
                 <option value={repo.id} title={repo.description || ""}>
                   {repo.id}
@@ -1342,6 +1419,7 @@
             class="mono"
             bind:value={newSession.branch}
             disabled={!newSession.repo || branchLoading}
+            required={newPanelMode === "run"}
           >
             {#if branchLoading}
               <option value="">loading branches</option>
@@ -1354,14 +1432,33 @@
             {/if}
           </select>
         </label>
+        {#if newPanelMode === "run"}
+          <label
+            >{P.labels.budgetWord}<input
+              type="number"
+              min="0"
+              step="0.01"
+              bind:value={newRun.budget}
+            /></label
+          >
+        {/if}
         <div class="new-actions">
           <button type="button" class="quiet-button" onclick={closeNewPanel}
             >cancel</button
           ><button
             class="send-button"
             type="submit"
-            disabled={creating || !newSession.prompt.trim()}
-            >{creating ? "creating…" : "create"}</button
+            disabled={creating ||
+              !newSession.prompt.trim() ||
+              (newPanelMode === "run" &&
+                (!newSession.repo || !newSession.branch))}
+            >{creating
+              ? newPanelMode === "run"
+                ? P.labels.startingRun
+                : P.labels.creating
+              : newPanelMode === "run"
+                ? P.labels.createRun
+                : P.labels.create}</button
           >
         </div>
       </form>
