@@ -58,9 +58,15 @@ done
 
 # _fail_missed_bump lived here. It told the author to run bump-chart.sh, which
 # is advice that no longer applies: with the version computed post-merge there
-# is no bump for a PR to miss. CHECK_MISSED_BUMP above is now unused and is
-# unwired, along with check-missed-bump.sh and bump-chart.sh themselves, in the
-# follow-up cleanup for ADR platform/009 decision 1.
+# is no bump for a PR to miss.
+#
+# CHECK_MISSED_BUMP is very much still wired, despite ADR platform/009 saying
+# the guard is "retired". Retiring it PRE-MERGE was right, because a PR carries
+# no version. Retiring it on MAIN was wrong: there it is not a bump guard at
+# all, it is the only content-stable answer to "did this chart actually
+# change", and the commit walk that replaced it depends on a dependency query
+# that can silently come back incomplete. Deleting it caused a silent
+# non-deploy on the first merge. See the digest-authority branch below.
 
 # --- Determine branch and workspace ---
 PUSH_TGZ="$CHART_TGZ"
@@ -137,8 +143,79 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
       SHOW_RC=$?
       set -e
       if [[ $SHOW_RC -eq 0 ]]; then
-        echo "Chart ${CHART_NAME} ${CHART_VERSION} is already published; nothing to publish."
-        exit 0
+        # DIGEST CONTENT IS THE AUTHORITY, NOT THE COMMIT WALK.
+        #
+        # chart-version.sh decides a bump from conventional commits scoped to
+        # `bazel query deps(...)`, and that package set can come back
+        # INCOMPLETE, at which point a real content change is reported as "no
+        # bump needed" and this branch silently skips a deploy. That is not
+        # hypothetical: it happened on the very first merge of the post-merge
+        # versioning change (2000bae, 2026-08-10). monolith's backend and jobs
+        # images changed because the docs manifests are baked into them, the
+        # closure query did not return projects/monolith, the walk found
+        # nothing, and chart 0.285.528 stayed pinned to the previous digests.
+        #
+        # So do not trust the walk to say "nothing changed". Ask the artifact.
+        # check-missed-bump.sh compares the ghcr.io digests pinned in the fresh
+        # chart against the published chart of this version, reads them straight
+        # out of the chart values (no registry round trip, no race with the
+        # image pushes in this same multirun), and is content-stable. If they
+        # match there is genuinely nothing to publish. If they differ, the
+        # content moved and this version must not be reused: republishing it in
+        # place is what wedges ArgoCD into permanent OutOfSync (ADR 011).
+        DIGESTS_MATCH="true"
+        if [[ -n "$CHECK_MISSED_BUMP" ]] && [[ -f "$CHECK_MISSED_BUMP" ]]; then
+          if [[ -f "${ABS_CHART_DIR}/application.yaml" ]]; then
+            GUARD_PROJECT_DIR="$CHART_DIR"
+          else
+            GUARD_PROJECT_DIR=$(dirname "$CHART_DIR")
+          fi
+          if ! env HELM="$HELM" REPOSITORY="$REPOSITORY" \
+            bash "$CHECK_MISSED_BUMP" "$CHART_NAME" "$CHART_VERSION" "$CHART_TGZ" "$GUARD_PROJECT_DIR"; then
+            DIGESTS_MATCH="false"
+          fi
+        fi
+
+        if [[ "$DIGESTS_MATCH" == "true" ]]; then
+          echo "Chart ${CHART_NAME} ${CHART_VERSION} is already published and the digests match; nothing to publish."
+          exit 0
+        fi
+
+        # The content changed under a published version. Escalate to a version
+        # derived from the commit REPO-WIDE, which needs no closure query, so
+        # the thing that just failed us cannot veto the escalation. It stays a
+        # function of HEAD, so concurrent publishes still cannot collide.
+        echo "Chart ${CHART_NAME} ${CHART_VERSION} is published but the image digests DIFFER; escalating the version." >&2
+        ESCALATED_VERSION=""
+        if [[ "$CAN_VERSION" == "true" ]]; then
+          ESCALATED_VERSION=$(cd "$WORKSPACE" && env CHART_VERSION_ALL_PATHS=1 "$CHART_VERSION_SH" "$CHART_DIR" "//${CHART_DIR}:chart.package") || ESCALATED_VERSION=""
+        fi
+        if [[ -z "$ESCALATED_VERSION" ]] || [[ "$ESCALATED_VERSION" == "$CHART_VERSION" ]]; then
+          {
+            echo "ERROR: ${CHART_NAME} ${CHART_VERSION} is published with DIFFERENT image digests, and no higher version could be computed."
+            echo "Publishing in place would mutate a deployed chart and wedge ArgoCD; skipping would silently not deploy."
+            echo "This needs a human: check bazel/helm/chart-version.sh against ${CHART_DIR}."
+          } >&2
+          exit 1
+        fi
+        echo "Escalated ${CHART_NAME}: ${CHART_VERSION} -> ${ESCALATED_VERSION}"
+        CHART_VERSION="$ESCALATED_VERSION"
+
+        # Re-check the ESCALATED version. SHOW_OUT below describes the old one,
+        # and reusing a published version is the exact mutation this branch
+        # exists to prevent, so the escalation has to be verified free rather
+        # than assumed free.
+        set +e
+        SHOW_OUT=$("${HELM}" show chart "${REPOSITORY}/${CHART_NAME}" --version "${CHART_VERSION}" 2>&1)
+        SHOW_RC=$?
+        set -e
+        if [[ $SHOW_RC -eq 0 ]]; then
+          {
+            echo "ERROR: escalated version ${CHART_NAME} ${CHART_VERSION} is ALSO already published."
+            echo "Publishing in place would mutate a deployed chart. This needs a human."
+          } >&2
+          exit 1
+        fi
       fi
       if echo "$SHOW_OUT" | grep -qiE 'not found|manifest unknown|404'; then
         echo "Publishing ${CHART_NAME}: ${CURRENT_VERSION} -> ${CHART_VERSION}"

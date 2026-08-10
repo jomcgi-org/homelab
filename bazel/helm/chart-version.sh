@@ -35,8 +35,20 @@ if [[ -z "$VERSION_COMMIT" ]]; then
 fi
 
 # --- Determine dependency directories ---
+#
+# CHART_VERSION_ALL_PATHS ignores the dependency closure and counts commits
+# across the WHOLE repo. It exists for the caller that already knows the chart's
+# content changed, because it compared image digests, and only needs a version
+# number that is deterministic per commit. The closure query cannot be trusted
+# in that situation: an incomplete package set is exactly how a real content
+# change gets reported as "no bump needed" (see the digest-authority branch in
+# push.sh.tpl). Counting repo-wide overcounts, which is harmless, rather than
+# undercounting, which silently skips a deploy.
 DEP_DIRS=""
-if [[ -n "$BAZEL_PACKAGE" ]]; then
+if [[ -n "${CHART_VERSION_ALL_PATHS:-}" ]]; then
+	echo >&2 "INFO: CHART_VERSION_ALL_PATHS set; counting commits repo-wide instead of over the dependency closure."
+	DEP_DIRS="."
+elif [[ -n "$BAZEL_PACKAGE" ]]; then
 	# Query Bazel for transitive source deps. --keep_going is load-bearing: a
 	# dependency whose external closure fails to preload (e.g. an apko image
 	# layer pulling wolfi packages) otherwise fails the WHOLE query, and we
