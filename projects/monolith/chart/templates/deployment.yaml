@@ -123,23 +123,23 @@ spec:
             - name: SANDBOX_SESSION_WORKLOAD
               value: {{ .Values.sandbox.sessionWorkload | quote }}
             {{- end }}
-            {{- if .Values.graph.enabled }}
-            # DBOS graph layer (ADR agents/038). GRAPH_ENABLED is the master
-            # switch the module reads: with it false the router still mounts but
-            # every run endpoint 503s and DBOS is never launched, so the import
-            # stays inert on the public tier and in unit tests.
-            - name: GRAPH_ENABLED
+            {{- if .Values.swarm.enabled }}
+            # DBOS swarm layer (ADR agents/038, agents/053). SWARM_ENABLED is
+            # the master switch the module reads: with it false the router still
+            # mounts but every run endpoint 503s and DBOS is never launched, so
+            # the import stays inert on the public tier and in unit tests.
+            - name: SWARM_ENABLED
               value: "true"
-            - name: GRAPH_IMPLEMENTER_MODEL
-              value: {{ .Values.graph.implementerModel | quote }}
-            - name: GRAPH_REVIEWER_MODEL
-              value: {{ .Values.graph.reviewerModel | quote }}
-            - name: GRAPH_MAX_ATTEMPTS
-              value: {{ .Values.graph.maxAttempts | quote }}
-            - name: GRAPH_TURN_TIMEOUT_SECONDS
-              value: {{ .Values.graph.turnTimeoutSeconds | quote }}
-            - name: GRAPH_CODEX_CONCURRENCY
-              value: {{ .Values.graph.codexConcurrency | quote }}
+            - name: SWARM_IMPLEMENTER_MODEL
+              value: {{ .Values.swarm.implementerModel | quote }}
+            - name: SWARM_REVIEWER_MODEL
+              value: {{ .Values.swarm.reviewerModel | quote }}
+            - name: SWARM_MAX_ATTEMPTS
+              value: {{ .Values.swarm.maxAttempts | quote }}
+            - name: SWARM_TURN_TIMEOUT_SECONDS
+              value: {{ .Values.swarm.turnTimeoutSeconds | quote }}
+            - name: SWARM_CODEX_CONCURRENCY
+              value: {{ .Values.swarm.codexConcurrency | quote }}
             {{- end }}
             {{- if and .Values.scratchPostgres.onepassword.itemPath (or .Values.scratchPostgres.enabled .Values.scratchPostgres.demoListenPort) }}
             # Shared postgres password for the EmberVM stateful DSNs below. Comes

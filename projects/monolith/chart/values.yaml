@@ -1009,7 +1009,7 @@ goosecracker:
 # Launched on the LEADER replica only in this first version, so two replicas do
 # not both run the recovery loop. Private tier only: the module is registered in
 # modules_private and never in modules_public.
-graph:
+swarm:
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
   # never below Opus: ADR 038 decision 5 floors anything assessable only by

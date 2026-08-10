@@ -209,7 +209,7 @@ goosecracker:
 # still Draft and `agent-review/gate` does not exist in code, so nothing
 # autonomous may land on main yet; the merge queue is declared at concurrency 1
 # and left unused until it does.
-graph:
+swarm:
   enabled: true
 
 # Taken offline 2026-06-14 for the ADR 006 Phase 4 transition: with the
