@@ -38,6 +38,8 @@ export const RUN_LEXICON = {
     staleShowing: "unreachable, showing",
     staleOld: "old state",
     absentNotice: "run shape unavailable: swarm engine offline",
+    expandMembers: "expand run members",
+    collapseMembers: "collapse run members",
     sessionsOnly: "sessions only",
     cancelRun: "cancel run",
     openBranch: "open branch",
