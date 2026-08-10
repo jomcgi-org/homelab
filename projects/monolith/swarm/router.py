@@ -71,16 +71,17 @@ def list_runs() -> list[dict]:
 
 
 @router.post("/runs/{workflow_id}/cancel")
-def cancel_run(workflow_id: str) -> dict:
-    _dbos().cancel_workflow(workflow_id)
-    # Cancelling the workflow does NOT reap the guest session it started, and
-    # parked sessions count against the live capacity cap, so a cancelled swarm
-    # can still deny creates cluster-wide. The compensating control-plane delete
-    # is tracked in #4578. Reported honestly rather than claiming a clean stop.
+async def cancel_run(workflow_id: str) -> dict:
+    dbos = _dbos()
+    dbos.cancel_workflow(workflow_id)
+    # Cancel first so no new turn is scheduled while guest sessions are reaped.
+    from agent_sessions.api import reap_sessions_for_workflow
+
+    guest_sessions = await reap_sessions_for_workflow(workflow_id)
     return {
         "workflow_id": workflow_id,
         "cancelled": True,
-        "guest_session_reaped": False,
+        "guest_sessions": guest_sessions,
     }
 
 
