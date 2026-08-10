@@ -18,6 +18,9 @@ class AgentSession(SQLModel, table=True):
     # The DBOS workflow that owns this session, or None for hand-started,
     # Discord, and MCP sessions.
     workflow_id: str | None = Field(default=None, index=True)
+    # The email of the human who triggered the session, projected from the
+    # X-Auth-Email header. NULL for Discord, MCP, and workflow-started sessions.
+    triggered_by: str | None = Field(default=None)
     # The Discord thread this session is bound to, or None for a session started
     # from the /agents UI or an MCP tool. Unique so a thread can never fan out to
     # two sessions; Postgres allows many NULLs under a unique constraint, so the

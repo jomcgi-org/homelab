@@ -3,9 +3,13 @@ const API_BASE = process.env.API_BASE;
 export async function POST({ request }) {
   try {
     const body = await request.json();
+    const email = request.headers.get("x-auth-email");
     const res = await fetch(`${API_BASE}/api/agents/sessions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(email ? { "X-Auth-Email": email } : {}),
+      },
       body: JSON.stringify({
         prompt: body.prompt,
         ...(body.model ? { model: body.model } : {}),
