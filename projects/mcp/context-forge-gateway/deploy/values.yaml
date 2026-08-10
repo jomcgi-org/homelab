@@ -251,7 +251,18 @@ scopedRoutes:
 # Rotation is one field edit on vaults/k8s-homelab/items/authentik
 # (PREVIEW_OIDC_CLIENT_SECRET) plus the same value on items/preview-oidc
 # (client-secret). Both ends must move together or the handshake breaks.
+# ARMED 2026-08-10. Steps 1 to 3 above were verified against the running
+# system before this flip: both blueprints report status=successful (so the
+# !Env resolved), the provider carries authorization_code + refresh_token and
+# the self-signed signing key, its JWKS answers with 1 key, and the zone 301s
+# http to https so the post-login redirect keeps its secure cookies.
+#
+# Expect a window of 500s immediately after this lands. The OnePasswordItem is
+# only created by this flip, and the operator syncs on a fixed 600s boundary,
+# so the Secret does not exist yet. Envoy Gateway answers 500 on every route a
+# SecurityPolicy targets when it cannot build the OIDC config, which is the
+# fail-closed behaviour: a missing secret cannot open the route.
 previewAuth:
-  enabled: false
+  enabled: true
   onepassword:
     itemPath: vaults/k8s-homelab/items/preview-oidc
