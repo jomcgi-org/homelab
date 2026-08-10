@@ -72,6 +72,17 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.cfIngress.private.servicePort | int }}
+    # Long-lived Server-Sent Events stream; requires extended timeouts to prevent intermediate reaping.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /private/agents/vms/stream
+      timeouts:
+        request: 600s
+        backendRequest: 600s
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.cfIngress.private.servicePort | int }}
     # Everything else — SvelteKit reroute hook maps to /private/ internally
     - matches:
         - path:

@@ -681,29 +681,37 @@
     }
   });
 
-  // Guest VM state polls at the transcript ladder's 100ms cadence: this
-  // page has one private viewer, the control-plane listing is a cheap
-  // in-memory read, and the 20s idle-park should flip the chip the
-  // moment it happens. Self-scheduling (like the ladder) so a slow
-  // fetch never stacks requests; a hidden tab skips the fetch entirely
-  // because unlike the ladder this loop runs for the life of the page.
+  // Subscribe to the shared VM state stream. A slow poll is only a fallback
+  // after the stream has failed repeatedly.
   $effect(() => {
-    let stopped = false;
-    let timeoutHandle;
-    const schedulePoll = async () => {
-      if (stopped) return;
-      const startTime = Date.now();
-      if (!document.hidden) await loadVms();
-      if (stopped) return;
-      timeoutHandle = setTimeout(
-        schedulePoll,
-        Math.max(0, 100 - (Date.now() - startTime)),
-      );
+    const source = new EventSource("/agents/vms/stream");
+    let failures = 0;
+    let fallbackInterval;
+
+    const startFallback = () => {
+      if (fallbackInterval) return;
+      fallbackInterval = setInterval(loadVms, 2000);
+      loadVms();
     };
-    schedulePoll();
+
+    source.onmessage = (event) => {
+      failures = 0;
+      clearInterval(fallbackInterval);
+      fallbackInterval = undefined;
+      try {
+        vms = JSON.parse(event.data).vms ?? {};
+      } catch {
+        // Ignore malformed advisory state and retain the last snapshot.
+      }
+    };
+    source.onerror = () => {
+      failures += 1;
+      if (failures >= 3) startFallback();
+    };
+
     return () => {
-      stopped = true;
-      clearTimeout(timeoutHandle);
+      source.close();
+      clearInterval(fallbackInterval);
     };
   });
 

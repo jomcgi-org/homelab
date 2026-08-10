@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
@@ -189,25 +190,25 @@ _VM_AWAKE_STATES = {"creating", "running", "relighting"}
 _VM_ASLEEP_STATES = {"banking", "banked", "parking", "parked"}
 
 
-@router.get("/vms")
-async def list_session_vms() -> dict:
-    """Map ember session ids to a coarse VM state for the console UI."""
-    # The control plane retains terminal session rows for days, so the
-    # listing can exceed one page; a silently truncated page would render
-    # a parked-days-ago session as "off" (the opposite of the truth).
-    # Follow `total` across pages, bounded far above the workload cap.
-    items = []
-    offset = 0
-    try:
-        for _ in range(4):
-            page = await _transport.list_sessions(limit=500, offset=offset)
-            batch = page.get("items", [])
-            items.extend(batch)
-            offset += len(batch)
-            if not batch or offset >= int(page.get("total") or 0):
-                break
-    except EmberVMTransportError as exc:
-        return {"vms": {}, "error": str(exc)}
+class _VmStateCache:
+    refresh_interval = 1.0
+    heartbeat_interval = 15.0
+
+    def __init__(self) -> None:
+        self.cache_map: dict[str, dict] = {}
+        self.last_refreshed_at = 0.0
+        self.subscriber_count = 0
+        self.task: asyncio.Task | None = None
+        self.change_event: asyncio.Event | None = None
+        self.generation = 0
+        self.initialized = False
+        self.last_error: str | None = None
+
+
+_vm_state_cache = _VmStateCache()
+
+
+def _coarse_vm_map(items: list[dict]) -> dict[str, dict]:
     vms = {}
     for item in items:
         state = str(item.get("state", ""))
@@ -223,7 +224,131 @@ async def list_session_vms() -> dict:
             "last_invoke_at": item.get("last_invoke_at"),
             "expires_at": item.get("expires_at"),
         }
-    return {"vms": vms}
+    return vms
+
+
+async def _refresh_cp_state() -> None:
+    items = []
+    offset = 0
+    try:
+        for _ in range(4):
+            page = await _transport.list_sessions(limit=500, offset=offset)
+            batch = page.get("items", [])
+            items.extend(batch)
+            offset += len(batch)
+            if not batch or offset >= int(page.get("total") or 0):
+                break
+    except EmberVMTransportError as exc:
+        _vm_state_cache.initialized = True
+        _vm_state_cache.last_error = str(exc)
+        logger.warning("failed to refresh agent VM state: %s", exc)
+        return
+
+    new_map = _coarse_vm_map(items)
+    changed = new_map != _vm_state_cache.cache_map
+    _vm_state_cache.cache_map = new_map
+    _vm_state_cache.last_refreshed_at = time.monotonic()
+    _vm_state_cache.last_error = None
+    _vm_state_cache.initialized = True
+    if changed:
+        _vm_state_cache.generation += 1
+        old_event = _vm_state_cache.change_event
+        _vm_state_cache.change_event = asyncio.Event()
+        if old_event is not None:
+            old_event.set()
+
+
+async def _run_vm_refresher() -> None:
+    try:
+        while True:
+            await _refresh_cp_state()
+            await asyncio.sleep(_vm_state_cache.refresh_interval)
+    except asyncio.CancelledError:
+        raise
+
+
+async def _start_refresher() -> None:
+    cache = _vm_state_cache
+    cache.subscriber_count += 1
+    if cache.change_event is None:
+        cache.change_event = asyncio.Event()
+    if cache.task is None or cache.task.done():
+        # Deployment is 1 replica with HPA to 3, so worst case is 3
+        # refreshers at 1s interval (acceptable). Lazy start ensures idle
+        # consoles produce zero control-plane traffic.
+        await _refresh_cp_state()
+        cache.task = asyncio.create_task(_run_vm_refresher())
+
+
+async def _stop_refresher() -> None:
+    cache = _vm_state_cache
+    cache.subscriber_count = max(0, cache.subscriber_count - 1)
+    if cache.subscriber_count or cache.task is None:
+        return
+    task, cache.task = cache.task, None
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@router.get("/vms/stream")
+async def stream_session_vms() -> StreamingResponse:
+    async def generate():
+        await _start_refresher()
+        cache = _vm_state_cache
+        try:
+            last_generation = cache.generation
+            yield f"data: {json.dumps({'vms': cache.cache_map})}\n\n"
+            while True:
+                if cache.generation != last_generation:
+                    last_generation = cache.generation
+                    yield f"data: {json.dumps({'vms': cache.cache_map})}\n\n"
+                    continue
+                event = cache.change_event
+                try:
+                    await asyncio.wait_for(
+                        event.wait(), timeout=cache.heartbeat_interval
+                    )
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                if cache.generation != last_generation:
+                    last_generation = cache.generation
+                    yield f"data: {json.dumps({'vms': cache.cache_map})}\n\n"
+        finally:
+            await _stop_refresher()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/vms")
+async def list_session_vms() -> dict:
+    """Return the shared VM snapshot, refreshing it when nothing is feeding it.
+
+    This is the console's fallback for a broken event stream, so it must NOT
+    depend on a stream subscriber having connected first. With no refresher
+    running, a cache-only read stays empty forever and the chip reads "off"
+    for every session, which is the opposite of the truth and precisely the
+    case the fallback exists to cover.
+
+    The refresh is skipped while a refresher owns the cache, and rate limited
+    to the same interval otherwise, so a fallback poll cannot reintroduce
+    per-request control-plane load.
+    """
+    cache = _vm_state_cache
+    stale = time.monotonic() - cache.last_refreshed_at >= cache.refresh_interval
+    if cache.task is None and (not cache.initialized or stale):
+        await _refresh_cp_state()
+    body = {"vms": cache.cache_map}
+    if cache.last_error:
+        body["error"] = cache.last_error
+    return body
 
 
 @router.get("/sessions/{session_id}")

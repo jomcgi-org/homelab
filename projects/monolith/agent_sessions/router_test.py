@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from agent_sessions import api, store
 from agent_sessions import mcp
+import agent_sessions.router as agent_router
 from agent_sessions.codex_login import codex_login_gate
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.router import router
@@ -172,6 +173,7 @@ def test_list_session_vms_maps_control_plane_states(client, monkeypatch):
         }
 
     monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+    asyncio.run(agent_router._refresh_cp_state())
     body = client.get("/api/agents/vms").json()
     assert body["vms"]["s-run"]["state"] == "awake"
     assert body["vms"]["s-park"]["state"] == "asleep"
@@ -196,6 +198,7 @@ def test_list_session_vms_follows_pagination(client, monkeypatch):
         return {"total": 501, "items": [{"session_id": "s-tail", "state": "running"}]}
 
     monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+    asyncio.run(agent_router._refresh_cp_state())
     body = client.get("/api/agents/vms").json()
     # The CP retains terminal rows for days; the tail page must be
     # fetched or an old parked session silently renders as "off".
@@ -209,9 +212,77 @@ def test_list_session_vms_degrades_when_embervm_is_down(client, monkeypatch):
         raise EmberVMTransportError("control plane unreachable")
 
     monkeypatch.setattr(mcp._transport, "list_sessions", broken_list_sessions)
+    asyncio.run(agent_router._refresh_cp_state())
     body = client.get("/api/agents/vms").json()
     assert body["vms"] == {}
     assert "unreachable" in body["error"]
+
+
+def test_vm_cache_refreshes_at_interval_and_stops_when_unused(monkeypatch):
+    calls = []
+
+    async def fake_list_sessions(limit=50, offset=0):
+        calls.append((limit, offset))
+        return {"items": [{"session_id": "s-1", "state": "running"}]}
+
+    async def exercise():
+        monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+        cache = agent_router._vm_state_cache
+        monkeypatch.setattr(cache, "refresh_interval", 0.01)
+        await agent_router._start_refresher()
+        await asyncio.sleep(0.025)
+        assert len(calls) >= 2
+        assert cache.subscriber_count == 1
+        await agent_router._stop_refresher()
+        assert cache.subscriber_count == 0
+        assert cache.task is None
+
+    asyncio.run(exercise())
+
+
+def test_vm_stream_emits_initial_and_changed_snapshots(monkeypatch):
+    state = [{"session_id": "s-1", "state": "running"}]
+
+    async def fake_list_sessions(limit=50, offset=0):
+        return {"items": state}
+
+    async def exercise():
+        monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+        cache = agent_router._vm_state_cache
+        monkeypatch.setattr(cache, "heartbeat_interval", 0.01)
+        response = await agent_router.stream_session_vms()
+        stream = response.body_iterator
+        initial = await stream.__anext__()
+        assert '"s-1"' in initial
+        generation = cache.generation
+        await agent_router._refresh_cp_state()
+        assert cache.generation == generation
+        assert not cache.change_event.is_set()
+        state[0] = {"session_id": "s-1", "state": "parked"}
+        await agent_router._refresh_cp_state()
+        changed = await stream.__anext__()
+        assert '"asleep"' in changed
+        await stream.aclose()
+        assert cache.subscriber_count == 0
+
+    asyncio.run(exercise())
+
+
+def test_vm_stream_heartbeats_when_idle(monkeypatch):
+    async def fake_list_sessions(limit=50, offset=0):
+        return {"items": []}
+
+    async def exercise():
+        monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+        cache = agent_router._vm_state_cache
+        monkeypatch.setattr(cache, "heartbeat_interval", 0.01)
+        response = await agent_router.stream_session_vms()
+        stream = response.body_iterator
+        await stream.__anext__()
+        assert await stream.__anext__() == ": ping\n\n"
+        await stream.aclose()
+
+    asyncio.run(exercise())
 
 
 def test_get_session_detail(client, session):
