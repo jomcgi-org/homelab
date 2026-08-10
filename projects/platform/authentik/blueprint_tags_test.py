@@ -90,6 +90,20 @@ def _blueprint_files():
     return []
 
 
+def test_blueprints_are_discovered():
+    """Fail loudly if the data glob stops materialising the blueprints.
+
+    Without this, a broken `data` dep in BUILD would leave _blueprint_files()
+    empty, parametrize would generate zero cases, and the file-driven guard
+    below would vanish while the suite still reported green. An empty
+    parametrize list is a silent pass, which is the one outcome a guard must
+    never produce.
+    """
+    assert BLUEPRINT_DIR.is_dir(), f"blueprint dir missing: {BLUEPRINT_DIR}"
+    found = _blueprint_files()
+    assert len(found) >= 2, f"expected at least 2 blueprints, found {len(found)}"
+
+
 @pytest.mark.parametrize("blueprint_file", _blueprint_files(), ids=lambda p: p.name)
 def test_blueprint_yaml_arity(blueprint_file):
     """Assert all blueprint YAML files have valid !Env arity."""
