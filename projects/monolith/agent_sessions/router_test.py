@@ -40,6 +40,33 @@ def session_fixture(tmp_path):
                 table.schema = original_schemas[table.name]
 
 
+@pytest.fixture(autouse=True)
+def reset_vm_state_cache():
+    """Clear the shared VM cache around every test.
+
+    The cache is deliberately module level, since it is shared by all SSE
+    subscribers in a replica, which makes it leak between tests in the same
+    process: a test that populated 500 sessions made a later "control plane
+    is down" assertion fail against the earlier test's data, and the failure
+    depended on test ORDER rather than on either test being wrong. Autouse so
+    a future test touching VM state inherits the isolation without knowing to
+    ask for it.
+    """
+    cache = agent_router._vm_state_cache
+    cache.cache_map = {}
+    cache.last_refreshed_at = 0.0
+    cache.subscriber_count = 0
+    cache.task = None
+    cache.change_event = None
+    cache.generation = 0
+    cache.initialized = False
+    cache.last_error = None
+    yield
+    cache.cache_map = {}
+    cache.task = None
+    cache.subscriber_count = 0
+
+
 @pytest.fixture(name="client")
 def client_fixture(session):
     app = FastAPI()
