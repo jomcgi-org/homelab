@@ -75,7 +75,13 @@
       {P.labels.started}
       {ago(run.created_at)}
       {P.labels.ago}
-      {#if fmtCost(run.cost_usd)}{P.punct.dot} {fmtCost(run.cost_usd)}{/if}
+      {#if run.plan?.budget_usd != null}
+        {P.punct.dot}
+        {fmtCost(run.cost_usd)}
+        {P.labels.of}
+        {fmtCost(run.plan.budget_usd)}
+        {P.labels.budgetWord}
+      {:else if fmtCost(run.cost_usd)}{P.punct.dot} {fmtCost(run.cost_usd)}{/if}
     </div>
     <div class="rv-statusline" data-register="fact">
       {#if run.state === "running" && attempts && run.plan?.pinned}
@@ -141,6 +147,12 @@
           </div>{:else}{@render nodeCard(group[0], false)}{/if}
       {/each}
     </div>
+    {#if run.deviations?.length}<div class="deviations" data-register="fact">
+        <div class="stage-head">{P.labels.deviations}</div>
+        {#each run.deviations as deviation}<div class="deviation-text mono">
+            {deviation.text}
+          </div>{/each}
+      </div>{/if}
     <div
       class="rv-foot"
       class:stale={view.engine_tier === "stale"}

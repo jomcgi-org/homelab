@@ -90,6 +90,7 @@ export const RUN_LEXICON = {
     createRun: "start run",
     creating: "creating…",
     startingRun: "starting…",
+    deviations: "deviations",
   },
   punct: { dot: "·", arrow: "→", colon: ":" },
   units: { s: "s", m: "m", h: "h", d: "d" },

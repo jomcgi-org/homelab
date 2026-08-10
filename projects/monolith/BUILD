@@ -2239,6 +2239,16 @@ py_test(
 )
 
 py_test(
+    name = "deviations_test",
+    srcs = ["swarm/deviations_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "tier_test",
     srcs = ["swarm/tier_test.py"],
     imports = ["."],

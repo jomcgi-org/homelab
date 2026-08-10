@@ -12,6 +12,7 @@ from typing import Any
 
 from swarm import config
 from swarm.rationale import parse_rationale
+from swarm.deviations import compute_deviations
 
 
 def _value(obj: Any, name: str, default: Any = None) -> Any:
@@ -361,11 +362,16 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
             "evidence": None,
         },
     ]
+    cost_usd = sum(
+        float(_value(row, "total_cost_usd", _value(row, "cost_usd", 0)) or 0)
+        for row in sessions
+    )
+    state = _derived_state(raw, output, nodes, stranded)
     work_branch = output.get("work_branch") or f"claude/swarm-{workflow_id}"
     return {
         "workflow_id": workflow_id,
         "dbos_status": raw,
-        "state": _derived_state(raw, output, nodes, stranded),
+        "state": state,
         "task": {
             "text": inp.get("task", ""),
             "repo": inp.get("repo"),
@@ -379,13 +385,13 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
         "app_version": app_version,
         "server_app_version": server_app_version,
         "stranded": stranded,
-        "cost_usd": sum(
-            float(_value(row, "total_cost_usd", _value(row, "cost_usd", 0)) or 0)
-            for row in sessions
-        ),
+        "cost_usd": cost_usd,
         "note": None,
         "plan": plan,
         "nodes": nodes,
+        "deviations": compute_deviations(
+            {"state": state, "cost_usd": cost_usd, "plan": plan, "nodes": nodes}
+        ),
         "cancelled_by": attrs.get("cancelled_by"),
     }
 
