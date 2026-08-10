@@ -118,6 +118,34 @@ def test_escalated_success_carries_branch_head_and_no_commit():
     assert run["state"] == "escalated"
     assert run["nodes"][1]["evidence"]["kind"] == "branch_head"
     assert run["nodes"][2]["verdict"] is None
+    assert run["deviations"] == []
+
+
+def test_composed_run_attaches_mechanical_deviations():
+    status = Status(
+        "wf-deviations",
+        "SUCCESS",
+        ["task", "repo", "main"],
+        {"status": "escalated"},
+    )
+    run = compose_run(
+        DBOS(
+            Workflow(status, {"plan": FX4_EXPECTED_PLAN}),
+            steps=[
+                {"function_name": "read_branch_head", "output": "same"},
+                {"function_name": "read_branch_head", "output": "same"},
+                {"function_name": "read_branch_head", "output": "same"},
+                {"function_name": "read_branch_head", "output": "same"},
+            ],
+        ),
+        "wf-deviations",
+        [session(1), session(2, attempt=2)],
+        "unknown",
+    )
+    assert [deviation["code"] for deviation in run["deviations"]] == [
+        "attempts_exhausted",
+        "retry_taken",
+    ]
 
 
 def test_stranded_pending_has_no_decision():

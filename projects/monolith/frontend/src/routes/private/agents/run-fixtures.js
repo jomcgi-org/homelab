@@ -99,6 +99,21 @@ function entry(runValue, sessions = []) {
 }
 
 const running = run("running", "running", {
+  plan: { ...plan, budget_usd: 0.15 },
+  deviations: [
+    {
+      code: "retry_taken",
+      node_key: "implement",
+      evidence: "attempts: 2; retry finding code: head_unchanged",
+      text: "implement took 2 attempts after head_unchanged.",
+    },
+    {
+      code: "budget_exceeded",
+      node_key: "run",
+      evidence: "cost_usd: $0.20; pinned budget_usd: $0.15",
+      text: "run spent $0.20 against a pinned $0.15 budget.",
+    },
+  ],
   nodes: [
     node("implement", "implement", "running", {
       attempts: [
