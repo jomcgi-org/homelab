@@ -164,11 +164,14 @@ def _attempts(session_rows: list[Any], steps: list[Any], node_key: str) -> list[
                 else None,
                 "cost_usd": _value(row, "total_cost_usd", _value(row, "cost_usd")),
                 "finding": _finding(None, observed, prior),
+                "prior_head": _short_sha(prior),
                 "live": None
                 if state != "running"
                 else {
                     "activity": _value(row, "activity"),
-                    "observed_at": _iso(_value(row, "last_turn_at")),
+                    "observed_at": _iso(
+                        _value(row, "activity_observed_at", _value(row, "last_turn_at"))
+                    ),
                 },
             }
         )
@@ -449,6 +452,11 @@ def compose_master(dbos, active, session_costs, server_app_version) -> dict:
                 if run["plan"]["pinned"]
                 else None,
                 "cost_usd": run["cost_usd"],
+                "active": run["dbos_status"] in ("PENDING", "ENQUEUED"),
+                "shape": [
+                    {"key": node["key"], "kind": node["kind"], "state": node["state"]}
+                    for node in run["nodes"]
+                ],
                 "needs": needs,
                 "queue_position": current["queue"]["position"]
                 if current["queue"]

@@ -2219,6 +2219,16 @@ py_test(
 )
 
 py_test(
+    name = "rows_test",
+    srcs = ["swarm/rows_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "tier_test",
     srcs = ["swarm/tier_test.py"],
     imports = ["."],

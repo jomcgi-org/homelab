@@ -1,8 +1,11 @@
 const API_BASE = process.env.API_BASE;
 
-export async function GET() {
+export async function GET({ url }) {
   try {
-    const res = await fetch(`${API_BASE}/api/swarm/runs`, {
+    const active = url.searchParams.get("active");
+    const query =
+      active === null ? "" : `?active=${encodeURIComponent(active)}`;
+    const res = await fetch(`${API_BASE}/api/swarm/runs${query}`, {
       signal: AbortSignal.timeout(10000),
     });
     return new Response(res.body, {

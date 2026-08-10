@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from swarm.view import compose_run
+from swarm.view import compose_master, compose_run
 
 
 class Status:
@@ -208,3 +208,43 @@ def test_shas_render_at_eight_characters():
     assert gate["evidence"]["summary"] == (
         "head 86dcbf41 observed on the remote after the turn"
     )
+
+
+def test_attempt_carries_prior_head_alongside_finding():
+    status = Status("wf-prior", "SUCCESS", ["task", "repo", "main"])
+    run = compose_run(
+        DBOS(
+            Workflow(status),
+            steps=[
+                {"function_name": "read_branch_head", "output": "1234567890"},
+                {"function_name": "read_branch_head", "output": "abcdef0123"},
+            ],
+        ),
+        "wf-prior",
+        [session(1, status="completed")],
+        "unknown",
+    )
+    attempt = run["nodes"][0]["attempts"][0]
+    assert attempt["prior_head"] == "12345678"
+    assert attempt["finding"]["observed_head"] == "abcdef01"
+
+
+def test_master_rows_include_active_and_shape():
+    status = Status("wf-master", "PENDING", ["task", "repo", "main"])
+
+    class ListingDBOS(DBOS):
+        def list_workflows(self, **kwargs):
+            return [self.workflow]
+
+    result = compose_master(
+        ListingDBOS(Workflow(status)),
+        True,
+        {"wf-master": []},
+        "unknown",
+    )
+    assert result["runs"][0]["active"] is True
+    assert result["runs"][0]["shape"] == [
+        {"key": "implement", "kind": "work", "state": "future"},
+        {"key": "push_gate", "kind": "gate", "state": "future"},
+        {"key": "review", "kind": "work", "state": "future"},
+    ]

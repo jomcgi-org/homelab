@@ -43,12 +43,12 @@ def _server_app_version() -> str:
 
 
 def _session_rows(workflow_id: str):
-    from agent_sessions import store
     from core.db import get_engine
     from sqlmodel import Session
+    from swarm.rows import swarm_session_views
 
     with Session(get_engine()) as session:
-        return store.sessions_for_workflow(session, workflow_id)
+        return swarm_session_views(session, workflow_id).get(workflow_id, [])
 
 
 @router.post("/runs")
@@ -106,8 +106,13 @@ def get_run(workflow_id: str) -> dict:
 @router.get("/runs")
 def list_runs(active: bool = True) -> dict:
     from swarm.view import compose_master
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm.rows import swarm_session_views
 
-    return compose_master(_dbos(), active, {}, _server_app_version())
+    with Session(get_engine()) as session:
+        session_costs = swarm_session_views(session)
+    return compose_master(_dbos(), active, session_costs, _server_app_version())
 
 
 @router.post("/runs/{workflow_id}/cancel")
