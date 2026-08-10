@@ -1,5 +1,7 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/helm:defs.bzl", "helm_chart")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 filegroup(
     name = "migrations",
@@ -37,21 +39,37 @@ helm_chart(
     visibility = ["//overlays:__subpackages__"],
 )
 
-load("//bazel/tools/pytest:defs.bzl", "py_test")
-
 py_test(
     name = "chart_env_vars_test",
     srcs = ["chart_env_vars_test.py"],
     data = [
-        "values.yaml",
-        "Chart.yaml",
         "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
         "//projects/monolith:module_configs",
         "//projects/monolith/deploy:deploy_values",
         "@multitool//tools/helm",
-    ] + glob(["templates/**/*", "charts/**/*", "migrations/**/*"]),
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
     },
+    deps = ["@pip//pytest"],
+)
+
+semgrep_test(
+    name = "chart_env_vars_test_semgrep_test",
+    srcs = ["chart_env_vars_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
