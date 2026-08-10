@@ -371,7 +371,7 @@ class EmberVmShimTransport:
             # capability token, so its only 403 is "service account not
             # permitted". That fails EVERY destroy at once, and calling it gone
             # would report the whole fleet reaped while every VM stays alive.
-            # The control plane's destroy handler answers 200, 404, or 500.
+            # The control plane's destroy handler answers 200 (destroyed), 202 (destroying), 404 (not found), or 500 (error).
             if exc.response.status_code in (404, 410):
                 raise EmberSessionGone(_status_error_detail(exc)) from exc
             raise EmberVMTransportError(_status_error_detail(exc)) from exc

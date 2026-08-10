@@ -588,6 +588,7 @@ defmodule Embervm.SessionBankRelightTest do
     put_workload(ctx, "wl")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
     {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert_receive {:destroyed, _vm_id}
 
     # The node still reports a snapshot for the destroyed session: it must be evicted.
     NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: [snap_fact(created.session_id)]))

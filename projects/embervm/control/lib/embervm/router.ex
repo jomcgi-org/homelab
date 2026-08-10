@@ -1018,6 +1018,7 @@ defmodule Embervm.Router do
   # DELETE /v1/sessions/:id (management auth): destroy.
   defp handle_destroy_session(conn, session_id) do
     case session_manager().destroy(session_manager_server(), session_id) do
+      {:ok, :destroying} -> send_json(conn, 202, %{session_id: session_id, state: "destroying"})
       {:ok, _} -> send_json(conn, 200, %{session_id: session_id, state: "destroyed"})
       {:error, :not_found} -> send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
       {:error, reason} -> send_json(conn, 500, %{error: "destroy failed", reason: inspect(reason), session_id: session_id, retryable: true})
