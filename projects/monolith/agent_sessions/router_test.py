@@ -193,6 +193,20 @@ def test_list_sessions_exposes_ember_binding(client, session):
     assert workflow_ids["unbound"] is None
 
 
+def test_list_sessions_exposes_node_identity(client, session):
+    _session(
+        session,
+        "implement-2",
+        workflow_id="wf-123",
+        node_key="implement",
+        node_attempt=2,
+    )
+
+    item = client.get("/api/agents/sessions").json()[0]
+    assert item["node_key"] == "implement"
+    assert item["node_attempt"] == 2
+
+
 def test_list_session_vms_maps_control_plane_states(client, monkeypatch):
     async def fake_list_sessions(limit=50, offset=0):
         return {

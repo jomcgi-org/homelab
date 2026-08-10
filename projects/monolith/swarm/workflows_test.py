@@ -46,8 +46,10 @@ def run(monkeypatch, turns, heads=None):
     monkeypatch.setattr(
         workflows,
         "_queued_session",
-        lambda key, prompt, model, repo, branch, workflow_id: (
-            calls.append((key, prompt, model, repo, branch, workflow_id))
+        lambda key, prompt, model, repo, branch, workflow_id, node_key=None, node_attempt=None: (
+            calls.append(
+                (key, prompt, model, repo, branch, workflow_id, node_key, node_attempt)
+            )
             or next(sessions)
         ),
     )
@@ -73,6 +75,8 @@ def test_commit_on_first_attempt_goes_to_review(monkeypatch):
     assert result["review_verdict"] == "approve"
     assert result["work_branch"] == "claude/swarm-unknown"
     assert len(calls) == 2
+    assert calls[0][-2:] == ("implement", 1)
+    assert calls[1][-2:] == ("review", 1)
 
 
 def test_no_commit_retries(monkeypatch):
@@ -87,6 +91,11 @@ def test_no_commit_retries(monkeypatch):
     result = workflow("task", "jomcgi/homelab", "main")
     assert result["attempts"] == 2
     assert len(calls) == 3
+    assert [call[-2:] for call in calls] == [
+        ("implement", 1),
+        ("implement", 2),
+        ("review", 1),
+    ]
 
 
 def test_pinned_attempt_bound_survives_config_change(monkeypatch):
@@ -119,7 +128,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
     monkeypatch.setattr(
         workflows,
         "_queued_session",
-        lambda *args: next(sessions),
+        lambda *args, **kwargs: next(sessions),
     )
     monkeypatch.setattr(
         workflows,
@@ -240,7 +249,9 @@ def test_queue_receives_a_workflow_not_a_step(monkeypatch):
     workflows._queued_session("k-1", "p", "luna", "jomcgi/homelab", "main", "wf-123")
     assert enqueued == [workflows.start_session_workflow]
     assert enqueued[0] is not workflows.start_agent_session
-    assert arguments == [("k-1", "p", "luna", "jomcgi/homelab", "main", "wf-123")]
+    assert arguments == [
+        ("k-1", "p", "luna", "jomcgi/homelab", "main", "wf-123", None, None)
+    ]
 
 
 def test_start_session_workflow_forwards_workflow_id(monkeypatch):
@@ -256,7 +267,9 @@ def test_start_session_workflow_forwards_workflow_id(monkeypatch):
     )
 
     assert result == 101
-    assert calls == [("k-1", "p", "luna", "jomcgi/homelab", "main", "wf-123")]
+    assert calls == [
+        ("k-1", "p", "luna", "jomcgi/homelab", "main", "wf-123", None, None)
+    ]
 
 
 def test_empty_commit_sha_is_not_success(monkeypatch):
@@ -281,7 +294,11 @@ def test_reviewer_has_no_lineage_argument(monkeypatch):
         },
     )
     workflow("task", "jomcgi/homelab", "main")
-    assert len(calls[1]) == 6
+    # Six positional plus node_key and node_attempt. The arity is asserted so a
+    # NEW argument cannot appear unnoticed; the substring check below is the
+    # property that actually matters (ADR 038 decision 3: the reviewer is never
+    # handed the implementer's lineage).
+    assert len(calls[1]) == 8
     assert all("lineage" not in str(value) for value in calls[1])
 
 

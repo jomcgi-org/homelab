@@ -33,6 +33,8 @@ def start_session_for_swarm(
     repo: str,
     branch: str,
     workflow_id: str | None = None,
+    node_key: str | None = None,
+    node_attempt: int | None = None,
 ) -> int:
     """Create and schedule a swarm-owned session through the normal session path.
 
@@ -61,6 +63,8 @@ def start_session_for_swarm(
         model,
         repo,
         workflow_id=workflow_id,
+        node_key=node_key,
+        node_attempt=node_attempt,
     )
     assert row.id is not None
     _persist_pending_message(row.id, prompt, model)

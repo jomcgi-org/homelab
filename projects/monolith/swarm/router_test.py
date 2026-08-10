@@ -129,6 +129,9 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
         async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
             events.append(("cancel", workflow_id, cancel_children))
 
+        async def update_workflow_attributes_async(self, workflow_id, values):
+            events.append(("attributes", workflow_id, values["cancelled_by"]["actor"]))
+
     async def reap(workflow_id):
         events.append(("reap", workflow_id))
         return {
@@ -140,7 +143,10 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
     monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
     monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
     monkeypatch.setattr("agent_sessions.api.reap_sessions_for_workflow", reap)
-    response = client().post("/api/swarm/runs/wf-1/cancel")
+    response = client().post(
+        "/api/swarm/runs/wf-1/cancel",
+        headers={"Cf-Access-Authenticated-User-Email": "alice@example.com"},
+    )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -152,7 +158,11 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
             "skipped": [4],
         },
     }
-    assert events == [("cancel", "wf-1", True), ("reap", "wf-1")]
+    assert events == [
+        ("cancel", "wf-1", True),
+        ("reap", "wf-1"),
+        ("attributes", "wf-1", "alice@example.com"),
+    ]
 
 
 def test_cancel_reports_reap_failure_without_failing(monkeypatch):
@@ -162,6 +172,10 @@ def test_cancel_reports_reap_failure_without_failing(monkeypatch):
         async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
             assert workflow_id == "wf-1"
             assert cancel_children is True
+
+        async def update_workflow_attributes_async(self, workflow_id, values):
+            assert workflow_id == "wf-1"
+            assert values["cancelled_by"]["actor"] == "operator"
 
     async def reap(_workflow_id):
         return {
@@ -180,3 +194,25 @@ def test_cancel_reports_reap_failure_without_failing(monkeypatch):
     assert response.json()["guest_sessions"]["failed"] == [
         {"session_id": 3, "error": "boom"}
     ]
+
+
+def test_cancel_survives_attribute_write_failure(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+
+    class FakeDBOS:
+        async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
+            pass
+
+        async def update_workflow_attributes_async(self, workflow_id, values):
+            raise RuntimeError("attribute store unavailable")
+
+    async def reap(_workflow_id):
+        return {"reaped": [], "failed": [], "skipped": []}
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr("agent_sessions.api.reap_sessions_for_workflow", reap)
+    response = client().post("/api/swarm/runs/wf-1/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["cancelled"] is True

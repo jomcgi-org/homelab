@@ -30,6 +30,8 @@ def create_session(
     system_prompt: str | None = None,
     workflow_id: str | None = None,
     triggered_by: str | None = None,
+    node_key: str | None = None,
+    node_attempt: int | None = None,
 ) -> AgentSession:
     row = AgentSession(
         local_session_id=local_session_id,
@@ -41,6 +43,8 @@ def create_session(
         progress_token=secrets.token_urlsafe(32),
         system_prompt=system_prompt,
         workflow_id=workflow_id,
+        node_key=node_key,
+        node_attempt=node_attempt,
         # Collapses whitespace-only to None rather than "". An empty string is a
         # third state that reads as "owned by nobody": it passes a NULL check but
         # matches no caller, so it would silently create rows nobody can ever read.
