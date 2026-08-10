@@ -46,10 +46,13 @@ py_test(
         "values.yaml",
         "Chart.yaml",
         "Chart.lock",
+        "//projects/monolith/agent:config",
+        "//projects/monolith/swarm:config",
         "//projects/monolith/deploy:deploy_values",
         "@multitool//tools/helm",
     ] + glob(["templates/**/*", "charts/**/*", "migrations/**/*"]),
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
     },
 )
