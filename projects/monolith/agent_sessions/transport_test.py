@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from agent_sessions import transport
+from agent_sessions.transport import EmberSessionGone
 from faas.embervm_client import EmberVMTransportError
 
 
@@ -24,6 +25,10 @@ class FakeAsyncClient:
 
     async def post(self, url, **kwargs):
         request = httpx.Request("POST", url, **kwargs)
+        return await self.handler(request)
+
+    async def delete(self, url, **kwargs):
+        request = httpx.Request("DELETE", url, **kwargs)
         return await self.handler(request)
 
 
@@ -963,3 +968,45 @@ def test_deliver_with_no_ember_and_no_restore_from_is_unchanged(monkeypatch):
     assert used == fresh
     assert json.loads(requests[0].content)["session_id"] == "cli-x"
     assert turn.result == "ok"
+
+
+def test_destroy_session_maps_404_to_session_gone(monkeypatch):
+    """404 is the control plane's "session not found": the goal state."""
+
+    async def handler(request):
+        return httpx.Response(
+            404,
+            json={"error": "session not found", "retryable": False},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberSessionGone):
+        asyncio.run(transport.EmberVmShimTransport().destroy_session("s-1"))
+
+
+def test_destroy_session_keeps_403_and_500_as_plain_failures(monkeypatch):
+    """Only 404/410 mean gone on this route.
+
+    DELETE is management-auth, so its 403 is "service account not permitted",
+    which fails EVERY destroy at once. Treating that as gone would report the
+    whole fleet reaped while every VM stayed alive holding a capacity slot.
+    A 500 whose body merely mentions a missing resource must not be gone
+    either.
+    """
+    statuses = []
+
+    async def handler(request):
+        status = statuses.pop(0)
+        return httpx.Response(
+            status,
+            json={"error": "service account not permitted / not found"},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    for status in (403, 500):
+        statuses.append(status)
+        with pytest.raises(EmberVMTransportError) as caught:
+            asyncio.run(transport.EmberVmShimTransport().destroy_session("s-404xyz"))
+        assert not isinstance(caught.value, EmberSessionGone), status
