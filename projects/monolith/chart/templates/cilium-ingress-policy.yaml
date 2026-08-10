@@ -36,10 +36,26 @@ Provenance of each allowlist entry:
     so it never crosses a Cilium boundary) and short Hubble windows therefore
     show no gateway traffic to 8000 at all.
   - mcp to 8000: Context Forge federates to the monolith API. Observed live.
-  - monolith-workflows to 8000: Argo Workflows POST to MONOLITH_INTERNAL_URL
+  - jobs.workflowNamespace to 8000, RESTRICTED to this chart's own job pods:
+    Argo Workflows POST to MONOLITH_INTERNAL_URL
     (http://monolith.monolith.svc.cluster.local:8000), set in chart/values.yaml.
     These are periodic and short-lived, so they do not appear in a short Hubble
     window; they come from config, not observation.
+
+    The namespace is NOT enough on its own. renovate deploys into the same
+    namespace (projects/platform/renovate/application.yaml), and it is a large
+    third-party executor that processes untrusted registry and dependency
+    metadata while holding a GitHub token, which makes it a more plausible
+    forger than anything this policy was originally aimed at. Of the 35
+    CronWorkflows in that namespace, 33 belong to this release and the only two
+    that do not are renovate's.
+
+    So the rule also matches app.kubernetes.io/part-of: <release>-jobs, which
+    cronworkflows.yaml stamps onto the job pods via workflowSpec.podMetadata.
+    Label and selector are rendered by the same chart and cannot drift apart.
+    The namespace itself comes from .Values.jobs.workflowNamespace rather than a
+    literal, for the same reason: a literal would leave the grant behind if that
+    value ever moved, and every cron POST would die as a silent dial timeout.
   - monolith component: whatsapp to 8000: the whatsapp gateway posts to
     whatsapp.monolithInboundUrl, which is .../8000/internal/whatsapp/inbound.
     Selected by pod label rather than by opening the whole namespace.
@@ -70,8 +86,10 @@ metadata:
     {{- include "monolith.labels" . | nindent 4 }}
 spec:
   description: >-
-    Allowlist ingress to the monolith app pod so an in-cluster workload cannot
-    reach the API and forge the X-Auth-Email identity header.
+    Allowlist ingress to the monolith app pod. Defence in depth for the
+    X-Auth-Email identity header: it removes most of the cluster from the set
+    that can reach the API, but the named sources can still send the header, so
+    nothing may authorize on it without verifying the JWT in the handler.
   endpointSelector:
     matchLabels:
       app.kubernetes.io/name: monolith
@@ -96,7 +114,8 @@ spec:
               protocol: TCP
     - fromEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: monolith-workflows
+            k8s:io.kubernetes.pod.namespace: {{ .Values.jobs.workflowNamespace }}
+            app.kubernetes.io/part-of: {{ .Release.Name }}-jobs
       toPorts:
         - ports:
             - port: "8000"

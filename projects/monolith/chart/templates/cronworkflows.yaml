@@ -43,6 +43,18 @@ spec:
   failedJobsHistoryLimit: {{ .failedJobsHistoryLimit | default 5 }}
   workflowSpec:
     entrypoint: run
+    # Stamp the JOB PODS, not just the CronWorkflow object. The labels above land
+    # on the CR and do not propagate, so without this the pods carry no chart
+    # labels at all and the only way to select them is by namespace.
+    #
+    # cilium-ingress-policy.yaml keys its monolith-workflows -> :8000 allow on
+    # this exact label, so that the grant covers THIS chart's jobs rather than
+    # everything sharing the namespace (renovate also deploys there and is a far
+    # larger third-party executor). Label and selector are rendered by the same
+    # chart, so they cannot drift apart.
+    podMetadata:
+      labels:
+        app.kubernetes.io/part-of: {{ $.Release.Name }}-jobs
     # Most jobs use the shared executor SA; a job needing extra cluster access
     # (e.g. stats_rollup reading node/pod counts) sets its own least-privilege SA.
     serviceAccountName: {{ .serviceAccountName | default "argo-workflow" }}
