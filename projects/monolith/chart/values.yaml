@@ -1243,3 +1243,13 @@ ciliumPolicy:
     enabled: false
     gatewayNamespace: mcp
     gatewayPodLabel: context-forge-gateway-mcp-stack-mcpgateway
+  # Allowlist ingress to the monolith app pod, so an in-cluster workload cannot
+  # reach the API and forge the X-Auth-Email identity header (issue #4628).
+  #
+  # Unlike tokenReplayDeny above this uses `ingress`, which makes the pod
+  # default-deny for every source it does not name, so the allowlist in
+  # templates/cilium-ingress-policy.yaml must be exhaustive. Default false:
+  # merging is inert, and a deploy override opts in after confirming the
+  # allowlist covers every live caller.
+  ingress:
+    enabled: false
