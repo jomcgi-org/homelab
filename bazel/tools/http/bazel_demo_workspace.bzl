@@ -69,7 +69,7 @@ def _basename(url):
 
 def _bazel_demo_workspace_impl(repository_ctx):
     # Stage everything under root/ laid out exactly as the in-image tree, so the
-    # tar step below is a plain `tar -C root .` with no path surgery.
+    # tar step below archives it as-is with no path surgery.
 
     # Extract the Abseil release directly to root/opt/abseil (stripPrefix drops the
     # top-level abseil-cpp-<ver>/ so the tree root is /opt/abseil in-image).

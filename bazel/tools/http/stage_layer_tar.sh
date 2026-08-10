@@ -11,7 +11,9 @@
 # that is easy to get wrong:
 #
 #   mtime   `touch -h -t` pins every entry to the epoch, so extraction time
-#           does not leak in.
+#           does not leak in. It MUST run under TZ=UTC: `touch -t` reads the
+#           timestamp as LOCAL time, so the same tree staged in Sydney stores
+#           mtime -36000 and produces different bytes than one staged in UTC.
 #   owner   `--owner=0 --group=0` (with `--numeric-owner`, so no name lookup
 #           happens either). `--numeric-owner` ALONE is not enough: it only
 #           suppresses the uid to name lookup and still records the building
@@ -46,8 +48,9 @@ esac
 
 cd "$ROOT"
 
-# Pin every mtime, symlinks included, to the epoch.
-find . -exec touch -h -t 197001010000 {} +
+# Pin every mtime, symlinks included, to the epoch. The TZ prefix propagates to
+# the -exec children and is what makes 197001010000 mean the epoch everywhere.
+TZ=UTC find . -exec touch -h -t 197001010000 {} +
 
 # Materialise the sorted member list instead of piping it. /bin/sh on the CI
 # runner is dash, which has no `pipefail`, so a failing `find` in a pipeline
