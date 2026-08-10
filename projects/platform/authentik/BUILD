@@ -1,4 +1,5 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
@@ -36,4 +37,10 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
+)
+
+semgrep_test(
+    name = "blueprint_tags_test_semgrep_test",
+    srcs = ["blueprint_tags_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
