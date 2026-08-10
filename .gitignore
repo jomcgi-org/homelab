@@ -88,3 +88,8 @@ bb-out/
 # Codex dispatch transcripts (bazel/tools/codex/dispatch.sh), kept per-worktree
 # for triage, never committed
 .codex-dispatch/
+
+# Chart versions published by main's push, handed to write-back-versions.sh
+# (ADR platform/009 decision 1). Written by bazel/helm/push.sh.tpl, consumed and
+# deleted in the same CI action, never committed.
+.chart-version-records/

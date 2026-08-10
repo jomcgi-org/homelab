@@ -163,12 +163,18 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
       fi
 
       # Record for the batched write-back: one file per chart, so concurrent
-      # multirun jobs never write the same path. Unset (a local `bazel run`)
-      # records nothing and therefore writes nothing back.
-      if [[ -n "${CHART_VERSION_RECORD_DIR:-}" ]]; then
-        mkdir -p "$CHART_VERSION_RECORD_DIR"
-        printf '%s %s\n' "$CHART_DIR" "$CHART_VERSION" > "${CHART_VERSION_RECORD_DIR}/${CHART_NAME}"
-      fi
+      # multirun jobs never write the same path.
+      #
+      # The location is DERIVED FROM THE WORKSPACE, not passed in an env var.
+      # An env var would have to survive `bazel run` into the target's
+      # environment, and if it ever did not, this would record nothing, the
+      # write-back would report "nothing to write back", and NO CHART WOULD EVER
+      # DEPLOY AGAIN with every step still green. BUILD_WORKSPACE_DIRECTORY is
+      # set by `bazel run` itself and is already load-bearing above, so there is
+      # no second thing to keep working.
+      RECORD_DIR="${WORKSPACE}/.chart-version-records"
+      mkdir -p "$RECORD_DIR"
+      printf '%s %s\n' "$CHART_DIR" "$CHART_VERSION" > "${RECORD_DIR}/${CHART_NAME}"
     fi
   fi
 elif [[ "$CAN_VERSION" == "true" ]]; then

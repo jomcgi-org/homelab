@@ -204,19 +204,19 @@ actions:
           #
           # The chart version is now computed HERE rather than carried on the PR
           # branch (ADR platform/009 decision 1). Each chart records the version
-          # it published into CHART_VERSION_RECORD_DIR instead of committing it
+          # it published into .chart-version-records/ instead of committing it
           # itself: push_all is a multirun with `jobs = 0`, so ~24 of these run
           # concurrently and cannot each touch the git index or race main's ref.
           # write-back-versions.sh then lands all of them in ONE commit.
           #
-          # The write-back is NOT allowed to fail the publish: the charts are
-          # already in the registry at that point, and failing here would leave
-          # main red without changing what was published. It exits non-zero only
-          # after exhausting its retries, which is a genuine "main does not
-          # reference the published charts" state worth going red for.
-          export CHART_VERSION_RECORD_DIR="$(mktemp -d)"
+          # The record path is derived from BUILD_WORKSPACE_DIRECTORY inside
+          # push.sh.tpl rather than exported here on purpose: an env var that
+          # failed to reach the `bazel run` target would silently record
+          # nothing, and "nothing to write back" is indistinguishable from
+          # "nothing needed publishing", so every chart would stop deploying
+          # with the action still green.
           bazel run //bazel/images:push_all --config=ci --stamp
-          ./bazel/helm/write-back-versions.sh "$CHART_VERSION_RECORD_DIR"
+          ./bazel/helm/write-back-versions.sh .chart-version-records
 
           # ---- 3. formatting must already be correct ----------------------
           # No auto-commit on main: fail with the fix instead.
