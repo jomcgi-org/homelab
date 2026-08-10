@@ -79,13 +79,16 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
     events = []
 
     class FakeDBOS:
-        def cancel_workflow(self, workflow_id):
-            events.append(("cancel", workflow_id))
+        # async, matching the real DBOS API: the sync cancel_workflow raises
+        # from a running event loop (check_async), so a sync fake would let a
+        # production-breaking handler pass its tests.
+        async def cancel_workflow_async(self, workflow_id, cancel_children=False):
+            events.append(("cancel", workflow_id, cancel_children))
 
     async def reap(workflow_id):
         events.append(("reap", workflow_id))
         return {
-            "reaped": ["ember-1"],
+            "reaped": [2],
             "failed": [],
             "skipped": [4],
         }
@@ -100,25 +103,26 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
         "workflow_id": "wf-1",
         "cancelled": True,
         "guest_sessions": {
-            "reaped": ["ember-1"],
+            "reaped": [2],
             "failed": [],
             "skipped": [4],
         },
     }
-    assert events == [("cancel", "wf-1"), ("reap", "wf-1")]
+    assert events == [("cancel", "wf-1", True), ("reap", "wf-1")]
 
 
 def test_cancel_reports_reap_failure_without_failing(monkeypatch):
     monkeypatch.setenv("SWARM_ENABLED", "true")
 
     class FakeDBOS:
-        def cancel_workflow(self, workflow_id):
+        async def cancel_workflow_async(self, workflow_id, cancel_children=False):
             assert workflow_id == "wf-1"
+            assert cancel_children is True
 
     async def reap(_workflow_id):
         return {
             "reaped": [],
-            "failed": [{"session_id": "ember-1", "error": "boom"}],
+            "failed": [{"session_id": 3, "error": "boom"}],
             "skipped": [],
         }
 
@@ -130,5 +134,5 @@ def test_cancel_reports_reap_failure_without_failing(monkeypatch):
     assert response.status_code == 200
     assert response.json()["cancelled"] is True
     assert response.json()["guest_sessions"]["failed"] == [
-        {"session_id": "ember-1", "error": "boom"}
+        {"session_id": 3, "error": "boom"}
     ]

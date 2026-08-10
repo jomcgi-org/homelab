@@ -4,6 +4,7 @@ from sqlmodel import Session, SQLModel, create_engine
 import agent_sessions.api as api
 import agent_sessions.mcp as mcp
 from agent_sessions.models import AgentSession
+from agent_sessions.transport import EmberSessionGone
 from faas.embervm_client import EmberVMTransportError
 
 
@@ -109,7 +110,7 @@ async def test_reap_sessions_for_workflow_treats_404_as_reaped(monkeypatch):
     )
 
     async def destroy(_ember_id):
-        raise EmberVMTransportError("404 session not found")
+        raise EmberSessionGone("404 session not found")
 
     cleared = []
     monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
@@ -124,3 +125,41 @@ async def test_reap_sessions_for_workflow_treats_404_as_reaped(monkeypatch):
         "skipped": [],
     }
     assert cleared == ["ember-gone"]
+
+
+@pytest.mark.asyncio
+async def test_reap_does_not_treat_a_500_mentioning_404_as_gone(monkeypatch):
+    """A live session must never be reported reaped.
+
+    The transport decides "gone" from the STATUS CODE. A plain transport error
+    whose text merely contains "404" (the session id itself can, and error
+    bodies routinely mention other not-found resources) has to count as a
+    FAILURE, otherwise the binding is cleared while the VM keeps burning a
+    live-capacity slot with nothing pointing at it.
+    """
+    row = AgentSession(
+        id=7,
+        local_session_id="live",
+        workspace="w",
+        branch="b",
+        ember_session_id="s-404ABCDEF",
+    )
+    cleared = []
+
+    async def destroy(_ember_id):
+        raise EmberVMTransportError(
+            "Server error '500 Internal Server Error' for url "
+            "'http://embervm/v1/sessions/s-404ABCDEF' not found upstream"
+        )
+
+    monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
+    monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(
+        api, "_clear_ember_bindings_for", lambda ember_id: cleared.append(ember_id)
+    )
+
+    result = await api.reap_sessions_for_workflow("wf-1")
+
+    assert result["reaped"] == []
+    assert result["failed"][0]["session_id"] == 7
+    assert cleared == []

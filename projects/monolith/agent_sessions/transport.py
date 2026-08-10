@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 # VM-state poll; it must never inherit the turn-sized read timeout.
 LIST_SESSIONS_READ_TIMEOUT = 5.0
 
+# Destroy runs on the interactive cancel path, once per session, serially. It
+# must never inherit the turn-sized read timeout either: three sessions behind
+# a wedged control plane would otherwise hold one request for 90 minutes.
+DESTROY_SESSION_READ_TIMEOUT = 30.0
+
 
 def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
     try:
@@ -328,7 +333,13 @@ class EmberVmShimTransport:
 
         url = f"{EMBERVM_URL}/v1/sessions/{ember_session_id}"
         headers = auth_headers()
-        timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
+        # Destroy is on the interactive cancel path, and a wedged control plane
+        # that accepts the connection but never answers would otherwise hold the
+        # request for the full turn read timeout (1800s) PER session, serially.
+        # Same reasoning as LIST_SESSIONS_READ_TIMEOUT above.
+        timeout = httpx.Timeout(
+            DESTROY_SESSION_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
+        )
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -348,6 +359,13 @@ class EmberVmShimTransport:
                 ember_session_id,
                 exc,
             )
+            # Distinguish "already gone" from "failed to destroy" HERE, where the
+            # status code is available. Callers that sniff the message string
+            # instead can be fooled by a 500 whose URL or body merely contains
+            # "404" or "not found", and would then treat a LIVE session as
+            # reaped, leaking the capacity slot they meant to reclaim.
+            if exc.response.status_code in (403, 404, 410):
+                raise EmberSessionGone(_status_error_detail(exc)) from exc
             raise EmberVMTransportError(_status_error_detail(exc)) from exc
         except httpx.TransportError as exc:
             logger.warning(
