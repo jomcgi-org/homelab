@@ -1,5 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { groupSessions, groupSummary, isGroupExpanded } from "./grouping.js";
+import {
+  groupSessions,
+  groupSummary,
+  isGroupExpanded,
+  shortWorkflowId,
+} from "./grouping.js";
+
+describe("shortWorkflowId", () => {
+  it("distinguishes ids that share a prefix", () => {
+    // Taking the head collapsed both of these to "swarm-sm" against live data.
+    expect(shortWorkflowId("swarm-smoke-1")).not.toBe(
+      shortWorkflowId("swarm-smoke-2"),
+    );
+  });
+
+  it("returns a short id unchanged, with no ellipsis", () => {
+    expect(shortWorkflowId("wf-1")).toBe("wf-1");
+  });
+
+  it("coerces a non-string id", () => {
+    expect(shortWorkflowId(42)).toBe("42");
+  });
+});
 
 describe("groupSessions", () => {
   it("keeps sessions without workflow ids flat", () => {
