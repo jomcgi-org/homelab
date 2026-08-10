@@ -22,7 +22,7 @@ import demos.module
 import dr_jobs.module
 import ember_public.module
 import faas.module
-import graph.module
+import swarm.module
 import grimoire.module
 import hikes.module
 import home.module
@@ -53,7 +53,7 @@ ALL_MODULES: tuple[Module, ...] = (
     worldcup.module.MODULE,
     artifact.module.MODULE,
     faas.module.MODULE,
-    graph.module.MODULE,
+    swarm.module.MODULE,
     demos.module.MODULE,
     ember_public.module.MODULE,
     # MCP-only domains (no HTTP routes of their own). Placed here, before

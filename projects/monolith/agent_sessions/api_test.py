@@ -5,7 +5,7 @@ import agent_sessions.mcp as mcp
 from agent_sessions.models import AgentSession
 
 
-def test_start_session_for_graph_retry_preserves_original_workflow_id(
+def test_start_session_for_swarm_retry_preserves_original_workflow_id(
     monkeypatch, tmp_path
 ):
     engine = create_engine(
@@ -23,7 +23,7 @@ def test_start_session_for_graph_retry_preserves_original_workflow_id(
     monkeypatch.setattr(api, "_schedule_next_message", lambda session_id: None)
 
     try:
-        first_id = api.start_session_for_graph(
+        first_id = api.start_session_for_swarm(
             "test-key",
             "prompt1",
             "luna",
@@ -31,7 +31,7 @@ def test_start_session_for_graph_retry_preserves_original_workflow_id(
             "main",
             workflow_id="wf-1",
         )
-        second_id = api.start_session_for_graph(
+        second_id = api.start_session_for_swarm(
             "test-key",
             "prompt1",
             "luna",

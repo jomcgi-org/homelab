@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-import graph.steps as steps
+import swarm.steps as steps
 
 
 class FakeClient:
@@ -29,26 +29,26 @@ class FakeClient:
 )
 def test_read_branch_head(monkeypatch, status, payload, expected):
     request = httpx.Request(
-        "GET", "https://api.github.com/repos/jomcgi/homelab/git/ref/heads/graph/wf-1"
+        "GET", "https://api.github.com/repos/jomcgi/homelab/git/ref/heads/swarm/wf-1"
     )
     response = httpx.Response(status, json=payload, request=request)
     FakeClient.response = response
     monkeypatch.setattr(steps.httpx, "Client", FakeClient)
 
     assert (
-        steps.read_branch_head.__wrapped__("jomcgi/homelab", "graph/wf-1") == expected
+        steps.read_branch_head.__wrapped__("jomcgi/homelab", "swarm/wf-1") == expected
     )
 
 
 def test_read_branch_head_raises_on_server_error(monkeypatch):
     request = httpx.Request(
-        "GET", "https://api.github.com/repos/jomcgi/homelab/git/ref/heads/graph/wf-1"
+        "GET", "https://api.github.com/repos/jomcgi/homelab/git/ref/heads/swarm/wf-1"
     )
     FakeClient.response = httpx.Response(500, json={"message": "boom"}, request=request)
     monkeypatch.setattr(steps.httpx, "Client", FakeClient)
 
     with pytest.raises(httpx.HTTPStatusError):
-        steps.read_branch_head.__wrapped__("jomcgi/homelab", "graph/wf-1")
+        steps.read_branch_head.__wrapped__("jomcgi/homelab", "swarm/wf-1")
 
 
 def test_start_agent_session_forwards_workflow_id(monkeypatch):
@@ -60,7 +60,7 @@ def test_start_agent_session_forwards_workflow_id(monkeypatch):
         calls.append((args, kwargs))
         return 101
 
-    monkeypatch.setattr(api, "start_session_for_graph", fake_start_session)
+    monkeypatch.setattr(api, "start_session_for_swarm", fake_start_session)
 
     result = steps.start_agent_session.__wrapped__(
         "test-key", "prompt", "luna", "jomcgi/homelab", "main", workflow_id="wf-abc"

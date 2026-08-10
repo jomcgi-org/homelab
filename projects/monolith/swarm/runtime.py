@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from graph import config
+from swarm import config
 
 _dbos = None
 _launched = False

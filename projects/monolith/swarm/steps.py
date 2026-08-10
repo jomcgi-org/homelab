@@ -17,9 +17,9 @@ def start_agent_session(
     live session holding another Codex slot, which is exactly the
     externally-visible-step hazard ADR 038 decision 2 calls out.
     """
-    from agent_sessions.api import start_session_for_graph
+    from agent_sessions.api import start_session_for_swarm
 
-    return start_session_for_graph(
+    return start_session_for_swarm(
         session_key, prompt, model, repo, branch, workflow_id=workflow_id
     )
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from graph import config
+from swarm import config
 
 _queues = None
 

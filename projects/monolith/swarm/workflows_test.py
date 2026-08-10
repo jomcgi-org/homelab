@@ -1,4 +1,4 @@
-import graph.workflows as workflows
+import swarm.workflows as workflows
 
 
 class Queue:
@@ -58,7 +58,7 @@ def test_commit_on_first_attempt_goes_to_review(monkeypatch):
     assert result["attempts"] == 1
     assert result["commit_sha"] == "abc"
     assert result["review_verdict"] == "approve"
-    assert result["work_branch"] == "claude/graph-unknown"
+    assert result["work_branch"] == "claude/swarm-unknown"
     assert len(calls) == 2
 
 
@@ -186,7 +186,7 @@ def test_reviewer_has_no_lineage_argument(monkeypatch):
 
 def test_routes_on_github_head_not_turn_commit(monkeypatch):
     """The turn CLAIMS a commit; GitHub says the branch was never pushed. The
-    graph must believe GitHub. Routing on the turn field is what made the
+    swarm must believe GitHub. Routing on the turn field is what made the
     reviewer unreachable, because AgentTurn.commit_sha is never written."""
     calls = run(
         monkeypatch,

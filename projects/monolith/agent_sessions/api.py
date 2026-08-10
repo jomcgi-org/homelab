@@ -20,7 +20,7 @@ from core.db import get_engine
 from goosecracker.api import REPO_CATALOG
 
 
-def start_session_for_graph(
+def start_session_for_swarm(
     local_session_id: str,
     prompt: str,
     model: str,

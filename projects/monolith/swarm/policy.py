@@ -4,7 +4,7 @@ import re
 
 
 def work_branch(workflow_id: str) -> str:
-    """The scratch branch one graph run pushes its implementation to.
+    """The scratch branch one swarm run pushes its implementation to.
 
     Lives under `claude/` because that is this repo's established agent branch
     namespace (ADR 038 decision 6 has implementer runs pushing `claude/*`, and
@@ -12,7 +12,7 @@ def work_branch(workflow_id: str) -> str:
     write would make the oracle silently return "no push" forever, which is the
     same class of dead signal that AgentTurn.commit_sha turned out to be.
     """
-    return f"claude/graph-{workflow_id}"
+    return f"claude/swarm-{workflow_id}"
 
 
 def next_action(
@@ -21,7 +21,7 @@ def next_action(
     head_sha: str | None,
     prior_sha: str | None,
 ) -> str:
-    """Decide what the graph does next, given one attempt's outcome.
+    """Decide what the swarm does next, given one attempt's outcome.
 
     Success means THIS attempt moved the remote branch, not that a commit
     exists. Per ADR 038 decision 1 the session's own account of itself is a

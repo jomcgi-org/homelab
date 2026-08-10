@@ -54,7 +54,7 @@ MONOLITH_DOMAINS = [
     "worldcup",
     "artifact",
     "faas",
-    "graph",
+    "swarm",
     "demos",
     "ember_public",
     "agent",

@@ -1,0 +1,27 @@
+from __future__ import annotations
+
+import os
+
+
+def enabled() -> bool:
+    return os.environ.get("SWARM_ENABLED", "false").lower() == "true"
+
+
+def implementer_model() -> str:
+    return os.environ.get("SWARM_IMPLEMENTER_MODEL", "luna")
+
+
+def reviewer_model() -> str:
+    return os.environ.get("SWARM_REVIEWER_MODEL", "opus")
+
+
+def max_attempts() -> int:
+    return int(os.environ.get("SWARM_MAX_ATTEMPTS", "2"))
+
+
+def turn_timeout_seconds() -> int:
+    return int(os.environ.get("SWARM_TURN_TIMEOUT_SECONDS", "1800"))
+
+
+def codex_concurrency() -> int:
+    return int(os.environ.get("SWARM_CODEX_CONCURRENCY", "2"))

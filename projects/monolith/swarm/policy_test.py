@@ -1,6 +1,6 @@
 import pytest
 
-from graph.policy import (
+from swarm.policy import (
     implementer_prompt,
     next_action,
     parse_review_verdict,
@@ -10,7 +10,7 @@ from graph.policy import (
 
 
 def test_work_branch():
-    assert work_branch("wf-123") == "claude/graph-wf-123"
+    assert work_branch("wf-123") == "claude/swarm-wf-123"
     # Must live in the agent branch namespace agents can actually push to.
     assert work_branch("wf-123").startswith("claude/")
 
@@ -50,12 +50,12 @@ def test_next_action_routes_new_head_to_review(prior, head):
 
 
 def test_prompt_builders():
-    prompt = implementer_prompt("fix bug", "claude/graph-wf-123", None)
-    assert "claude/graph-wf-123" in prompt
+    prompt = implementer_prompt("fix bug", "claude/swarm-wf-123", None)
+    assert "claude/swarm-wf-123" in prompt
     assert "Do not open a pull request" in prompt
     assert "Do not push to main" in prompt
     assert "Previous attempt failed: tests failed" in implementer_prompt(
-        "fix bug", "claude/graph-wf-123", "tests failed"
+        "fix bug", "claude/swarm-wf-123", "tests failed"
     )
     prompt = reviewer_prompt("fix bug", "feature", "abc123")
     assert "fix bug" in prompt

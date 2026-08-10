@@ -10,7 +10,7 @@
 # gazelle:exclude ember_public
 # gazelle:exclude e2e
 # gazelle:exclude framework
-# gazelle:exclude graph
+# gazelle:exclude swarm
 # gazelle:exclude knowledge
 # gazelle:exclude notes
 # gazelle:exclude scripts
@@ -97,7 +97,7 @@ _BACKEND_SRCS = glob(
         "grimoire/**/*.py",
         "grimoire_chat/**/*.py",
         "faas/**/*.py",
-        "graph/**/*.py",
+        "swarm/**/*.py",
     ],
     exclude = [
         # pytest discovers both *_test.py (sibling convention) and
@@ -1554,9 +1554,9 @@ py_library(
 )
 
 py_library(
-    name = "pkg_graph",
+    name = "pkg_swarm",
     srcs = glob(
-        ["graph/**/*.py"],
+        ["swarm/**/*.py"],
         exclude = [
             "**/*_test.py",
             "**/test_*.py",
@@ -1731,7 +1731,7 @@ py_library(
             "grimoire/**/*.py",
             "grimoire_chat/**/*.py",
             "faas/**/*.py",
-            "graph/**/*.py",
+            "swarm/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -4313,31 +4313,31 @@ py_test(
 )
 
 py_test(
-    name = "graph_config_test",
-    srcs = ["graph/config_test.py"],
+    name = "swarm_config_test",
+    srcs = ["swarm/config_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_graph",
+        ":pkg_swarm",
         "@pip//pytest",
     ],
 )
 
 py_test(
-    name = "graph_policy_test",
-    srcs = ["graph/policy_test.py"],
+    name = "swarm_policy_test",
+    srcs = ["swarm/policy_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_graph",
+        ":pkg_swarm",
         "@pip//pytest",
     ],
 )
 
 py_test(
-    name = "graph_router_test",
-    srcs = ["graph/router_test.py"],
+    name = "swarm_router_test",
+    srcs = ["swarm/router_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_graph",
+        ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4345,21 +4345,21 @@ py_test(
 )
 
 py_test(
-    name = "graph_workflows_test",
-    srcs = ["graph/workflows_test.py"],
+    name = "swarm_workflows_test",
+    srcs = ["swarm/workflows_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_graph",
+        ":pkg_swarm",
         "@pip//pytest",
     ],
 )
 
 py_test(
-    name = "graph_steps_test",
-    srcs = ["graph/steps_test.py"],
+    name = "swarm_steps_test",
+    srcs = ["swarm/steps_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_graph",
+        ":pkg_swarm",
         "@pip//httpx",
         "@pip//pytest",
     ],

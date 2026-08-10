@@ -3,10 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from graph import config, runtime
+from swarm import config, runtime
 from goosecracker.api import REPO_CATALOG
 
-router = APIRouter(prefix="/api/graph", tags=["graph"])
+router = APIRouter(prefix="/api/swarm", tags=["swarm"])
 
 
 class RunRequest(BaseModel):
@@ -18,16 +18,16 @@ class RunRequest(BaseModel):
 
 def _dbos():
     if not config.enabled():
-        raise HTTPException(status_code=503, detail="Graph workflows are disabled")
+        raise HTTPException(status_code=503, detail="Swarm workflows are disabled")
     instance = runtime.init_dbos()
     if instance is None:
-        raise HTTPException(status_code=503, detail="Graph DBOS is not configured")
+        raise HTTPException(status_code=503, detail="Swarm DBOS is not configured")
     if not runtime.is_launched():
         # A follower replica: the router is mounted everywhere but DBOS only
         # launches on the leader. Submitting here would target an unlaunched
         # runtime, so say so rather than failing obscurely downstream.
         raise HTTPException(
-            status_code=503, detail="Graph DBOS is not launched on this replica"
+            status_code=503, detail="Swarm DBOS is not launched on this replica"
         )
     return instance
 
@@ -36,7 +36,7 @@ def _dbos():
 def start_run(request: RunRequest) -> dict:
     if request.repo not in REPO_CATALOG:
         raise HTTPException(status_code=400, detail=f"unknown repo {request.repo}")
-    from graph.workflows import implement_then_review
+    from swarm.workflows import implement_then_review
 
     dbos = _dbos()
     from dbos import SetWorkflowID
@@ -74,7 +74,7 @@ def list_runs() -> list[dict]:
 def cancel_run(workflow_id: str) -> dict:
     _dbos().cancel_workflow(workflow_id)
     # Cancelling the workflow does NOT reap the guest session it started, and
-    # parked sessions count against the live capacity cap, so a cancelled graph
+    # parked sessions count against the live capacity cap, so a cancelled swarm
     # can still deny creates cluster-wide. The compensating control-plane delete
     # is tracked in #4578. Reported honestly rather than claiming a clean stop.
     return {
