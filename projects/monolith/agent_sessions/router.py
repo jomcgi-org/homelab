@@ -262,7 +262,12 @@ def _publish_vm_map(new_map: dict[str, dict], error: str | None) -> None:
     an update entirely.
     """
     cache = _vm_state_cache
-    changed = new_map != cache.cache_map
+    # The error is part of what changed, not just the map. With no live
+    # sessions the map is already empty, so losing the control plane
+    # published an identical {} and woke nobody: subscribers kept a frame
+    # claiming a clean empty state while the snapshot endpoint reported the
+    # outage. Recovery was equally silent.
+    changed = new_map != cache.cache_map or error != cache.last_error
     cache.cache_map = new_map
     cache.last_refreshed_at = time.monotonic()
     cache.last_error = error
@@ -307,10 +312,15 @@ async def _start_refresher() -> None:
     # Deployment is 1 replica with HPA to 3, so worst case is 3 refreshers.
     if cache.task is None or cache.task.done():
         cache.task = asyncio.create_task(_run_vm_refresher())
-    # Give the first subscriber real data before it yields its snapshot. The
-    # task refreshes too, so this can duplicate one poll on first connect,
-    # which is harmless where a duplicated task was not.
-    if not cache.initialized:
+    # Give a joining subscriber fresh data before it yields its snapshot.
+    # Staleness, not just initialization: `initialized` latches true on the
+    # first publish and never resets, so testing it alone meant a console
+    # reopened hours after the last viewer left got a frame built from the
+    # overnight map, rendering a confident "awake" chip for a guest that
+    # parked long ago. Costs nothing while a refresher is live, since
+    # last_refreshed_at is then always under one interval old.
+    stale = time.monotonic() - cache.last_refreshed_at >= cache.refresh_interval
+    if not cache.initialized or stale:
         await _refresh_cp_state()
 
 
