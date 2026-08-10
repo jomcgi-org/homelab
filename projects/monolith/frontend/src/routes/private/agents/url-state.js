@@ -1,0 +1,41 @@
+function searchParamsFrom(value) {
+  if (value instanceof URL) return new URLSearchParams(value.search);
+  if (value instanceof URLSearchParams) return new URLSearchParams(value);
+  return new URLSearchParams(value ?? "");
+}
+
+export function parseUrlState(value) {
+  const params = searchParamsFrom(value);
+  return {
+    runId: params.get("run"),
+    sessionId: params.get("session"),
+  };
+}
+
+export function selectRun(value, runId) {
+  const params = searchParamsFrom(value);
+  params.delete("session");
+  if (runId == null) params.delete("run");
+  else params.set("run", String(runId));
+  return params.toString();
+}
+
+export function selectSession(value, sessionId) {
+  const params = searchParamsFrom(value);
+  if (sessionId == null) params.delete("session");
+  else params.set("session", String(sessionId));
+  return params.toString();
+}
+
+export function clearSelection(value) {
+  const params = searchParamsFrom(value);
+  params.delete("run");
+  params.delete("session");
+  return params.toString();
+}
+
+export function backToRun(value) {
+  const params = searchParamsFrom(value);
+  params.delete("session");
+  return params.toString();
+}

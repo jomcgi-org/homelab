@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick } from "svelte";
-  import { pushState } from "$app/navigation";
+  import { pushState, replaceState } from "$app/navigation";
   import { page } from "$app/stores";
   import { renderAgentMarkdown } from "./markdown.js";
   import { RUN_FIXTURES } from "./run-fixtures.js";
@@ -12,12 +12,11 @@
     shortWorkflowId,
   } from "./grouping.js";
   import {
-    enterTranscript,
-    MOBILE_MEDIA_QUERY,
-    MOBILE_VIEW_LIST,
-    MOBILE_VIEW_TRANSCRIPT,
-    returnToList,
-  } from "./mobile-view.js";
+    backToRun,
+    clearSelection,
+    selectRun as runSearchTransition,
+    selectSession as sessionTransition,
+  } from "./url-state.js";
   import { statusClass, statusLabel, vmRunning, vmState } from "./status.js";
   import "./agents-theme.css";
   import "./run-view.css";
@@ -27,6 +26,8 @@
   import { nodeIconKey, nodeStateClass } from "./dag.js";
   import { fmtCost } from "./run-format.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
+
+  const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
 
   let { data } = $props();
 
@@ -43,8 +44,11 @@
       : undefined;
   });
 
-  let selectedId = $state(null);
-  let mobileView = $state(MOBILE_VIEW_LIST);
+  const selectedId = $derived($page.url.searchParams.get("session"));
+  const selectedRunId = $derived($page.url.searchParams.get("run"));
+  const mobileTranscript = $derived(
+    isMobileViewport() && (selectedId != null || selectedRunId != null),
+  );
   let sidebarCollapsed = $state(false);
   if (typeof window !== "undefined") {
     try {
@@ -63,7 +67,6 @@
   });
   let masterSnapshotFetchedAt = 0;
   let masterHasSnapshot = false;
-  let selectedRunId = $state(null);
   let runDetail = $state(null);
   let runRequestSequence = 0;
   let detail = $state(null);
@@ -71,7 +74,7 @@
   let searchResults = $state(null);
   let searchLoading = $state(false);
   let prompt = $state("");
-  let composerModel = $state("");
+  let composerModelOverride = $state(null);
   let sending = $state(false);
   let creating = $state(false);
   let showNewPanel = $state(false);
@@ -79,7 +82,8 @@
   let newButtonEl = $state(null);
   let newPromptEl = $state(null);
   let titleEl = $state(null);
-  let mobileHistoryEntry = false;
+  let focusSessionId = null;
+  let previousSessionId = null;
   let showAllHistory = $state(false);
   let repos = $state([]);
   let branches = $state([]);
@@ -109,6 +113,13 @@
     sessions.find((session) => String(session.id) === String(selectedId)) ??
       detail?.session ??
       null,
+  );
+  // The composer defaults to the selected session's model until the picker
+  // overrides it. Derived rather than assigned in the selection effect: that
+  // effect must not read `sessions`, or every 2s poll would re-run it and
+  // wipe the open transcript.
+  const composerModel = $derived(
+    composerModelOverride ?? selectedSession?.model ?? "",
   );
   const hasRuns = $derived(runs.length > 0);
   const runNeedsAttention = $derived(runs.filter((run) => run.needs).length);
@@ -385,8 +396,11 @@
         selectedId != null &&
         !sessions.some((session) => String(session.id) === String(selectedId))
       ) {
-        selectedId = null;
-        detail = null;
+        const search = sessionTransition($page.url.searchParams, null);
+        replaceState(
+          search ? `/private/agents?${search}` : "/private/agents",
+          {},
+        );
       }
     } catch (error) {
       errorMessage = error.message;
@@ -478,39 +492,12 @@
   function selectRun(runOrId) {
     const id = typeof runOrId === "object" ? runOrId?.workflow_id : runOrId;
     if (id == null) return;
-    requestSequence += 1;
-    selectedRunId = id;
-    selectedId = null;
-    detail = null;
-    runDetail = null;
-    runRequestSequence += 1;
-    loadRunDetail(id, runRequestSequence);
-    if (isMobileViewport() && mobileView === MOBILE_VIEW_LIST) {
-      mobileView = enterTranscript({ view: mobileView }).view;
-      pushState(`?run=${encodeURIComponent(id)}`, {
-        agentsRunId: id,
-        agentsMobileView: MOBILE_VIEW_TRANSCRIPT,
-      });
-      mobileHistoryEntry = true;
-    } else {
-      pushState(`?run=${encodeURIComponent(id)}`, { agentsRunId: id });
-    }
+    const search = runSearchTransition($page.url.searchParams, id);
+    pushState(search ? `/private/agents?${search}` : "/private/agents", {});
   }
 
   function selectRuns() {
-    selectedId = null;
-    selectedRunId = null;
-    runDetail = null;
-    if (isMobileViewport() && mobileView === MOBILE_VIEW_LIST) {
-      mobileView = enterTranscript({ view: mobileView }).view;
-      pushState("/private/agents", {
-        agentsRunId: null,
-        agentsMobileView: MOBILE_VIEW_TRANSCRIPT,
-      });
-      mobileHistoryEntry = true;
-    } else {
-      pushState("/private/agents", { agentsRunId: null });
-    }
+    pushState("/private/agents", {});
   }
 
   async function loadVms() {
@@ -578,29 +565,8 @@
   function selectSession(sessionOrId) {
     const id = typeof sessionOrId === "object" ? sessionOrId?.id : sessionOrId;
     if (id == null) return;
-    requestSequence += 1;
-    selectedId = id;
-    selectedRunId = null;
-    runDetail = null;
-    detail = null;
-    renderedPending = {};
-    searchResults = null;
-    loadDetail(id, requestSequence);
-    const session = sessions.find((item) => String(item.id) === String(id));
-    composerModel = session?.model || "";
-    if (isMobileViewport() && mobileView === MOBILE_VIEW_LIST) {
-      mobileView = enterTranscript({ view: mobileView }).view;
-      pushState("/private/agents", {
-        agentsRunId: null,
-        agentsMobileView: MOBILE_VIEW_TRANSCRIPT,
-      });
-      mobileHistoryEntry = true;
-      tick().then(() => {
-        if (isMobileViewport()) titleEl?.focus({ preventScroll: true });
-      });
-    } else {
-      pushState("/private/agents", { agentsRunId: null });
-    }
+    const search = sessionTransition($page.url.searchParams, id);
+    pushState(search ? `/private/agents?${search}` : "/private/agents", {});
   }
 
   function isMobileViewport() {
@@ -611,17 +577,14 @@
   }
 
   function returnToSessionList() {
-    mobileView = returnToList({ view: mobileView }).view;
-    if (mobileHistoryEntry) {
-      mobileHistoryEntry = false;
-      history.back();
-    }
-    tick().then(() => {
-      if (!isMobileViewport()) return;
-      document
-        .getElementById(`agent-session-${String(selectedId)}`)
-        ?.focus({ preventScroll: true });
-    });
+    focusSessionId = selectedId;
+    const search = clearSelection($page.url.searchParams);
+    pushState(search ? `/private/agents?${search}` : "/private/agents", {});
+  }
+
+  function returnToRun() {
+    const search = backToRun($page.url.searchParams);
+    pushState(search ? `/private/agents?${search}` : "/private/agents", {});
   }
 
   function closeNewPanel() {
@@ -811,10 +774,13 @@
         { method: "DELETE" },
       );
       if (!response.ok) throw new Error("Session could not be destroyed");
-      selectedId = null;
-      detail = null;
+      focusSessionId = selectedId;
+      const search = sessionTransition($page.url.searchParams, null);
+      replaceState(
+        search ? `/private/agents?${search}` : "/private/agents",
+        {},
+      );
       await loadSessions();
-      returnToSessionList();
     } catch (error) {
       errorMessage = error.message;
     }
@@ -840,45 +806,50 @@
 
   onMount(() => {
     loadRuns();
-    const linkedRun = new URLSearchParams(window.location.search).get("run");
-    if (linkedRun) selectRun(linkedRun);
     const handleKeydown = (event) => {
       if (event.key === "Escape" && !event.isComposing && showNewPanel) {
         event.preventDefault();
         closeNewPanel();
       }
     };
-    const handlePopstate = () => {
-      const linkedRun = new URLSearchParams(window.location.search).get("run");
-      if (linkedRun) {
-        selectRun(linkedRun);
-        return;
-      }
-      const nextView = $page.state?.agentsMobileView;
-      if (nextView === MOBILE_VIEW_TRANSCRIPT) {
-        mobileHistoryEntry = true;
-        mobileView = enterTranscript({ view: mobileView }).view;
-        tick().then(() => {
-          if (isMobileViewport()) titleEl?.focus({ preventScroll: true });
-        });
-      } else {
-        mobileHistoryEntry = false;
-        mobileView = returnToList({ view: mobileView }).view;
-        tick().then(() => {
-          if (isMobileViewport()) {
-            document
-              .getElementById(`agent-session-${String(selectedId)}`)
-              ?.focus({ preventScroll: true });
-          }
-        });
-      }
-    };
     window.addEventListener("keydown", handleKeydown);
-    window.addEventListener("popstate", handlePopstate);
     return () => {
       window.removeEventListener("keydown", handleKeydown);
-      window.removeEventListener("popstate", handlePopstate);
     };
+  });
+
+  $effect(() => {
+    const sessionId = selectedId;
+    const runId = selectedRunId;
+    const wasSessionId = previousSessionId;
+    previousSessionId = sessionId;
+
+    requestSequence += 1;
+    runRequestSequence += 1;
+    detail = null;
+    runDetail = null;
+    renderedPending = {};
+    searchResults = null;
+    composerModelOverride = null;
+
+    if (runId != null) loadRunDetail(runId, runRequestSequence);
+    if (sessionId != null) loadDetail(sessionId, requestSequence);
+
+    if (isMobileViewport() && sessionId != null) {
+      tick().then(() => titleEl?.focus({ preventScroll: true }));
+    } else if (
+      isMobileViewport() &&
+      runId == null &&
+      sessionId == null &&
+      wasSessionId != null
+    ) {
+      const rowId = focusSessionId ?? wasSessionId;
+      tick().then(() =>
+        document
+          .getElementById(`agent-session-${String(rowId)}`)
+          ?.focus({ preventScroll: true }),
+      );
+    }
   });
 
   $effect(() => {
@@ -995,7 +966,7 @@
 
 <main
   class:sidebar-collapsed={sidebarCollapsed}
-  class:mobile-transcript={mobileView === MOBILE_VIEW_TRANSCRIPT}
+  class:mobile-transcript={mobileTranscript}
   class="console"
 >
   <aside class="sidebar" aria-label="Agent sessions">
@@ -1118,19 +1089,14 @@
         sessions={fixture.sessions}
         onSelectSession={selectSession}
       />
-    {:else if selectedRunId}
-      {#if runDetail?.run}
-        <RunView
-          run={runDetail.run}
-          view={runDetail.view}
-          sessions={runDetail.sessions}
-          onSelectSession={selectSession}
-          onCancel={() => cancelRun(selectedRunId)}
-        />
-      {:else}<div class="empty blank-state">Loading run…</div>{/if}
-    {:else if selectedSession}
+    {:else if selectedId && selectedSession}
       <header class="transcript-head">
         <div class="head-main">
+          {#if selectedRunId}
+            <button class="back-to-run" type="button" onclick={returnToRun}>
+              ← back to run
+            </button>
+          {/if}
           <h1
             class="session-title"
             title={headerTitle}
@@ -1312,7 +1278,7 @@
             }}></textarea>
           <div class="composer-actions">
             {@render modelPicker(composerModel, (model) => {
-              composerModel = model;
+              composerModelOverride = model;
             })}
             <button
               class="send-button"
@@ -1323,6 +1289,21 @@
           </div>
         </div>
       </form>
+    {:else if selectedId}
+      <!-- ?session= for a row absent from the server-rendered list. Without
+           this branch the pane falls through to the master view and swaps
+           once loadDetail resolves. -->
+      <div class="empty blank-state">Loading session…</div>
+    {:else if selectedRunId}
+      {#if runDetail?.run}
+        <RunView
+          run={runDetail.run}
+          view={runDetail.view}
+          sessions={runDetail.sessions}
+          onSelectSession={selectSession}
+          onCancel={() => cancelRun(selectedRunId)}
+        />
+      {:else}<div class="empty blank-state">Loading run…</div>{/if}
     {:else}
       <MasterView
         master={runMaster}
@@ -1897,6 +1878,21 @@
     color: var(--muted);
     font-size: var(--size-meta);
   }
+  .back-to-run {
+    display: inline-block;
+    margin-bottom: 4px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: var(--size-meta);
+    cursor: pointer;
+  }
+  .back-to-run:hover {
+    color: var(--text);
+    text-decoration: underline;
+  }
   .row-cost {
     white-space: nowrap;
     margin-top: 1px;
@@ -2363,7 +2359,7 @@
       opacity: 0.35;
     }
   }
-  /* Matches MOBILE_MEDIA_QUERY in mobile-view.js */
+  /* Matches MOBILE_MEDIA_QUERY at the top of this file */
   @media (max-width: 760px) {
     .console {
       grid-template-columns: 1fr;
