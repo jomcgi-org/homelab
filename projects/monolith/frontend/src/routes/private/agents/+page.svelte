@@ -21,6 +21,7 @@
   import "./run-view.css";
   import RunView from "./RunView.svelte";
   import MasterView from "./MasterView.svelte";
+  import { RUN_LEXICON as P } from "./run-lexicon.js";
 
   let { data } = $props();
 
@@ -42,9 +43,14 @@
   let sessions = $state(data.sessions ?? []);
   let runs = $state([]);
   let runMaster = $state({ runs: [], queues: [] });
+  let masterView = $state({
+    engine_tier: "live",
+    snapshot_age_seconds: 0,
+  });
+  let masterSnapshotFetchedAt = 0;
+  let masterHasSnapshot = false;
   let selectedRunId = $state(null);
   let runDetail = $state(null);
-  let runError = $state(false);
   let runRequestSequence = 0;
   let detail = $state(null);
   let searchQuery = $state("");
@@ -378,9 +384,19 @@
       const body = await response.json();
       runMaster = body.master ?? body;
       runs = runMaster.runs ?? [];
-      runError = false;
+      masterSnapshotFetchedAt = Date.now();
+      masterHasSnapshot = true;
+      masterView = { engine_tier: "live", snapshot_age_seconds: 0 };
     } catch {
-      runError = true;
+      masterView = masterHasSnapshot
+        ? {
+            engine_tier: "stale",
+            snapshot_age_seconds: Math.max(
+              1,
+              Math.floor((Date.now() - masterSnapshotFetchedAt) / 1000),
+            ),
+          }
+        : { engine_tier: "absent", snapshot_age_seconds: 0 };
     }
   }
 
@@ -402,11 +418,12 @@
             now: new Date().toISOString(),
             snapshot_age_seconds: 0,
           },
-          sessions: body.sessions ?? sessions,
+          sessions: (body.sessions ?? sessions).filter(
+            (session) => String(session.workflow_id) === String(id),
+          ),
         };
       }
     } catch {
-      runError = true;
       if (
         sequence === runRequestSequence &&
         String(selectedRunId) === String(id)
@@ -426,7 +443,9 @@
         } else {
           runDetail = {
             run: null,
-            sessions,
+            sessions: sessions.filter(
+              (session) => String(session.workflow_id) === String(id),
+            ),
             view: {
               engine_tier: "absent",
               now: new Date().toISOString(),
@@ -1028,7 +1047,7 @@
         <RunView
           run={runDetail.run}
           view={runDetail.view}
-          sessions={runDetail.sessions ?? sessions}
+          sessions={runDetail.sessions}
           onSelectSession={selectSession}
           onCancel={() => cancelRun(selectedRunId)}
         />
@@ -1229,7 +1248,11 @@
         </div>
       </form>
     {:else}
-      <MasterView master={runMaster} />
+      <MasterView
+        master={runMaster}
+        onSelectRun={selectRun}
+        view={masterView}
+      />
     {/if}
   </section>
 
@@ -1362,17 +1385,23 @@
 {#snippet sessionGroup(entry, active)}
   <div class="session-group">
     <button
-      class="group-header"
+      class="group-header group-main"
       type="button"
-      aria-expanded={isGroupExpanded(entry, active)}
-      onclick={() => toggleGroup(entry, active)}
+      onclick={() => selectRun(entry.workflowId)}
     >
       <span class="group-id mono">{shortWorkflowId(entry.workflowId)}</span>
       <span class="group-summary">{groupSummary(entry.counts)}</span>
-      <span class="group-toggle" aria-hidden="true"
-        >{isGroupExpanded(entry, active) ? "▾" : "▸"}</span
-      >
     </button>
+    <button
+      class="group-header group-chevron"
+      type="button"
+      aria-expanded={isGroupExpanded(entry, active)}
+      aria-label={isGroupExpanded(entry, active)
+        ? P.labels.collapseMembers
+        : P.labels.expandMembers}
+      onclick={() => toggleGroup(entry, active)}
+      >{isGroupExpanded(entry, active) ? "▾" : "▸"}</button
+    >
     {#if isGroupExpanded(entry, active)}
       <div class="group-members">
         {#each entry.sessions as session (session.id)}
@@ -1617,9 +1646,10 @@
   }
   .session-group {
     min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
   .group-header {
-    width: 100%;
     min-width: 0;
     display: flex;
     align-items: center;
@@ -1631,6 +1661,14 @@
     text-align: left;
     font-size: var(--size-meta);
     white-space: nowrap;
+  }
+  .group-main {
+    width: 100%;
+  }
+  .group-chevron {
+    width: auto;
+    padding-right: 8px;
+    padding-left: 8px;
   }
   .group-id,
   .group-summary {
@@ -1649,6 +1687,7 @@
     flex: 0 0 auto;
   }
   .group-members {
+    grid-column: 1 / -1;
     padding-left: 10px;
   }
   .session-row,
