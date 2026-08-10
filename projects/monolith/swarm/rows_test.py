@@ -65,6 +65,27 @@ def test_costs_are_grouped_and_zero_without_turns(db):
     assert by_id[first]["total_cost_usd"] == pytest.approx(0.6)
     assert by_id[second]["total_cost_usd"] == 0.0
     assert isinstance(by_id[first]["created_at"], datetime)
+    assert by_id[first]["final_result_text"] == "result"
+    assert by_id[second]["final_result_text"] is None
+
+
+def test_final_result_text_comes_from_highest_turn_seq(db):
+    session_id = add_session(db, local_id="last-turn")
+    with Session(db) as session:
+        session.add_all(
+            [
+                AgentTurn(
+                    session_id=session_id, seq=1, prompt="p", result_text="first"
+                ),
+                AgentTurn(session_id=session_id, seq=3, prompt="p", result_text="last"),
+                AgentTurn(
+                    session_id=session_id, seq=2, prompt="p", result_text="middle"
+                ),
+            ]
+        )
+        session.commit()
+        row = swarm_session_views(session)["wf-1"][0]
+    assert row["final_result_text"] == "last"
 
 
 def test_workflow_filter_and_grouping(db):

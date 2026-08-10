@@ -224,29 +224,59 @@
             >{/if}{/each}
       </div>{/if}
     {#each node.attempts ?? [] as attempt}
-      <button
-        class="log-entry"
-        type="button"
-        onclick={() =>
-          attempt.session_id && onSelectSession(attempt.session_id)}
-        ><span class="entry-meta"
-          >{P.labels.attempt}
-          {attempt.n}
-          {P.punct.dot}
-          {attempt.ended_at
-            ? fmtDur(relSeconds(attempt.started_at, attempt.ended_at))
-            : `${P.stateWords.running} ${fmtDur(relSeconds(attempt.started_at, view.now))}`}{#if fmtCost(attempt.cost_usd)}
-            {P.punct.dot} {fmtCost(attempt.cost_usd)}{/if}</span
-        >{#if attempt.state === "running" && attempt.live?.activity}<span
-            class="live-line"
-            ><span class="live-dot"></span><span class="live-act"
-              >{attempt.live.activity}</span
-            >{ago(attempt.live.observed_at)}
-            {P.labels.ago}</span
-          >{/if}{#if attempt.finding}<span class="finding"
-            >{attempt.finding.text} {attempt.finding.observed_head ?? ""}</span
-          >{/if}</button
-      >
+      <div>
+        <button
+          class="log-entry"
+          type="button"
+          onclick={() =>
+            attempt.session_id && onSelectSession(attempt.session_id)}
+          ><span class="entry-meta"
+            >{P.labels.attempt}
+            {attempt.n}
+            {P.punct.dot}
+            {attempt.ended_at
+              ? fmtDur(relSeconds(attempt.started_at, attempt.ended_at))
+              : `${P.stateWords.running} ${fmtDur(relSeconds(attempt.started_at, view.now))}`}{#if fmtCost(attempt.cost_usd)}
+              {P.punct.dot} {fmtCost(attempt.cost_usd)}{/if}</span
+          >{#if attempt.state === "running" && attempt.live?.activity}<span
+              class="live-line"
+              ><span class="live-dot"></span><span class="live-act"
+                >{attempt.live.activity}</span
+              >{ago(attempt.live.observed_at)}
+              {P.labels.ago}</span
+            >{/if}{#if attempt.finding}<span class="finding"
+              >{attempt.finding.text}
+              {attempt.finding.observed_head ?? ""}</span
+            >{/if}</button
+        >
+        {#if attempt.rationale?.parse_status === "parsed" || attempt.rationale?.parse_status === "unparseable"}
+          <div class="testimony" data-register="testimony">
+            <div class="testimony-attribution">
+              {node.label}
+              {P.punct.dot}
+              {P.labels.attempt}
+              {attempt.n}{#if attempt.model}
+                {P.punct.dot} {attempt.model}{/if}
+            </div>
+            {#if attempt.rationale.parse_status === "parsed"}
+              {#each attempt.rationale.areas as area}
+                <div class="testimony-line">
+                  {area.area}{#if area.why}
+                    {P.punct.dot} {area.why}{/if}
+                </div>
+              {/each}
+              {#each attempt.rationale.deviations as deviation}
+                <div class="testimony-line">
+                  {P.labels.deviationWord}
+                  {deviation}
+                </div>
+              {/each}
+            {:else}
+              <pre class="testimony-raw">{attempt.rationale.raw}</pre>
+            {/if}
+          </div>
+        {/if}
+      </div>
     {/each}
     {#if node.verdict}<div class="verdict-box" data-register="belief">
         <div class="verdict-word">{P.labels.verdict} {node.verdict.value}</div>

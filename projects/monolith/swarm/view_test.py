@@ -151,6 +151,10 @@ def _running_implement(workflow_id):
             "created_at": datetime(2026, 8, 10, 22, 50, tzinfo=timezone.utc),
             "last_turn_at": datetime(2026, 8, 10, 22, 56, tzinfo=timezone.utc),
             "total_cost_usd": 0.09,
+            "final_result_text": (
+                "RATIONALE\n- area: swarm/view.py · why: attaches testimony\n"
+                "- deviation: no routing changes"
+            ),
         }
     ]
 
@@ -174,6 +178,28 @@ def test_pinned_and_unpinned_registers_are_distinct(monkeypatch):
     assert unpinned["plan"]["pinned"] is False
     assert unpinned["plan"]["max_attempts"] is None
     assert unpinned["nodes"][1]["decision"]["register"] == "belief"
+
+
+def test_attempt_carries_parsed_rationale_and_absence():
+    parsed = compose_run(
+        DBOS(Workflow(Status("wf-rationale", "PENDING", ["task", "repo", "main"]))),
+        "wf-rationale",
+        _running_implement("wf-rationale"),
+        "unknown",
+    )
+    assert parsed["nodes"][0]["attempts"][0]["rationale"]["parse_status"] == "parsed"
+
+    absent_row = _running_implement("wf-rationale")[0]
+    absent_row["final_result_text"] = None
+    absent = compose_run(
+        DBOS(
+            Workflow(Status("wf-rationale-none", "PENDING", ["task", "repo", "main"]))
+        ),
+        "wf-rationale-none",
+        [absent_row],
+        "unknown",
+    )
+    assert absent["nodes"][0]["attempts"][0]["rationale"]["parse_status"] == "none"
 
 
 def test_queued_child_gets_codex_position():

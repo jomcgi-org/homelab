@@ -325,6 +325,24 @@
   color: var(--attn);
   font: var(--size-body-mono) var(--font-mono);
 }
+.testimony {
+  margin-top: 8px;
+  border-left: 2px solid var(--line-strong);
+  padding: 4px 0 4px 14px;
+  font-family: var(--font-ui);
+}
+.testimony-attribution {
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+}
+.testimony-line {
+  margin-top: 3px;
+}
+.testimony-raw {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  font: inherit;
+}
 .rv-foot {
   margin-top: 14px;
   border-top: 1px solid var(--line);

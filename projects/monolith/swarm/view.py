@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from swarm import config
+from swarm.rationale import parse_rationale
 
 
 def _value(obj: Any, name: str, default: Any = None) -> Any:
@@ -164,6 +165,7 @@ def _attempts(session_rows: list[Any], steps: list[Any], node_key: str) -> list[
                 else None,
                 "cost_usd": _value(row, "total_cost_usd", _value(row, "cost_usd")),
                 "finding": _finding(None, observed, prior),
+                "rationale": parse_rationale(_value(row, "final_result_text")),
                 "prior_head": _short_sha(prior),
                 "live": None
                 if state != "running"
