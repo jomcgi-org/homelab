@@ -192,3 +192,32 @@ toolRefresh:
       memory: 128Mi
     limits:
       memory: 128Mi
+
+# Browser-authenticated preview lane on friends.jomcgi.dev. See
+# templates/httproute-preview.yaml for why this is a route of its own rather
+# than a rule on the scoped route, and blueprints/preview-auth.yaml in the
+# authentik chart for the provider it authenticates against.
+#
+# DISABLED here AND in deploy/values.yaml. authentik generates the provider's
+# client secret on create, so it cannot come from Git: the secret has to be
+# copied into 1Password by hand before any of this renders something that
+# works. Enabling it without that gives a SecurityPolicy referencing an absent
+# Secret, which fails the policy rather than opening the route, but there is no
+# reason to deploy a broken policy in the meantime.
+previewAuth:
+  enabled: false
+  hostname: friends.jomcgi.dev
+  # authentik derives the OIDC issuer from the APPLICATION slug, not the
+  # provider name. Both of these track blueprints/preview-auth.yaml entry 2;
+  # renaming the application there breaks token validation here.
+  issuer: https://auth.jomcgi.dev/application/o/preview/
+  jwksUri: https://auth.jomcgi.dev/application/o/preview/jwks/
+  # Pinned in the blueprint rather than generated, because it is not a secret
+  # and this file has to name it.
+  clientID: preview-friends
+  # k8s Secret synced from 1Password, holding key `client-secret`.
+  clientSecretName: preview-oidc-client
+  # Root domain so one login covers every future preview subdomain.
+  cookieDomain: jomcgi.dev
+  onepassword:
+    itemPath: ""
