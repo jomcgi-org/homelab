@@ -29,6 +29,15 @@ surfaces live here and cost no Zero Trust seats.
 Both lanes normalise onto the SAME downstream header, X-Auth-Email, so a
 backend or a route match never has to know which one authenticated the caller.
 
+That header is only trustworthy because of the ClientTrafficPolicy in
+projects/platform/cloudflare-gateway, which strips any inbound X-Auth-Email at
+the listener. Envoy's jwt filter APPENDS the projected claim rather than
+replacing it, so without that strip a caller holding a valid token for
+themselves could send X-Auth-Email for somebody else and a backend reading the
+first value would believe it. The strip has to happen at the listener: an
+HTTPRoute RequestHeaderModifier runs in the router filter, long after the auth
+filters, and would remove the projected value too.
+
 NOTHING BEHIND THIS IS A REAL PREVIEW YET. The backend is a direct response, so
 the only thing this route can leak is the caller's own email back to them. It
 exists to prove the flow end to end before anything worth protecting is served
@@ -41,11 +50,14 @@ the one value that cannot come from Git. The 1Password item needs a field named
 `client-secret`, because Envoy Gateway reads that key out of the Secret this
 syncs.
 
-The 1Password operator runs with AUTO_RESTART disabled and there are no restart
-annotations anywhere in this repo, so rotating the field updates the Secret and
-nothing else. Envoy Gateway reads the Secret through its own watch rather than
-an envFrom process, so it should pick a rotation up on its own; confirm that
-before relying on rotation as a revocation path.
+The 1Password operator runs AUTO_RESTART=false globally. The authentik side of
+this handshake overrides that with operator.1password.io/auto-restart on its own
+OnePasswordItem, because it reads its value through envFrom, which is evaluated
+only at container start. Nothing equivalent is needed here: Envoy Gateway reads
+this Secret through its own watch rather than a process environment.
+
+Note the operator polls on a fixed 600s cycle rather than debouncing, so a
+rotation lands on the next boundary, up to ten minutes later, at both ends.
 */}}
 apiVersion: onepassword.com/v1
 kind: OnePasswordItem
@@ -157,10 +169,17 @@ spec:
       name: {{ .Values.previewAuth.clientSecretName | quote }}
     redirectURL: {{ printf "https://%s/preview/oauth2/callback" .Values.previewAuth.hostname | quote }}
     logoutPath: /preview/logout
-    # Root domain, so one login covers every future preview subdomain rather
-    # than re-prompting per host. Narrowing this later requires clearing
-    # browser cookies: a stale wider-domain cookie shadows the new one and
-    # presents as a login loop rather than a rejection.
+    # Scoped to THIS host, not the apex. EG sets the cookie on the named domain
+    # and all subdomains, and these cookies are the session: the oauth2 filter
+    # authenticates on an HMAC over them. At the apex they would be attached to
+    # every request to the public site, private, mcp and auth, so any header
+    # logging on any tier captures a live session. They are secure and HttpOnly,
+    # so this is exposure rather than an XSS-steal, but it buys nothing until a
+    # second preview host exists.
+    #
+    # Widening later is the safe direction. Narrowing is the painful one: a
+    # stale wider-domain cookie shadows the new one and presents as a login
+    # loop rather than a rejection, and only clearing browser cookies fixes it.
     cookieDomain: {{ .Values.previewAuth.cookieDomain | quote }}
     # Both named explicitly rather than defaulted, because the jwt block below
     # extracts from one of them by name and a defaulted name is a silent
