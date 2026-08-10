@@ -16,10 +16,28 @@ entries:
   # a preview page has no business carrying an audience that a backend will
   # accept as a credential, so the two stay apart.
   #
-  # client_secret is deliberately NOT set: authentik generates one on create,
-  # and it is copied out into 1Password and synced to the cluster by hand. A
-  # blueprint only writes the fields it names, so re-applying this never
-  # overwrites the generated secret.
+  # client_secret comes from the environment, never from Git and never from
+  # authentik's own generator. One value lives in 1Password and reaches both
+  # ends of the handshake from there:
+  #
+  #   vaults/k8s-homelab/items/authentik   field PREVIEW_OIDC_CLIENT_SECRET
+  #     -> authentik-secrets Secret -> envFrom on both authentik pods -> !Env here
+  #   vaults/k8s-homelab/items/preview-oidc  field client-secret
+  #     -> preview-oidc-client Secret in the mcp namespace -> SecurityPolicy
+  #
+  # Two 1Password items rather than one on purpose: the mcp namespace must not
+  # receive authentik's whole secret bundle (its secret key and bootstrap
+  # credentials) just to read one client secret.
+  #
+  # Letting authentik generate it instead would mean a value that exists only
+  # in its database, copied by hand into 1Password, and copied again on every
+  # rotation. This way rotation is one field edit: the OnePasswordItem carries
+  # operator.1password.io/auto-restart, so the pods restart, this blueprint
+  # re-applies, and the provider is updated.
+  #
+  # No default on !Env, deliberately. A missing variable fails the whole
+  # blueprint rather than quietly creating a provider whose secret nobody
+  # holds, which would present as a login loop rather than an error.
   #
   # client_id IS pinned, because it is not a secret and the SecurityPolicy that
   # consumes it lives in Git. Leaving it generated would put a value only
@@ -31,6 +49,7 @@ entries:
     attrs:
       client_type: confidential
       client_id: preview-friends
+      client_secret: !Env [PREVIEW_OIDC_CLIENT_SECRET]
       # Must match the SecurityPolicy's redirectURL exactly, and that URL must
       # fall inside the target HTTPRoute's path prefix or the callback 404s
       # before Envoy ever sees it.

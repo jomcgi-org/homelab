@@ -211,25 +211,35 @@ scopedRoutes:
 # hostname straight to the gateway. The SecurityPolicy is the only thing
 # between /preview/ and the internet.
 #
+# The client secret is already in 1Password at both ends, so there is no manual
+# copy step. This app deploys from git at targetRevision HEAD, so there is no
+# chart version to bump either: merging IS the deploy.
+#
 # To turn it on, in order:
-#   1. Merge this PR. The authentik blueprint creates the `preview` provider
-#      and application; nothing else deploys while enabled is false.
-#   2. Read the generated client secret out of the authentik admin UI
-#      (Applications -> Providers -> preview).
-#   3. Put it in 1Password as a field named `client-secret`, and set
-#      previewAuth.onepassword.itemPath below to that item.
-#   4. Set enabled: true and bump the chart.
-#   5. Verify the DENY path FIRST, before checking that login works:
+#   1. Merge. The authentik blueprint creates the `preview` provider and
+#      application, reading its client secret from the environment. Nothing on
+#      this side renders while enabled is false.
+#   2. Confirm the provider actually got the secret, because !Env failing is
+#      the one thing that fails quietly here:
+#        kubectl get application -n argocd authentik   # Synced/Healthy
+#      then check auth.jomcgi.dev/application/o/preview/.well-known/openid-configuration
+#      answers. A 404 means the blueprint did not apply.
+#   3. Set enabled: true here.
+#   4. Verify the DENY path FIRST, before checking that login works:
 #        curl -sS -o /dev/null -w '%{http_code}\n' https://friends.jomcgi.dev/preview/
 #      A 200 here means the policy is not attached and the route is public.
 #      Expect a redirect to auth.jomcgi.dev or a 401, never a 200.
-#   6. Then log in through a browser and confirm the placeholder body renders.
+#   5. Then log in through a browser and confirm the placeholder body renders.
 #      If login completes but the browser loops back to auth.jomcgi.dev instead
 #      of landing, the cookie names in the oidc and jwt blocks have drifted: a
 #      redirect loop is what a token that was issued and then rejected looks
 #      like, not a 401. See the extractFrom comment in
 #      templates/httproute-preview.yaml.
+#
+# Rotation is one field edit on vaults/k8s-homelab/items/authentik
+# (PREVIEW_OIDC_CLIENT_SECRET) plus the same value on items/preview-oidc
+# (client-secret). Both ends must move together or the handshake breaks.
 previewAuth:
   enabled: false
   onepassword:
-    itemPath: ""
+    itemPath: vaults/k8s-homelab/items/preview-oidc

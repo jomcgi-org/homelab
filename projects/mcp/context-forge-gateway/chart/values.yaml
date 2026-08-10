@@ -198,12 +198,15 @@ toolRefresh:
 # than a rule on the scoped route, and blueprints/preview-auth.yaml in the
 # authentik chart for the provider it authenticates against.
 #
-# DISABLED here AND in deploy/values.yaml. authentik generates the provider's
-# client secret on create, so it cannot come from Git: the secret has to be
-# copied into 1Password by hand before any of this renders something that
-# works. Enabling it without that gives a SecurityPolicy referencing an absent
-# Secret, which fails the policy rather than opening the route, but there is no
-# reason to deploy a broken policy in the meantime.
+# DISABLED here AND in deploy/values.yaml. Enabling it is deliberately the last
+# step: this hostname has no Cloudflare Access application in front of it, so
+# the SecurityPolicy is the only thing between /preview/ and the internet, and
+# the deny path is worth confirming before anything is served. deploy values
+# carries the ordered checklist.
+#
+# One client secret lives in 1Password and reaches both ends from there: the
+# authentik provider reads it from its pod environment, and the SecurityPolicy
+# reads it from a Secret in this namespace. Neither end holds it in Git.
 previewAuth:
   enabled: false
   hostname: friends.jomcgi.dev
