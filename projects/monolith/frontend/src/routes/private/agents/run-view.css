@@ -408,7 +408,3 @@
 [data-register="belief"] {
   color: var(--muted);
 }
-.phone-frame {
-  width: 360px;
-  max-width: 100%;
-}

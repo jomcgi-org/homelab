@@ -55,3 +55,10 @@ export function pipClass(attempt) {
       ? "pip run"
       : "pip bad";
 }
+
+export function capacityPips(plan, node) {
+  const spent = (node.attempts || []).map(pipClass);
+  if (!plan?.pinned || typeof plan.max_attempts !== "number") return spent;
+  const free = Math.max(0, plan.max_attempts - spent.length);
+  return [...spent, ...Array.from({ length: free }, () => "pip free")];
+}

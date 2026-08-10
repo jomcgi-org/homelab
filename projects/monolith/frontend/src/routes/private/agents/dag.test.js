@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { computeRanks, nodeIconKey } from "./dag.js";
+import { capacityPips, computeRanks, nodeIconKey } from "./dag.js";
 
 const chain = [
   { key: "a", deps: [] },
@@ -37,4 +37,43 @@ describe("run DAG helpers", () => {
     expect(nodeIconKey({ kind: "expansion", state: "future" })).toBe(
       "expansion",
     ));
+  test("pinned capacity adds one free pip", () =>
+    expect(
+      capacityPips(
+        { pinned: true, max_attempts: 2 },
+        { attempts: [{ state: "done" }] },
+      ),
+    ).toEqual(["pip", "pip free"]));
+  test("pinned capacity does not add free pips when all are spent", () =>
+    expect(
+      capacityPips(
+        { pinned: true, max_attempts: 2 },
+        { attempts: [{ state: "done" }, { state: "failed" }] },
+      ),
+    ).toEqual(["pip", "pip bad"]));
+  test("pinned running attempt keeps its running pip", () =>
+    expect(
+      capacityPips(
+        { pinned: true, max_attempts: 2 },
+        { attempts: [{ state: "running" }] },
+      ),
+    ).toEqual(["pip run", "pip free"]));
+  test("unpinned capacity only shows spent pips", () =>
+    expect(
+      capacityPips(
+        { pinned: false, max_attempts: 2 },
+        { attempts: [{ state: "done" }, { state: "failed" }] },
+      ),
+    ).toEqual(["pip", "pip bad"]));
+  test("missing max attempts does not add free pips", () =>
+    expect(
+      capacityPips({ pinned: true }, { attempts: [{ state: "done" }] }),
+    ).toEqual(["pip"]));
+  test("spent attempts beyond capacity do not produce negative pips", () =>
+    expect(
+      capacityPips(
+        { pinned: true, max_attempts: 1 },
+        { attempts: [{ state: "done" }, { state: "failed" }] },
+      ),
+    ).toEqual(["pip", "pip bad"]));
 });

@@ -5,7 +5,7 @@
     isWide,
     nodeIconKey,
     nodeStateClass,
-    pipClass,
+    capacityPips,
   } from "./dag.js";
   import { fmtCost, fmtDur, ordinal, relSeconds } from "./run-format.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
@@ -66,7 +66,7 @@
     <div class="rv-eyebrow">
       <span class={`state-chip s-${run.state}`}
         >{P.stateWords[run.state] || run.state}</span
-      ><span class="rv-id">{run.workflow_id}</span>
+      >
     </div>
     <h2 class="rv-title">{run.task.text}</h2>
     <div class="rv-meta">
@@ -78,15 +78,17 @@
       {#if fmtCost(run.cost_usd)}{P.punct.dot} {fmtCost(run.cost_usd)}{/if}
     </div>
     <div class="rv-statusline" data-register="fact">
-      {#if run.state === "running" && attempts}
+      {#if run.state === "running" && attempts && run.plan?.pinned}
         <span class="fact-count"
           >{P.labels.attempt}
           {attempts}
           {P.labels.of}
-          {run.plan?.max_attempts || attempts}</span
+          {run.plan.max_attempts}</span
         >
-        <span data-register="belief">
-          {P.punct.dot} {P.labels.retriesRemain}</span
+      {:else if run.state === "running" && attempts}
+        <span class="fact-count">{P.labels.attempt} {attempts}</span>
+        <span data-register="belief"
+          >{P.punct.dot} {P.labels.retriesRemain}</span
         >
       {:else if run.completed_at}
         {P.stateWords[run.state] || run.state}
@@ -101,7 +103,14 @@
           {P.labels.positionWord}{/if}
       {/if}
     </div>
-    {#if run.stranded}<div class="banner">{P.labels.strandedBanner}</div>{/if}
+    {#if run.stranded}<div class="banner">
+        {P.labels.strandedBanner}
+        {P.labels.buildWord}
+        {run.app_version}
+        {P.punct.dot}
+        {P.labels.serverBuildWord}
+        {run.server_app_version}
+      </div>{/if}
     <div class="rv-actions">
       {#if active}<button
           class="btn-quiet btn-danger"
@@ -116,6 +125,9 @@
           {shortSha(
             run.nodes.find((node) => node.verdict).verdict.commit_sha,
           )}</a
+        >{/if}
+      {#if run.branch_url}<a class="link-out" href={run.branch_url}
+          >{P.labels.openBranch}</a
         >{/if}
     </div>
     <div class="staged">
@@ -134,10 +146,14 @@
       class:stale={view.engine_tier === "stale"}
       data-register="fact"
     >
-      {P.labels.engine}{P.punct.colon}
-      {view.engine_tier === "live"
-        ? P.labels.live
-        : `${P.labels.staleShowing} ${fmtDur(view.snapshot_age_seconds)} ${P.labels.staleOld}`}
+      <span class="rv-id">{run.workflow_id}</span>
+      {#if view.engine_tier !== "live"}
+        {P.punct.dot}
+        {P.labels.engine}{P.punct.colon}
+        {P.labels.staleShowing}
+        {fmtDur(view.snapshot_age_seconds)}
+        {P.labels.staleOld}
+      {/if}
     </div>
   {/if}
 </div>
@@ -153,16 +169,46 @@
       <span class="card-label">{node.label}</span><span class="entry-meta"
         >{P.nodeStates[node.state] || node.state}</span
       >
-      {#if node.attempts?.length}<span class="pips"
-          >{#each node.attempts as attempt}<span class={pipClass(attempt)}
-            ></span>{/each}</span
-        >{/if}
+      {#if node.attempts?.length}<span class="pips">
+          {#each capacityPips(run.plan, node) as pip}<span class={pip}
+            ></span>{/each}
+        </span>
+        {#if run.plan?.pinned}<span class="entry-meta"
+            >{run.plan.max_attempts} {P.labels.attempts}</span
+          >{/if}
+      {/if}
       {#if node.state === "escalated" || node.blocked_on?.kind === "human"}<span
           class="needs-tag">{P.labels.needsYou}</span
         >{/if}
     </div>
     {#if node.blocked_on}<div class="log-entry" data-register="belief">
         {node.blocked_on.note}
+      </div>{/if}
+    {#if node.model}<div class="entry-meta">{node.model}</div>{/if}
+    {#if node.queue}<div class="log-entry" data-register="fact">
+        {ordinal(node.queue.position)}
+        {P.labels.queuedOn}
+        {node.queue.name}
+        {P.labels.queueWord}
+      </div>{/if}
+    {#if node.decision}<div
+        class="decision"
+        data-register={node.decision.register}
+        title={node.decision.basis}
+      >
+        <div class="entry-meta">
+          {P.labels.gateWord}
+          {P.labels.whenTurnEnds}
+        </div>
+        <table>
+          <tbody
+            >{#each node.decision.outcomes as outcome}<tr
+                ><td>{outcome.when}</td><td>{P.punct.arrow}</td><td
+                  >{outcome.then}</td
+                ></tr
+              >{/each}</tbody
+          >
+        </table>
       </div>{/if}
     {#if node.deps?.length > 1 || node.state === "blocked"}<div
         class="dep-chips"
@@ -191,7 +237,13 @@
             ? fmtDur(relSeconds(attempt.started_at, attempt.ended_at))
             : `${P.stateWords.running} ${fmtDur(relSeconds(attempt.started_at, view.now))}`}{#if fmtCost(attempt.cost_usd)}
             {P.punct.dot} {fmtCost(attempt.cost_usd)}{/if}</span
-        >{#if attempt.finding}<span class="finding"
+        >{#if attempt.state === "running" && attempt.live?.activity}<span
+            class="live-line"
+            ><span class="live-dot"></span><span class="live-act"
+              >{attempt.live.activity}</span
+            >{ago(attempt.live.observed_at)}
+            {P.labels.ago}</span
+          >{/if}{#if attempt.finding}<span class="finding"
             >{attempt.finding.text} {attempt.finding.observed_head ?? ""}</span
           >{/if}</button
       >

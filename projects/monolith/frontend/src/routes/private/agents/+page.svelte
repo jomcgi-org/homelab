@@ -3,6 +3,7 @@
   import { pushState } from "$app/navigation";
   import { page } from "$app/stores";
   import { renderAgentMarkdown } from "./markdown.js";
+  import { RUN_FIXTURES } from "./run-fixtures.js";
   import {
     groupSessions,
     groupSummary,
@@ -28,6 +29,15 @@
   const MODELS = ["opus", "fable", "sonnet", "luna", "terra", "sol", "qwen"];
   const RECENT_HISTORY_MS = 24 * 60 * 60 * 1000;
   const ATTENTION_MS = 60 * 60 * 1000;
+  // hasOwn, not a bare index: ?fixture=constructor would otherwise resolve to
+  // Object.prototype.constructor, which is truthy, and the preview branch would
+  // then hand RunView an undefined view and throw.
+  const fixture = $derived.by(() => {
+    const name = $page.url.searchParams.get("fixture");
+    return name && Object.hasOwn(RUN_FIXTURES, name)
+      ? RUN_FIXTURES[name]
+      : undefined;
+  });
 
   let selectedId = $state(null);
   let mobileView = $state(MOBILE_VIEW_LIST);
@@ -378,6 +388,7 @@
   }
 
   async function loadRuns() {
+    if (fixture) return;
     try {
       const response = await fetch("/agents/runs");
       if (!response.ok) throw new Error("swarm runs unavailable");
@@ -401,6 +412,7 @@
   }
 
   async function loadRunDetail(id, sequence = runRequestSequence) {
+    if (fixture) return;
     if (id == null) return;
     try {
       const response = await fetch(`/agents/runs/${encodeURIComponent(id)}`);
@@ -1042,7 +1054,14 @@
       aria-label="Back to agent sessions"
       onclick={returnToSessionList}>← back</button
     >
-    {#if selectedRunId}
+    {#if fixture}
+      <RunView
+        run={fixture.run}
+        view={fixture.view}
+        sessions={fixture.sessions}
+        onSelectSession={selectSession}
+      />
+    {:else if selectedRunId}
       {#if runDetail?.run}
         <RunView
           run={runDetail.run}
