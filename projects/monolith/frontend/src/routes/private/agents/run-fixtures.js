@@ -108,6 +108,16 @@ const running = run("running", "running", {
             text: "the branch head did not move during the turn",
             observed_head: "86dcbf41",
           },
+          rationale: {
+            raw: "RATIONALE\n- area: swarm/rows.py · why: carries the final turn\n- area: run view · why: shows testimony\n- deviation: kept routing unchanged",
+            parse_status: "parsed",
+            areas: [
+              { area: "swarm/rows.py", why: "carries the final turn" },
+              { area: "run view", why: "shows testimony" },
+            ],
+            deviations: ["kept routing unchanged"],
+            parser_version: 1,
+          },
         }),
         attempt(2, "running", {
           live: {
@@ -115,6 +125,13 @@ const running = run("running", "running", {
             observed_at: "2026-08-10T22:59:42Z",
           },
           ended_at: null,
+          rationale: {
+            raw: null,
+            parse_status: "none",
+            areas: [],
+            deviations: [],
+            parser_version: 1,
+          },
         }),
       ],
     }),

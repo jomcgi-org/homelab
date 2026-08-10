@@ -59,9 +59,27 @@ def swarm_session_views(
         .group_by(AgentTurn.session_id)
         .subquery()
     )
+    latest_turns = (
+        select(AgentTurn.session_id, func.max(AgentTurn.seq).label("latest_seq"))
+        .group_by(AgentTurn.session_id)
+        .subquery()
+    )
     statement = (
-        select(AgentSession, func.coalesce(totals.c.total_cost_usd, 0))
+        select(
+            AgentSession,
+            func.coalesce(totals.c.total_cost_usd, 0),
+            AgentTurn.result_text,
+        )
         .outerjoin(totals, totals.c.session_id == AgentSession.id)
+        .outerjoin(
+            latest_turns,
+            latest_turns.c.session_id == AgentSession.id,
+        )
+        .outerjoin(
+            AgentTurn,
+            (AgentTurn.session_id == latest_turns.c.session_id)
+            & (AgentTurn.seq == latest_turns.c.latest_seq),
+        )
         .where(AgentSession.workflow_id.is_not(None))
     )
     if workflow_id is not None:
@@ -80,7 +98,7 @@ def swarm_session_views(
             pending_by_session.setdefault(pending.session_id, []).append(pending)
 
     result: dict[str, list[dict]] = {}
-    for row, total_cost in rows:
+    for row, total_cost, result_text in rows:
         pending = pending_by_session.get(row.id, [])
         claimed = [item for item in pending if item.claimed_by_replica is not None]
         current = (
@@ -105,6 +123,7 @@ def swarm_session_views(
             "status": row.status,
             "model": row.model,
             "total_cost_usd": float(total_cost or 0),
+            "final_result_text": result_text,
             "created_at": row.created_at,
             "last_turn_at": row.last_turn_at,
             "activity": _activity_line(activity) if activity is not None else None,

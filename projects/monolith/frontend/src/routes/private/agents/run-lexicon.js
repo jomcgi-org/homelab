@@ -70,6 +70,7 @@ export const RUN_LEXICON = {
     parallel: "in parallel",
     byWord: "by",
     evidence: "evidence",
+    deviationWord: "deviation",
     approve: "approve",
     deny: "deny",
     blockedOnYou: "blocked on you",
