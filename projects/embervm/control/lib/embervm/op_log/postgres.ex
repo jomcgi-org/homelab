@@ -779,6 +779,25 @@ defmodule Embervm.OpLog.Postgres do
     )
   end
 
+  # session_destroying: the durable destroy INTENT (ADR embervm/014 decision 5).
+  # A non-terminal state marker appended BEFORE the teardown, so a CP crash
+  # mid-destroy rebuilds as destroying and re-drives it rather than forgetting.
+  # session_destroyed (terminal) is appended only once teardown completes.
+  #
+  # This clause was missing while the op kind was only ever written under
+  # EMBERVM_NODE_CONFIRMED_DESTROY, which has never been armed in prod. The
+  # SQLite backend has always had it, so the two backends had drifted. Deferring
+  # the teardown made this kind reachable on the ungated path, and the missing
+  # clause raised FunctionClauseError inside the append transaction, which
+  # cascaded a crash through OpLog, SessionStore and SessionManager on every
+  # destroy of a live session.
+  defp project(conn, %Op{kind: :session_destroying} = op, _seq) do
+    exec(conn, "UPDATE sessions SET state='destroying', updated_at=$1 WHERE session_id=$2", [
+      op.ts,
+      op.session_id
+    ])
+  end
+
   defp project(conn, %Op{kind: :session_expired} = op, _seq),
     do: terminate_session(conn, op, "expired")
 
