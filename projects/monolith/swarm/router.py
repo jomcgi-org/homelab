@@ -73,7 +73,16 @@ def list_runs() -> list[dict]:
 @router.post("/runs/{workflow_id}/cancel")
 async def cancel_run(workflow_id: str) -> dict:
     dbos = _dbos()
-    dbos.cancel_workflow(workflow_id)
+    # cancel_children: sessions are not created inline. The workflow enqueues
+    # start_session_workflow as a CHILD on the codex queue, so cancelling only
+    # the parent leaves a queued child that mints a fresh guest AFTER the reap
+    # sweeps, recreating the orphan this endpoint exists to prevent.
+    #
+    # ..._async, not the sync call: DBOS's cancel_workflow starts with
+    # check_async(), which raises whenever an event loop is running, so calling
+    # it from this async handler would 500 every request without cancelling
+    # anything. Unit tests with a fake DBOS cannot catch that.
+    await dbos.cancel_workflow_async(workflow_id, cancel_children=True)
     # Cancel first so no new turn is scheduled while guest sessions are reaped.
     from agent_sessions.api import reap_sessions_for_workflow
 

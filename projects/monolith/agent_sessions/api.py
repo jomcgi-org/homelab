@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from uuid import uuid4
 
 from sqlmodel import Session
@@ -18,9 +19,11 @@ from agent_sessions.mcp import (
     _set_session_status,
     _transport,
 )
+from agent_sessions.transport import EmberSessionGone
 from core.db import get_engine
-from faas.embervm_client import EmberVMTransportError
 from goosecracker.api import REPO_CATALOG
+
+logger = logging.getLogger(__name__)
 
 
 def start_session_for_swarm(
@@ -75,11 +78,6 @@ def _sessions_for_workflow(workflow_id: str):
         return store.sessions_for_workflow(db_session, workflow_id)
 
 
-def _is_gone_error(exc: EmberVMTransportError) -> bool:
-    detail = str(exc).lower()
-    return "404" in detail or "not found" in detail or "not_found" in detail
-
-
 async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     """Destroy and unbind every guest session owned by a swarm workflow.
 
@@ -87,6 +85,11 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     caller reading the summary can look each one up in /agents directly. One
     session failing never stops the others: a cancelled run that leaves even
     one guest alive keeps burning a slot against the live-capacity cap.
+
+    "Already gone" is decided by ``EmberSessionGone``, which the transport
+    raises off the STATUS CODE. Sniffing the message string instead would read
+    a 500 whose URL or body merely contains "404" as success and leak the very
+    slot this reap exists to reclaim.
     """
     rows = await asyncio.to_thread(_sessions_for_workflow, workflow_id)
     summary: dict[str, list] = {"reaped": [], "failed": [], "skipped": []}
@@ -98,13 +101,21 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
         try:
             try:
                 await _transport.destroy_session(ember_session_id)
-            except EmberVMTransportError as exc:
-                # An already-gone session is the goal state, not a failure.
-                if not _is_gone_error(exc):
-                    raise
+            except EmberSessionGone:
+                # The goal state, not a failure: still clear the binding below.
+                pass
             await asyncio.to_thread(_clear_ember_bindings_for, ember_session_id)
             summary["reaped"].append(row.id)
         except Exception as exc:  # noqa: BLE001 - one bad session must not stop the rest
+            # Logged as well as returned: a caller that drops the response would
+            # otherwise leave a permanently leaked capacity slot with no trace.
+            logger.warning(
+                "swarm reap failed for session %s (ember %s) of workflow %s: %s",
+                row.id,
+                ember_session_id,
+                workflow_id,
+                exc,
+            )
             summary["failed"].append({"session_id": row.id, "error": str(exc)})
     return summary
 
