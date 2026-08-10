@@ -1,0 +1,202 @@
+{{- /*
+Preview lane: a browser-authenticated surface on an EXISTING hostname.
+
+WHY THIS IS A SEPARATE ROUTE, not a rule added to httproute-scoped.yaml.
+A SecurityPolicy targets a whole HTTPRoute, and the scoped route's two rules
+must both stay reachable without a browser session:
+
+  /.well-known/  OAuth discovery, marked "Public by design" there. An MCP
+                 client has to read it BEFORE it holds any token, so gating it
+                 would break discovery for every client.
+  /servers/      MCP over a Bearer token, not a browser cookie. An OIDC policy
+                 would redirect a programmatic client to a login page.
+
+So this carries only /preview/ and the policy below targets only this route.
+That is the same split httproute-private.yaml uses for the GitHub webhook, for
+the same reason: a SecurityPolicy is route-scoped, so path isolation is how you
+keep one auth model from swallowing another on a shared hostname.
+
+Every other path on this hostname still finds no route and 404s, so adding
+/preview/ is additive: it takes a prefix that currently returns nothing.
+
+WHY THE IDENTITY LANE IS AUTHENTIK AND NOT CLOUDFLARE ACCESS.
+The lanes are split by audience, not by layer. Operator surfaces (argocd,
+signoz, longhorn, monolith private) use cf-ingress.security-policy and stay on
+Access, which is what keeps an authentik outage recoverable: authentik down
+must not lock the operator out of the tools used to fix authentik. User
+surfaces live here and cost no Zero Trust seats.
+
+Both lanes normalise onto the SAME downstream header, X-Auth-Email, so a
+backend or a route match never has to know which one authenticated the caller.
+
+NOTHING BEHIND THIS IS A REAL PREVIEW YET. The backend is a direct response, so
+the only thing this route can leak is the caller's own email back to them. It
+exists to prove the flow end to end before anything worth protecting is served
+from it. Per-preview authorization is the commented rule at the bottom.
+*/}}
+{{- if .Values.previewAuth.enabled }}
+{{- /*
+The authentik provider generates its own client secret on create, so this is
+the one value that cannot come from Git. The 1Password item needs a field named
+`client-secret`, because Envoy Gateway reads that key out of the Secret this
+syncs.
+
+The 1Password operator runs with AUTO_RESTART disabled and there are no restart
+annotations anywhere in this repo, so rotating the field updates the Secret and
+nothing else. Envoy Gateway reads the Secret through its own watch rather than
+an envFrom process, so it should pick a rotation up on its own; confirm that
+before relying on rotation as a revocation path.
+*/}}
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: {{ .Values.previewAuth.clientSecretName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+spec:
+  itemPath: {{ .Values.previewAuth.onepassword.itemPath | quote }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: {{ include "context-forge.fullname" . }}-preview-placeholder
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+spec:
+  directResponse:
+    contentType: text/plain
+    statusCode: 200
+    body:
+      type: Inline
+      inline: |
+        Preview lane authenticated.
+
+        If you can read this, the authentik OIDC flow completed and Envoy
+        accepted the resulting token. There is no preview content here yet.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "context-forge.fullname" . }}-preview
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+    ingress-tier: public
+spec:
+  parentRefs:
+    - name: {{ .Values.httpRoute.gatewayRef.name }}
+      namespace: {{ .Values.httpRoute.gatewayRef.namespace }}
+  hostnames:
+    - {{ .Values.previewAuth.hostname | quote }}
+  rules:
+    # The OAuth callback and logout paths MUST fall inside this route's prefix.
+    # Envoy serves them itself rather than forwarding them, but the request has
+    # to select this route first or it 404s before the policy is consulted.
+    #
+    # Per-preview authorization goes here later, as a rule per live preview:
+    #
+    #   - matches:
+    #       - path: {type: PathPrefix, value: /preview/<id>/}
+    #         headers:
+    #           - {name: X-Auth-Email, value: <subject that triggered the run>}
+    #
+    # which is why the SecurityPolicy below sets recomputeRoute. The subject
+    # comes from the create-session grant set (ADR agents/047 decision 10), and
+    # the rules are published by the EmberVM control plane over xDS rather than
+    # templated here, so no per-invocation Kubernetes object is created
+    # (EmberVM invariant 8).
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /preview/
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: {{ include "context-forge.fullname" . }}-preview-placeholder
+---
+{{- /*
+MECHANISM: the oidc and jwt blocks compose, they are not alternatives.
+
+  oidc  runs the browser redirect flow against authentik and stores the result
+        in a cookie. A bare jwt block cannot do this: it only validates a token
+        that is already present, so a browser arriving with none gets a 401
+        instead of a login page. This is the one real difference from the
+        Cloudflare lane, where Access performs the redirect itself.
+  jwt   reads that same cookie back, verifies it against authentik's JWKS, and
+        copies a claim into a header.
+
+recomputeRoute is REQUIRED for the per-preview rule sketched above. Without it
+the header is attached after route selection, so a rule matching on
+X-Auth-Email would never match and every request would fall through to the
+first rule.
+
+FAIL-CLOSED: a configured jwt provider rejects a request carrying no valid
+token, so denial is the default rather than something layered on top. Verify
+that with an explicit unauthenticated request before trusting it. This lane has
+no second layer behind it: the cloudflared tunnel's catchAll routes every
+resolving hostname to this gateway, and no Access application covers this host.
+*/}}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "context-forge.fullname" . }}-preview-authentik
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "context-forge.fullname" . }}-preview
+  oidc:
+    provider:
+      issuer: {{ .Values.previewAuth.issuer | quote }}
+    clientID: {{ .Values.previewAuth.clientID | quote }}
+    clientSecret:
+      name: {{ .Values.previewAuth.clientSecretName | quote }}
+    redirectURL: {{ printf "https://%s/preview/oauth2/callback" .Values.previewAuth.hostname | quote }}
+    logoutPath: /preview/logout
+    # Root domain, so one login covers every future preview subdomain rather
+    # than re-prompting per host. Narrowing this later requires clearing
+    # browser cookies: a stale wider-domain cookie shadows the new one and
+    # presents as a login loop rather than a rejection.
+    cookieDomain: {{ .Values.previewAuth.cookieDomain | quote }}
+    # Both named explicitly rather than defaulted, because the jwt block below
+    # extracts from one of them by name and a defaulted name is a silent
+    # coupling. The ID token is the one that matters here: see the extractFrom
+    # comment.
+    cookieNames:
+      accessToken: preview-access-token
+      idToken: preview-id-token
+    scopes:
+      - email
+      - profile
+  jwt:
+    providers:
+      - name: authentik
+        issuer: {{ .Values.previewAuth.issuer | quote }}
+        remoteJWKS:
+          uri: {{ .Values.previewAuth.jwksUri | quote }}
+        # The ID token cookie the oidc block above set, NOT the access token.
+        # This is deliberate: OIDC requires the ID token to carry `email` when
+        # the email scope is granted, whereas whether an ACCESS token carries
+        # it is provider-specific. Extracting the ID token makes the claim
+        # projection below a spec guarantee rather than an authentik detail.
+        #
+        # This is also the seam between the two blocks: if the cookie names
+        # drift, oidc logs the user in and jwt then rejects them, which
+        # presents as an infinite redirect rather than a 401.
+        #
+        # No `audiences` is set, so audience is not checked. The ID token's aud
+        # is the client ID; adding it here would be strictly tighter, but only
+        # once confirmed against a real token, since a mismatch fails closed
+        # and reads as the same redirect loop.
+        extractFrom:
+          cookies:
+            - preview-id-token
+        claimToHeaders:
+          - claim: email
+            header: X-Auth-Email
+        recomputeRoute: true
+{{- end }}
