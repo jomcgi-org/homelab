@@ -35,9 +35,18 @@ entries:
   # operator.1password.io/auto-restart, so the pods restart, this blueprint
   # re-applies, and the provider is updated.
   #
-  # No default on !Env, deliberately. A missing variable fails the whole
-  # blueprint rather than quietly creating a provider whose secret nobody
-  # holds, which would present as a login loop rather than an error.
+  # SCALAR form, not `!Env [KEY]`. The one-element sequence does not exist:
+  # authentik's Env tag reads node.value[1] with no length check, so a
+  # one-element list raises IndexError. blueprints_find() catches only
+  # YAMLError, so that IndexError escapes and aborts blueprints_discovery for
+  # the ENTIRE /blueprints tree, including authentik's own bundled defaults and
+  # mcp-auth.yaml. One malformed tag here silently stops every blueprint in the
+  # instance from reconciling. The valid forms are `!Env KEY` and
+  # `!Env [KEY, default]`.
+  #
+  # No default, deliberately: a missing variable resolves to None and authentik
+  # rejects the provider, rather than an empty-string default quietly creating a
+  # provider whose secret nobody holds.
   #
   # client_id IS pinned, because it is not a secret and the SecurityPolicy that
   # consumes it lives in Git. Leaving it generated would put a value only
@@ -49,7 +58,30 @@ entries:
     attrs:
       client_type: confidential
       client_id: preview-friends
-      client_secret: !Env [PREVIEW_OIDC_CLIENT_SECRET]
+      client_secret: !Env PREVIEW_OIDC_CLIENT_SECRET
+      # Both of these are REQUIRED when a provider is created from a blueprint,
+      # and neither is obvious, because every provider made in the UI gets them
+      # filled in by the form. mcp-friends was made in the UI and mcp-auth.yaml
+      # only patches its property_mappings, so this is the first provider in
+      # this repo created from Git and the first to need them stated.
+      #
+      # grant_types defaults to an EMPTY LIST on the model, and both the
+      # authorize and token views reject anything not in it, so a provider
+      # without this supports no grant at all and fails on the first hop.
+      grant_types:
+        - authorization_code
+        - refresh_token
+      # Without a signing_key authentik falls back to HS256 signed with the
+      # client secret, and the JWKS endpoint emits no keys at all. Envoy
+      # validates via remoteJWKS, so it would have no key to validate with and
+      # would 401 every request. Note this failure is invisible to the
+      # discovery-document check: /.well-known/openid-configuration still
+      # answers 200 with an empty JWKS behind it.
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, authentik Self-signed Certificate],
+        ]
       # Must match the SecurityPolicy's redirectURL exactly, and that URL must
       # fall inside the target HTTPRoute's path prefix or the callback 404s
       # before Envoy ever sees it.

@@ -1,0 +1,45 @@
+{{- /*
+Strip client-supplied identity headers at the listener, before any auth filter
+runs.
+
+WHY THIS EXISTS. Both ingress identity lanes project a verified claim into
+X-Auth-Email: cf-ingress.security-policy for the Cloudflare Access lane
+(operator surfaces), and the authentik lane on friends.jomcgi.dev. Envoy's JWT
+filter APPENDS that claim rather than replacing it, so an inbound X-Auth-Email
+survives alongside the projected one, arriving FIRST. A caller holding a valid
+token for themselves could send X-Auth-Email for somebody else, and any backend
+reading the ordinary first value (Go Header.Get, Starlette headers[...]) would
+believe it.
+
+WHY AT THE LISTENER, and not on a route. Envoy Gateway runs listener-level early
+header mutation ahead of the auth filters, specifically so a header cannot be
+smuggled past them. A route-level RequestHeaderModifier is applied by the router
+filter instead, long after JWT validation, so it would strip the PROJECTED value
+too and defeat the thing it was meant to protect.
+
+This is gateway-wide on purpose. The header is only ever produced by an auth
+filter, never legitimately sent by a client, so removing it unconditionally on
+ingress is correct for every route and closes the same gap on the Cloudflare
+lane, which predates this policy.
+
+This is the first ClientTrafficPolicy in the repo. It deliberately sets ONLY
+this field, so every other client-traffic default stays exactly as it was when
+no policy existed.
+*/}}
+{{- if .Values.gateway.enabled }}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: {{ .Values.gateway.name }}-strip-identity-headers
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "cloudflare-gateway.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.gateway.name }}
+  headers:
+    earlyRequestHeaders:
+      remove:
+        - X-Auth-Email
+{{- end }}

@@ -219,22 +219,34 @@ scopedRoutes:
 #   1. Merge. The authentik blueprint creates the `preview` provider and
 #      application, reading its client secret from the environment. Nothing on
 #      this side renders while enabled is false.
-#   2. Confirm the provider actually got the secret, because !Env failing is
-#      the one thing that fails quietly here:
-#        kubectl get application -n argocd authentik   # Synced/Healthy
-#      then check auth.jomcgi.dev/application/o/preview/.well-known/openid-configuration
-#      answers. A 404 means the blueprint did not apply.
-#   3. Set enabled: true here.
-#   4. Verify the DENY path FIRST, before checking that login works:
+#   2. Confirm the provider is actually usable. The discovery document is NOT
+#      sufficient: it answers 200 even when the provider has no signing key and
+#      no grants, so check the JWKS has keys in it, which is what Envoy
+#      validates against:
+#        curl -s https://auth.jomcgi.dev/application/o/preview/jwks/ | jq '.keys | length'
+#      Expect >= 1. Zero means the provider has no signing key and every request
+#      would 401 with a perfectly healthy-looking discovery document.
+#   3. Confirm the zone forces HTTPS. Envoy overwrites X-Forwarded-Proto with
+#      the connection scheme (the tunnel reaches the listener over plain HTTP on
+#      port 80, and there is no ClientTrafficPolicy setting numTrustedHops), so
+#      the oauth2 filter builds its post-login redirect from scheme http. If the
+#      zone does not 301 that to https, the browser withholds the secure cookies
+#      and the login bounces forever. Adding the X-Forwarded-Proto header filter
+#      that other routes here carry does NOT fix it: route-level mutation runs
+#      after the oauth2 filter.
+#   4. Set enabled: true here.
+#   5. Verify the DENY path FIRST, before checking that login works:
 #        curl -sS -o /dev/null -w '%{http_code}\n' https://friends.jomcgi.dev/preview/
 #      A 200 here means the policy is not attached and the route is public.
 #      Expect a redirect to auth.jomcgi.dev or a 401, never a 200.
-#   5. Then log in through a browser and confirm the placeholder body renders.
-#      If login completes but the browser loops back to auth.jomcgi.dev instead
-#      of landing, the cookie names in the oidc and jwt blocks have drifted: a
-#      redirect loop is what a token that was issued and then rejected looks
-#      like, not a 401. See the extractFrom comment in
-#      templates/httproute-preview.yaml.
+#      Worth re-running after any later change: the route and the policy are
+#      separate objects, and nothing binds them into one unit, so a partial sync
+#      or a prune could leave the route serving without the policy.
+#   6. Then log in through a browser and confirm the placeholder body renders.
+#      A login loop has two likely causes, in this order: the scheme problem in
+#      step 3, or the cookie names in the oidc and jwt blocks having drifted. A
+#      token that was issued and then rejected loops rather than 401ing, which
+#      is why neither shows up as an error.
 #
 # Rotation is one field edit on vaults/k8s-homelab/items/authentik
 # (PREVIEW_OIDC_CLIENT_SECRET) plus the same value on items/preview-oidc
