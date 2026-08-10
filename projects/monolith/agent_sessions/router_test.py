@@ -304,6 +304,67 @@ def test_vm_stream_emits_initial_and_changed_snapshots(monkeypatch):
     asyncio.run(exercise())
 
 
+def test_refresher_survives_an_iteration_that_raises(monkeypatch):
+    """A refresher that dies is invisible, so prove it does not.
+
+    Before this loop caught broad exceptions, one malformed control-plane
+    page killed it for good while every surface still looked healthy:
+    subscribers kept getting heartbeats, no message ever arrived so the
+    client fallback never engaged, and the snapshot endpoint saw a non-None
+    task and stopped refreshing too.
+    """
+    calls = []
+
+    async def flaky_list_sessions(limit=50, offset=0):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("malformed page")
+        return {"items": [{"session_id": "s-1", "state": "running"}]}
+
+    async def exercise():
+        monkeypatch.setattr(mcp._transport, "list_sessions", flaky_list_sessions)
+        cache = agent_router._vm_state_cache
+        monkeypatch.setattr(cache, "refresh_interval", 0.01)
+        task = asyncio.create_task(agent_router._run_vm_refresher())
+        cache.task = task
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        # It kept polling past the failure, and the failure was published
+        # rather than swallowed into a frozen map.
+        assert len(calls) >= 2
+        assert cache.cache_map.get("s-1", {}).get("state") == "awake"
+
+    asyncio.run(exercise())
+
+
+def test_snapshot_reclaims_a_dead_refresher(monkeypatch):
+    """A finished task is not None, so `task is None` alone froze this too."""
+    calls = []
+
+    async def fake_list_sessions(limit=50, offset=0):
+        calls.append(1)
+        return {"items": [{"session_id": "s-1", "state": "running"}]}
+
+    async def dead():
+        return None
+
+    async def exercise():
+        monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+        cache = agent_router._vm_state_cache
+        finished = asyncio.create_task(dead())
+        await finished
+        cache.task = finished
+        body = await agent_router.list_session_vms()
+        assert calls, "a done() task must not count as owning the cache"
+        assert body["vms"]["s-1"]["state"] == "awake"
+
+    asyncio.run(exercise())
+
+
 def test_vm_stream_heartbeats_when_idle(monkeypatch):
     async def fake_list_sessions(limit=50, offset=0):
         return {"items": []}
