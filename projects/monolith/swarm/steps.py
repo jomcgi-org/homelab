@@ -6,6 +6,26 @@ import httpx
 from dbos import DBOS
 
 
+@DBOS.step()
+def pin_plan(budget_usd: float | None = None) -> dict:
+    """Resolve run config ONCE and checkpoint it.
+
+    The workflow body must never read config.* directly: recovery re-executes
+    the body and a changed env would alter a live run's control flow (#4618).
+    The step record is the pin; replay returns the recorded dict.
+    """
+    from swarm import config
+
+    return {
+        "version": 1,
+        "max_attempts": max(1, config.max_attempts()),
+        "implementer_model": config.implementer_model(),
+        "reviewer_model": config.reviewer_model(),
+        "turn_timeout_seconds": config.turn_timeout_seconds(),
+        "budget_usd": budget_usd,
+    }
+
+
 @DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
 def start_agent_session(
     session_key, prompt, model, repo, branch, workflow_id: str

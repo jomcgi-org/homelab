@@ -23,6 +23,22 @@ class FakeClient:
         return self.response
 
 
+def test_pin_plan_resolves_config_once(monkeypatch):
+    monkeypatch.setenv("SWARM_MAX_ATTEMPTS", "0")
+    monkeypatch.setenv("SWARM_IMPLEMENTER_MODEL", "implementer")
+    monkeypatch.setenv("SWARM_REVIEWER_MODEL", "reviewer")
+    monkeypatch.setenv("SWARM_TURN_TIMEOUT_SECONDS", "42")
+
+    assert steps.pin_plan.__wrapped__(2.0) == {
+        "version": 1,
+        "max_attempts": 1,
+        "implementer_model": "implementer",
+        "reviewer_model": "reviewer",
+        "turn_timeout_seconds": 42,
+        "budget_usd": 2.0,
+    }
+
+
 @pytest.mark.parametrize(
     ("status", "payload", "expected"),
     [(200, {"object": {"sha": "deadbeef"}}, "deadbeef"), (404, {}, None)],

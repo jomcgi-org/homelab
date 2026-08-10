@@ -37,7 +37,10 @@ def test_start_run(monkeypatch):
         workflow_id = "wf-1"
 
     class FakeDBOS:
+        args = None
+
         def start_workflow(self, *args):
+            self.args = args
             return Handle()
 
     monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
@@ -53,6 +56,47 @@ def test_start_run(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json() == {"workflow_id": "wf-1"}
+
+
+def test_budget_must_be_positive(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    response = client().post(
+        "/api/swarm/runs",
+        json={
+            "task": "fix",
+            "repo": "jomcgi/homelab",
+            "branch": "main",
+            "budget_usd": -1,
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_start_run_passes_budget(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    captured = []
+
+    class Handle:
+        workflow_id = "wf-1"
+
+    class FakeDBOS:
+        def start_workflow(self, *args):
+            captured.append(args)
+            return Handle()
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    response = client().post(
+        "/api/swarm/runs",
+        json={
+            "task": "fix",
+            "repo": "jomcgi/homelab",
+            "branch": "main",
+            "budget_usd": 2.0,
+        },
+    )
+    assert response.status_code == 200
+    assert captured[0][1:] == ("fix", "jomcgi/homelab", "main", 2.0)
 
 
 def test_follower_replica_returns_503(monkeypatch):
