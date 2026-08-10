@@ -70,11 +70,22 @@ platforms are wrong.
   `projects/monolith/CLAUDE.md` for the first three. Fix the code, do not silence
   the rule.
 - **`Push images` failing on merge.** No longer a missed bump: PRs do not carry
-  chart versions (ADR platform/009 decision 1). Read the failing stage. If it is
-  the write-back (`write-back-versions.sh`), the charts published but main does
-  not reference them yet, so nothing deploys until it is resolved; re-running the
-  action is safe and idempotent. If it is the publish itself, treat it as a
-  normal build failure.
+  chart versions (ADR platform/009 decision 1). Read the failing stage.
+  - **write-back (`write-back-versions.sh`)**: the charts published but main
+    does not reference them yet, so nothing deploys until it is resolved.
+    Re-running the action is safe and idempotent.
+  - **"published but the image digests DIFFER ... no higher version could be
+    computed"**: the content changed under a published version and the
+    escalation could not produce a new one. Do not re-run and hope; this means
+    `chart-version.sh` returned the same version twice, so read it against that
+    chart's directory.
+  - anything else: a normal build failure.
+- **Merged but never deployed, everything green.** Check whether the chart
+  version actually moved: `git log --author=chart-version-bot -3 origin/main`.
+  A merge whose images changed must produce a write-back. If it did not, compare
+  the digests pinned in the published chart against what the run built, because
+  "nothing to publish" and "failed to notice a change" print almost the same
+  thing. This exact failure happened on 2026-08-10 (commit 2000bae).
 - **Generated files drifting.** `ci regen` runs the committed generators (home
   cluster kustomization, doc manifests, routes, orchestrator bundle). If CI
   auto-commits a regen you did not run, that is the format bot, not a failure.

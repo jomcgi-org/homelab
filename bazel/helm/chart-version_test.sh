@@ -146,6 +146,32 @@ commit_in "$repo" "fix: real change"
 commit_in "$repo" "chore(demo): bump chart version to 0.1.1" "chart-version-bot"
 expect "bot commits are not counted" "0.1.1" "$(run_version "$repo")" "1 human commit"
 
+# 9. CHART_VERSION_ALL_PATHS counts commits that the chart-dir scoping misses.
+# This is the escalation path push.sh.tpl uses when the image digests prove the
+# content changed but the dependency closure reported nothing: the query that
+# just failed must not be able to veto the new version.
+repo=$(new_repo allpaths 0.1.0)
+mkdir -p "$repo/elsewhere"
+echo "change" >>"$repo/elsewhere/file.txt"
+git -C "$repo" add elsewhere/file.txt
+git -C "$repo" commit --quiet -m "fix: outside the chart dir"
+expect "chart-dir scoping misses it" "0.1.0" \
+	"$(run_version "$repo")" "commit touched no chart path"
+expect "all-paths scoping finds it" "0.1.1" \
+	"$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)" \
+	"counted repo-wide"
+
+# 10. The escalation stays commit-derived, so two concurrent publishes taking
+# this path still cannot compute the same version. The commit has to touch a
+# real path: `git log -- <paths>` excludes empty commits even when the path is
+# the repo root, so an --allow-empty commit would not be counted here.
+echo "more" >>"$repo/elsewhere/file.txt"
+git -C "$repo" add elsewhere/file.txt
+git -C "$repo" commit --quiet -m "fix: another one"
+expect "all-paths stays commit-derived" "0.1.2" \
+	"$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)" \
+	"strictly greater at the later commit"
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1
