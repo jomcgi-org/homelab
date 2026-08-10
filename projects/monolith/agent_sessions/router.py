@@ -239,23 +239,41 @@ async def _refresh_cp_state() -> None:
             if not batch or offset >= int(page.get("total") or 0):
                 break
     except EmberVMTransportError as exc:
-        _vm_state_cache.initialized = True
-        _vm_state_cache.last_error = str(exc)
+        # Drop the map rather than serving the last known one. A stale entry
+        # renders as a confident "awake" chip for a guest that may be long
+        # gone, where an absent entry renders "off" alongside the error, which
+        # is what this endpoint promised before it was cached. Losing the CP
+        # means we do not know, and the honest rendering of not knowing is the
+        # one the console already had.
         logger.warning("failed to refresh agent VM state: %s", exc)
+        _publish_vm_map({}, error=str(exc))
         return
 
-    new_map = _coarse_vm_map(items)
-    changed = new_map != _vm_state_cache.cache_map
-    _vm_state_cache.cache_map = new_map
-    _vm_state_cache.last_refreshed_at = time.monotonic()
-    _vm_state_cache.last_error = None
-    _vm_state_cache.initialized = True
-    if changed:
-        _vm_state_cache.generation += 1
-        old_event = _vm_state_cache.change_event
-        _vm_state_cache.change_event = asyncio.Event()
-        if old_event is not None:
-            old_event.set()
+    _publish_vm_map(_coarse_vm_map(items), error=None)
+
+
+def _publish_vm_map(new_map: dict[str, dict], error: str | None) -> None:
+    """Store a map and wake subscribers only when it actually differs.
+
+    The generation counter, rather than a bare Event, is what lets each
+    subscriber tell whether it already saw a change: a single shared Event
+    cannot distinguish "woke for this change" from "woke for the previous
+    one", so a client waking between set and clear would double-send or miss
+    an update entirely.
+    """
+    cache = _vm_state_cache
+    changed = new_map != cache.cache_map
+    cache.cache_map = new_map
+    cache.last_refreshed_at = time.monotonic()
+    cache.last_error = error
+    cache.initialized = True
+    if not changed:
+        return
+    cache.generation += 1
+    old_event = cache.change_event
+    cache.change_event = asyncio.Event()
+    if old_event is not None:
+        old_event.set()
 
 
 async def _run_vm_refresher() -> None:
