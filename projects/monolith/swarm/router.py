@@ -14,6 +14,7 @@ class RunRequest(BaseModel):
     repo: str
     branch: str
     idempotency_key: str | None = None
+    budget_usd: float | None = None
 
 
 def _dbos():
@@ -36,6 +37,8 @@ def _dbos():
 def start_run(request: RunRequest) -> dict:
     if request.repo not in REPO_CATALOG:
         raise HTTPException(status_code=400, detail=f"unknown repo {request.repo}")
+    if request.budget_usd is not None and request.budget_usd <= 0:
+        raise HTTPException(status_code=400, detail="budget_usd must be positive")
     from swarm.workflows import implement_then_review
 
     dbos = _dbos()
@@ -47,11 +50,19 @@ def start_run(request: RunRequest) -> dict:
     if context:
         with context:
             handle = dbos.start_workflow(
-                implement_then_review, request.task, request.repo, request.branch
+                implement_then_review,
+                request.task,
+                request.repo,
+                request.branch,
+                request.budget_usd,
             )
     else:
         handle = dbos.start_workflow(
-            implement_then_review, request.task, request.repo, request.branch
+            implement_then_review,
+            request.task,
+            request.repo,
+            request.branch,
+            request.budget_usd,
         )
     return {"workflow_id": handle.workflow_id}
 

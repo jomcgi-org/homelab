@@ -1,4 +1,5 @@
 import swarm.workflows as workflows
+from swarm import config
 
 
 class Queue:
@@ -27,6 +28,18 @@ def run(monkeypatch, turns, heads=None):
                 heads.extend([None, turns[session].get("commit_sha")])
     branch_heads = iter(heads)
     monkeypatch.setattr(workflows, "codex_queue", lambda: Queue())
+    monkeypatch.setattr(
+        workflows,
+        "pin_plan",
+        lambda budget_usd=None: {
+            "version": 1,
+            "max_attempts": max(1, config.max_attempts()),
+            "implementer_model": config.implementer_model(),
+            "reviewer_model": config.reviewer_model(),
+            "turn_timeout_seconds": config.turn_timeout_seconds(),
+            "budget_usd": budget_usd,
+        },
+    )
     monkeypatch.setattr(workflows, "start_agent_session", lambda *args: 0)
     monkeypatch.setattr(workflows, "_await_turn", lambda session, *_: turns[session])
     monkeypatch.setattr(workflows, "read_branch_head", lambda *_: next(branch_heads))
@@ -74,6 +87,94 @@ def test_no_commit_retries(monkeypatch):
     result = workflow("task", "jomcgi/homelab", "main")
     assert result["attempts"] == 2
     assert len(calls) == 3
+
+
+def test_pinned_attempt_bound_survives_config_change(monkeypatch):
+    monkeypatch.setenv("SWARM_MAX_ATTEMPTS", "2")
+    attributes = []
+    sessions = iter([101, 102])
+    heads = iter([None, None, None, None])
+    monkeypatch.setattr(
+        workflows,
+        "pin_plan",
+        lambda budget_usd=None: {
+            "version": 1,
+            "max_attempts": max(1, config.max_attempts()),
+            "implementer_model": config.implementer_model(),
+            "reviewer_model": config.reviewer_model(),
+            "turn_timeout_seconds": config.turn_timeout_seconds(),
+            "budget_usd": budget_usd,
+        },
+    )
+
+    class FakeDBOS:
+        workflow_id = "wf-1"
+
+        @staticmethod
+        def update_workflow_attributes(workflow_id, values):
+            attributes.append((workflow_id, values))
+
+    monkeypatch.setattr(workflows, "DBOS", FakeDBOS)
+    monkeypatch.setattr(workflows, "read_branch_head", lambda *_: next(heads))
+    monkeypatch.setattr(
+        workflows,
+        "_queued_session",
+        lambda *args: next(sessions),
+    )
+    monkeypatch.setattr(
+        workflows,
+        "_await_turn",
+        lambda session, *_: (
+            monkeypatch.setenv("SWARM_MAX_ATTEMPTS", "5")
+            or {"result_text": "no", "cost_usd": 1}
+        ),
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main")
+
+    assert result["status"] == "escalated"
+    assert result["attempts"] == 2
+    assert attributes == [
+        (
+            "wf-1",
+            {
+                "plan": {
+                    "version": 1,
+                    "max_attempts": 2,
+                    "implementer_model": "luna",
+                    "reviewer_model": "opus",
+                    "turn_timeout_seconds": 1800,
+                    "budget_usd": None,
+                }
+            },
+        )
+    ]
+
+
+def test_attributes_write_failure_does_not_kill_the_run(monkeypatch):
+    # The authoritative pin is pin_plan's step record; the attributes copy is a
+    # convenience for the run endpoint. A convenience write must not be able to
+    # kill a run at its first instruction.
+    class FailingDBOS:
+        workflow_id = "wf-1"
+
+        @staticmethod
+        def update_workflow_attributes(workflow_id, values):
+            raise RuntimeError("attributes backend down")
+
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+            102: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+        },
+    )
+    monkeypatch.setattr(workflows, "DBOS", FailingDBOS)
+
+    result = workflow("task", "jomcgi/homelab", "main")
+
+    assert result["status"] == "escalated"
+    assert len(calls) == 2
 
 
 def test_exhausted_attempts_escalate_without_reviewer(monkeypatch):

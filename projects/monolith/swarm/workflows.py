@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
+
 from dbos import DBOS
 
-from swarm import config
 from swarm.policy import (
     implementer_prompt,
     next_action,
@@ -11,7 +12,9 @@ from swarm.policy import (
     work_branch,
 )
 from swarm.queues import codex_queue
-from swarm.steps import poll_turn, read_branch_head, start_agent_session
+from swarm.steps import pin_plan, poll_turn, read_branch_head, start_agent_session
+
+logger = logging.getLogger(__name__)
 
 # How long to wait between polls for a session's next turn. Each sleep is a
 # durable checkpoint, so the interval also sets how much wait is re-done after a
@@ -109,13 +112,28 @@ def _escalated(
 
 
 @DBOS.workflow()
-def implement_then_review(task: str, repo: str, branch: str) -> dict:
+def implement_then_review(
+    task: str, repo: str, branch: str, budget_usd: float | None = None
+) -> dict:
+    plan = pin_plan(budget_usd)
     try:
         workflow_id = DBOS.workflow_id
     except Exception:  # noqa: BLE001 - no workflow context
         workflow_id = None
+    if workflow_id is not None:
+        # The authoritative pin is pin_plan's own step record; this copy exists
+        # only so the run endpoint can read the plan without walking steps. A
+        # convenience write must never be able to kill a run at its first
+        # instruction, so a failure here is logged and dropped.
+        try:
+            DBOS.update_workflow_attributes(workflow_id, {"plan": plan})
+        except Exception:  # noqa: BLE001 - the step record is the real pin
+            logger.warning(
+                "failed to copy pinned plan onto workflow attributes",
+                exc_info=True,
+            )
     branch_name = work_branch(workflow_id or "unknown")
-    max_attempts = max(1, config.max_attempts())
+    max_attempts = plan["max_attempts"]
     attempt = 0
     previous_failure = None
     implementer_session_id = None
@@ -128,13 +146,13 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
         implementer_session_id = _queued_session(
             session_key(f"implement-{attempt}"),
             implementer_prompt(task, branch_name, previous_failure),
-            config.implementer_model(),
+            plan["implementer_model"],
             repo,
             branch,
             workflow_id,
         )
         implementer_turn = _await_turn(
-            implementer_session_id, 0, config.turn_timeout_seconds()
+            implementer_session_id, 0, plan["turn_timeout_seconds"]
         )
         head_sha = read_branch_head(repo, branch_name)
         action = next_action(attempt, max_attempts, head_sha, prior_sha)
@@ -178,12 +196,12 @@ def implement_then_review(task: str, repo: str, branch: str) -> dict:
     reviewer_session_id = _queued_session(
         session_key("review"),
         reviewer_prompt(task, branch_name, commit_sha),
-        config.reviewer_model(),
+        plan["reviewer_model"],
         repo,
         branch,
         workflow_id,
     )
-    reviewer_turn = _await_turn(reviewer_session_id, 0, config.turn_timeout_seconds())
+    reviewer_turn = _await_turn(reviewer_session_id, 0, plan["turn_timeout_seconds"])
     return {
         "status": "review",
         "attempts": attempt,
