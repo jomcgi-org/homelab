@@ -71,8 +71,14 @@ if [ ! -s "$MANIFEST" ]; then
 	exit 1
 fi
 
+# "${BAZEL_ARGS[@]}", not a bare --config=ci, even though crane is a prebuilt
+# binary that --stamp cannot affect. Bazel discards the whole analysis cache
+# whenever --stamp flips, so building this one target unstamped between two
+# stamped ones cost TWO re-analyses per deploy: observed 2026-08-11 at 05:26:02
+# and again at 05:26:16, the second re-configuring 19,282 targets in 21s. Keep
+# every bazel command in this script on the same value.
 echo "==> Building crane"
-"$BAZEL" build @multitool//tools/crane --config=ci
+"$BAZEL" build @multitool//tools/crane "${BAZEL_ARGS[@]}"
 # `|| true` because pipefail turns a find that cannot read the tree into an
 # abort with no explanation, instead of the message below.
 CRANE="${CRANE:-$(find -L "$BAZEL_BIN/external" -name "crane" -type f -perm /111 2>/dev/null | head -1 || true)}"
