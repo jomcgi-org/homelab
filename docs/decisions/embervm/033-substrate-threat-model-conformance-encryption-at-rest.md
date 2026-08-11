@@ -35,9 +35,16 @@ agent-substrate project (Google-adjacent, K8s actor-multiplexing, attacking
 the same problem from the density side: warm shared worker pods, gVisor,
 around 30x oversubscription) publishes a threat model at
 `https://github.com/agent-substrate/substrate/blob/main/docs/threat-model.md`
-enumerating 43 threats across external network, internal clients, actors,
-nodes, and insiders. Nearly all of its own mitigations are aspirational; the
-project's own status text says it is not production-ready. That does not
+enumerating 43 threats across external network, internal clients,
+misconfiguration, actors, nodes, insiders, and detection and response.
+The upstream rows carry no numbers; threat numbers here and in
+ARCHITECTURE.md count 1 to 43 in upstream document order as of its
+2026-06-25 revision. Nearly all of its own mitigations are aspirational;
+the project's own status text says it is not production-ready. This is
+also not a first encounter: ADR agents/014 adopted the project wholesale
+in May 2026 and was deprecated two weeks later before the adoption
+shipped, so the posture here, frame not code, is a deliberate reversal of
+shape. That does not
 make the enumeration less useful to us. Read against it, the at-rest gap
 maps onto eight of its named threats directly: 23 (snapshot theft across
 actors), 24 (snapshot corruption or substitution), 25 (a corrupt snapshot
@@ -152,7 +159,7 @@ elsewhere:
 
 ```mermaid
 graph LR
-    subgraph store [Warmth / artifact store]
+    subgraph store ["Warmth / artifact store"]
         BASE[Shared immutable bases<br/>plaintext, dedup-able]
         ART["Principal artifact<br/>(memory snapshot, session<br/>bundle, stateful volume)"]
     end
@@ -191,8 +198,10 @@ confidentiality at rest, which the store did not previously enforce.
 - The decrypt capability issued to a brick is short-lived and scoped to
   one restore tuple; it is not a standing credential a brick retains
   between restores.
-- KEK custody (which system holds and rotates the principal-scoped keys)
-  is an open question, listed below, not decided here.
+- KEK custody is decided as two modes: platform-managed and
+  customer-managed in the principal's own KMS. Under customer-managed
+  custody the customer's KMS holds and rotates the keys; which platform
+  system holds the platform-managed keys is open question 1.
 
 ## Risks
 
@@ -235,6 +244,6 @@ The implementation work this decision implies is tracked in GitHub issue
 | [ADR embervm/030](030-lineage-decoupled-from-session-generation.md) | Lineage decoupled from session generation, one of the artifact kinds this decision covers |
 | [ADR agents/047](../agents/047-per-principal-egress-credential-broker.md) | Draft, per-principal grants at the egress credential broker; explicitly not re-decided here |
 | [ADR agents/055](../agents/055-tool-mediated-github-access.md) | Draft, request-scoped GitHub access via tool mediation; explicitly not re-decided here |
-| [ADR agents/014](../agents/014-ax-substrate-agent-runtime.md) (Deprecated) and [ADR agents/015](../agents/015-temporal-orchestration-substrate.md) (superseding it) | Prior art for tracking an external project's design without adopting its code, the same posture this ADR takes toward agent-substrate |
+| [ADR agents/014](../agents/014-ax-substrate-agent-runtime.md) (Deprecated) and [ADR agents/015](../agents/015-temporal-orchestration-substrate.md) (also Deprecated) | Prior art in the opposite direction: 014 adopted this same project's code in May 2026 and was deprecated within two weeks, before the adoption shipped. This ADR takes the frame and leaves the code |
 | GitHub issue #4691 | The outstanding implementation work this decision implies |
 | [docs/security.md](../../security.md) | Security baseline |
