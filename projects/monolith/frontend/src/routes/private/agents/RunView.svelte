@@ -18,7 +18,10 @@
     relSeconds,
     spendOfBudget,
     startedAgo,
+    firstLine,
   } from "./run-format.js";
+  import PaneHeader from "./PaneHeader.svelte";
+  import { crumbTrail } from "./lineage.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   let {
     run,
@@ -26,6 +29,7 @@
     sessions = [],
     onSelectSession = () => {},
     onCancel = () => {},
+    onCrumb = () => {},
   } = $props();
   const active = $derived(
     run?.dbos_status === "PENDING" || run?.dbos_status === "ENQUEUED",
@@ -54,11 +58,11 @@
 
 <div class:tier-stale={view.engine_tier === "stale"} class="runview">
   {#if !run || view.engine_tier === "absent"}
-    <div class="rv-eyebrow">
-      <span class="eyebrow-label">{P.labels.run}</span><span class="state-chip"
-        >{P.labels.sessionsOnly}</span
-      >
-    </div>
+    <PaneHeader kind={P.labels.run} {onCrumb}>
+      {#snippet chips()}
+        <span class="state-chip">{P.labels.sessionsOnly}</span>
+      {/snippet}
+    </PaneHeader>
     <div class="absent-note">{P.labels.absentNotice}</div>
     <div class="sess-list">
       {#each sessions as session, i}
@@ -83,11 +87,17 @@
       {/each}
     </div>
   {:else}
-    <div class="rv-eyebrow">
-      <span class={`state-chip s-${run.state}`}
-        >{P.stateWords[run.state] || run.state}</span
-      >
-    </div>
+    <PaneHeader
+      kind={P.labels.run}
+      crumbs={crumbTrail({ kind: "run", runTitle: firstLine(run.task.text) })}
+      {onCrumb}
+    >
+      {#snippet chips()}
+        <span class={`state-chip s-${run.state}`}
+          >{P.stateWords[run.state] || run.state}</span
+        >
+      {/snippet}
+    </PaneHeader>
     <h2 class="rv-title">{run.task.text}</h2>
     <div class="rv-meta">
       {joinMeta(

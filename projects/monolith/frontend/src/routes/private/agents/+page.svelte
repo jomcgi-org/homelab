@@ -21,8 +21,10 @@
   import MasterView from "./MasterView.svelte";
   import StateIcon from "./StateIcon.svelte";
   import { nodeIconKey, nodeStateClass } from "./dag.js";
-  import { fmtCost, joinMeta } from "./run-format.js";
+  import { firstLine, fmtCost, joinMeta } from "./run-format.js";
+  import { crumbTrail, sessionLineage } from "./lineage.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
+  import PaneHeader from "./PaneHeader.svelte";
 
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
 
@@ -171,6 +173,21 @@
       firstLine(detail?.pending_queue?.[0]?.prompt) ||
       sessionTitle(selectedSession),
   );
+  const crumbRunTitle = $derived(
+    selectedRunId ? firstLine(runDetail?.run?.task?.text) : "",
+  );
+  const crumbLineage = $derived(
+    selectedRunId ? sessionLineage(runDetail?.run, selectedId) : null,
+  );
+  const sessionCrumbs = $derived(
+    crumbTrail({
+      kind: "session",
+      runTitle: crumbRunTitle,
+      nodeLabel: crumbLineage?.nodeLabel,
+      attemptN: crumbLineage?.attemptN,
+      sessionTitle: headerTitle,
+    }),
+  );
 
   function isActive(session) {
     return session?.status === "running" || Number(session?.pending_count) > 0;
@@ -212,12 +229,6 @@
     const months = Math.floor(days / 30);
     if (months < 12) return `${months}mo`;
     return `${Math.floor(months / 12)}y`;
-  }
-
-  function firstLine(value) {
-    return String(value || "")
-      .trim()
-      .split("\n")[0];
   }
 
   function shortId(session) {
@@ -596,6 +607,11 @@
 
   function returnToRun() {
     navigateTo(backToRun($page.url.searchParams));
+  }
+
+  function paneCrumb(to) {
+    if (to === "home") selectRuns();
+    else if (to === "run") returnToRun();
   }
 
   function closeNewPanel() {
@@ -1093,44 +1109,58 @@
         view={fixture.view}
         sessions={fixture.sessions}
         onSelectSession={selectSession}
+        onCrumb={paneCrumb}
       />
     {:else if selectedId && selectedSession}
       <header class="transcript-head">
-        <div class="head-main">
-          {#if selectedRunId}
-            <button class="back-to-run" type="button" onclick={returnToRun}>
-              ← back to run
-            </button>
-          {/if}
-          <h1
-            class="session-title"
-            title={headerTitle}
-            tabindex="-1"
-            bind:this={titleEl}
-          >
-            {headerTitle}
-          </h1>
-          <div class="session-context mono">
-            {formatRepoContext(selectedSession)} · {selectedSession.model ||
-              "luna"} · {shortId(selectedSession)}
-          </div>
-        </div>
-        <div class="head-actions">
-          <span
-            class={`vm-chip vm-${vmState(selectedSession, vms)}`}
-            title={vms[selectedSession.ember_session_id]?.cp_state
-              ? `control plane: ${vms[selectedSession.ember_session_id].cp_state}`
-              : "no live microVM; the next prompt boots fresh"}
-            >vm {vmState(selectedSession, vms)}</span
-          >
-          {#if statusClass(selectedSession) !== "completed"}
-            <span class={`session-state ${statusClass(selectedSession)}`}
-              >{statusLabel(selectedSession)}</span
+        <PaneHeader
+          kind={P.labels.sessionWord}
+          crumbs={sessionCrumbs}
+          onCrumb={paneCrumb}
+        >
+          {#snippet chips()}
+            <span
+              class={`vm-chip vm-${vmState(selectedSession, vms)}`}
+              title={vms[selectedSession.ember_session_id]?.cp_state
+                ? `control plane: ${vms[selectedSession.ember_session_id].cp_state}`
+                : "no live microVM; the next prompt boots fresh"}
+              >vm {vmState(selectedSession, vms)}</span
             >
-          {/if}
-          <button class="destroy-button" type="button" onclick={destroySession}
-            >destroy</button
-          >
+            {#if statusClass(selectedSession) !== "completed"}
+              <span class={`session-state ${statusClass(selectedSession)}`}
+                >{statusLabel(selectedSession)}</span
+              >
+            {/if}
+            <!-- One right-hand group whether or not the session came from a
+                 run. Pushing only the back link would leave destroy sitting
+                 against the state chip on a standalone session, so the
+                 button a mis-click destroys a VM with moves under the
+                 cursor depending on how you arrived. -->
+            <span class="push head-right">
+              {#if selectedRunId}
+                <button class="back-to-run" type="button" onclick={returnToRun}
+                  >{P.labels.backToRun}</button
+                >
+              {/if}
+              <button
+                class="destroy-button"
+                type="button"
+                onclick={destroySession}>destroy</button
+              >
+            </span>
+          {/snippet}
+        </PaneHeader>
+        <h1
+          class="session-title"
+          title={headerTitle}
+          tabindex="-1"
+          bind:this={titleEl}
+        >
+          {headerTitle}
+        </h1>
+        <div class="session-context mono">
+          {formatRepoContext(selectedSession)} · {selectedSession.model ||
+            "luna"} · {shortId(selectedSession)}
         </div>
       </header>
       <div class="turns" bind:this={turnsEl}>
@@ -1298,7 +1328,10 @@
       <!-- ?session= for a row absent from the server-rendered list. Without
            this branch the pane falls through to the master view and swaps
            once loadDetail resolves. -->
-      <div class="empty blank-state">Loading session…</div>
+      <div class="loading-session">
+        <PaneHeader kind={P.labels.sessionWord} />
+        <div class="empty blank-state">Loading session…</div>
+      </div>
     {:else if selectedRunId}
       {#if runDetail?.run}
         <RunView
@@ -1307,6 +1340,7 @@
           sessions={runDetail.sessions}
           onSelectSession={selectSession}
           onCancel={() => cancelRun(selectedRunId)}
+          onCrumb={paneCrumb}
         />
         <!-- loadRunDetail's catch leaves runDetail set with run: null and the
              tier marked absent. Without this branch that state is
@@ -1632,10 +1666,8 @@
     gap: 8px;
   }
   .side-head,
-  .transcript-head,
   .composer-actions,
-  .new-actions,
-  .head-actions {
+  .new-actions {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -1913,11 +1945,14 @@
     background: var(--panel-bg);
   }
   .transcript-head {
+    display: block;
     padding: 14px 28px;
     border-bottom: 1px solid var(--line);
   }
-  .head-main {
-    min-width: 0;
+  .head-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .session-title {
     margin: 0;
@@ -2396,11 +2431,7 @@
       background: transparent;
     }
     .transcript-head {
-      justify-content: flex-start;
-      flex-wrap: wrap;
-    }
-    .transcript-head .head-main {
-      flex: 1;
+      padding: 12px 16px;
     }
     .new-panel-scrim {
       display: block;

@@ -1,5 +1,11 @@
 import { RUN_LEXICON } from "./run-lexicon.js";
 
+export function firstLine(value) {
+  return String(value ?? "")
+    .trim()
+    .split("\n")[0];
+}
+
 // A console for a durable workflow engine has to keep three things apart that
 // these formatters used to collapse into one: a measured zero, a value not
 // observed yet, and a value that failed to parse. Only the first is a fact.

@@ -10,18 +10,42 @@
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.rv-eyebrow {
+.crumbs {
+  margin-bottom: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.crumb-link {
+  padding: 0;
+  border: 0;
+  color: var(--info);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.crumb-link:hover {
+  text-decoration: underline;
+}
+.crumb-sep {
+  margin: 0 6px;
+}
+.kind-row {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
-.eyebrow-label,
-.rv-eyebrow-label {
+.kind {
   color: var(--muted);
   font: var(--size-meta) var(--font-mono);
   letter-spacing: 0.13em;
   text-transform: uppercase;
+}
+.kind-row .push {
+  margin-left: auto;
 }
 .rv-id,
 .rv-meta,
