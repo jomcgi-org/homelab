@@ -7,6 +7,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_push")
+load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 load(":multitool_tar.bzl", "multitool_tar")
 load(":node_tar.bzl", "node_tar")
 load(":python_tar.bzl", "python_tar")
@@ -259,6 +260,20 @@ oci_push(
     remote_tags = "image_stamped_tags",
     repository = "ghcr.io/jomcgi/homelab/bazel/tools/image",
     visibility = ["//bazel/images:__pkg__"],
+)
+
+# The macros (go_image, apko_image, ...) emit a `.info` next to every `.push`.
+# This is the one raw oci_push in the repo, so it needs one written out. No
+# chart pins this image, but //bazel/images/digests:manifest requires an
+# OciImageInfo for every pushable image: without it main's deploy could not
+# tell whether this image changed, and would have to push it on every commit.
+oci_image_info(
+    name = "image.info",
+    image = ":image",
+    image_digest = ":image.digest",
+    image_tags = "image_stamped.tags.txt",
+    repository = "ghcr.io/jomcgi/homelab/bazel/tools/image",
+    visibility = ["//visibility:public"],
 )
 
 semgrep_target_test(

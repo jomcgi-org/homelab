@@ -39,9 +39,14 @@ wrapper that sets `NODE_PATH` so `require("prettier-plugin-svelte")` from
 | `:python_deps_test`       | `py_test` verifying that pip deps (`httpx`, `typer`) are importable         |
 | `:python_deps_semgrep_test` | SCA scan of the `python_deps` requirements against `//bazel/semgrep/rules:sca_python_rules` |
 
-`:image.push` is included in `//bazel/images:push_all` and runs on every merge
-to main via BuildBuddy CI. Tags are stamped at build time; never set them by
-hand.
+`:image.push` is included in `//bazel/images:push_all` and runs on merge to main
+via BuildBuddy CI, but only when this image's content actually changed: the
+`deploy` action publishes through `bazel/images/push/push-changed.sh`, which
+compares each image's digest against the registry first. `:image.info` exists to
+feed it that digest. This is the repo's one raw `oci_push`, so unlike the macro
+built images it needs its `oci_image_info` written out by hand; without one the
+digest manifest fails to analyse. Tags are stamped at build time; never set them
+by hand.
 
 ## Local development
 

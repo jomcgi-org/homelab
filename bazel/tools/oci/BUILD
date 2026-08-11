@@ -78,3 +78,10 @@ bzl_library(
     srcs = ["providers.bzl"],
     visibility = ["//visibility:public"],
 )
+
+bzl_library(
+    name = "push_manifest",
+    srcs = ["push_manifest.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [":providers"],
+)
