@@ -73,7 +73,9 @@ fi
 
 echo "==> Building crane"
 "$BAZEL" build @multitool//tools/crane --config=ci
-CRANE="${CRANE:-$(find -L "$BAZEL_BIN/external" -name "crane" -type f -perm /111 2>/dev/null | head -1)}"
+# `|| true` because pipefail turns a find that cannot read the tree into an
+# abort with no explanation, instead of the message below.
+CRANE="${CRANE:-$(find -L "$BAZEL_BIN/external" -name "crane" -type f -perm /111 2>/dev/null | head -1 || true)}"
 if [ -z "$CRANE" ]; then
 	echo "ERROR: crane not found under $BAZEL_BIN/external" >&2
 	exit 1
@@ -112,8 +114,16 @@ done <"$MANIFEST"
 # not re-run. main's format stage would catch that, but it runs AFTER this
 # script (deliberately: a formatter hiccup must not block a deploy), so an
 # uncovered image is pushed here rather than silently never published.
-LC_ALL=C sort -u -o "$COVERED" "$COVERED"
-UNCOVERED=$(comm -23 <(comm -23 <(_multirun_labels push_all) <(_multirun_labels push_charts)) "$COVERED")
+#
+# Set subtraction with `grep -Fxv -f`, NOT `comm`. comm requires its inputs
+# sorted in comm's OWN collation, and these are sorted LC_ALL=C while the runner
+# locale is not: under en_GB.UTF-8 comm silently mis-merged and reported
+# //projects/platform/signoz-addons/dashboard-sidecar:chart.push, a target
+# present in BOTH lists, as an uncovered image. Fixed-string matching has no
+# ordering requirement and no locale sensitivity.
+UNCOVERED=$(_multirun_labels push_all |
+	grep -Fxv -f <(_multirun_labels push_charts) |
+	grep -Fxv -f "$COVERED" || true)
 if [ -n "$UNCOVERED" ]; then
 	echo "  WARNING: these images are in push_all but not in the digest manifest;" >&2
 	echo "           pushing them unconditionally. Re-run 'format' to regenerate." >&2
@@ -124,7 +134,7 @@ if [ -n "$UNCOVERED" ]; then
 	done <<<"$UNCOVERED"
 fi
 
-PUSH_COUNT=$(grep -c . "$TO_PUSH" 2>/dev/null || echo 0)
+PUSH_COUNT=$(grep -c . "$TO_PUSH" || true)
 echo ""
 echo "==> $PUSH_COUNT image(s) to push, $SKIPPED already published"
 

@@ -32,6 +32,11 @@ setup() {
 	WORK=$(mktemp -d)
 	mkdir -p "$WORK/bazel/images" "$WORK/bazel-bin/bazel/images/digests" "$WORK/bin"
 
+	# The signoz-addons pair is not decoration. Subtracting push_charts from
+	# push_all with `comm` reported that chart, which is in BOTH lists, as an
+	# uncovered image: comm compares in the ambient locale while the inputs were
+	# sorted LC_ALL=C, and under en_GB.UTF-8 the two disagree. These are the
+	# exact labels that reproduced it, so case 6 is the regression test.
 	cat >"$WORK/bazel/images/BUILD" <<'BUILD'
 multirun(
     name = "push_all",
@@ -40,6 +45,8 @@ multirun(
         "//projects/alpha/chart:chart.push",
         "//projects/beta:image.push",
         "//projects/gamma:image.push",
+        "//projects/platform/signoz-addons/dashboard-sidecar:chart.push",
+        "//projects/platform/signoz-addons/dashboard-sidecar/cmd:image.push",
     ],
     jobs = 0,
     visibility = ["//visibility:public"],
@@ -49,6 +56,7 @@ multirun(
     name = "push_charts",
     commands = [
         "//projects/alpha/chart:chart.push",
+        "//projects/platform/signoz-addons/dashboard-sidecar:chart.push",
     ],
     jobs = 0,
     visibility = ["//visibility:public"],
@@ -86,12 +94,21 @@ run_script() {
 		bash "$SCRIPT" 2>&1
 }
 
+SIDECAR="//projects/platform/signoz-addons/dashboard-sidecar/cmd:image.push"
+
 MANIFEST_3=$(
 	printf '%s\t%s\t%s\n' \
 		"//projects/alpha:image.push" "ghcr.io/jomcgi/homelab/alpha" "sha256:aaa" \
 		"//projects/beta:image.push" "ghcr.io/jomcgi/homelab/beta" "sha256:bbb" \
+		"$SIDECAR" "ghcr.io/jomcgi/homelab/sidecar" "sha256:ddd" \
 		"//projects/gamma:image.push" "ghcr.io/jomcgi/homelab/gamma" "sha256:ccc"
 )
+
+ALL_PUBLISHED=$(printf '%s\n%s\n%s\n%s' \
+	"ghcr.io/jomcgi/homelab/alpha@sha256:aaa" \
+	"ghcr.io/jomcgi/homelab/beta@sha256:bbb" \
+	"ghcr.io/jomcgi/homelab/gamma@sha256:ccc" \
+	"ghcr.io/jomcgi/homelab/sidecar@sha256:ddd")
 
 echo "push-changed.sh"
 
@@ -116,10 +133,7 @@ teardown
 #    from a command substitution, so its last line has no newline, and a plain
 #    `read` loop drops that line at EOF. gamma is last, so before the fix it was
 #    never compared and could never be skipped.
-setup "$MANIFEST_3" "$(printf '%s\n%s\n%s' \
-	"ghcr.io/jomcgi/homelab/alpha@sha256:aaa" \
-	"ghcr.io/jomcgi/homelab/beta@sha256:bbb" \
-	"ghcr.io/jomcgi/homelab/gamma@sha256:ccc")"
+setup "$MANIFEST_3" "$ALL_PUBLISHED"
 OUT=$(run_script)
 LOG=$(cat "$STUB_RUN_LOG")
 if [ "$LOG" = "//bazel/images:push_charts" ]; then
@@ -160,10 +174,9 @@ teardown
 #    the deploy would look green while never publishing gamma.
 setup "$(printf '%s\t%s\t%s\n' \
 	"//projects/alpha:image.push" "ghcr.io/jomcgi/homelab/alpha" "sha256:aaa" \
-	"//projects/beta:image.push" "ghcr.io/jomcgi/homelab/beta" "sha256:bbb")" \
-	"$(printf '%s\n%s' \
-		"ghcr.io/jomcgi/homelab/alpha@sha256:aaa" \
-		"ghcr.io/jomcgi/homelab/beta@sha256:bbb")"
+	"//projects/beta:image.push" "ghcr.io/jomcgi/homelab/beta" "sha256:bbb" \
+	"$SIDECAR" "ghcr.io/jomcgi/homelab/sidecar" "sha256:ddd")" \
+	"$ALL_PUBLISHED"
 OUT=$(run_script)
 LOG=$(cat "$STUB_RUN_LOG")
 if grep -q "gamma:image.push" <<<"$LOG" && grep -q "not in the digest manifest" <<<"$OUT"; then
@@ -174,11 +187,10 @@ fi
 teardown
 
 # 6. A chart target is not an image: it must never be treated as one, and it
-#    must not appear in the uncovered-images warning.
-setup "$MANIFEST_3" "$(printf '%s\n%s\n%s' \
-	"ghcr.io/jomcgi/homelab/alpha@sha256:aaa" \
-	"ghcr.io/jomcgi/homelab/beta@sha256:bbb" \
-	"ghcr.io/jomcgi/homelab/gamma@sha256:ccc")"
+#    must not appear in the uncovered-images warning. REGRESSION TEST for the
+#    comm collation bug, which reported the signoz-addons chart (present in both
+#    push_all and push_charts) as uncovered and pushed it a second time.
+setup "$MANIFEST_3" "$ALL_PUBLISHED"
 OUT=$(run_script)
 if grep -q "chart.push" <<<"$OUT"; then
 	fail "never treats a chart target as an uncovered image" "$OUT"
