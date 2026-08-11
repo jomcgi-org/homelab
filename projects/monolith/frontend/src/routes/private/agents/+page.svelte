@@ -4,13 +4,9 @@
   import { page } from "$app/stores";
   import { renderAgentMarkdown } from "./markdown.js";
   import { RUN_FIXTURES } from "./run-fixtures.js";
-  import {
-    groupSessions,
-    groupSummary,
-    isGroupExpanded as groupIsExpanded,
-    runRowModel,
-    shortWorkflowId,
-  } from "./grouping.js";
+  // groupSessions and its helpers grouped run-spawned sessions into the
+  // session list. Runs are their own collection now and their sessions live
+  // inside the run, so the grouping is gone rather than hidden.
   import {
     backToRun,
     clearSelection,
@@ -25,7 +21,7 @@
   import MasterView from "./MasterView.svelte";
   import StateIcon from "./StateIcon.svelte";
   import { nodeIconKey, nodeStateClass } from "./dag.js";
-  import { fmtCost } from "./run-format.js";
+  import { fmtCost, joinMeta } from "./run-format.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
 
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
@@ -108,7 +104,6 @@
   let renderedPending = $state({});
   let vms = $state({});
   let turnsEl = $state(null);
-  let expandedGroups = $state({});
 
   const selectedSession = $derived(
     sessions.find((session) => String(session.id) === String(selectedId)) ??
@@ -130,7 +125,21 @@
   const activeSessions = $derived(
     sessions.filter((session) => isActive(session)).sort(compareSessions),
   );
-  const activeEntries = $derived(groupSessions(activeSessions));
+
+  // Runs and sessions are two collections, not one list with runs bolted on.
+  // A session a run spawned is a detail of that run, reachable through it,
+  // never a peer of a session you started yourself. Previously a run appeared
+  // twice, once in an aggregate row and once as a group, and its children sat
+  // at top level alongside standalone sessions.
+  const isStandalone = (session) =>
+    session?.workflow_id == null || session.workflow_id === "";
+  const standaloneActive = $derived(activeSessions.filter(isStandalone));
+  // Runs needing a human sort first; the engine's order holds within each half.
+  const sidebarRuns = $derived(
+    [...runs].sort(
+      (a, b) => Number(Boolean(b.needs)) - Number(Boolean(a.needs)),
+    ),
+  );
   const historySessions = $derived(
     sessions.filter((session) => !isActive(session)).sort(compareSessions),
   );
@@ -142,7 +151,12 @@
   const visibleHistorySessions = $derived(
     showAllHistory ? historySessions : recentHistorySessions,
   );
-  const historyEntries = $derived(groupSessions(visibleHistorySessions));
+  const standaloneHistory = $derived(
+    visibleHistorySessions.filter(isStandalone),
+  );
+  const standaloneHistoryTotal = $derived(
+    historySessions.filter(isStandalone).length,
+  );
   const visibleSearchResults = $derived(searchResults ?? []);
   const hasActiveSessions = $derived(
     sessions.some((session) => isActive(session)) ||
@@ -160,18 +174,6 @@
 
   function isActive(session) {
     return session?.status === "running" || Number(session?.pending_count) > 0;
-  }
-
-  function isGroupExpanded(entry, active) {
-    return groupIsExpanded(entry, {
-      active,
-      selectedId,
-      expanded: expandedGroups,
-    });
-  }
-
-  function toggleGroup(entry, active) {
-    expandedGroups[entry.workflowId] = !isGroupExpanded(entry, active);
   }
 
   function compareSessions(a, b) {
@@ -1028,53 +1030,51 @@
         {:else}<div class="empty">No matching turns</div>{/each}
       </div>
     {:else}
-      {#if runs.length}
-        <button class="run-row" type="button" onclick={selectRuns}>
-          <span class="run-title">runs</span>
-          <span class="run-sub mono"
-            >{runs.length} in flight {#if runNeedsAttention}
-              · <span class="needs-tag"
-                >{runNeedsAttention} needs attention</span
-              >{/if}</span
-          >
-          {#if runSpend}<span class="run-cost mono">${runSpend.toFixed(2)}</span
-            >{/if}
-        </button>
-      {/if}
-      {#if activeSessions.length}
+      <!-- The heading is the affordance for the swarm home: clicking it
+           clears the selection. There is no aggregate pseudo-row, which is
+           what made a run appear twice. -->
+      <div class="group-title">
+        <button class="section-link" type="button" onclick={selectRuns}
+          >{P.labels.runsWord}</button
+        ><span
+          >{#if runNeedsAttention}<span class="needs-tag"
+              >{runNeedsAttention} {P.labels.needsYou}</span
+            >{:else}{sidebarRuns.length}{/if}</span
+        >
+      </div>
+      <div class="session-list runs-list">
+        {#each sidebarRuns as run (run.workflow_id)}
+          {@render runRow(run)}
+        {:else}<div class="empty">{P.labels.noneYet}</div>{/each}
+      </div>
+      {#if standaloneActive.length}
         <div class="group-title">
-          Active <span>{activeSessions.length}</span>
+          Active <span>{standaloneActive.length}</span>
         </div>
         <div class="session-list">
-          {#each activeEntries as entry (entry.kind === "group" ? "wf:" + entry.workflowId : entry.session.id)}
-            {#if entry.kind === "group"}
-              {@render sessionGroup(entry, true)}
-            {:else}
-              {@render sessionRow(entry.session)}
-            {/if}
+          {#each standaloneActive as session (session.id)}
+            {@render sessionRow(session)}
           {/each}
         </div>
       {/if}
-      <div class="group-title history-title">Recent</div>
+      <div class="group-title history-title">
+        {P.labels.sessionsSection}
+      </div>
       <div class="session-list">
-        {#each historyEntries as entry (entry.kind === "group" ? "wf:" + entry.workflowId : entry.session.id)}
-          {#if entry.kind === "group"}
-            {@render sessionGroup(entry, false)}
-          {:else}
-            {@render sessionRow(entry.session)}
-          {/if}
+        {#each standaloneHistory as session (session.id)}
+          {@render sessionRow(session)}
         {:else}<div class="empty">
-            {activeSessions.length ? "No recent sessions" : "No sessions yet"}
+            {standaloneActive.length ? "No recent sessions" : "No sessions yet"}
           </div>{/each}
       </div>
-      {#if historySessions.length > recentHistorySessions.length}
+      {#if standaloneHistoryTotal > standaloneHistory.length}
         <button
           class="history-toggle"
           type="button"
           onclick={() => (showAllHistory = !showAllHistory)}
           >{showAllHistory
             ? "show recent only"
-            : `show all (${historySessions.length})`}</button
+            : `show all (${standaloneHistoryTotal})`}</button
         >
       {/if}
     {/if}
@@ -1496,49 +1496,31 @@
   </button>
 {/snippet}
 
-{#snippet sessionGroup(entry, active)}
-  {@const run = runRowModel(entry, runs)}
-  <div class="session-group">
-    <button
-      class="group-header group-main"
-      type="button"
-      title={entry.workflowId}
-      onclick={() => selectRun(entry.workflowId)}
+{#snippet runRow(run)}
+  <button
+    class="group-header group-main run-entry"
+    class:chosen={String(selectedRunId) === String(run.workflow_id)}
+    type="button"
+    title={run.workflow_id}
+    onclick={() => selectRun(run.workflow_id)}
+  >
+    <!-- The shape strip is the run's state at a glance and the only thing
+         that has to stay legible at 44px, which is what the collapsed rail
+         renders. -->
+    <span class="ic-strip run-shape-strip" aria-hidden="true">
+      {#each run.shape ?? [] as node (node.key)}
+        <StateIcon icon={nodeIconKey(node)} class={nodeStateClass(node)} />
+      {/each}
+    </span>
+    <span class="group-run-title">{firstLine(run.title)}</span>
+    <span class="group-run-meta mono"
+      >{joinMeta(
+        P.stateWords[run.state] || run.state,
+        fmtCost(run.cost_usd),
+      )}</span
     >
-      {#if run}
-        <span class="ic-strip run-shape-strip" aria-hidden="true">
-          {#each run.shape ?? [] as node (node.key)}
-            <StateIcon icon={nodeIconKey(node)} class={nodeStateClass(node)} />
-          {/each}
-        </span>
-        <span class="group-run-title">{firstLine(run.title)}</span>
-        <span class="group-run-meta mono">
-          {P.stateWords[run.state] || run.state}{#if fmtCost(run.cost_usd)}
-            {P.punct.dot} {fmtCost(run.cost_usd)}{/if}
-        </span>
-      {:else}
-        <span class="group-id mono">{shortWorkflowId(entry.workflowId)}</span>
-        <span class="group-summary">{groupSummary(entry.counts)}</span>
-      {/if}
-    </button>
-    <button
-      class="group-header group-chevron"
-      type="button"
-      aria-expanded={isGroupExpanded(entry, active)}
-      aria-label={isGroupExpanded(entry, active)
-        ? P.labels.collapseMembers
-        : P.labels.expandMembers}
-      onclick={() => toggleGroup(entry, active)}
-      >{isGroupExpanded(entry, active) ? "▾" : "▸"}</button
-    >
-    {#if isGroupExpanded(entry, active)}
-      <div class="group-members">
-        {#each entry.sessions as session (session.id)}
-          {@render sessionRow(session)}
-        {/each}
-      </div>
-    {/if}
-  </div>
+    {#if run.needs}<span class="needs-tag">{P.labels.needsYou}</span>{/if}
+  </button>
 {/snippet}
 
 {#snippet modelPicker(current, choose)}
@@ -2328,6 +2310,15 @@
   :global(html[data-agents-rail="collapsed"]) .console .side-head {
     justify-content: center;
   }
+  /* The rail declares what it shows instead of listing what to remove.
+     Subtraction is why "…633" appeared stacked above bare dots: the hide list
+     named the elements that existed when it was written, so a row gaining a
+     title or a short id later leaked into 44px as a truncated fragment. A run
+     is its shape strip, a session is its dot, and anything else inside a row
+     is hidden by construction, including things not yet invented. */
+  .sidebar-collapsed .session-list button > *:not(.run-shape-strip):not(.dot) {
+    display: none;
+  }
   .sidebar-collapsed .eyebrow,
   .sidebar-collapsed .new-button,
   .sidebar-collapsed .search-label,
@@ -2337,6 +2328,15 @@
   .sidebar-collapsed .row-cost,
   .sidebar-collapsed .search-result,
   .sidebar-collapsed .empty {
+    display: none;
+  }
+  /* Same rule for the pre-hydration rail the static shell stamps on <html>,
+     so the collapsed state does not flash a different shape before hydration. */
+  :global(html[data-agents-rail="collapsed"])
+    .console
+    .session-list
+    button
+    > *:not(.run-shape-strip):not(.dot) {
     display: none;
   }
   :global(html[data-agents-rail="collapsed"]) .console .eyebrow,
