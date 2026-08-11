@@ -121,9 +121,12 @@ if $STAGED; then
 		esac
 	done
 
-	# Sync homelab-library dependency versions (local-only: needs the helm CLI,
-	# which is not in the CI format runner; charts have their own version gates)
-	./bazel/tools/format/sync-helm-deps.sh 2>/dev/null &
+	# Sync vendored chart dependencies, by CONTENT as well as version (local-only:
+	# needs the helm CLI, which the CI format runner does not have; CI enforces the
+	# same invariant read-only via check_helm_deps.py). stderr is kept: it used to
+	# be discarded, so a sync that could not run looked identical to one with
+	# nothing to do, which is the failure mode issue #4682 was about.
+	./bazel/tools/format/sync-helm-deps.sh &
 	PIDS+=($!)
 
 	for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
@@ -180,9 +183,12 @@ PIDS+=($!)
 (./bazel/tools/format/run-generators.sh 2>/dev/null || true) &
 PIDS+=($!)
 
-# Sync homelab-library dependency versions (local-only: needs the helm CLI, which
-# is not in the CI format runner; charts have their own version gates)
-./bazel/tools/format/sync-helm-deps.sh 2>/dev/null &
+# Sync vendored chart dependencies, by CONTENT as well as version (local-only:
+# needs the helm CLI, which the CI format runner does not have; CI enforces the
+# same invariant read-only via check_helm_deps.py). stderr is kept: it used to be
+# discarded, so a sync that could not run looked identical to one with nothing to
+# do, which is the failure mode issue #4682 was about.
+./bazel/tools/format/sync-helm-deps.sh &
 PIDS+=($!)
 
 # Atlas migration checksums

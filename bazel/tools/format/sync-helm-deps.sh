@@ -48,30 +48,56 @@ while IFS= read -r chart_file; do
 	fi
 done < <(grep -rl 'name: homelab-library' --include='Chart.yaml' projects/ 2>/dev/null || true)
 
-if [[ ${#MISMATCHED[@]} -eq 0 ]]; then
+if $CHECK_ONLY; then
+	if [[ ${#MISMATCHED[@]} -gt 0 ]]; then
+		err "homelab-library is $LIBRARY_VERSION but these charts reference an older version:"
+		for f in "${MISMATCHED[@]}"; do
+			err "  $f"
+		done
+		exit 1
+	fi
+	# Content drift is the other half, and the half a version comparison cannot
+	# see. check_helm_deps.py is the authority on both, and is what CI runs.
+	exec python3 ./bazel/tools/format/helm_deps/check_helm_deps.py --root .
+fi
+
+if [[ ${#MISMATCHED[@]} -gt 0 ]]; then
+	log "Syncing homelab-library $LIBRARY_VERSION to ${#MISMATCHED[@]} chart(s)..."
+
+	for chart_file in "${MISMATCHED[@]}"; do
+		# Update the version in Chart.yaml (line after "name: homelab-library")
+		sed -i '' "/name: homelab-library/{n;s/version: \"[^\"]*\"/version: \"$LIBRARY_VERSION\"/;}" "$chart_file"
+		log "  Updated $chart_file"
+	done
+fi
+
+# CONTENT drift, not just version drift. This used to rebuild only when a
+# declared dependency version differed from the library's, which meant editing a
+# library template WITHOUT bumping its version left the fix in the source while
+# the stale committed tarball kept deploying: `helm_chart` globs `**/*`, so the
+# tarball is what Bazel ships. Clean diff, green CI, nothing rolls. That trap
+# nearly swallowed PR #4680's fix (issue #4682).
+#
+# The comparison lives in check_helm_deps.py rather than here so there is ONE
+# definition of stale, it is unit tested, and CI can enforce it without helm.
+if ! command -v helm &>/dev/null; then
+	# Local-only by design: the CI format runner has no helm CLI. CI enforces
+	# the same invariant read-only via check_helm_deps.py, so a missing helm
+	# here means "cannot fix", never "nothing was wrong".
 	exit 0
 fi
 
-if $CHECK_ONLY; then
-	err "homelab-library is $LIBRARY_VERSION but these charts reference an older version:"
-	for f in "${MISMATCHED[@]}"; do
-		err "  $f"
-	done
-	exit 1
+STALE=()
+while IFS= read -r chart_dir; do
+	[[ -n "$chart_dir" ]] && STALE+=("$chart_dir")
+done < <(python3 ./bazel/tools/format/helm_deps/check_helm_deps.py --root . --list-stale 2>/dev/null || true)
+
+if [[ ${#STALE[@]} -eq 0 ]]; then
+	exit 0
 fi
 
-log "Syncing homelab-library $LIBRARY_VERSION to ${#MISMATCHED[@]} chart(s)..."
-
-for chart_file in "${MISMATCHED[@]}"; do
-	chart_dir=$(dirname "$chart_file")
-
-	# Update the version in Chart.yaml (line after "name: homelab-library")
-	sed -i '' "/name: homelab-library/{n;s/version: \"[^\"]*\"/version: \"$LIBRARY_VERSION\"/;}" "$chart_file"
-
-	# Rebuild dependency archive
-	if command -v helm &>/dev/null; then
-		helm dependency update "$chart_dir" >/dev/null 2>&1 || true
-	fi
-
-	log "  Updated $chart_file"
+log "Rebuilding ${#STALE[@]} chart(s) whose vendored tarballs drifted from source..."
+for chart_dir in "${STALE[@]}"; do
+	helm dependency update "$chart_dir" >/dev/null 2>&1 || true
+	log "  Rebuilt $chart_dir"
 done
