@@ -98,6 +98,8 @@ export const RUN_LEXICON = {
     // staleShowing trails off into an age ("unreachable, showing"), so it
     // cannot stand alone when the age was never measured.
     staleUnreachable: "unreachable",
+    sessionsSection: "sessions",
+    noneYet: "none yet",
   },
   punct: { dot: "·", arrow: "→", colon: ":" },
   units: { s: "s", m: "m", h: "h", d: "d" },
