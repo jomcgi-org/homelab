@@ -1,0 +1,99 @@
+{{- if .Values.postgres.devRefresh.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: cnpg-dev-refresh
+  namespace: {{ .Values.jobs.workflowNamespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cron-job
+spec:
+  schedules:
+    - {{ .Values.postgres.devRefresh.cron | quote }}
+  concurrencyPolicy: Forbid
+  suspend: false
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  workflowSpec:
+    entrypoint: refresh
+    serviceAccountName: argo-workflow
+    # concurrencyPolicy: Forbid above means a hung run blocks every later one,
+    # so the run needs its own ceiling or one stuck dump silently ends the
+    # nightly refresh and dev quietly goes stale. An hour is far above the
+    # observed shape of the work (the database is under 2 GB).
+    activeDeadlineSeconds: 3600
+    templates:
+      - name: refresh
+        container:
+          image: {{ .Values.postgres.pgvector.image | quote }}
+          command: ["/bin/sh", "-ceu"]
+          args:
+            - |
+              dump_file=/tmp/monolith.dump
+              case "$DEV_PGHOST" in
+                *monolith-dev*) ;;
+                *) echo "refusing non-dev restore target: $DEV_PGHOST" >&2; exit 1 ;;
+              esac
+              export PGPASSWORD=$DUMP_PASSWORD
+              pg_dump \
+                --host "$PROD_PGHOST" --port 5432 \
+                --username "$DUMP_ROLE" --dbname monolith \
+                --format custom --file "$dump_file"
+              export PGPASSWORD=$DEV_PASSWORD
+              pg_restore \
+                --host "$DEV_PGHOST" --port 5432 \
+                --username app --dbname monolith \
+                --clean --if-exists --no-owner --no-acl "$dump_file"
+              # SAFETY BARRIER: dev must hold no actionable queue state. The
+              # chat leader would post production's discord_outbox messages a
+              # second time, and DBOS would resume production's in-flight agent
+              # runs from dbos on launch. This barrier supplements
+              # MONOLITH_LEADER_SINGLETONS=false rather than relying on one env var.
+              psql \
+                --host "$DEV_PGHOST" --port 5432 \
+                --username app --dbname monolith \
+                --command 'DROP SCHEMA IF EXISTS dbos CASCADE; TRUNCATE TABLE discord_outbox, whatsapp_outbox;'
+          # Declared rather than omitted, because a container with no requests
+          # is BestEffort and is the first thing evicted under pressure. This
+          # cluster is not roomy: node-1 sits at 91% of requestable memory, so
+          # a BestEffort nightly job would be evicted exactly when the cluster
+          # is busiest and the refresh would fail on the nights it is least
+          # convenient to notice.
+          #
+          # Memory request equals limit per the repo's sizing convention, CPU
+          # request only. ephemeral-storage is declared because the dump lands
+          # on the pod filesystem at /tmp: the database is ~1.5 GB and pg_dump
+          # custom format compresses, so 4Gi is generous, but an undeclared
+          # ephemeral write is how a node fills its disk without any workload
+          # appearing to ask for it.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+              ephemeral-storage: 4Gi
+            limits:
+              memory: 512Mi
+              ephemeral-storage: 4Gi
+          env:
+            - name: PROD_PGHOST
+              value: monolith-pg-ro.monolith.svc.cluster.local
+            # monolith-pg-rw, NOT monolith-dev-pg-rw. The dev Application uses
+            # releaseName `monolith` deliberately, so its resources carry the
+            # same names as production's and only the NAMESPACE differs. The
+            # namespace is therefore the only thing distinguishing these two
+            # hosts, which is exactly what the guard above checks for.
+            - name: DEV_PGHOST
+              value: monolith-pg-rw.monolith-dev.svc.cluster.local
+            - name: DUMP_ROLE
+              value: {{ .Values.postgres.devRefresh.role | quote }}
+            - name: DUMP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.devRefresh.dumpReaderSecret }}
+                  key: password
+            - name: DEV_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.devRefresh.devAppSecret }}
+                  key: password
+{{- end }}

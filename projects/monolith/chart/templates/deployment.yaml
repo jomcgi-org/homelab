@@ -50,6 +50,21 @@ spec:
             # still submittable by hand.
             - name: ARGO_JOBS
               value: "{{- range .Values.jobs.cronWorkflows }}{{- if .replaces }}{{ .replaces }},{{- end }}{{- end }}"
+            # Side-effect mute for non-production deployments (#4695). A dev
+            # instance fed by a copy of prod's database must start no leader
+            # singletons: the chat outbox drain would repost prod's queued
+            # Discord messages, and DBOS would resume prod's in-flight runs.
+            #
+            # Rendered ALWAYS rather than only when disabled, so `kubectl
+            # describe` states which way it is set instead of leaving
+            # production's behaviour implied by an absent variable.
+            #
+            # No `| default true` here on purpose: Helm's `default` treats
+            # `false` as empty, so `false | default true` renders TRUE and the
+            # mute would silently never apply. chart/values.yaml supplies the
+            # default instead.
+            - name: MONOLITH_LEADER_SINGLETONS
+              value: {{ .Values.backend.leaderSingletons | quote }}
             {{- if .Values.onepassword.enabled }}
             - name: ICAL_FEED_URL
               valueFrom:

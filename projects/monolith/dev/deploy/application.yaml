@@ -1,0 +1,66 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monolith-dev
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    # The SAME OCI chart production runs. Dev is not a variant build: it is the
+    # identical artifact with a thin values overlay, so what gets promoted is
+    # what was exercised.
+    #
+    # targetRevision here is owned by Kargo, which subscribes to this chart repo
+    # by semver. Production's copy of this line is still written by the CI
+    # write-back (bazel/helm/write-back-versions.sh), which resolves exactly one
+    # deploy/application.yaml per chart and therefore cannot see this file. That
+    # split is deliberate: dev tracks automatically, and the script that moves
+    # PRODUCTION's pin is left alone.
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: monolith
+      targetRevision: 0.288.3
+      helm:
+        # releaseName matches production ON PURPOSE. Helm prepends the release
+        # name to every resource, so an identical name means dev renders
+        # byte-identical object names and any diff between environments is
+        # purely values. A distinct release name would also silently rewrite
+        # every in-cluster service DNS name, which is the failure mode
+        # CLAUDE.md warns about. The namespace is what separates the two.
+        releaseName: monolith
+        # ORDER IS LOAD-BEARING. Production's values first, dev's overrides
+        # second, because Helm lets later files win. This is what makes dev the
+        # same configuration as prod minus a deliberate, reviewable diff, rather
+        # than a second configuration that drifts.
+        valueFiles:
+          - $values/projects/monolith/deploy/values.yaml
+          - $values/projects/monolith/dev/deploy/values.yaml
+    - repoURL: https://github.com/jomcgi/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monolith-dev
+  # Same rationale as the production app: Kyverno mutates the Deployment at
+  # admission, and the HPA owns the replica count.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jqPathExpressions:
+        - '.spec.template.spec.containers[].env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
+        - '.spec.template.spec.initContainers[]?.env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
+      jsonPointers:
+        - /spec/template/metadata/annotations/otel.injected-by
+        - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
+        - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

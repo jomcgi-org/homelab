@@ -8,5 +8,6 @@ resources:
   - ../../projects/mcp/context-forge-gateway/deploy
   - ../../projects/monolith-public/deploy
   - ../../projects/monolith/deploy
+  - ../../projects/monolith/dev/deploy
   - ../../projects/operators/oci-model-cache/deploy
   - ../../projects/platform
