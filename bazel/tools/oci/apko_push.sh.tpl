@@ -27,6 +27,26 @@ readonly IMAGE_DIR="$(rlocation "{{IMAGE_DIR}}")"
 readonly REPOSITORY_FILE="$(rlocation "{{REPOSITORY_FILE}}")"
 readonly TAGS_FILE="$(rlocation "{{TAGS_FILE}}")"
 
+# rlocation hands back the path it was given when it cannot resolve, so an
+# unbuilt runfiles tree arrives at jq below as a workspace-relative path and
+# reads as a missing FILE rather than as a failed lookup:
+#
+#   jq: error: Could not open file projects/monolith/frontend/image/index.json
+#
+# That sentence cost #4685 a wrong fix, because it looks like the layout was
+# never downloaded when in fact it was never named. IMAGE_DIR is a directory,
+# which is precisely the case a runfiles MANIFEST cannot answer, so this fires
+# exactly when the caller forgot --build_runfile_links. preset.bazelrc sets
+# --nobuild_runfile_links repo-wide, which makes forgetting it the default.
+if [[ ! -d "${IMAGE_DIR}" ]]; then
+  echo >&2 "ERROR: the image layout did not resolve through runfiles."
+  echo >&2 "       IMAGE_DIR=${IMAGE_DIR}"
+  echo >&2 "       Run this target with --build_runfile_links. rlocation cannot"
+  echo >&2 "       resolve a DIRECTORY from RUNFILES_MANIFEST_FILE alone, and"
+  echo >&2 "       preset.bazelrc disables the runfiles tree repo-wide."
+  exit 1
+fi
+
 # Read repository
 REPOSITORY=$(cat "${REPOSITORY_FILE}")
 

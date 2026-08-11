@@ -230,13 +230,14 @@ else
 fi
 teardown
 
-# 9. An image push must ask for its layout to be materialised. --config=ci sets
-#    --remote_download_minimal, which leaves the oci_image layout directory in
-#    CAS, while push.sh.tpl reads index.json off local disk. Without the flag
-#    every push dies on `jq: Could not open file .../image/index.json` (#4685).
+# 9. An image push must build its runfiles tree. preset.bazelrc sets
+#    `common --nobuild_runfile_links` repo-wide, and apko_push.sh.tpl resolves
+#    IMAGE_DIR through rlocation, which without a tree falls back to the
+#    manifest and cannot resolve a DIRECTORY. Without the flag every push dies
+#    on `jq: Could not open file .../image/index.json` (#4685).
 #
-#    Pinned as a command line rather than as behaviour because the failure is a
-#    bazel download mode on a remote runner, which no local test can reproduce.
+#    Pinned as a command line rather than as behaviour because the failure needs
+#    a bazel-built binary on a remote runner, which no local test reproduces.
 #    The reason it needs pinning at all is that this branch does not run when
 #    every image is content-identical, so a regression here stays invisible
 #    until the next commit that genuinely publishes something.
@@ -244,11 +245,27 @@ setup "$MANIFEST_3" ""
 OUT=$(run_script)
 IMAGE_ARGV=$(grep "alpha:image.push" "$STUB_ARGV_LOG" || true)
 if [ -z "$IMAGE_ARGV" ]; then
-	fail "image push materialises the image layout" "no image push was recorded"
-elif grep -q -- "--remote_download_outputs=all" <<<"$IMAGE_ARGV"; then
-	pass "image push materialises the image layout"
+	fail "image push builds its runfiles tree" "no image push was recorded"
+elif grep -q -- "--build_runfile_links" <<<"$IMAGE_ARGV"; then
+	pass "image push builds its runfiles tree"
 else
-	fail "image push materialises the image layout" "$IMAGE_ARGV"
+	fail "image push builds its runfiles tree" "$IMAGE_ARGV"
+fi
+teardown
+
+# 10. And it must NOT carry a download-mode override. 57c2dd16c added
+#     --remote_download_outputs=all on the theory that the layout was stranded
+#     in CAS. It was not the cause and it did not fix anything, but it does pull
+#     every layer of every changed image to the runner, which is exactly the
+#     BuildBuddy egress push-changed.sh exists to cut (PR #4586, 488 GB/day).
+#     Measured on a runner: --build_runfile_links alone materialises the layout.
+setup "$MANIFEST_3" ""
+OUT=$(run_script)
+IMAGE_ARGV=$(grep "alpha:image.push" "$STUB_ARGV_LOG" || true)
+if grep -q -- "--remote_download_outputs" <<<"$IMAGE_ARGV"; then
+	fail "image push does not pay for a download-mode override" "$IMAGE_ARGV"
+else
+	pass "image push does not pay for a download-mode override"
 fi
 teardown
 
