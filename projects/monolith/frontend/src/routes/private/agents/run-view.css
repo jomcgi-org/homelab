@@ -65,6 +65,16 @@
   color: var(--text-soft);
   font-size: 13px;
 }
+.rv-task-details {
+  margin-top: 8px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+.rv-task-details pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  font: inherit;
+}
 .rv-actions {
   display: flex;
   gap: 8px;
