@@ -46,6 +46,7 @@ description matching. Open only when:
 |---------|------|
 | [daily-digest.md](daily-digest.md) | Outstanding work digest (routine + on demand) |
 | [refresh-structure-docs.md](refresh-structure-docs.md) | Root README structural refresh |
+| [rollup-architecture-docs.md](rollup-architecture-docs.md) | Roll one domain's ADRs up into `ARCHITECTURE.md`, then drop them |
 | [update-claude-routines.md](update-claude-routines.md) | Sync claude.ai routines from YAML |
 | [bazel.md](bazel.md) | BUILD/gazelle patterns; CI is via `ci` / Workflows |
 | [apko.md](apko.md) | apko.yaml + `apko_image` (locks via pre-commit / script) |
