@@ -5492,6 +5492,18 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
+# Guard: the packaged homelab-library must deploy images by content digest, not
+# by the build-timestamped tag that push-changed.sh frequently never pushes.
+# Reads the packaged tarball (what actually ships) rather than the library
+# source, so a fix that was never re-synced into the tarball still fails.
+py_test(
+    name = "public_library_image_digest_guard_test",
+    srcs = ["public_library_image_digest_guard_test.py"],
+    data = ["//projects/monolith-public/chart:packaged_library_chart"],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
+
 py_test(
     name = "hikes_jobs_test",
     srcs = ["hikes/jobs_test.py"],

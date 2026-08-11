@@ -9,6 +9,8 @@ Usage:
 
 Required values under .<component>:
   image.repository, image.tag, image.pullPolicy
+  image.digest — optional, but preferred when present: see homelab.imageRef in
+                 _helpers.tpl for why the digest and not the tag is deployed.
   persistence.size, persistence.mountPath
 
 Optional values (with defaults):
@@ -70,7 +72,7 @@ spec:
         {{- toYaml $podSec | nindent 8 }}
       containers:
         - name: {{ $name }}
-          image: "{{ $vals.image.repository }}:{{ $vals.image.tag }}"
+          image: "{{ include "homelab.imageRef" $vals.image }}"
           imagePullPolicy: {{ $vals.image.pullPolicy }}
           securityContext:
             {{- $sec := default $ctx.Values.securityContext $vals.securityContext -}}

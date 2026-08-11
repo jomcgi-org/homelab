@@ -15,7 +15,7 @@ annotations:
   org.opencontainers.image.licenses: "MPL-2.0"
 dependencies:
   - name: homelab-library
-    version: "0.5.0"
+    version: "0.6.0"
     repository: "file://../../shared/helm/homelab-library/chart"
   - name: cf-ingress
     version: 0.1.0
