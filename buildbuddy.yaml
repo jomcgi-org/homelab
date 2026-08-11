@@ -48,6 +48,19 @@ actions:
           # silently skipping a guard, so optional secrets use ${VAR:-}.
           set -eu
 
+          # Disk high-water sampling. `disk: 120GB` above was set in 2026-07
+          # (db9ea2ce0) for actions that no longer exist in that shape, and
+          # nothing has measured what these two runners actually use since.
+          # Costs nothing: no bytes, no cache traffic, two lines of log.
+          #
+          # These are BETWEEN-STAGE samples, so they UNDERSTATE the true peak,
+          # which happens inside a bazel build. Read the minimum "Avail" across
+          # runs as an upper bound on free space, not as the exact headroom, and
+          # do not shrink the reservation to a number these samples only just
+          # clear. Snapshot restore cost tracks workspace CONTENT, not this
+          # reservation, so shrinking it saves no download bytes either way.
+          echo "DISK pr-checks start:"; df -h /
+
           echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
 
           # Authenticate Docker Hub so rules_oci base-image manifest fetches
@@ -82,6 +95,9 @@ actions:
           # to run bazel/helm/check-missed-bump.sh, the pre-merge guard that
           # stops a chart whose images changed from merging un-bumped.
           bazel run //bazel/images:push_charts --config=ci --stamp
+
+          # After the build, which is where the workspace is fattest.
+          echo "DISK pr-checks after build:"; df -h /
 
           # ---- 3. rendered-manifest diff PR comment -----------------------
           # Hard-fails on newly introduced duplicate env var names within a
@@ -144,6 +160,8 @@ actions:
             fi
           fi
 
+          echo "DISK pr-checks end:"; df -h /
+
   # deploy — main only. Same one-runner reasoning as pr-checks.
   #
   # Ordering is deliberate: formatting, then tests, then publish. Tests GATE the
@@ -167,6 +185,12 @@ actions:
           # See pr-checks: errexit is load-bearing, and here it is what stops a
           # failed test from publishing images anyway.
           set -eu
+
+          # See pr-checks for what these samples are and are not good for.
+          # deploy is the more interesting of the two: it no longer stages all
+          # ~24 images' runfiles, so its footprint should have dropped and the
+          # 120GB reservation is the least evidence-based number here.
+          echo "DISK deploy start:"; df -h /
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
 
@@ -267,6 +291,9 @@ actions:
           # than concurrently with them.
           ./bazel/images/push/push-changed.sh
 
+          # After the build and the pushes, the fattest point in this action.
+          echo "DISK deploy after publish:"; df -h /
+
           # Push the write-back as jomcgi, not as the runner's own identity.
           #
           # main carries the `lets-not-delete-everything` ruleset, whose
@@ -312,6 +339,8 @@ actions:
               exit 1
             fi
           fi
+
+          echo "DISK deploy end:"; df -h /
 
   # TEMPORARILY DISABLED 2026-08-09: BuildBuddy asked us to cut Workflows cache
   # traffic, and this action is pure runner cost. It normally no-ops (no
