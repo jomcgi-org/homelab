@@ -182,6 +182,43 @@ actions:
           # ---- 1. tests ---------------------------------------------------
           bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 
+          # ---- 1.5 deepen the clone ---------------------------------------
+          # The publish below derives every chart version from a walk over the
+          # conventional commits since the commit that last set that version
+          # (chart-version.sh). BuildBuddy clones SHALLOW, and in a shallow
+          # clone that walk is not merely short, it is EMPTY: at the graft
+          # boundary every file reads as newly added, so the `-S"version: X"`
+          # search matches the boundary commit itself, and at depth 1 that is
+          # HEAD, whose exclusive HEAD..HEAD range contains nothing.
+          #
+          # The result is that every chart computes "no bump needed" and either
+          # silently skips its deploy or, now that image digests are the
+          # authority on whether to publish, fails the action outright. That is
+          # what took main's deploy down on 2026-08-10 (60ebba4, and inertly on
+          # 2000bae before it): the escalation could not compute a higher
+          # version because the range it walked was empty, not because the
+          # dependency closure was incomplete.
+          #
+          # Deepening restores the assumption the arithmetic is built on, that
+          # the version is a function of the COMMIT. It is not enough to fetch
+          # "some" history: at depth 10 this repo computes embervm 0.2.8 where
+          # the full history gives 0.2.30, so a bounded --deepen would just
+          # trade a stuck version for a wrong one. BuildBuddy reuses the runner
+          # workspace between runs, so the cost is paid per cold runner rather
+          # than per deploy, and the guard is skipped once the repo is complete.
+          # Deliberately NOT fatal, unlike the test step above. `set -e` is
+          # load-bearing there because a failed test must not publish images.
+          # Here the opposite applies: if this fetch cannot run, because the
+          # runner's clone has no remote configured or the network blips,
+          # aborting would skip the image pushes as well and leave main worse
+          # off than the bug being fixed. chart-version.sh refuses to compute a
+          # version in a shallow repo, so a failed deepen surfaces as a precise
+          # per-chart error instead of a raw git failure with nothing attempted.
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --unshallow --quiet ||
+              echo "WARNING: could not deepen the clone; chart versions will fail loudly below." >&2
+          fi
+
           # PUBLISH BEFORE THE FORMAT CHECK, deliberately. Under `set -e` a
           # formatter hiccup aborts everything after it, and on 2026-08-09 that
           # took main's first consolidated deploy down before it pushed
