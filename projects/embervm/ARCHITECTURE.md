@@ -176,7 +176,7 @@ are fetched and unpacked inside the disposable guest).
 | **task** | Fresh VM per invocation from a pristine base, destroyed after one task. Dispatch is assignment-only from a primed pool | vsock only, no NIC | none | scan fleet (semgrep), zip functions |
 | **session** | Bank/relight sandbox: idle snapshot to disk, restore on next invoke, principal-bound lineage | vsock only, no NIC | memory snapshot (+ workspace tier) | agent sandboxes |
 | **serving** | Long-lived warm HTTP endpoint; Envoy routes hits, CP only on miss/wake | tap NIC | none durable | tenant web APIs, og-image |
-| **stateful** | Scale-to-zero singleton datastore; L4 wake-on-connect; volume owns data, snapshot owns warmth | L4 via node Envoy | `vol.img` on node NVMe (authoritative) | demo-postgres (scratch-postgres retired 2026-08) |
+| **stateful** | Scale-to-zero singleton datastore; L4 wake-on-connect; volume owns data, snapshot owns warmth | L4 via node Envoy | `vol.img` on node NVMe (authoritative) | demo-postgres |
 | **composite** | Multi-VM group, private per-group /24, all-or-none bundle-set bank/relight; warmth only, no member volumes | per-group bridge | group snapshot set | no live consumer |
 
 **Decided direction, not yet built:**
@@ -225,8 +225,8 @@ Facts that make this safe:
 ### Generation blessing and quarantine (ADRs 011, 017, 018)
 
 The control plane is the adjudicator of volume generations, with exactly
-three legitimate issuance shapes (the canonical exception table lives in ADR
-011's 2026-07-23 amendment):
+three legitimate issuance shapes (the canonical exception table lives in
+ADR 011):
 
 1. **CP-issued pre-dispatch**: blessed durably before a wake/attach
    (op-log-before-dispatch). The default.
@@ -250,15 +250,15 @@ who may *issue* a generation, never who may *write* a volume (invariant 6).
 
 A request to a scaled-to-zero workload lands on a fallback endpoint, parks,
 and triggers a single-flighted wake; the real endpoint is then published and
-bytes splice. Historically both activators (L7 serving, L4 stateful/
-composite) lived in the CP pod, so a CP `Recreate` roll black-holed cold
-wakes. Fork A moves the activator into noded (stable DNAT from the node IP,
-`NodeStatus` advertises the activator endpoint, `EndpointPublisher` renders
-it as the fallback), mints instance ids node-side with `origin: ACTIVATOR`,
-and the CP adopts and backfills on reconcile. Status: partial land, soak
+bytes splice. The activator (L7 serving, L4 stateful/composite) belongs in
+noded rather than the CP pod so that a CP `Recreate` roll cannot black-hole
+cold wakes: stable DNAT from the node IP, `NodeStatus` advertises the
+activator endpoint, `EndpointPublisher` renders it as the fallback, and
+instance ids minted node-side carry `origin: ACTIVATOR` for the CP to adopt
+and backfill on reconcile. **Planned** (Fork A): partially landed, soak
 ongoing.
 
-### Sessions: the durability ladder (ADR 016, amended by ADRs 027, 029, 030)
+### Sessions: the durability ladder (ADRs 016, 027, 029, 030)
 
 | Tier | Window | Artifact | Pinning |
 | ---- | ------ | -------- | ------- |
@@ -268,8 +268,8 @@ ongoing.
 
 Resume is one interface with four verbs: cold boot; base-snapshot restore;
 warm (memory) restore; base + workspace hydration. The CP picks the cheapest
-unexpired artifact. "Instant for 6h, restorable for 7 days" is strictly more
-than the AWS Lambda MicroVMs offer being copied. ADR 027 amends this ladder:
+unexpired artifact; the session contract is instant for 6h, restorable for
+7 days. ADR 027 amends this ladder:
 capture may decouple from bank (close-triggered for no-memory-snapshot
 workloads), retention becomes `latest + N`, and the workspace size cap
 becomes a declared soft budget.
@@ -286,11 +286,11 @@ weeks of shorter runs even though no single session may.
 
 **Parked sessions count as disk, not against `concurrency.cap`** (ADR 029).
 A session in ADR 027's `memory: false, filesystem: true` quadrant parks to
-its workspace volume holding zero RAM, so bucketing it as live let two idle
-sessions pin a `cap: 2` workload for hours while nothing ran (#4298).
-`concurrency.cap` now bounds concurrently running VMs only, and wake does
-not re-check it: placement's memory admission and the per-principal
-wake-rate limit are what protect the receiving node.
+its workspace volume holding zero RAM, so counting it as live would let
+idle sessions starve the cap while nothing runs. `concurrency.cap` bounds
+concurrently running VMs only, and wake does not re-check it: placement's
+memory admission and the per-principal wake-rate limit are what protect the
+receiving node.
 
 The S3 artifact GC uses an 8-hour TTL for stateful warmth and 7-day TTLs for
 session memory, serving snapshots, session workspaces, and group sets.
@@ -329,8 +329,8 @@ against them.
    Cutting off a principal is an admission action (stop minting tokens, 402
    at the edge), not a metering one.
 
-5. **The node agent is authoritative for instance runtime state** (ADR 014,
-   still Draft although the behaviour ships). What a brick reports over
+5. **The node agent is authoritative for instance runtime state** (ADR
+   014). What a brick reports over
    dial-home about its VMs, taps, and volumes is the truth; control-plane
    tables are a reconciled cache. The one carve-out is destruction: an
    instance is recorded destroyed only after the owning node confirms
@@ -357,7 +357,7 @@ against them.
 9. **Classes are reuse semantics; substrates are lanes.** New execution
    technologies (Hyperlight, wasm) enter as lanes under existing classes,
    never as new classes. Persistence is becoming an orthogonal declared
-   property too (ADR 027, in review).
+   property too (ADR 027).
 
 10. **Users express posture, never mechanics.** The surface is a small set
     of declared scalars in user-facing units, each under a platform ceiling
@@ -426,8 +426,8 @@ a fixed-size noded Deployment pod in a T-shirt size class (v1: `small` for
 dense task packing, `large` for 1-2 serving/session VMs), with honest
 Guaranteed requests, sized roughly 4-8x the largest VM of its class, a
 handful per node. The daemon is budget-agnostic: it reads its ceiling from
-its own cgroup, so a size class is a resources block, not a code fork.
-In-place pod resize is retired on every tier.
+its own cgroup, so a size class is a resources block, not a code fork, and
+a brick's size is fixed for its lifetime.
 
 | Layer | Owner | EmberVM's lever |
 | ----- | ----- | --------------- |
@@ -450,26 +450,17 @@ a terminating node is a placement target for work that fits its horizon.
 Karpenter behaviour is drilled against kwok (a Kubernetes workload
 simulator) in CI, path-scoped to the Karpenter-facing modules.
 
-**Homelab brick status** (brick-program log): the wildcard per-node noded
-DaemonSet is retired (`noded.enabled: false`). That flag gates the wildcard
-DaemonSet, not noded itself, so `noded.enabled: false` with `bricks.enabled:
-true` means noded everywhere and a DaemonSet nowhere. Every brick still runs
-noded; discovery is dial-home, not the noded Service. `bricks.enabled:
-true`, and bricks are now the only source of node capacity, so the control
-plane picks the brick mix from placement demand rather than getting one
-fixed daemon per node. Brick autoscale is at rung `up` on the `observe -> up
--> full` ladder: denial-driven scale-up acts, clamped to the chart's
-maxReplicas, while scale-down stays observe-only. Promoting to `full`
-(drain-aware scale-down) is the remaining rung.
-
-Live shape is `desiredReplicas` 2gi 1 and 16gi 1, with per-node floor bricks
-of class 2gi pinned on node-1, node-2, and node-3. The 4gi and 8gi classes
-are present at zero replicas. Chart clamps are min 16gi 1, and max 2gi 4 /
-4gi 3 / 8gi 2 / 16gi 2. Desired counts come from the per-class
-`desiredReplicas` values knob reconciled by `Embervm.BrickController`
-through `/scale` because ArgoCD ignores `/spec/replicas` fleet-wide, so
-git-declared replicas would not sync. Instance identity is the kubelet pod
-UID.
+**Brick discovery and scale**: bricks are the only source of node capacity,
+so the control plane picks the brick mix from placement demand rather than
+running one fixed daemon per node; discovery is dial-home, never a Service
+or a per-node DaemonSet. Desired per-class counts are a values knob
+reconciled by `Embervm.BrickController` through `/scale`, because ArgoCD
+ignores `/spec/replicas` fleet-wide and git-declared replicas would not
+sync; instance identity is the kubelet pod UID. Brick autoscale runs at
+rung `up` on the `observe -> up -> full` ladder: denial-driven scale-up
+acts, clamped to the chart's maxReplicas. **Planned**: promoting to `full`
+adds drain-aware scale-down. The live brick mix is deployment state and
+lives in the fleet section.
 
 ---
 
@@ -490,8 +481,7 @@ vendor-mismatched restore loudly. Volume data is fully portable. Legacy
 artifacts cut before stamping existed are grandfathered: restorable on their
 home node forever, never distributed.
 
-**Decided direction (Draft ADR 025):** This withdraws ADR 011's Longhorn
-move; Longhorn stays deployed for other cluster uses.
+**Decided direction (Draft ADR 025):**
 
 - **Local disk is authoritative**: local node NVMe relight needs no network.
 - **S3 is a zstd content-addressed archive**, written at bank commit, not a
@@ -554,12 +544,11 @@ egress reads the plaintext request, sets the configured header to the real
 value (mounted only in the sidecar), and originates a fresh verified TLS
 connection onward. Injection fires only when the destination is in that
 secret's `egressTo`, so the credential is unreachable at every other host
-(`projects/firecracker/substrate/egress-proxy/cmd/swap.go`). This replaced
-ADR 023's placeholder substitution, which needed the same byte string in the
-guest and in the catalog and substituted over path and query, letting a
-guest splice the placeholder into a URL and have the credential reflected
-into a request line. RAM scrubbing before snapshot is rejected as a
-mechanism to rely on; revocation at the validator is the control.
+(`projects/firecracker/substrate/egress-proxy/cmd/swap.go`). Header
+injection is used rather than placeholder substitution because a
+guest-controlled placeholder can be spliced into a URL and reflect the
+credential into a request line. RAM scrubbing before snapshot is rejected
+as a mechanism to rely on; revocation at the validator is the control.
 
 **Public surface hardening** (as shipped): the public routes are scoped at their
 HTTPRoutes, with serving routes additionally constrained by node Envoy authority
@@ -622,7 +611,7 @@ resource limits), and 42 (detection integrations).
 | No Kubernetes or management-API escalation from guests (20, 22) | **Built** where it binds: a guest holds no cluster credential by construction (no NIC, no mounted ServiceAccount). The audience-scoped projected guest token is ADR 024 (Draft), decided direction rather than shipped. Definitions are CP-owned and there is no self-modification verb. |
 | Worker state fully reset between actors (18, 27, 30) | **Built by construction.** Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, placement is CP-owned, never guest-chosen, and each VM's rootfs and scratch are private to it: no filesystem is shared between guests. |
 | Credentials never inside the sandbox by default (28, 29) | **Built.** The brick-local egress proxy holds the real credential and injects it only at the sidecar hop, only for hosts in that secret's `egressTo`; revocation at the validator is the control, and RAM scrubbing is rejected as a mechanism (section 9). **Planned:** per-principal grants at the broker (ADR agents/047) and request-scoped GitHub tool mediation replacing host-keyed injection (ADR agents/055). |
-| Quotas and rate limits on creation and spend (9, 33) | **Built** as enforcement machinery: admission fails closed, a configured quota of 0 is a hard stop at submit, and metering rides the operation (invariant 4). The per-principal daily budget is currently unset in the reference deployment (`deploy/values.yaml` cleared it 2026-08-09), so spend is bounded by admission caps and concurrency, not by a per-principal quota, until a budget is set. |
+| Quotas and rate limits on creation and spend (9, 33) | **Built** as enforcement machinery: admission fails closed, a configured quota of 0 is a hard stop at submit, and metering rides the operation (invariant 4). The per-principal daily budget is deliberately unset in the reference deployment (`deploy/values.yaml`), so spend is bounded by admission caps and concurrency, not by a per-principal quota, until a budget is set. |
 | Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Planned** (ADR 033, #4691): per-principal envelope encryption of mutable warmth, digest-verified manifests, and restore authorized by the tuple (principal, lineage, brick, workload, generation, lease), never by storage ACL alone. Today the boundary is store ACLs plus the fail-closed vendor stamp, which defends against accidents, not against an adversary with store access. |
 
 ### Attacks from clients and the internal network
@@ -671,6 +660,10 @@ resource limits), and 42 (detection integrations).
   RAID0 satisfies it on EKS.
 - The FC node taint is a recorded option, not applied; co-tenancy runs on
   honest requests plus the disposable priority class.
+- Live brick mix: `desiredReplicas` 2gi 1 and 16gi 1, with per-node 2gi
+  floor bricks pinned on node-1, node-2, and node-3; the 4gi and 8gi
+  classes are present at zero replicas; chart clamps are min 16gi 1 and
+  max 2gi 4 / 4gi 3 / 8gi 2 / 16gi 2.
 - The control plane runs one replica with `strategy: Recreate`. Its op-log is
   a database on the shared `monolith-pg` CNPG cluster rather than a
   node-pinned RWO volume, so durability no longer follows a Longhorn volume
@@ -698,11 +691,9 @@ resource limits), and 42 (detection integrations).
 
 ## 12. Roadmap state
 
-Two different rungs have been called R6. ADR 001's original **R6 Facade**
-(etcd shim, virtual control planes, hard tenancy) was demoted to Recorded
-pending real demand, and ADR 009 then reused the number for **R6
-Continuity**, which is the R6 meant everywhere else in this document. The
-ladder below is ADR 009's.
+The rung ladder below is ADR 009's, where R6 is **Continuity** (ADR 001's
+original R6 Facade, virtual control planes and hard tenancy, is demoted to
+Recorded pending real demand).
 
 R0 Tasks, R1 Zip lane, R2 Sessions, R3 Serving, R4 Stateful, R5 Composite,
 R6 Continuity, and R8 Consumers (agent threads on sessions, goosecracker
@@ -717,10 +708,8 @@ verified tuple-authorized restore (ADR 033, #4691), and the management
 surface's actor / principal / permission split (ADR 032). The threat model
 section carries the per-row state.
 
-R5 Composite shipped as a code path but has no live consumer: the
-scratch-k8s demo it was built for is retired, there is no group workload
-template in the chart, and `warmthS3Gc.allowEmptyKinds: "group"` is the
-operator statement to the GC that the class is legitimately empty.
+R5 Composite has no live consumer; `warmthS3Gc.allowEmptyKinds: "group"`
+is the operator statement to the GC that the class is legitimately empty.
 
 The availability contract is spot semantics: a routine roll gives every
 workload up to two minutes of drain notice; state durability is the hard
@@ -737,9 +726,8 @@ app, so the guard can only be weakened deliberately.
 
 The S3 warmth GC is dry-run in code and may delete only the explicit
 allowlist of warmth prefixes. It is **armed in the homelab**
-(`warmthS3Gc.enabled: "1"`, 2026-08-04, after a dry-run manifest was read
-and verified); rollback is setting `enabled` back to `""` and bumping the
-chart. Its 8-hour stateful TTL keeps the newest one
+(`warmthS3Gc.enabled: "1"`); rollback is setting `enabled` back to `""`
+and bumping the chart. Its 8-hour stateful TTL keeps the newest one
 reference per vendor and workload for live workloads (any non-terminal
 instance or volume row); older superseded refs are eligible after the grace
 window. Dead workloads' namespaces, including their newest ref, are evicted
