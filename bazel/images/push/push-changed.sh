@@ -16,9 +16,22 @@
 # guard already relies on. So an image whose manifest digest is already in the
 # registry has nothing to publish. The only thing a push would add is one more
 # build-timestamped tag over identical bytes, and nothing reads those tags:
-# every chart here deploys `repository@digest`. The two tag-only image
-# references in the repo (embervm servingEnvoy, context-forge toolRefresh) are
-# upstream images this never pushes.
+# every chart here deploys `repository@digest`.
+#
+# THAT LAST SENTENCE IS A LOAD-BEARING INVARIANT, NOT AN OBSERVATION, and it was
+# false for eight months. A chart rendering `repository:tag` pins the very tag
+# this script decided not to create, which is an ImagePullBackOff on the next
+# content-identical commit. monolith-public deployed that way and wedged for
+# ~11h on 2026-08-11 while this script printed "0 image(s) to push" and the
+# action stayed green. Fixed in PR #4680 (homelab-library) and #4681
+# (oci-model-cache, signoz dashboard-sidecar). Before relying on the skip again,
+# check that no chart template renders a bare tag over an image we push:
+#
+#   grep -rn 'image.repository }}:{{' projects/*/chart/templates projects/*/*/chart/templates
+#
+# Legitimate hits are upstream images this never pushes (embervm servingEnvoy,
+# context-forge toolRefresh, cloudflare-gateway, renovate). embervm tokenBroker
+# renders `repo:tag@digest`, where the digest still decides.
 #
 # FAIL CLOSED. An image is pushed whenever we cannot prove it is unnecessary:
 # no manifest entry, a blank repository or digest, or any registry lookup that

@@ -40,7 +40,7 @@ spec:
         {{- if ne .Values.controllerManager.metrics.bindAddress "0" }}
         - --metrics-bind-address={{ .Values.controllerManager.metrics.bindAddress }}
         {{- end }}
-        image: "{{ .Values.controllerManager.image.repository }}:{{ .Values.controllerManager.image.tag | default .Chart.AppVersion }}"
+        image: "{{ include "oci-model-cache-operator.imageRef" . }}"
         imagePullPolicy: {{ .Values.controllerManager.image.pullPolicy }}
         name: manager
         securityContext:
