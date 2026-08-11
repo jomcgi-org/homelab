@@ -5501,7 +5501,6 @@ py_test(
     srcs = ["public_library_image_digest_guard_test.py"],
     data = ["//projects/monolith-public/chart:packaged_library_chart"],
     imports = ["."],
-    deps = ["@pip//pytest"],
 )
 
 py_test(
@@ -7436,4 +7435,17 @@ semgrep_target_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":progress",
+)
+
+semgrep_test(
+    name = "public_library_image_digest_guard_test_semgrep_test",
+    srcs = ["public_library_image_digest_guard_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
