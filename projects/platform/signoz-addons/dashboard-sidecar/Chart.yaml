@@ -2,7 +2,7 @@ apiVersion: v2
 name: signoz-dashboard-sidecar
 description: GitOps sidecar for syncing SigNoz dashboards from ConfigMaps
 type: application
-version: 0.3.3
+version: 0.3.4
 appVersion: "0.1.0"
 keywords:
   - signoz
