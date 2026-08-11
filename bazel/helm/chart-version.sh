@@ -25,6 +25,36 @@ if [[ -z "$CURRENT_VERSION" ]]; then
 	exit 1
 fi
 
+# --- Refuse to compute anything from a truncated history ---
+#
+# Every number below comes out of a commit walk, so the whole computation
+# assumes the history is actually present. In a SHALLOW clone it is not, and it
+# fails silently rather than obviously: at the graft boundary every file reads
+# as newly ADDED, so the -S search below matches the boundary commit itself. At
+# depth 1 that is HEAD, the HEAD..HEAD range is empty by definition, and this
+# script cheerfully reports "no bump needed" for a chart whose content changed.
+#
+# A partial depth is worse than depth 1, because it returns a plausible WRONG
+# number instead of an obviously stuck one: this repo computes embervm 0.2.8 at
+# depth 10 and 0.2.30 with the full history. That breaks the property the
+# serial arithmetic below is built on, that the version is a function of the
+# COMMIT. Under a shallow clone it is a function of the commit AND the fetch
+# depth, so two publishes of the same commit on differently-deepened runners
+# disagree, and the shallower one computes the lower version.
+#
+# This is not hypothetical: it is what took main's deploy down on 2026-08-10.
+# BuildBuddy clones shallow, every chart reported "no bump needed", and the
+# publish either skipped silently or died in push.sh.tpl's escalation. The
+# deploy action now deepens the clone before publishing (buildbuddy.yaml); this
+# is the backstop for any caller that does not, and it fails loudly because a
+# wrong version is far more expensive than a red build: it wedges ArgoCD.
+if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null || echo false)" == "true" ]]; then
+	echo >&2 "ERROR: refusing to compute a chart version in a shallow repository."
+	echo >&2 "The commit walk would be truncated, making the version a function of the fetch depth rather than of the commit."
+	echo >&2 "Fix: git fetch --unshallow"
+	exit 1
+fi
+
 # --- Find the commit where this version was last set ---
 VERSION_COMMIT=$(git log -1 --format=%H -S"version: ${CURRENT_VERSION}" -- "$CHART_YAML" 2>/dev/null || true)
 if [[ -z "$VERSION_COMMIT" ]]; then

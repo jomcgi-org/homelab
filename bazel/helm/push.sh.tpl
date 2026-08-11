@@ -145,15 +145,24 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
       if [[ $SHOW_RC -eq 0 ]]; then
         # DIGEST CONTENT IS THE AUTHORITY, NOT THE COMMIT WALK.
         #
-        # chart-version.sh decides a bump from conventional commits scoped to
-        # `bazel query deps(...)`, and that package set can come back
-        # INCOMPLETE, at which point a real content change is reported as "no
-        # bump needed" and this branch silently skips a deploy. That is not
-        # hypothetical: it happened on the very first merge of the post-merge
-        # versioning change (2000bae, 2026-08-10). monolith's backend and jobs
-        # images changed because the docs manifests are baked into them, the
-        # closure query did not return projects/monolith, the walk found
-        # nothing, and chart 0.285.528 stayed pinned to the previous digests.
+        # chart-version.sh decides a bump from a walk over conventional
+        # commits, and that walk has more than one way to report "no bump
+        # needed" for content that demonstrably changed. The dependency closure
+        # from `bazel query deps(...)` can come back INCOMPLETE, and the git
+        # history the walk runs over can be TRUNCATED.
+        #
+        # The truncation is the one that actually bit, on the very first merge
+        # of the post-merge versioning change (2000bae, 2026-08-10) and again
+        # loudly at 60ebba4. BuildBuddy clones shallow, and in a shallow clone
+        # the walk anchors to the graft boundary, so its range was empty and
+        # EVERY chart reported no bump. The deploy action now deepens the clone
+        # and chart-version.sh refuses to run shallow at all, so that specific
+        # cause is fixed at the source rather than absorbed here.
+        #
+        # An earlier revision of this comment blamed the closure query for
+        # 2000bae. That was a guess and it was wrong, which is worth recording:
+        # the two causes are indistinguishable from this side, because both
+        # surface only as a version that failed to move.
         #
         # So do not trust the walk to say "nothing changed". Ask the artifact.
         # check-missed-bump.sh compares the ghcr.io digests pinned in the fresh

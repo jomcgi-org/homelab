@@ -172,6 +172,44 @@ expect "all-paths stays commit-derived" "0.1.2" \
 	"$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)" \
 	"strictly greater at the later commit"
 
+# 11. A SHALLOW clone must fail LOUDLY rather than return a plausible number.
+#
+# This is the failure that took main's deploy down on 2026-08-10. BuildBuddy
+# clones shallow, and in a shallow repo the -S search for the current version
+# matches the graft boundary commit, because at the boundary every file reads
+# as newly added. At depth 1 that boundary is HEAD, so the HEAD..HEAD range is
+# empty and the script reported "no bump needed" for charts whose images had
+# demonstrably changed.
+#
+# The fixture has to BE a shallow clone: the bug is invisible in every other
+# case in this file, all of which build their history locally and therefore
+# always have it complete. `file://` is load-bearing, because a plain path
+# clone is a local hardlink copy that ignores --depth entirely.
+repo=$(new_repo shallowsrc 0.1.0)
+commit_in "$repo" "fix: one"
+commit_in "$repo" "fix: two"
+expect "same repo cloned deep" "0.1.2" "$(run_version "$repo")" "full history counts both"
+
+shallow="$TMP/shallowclone"
+git clone --depth=1 --quiet "file://$repo" "$shallow"
+expect "fixture really is shallow" "true" \
+	"$(git -C "$shallow" rev-parse --is-shallow-repository)" "clone --depth=1"
+
+set +e
+shallow_out=$(cd "$shallow" && bash "$SCRIPT" chart 2>/dev/null)
+shallow_rc=$?
+set -e
+expect "shallow clone fails" "1" "$shallow_rc" "history is truncated"
+# Assert the OLD behaviour specifically. Exiting non-zero is not enough on its
+# own: the regression is the script confidently emitting the unchanged version,
+# which push.sh.tpl reads as "nothing to deploy".
+if [[ "$shallow_out" == "0.1.0" ]]; then
+	echo "FAIL: shallow clone returned the unchanged version '0.1.0' instead of failing" >&2
+	FAILURES=$((FAILURES + 1))
+else
+	echo "ok: shallow clone emitted no version (got '${shallow_out}')"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1
