@@ -794,7 +794,7 @@
   }
 
   async function destroySession() {
-    if (!selectedId || !window.confirm("Destroy this agent session?")) return;
+    if (!selectedId || !window.confirm(P.labels.destroyConfirm)) return;
     try {
       const response = await fetch(
         `/agents/session/${encodeURIComponent(selectedId)}`,
@@ -810,7 +810,7 @@
   }
 
   async function cancelRun(id) {
-    if (!id || !window.confirm("Cancel this swarm run?")) return;
+    if (!id || !window.confirm(P.labels.cancelRunConfirm)) return;
     try {
       const response = await fetch(
         `/agents/runs/${encodeURIComponent(id)}/cancel`,
@@ -985,17 +985,17 @@
   });
 </script>
 
-<svelte:head><title>Agents</title></svelte:head>
+<svelte:head><title>{P.labels.pageTitle}</title></svelte:head>
 
 <main
   class:sidebar-collapsed={sidebarCollapsed}
   class:mobile-transcript={mobileTranscript}
   class="console"
 >
-  <aside class="sidebar" aria-label="Agent sessions">
+  <aside class="sidebar" aria-label={P.labels.sessionsRegion}>
     <div class="side-head">
       <div class="side-head-left">
-        <div class="eyebrow">agent sessions</div>
+        <div class="eyebrow">{P.labels.sessionsEyebrow}</div>
         <button
           class="collapse-button"
           type="button"
@@ -1017,17 +1017,17 @@
     </div>
 
     <label class="search-label">
-      <span class="sr-only">Search sessions</span>
+      <span class="sr-only">{P.labels.searchLabel}</span>
       <input
         bind:value={searchQuery}
-        placeholder="search transcripts"
+        placeholder={P.labels.searchPlaceholder}
         autocomplete="off"
       />
       {#if searchLoading}<span class="search-pulse">…</span>{/if}
     </label>
 
     {#if searchResults !== null}
-      <div class="group-title">Search results</div>
+      <div class="group-title">{P.labels.searchResults}</div>
       <div class="session-list">
         {#each visibleSearchResults as result (result.session_id + ":" + result.seq)}
           <button
@@ -1043,7 +1043,7 @@
               )} · turn {result.seq} · {relativeTime(result.created_at)}</span
             >
           </button>
-        {:else}<div class="empty">No matching turns</div>{/each}
+        {:else}<div class="empty">{P.labels.noMatchingTurns}</div>{/each}
       </div>
     {:else}
       <!-- The heading is the affordance for the swarm home: clicking it
@@ -1080,7 +1080,9 @@
         {#each standaloneHistory as session (session.id)}
           {@render sessionRow(session)}
         {:else}<div class="empty">
-            {standaloneActive.length ? "No recent sessions" : "No sessions yet"}
+            {standaloneActive.length
+              ? P.labels.noRecentSessions
+              : P.labels.noSessionsYet}
           </div>{/each}
       </div>
       {#if standaloneHistoryTotal > standaloneHistory.length}
@@ -1096,12 +1098,12 @@
     {/if}
   </aside>
 
-  <section class="transcript" aria-label="Agent transcript">
+  <section class="transcript" aria-label={P.labels.transcriptRegion}>
     <button
       class="mobile-back"
       type="button"
-      aria-label="Back to agent sessions"
-      onclick={returnToSessionList}>← back</button
+      aria-label={P.labels.backToSessions}
+      onclick={returnToSessionList}>{P.labels.mobileBack}</button
     >
     {#if fixture}
       <RunView
@@ -1145,7 +1147,7 @@
               <button
                 class="destroy-button"
                 type="button"
-                onclick={destroySession}>destroy</button
+                onclick={destroySession}>{P.labels.destroy}</button
               >
             </span>
           {/snippet}
@@ -1208,7 +1210,8 @@
                 {#if turn.stop_reason && turn.stop_reason !== "end_turn"}
                   <span>{turn.stop_reason}</span>
                 {/if}
-                {#if turnFailed(turn)}<span class="badge-failed">failed</span
+                {#if turnFailed(turn)}<span class="badge-failed"
+                    >{P.labels.turnFailed}</span
                   >{/if}
               </div>
             </article>
@@ -1234,20 +1237,20 @@
                       )}</span
                     >
                   {:else if partial?.partial_text}
-                    <span class="live-latest">working…</span>
+                    <span class="live-latest">{P.labels.working}</span>
                   {:else if vmRunning(selectedSession, vms)}
                     <!-- Claimed, VM confirmed running, no output yet: the
                          CLI is spinning up / the model has the prompt. -->
-                    <span class="live-latest">starting the agent…</span>
+                    <span class="live-latest">{P.labels.startingAgent}</span>
                   {:else}
                     <!-- Claimed but the control plane does not report the
                          guest running yet: park rejoin or cold boot. -->
-                    <span class="live-latest">waking vm…</span>
+                    <span class="live-latest">{P.labels.wakingVm}</span>
                   {/if}
                 {:else if state === "starting"}
-                  <span class="live-latest">starting up…</span>
+                  <span class="live-latest">{P.labels.startingUp}</span>
                 {:else}
-                  <span class="live-latest">waiting for the turn ahead…</span>
+                  <span class="live-latest">{P.labels.waitingForTurn}</span>
                 {/if}
               </div>
               {#if partial?.partial_activities?.length > 1}
@@ -1281,7 +1284,7 @@
             <div class="empty transcript-empty">
               {detail
                 ? "No turns yet. Send a prompt below."
-                : "Loading session…"}
+                : P.labels.loadingSession}
             </div>
           {/if}
         </div>
@@ -1319,7 +1322,7 @@
               class="send-button"
               type="submit"
               disabled={sending || !prompt.trim()}
-              >{sending ? "sending…" : "send"}</button
+              >{sending ? P.labels.sending : P.labels.send}</button
             >
           </div>
         </div>
@@ -1330,7 +1333,7 @@
            once loadDetail resolves. -->
       <div class="loading-session">
         <PaneHeader kind={P.labels.sessionWord} />
-        <div class="empty blank-state">Loading session…</div>
+        <div class="empty blank-state">{P.labels.loadingSession}</div>
       </div>
     {:else if selectedRunId}
       {#if runDetail?.run}
@@ -1349,7 +1352,7 @@
              broken navigation rather than a missing run. -->
       {:else if runDetail?.view?.engine_tier === "absent"}
         <div class="empty blank-state">{P.labels.absentNotice}</div>
-      {:else}<div class="empty blank-state">Loading run…</div>{/if}
+      {:else}<div class="empty blank-state">{P.labels.loadingRun}</div>{/if}
     {:else}
       <MasterView
         master={runMaster}
@@ -1413,14 +1416,14 @@
         >
         {#if newPanelMode === "session"}
           <div class="field">
-            <span class="field-label">model</span>
+            <span class="field-label">{P.labels.modelWord}</span>
             {@render modelPicker(newSession.model, (model) => {
               newSession.model = model;
             })}
           </div>
         {/if}
         <label
-          >repo<select
+          >{P.labels.repoWord}<select
             class="mono"
             bind:value={newSession.repo}
             required={newPanelMode === "run"}
@@ -1431,10 +1434,10 @@
             }}
           >
             {#if repoLoading}
-              <option value="">loading repos</option>
+              <option value="">{P.labels.loadingRepos}</option>
             {:else}
               {#if newPanelMode === "session"}
-                <option value="">none (scratch workspace)</option>
+                <option value="">{P.labels.scratchWorkspace}</option>
               {:else}
                 <option value="">{P.labels.selectRepo}</option>
               {/if}
@@ -1454,7 +1457,7 @@
             required={newPanelMode === "run"}
           >
             {#if branchLoading}
-              <option value="">loading branches</option>
+              <option value="">{P.labels.loadingBranches}</option>
             {:else if branches.length === 0}
               <option value="main">main</option>
             {:else}
@@ -1476,7 +1479,7 @@
         {/if}
         <div class="new-actions">
           <button type="button" class="quiet-button" onclick={closeNewPanel}
-            >cancel</button
+            >{P.labels.cancelWord}</button
           ><button
             class="send-button"
             type="submit"
@@ -1564,7 +1567,7 @@
       class="chip"
       class:on={!current}
       aria-pressed={!current}
-      onclick={() => choose("")}>default</button
+      onclick={() => choose("")}>{P.labels.defaultWord}</button
     >
     {#each MODELS as model}
       <button
@@ -1584,7 +1587,7 @@
       value={current}
       onchange={(event) => choose(event.currentTarget.value)}
     >
-      <option value="">default</option>
+      <option value="">{P.labels.defaultWord}</option>
       {#if current && !MODELS.includes(current)}
         <option value={current}>{current}</option>
       {/if}

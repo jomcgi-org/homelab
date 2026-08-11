@@ -102,7 +102,7 @@
         >
       {/snippet}
     </PaneHeader>
-    <h2 class="rv-title">{run.task.text}</h2>
+    <h2 class="rv-title" title={run.task.text}>{firstLine(run.task.text)}</h2>
     <div class="rv-meta">
       {joinMeta(
         run.work_branch,
@@ -136,6 +136,16 @@
           )}{/if}
       {/if}
     </div>
+    <!-- String(), because the old markup rendered task.text bare and an absent
+         one merely looked wrong. Calling .includes on it turns the same absent
+         value into a TypeError that blanks the entire pane, which is a worse
+         failure than the one being fixed. -->
+    {#if String(run.task.text ?? "").includes("\n")}
+      <details class="rv-task-details">
+        <summary>{P.labels.fullTask}</summary>
+        <pre>{run.task.text}</pre>
+      </details>
+    {/if}
     {#if run.stranded}<div class="banner" data-register="belief">
         <span class="register-tag">{P.labels.engineBelief}</span>
         {joinMeta(
