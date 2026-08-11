@@ -39,3 +39,15 @@ export function backToRun(value) {
   params.delete("session");
   return params.toString();
 }
+
+/**
+ * Joins a search string onto the path the browser is already on.
+ *
+ * The caller must pass the live pathname rather than a literal. `/private` is
+ * only the internal route prefix that src/hooks.js reroutes onto: the private
+ * tier reaches this page at `/agents`, so hardcoding `/private/agents` puts an
+ * address in the bar that nobody types or shares.
+ */
+export function withSearch(pathname, search) {
+  return search ? `${pathname}?${search}` : pathname;
+}

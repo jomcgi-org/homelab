@@ -5,6 +5,7 @@ import {
   parseUrlState,
   selectRun,
   selectSession,
+  withSearch,
 } from "./url-state.js";
 
 describe("agent URL state", () => {
@@ -35,6 +36,24 @@ describe("agent URL state", () => {
 
   test("back to run drops only the session", () => {
     expect(backToRun("run=wf-123&session=wf-123-call2")).toBe("run=wf-123");
+  });
+
+  test("keeps the path the browser is on rather than the route id", () => {
+    // private.jomcgi.dev serves this page at /agents; /private/agents is only
+    // the internal route src/hooks.js reroutes onto. Navigating to the route id
+    // rewrote the address bar to a URL nobody types.
+    expect(withSearch("/agents", "run=wf-123")).toBe("/agents?run=wf-123");
+  });
+
+  test("drops the question mark when nothing is selected", () => {
+    expect(withSearch("/agents", "")).toBe("/agents");
+  });
+
+  test("composes with the transitions it exists to serve", () => {
+    const search = selectSession(selectRun("", "wf-1"), "wf-1-call2");
+    expect(withSearch("/agents", search)).toBe(
+      "/agents?run=wf-1&session=wf-1-call2",
+    );
   });
 
   test("encodes ids and round-trips them", () => {
