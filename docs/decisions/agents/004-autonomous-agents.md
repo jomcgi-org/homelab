@@ -515,7 +515,7 @@ The `goose-sandboxes` namespace gets both a LimitRange and ResourceQuota (see [N
 | [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) | Sandbox CRDs, warm pool, lifecycle management   |
 | [block/goose](https://github.com/block/goose)                                     | Agent framework, MCP-native tool model          |
 | [litellm-claude-code](https://github.com/cabinlab/litellm-claude-code)            | LiteLLM custom provider for Claude Agent SDK    |
-| [Context Forge RFC](context-forge.md)                                             | MCP gateway for cluster services (separate RFC) |
+| [Context Forge RFC](003-context-forge.md)                                             | MCP gateway for cluster services (separate RFC) |
 | [Kata Containers](https://katacontainers.io/)                                     | microVM-based container runtime                 |
 | [Firecracker](https://firecracker-microvm.github.io/)                             | VMM for lightweight microVMs                    |
 

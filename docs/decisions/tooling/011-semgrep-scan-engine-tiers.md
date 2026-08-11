@@ -166,7 +166,7 @@ access path (ADR 041), no new credential.
 | Resource | Relevance |
 | -------- | --------- |
 | [ADR tooling/004](004-ocaml-rules-for-semgrep.md) | The custom rules feeding the Pro packs this engine loads |
-| [ADR platform/041](../platform/041-git-mirror-generic-egress.md) | Git-mirror hydration option for materializing the tree in the guest |
+| [ADR platform/041](../agents/041-hot-git-mirror-agent-workspaces.md) | Git-mirror hydration option for materializing the tree in the guest |
 | `projects/firecracker/semgrep/guest-init/internal/scandriver/driver.go` | The `osemgrep-pro mcp --pro` warm scan-server (fast path) |
 | `projects/firecracker/substrate/chart/values.yaml` | fc-invoke workload footprint definitions |
 | `projects/monolith/semgrep_scan/report.py` | Diff-vs-full reporting seam (`is_full_scan`, App baseline) |

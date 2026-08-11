@@ -1,7 +1,7 @@
 # ADR 008: Stars live and historical heatmaps via month-bucketed accumulate-at-drop
 
 **Author:** Joe McGinley
-**Status:** Superseded (in part) by [009-stars-era5-climatology-backfill](009-stars-era5-climatology-backfill.md)
+**Status:** Superseded (in part) by [009-stars-era5-climatology-backfill](009-stars-climatology-backfill.md)
 **Created:** 2026-06-13
 **Supersedes:** the heatmap section of [007-stars-quality-model-and-heatmap](007-stars-quality-model-and-heatmap.md) (its quality model `Q = D x C x W` still stands)
 
