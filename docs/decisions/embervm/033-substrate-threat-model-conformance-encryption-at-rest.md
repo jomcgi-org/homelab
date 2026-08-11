@@ -97,6 +97,25 @@ contract, it extends the two that already exist: "facts through the
 control plane, payloads never" (invariant 2) and the standing rule that a
 guest holds no credential material.
 
+KEK custody comes in exactly two supported modes:
+
+- **Platform-managed** (default): the platform holds and rotates the
+  principal's KEK. Which platform system holds it is open question 1.
+- **Customer-managed**: the principal issues and holds the KEK in their
+  own KMS and grants the control plane wrap and unwrap operations only.
+  Key material never enters the platform: the control plane calls the
+  customer's KMS to unwrap a data key at restore time, so every restore
+  appears in the customer's KMS audit log, and the customer revokes
+  unilaterally by disabling the key or the grant. Revocation makes banked
+  state unrestorable, which degrades to a cold boot per invariant 4 (fail
+  open on warmth), never to an outage.
+
+A customer KMS on the wake path couples that principal's warm restores to
+their KMS availability. That is the correct coupling: an unreachable KMS
+is treated as missing warmth (cold boot), and KEK rotation rewraps data
+keys lazily rather than re-encrypting artifacts, which is the point of
+the envelope.
+
 ### 3. Verified, tuple-authorized restore
 
 Snapshot manifests carry content digests, and a restore refuses an
@@ -137,7 +156,7 @@ graph LR
         BASE[Shared immutable bases<br/>plaintext, dedup-able]
         ART["Principal artifact<br/>(memory snapshot, session<br/>bundle, stateful volume)"]
     end
-    KEK["Principal-scoped KEK<br/>(custody: open question 1)"]
+    KEK["Principal-scoped KEK<br/>platform-managed, or<br/>customer-managed in their KMS"]
     DEK["Per-artifact data key"]
     KEK -->|wraps| DEK
     DEK -->|encrypts| ART
@@ -179,15 +198,18 @@ confidentiality at rest, which the store did not previously enforce.
 
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
-| KEK custody on a single-operator deployment concentrates key material somewhere that itself becomes a target | Medium | High | Open question below: 1Password Operator custody versus a key-sharded swap tier like the class-3 credential path in the ADR 016 security contract; not resolved here |
+| KEK custody on a single-operator deployment concentrates key material somewhere that itself becomes a target | Medium | High | Applies to the platform-managed mode only; open question 1 (1Password Operator versus a key-sharded swap tier) covers it, and the customer-managed mode removes the platform from custody entirely |
+| A customer KMS on the wake path couples warm restores to an external dependency | Medium | Low | Deliberate: an unreachable or revoking KMS is treated as missing warmth, so the failure mode is a cold boot per invariant 4, never an outage; the coupling is scoped to the principal that chose the mode |
 | Decryption on the wake path adds latency the 2.5ms load-to-resume figure did not account for | Medium | Medium | Must be re-measured with decryption in line before this ships; if it breaks the budget, decrypt-on-download before the wake preserves the warm path at the cost of node-local plaintext on scratch, a narrower exposure than the shared store, and is an acceptable fallback shape |
 | Artifacts already key per CPU vendor; encryption multiplies key count per (principal, vendor) pair | High | Low | Accepted cost; key management overhead scales with tenancy and hardware diversity, not with data volume |
 | Key loss equals data loss for banked state, by design | Low | Medium | This is the intended boundary, not a defect; cold boot is always the fallback per invariant 4 (fail open on warmth), so key loss degrades to a slower cold start rather than an outage |
 
 ## Open Questions
 
-1. KEK custody: 1Password Operator versus a key-sharded swap tier
-   mirroring the class-3 credential path in the ADR 016 security contract.
+1. KEK custody for the platform-managed mode: 1Password Operator versus a
+   key-sharded swap tier mirroring the class-3 credential path in the ADR
+   016 security contract. The customer-managed mode has no platform
+   custody question by construction.
 2. Whether the wake-path decrypt cost, once measured, forces
    decrypt-on-download (node-local plaintext on scratch) rather than
    decrypt-in-line, and if so, how that narrower exposure is documented
