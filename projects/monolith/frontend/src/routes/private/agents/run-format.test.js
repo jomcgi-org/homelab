@@ -1,5 +1,15 @@
 import { describe, expect, test } from "vitest";
-import { fmtCost, fmtDur, ordinal, relSeconds } from "./run-format.js";
+import {
+  attemptMeta,
+  engineStale,
+  fmtCost,
+  fmtDur,
+  joinMeta,
+  ordinal,
+  relSeconds,
+  spendOfBudget,
+  startedAgo,
+} from "./run-format.js";
 
 describe("run formatting", () => {
   test("formats durations using the contract units", () => {
@@ -39,5 +49,39 @@ describe("run formatting", () => {
     expect(fmtCost(0)).toBe("");
     expect(fmtCost(null)).toBe(null);
     expect(fmtCost(undefined)).toBe(null);
+  });
+});
+
+describe("phrases", () => {
+  test("joins with its own separator and drops absent parts", () => {
+    expect(joinMeta("a", "b")).toBe("a · b");
+    expect(joinMeta("a", null, "", undefined, "b")).toBe("a · b");
+    expect(joinMeta(null, undefined)).toBe(null);
+  });
+
+  test("spend is whole or absent, never a headless fragment", () => {
+    // The observed defect: a run with no spend yet printed "of $50.00 budget".
+    expect(spendOfBudget(0.2, 0.15)).toBe("$0.20 of $0.15 budget");
+    expect(spendOfBudget(0, 0.15)).toBe("nothing spent yet");
+    expect(spendOfBudget(null, 50)).toBe(null);
+    expect(spendOfBudget(0.2, null)).toBe("$0.20");
+    expect(spendOfBudget(null, null)).toBe(null);
+  });
+
+  test("attempt meta omits the parts it does not have", () => {
+    expect(attemptMeta(2, "running", 1200, 0.12)).toBe(
+      "attempt 2 · running 20m · $0.12",
+    );
+    expect(attemptMeta(1, null, 480, 0)).toBe("attempt 1 · 8m");
+    expect(attemptMeta(1, "running", null, null)).toBe("attempt 1 · running");
+  });
+
+  test("a claim survives without the measurement it would have carried", () => {
+    expect(startedAgo(120)).toBe("started 2m ago");
+    expect(startedAgo(null)).toBe(null);
+    // Dropping to the bare claim beats asserting the snapshot is "0s old",
+    // which would read as fresh.
+    expect(engineStale(120)).toBe("engine: unreachable, showing 2m old state");
+    expect(engineStale(null)).toBe("engine: unreachable");
   });
 });
