@@ -568,11 +568,11 @@ matches and the guest shim's reserved `/shim/` prefix. The `/ember` Bazel demo
 warm-Skyframe snapshot: server-controlled argv, zero egress, reaped per
 request.
 
-**Guest identity** (as shipped): a guest never holds a cluster
-credential. It asserts identity via an audience-scoped projected token
-(audience `embervm`, useless against the Kubernetes API); the platform holds
-real credentials and
-acts on the guest's behalf through the brokered egress path.
+**Guest identity**: a guest never holds a cluster credential (as
+shipped, by construction: no NIC, no mounted ServiceAccount); the
+platform holds real credentials and acts on the guest's behalf through
+the brokered egress path. The audience-scoped projected guest token
+(audience `embervm`) is ADR 024 decided direction, not yet shipped.
 
 **Decided direction (Draft ADR agents/055):** GitHub leaves the agent egress
 catalog. Host-keyed injection bounds which host a credential reaches, never
@@ -602,21 +602,27 @@ while Ember carries them as shipped invariants.
 Vocabulary mapping: their *actor* is Ember's guest workload, their *worker
 pod* is a Firecracker slot on a brick, their *atelet* is noded, their
 *snapshot* is Ember's warmth artifact (memory snapshot, session bundle,
-volume archive). Their 43 threats are condensed below to the rows that bind
-on Ember's architecture; the multiplexed-shared-worker threats with no
-Ember analogue are answered by the "no reuse across principals" row.
+volume archive). The threat numbering is ours: upstream rows are
+unnumbered, so threats are numbered 1 to 43 in upstream document order as
+of its 2026-06-25 revision. The enumeration is condensed below;
+shared-worker threats with no Ember analogue are answered by the "no reuse
+across principals" row, and five unmapped threats do bind on Ember and are
+open mapping work, not implied conformance: 8 (template-author reach into
+storage), 21 (worker privilege: noded runs privileged with /dev/kvm), 26
+(policy propagated out of band with scheduling), 31 (image-extraction
+resource limits), and 42 (detection integrations).
 
 ### Attacks from guests
 
 | Requirement (their threat #) | Ember state |
 | ---------------------------- | ----------- |
 | Hardened sandbox, never bare containers (15) | **Built.** Every guest is a Firecracker microVM; there is no container lane. New execution technologies enter as lanes under existing classes (invariant 9), so the sandbox floor is a platform decision, never a workload one. |
-| Default-deny actor networking (17) | **Built, stronger.** Task and session guests have no NIC at all: vsock only, so no actor-to-actor network path exists, and guest egress exists only through the brokered proxy lane (section 9). Serving guests get a tap device reachable solely via node Envoy authority matches and kernel DNAT (section 2). |
-| No guest access to node services, metadata, or cluster DNS (16, 19, 34) | **Built.** A vsock guest reaches only the shim contract; there is no host network namespace, no metadata service, and no cluster DNS inside the guest. |
-| No Kubernetes or management-API escalation from guests (20, 22) | **Built.** A guest holds no cluster credential; its projected token is audience-scoped to `embervm` and useless against the Kubernetes API (section 9). Definitions are CP-owned and there is no self-modification verb. |
-| Worker state fully reset between actors (18, 27, 30) | **Built by construction.** Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, and placement is CP-owned, never guest-chosen. |
+| Default-deny actor networking (17) | **Built, stronger** for the cross-actor half: task and session guests have no NIC at all, vsock only, so no actor-to-actor network path exists. Serving guests get a tap device reachable solely via node Envoy authority matches and kernel DNAT (section 2). Egress is the deliberate exception: the brokered proxy lane defaults internal-deny but external-allow (`EGRESS_EXTERNAL: allow`), so guests read the public internet by design, and the credential boundary rather than reachability is the control there (section 9). |
+| No guest access to node services, metadata, or cluster DNS (16, 19, 34) | **Built**, with two named exceptions: a vsock guest reaches the shim contract plus the two deliberate holes in the split-horizon egress guardrail, inference and monolith:8091 (`deploy/values.yaml` records that adding an entry is a security decision). No host network namespace, no metadata service, no cluster DNS inside the guest. |
+| No Kubernetes or management-API escalation from guests (20, 22) | **Built** where it binds: a guest holds no cluster credential by construction (no NIC, no mounted ServiceAccount). The audience-scoped projected guest token is ADR 024 (Draft), decided direction rather than shipped. Definitions are CP-owned and there is no self-modification verb. |
+| Worker state fully reset between actors (18, 27, 30) | **Built by construction.** Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, placement is CP-owned, never guest-chosen, and each VM's rootfs and scratch are private to it: no filesystem is shared between guests. |
 | Credentials never inside the sandbox by default (28, 29) | **Built.** The brick-local egress proxy holds the real credential and injects it only at the sidecar hop, only for hosts in that secret's `egressTo`; revocation at the validator is the control, and RAM scrubbing is rejected as a mechanism (section 9). **Planned:** per-principal grants at the broker (ADR agents/047) and request-scoped GitHub tool mediation replacing host-keyed injection (ADR agents/055). |
-| Quotas and rate limits on creation and spend (9, 31, 33) | **Built.** Admission fails closed, quota 0 is a hard stop at submit, metering rides the operation (invariant 4), and cutting off a principal is an admission action: stop minting tokens, 402 at the edge. |
+| Quotas and rate limits on creation and spend (9, 33) | **Built** as enforcement machinery: admission fails closed, a configured quota of 0 is a hard stop at submit, and metering rides the operation (invariant 4). The per-principal daily budget is currently unset in the reference deployment (`deploy/values.yaml` cleared it 2026-08-09), so spend is bounded by admission caps and concurrency, not by a per-principal quota, until a budget is set. |
 | Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Planned** (ADR 033, #4691): per-principal envelope encryption of mutable warmth, digest-verified manifests, and restore authorized by the tuple (principal, lineage, brick, workload, generation, lease), never by storage ACL alone. Today the boundary is store ACLs plus the fail-closed vendor stamp, which defends against accidents, not against an adversary with store access. |
 
 ### Attacks from clients and the internal network
@@ -624,7 +630,7 @@ Ember analogue are answered by the "no reuse across principals" row.
 | Requirement (their threat #) | Ember state |
 | ---------------------------- | ----------- |
 | No direct internet exposure of guests, nodes, or the CP (1, 2, 3) | **Built.** Nothing faces the internet directly; ingress rides Cloudflare, public routes are scoped at their HTTPRoutes, and the serving shim's reserved `/shim/` prefix is unreachable from outside (section 9). |
-| Mutual authentication and encrypted transport between components (4, 10) | Partial, by explicit v1 contract: CP-to-noded gRPC uses a static bearer token in call metadata plus Cilium network policy; mTLS/SPIFFE is a declared additive upgrade path (`proto/embervm/node/v1/node.proto`), not built. Session-routing tokens are encrypted (ADR 020). Management callers authenticate via Kubernetes TokenReview against an allow-list; **Planned:** the actor / principal / permission split with per-verb authorization (ADR 032). |
+| Mutual authentication and encrypted transport between components (4, 10) | **Planned** (#4693, deferred at R0): noded's gRPC currently runs open on the pod network. The bearer token is designed but disabled (`noded.bearerTokenSecret` ships empty, the CP attaches no metadata), and no network policy selects noded today (the only CiliumNetworkPolicy rendered covers the tokenbroker). mTLS/SPIFFE is a declared additive upgrade path (`proto/embervm/node/v1/node.proto`). Encrypted session-routing tokens are ADR 020 (Draft). Management callers authenticate via Kubernetes TokenReview against an allow-list; the actor / principal / permission split with per-verb authorization is ADR 032 (Draft). |
 | Control plane isolated from the data plane (6) | **Built** as a seam: the CP runs on Kubernetes, noded runs on bricks, and payloads never traverse the CP (invariant 2). **Accepted risk:** guests co-locate with the etcd masters on this fleet (ADR 012); do not import that clause into a cluster whose etcd is precious (section 11). |
 | Runtime configurable only by administrators (7) | **Built.** A workload chooses class and source (zip or image); the sandbox technology, kernel, and platform bases are CI-built platform artifacts it cannot substitute. |
 | A sanctioned, secure path for secrets (11) | **Built.** The 1Password Operator is the only secret source, and guests receive none (the section 9 credential classes). |
@@ -636,8 +642,8 @@ Ember analogue are answered by the "no reuse across principals" row.
 | Node storage access scoped to actors scheduled on it (36, 37) | **Planned** (ADR 033, #4691): a brick receives a short-lived decryption capability for exactly the tuple it is waking, so a compromised brick or a bulk bucket copy yields nothing readable beyond its own live assignments. Today any brick with store credentials can read any warmth object. |
 | Node API access scoped to its own actors (38) | **Built in shape.** noded dials home and is adopted keyed by (node, pod uid); node reports are authoritative only for instances anchored to that node, and wake grants are gated on the volume's anchor (section 4). |
 | Granular admin access and envelope encryption at rest (39, 40) | **Planned** for principal warmth (ADR 033, #4691), with two KEK custody modes: platform-managed, or customer-managed in the principal's own KMS with wrap/unwrap grants only, so key material never enters the platform and revocation is the customer's unilateral act. The op-log shares `monolith-pg` deliberately (section 11); payload separation and principal-scoped erasure are ADR 019. |
-| Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). |
-| Containment of a detected-bad actor (43) | **Built in the primitives**: principal cutoff is an admission action, and bricks quarantine on checkpoint-abort evidence (ADR 017). An automatic principal-level quarantine policy is not decided. |
+| Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). The journal is prefix-compacted past 30 days (ADR 002); older audit lives only in SigNoz. |
+| Containment of a detected-bad actor (43) | Partial. The live lever is principal cutoff as an admission action: stop minting tokens, 402 at the edge. The volume quarantine (ADR 017) is a data-integrity guard against generation divergence, not an adversary control, and no brick- or principal-level quarantine primitive exists. An automatic containment policy is not decided. |
 
 ---
 
