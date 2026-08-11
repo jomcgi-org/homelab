@@ -15,7 +15,10 @@ claimed, never implied:
 - **Accepted risk**: an eyes-open trade, stated where it applies.
 
 An unflagged claim means live behaviour; if reality and this document
-disagree, one of them is a bug to fix.
+disagree, one of them is a bug to fix. Claims verified by a TLA+ model are
+additionally marked **model-checked** with their spec in
+`projects/embervm/specs/`; those specs run under TLC in the build, so
+violating one is a build failure, not a report.
 
 ---
 
@@ -135,28 +138,60 @@ the control plane adopts it keyed by `(node, pod_uid)` and streams
 the fleet is labelling a node (`homelab.io/firecracker=true`), not a values
 edit.
 
+**Decided direction** (#4696): enrollment consolidates on a single
+chart-configurable key, `embervm.jomcgi.dev/node`, used as both the
+enrollment label and the key of the optional hard taint; the separate
+serving label is retired, since every enrolled node carries the serving
+relay.
+
 ### How one invocation works
 
-**A task (the all-miss case):**
+**A serving hit (the steady state)**, where the control plane is not
+involved at all:
 
-1. A caller submits `POST /v1/workloads`.
-2. The dispatcher assigns a primed VM from the matching pool.
-3. It sends gRPC to noded on the chosen brick; the payload enters the VM
-   over vsock, the result comes back, the VM is destroyed after one task,
-   and the op-log records the action.
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant E as node Envoy
+    participant VM as Serving VM
+    C->>E: edge HTTPRoute
+    E->>VM: kernel DNAT into tap NIC
+    VM-->>C: response
+```
 
-**A serving hit (the steady state):**
+**A wake (a serving or stateful miss)**, the lifecycle action that earns
+the control plane its place on the path:
 
-1. An edge HTTPRoute reaches node-local Envoy, which the control plane
-   already programmed over xDS.
-2. Kernel DNAT carries the request into the serving VM's tap NIC. The
-   control plane is not involved.
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant E as node Envoy
+    participant A as Fallback activator
+    participant VM as Guest VM
+    C->>E: request (workload scaled to zero)
+    E->>A: fallback endpoint; request parks
+    A->>VM: single-flighted wake (restore or cold boot)
+    A-->>E: real endpoint published via xDS
+    E->>VM: parked bytes splice through
+    VM-->>C: response
+```
 
-**A wake (a serving or stateful miss):**
+**A task (the all-miss case by policy)**, a fresh VM per invocation:
 
-1. The request reaches the fallback activator endpoint and parks.
-2. A single-flighted wake fires, the real endpoint is published, and bytes
-   splice through to it.
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant CP as Control plane
+    participant N as noded
+    participant VM as Guest VM
+    C->>CP: POST /v1/workloads
+    CP->>CP: admission + quota, op-log append
+    CP->>N: gRPC assign (primed VM)
+    N->>VM: payload over vsock
+    VM-->>N: result
+    N-->>CP: result; VM destroyed after one task
+    CP-->>C: result
+```
 
 The task and wake paths are the only ones on which the control plane sits.
 That is the hit/miss invariant stated in section 5.
@@ -215,6 +250,9 @@ Facts that make this safe:
   two-minute preemption contract).
 - **Resume requires an exact (memory snapshot, volume generation) pair**;
   mismatch discards warmth and cold-boots from the durable volume.
+  Model-checked (`bank_relight.tla`), including the monotonic floor: a
+  lagging node report can never regress the stored pair key, so a stale
+  report cannot legalise a stale snapshot.
 - **The interruptible bank** (`spec.stateful.interruptibleBank: true`, off
   by default) makes steady-state wakes always hot or warm, never cold. The
   three cold exceptions: genuine first boot, explicit operator reset, and
@@ -325,7 +363,10 @@ against them.
    **fails open by design**: a brick out of contact
    keeps running and keeps counting, and unreconciled spend is written off.
    Cutting off a principal is an admission action (stop minting tokens, 402
-   at the edge), not a metering one.
+   at the edge), not a metering one. The quota gate is model-checked
+   (`quota.tla`): budgets are opt-in, and for a principal with a budget
+   both the submit gate and the dispatch gate fail closed when the usage
+   cache is unreadable.
 
 5. **The node agent is authoritative for instance runtime state.**
    What a brick reports over
@@ -335,6 +376,10 @@ against them.
    teardown, and reconciliation is fail-closed toward destruction (an
    unrecognised node VM is an orphan to destroy, unless it carries the
    `origin: ACTIVATOR` marker, in which case it is adopted and backfilled).
+   Model-checked (`adoption.tla`) against control-plane and node crashes
+   between any two steps: the dispatch restart wedge, forget-before-kill
+   resurrection, and reap-would-wipe-fleet bug classes are excluded by
+   invariant.
 
 6. **Single-writer for stateful is a physical fact, not a protocol.** The
    storage section explains the raw sparse file, one-writable-attach rule,
@@ -595,6 +640,33 @@ storage), 21 (worker privilege: noded runs privileged with /dev/kvm), 26
 (policy propagated out of band with scheduling), 31 (image-extraction
 resource limits), and 42 (detection integrations).
 
+The boundary in one picture: what untrusted code can reach, and what
+never crosses toward it.
+
+```mermaid
+graph LR
+    subgraph vm ["Guest VM: untrusted"]
+        G["workload code<br/>no NIC (task/session)<br/>no credentials"]
+    end
+    subgraph brick ["Brick: trusted host"]
+        N["noded"]
+        P["egress proxy<br/>(holds credentials)"]
+        E["node Envoy"]
+    end
+    subgraph cp ["Control plane"]
+        F["admission, facts,<br/>op-log audit"]
+    end
+    S[("artifact store<br/>Planned #4691: per-principal<br/>envelope encryption")]
+    X["external hosts"]
+
+    G -- "vsock only" --> N
+    E -- "DNAT into tap<br/>(serving only)" --> G
+    G -- "plaintext egress" --> P
+    P -- "fresh TLS, credential injected<br/>only for allowlisted hosts" --> X
+    N -- "facts (dial-home)" --> F
+    N -- "snapshot bytes,<br/>never via the CP" --> S
+```
+
 ### Attacks from guests
 
 | Requirement (their threat #) | Ember state |
@@ -605,7 +677,7 @@ resource limits), and 42 (detection integrations).
 | No Kubernetes or management-API escalation from guests (20, 22) | **Built** where it binds: a guest holds no cluster credential by construction (no NIC, no mounted ServiceAccount). The audience-scoped projected guest token is decided direction, not yet shipped. Definitions are CP-owned and there is no self-modification verb. |
 | Worker state fully reset between actors (18, 27, 30) | **Built by construction.** Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, placement is CP-owned, never guest-chosen, and each VM's rootfs and scratch are private to it: no filesystem is shared between guests. |
 | Credentials never inside the sandbox by default (28, 29) | **Built.** The brick-local egress proxy holds the real credential and injects it only at the sidecar hop, only for hosts in that secret's `egressTo`; revocation at the validator is the control, and RAM scrubbing is rejected as a mechanism (section 9). **Planned:** per-principal grants at the credential broker and request-scoped GitHub tool mediation replacing host-keyed injection. |
-| Quotas and rate limits on creation and spend (9, 33) | **Built** as enforcement machinery: admission fails closed, a configured quota of 0 is a hard stop at submit, and metering rides the operation (invariant 4). The per-principal daily budget is deliberately unset in the reference deployment (`deploy/values.yaml`), so spend is bounded by admission caps and concurrency, not by a per-principal quota, until a budget is set. |
+| Quotas and rate limits on creation and spend (9, 33) | **Built** as enforcement machinery, model-checked (`quota.tla`): admission fails closed, a configured quota of 0 is a hard stop at submit, and metering rides the operation (invariant 4). The per-principal daily budget is deliberately unset in the reference deployment (`deploy/values.yaml`), so spend is bounded by admission caps and concurrency, not by a per-principal quota, until a budget is set. |
 | Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Planned** (#4691): per-principal envelope encryption of mutable warmth, digest-verified manifests, and restore authorized by the tuple (principal, lineage, brick, workload, generation, lease), never by storage ACL alone. Today the boundary is store ACLs plus the fail-closed vendor stamp, which defends against accidents, not against an adversary with store access. |
 
 ### Attacks from clients and the internal network
