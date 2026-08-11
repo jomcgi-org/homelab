@@ -1,16 +1,24 @@
 # EmberVM Architecture
 
 A single rolled-up description of how EmberVM operates, written for a reader
-who needs to reason about the system without re-reading 31 ADRs.
+who needs to reason about the system without re-reading 33 ADRs.
 
-Two kinds of statement appear here:
+This document presents the complete decided vision, not only what runs
+today, so every section reads as one coherent design. Three kinds of
+statement appear, and anything not yet live is flagged inline where it is
+claimed, never implied:
 
 - **Built**: how the system behaves today (Accepted ADRs, shipped code).
-  One exception, called out in its row: ADR 031 is Accepted as a decision
-  but its detector is not built (#4338).
-- **Decided direction**: agreed in Draft ADRs 014, 015, and 019 through 028,
-  but not yet implemented or only partially landed. These sections are
-  marked.
+  Accepted-but-not-built exceptions are called out in their rows: ADR 031's
+  detector (#4338) and ADR 033's encryption work (#4691).
+- **Decided direction** (**Planned** in tables): agreed in an ADR but not
+  yet implemented or only partially landed, named with the ADR and, where
+  work is scheduled, the tracking issue.
+- **Accepted risk**: an eyes-open trade recorded in an ADR (for example
+  the ADR 012 fleet co-location clause).
+
+An unflagged claim means live behaviour; if reality and this document
+disagree, one of them is a bug to fix.
 
 ---
 
@@ -25,7 +33,7 @@ object per invocation, and without etcd in the execution path.
 
 This runs on a four-node homelab cluster: three Intel nodes are the cold,
 CPU-rich tier and one AMD node holds the warm tier. The concrete fleet shape
-is in [the fleet section](#10-the-fleet-today).
+is in [the fleet section](#11-the-fleet-today).
 
 **Goals**: private Lambda ergonomics (HTTP invoke, zip or image source,
 caps, quotas, internal chargeback); honest scheduling on finite capacity;
@@ -578,7 +586,62 @@ among them.
 
 ---
 
-## 10. The fleet today
+## 10. Threat model
+
+EmberVM evaluates itself against the threat model published by
+[agent-substrate/substrate](https://github.com/agent-substrate/substrate/blob/main/docs/threat-model.md),
+adopted as the external conformance frame by ADR embervm/033. The frame is
+deliberately not ours: Substrate attacks the same problem from the density
+side (many actors multiplexed onto shared warm worker pods), and its threat
+enumeration is the most complete public statement of what a multi-tenant
+agent execution plane must defend. Scoring Ember against criteria a
+competing project wrote keeps these claims falsifiable, and most of Ember's
+differentiation is exactly the rows that project lists as planned work
+while Ember carries them as shipped invariants.
+
+Vocabulary mapping: their *actor* is Ember's guest workload, their *worker
+pod* is a Firecracker slot on a brick, their *atelet* is noded, their
+*snapshot* is Ember's warmth artifact (memory snapshot, session bundle,
+volume archive). Their 43 threats are condensed below to the rows that bind
+on Ember's architecture; the multiplexed-shared-worker threats with no
+Ember analogue are answered by the "no reuse across principals" row.
+
+### Attacks from guests
+
+| Requirement (their threat #) | Ember state |
+| ---------------------------- | ----------- |
+| Hardened sandbox, never bare containers (15) | **Built.** Every guest is a Firecracker microVM; there is no container lane. New execution technologies enter as lanes under existing classes (invariant 9), so the sandbox floor is a platform decision, never a workload one. |
+| Default-deny actor networking (17) | **Built, stronger.** Task and session guests have no NIC at all: vsock only, so no actor-to-actor network path exists, and guest egress exists only through the brokered proxy lane (section 9). Serving guests get a tap device reachable solely via node Envoy authority matches and kernel DNAT (section 2). |
+| No guest access to node services, metadata, or cluster DNS (16, 19, 34) | **Built.** A vsock guest reaches only the shim contract; there is no host network namespace, no metadata service, and no cluster DNS inside the guest. |
+| No Kubernetes or management-API escalation from guests (20, 22) | **Built.** A guest holds no cluster credential; its projected token is audience-scoped to `embervm` and useless against the Kubernetes API (section 9). Definitions are CP-owned and there is no self-modification verb. |
+| Worker state fully reset between actors (18, 27, 30) | **Built by construction.** Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, and placement is CP-owned, never guest-chosen. |
+| Credentials never inside the sandbox by default (28, 29) | **Built.** The brick-local egress proxy holds the real credential and injects it only at the sidecar hop, only for hosts in that secret's `egressTo`; revocation at the validator is the control, and RAM scrubbing is rejected as a mechanism (section 9). **Planned:** per-principal grants at the broker (ADR agents/047) and request-scoped GitHub tool mediation replacing host-keyed injection (ADR agents/055). |
+| Quotas and rate limits on creation and spend (9, 31, 33) | **Built.** Admission fails closed, quota 0 is a hard stop at submit, metering rides the operation (invariant 4), and cutting off a principal is an admission action: stop minting tokens, 402 at the edge. |
+| Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Planned** (ADR 033, #4691): per-principal envelope encryption of mutable warmth, digest-verified manifests, and restore authorized by the tuple (principal, lineage, brick, workload, generation, lease), never by storage ACL alone. Today the boundary is store ACLs plus the fail-closed vendor stamp, which defends against accidents, not against an adversary with store access. |
+
+### Attacks from clients and the internal network
+
+| Requirement (their threat #) | Ember state |
+| ---------------------------- | ----------- |
+| No direct internet exposure of guests, nodes, or the CP (1, 2, 3) | **Built.** Nothing faces the internet directly; ingress rides Cloudflare, public routes are scoped at their HTTPRoutes, and the serving shim's reserved `/shim/` prefix is unreachable from outside (section 9). |
+| Mutual authentication and encrypted transport between components (4, 10) | Partial, by explicit v1 contract: CP-to-noded gRPC uses a static bearer token in call metadata plus Cilium network policy; mTLS/SPIFFE is a declared additive upgrade path (`proto/embervm/node/v1/node.proto`), not built. Session-routing tokens are encrypted (ADR 020). Management callers authenticate via Kubernetes TokenReview against an allow-list; **Planned:** the actor / principal / permission split with per-verb authorization (ADR 032). |
+| Control plane isolated from the data plane (6) | **Built** as a seam: the CP runs on Kubernetes, noded runs on bricks, and payloads never traverse the CP (invariant 2). **Accepted risk:** guests co-locate with the etcd masters on this fleet (ADR 012); do not import that clause into a cluster whose etcd is precious (section 11). |
+| Runtime configurable only by administrators (7) | **Built.** A workload chooses class and source (zip or image); the sandbox technology, kernel, and platform bases are CI-built platform artifacts it cannot substitute. |
+| A sanctioned, secure path for secrets (11) | **Built.** The 1Password Operator is the only secret source, and guests receive none (the section 9 credential classes). |
+
+### Attacks from nodes and insiders
+
+| Requirement (their threat #) | Ember state |
+| ---------------------------- | ----------- |
+| Node storage access scoped to actors scheduled on it (36, 37) | **Planned** (ADR 033, #4691): a brick receives a short-lived decryption capability for exactly the tuple it is waking, so a compromised brick or a bulk bucket copy yields nothing readable beyond its own live assignments. Today any brick with store credentials can read any warmth object. |
+| Node API access scoped to its own actors (38) | **Built in shape.** noded dials home and is adopted keyed by (node, pod uid); node reports are authoritative only for instances anchored to that node, and wake grants are gated on the volume's anchor (section 4). |
+| Granular admin access and envelope encryption at rest (39, 40) | **Planned** for principal warmth (ADR 033, #4691). The op-log shares `monolith-pg` deliberately (section 11); payload separation and principal-scoped erasure are ADR 019. |
+| Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). |
+| Containment of a detected-bad actor (43) | **Built in the primitives**: principal cutoff is an admission action, and bricks quarantine on checkpoint-abort evidence (ADR 017). An automatic principal-level quarantine policy is not decided. |
+
+---
+
+## 11. The fleet today
 
 | Node | CPU | Memory | Role |
 | ---- | --- | ------ | ---- |
@@ -627,7 +690,7 @@ among them.
 
 ---
 
-## 11. Roadmap state
+## 12. Roadmap state
 
 Two different rungs have been called R6. ADR 001's original **R6 Facade**
 (etcd shim, virtual control planes, hard tenancy) was demoted to Recorded
@@ -642,6 +705,11 @@ over the export/restore verbs; needs a second warm-capable node to matter).
 R9 Packaging (standalone open-sourceable artifact) is decided. In-flight
 engineering: promoting brick autoscale from `up` to `full`, node-local
 activator soak, and the conciseness program (issue #4009).
+
+Decided direction, security: per-principal envelope encryption at rest and
+verified tuple-authorized restore (ADR 033, #4691), and the management
+surface's actor / principal / permission split (ADR 032). The threat model
+section carries the per-row state.
 
 R5 Composite shipped as a code path but has no live consumer: the
 scratch-k8s demo it was built for is retired, there is no group workload
@@ -684,11 +752,11 @@ serving.
 
 ---
 
-## 12. ADR map
+## 13. ADR map
 
 How to read a decision: start here, then open the ADR for rationale. Status
 is the ADR's own header plus its amendment trail. Draft ADRs are 014, 015,
-and 019-028. ADRs 019-027 are one design pass answering "what changes to
+019-028, and 032. ADRs 019-027 are one design pass answering "what changes to
 manage 100k+ workload definitions" (see `docs/decisions/embervm/README.md`
 for their reading order); they are decided direction, not yet built. ADRs
 014 and 015 predate that pass and are a separate case. ADRs 014 and 015 have
@@ -729,6 +797,8 @@ session model, so read them as current behaviour rather than direction.
 | [029](../../docs/decisions/embervm/029-parked-sessions-disk-bucket-not-cap.md) | Parked sessions bucket as disk, not against `concurrency.cap`; wake deliberately does not re-check the cap | Accepted; amends 016 decision 6 on the capacity-accounting axis only |
 | [030](../../docs/decisions/embervm/030-lineage-decoupled-from-session-generation.md) | Lineage decoupled from session generation; `maxLifetimeSeconds` (6h) reaffirmed as a version-convergence bound; continuity via workspace adoption | Accepted; amends 027's quadrant description |
 | [031](../../docs/decisions/embervm/031-health-signals-classified-by-time-to-impact.md) | Health signals classified by time-to-impact: immediate latch for platform-impact-now signals (sustained artifact export failures), >24h-sustained latch for maintenance-debt signals (S3 warmth GC sweep stall); both end in the health surface, not alert-only | Accepted; decided direction, detector implementation tracked in #4338, not yet built |
+| [032](../../docs/decisions/embervm/032-federated-identity-adapters-authentik-sso.md) | Federated identity adapters: the actor / principal / permission split for the management surface, authentik SSO as the homelab identity source | Draft |
+| [033](../../docs/decisions/embervm/033-substrate-threat-model-conformance-encryption-at-rest.md) | Substrate's threat model adopted as the external conformance frame; per-principal envelope encryption at rest; digest-verified, tuple-authorized restore | Accepted; implementation tracked in #4691, not yet built |
 
 Operational entry points: ArgoCD and SigNoz at `private.jomcgi.dev/app/*`,
 `kubectl get workloads` for definition status, `/v1/usage` for metering,
@@ -742,7 +812,7 @@ that changes a decision updates this document in the same PR; the `adr`
 skill and `check-adr-architecture-sync` hook enforce it. If the two
 disagree, fix both.
 
-Sources: ADRs embervm/001-031, the project README (goals and non-goals), and
+Sources: ADRs embervm/001-033, the project README (goals and non-goals), and
 the brick-program decision log. EmberVM generalized the fc-invoke / FaaS
 line (agents/030, agents/044, agents/045); fc-invoke itself is being
 deprecated, and the carried-over sandbox isolation posture, microVM surface,
