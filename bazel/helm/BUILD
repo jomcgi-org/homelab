@@ -32,6 +32,12 @@ sh_test(
     data = [":write-back-versions.sh"],
 )
 
+sh_test(
+    name = "push_test",
+    srcs = ["push_test.sh"],
+    data = [":push.sh.tpl"],
+)
+
 sh_binary(
     name = "validate_manifests",
     srcs = ["ci-validate-manifests.sh"],

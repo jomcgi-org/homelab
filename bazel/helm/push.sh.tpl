@@ -186,7 +186,35 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
         fi
 
         if [[ "$DIGESTS_MATCH" == "true" ]]; then
-          echo "Chart ${CHART_NAME} ${CHART_VERSION} is already published and the digests match; nothing to publish."
+          # PUBLISHING IS DONE, BUT MAIN MAY STILL NOT REFERENCE THIS VERSION.
+          #
+          # The record below is the only input to the write-back, and it used to
+          # be written solely on the publish path. So "published, but the
+          # write-back was refused" was unrecoverable: the chart sits in the
+          # registry, main's Chart.yaml still names the older version, and every
+          # later run recomputes this same version, finds it published with
+          # matching digests, and exits here without a record. Nothing ever
+          # reconciles the two.
+          #
+          # For a chart whose content keeps changing that self-heals, because
+          # the next content change moves the digests and takes the escalation
+          # path below. For a chart that goes quiet it is PERMANENT: on
+          # 2026-08-10 signoz-dashboard-sidecar sat at 0.2.0 on main against a
+          # published 0.3.3 for exactly this reason, while embervm escaped only
+          # because an unrelated dependency bump happened to touch it.
+          #
+          # The state that matters is not "did this run publish" but "does main
+          # reference what is published", so record whenever those disagree.
+          # This converges: once the write-back lands, CURRENT_VERSION equals
+          # CHART_VERSION and later runs take the quiet branch.
+          if [[ "$CHART_VERSION" != "$CURRENT_VERSION" ]]; then
+            echo "Chart ${CHART_NAME} ${CHART_VERSION} is published and its digests match, but main still says ${CURRENT_VERSION}; recording it so the write-back can align main."
+            RECORD_DIR="${WORKSPACE}/.chart-version-records"
+            mkdir -p "$RECORD_DIR"
+            printf '%s %s\n' "$CHART_DIR" "$CHART_VERSION" > "${RECORD_DIR}/${CHART_NAME}"
+          else
+            echo "Chart ${CHART_NAME} ${CHART_VERSION} is already published and the digests match; nothing to publish."
+          fi
           exit 0
         fi
 
