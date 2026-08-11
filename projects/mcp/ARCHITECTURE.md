@@ -60,10 +60,10 @@ a protocol requirement here, not a preference.
 
 `friends.jomcgi.dev` reaches `friends-empty`, a virtual server that is
 deliberately empty so `tools/list` returns `[]`. It has no Cloudflare Access
-application in front of it and `MCP_REQUIRE_AUTH` is off, and it exists only to
-test whether a Claude connector can complete an OAuth flow against authentik
-without spending Zero Trust seats. **Do not add tools to it while it is
-unauthenticated.**
+application in front of it, and it exists only to test whether a Claude
+connector can complete an OAuth flow against authentik without spending Zero
+Trust seats. **Do not add tools to it.** The hostname exposing nothing is the
+control; treat it as unauthenticated regardless of the current flag state.
 
 ## Authentication
 
@@ -81,6 +81,37 @@ browser SSO flow, and gates the admin API that manages the `sso_providers` row.
 It does not gate the auth path itself.
 
 NetworkPolicy is disabled. Authorization is enforced at the application layer.
+
+### Effective values, and why you cannot read them off one file
+
+The auth flags are split across two mechanisms with different precedence, so
+neither `chart/values.yaml` nor `deploy/values.yaml` tells you the answer alone.
+Verified against the running pod:
+
+| Flag | Effective | Source |
+|---|---|---|
+| `MCP_REQUIRE_AUTH` | **true** | `extraEnv`, overriding the `secret:` block's `false` |
+| `SSO_ENABLED` | true | `extraEnv` |
+| `SSO_API_TOKEN_AUTH_ENABLED` | true | `extraEnv` |
+| `AUTH_REQUIRED` | true | `secret:` via `envFrom` |
+| `MCP_CLIENT_AUTH_ENABLED` | true | `secret:` via `envFrom` |
+| `TRUST_PROXY_AUTH` | true | `secret:` via `envFrom` |
+| `TRUST_PROXY_AUTH_DANGEROUSLY` | false | upstream default |
+
+Two things follow. **`MCP_REQUIRE_AUTH` reads as `false` in `chart/values.yaml`
+and is `true` in production**, because `env` outranks `envFrom`. And the whole
+`AUTH_REQUIRED` / `MCP_CLIENT_AUTH_ENABLED` / `TRUST_PROXY_AUTH` /
+`PROXY_USER_HEADER` block still lives in `secret:`, which is the location this
+chart's own configuration rule says never to use: editing it does not roll the
+deployment, so a change there sits in Git looking applied while the process
+keeps the old value.
+
+To read the real state, read the pod, not the values files:
+
+```bash
+kubectl get pod -n mcp -l app.kubernetes.io/name=mcpgateway \
+  -o jsonpath='{.items[0].spec.containers[0].env[*].name}'
+```
 
 ## Token forwarding to upstreams, and what is not live yet
 
