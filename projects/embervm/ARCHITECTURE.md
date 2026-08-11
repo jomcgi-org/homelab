@@ -539,11 +539,18 @@ registration as a desired-set reconcile.
 it can be stolen only if the platform can kill its validity on demand;
 otherwise the request moves to the credential. Secrets are classed:
 derivable short-lived (class 1, may enter trusted guests, revoked at bank),
-fixed-but-rotatable (class 2, brick-lease only, placeholder-swapped),
-fixed-manual (class 3, never leaves a central key-sharded swap tier). Guests
-hold per-light placeholder nonces; a brick-local proxy on every guest egress
-injects real credentials from memory-only leases sealed to the brick's
-dial-home identity. RAM scrubbing before snapshot is rejected as a
+fixed-but-rotatable (class 2, brick-lease only, injected at the egress hop),
+fixed-manual (class 3, never leaves a central key-sharded swap tier). A
+guest holds no credential material: the brick-local proxy on every guest
+egress reads the plaintext request, sets the configured header to the real
+value (mounted only in the sidecar), and originates a fresh verified TLS
+connection onward. Injection fires only when the destination is in that
+secret's `egressTo`, so the credential is unreachable at every other host
+(`projects/firecracker/substrate/egress-proxy/cmd/swap.go`). This replaced
+ADR 023's placeholder substitution, which needed the same byte string in the
+guest and in the catalog and substituted over path and query, letting a
+guest splice the placeholder into a URL and have the credential reflected
+into a request line. RAM scrubbing before snapshot is rejected as a
 mechanism to rely on; revocation at the validator is the control.
 
 **Public surface hardening** (as shipped): the public routes are scoped at their
@@ -558,6 +565,16 @@ credential. It asserts identity via an audience-scoped projected token
 (audience `embervm`, useless against the Kubernetes API); the platform holds
 real credentials and
 acts on the guest's behalf through the brokered egress path.
+
+**Decided direction (Draft ADR agents/055):** GitHub leaves the agent egress
+catalog. Host-keyed injection bounds which host a credential reaches, never
+which request reaches it, so a prompt-injected guest can shape any GitHub API
+call and have the token attached to it. Agent principals instead reach GitHub
+through MCP tools whose URLs name the target repo, entitled per Authentik
+group and backed by a per-group fine-grained PAT, so what a guest can reach is
+a fixed tool set rather than an API surface. The egress broker keeps the
+credentials that genuinely need host-keyed injection, the model providers
+among them.
 
 ---
 
