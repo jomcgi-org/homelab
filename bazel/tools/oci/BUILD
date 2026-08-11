@@ -80,8 +80,8 @@ bzl_library(
 )
 
 bzl_library(
-    name = "push_manifest",
-    srcs = ["push_manifest.bzl"],
+    name = "digest_manifest",
+    srcs = ["digest_manifest.bzl"],
     visibility = ["//visibility:public"],
     deps = [":providers"],
 )
