@@ -307,6 +307,54 @@ def test_attempt_carries_prior_head_alongside_finding():
     assert attempt["finding"]["observed_head"] == "abcdef01"
 
 
+def test_review_does_not_inherit_the_implement_lane_head_reads():
+    """Branch head reads belong to the implement lane alone.
+
+    `implement_then_review` calls read_branch_head only inside the implement
+    loop, so the reviewer takes no reading of its own. Pairing its single
+    attempt against the run's undifferentiated observation list handed it
+    implement attempt 1's pair, and the console printed implement's finding
+    verbatim under review. Branch head movement is the routing signal in ADR
+    038 decision 1, so evidence on the wrong node is the confusion that
+    decision exists to prevent.
+    """
+    status = Status("wf-lanes", "SUCCESS", ["task", "repo", "main"])
+    run = compose_run(
+        DBOS(
+            Workflow(status),
+            steps=[
+                {"function_name": "read_branch_head", "output": "1234567890"},
+                {"function_name": "read_branch_head", "output": "abcdef0123"},
+            ],
+        ),
+        "wf-lanes",
+        [
+            session(1, status="completed", node="implement", attempt=1),
+            session(2, status="completed", node="review", attempt=1),
+        ],
+        "unknown",
+    )
+    implement, review = run["nodes"][0], run["nodes"][2]
+    assert implement["attempts"][0]["prior_head"] == "12345678"
+    assert implement["attempts"][0]["finding"]["observed_head"] == "abcdef01"
+    review_attempt = review["attempts"][0]
+    assert review_attempt["finding"] is None
+    assert review_attempt["prior_head"] is None
+
+
+def test_unserializable_timestamp_is_absent_not_passed_through():
+    """A timestamp the server cannot serialize must not reach the client.
+
+    It used to pass through untouched, where Date.parse returned NaN and the
+    client's `Number(x) || 0` printed it as a confident "0s ago" beside a real
+    elapsed time.
+    """
+    status = Status("wf-clock", "SUCCESS", ["task", "repo", "main"])
+    status.created_at = 1786423167
+    run = compose_run(DBOS(Workflow(status)), "wf-clock", [], "unknown")
+    assert run["created_at"] is None
+
+
 def test_master_rows_include_active_and_shape():
     status = Status("wf-master", "PENDING", ["task", "repo", "main"])
 

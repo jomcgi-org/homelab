@@ -28,6 +28,15 @@
   // shows.
   const shortSha = (sha) => String(sha || "").slice(0, 8);
   const ago = (value) => fmtDur(relSeconds(value, view.now));
+
+  // "running 2m" when the elapsed time is known, bare "running" when it is
+  // not. Interpolating the duration directly would print the text "null" now
+  // that formatters report absence honestly, which is a louder fabrication
+  // than the "0s" it replaced. The phrase layer generalises this.
+  const withDur = (word, seconds) => {
+    const duration = fmtDur(seconds);
+    return duration ? `${word} ${duration}` : word;
+  };
   const path = (i, suffix) => `run.nodes[${i}]${suffix}`;
 </script>
 
@@ -248,7 +257,10 @@
             {P.punct.dot}
             {attempt.ended_at
               ? fmtDur(relSeconds(attempt.started_at, attempt.ended_at))
-              : `${P.stateWords.running} ${fmtDur(relSeconds(attempt.started_at, view.now))}`}{#if fmtCost(attempt.cost_usd)}
+              : withDur(
+                  P.stateWords.running,
+                  relSeconds(attempt.started_at, view.now),
+                )}{#if fmtCost(attempt.cost_usd)}
               {P.punct.dot} {fmtCost(attempt.cost_usd)}{/if}</span
           >{#if attempt.state === "running" && attempt.live?.activity}<span
               class="live-line"
