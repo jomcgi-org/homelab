@@ -2,7 +2,7 @@ apiVersion: v2
 name: homelab-library
 description: Shared Helm library chart for homelab services
 type: library
-version: 0.5.0
+version: 0.6.0
 maintainers:
   - name: homelab
 annotations:

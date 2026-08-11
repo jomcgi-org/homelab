@@ -81,3 +81,35 @@ Usage: {{ include "homelab.componentSelectorLabels" (dict "context" . "component
 {{ include "homelab.selectorLabels" .context }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}
+
+{{/*
+Container image reference. Prefers the content-addressed digest, falling back to
+the tag when no digest is set.
+Usage: {{ include "homelab.imageRef" .Values.web.image }}
+
+WHY THE DIGEST WINS. helm_images_values emits repository, tag AND digest for
+every Bazel-built image, and the tag is build-timestamped: it moves on every
+commit to main even when the image bytes are identical. bazel/images/push/
+push-changed.sh skips pushing an image whose content digest is already in the
+registry, so that new tag is frequently never created. A chart that deployed
+`repository:tag` therefore pinned a tag that does not exist, which is an
+ImagePullBackOff. That took monolith-public's rollout down on 2026-08-11 (chart
+0.287.0, commit 95eb93de7, where both public images were content-identical and
+neither push ran). The digest is what push-changed.sh proves is published, so
+it is the only ref that is correct by construction.
+
+It also stops the churn: an unchanged image renders an identical Deployment, so
+a chart republish no longer rolls the pods. The hand-written monolith and
+embervm templates have always done this; the library is catching up.
+
+The tag fallback is load-bearing for upstream images that never go through
+helm_images_values and so carry no digest key (imgproxy pins its own digest
+inside the tag string).
+*/}}
+{{- define "homelab.imageRef" -}}
+{{- if .digest -}}
+{{ .repository }}@{{ .digest }}
+{{- else -}}
+{{ .repository }}:{{ .tag }}
+{{- end -}}
+{{- end }}
