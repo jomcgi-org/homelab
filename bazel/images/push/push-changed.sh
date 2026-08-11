@@ -157,20 +157,35 @@ PUSH_COUNT=$(grep -c . "$TO_PUSH" || true)
 echo ""
 echo "==> $PUSH_COUNT image(s) to push, $SKIPPED already published"
 
-# --remote_download_outputs=all overrides the --remote_download_minimal that
-# --config=ci sets, and only for the pushes. `bazel run` materialises the
-# generated push script but leaves the oci_image layout DIRECTORY at rest in
-# CAS, so push.sh.tpl's first jq reads a path that is not on disk:
+# --build_runfile_links, and NOT a download-mode override. preset.bazelrc sets
+# `common --nobuild_runfile_links` repo-wide, and its own comment says a binary
+# that is going to be EXECUTED has to ask for the tree back. apko_push.sh.tpl
+# resolves everything through rlocation, and with no tree rlocation falls back
+# to RUNFILES_MANIFEST_FILE, which is where this breaks.
 #
-#   jq: error: Could not open file projects/monolith/frontend/image/index.json
+# 57c2dd16c reached for --remote_download_outputs=all instead and changed
+# nothing: BuildBuddy recorded the flag on the argv and bazel exited SUCCESS
+# while the push still died on the same jq line. Building the tree is what
+# materialises the layout, because bazel needs real files to symlink; measured
+# on a runner, --build_runfile_links ALONE is sufficient and the download
+# override is pure BuildBuddy egress for no benefit. Do not add it back.
 #
-# `toplevel` is what the manifest build above uses and is not enough here: crane
-# uploads every blob in that layout, so the whole tree has to be local rather
-# than just the run target's own output.
+# WHY CHARTS PUBLISHED FINE THROUGHOUT. push.sh.tpl has the identical runfiles
+# preamble and the identical rlocation calls, and chart pushes never broke. The
+# difference is what each resolves: CHART_TGZ is a regular FILE and IMAGE_DIR is
+# a DIRECTORY. A runfiles manifest maps individual files, so a .tgz lookup
+# succeeds and a tree artifact, which has no entry of its own, does not. That
+# asymmetry is why the failure reads as an image-only problem and why the
+# deploy could keep writing chart versions back while publishing no images.
 #
-# This is the one place in the deploy that genuinely needs the bytes, which is
-# why the flag is on this line and not in BAZEL_ARGS. The skip decision above is
-# what bounds the cost: only the images whose content actually changed, which is
+# Verified on a real BuildBuddy Linux runner before landing, via
+# `bazel run ... --run_under` to list the tree without invoking crane:
+#
+#   PROBE_LAYOUT_NODL=blobs  index.json  oci-layout
+#
+# The flag stays on this line rather than in BAZEL_ARGS: this is the only
+# command in the deploy that executes a bazel-built binary, and the skip
+# decision above bounds it to the images whose content actually changed,
 # normally one or two rather than all 24.
 #
 # The branch had never executed until 2026-08-11 (#4685). Every deploy for weeks
@@ -180,7 +195,7 @@ while IFS= read -r label || [ -n "$label" ]; do
 	[ -n "$label" ] || continue
 	echo ""
 	echo "==> push $label"
-	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" --remote_download_outputs=all
+	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" --build_runfile_links
 done <"$TO_PUSH"
 
 # Charts LAST, and in their own multirun. Ordering is load-bearing now in a way
