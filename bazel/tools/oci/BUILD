@@ -68,6 +68,13 @@ bzl_library(
 )
 
 bzl_library(
+    name = "digest_manifest",
+    srcs = ["digest_manifest.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [":providers"],
+)
+
+bzl_library(
     name = "oci_run",
     srcs = ["oci_run.bzl"],
     visibility = ["//visibility:public"],
@@ -77,11 +84,4 @@ bzl_library(
     name = "providers",
     srcs = ["providers.bzl"],
     visibility = ["//visibility:public"],
-)
-
-bzl_library(
-    name = "digest_manifest",
-    srcs = ["digest_manifest.bzl"],
-    visibility = ["//visibility:public"],
-    deps = [":providers"],
 )
