@@ -55,8 +55,9 @@ Helm packaging machinery resolves the repository and primary tag and deep-merges
 them into the chart's `values.yaml`. You never hand-write `@sha256:` digests in
 values files: the pipeline manages pinning automatically.
 
-Image pushes (`{name}.push`) run only in CI (`bazel run //bazel/images:push_all`
-or per-service). Do not run push targets locally.
+Image pushes (`{name}.push`) run only in CI, and only on main, one target at a
+time from `bazel/images/push/push-changed.sh`, and only for images whose content
+digest is not already published. Do not run push targets locally.
 
 ## `OciImageInfo` provider
 

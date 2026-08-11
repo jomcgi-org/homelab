@@ -252,7 +252,20 @@ actions:
           # nothing, and "nothing to write back" is indistinguishable from
           # "nothing needed publishing", so every chart would stop deploying
           # with the action still green.
-          bazel run //bazel/images:push_all --config=ci --stamp
+          #
+          # NOT `bazel run //bazel/images:push_all`. That materialises every
+          # command's runfiles on this runner before the first command executes,
+          # so it drags all ~24 dual-arch images out of CAS on every commit to
+          # main even when every action is a cache hit. Measured 2026-08-10 that
+          # made `deploy` 488 GB/day of BuildBuddy download, 29.6% of everything
+          # this repo moves and its largest single source. PR #4586 already fixed
+          # the same problem on PR branches; push-changed.sh is the main-branch
+          # half. It builds the images (proving they build, layers at rest in
+          # CAS), reads each one's content digest out of the build, and runs only
+          # the pushes whose content is not already published. Charts still
+          # publish through push_charts, now strictly after the images rather
+          # than concurrently with them.
+          ./bazel/images/push/push-changed.sh
 
           # Push the write-back as jomcgi, not as the runner's own identity.
           #

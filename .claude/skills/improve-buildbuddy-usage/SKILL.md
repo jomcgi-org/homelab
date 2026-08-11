@@ -16,7 +16,12 @@ change at the largest source, and tracks the result across cycles.
 |---|---|
 | Baseline (7 days to 2026-07-28) | 1.502 TB/day download |
 | Target | 0.751 TB/day download |
+| Latest (1.5 days to 2026-08-10, post-rewrite) | 1.67 TB/day download |
 | Upload | 7.1 GB/day, 0.5% of the problem |
+
+The latest figure is not a failure of the landed work, and it is not comparable
+to the baseline either: the four reduction commits landed on 2026-08-09 and the
+window still contains the actions they removed. See "Where the bytes are".
 
 Upload is a rounding error. **Optimise downloads.** Ignore any change that only
 helps upload unless it is free.
@@ -67,26 +72,31 @@ change that cuts the average 10% is worth less than one that stops a single
 
 ## Where the bytes are
 
-**Stale as of 2026-08-09**: this is the 2026-07-28 baseline split, kept for
-comparison. `Visual regression`, `Buck2 rules` and `BDD future features` no
-longer run, and the `Push images` split has changed. Re-measure before using it.
+**Both committed snapshots predate the 2026-08-09 rewrite.** Every reduction
+commit (`d2bd5b032`, `524430f02`, `b671019ed`, `d6b4041c6`) landed that day, so
+`report` compares two pre-change windows and prints 0% progress no matter what
+happened. Do not read that as "nothing worked". A snapshot is only clean from
+**2026-08-16** onward; before then measure with `snapshot --days N --no-write`
+over a window that starts after the change.
 
-From the baseline snapshot, by source (7 day totals):
+Current split, measured 2026-08-10 over the 1.5 days since the rewrite
+(1.67 TB/day, still 2.2x the target):
 
-| Share | Source |
-|---|---|
-| 24.3% | `CI test //...` (the Test action's bazel run) |
-| 22.7% | `Push images` runner |
-| 19.7% | `Test` runner |
-| 13.1% | `CI run //bazel/images:push_all` |
-| 8.8% | `HOSTED_BAZEL remote test //...` (local `ci test`) |
-| 4.2% | `Format check` runner |
+| Share | GB/day | Source |
+|---|---|---|
+| 35.8% | 589 | `CI test //...` |
+| 29.6% | 488 | `CI_RUNNER deploy` |
+| 14.5% | 240 | `HOSTED_BAZEL remote test //...` (local `ci test`) |
+| 7.9% | 130 | `CI_RUNNER pr-checks` |
+| ~11% | ~180 | the four removed actions, still draining out of the window |
+
+The 2026-07-28 baseline split is in `snapshots/2026-07-28.json` if you need it.
 
 Two roles matter. `CI` is the bazel client inside a workflow. `CI_RUNNER` is the
-BuildBuddy runner wrapping it. They are **not** double counted: on a warm
-recycled runner the `CI_RUNNER` invocation reports ~0 bytes, and its traffic
-spikes only on some runs. Runner traffic is therefore about runner cold starts,
-not about the bazel graph.
+BuildBuddy runner wrapping it. They are **not** double counted, and this was
+re-confirmed under the new layout: invocation `6273779d` reports 61.4 GB while
+its six child bazel invocations sum to 8.0 GB. Runner traffic is its own thing,
+not a rollup of the bazel graph.
 
 `ci test` runs `bazel test //... --config=ci` on a hosted worker, so it shares
 every `--config=ci` flag with PR CI. Any flag fix lands on both lanes at once.
@@ -102,13 +112,28 @@ tracks `actions executed remotely x input tree size`, and every client-download
 flag (`--remote_download_minimal`, `--experimental_fetch_all_coverage_outputs`,
 `--remote_download_outputs=all`) is aimed at the wrong layer.
 
-**`CI_RUNNER` is 47.7% of all traffic and 99% of it is cold starts.** A warm
-runner reports under 100 MB; a cold one restores a VM snapshot from the cache
-and averages 1.6 to 5.5 GB. Cold rate tracks *workspace size*, not run count:
-`Format check`, `Test` and `Push images` all ran ~747 times with cold rates of
-20%, 56%, 62%. A bigger `output_base` is likelier to be evicted locally *and*
-costs more to restore. Each action has its own runner pool, so the repo keeps
-several near-identical workspaces warm in parallel.
+**`CI_RUNNER` is roughly half of all traffic and it is bimodal.** A warm runner
+reports under 200 MB; a cold one restores a VM snapshot from the cache. Each
+action has its own runner pool, so the repo keeps several near-identical
+workspaces warm in parallel.
+
+**Cold-start unit cost is additive in workspace content, and that is the number
+that matters.** Same-window measurement on 2026-08-10, cold = >1 GB:
+
+| action | runs | cold% | cold unit | cost per push |
+|---|---|---|---|---|
+| old `Test` | 69 | 30% | 8.2 GB | 2.5 GB |
+| old `Push images` | 69 | 43% | 10.2 GB | 4.4 GB |
+| old `Format check` | 69 | 16% | 5.8 GB | 0.9 GB |
+| **old three combined** | | | | **7.8 GB** |
+| new `pr-checks` | 125 | 7% | 20.9 GB | **1.5 GB** |
+| new `deploy` | 57 | 39% | 33.1 GB | **12.9 GB** |
+
+8.2 + 10.2 + 5.8 = 24.2 GB against `pr-checks`' measured 20.9 GB: one collapsed
+workspace costs about what its parts cost separately. **So collapsing wins by
+cutting the NUMBER of restores per push, not by keeping anything warmer.** The
+1.6 to 5.5 GB figure quoted before the rewrite is dead; units are 21 to 33 GB
+now.
 
 Corollary that keeps catching people: **an early-exit guard cannot save a cold
 start.** The runner spins up, restores its snapshot, and only then runs step one.
@@ -131,6 +156,12 @@ both prove this: they exit in 1 to 5 seconds and still cost GBs.
 - **Auto-cancellation is already on.** `allow_concurrent_runs` defaults to
   `false`. Superseded runs still cost their cold start, which is paid at
   spin-up before cancellation can land. Nothing to tune.
+- **Running an action more often does not keep it warm.** Cold rate is flat
+  against the gap since that action's previous run: on 2026-08-10 `deploy` was
+  29 to 43% cold in every gap bucket from under 5 minutes to over an hour, and
+  `pr-checks` was 0 to 10% cold in all of them, including >60m. So "merge the
+  pools so the workspace gets touched more" is not a mechanism. Attack the
+  snapshot's SIZE, or the number of restores per push, not its frequency.
 
 ## Landed
 
@@ -139,6 +170,8 @@ both prove this: they exit in 1 to 5 seconds and still cost GBs.
 | #4586 | PR branches build images instead of `bazel run push_all` | `CI run push_all` 1.8 GB -> 155 MB per run, 12x |
 | #4587 | disabled `Buck2 rules` + `BDD future features` | 1,012 spin-ups, 558 GB/wk |
 | #4588 | removed the visual regression suite | ~176 GB/wk |
+| `d6b4041c6` | collapsed four actions into `pr-checks` + `deploy` | **split result.** `pr-checks` 7.8 -> 1.5 GB per push, 5x. `deploy` 7.8 -> 12.9 GB per push, a regression: it is a fourth workspace, the largest, and main-only |
+| this PR | main pushes only images whose digest is not already published | pending; re-measure after 2026-08-16 |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
@@ -149,25 +182,38 @@ dragged all ~24 images out of CAS.
 Ranked by expected bytes saved. Everything here is a **hypothesis that must be
 confirmed against a real invocation** before you act on it.
 
-1. **Collapse the remaining actions into one runner per push.** The largest
-   lever left. `Test` (2.1 TB, 56% cold) and `Push images` (2.5 TB, 62% cold)
-   keep separate, near-identical `output_base`s warm. One shared workspace is
-   touched more often and has a smaller total warm footprint. Note the trap:
-   required status checks are matched by exact name, so deleting an action
-   without editing the ruleset blocks every PR, and the deleting PR cannot merge
-   because it removes the checks required on itself. Flip the ruleset while the
-   PR is open and its new check is green.
-2. **Push only the images whose content changed, on main.** Worth ~2% now that
-   PRs no longer push, and it is the only lever here that can break a deploy by
-   skipping a push that was needed. Low priority.
-3. **Fewer redundant pushes.** 1,396 runs in 7 days were superseded within 10
+1. **`CI test //...` at 589 GB/day is now the largest source.** Untouched so far
+   and the only remaining item bigger than `deploy`. It is remote executors
+   fetching action inputs, so the lever is the build graph (input tree size,
+   how many actions miss the cache), not any client flag. Start by finding what
+   the 70+ GB `test //...` invocations do that the median one does not.
+2. **Shrink `deploy`'s snapshot further.** This PR removes the image runfiles
+   staging. If `deploy`'s cold unit does not fall from 33.1 GB toward
+   `pr-checks`' 20.9 GB, the extra 12 GB is something else and worth finding.
+3. **`HOSTED_BAZEL` at 240 GB/day is local `ci test`.** Real bytes, but not what
+   BuildBuddy wrote to us about. Report it separately, never fold it into the
+   CI number.
+4. **Fewer redundant pushes.** 1,396 runs in 7 days were superseded within 10
    minutes by another run of the same action on the same branch. The strict
    "up to date with main" rule forces `update-branch` on every open PR whenever
-   anything merges. This is policy, not config.
+   anything merges. This is policy, not config. Note that a superseded run still
+   pays its cold start, so cancellation does not help.
+
+Collapsing actions is **done** (`d6b4041c6`), with the split result recorded
+above. If you revisit it, the trap is unchanged: required status checks are
+matched by exact name, so deleting an action without editing the ruleset blocks
+every PR, and the deleting PR cannot merge because it removes the checks
+required on itself. Flip the ruleset while the PR is open and its new check is
+green.
 
 ## Running a cycle
 
 1. `snapshot --days 7`, then `outliers --days 7`. Read the concentration block.
+   If a change landed inside that 7 days, the window is half old behaviour and
+   both the split and the comparison lie. Measure the post-change window with
+   `snapshot --days <N> --no-write` instead, and do not commit a snapshot until
+   7 clean days have passed. `report` reads committed snapshots only, so it will
+   keep printing the stale comparison until then; that is expected, not a bug.
 2. Pick **one** lever. Open the specific invocations that motivate it and
    confirm the mechanism before writing any code.
 3. Land it as a normal PR (`pr-workflow`). Chart bumps still apply if a

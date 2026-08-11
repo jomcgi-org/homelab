@@ -32,15 +32,28 @@ The CI "Format check" action (see `buildbuddy.yaml`) runs
 `./bazel/images/validate-generate-scripts.sh`. If any generator output has
 drifted from the real build graph, CI fails with a diff.
 
-On both main and PR branches, the "Push images" action runs:
+Nothing runs `bazel run //bazel/images:push_all` any more, on either branch.
+`bazel run` materialises every command's runfiles before the first command
+executes, so running the whole multirun pulls all ~24 dual-arch images out of
+CAS even when every action is a cache hit.
+
+PR branches (`pr-checks`) prove the images build and publish nothing:
 
 ```
-bazel run //bazel/images:push_all --config=ci --stamp
+bazel build //bazel/images:push_all --config=ci
+bazel run //bazel/images:push_charts --config=ci --stamp
 ```
 
-This executes every `*.push` command in the generated `push_all` multirun in
-parallel (`jobs=0`). PR images are tagged with the source branch name so ArgoCD
-ignores them; only main-branch images carry the `main` tag that ArgoCD tracks.
+main (`deploy`) publishes through `bazel/images/push/push-changed.sh`, which
+builds the same way, reads each image's content digest from
+`//bazel/images/digests:manifest`, and runs only the `*.push` targets whose
+content is not already in the registry. Charts publish after the images rather
+than concurrently with them.
+
+Skipping is safe because image digests are content-stable and every chart here
+deploys `repository@digest`: a push over identical bytes would only add another
+build-timestamped tag that nothing reads. Anything the manifest does not cover
+is pushed regardless.
 
 ## `generate-home-cluster.sh` and GitOps
 
