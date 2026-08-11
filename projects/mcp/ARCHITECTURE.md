@@ -63,7 +63,12 @@ deliberately empty so `tools/list` returns `[]`. It has no Cloudflare Access
 application in front of it, and it exists only to test whether a Claude
 connector can complete an OAuth flow against authentik without spending Zero
 Trust seats. **Do not add tools to it.** The hostname exposing nothing is the
-control; treat it as unauthenticated regardless of the current flag state.
+control.
+
+Note that **`MCP_REQUIRE_AUTH` is gateway-wide, not per virtual server**, so it
+cannot be the thing that isolates one hostname from another. That is what makes
+"the server is empty" the actual control here, and it is why the in-cluster
+ClusterIP path is no longer unauthenticated either.
 
 ## Authentication
 
@@ -96,7 +101,11 @@ Verified against the running pod:
 | `AUTH_REQUIRED` | true | `secret:` via `envFrom` |
 | `MCP_CLIENT_AUTH_ENABLED` | true | `secret:` via `envFrom` |
 | `TRUST_PROXY_AUTH` | true | `secret:` via `envFrom` |
-| `TRUST_PROXY_AUTH_DANGEROUSLY` | false | upstream default |
+| `TRUST_PROXY_AUTH_DANGEROUSLY` | false | upstream default, never set here |
+
+`TRUST_PROXY_AUTH` and `PROXY_USER_HEADER` date from the Cloudflare Access era
+and are not the current auth model. They are retained rather than removed, so do
+not read them as describing how a caller is authenticated today.
 
 Two things follow. **`MCP_REQUIRE_AUTH` reads as `false` in `chart/values.yaml`
 and is `true` in production**, because `env` outranks `envFrom`. And the whole
@@ -185,8 +194,9 @@ Rationale only. None of these describes current state.
 
 | Decision | ADR | Status |
 |---|---|---|
-| Adopt Context Forge as the MCP gateway | `agents/003` | Superseded by 020, then reversed in practice |
-| Deprecate Context Forge, serve MCP from the monolith | `agents/020` | Accepted, **partially executed**. The monolith `/mcp` was built; Context Forge was retained and is now the agent gateway |
+| Adopt Context Forge as the MCP gateway | `agents/003` | Superseded by 020 |
+| Deprecate Context Forge, serve MCP from the monolith | `agents/020` | Accepted, **execution deferred** (issues #3831, #3832, #3833). The monolith `/mcp` exists; Context Forge is retained and `mcp.jomcgi.dev` is untouched, so this component is on a path to removal that has not been walked |
+| Tool-mediated GitHub access for agent principals | `agents/055` | Draft. Makes this gateway the mediation point for agent GitHub access, which **cuts against 020**. The tension is stated in 055, not resolved |
 | OIDC auth for the gateway | `agents/006` | Superseded by 011 |
 | Cloudflare Managed OAuth | `agents/011` | Deprecated |
 | Role-based MCP access | `agents/005` | Deprecated |
