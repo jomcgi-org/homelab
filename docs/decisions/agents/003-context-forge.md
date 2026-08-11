@@ -311,4 +311,4 @@ None. This deployment follows all five layers from `docs/security.md`:
 | [SigNoz API docs](https://signoz.io/docs/developers/query-service/)                                                               | Backend API surface for virtual tool registration                          |
 | [ArgoCD API docs](https://cd.apps.argoproj.io/swagger-ui)                                                                         | Backend API surface for virtual tool registration                          |
 | [docs/security.md](../../security.md)                                                                                             | Cluster security model (this RFC is fully compliant)                       |
-| [architecture/rfcs/openhands-agent-sandbox.md](openhands-agent-sandbox.md)                                                        | OpenHands sandbox architecture (in-cluster agent consumer of this gateway) |
+| [agents/002 - OpenHands agent sandbox](002-openhands-agent-sandbox.md)                                                        | OpenHands sandbox architecture (in-cluster agent consumer of this gateway) |

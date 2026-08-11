@@ -143,6 +143,12 @@ actions:
             # RBE); the pure logic is pinned by a bazel test.
             python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
 
+            # Every reference to an ADR must resolve. Rollups delete ADRs once
+            # a domain's ARCHITECTURE.md carries the state, and this is what
+            # makes that safe. Working-tree check, not git history: CI clones
+            # --depth=1, so a history lookup reads the graft boundary.
+            python3 ./bazel/tools/format/doc_links/check_doc_links.py
+
             if git diff --exit-code; then
               echo "All files formatted correctly"
             else
@@ -331,6 +337,7 @@ actions:
             ./bazel/tools/git/check-commit-msg-ascii.sh --all origin/main
             ./bazel/tools/hooks/validate-hooks-executable.sh
             python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
+            python3 ./bazel/tools/format/doc_links/check_doc_links.py
 
             if ! git diff --exit-code; then
               echo "ERROR: Code not formatted or BUILD files out of sync."
