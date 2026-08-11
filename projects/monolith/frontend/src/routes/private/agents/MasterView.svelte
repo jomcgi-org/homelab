@@ -4,6 +4,7 @@
   let {
     master,
     onSelectRun = () => {},
+    onStartRun = () => {},
     view = { engine_tier: "live", snapshot_age_seconds: 0 },
   } = $props();
   const total = $derived(
@@ -69,7 +70,16 @@
                 {P.punct.dot} {fmtCost(run.cost_usd)}{/if}</span
             >
           </button>{/each}
-      </div>{:else}<div class="m-quiet">{P.labels.noRuns}</div>{/if}
+      </div>{:else}<div class="m-quiet m-empty">
+        <span>{P.labels.noRuns}</span>
+        <!-- Starting a run is otherwise only reachable by opening the new
+             panel and changing its mode select, which reads as "there is no
+             way to start one" on a swarm home that is empty by definition
+             until the first run exists. -->
+        <button class="m-start" type="button" onclick={() => onStartRun()}
+          >{P.labels.createRun}</button
+        >
+      </div>{/if}
     <div class="m-totals">
       {P.labels.spend}
       {P.punct.colon}
@@ -105,6 +115,22 @@
 
   .m-row {
     border-bottom: 1px solid var(--line);
+  }
+
+  .m-empty {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .m-start {
+    padding: 2px 8px;
+    color: var(--info);
+    background: transparent;
+    font: inherit;
+    font-size: var(--size-meta);
+    border: 1px solid var(--line-strong);
+    cursor: pointer;
   }
 
   .tier-stale .m-row,

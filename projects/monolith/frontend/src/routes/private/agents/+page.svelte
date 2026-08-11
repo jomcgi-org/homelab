@@ -16,6 +16,7 @@
     clearSelection,
     selectRun as runSearchTransition,
     selectSession as sessionTransition,
+    withSearch,
   } from "./url-state.js";
   import { statusClass, statusLabel, vmRunning, vmState } from "./status.js";
   import "./agents-theme.css";
@@ -396,11 +397,7 @@
         selectedId != null &&
         !sessions.some((session) => String(session.id) === String(selectedId))
       ) {
-        const search = sessionTransition($page.url.searchParams, null);
-        replaceState(
-          search ? `/private/agents?${search}` : "/private/agents",
-          {},
-        );
+        replaceWith(sessionTransition($page.url.searchParams, null));
       }
     } catch (error) {
       errorMessage = error.message;
@@ -489,15 +486,30 @@
     }
   }
 
+  // `/private/agents` is the internal route id, not the address the browser is
+  // on: the reroute hook (src/hooks.js) maps private.jomcgi.dev/agents onto it,
+  // so the tier reaches this page at /agents. Pushing the internal path put a
+  // URL in the address bar that nobody types or shares, and it only failed
+  // quietly because the reroute guard skips paths already under /private/.
+  // Keep whichever path the browser actually arrived on.
+  function navigateTo(search) {
+    pushState(withSearch($page.url.pathname, search), {});
+  }
+
+  // Correcting the URL for a selection that no longer exists, so it must not
+  // add a history entry the back button has to walk back through.
+  function replaceWith(search) {
+    replaceState(withSearch($page.url.pathname, search), {});
+  }
+
   function selectRun(runOrId) {
     const id = typeof runOrId === "object" ? runOrId?.workflow_id : runOrId;
     if (id == null) return;
-    const search = runSearchTransition($page.url.searchParams, id);
-    pushState(search ? `/private/agents?${search}` : "/private/agents", {});
+    navigateTo(runSearchTransition($page.url.searchParams, id));
   }
 
   function selectRuns() {
-    pushState("/private/agents", {});
+    navigateTo("");
   }
 
   async function loadVms() {
@@ -565,8 +577,7 @@
   function selectSession(sessionOrId) {
     const id = typeof sessionOrId === "object" ? sessionOrId?.id : sessionOrId;
     if (id == null) return;
-    const search = sessionTransition($page.url.searchParams, id);
-    pushState(search ? `/private/agents?${search}` : "/private/agents", {});
+    navigateTo(sessionTransition($page.url.searchParams, id));
   }
 
   function isMobileViewport() {
@@ -578,13 +589,11 @@
 
   function returnToSessionList() {
     focusSessionId = selectedId;
-    const search = clearSelection($page.url.searchParams);
-    pushState(search ? `/private/agents?${search}` : "/private/agents", {});
+    navigateTo(clearSelection($page.url.searchParams));
   }
 
   function returnToRun() {
-    const search = backToRun($page.url.searchParams);
-    pushState(search ? `/private/agents?${search}` : "/private/agents", {});
+    navigateTo(backToRun($page.url.searchParams));
   }
 
   function closeNewPanel() {
@@ -592,8 +601,8 @@
     tick().then(() => newButtonEl?.focus({ preventScroll: true }));
   }
 
-  function openNewPanel() {
-    newPanelMode = "session";
+  function openNewPanel(mode = "session") {
+    newPanelMode = mode;
     newRun.idempotencyKey = crypto.randomUUID();
     showNewPanel = true;
   }
@@ -775,11 +784,7 @@
       );
       if (!response.ok) throw new Error("Session could not be destroyed");
       focusSessionId = selectedId;
-      const search = sessionTransition($page.url.searchParams, null);
-      replaceState(
-        search ? `/private/agents?${search}` : "/private/agents",
-        {},
-      );
+      replaceWith(sessionTransition($page.url.searchParams, null));
       await loadSessions();
     } catch (error) {
       errorMessage = error.message;
@@ -1303,11 +1308,19 @@
           onSelectSession={selectSession}
           onCancel={() => cancelRun(selectedRunId)}
         />
+        <!-- loadRunDetail's catch leaves runDetail set with run: null and the
+             tier marked absent. Without this branch that state is
+             indistinguishable from the pre-fetch one, so a ?run= naming a run
+             that does not resolve sits on "Loading run…" forever and reads as
+             broken navigation rather than a missing run. -->
+      {:else if runDetail?.view?.engine_tier === "absent"}
+        <div class="empty blank-state">{P.labels.absentNotice}</div>
       {:else}<div class="empty blank-state">Loading run…</div>{/if}
     {:else}
       <MasterView
         master={runMaster}
         onSelectRun={selectRun}
+        onStartRun={() => openNewPanel("run")}
         view={masterView}
       />
     {/if}
