@@ -1,0 +1,58 @@
+# Dev overlay for the monolith chart.
+#
+# This file is applied AFTER projects/monolith/deploy/values.yaml, so it is a
+# diff against production rather than a second configuration. Keep it that way.
+#
+# WHAT BELONGS HERE: identity (which cluster, which hostname), sizing, and
+# disables for behaviour that is actively harmful to run twice.
+#
+# WHAT DOES NOT: turning features off to make dev "smaller". Disabling chat,
+# whatsapp, marine or semgrep would make dev render DIFFERENT templates from
+# production, at which point dev stops rehearsing what you are about to promote
+# and becomes its own configuration with its own bugs. The leaderSingletons
+# switch below already stops every side effect those features would produce,
+# while leaving their routes, models and migrations identical to prod.
+
+backend:
+  # THE side-effect mute. One switch covers all five leader singletons (Discord
+  # bot, chat outbox drain, DBOS swarm runtime, AIS ingest, cd probe writer).
+  # This is the single most important line in this file: the nightly refresh
+  # imports production's queue tables, so without it dev would repost prod's
+  # Discord backlog and resume prod's in-flight agent runs.
+  #
+  # It is not the only barrier. The refresh also drops the dbos schema and
+  # truncates the outboxes, so the data holds nothing actionable either.
+  leaderSingletons: false
+
+# INGRESS IS OFF, and this is the most safety-critical block in this file.
+#
+# Every HTTPRoute in this chart attaches to the ONE cloudflare-ingress Gateway
+# in envoy-gateway-system, and Gateway API MERGES routes that attach to the same
+# Gateway for the same hostname. Inheriting production's values unchanged would
+# have dev claim private.jomcgi.dev and ships.jomcgi.dev, and production traffic
+# could then be served by a dev build running against a copy of prod's data.
+#
+# Turning these off leaves dev reachable only in-cluster, which is correct until
+# it has a hostname of its OWN. That is deliberately not done here: the chart
+# emits a Cloudflare Access SecurityPolicy, and CF Access consumes the
+# Authorization header, so agents cannot authenticate through it. dev.jomcgi.dev
+# needs an authentik-gated variant (modelled on the working preview lane, with
+# extractFrom widened to accept bearer tokens), which is a chart addition rather
+# than a values change and lands separately.
+cfIngress:
+  private:
+    enabled: false
+  shipsRedirect:
+    enabled: false
+
+postgres:
+  # One instance. Dev has no availability requirement, and the cluster is not
+  # roomy: node-1 sits at 91% of requestable memory.
+  instances: 1
+  # Production owns the refresh. Inherited as true from prod's values, and it
+  # MUST be overridden here: the CronWorkflow renders into jobs.workflowNamespace
+  # rather than the release namespace, so leaving it on would put a second,
+  # identically-named CronWorkflow into monolith-workflows and the two
+  # Applications would fight over it on every sync.
+  devRefresh:
+    enabled: false

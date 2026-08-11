@@ -1,3 +1,11 @@
+{{- /*
+Gated so a NON-PRODUCTION deployment of this chart does not claim
+ships.jomcgi.dev. Every HTTPRoute here attaches to the one cloudflare-ingress
+Gateway, and Gateway API MERGES routes that attach to the same Gateway for the
+same hostname, so a second deployment rendering this would have production
+traffic served by whichever backend won. Default true: production is unchanged.
+*/}}
+{{- if .Values.cfIngress.shipsRedirect.enabled }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -18,3 +26,4 @@ spec:
               type: ReplaceFullPath
               replaceFullPath: /app/ships
             statusCode: 301
+{{- end }}

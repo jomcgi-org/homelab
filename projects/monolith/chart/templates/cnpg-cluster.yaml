@@ -60,6 +60,19 @@ spec:
           name: {{ .Values.postgres.embervmOpLog.passwordSecret }}
         comment: "EmberVM op-log owner (ADR embervm/007); owns only its own database"
       {{- end }}
+      {{- if .Values.postgres.devRefresh.enabled }}
+      # This role exists solely so the dev refresh can dump production without
+      # using a superuser. pg_read_all_data is a PostgreSQL predefined role, so
+      # its privileges need no Atlas migration to carry the GRANTs.
+      - name: {{ .Values.postgres.devRefresh.role }}
+        ensure: present
+        login: true
+        passwordSecret:
+          name: {{ .Values.postgres.devRefresh.dumpReaderSecret }}
+        inRoles:
+          - pg_read_all_data
+        comment: "Dev refresh dump reader"
+      {{- end }}
       # public_writer: the first public-tier WRITE identity (ADR 005). Generic so
       # future public-tier write paths can reuse it; today it owns DML on the
       # chat_public schema only (sessions + transcripts on the primary), distinct
