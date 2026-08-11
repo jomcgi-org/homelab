@@ -106,7 +106,6 @@ slower and less grounded, so fill every required field.
 ## Repo structure
 
 Top-level projects/ directories:
-- advent_of_code
 - design-system
 - embervm
 - firecracker
