@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
@@ -39,7 +38,32 @@ def _dbos():
 
 
 def _server_app_version() -> str:
-    return os.environ.get("APP_VERSION", os.environ.get("GIT_SHA", "unknown"))
+    """The app version DBOS is actually running, asked of DBOS itself.
+
+    A workflow's `app_version` is a value DBOS computes (a hash over registered
+    workflow source) unless `DBOS__APPVERSION` overrides it, and it is stored on
+    `GlobalParams` at launch. It is not a chart version and not a git sha, so
+    comparing it against an environment variable compares two different
+    namespaces and can only ever be unequal.
+
+    This previously read `APP_VERSION` then `GIT_SHA`, neither of which this
+    chart sets, so it returned the literal "unknown" on every call. No real DBOS
+    version equals "unknown", which made `compose_run` mark every PENDING or
+    ENQUEUED run stranded, banner and all, while the run was still running.
+
+    Returns "" when the version cannot be resolved, which the caller treats as
+    "cannot tell" rather than as evidence of stranding. `GlobalParams` is a
+    private module, hence the guarded import: there is no public accessor in
+    dbos 2.29.0, and a restructure upstream must degrade to "cannot tell"
+    instead of resurrecting the false positive.
+    """
+    try:
+        from dbos._utils import GlobalParams
+
+        return GlobalParams.app_version or ""
+    except Exception:
+        logger.warning("could not read the DBOS app version", exc_info=True)
+        return ""
 
 
 def _session_rows(workflow_id: str):

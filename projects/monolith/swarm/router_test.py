@@ -216,3 +216,26 @@ def test_cancel_survives_attribute_write_failure(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["cancelled"] is True
+
+
+def test_server_app_version_comes_from_dbos_not_the_environment(monkeypatch):
+    """The comparison target must be DBOS's own version.
+
+    APP_VERSION and GIT_SHA are a different namespace from the hash DBOS
+    computes over workflow source, so reading them could only ever produce a
+    value no run matches, which marked every pending run stranded.
+    """
+    from dbos._utils import GlobalParams
+
+    monkeypatch.setenv("APP_VERSION", "chart-0.285.531")
+    monkeypatch.setenv("GIT_SHA", "deadbeef")
+    monkeypatch.setattr(GlobalParams, "app_version", "dbos-computed-hash")
+    assert swarm_router._server_app_version() == "dbos-computed-hash"
+
+
+def test_server_app_version_is_empty_when_dbos_has_not_launched(monkeypatch):
+    """Empty means "cannot tell", which compose_run must not read as stranded."""
+    from dbos._utils import GlobalParams
+
+    monkeypatch.setattr(GlobalParams, "app_version", "")
+    assert swarm_router._server_app_version() == ""
