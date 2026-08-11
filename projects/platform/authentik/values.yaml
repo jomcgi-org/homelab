@@ -18,6 +18,20 @@ authentik:
       user: authentik
       port: 5432
   global:
+    # Pinned to the 2026.8.0 release candidate to try RFC 8693 token exchange,
+    # which lands in 2026.8 and does not exist in 2026.5.6 (verified: that
+    # tag's providers/oauth2/views/token.py has no GRANT_TYPE_TOKEN_EXCHANGE).
+    # It is set here rather than as a Chart.yaml dependency bump because
+    # charts.goauthentik.io publishes no 2026.8.0 chart at all, RC or
+    # otherwise: the newest chart is 2026.5.6. So this runs the new image on
+    # the old chart, which the release notes permit ("This release does not
+    # introduce any new requirements"). The chart dependency and Chart.lock
+    # deliberately stay at 2026.5.6.
+    #
+    # Once enabled, token exchange is off by default per provider and has to
+    # be turned on under the provider's Grant Types setting.
+    image:
+      tag: "2026.8.0-rc7"
     # authentik.existingSecret replaces the chart-generated configuration
     # secret, so the PostgreSQL connection settings must be supplied here too.
     # Without these values authentik falls back to localhost:5432.
