@@ -1,6 +1,7 @@
 <script>
   import { fmtCost, fmtDur } from "./run-format.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
+  import PaneHeader from "./PaneHeader.svelte";
   let {
     master,
     onSelectRun = () => {},
@@ -16,11 +17,11 @@
   class:tier-stale={view.engine_tier === "stale"}
   class="runview master-view"
 >
-  <div class="rv-eyebrow">
-    <span class="eyebrow-label">{P.labels.masterEyebrow}</span><span
-      class="rv-id">{master.runs.length} {P.labels.inFlight}</span
-    >
-  </div>
+  <PaneHeader kind={P.labels.masterEyebrow}>
+    {#snippet chips()}
+      <span class="rv-id">{master.runs.length} {P.labels.inFlight}</span>
+    {/snippet}
+  </PaneHeader>
   {#if view.engine_tier === "absent"}
     <div class="m-quiet">{P.labels.absentNotice}</div>
   {:else}

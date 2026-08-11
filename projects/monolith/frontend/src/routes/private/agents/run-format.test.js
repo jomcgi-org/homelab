@@ -4,6 +4,7 @@ import {
   engineStale,
   fmtCost,
   fmtDur,
+  firstLine,
   joinMeta,
   ordinal,
   relSeconds,
@@ -12,6 +13,12 @@ import {
 } from "./run-format.js";
 
 describe("run formatting", () => {
+  test("returns the trimmed first line", () => {
+    expect(firstLine("  first line\nsecond line  ")).toBe("first line");
+    expect(firstLine("\n  \n")).toBe("");
+    expect(firstLine(null)).toBe("");
+    expect(firstLine(undefined)).toBe("");
+  });
   test("formats durations using the contract units", () => {
     expect(fmtDur(12)).toBe("12s");
     expect(fmtDur(90)).toBe("1m");

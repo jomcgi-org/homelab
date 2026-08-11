@@ -78,6 +78,8 @@ export const RUN_LEXICON = {
     gateWord: "gate",
     budgetWord: "budget",
     sessionMode: "session",
+    sessionWord: "session",
+    backToRun: "back to run",
     runMode: "run",
     newSession: "new session",
     newRun: "new run",
