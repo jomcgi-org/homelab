@@ -420,7 +420,31 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
         # bots/streams. Followers just serve HTTP. See app/leadership.py.
         app.state.elector = None
         elector_task = None
-        if profile.leader_singletons and any(m.leader_start for m in modules):
+        # A second deployment fed by a copy of prod's database (the standing dev
+        # environment) must start NONE of these. Two of them act on queue state
+        # the copy brings with it: the chat outbox drain would post prod's
+        # queued messages to Discord a second time, and DBOS recovers pending
+        # workflows on launch, so dev would resume prod's in-flight agent runs.
+        #
+        # The gate stops the elector being CONSTRUCTED rather than stopping its
+        # callbacks. The lease is scoped by profile.leader_lease_key, not by
+        # database, so a dev instance that takes the lease benches prod's
+        # leader: the mute would cause the outage it exists to prevent.
+        #
+        # Unset and unrecognised both mean enabled, so a typo cannot silently
+        # stop prod's bot while every probe still reports healthy.
+        leader_singletons_config = os.environ.get("MONOLITH_LEADER_SINGLETONS")
+        leader_singletons_enabled = leader_singletons_config is None or (
+            leader_singletons_config.strip().lower() not in {"false", "0", "no"}
+        )
+        leader_singletons_available = profile.leader_singletons and any(
+            m.leader_start for m in modules
+        )
+        if leader_singletons_available and not leader_singletons_enabled:
+            logger.info(
+                "Monolith started (leader singletons disabled by configuration)"
+            )
+        elif leader_singletons_available:
             from core.leadership import LeaderElector
 
             elector = LeaderElector(lease_key=profile.leader_lease_key)

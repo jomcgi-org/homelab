@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import logging
 
+import core.leadership as leadership
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -330,6 +331,35 @@ def _leader_module(name: str, log: list[str]) -> Module:
     return Module(name=name, leader_start=leader_start, leader_stop=leader_stop)
 
 
+class _FakeLeaderElector:
+    constructed = 0
+
+    def __init__(self, lease_key: str) -> None:
+        type(self).constructed += 1
+        self.lease_key = lease_key
+
+    async def run(self, on_acquire, on_resign) -> None:
+        await on_acquire()
+        await asyncio.Event().wait()
+
+
+def _patch_fake_elector(monkeypatch):
+    _FakeLeaderElector.constructed = 0
+    monkeypatch.setattr(leadership, "LeaderElector", _FakeLeaderElector)
+
+
+async def _run_private_lifespan(monkeypatch, modules, env_name, env_value=None):
+    _patch_fake_elector(monkeypatch)
+    if env_value is None:
+        monkeypatch.delenv(env_name, raising=False)
+    else:
+        monkeypatch.setenv(env_name, env_value)
+    app = FastAPI()
+    async with build_private_lifespan(_PLAIN_PRIVATE, modules)(app):
+        await asyncio.sleep(0)
+    return app
+
+
 @pytest.mark.asyncio
 async def test_start_and_stop_leader_singletons_compose_across_modules():
     log: list[str] = []
@@ -392,3 +422,66 @@ async def test_private_lifespan_runs_startup_hooks_and_skips_elector_without_lea
         # No module declares leader hooks, so no elector was created; the
         # attribute still exists (None) so readers never AttributeError.
         assert app.state.elector is None
+
+
+@pytest.mark.asyncio
+async def test_private_lifespan_leader_singletons_default_to_enabled(monkeypatch):
+    log: list[str] = []
+    app = await _run_private_lifespan(
+        monkeypatch, [_leader_module("a", log)], "MONOLITH_LEADER_SINGLETONS"
+    )
+
+    assert _FakeLeaderElector.constructed == 1
+    assert log == ["a:start", "a:stop"]
+    assert app.state.elector is not None
+
+
+@pytest.mark.asyncio
+async def test_private_lifespan_false_disables_leader_singletons(monkeypatch):
+    log: list[str] = []
+    app = await _run_private_lifespan(
+        monkeypatch, [_leader_module("a", log)], "MONOLITH_LEADER_SINGLETONS", "false"
+    )
+
+    assert _FakeLeaderElector.constructed == 0
+    assert app.state.elector is None
+    assert "a:start" not in log
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["FALSE", " false "])
+async def test_private_lifespan_false_is_case_and_whitespace_insensitive(
+    monkeypatch, value
+):
+    log: list[str] = []
+    app = await _run_private_lifespan(
+        monkeypatch, [_leader_module("a", log)], "MONOLITH_LEADER_SINGLETONS", value
+    )
+
+    assert _FakeLeaderElector.constructed == 0
+    assert app.state.elector is None
+    assert "a:start" not in log
+
+
+@pytest.mark.asyncio
+async def test_private_lifespan_unrecognized_value_fails_safe(monkeypatch):
+    log: list[str] = []
+    app = await _run_private_lifespan(
+        monkeypatch, [_leader_module("a", log)], "MONOLITH_LEADER_SINGLETONS", "maybe"
+    )
+
+    assert _FakeLeaderElector.constructed == 1
+    assert app.state.elector is not None
+    assert log == ["a:start", "a:stop"]
+
+
+@pytest.mark.asyncio
+async def test_private_lifespan_true_enables_leader_singletons(monkeypatch):
+    log: list[str] = []
+    app = await _run_private_lifespan(
+        monkeypatch, [_leader_module("a", log)], "MONOLITH_LEADER_SINGLETONS", "true"
+    )
+
+    assert _FakeLeaderElector.constructed == 1
+    assert app.state.elector is not None
+    assert log == ["a:start", "a:stop"]
