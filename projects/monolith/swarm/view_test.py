@@ -160,6 +160,30 @@ def test_stranded_pending_has_no_decision():
     assert run["nodes"][1]["decision"] is None
 
 
+def test_unresolvable_server_version_does_not_strand():
+    """An unknown server version is not evidence of stranding.
+
+    Observed in production: the server version resolved to a placeholder no real
+    DBOS version could equal, so every PENDING run rendered a "will not resume
+    unaided" banner while its nodes were still running.
+    """
+    status = Status("wf-3", "PENDING", ["task", "repo", "main"], app_version="real")
+    run = compose_run(
+        DBOS(Workflow(status, {"plan": FX4_EXPECTED_PLAN})), "wf-3", [], ""
+    )
+    assert run["stranded"] is False
+    assert run["state"] != "stranded"
+
+
+def test_missing_run_version_does_not_strand():
+    status = Status("wf-4", "PENDING", ["task", "repo", "main"], app_version="")
+    run = compose_run(
+        DBOS(Workflow(status, {"plan": FX4_EXPECTED_PLAN})), "wf-4", [], "new"
+    )
+    assert run["stranded"] is False
+    assert run["state"] != "stranded"
+
+
 def _running_implement(workflow_id):
     """One in-flight implement attempt.
 

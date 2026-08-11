@@ -241,7 +241,17 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
     app_version = _value(
         status, "app_version", attrs.get("app_version", inp.get("app_version"))
     )
-    stranded = raw in ("PENDING", "ENQUEUED") and app_version != server_app_version
+    # Fail safe. Stranding is a terminal claim ("will not resume unaided"), so
+    # it must be positive evidence that the two versions differ, never the
+    # absence of evidence. When either side is missing the honest answer is
+    # "cannot tell", and an unknown that renders as a diagnosis is how every
+    # pending run came to carry a stranded banner while it was still running.
+    stranded = (
+        raw in ("PENDING", "ENQUEUED")
+        and bool(app_version)
+        and bool(server_app_version)
+        and app_version != server_app_version
+    )
     steps = _steps(dbos, workflow_id)
     children = _children(dbos, workflow_id)
     plan = _plan(attrs)
