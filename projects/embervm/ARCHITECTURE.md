@@ -47,10 +47,12 @@ by kubectl/Helm/ArgoCD).
 advanced classes); pretending capacity is infinite (queue depth, saturation
 signals, and admission control are the product surface instead).
 
-The displaced incumbent is Argo-Workflows-shaped orchestration, where every
-job is an etcd object and every step is a pod. EmberVM keeps workload
-*definitions* in Kubernetes (low churn) and execution state in its own
-op-log and memory (high churn).
+EmberVM keeps workload *definitions* in Kubernetes (low churn) and
+execution state in its own op-log and memory (high churn). The split is the
+point: per-job orchestration (an etcd object per job, a pod per step)
+prices out thousands of short tasks, and nothing pod-shaped offers
+millisecond warm restore or wake-on-connect at all, so the low-latency
+classes have no incumbent to compare against.
 
 ---
 
@@ -246,7 +248,7 @@ ADR 011):
 An advancement no grant covers is quarantined on sight. The grant changes
 who may *issue* a generation, never who may *write* a volume (invariant 6).
 
-### Wake path and the node-local activator (ADR 018, Fork A partially landed)
+### Wake path and the node-local activator (ADR 018)
 
 A request to a scaled-to-zero workload lands on a fallback endpoint, parks,
 and triggers a single-flighted wake; the real endpoint is then published and
@@ -269,10 +271,9 @@ ongoing.
 Resume is one interface with four verbs: cold boot; base-snapshot restore;
 warm (memory) restore; base + workspace hydration. The CP picks the cheapest
 unexpired artifact; the session contract is instant for 6h, restorable for
-7 days. ADR 027 amends this ladder:
-capture may decouple from bank (close-triggered for no-memory-snapshot
-workloads), retention becomes `latest + N`, and the workspace size cap
-becomes a declared soft budget.
+7 days. **Decided direction** (ADR 027): capture decouples from bank
+(close-triggered for no-memory-snapshot workloads), retention becomes
+`latest + N`, and the workspace size cap becomes a declared soft budget.
 
 **The 6h ceiling is a version-convergence bound, not a data lifetime** (ADR
 030). It exists so a session cannot ride a stale base image forever, since a
@@ -356,8 +357,7 @@ against them.
 
 9. **Classes are reuse semantics; substrates are lanes.** New execution
    technologies (Hyperlight, wasm) enter as lanes under existing classes,
-   never as new classes. Persistence is becoming an orthogonal declared
-   property too (ADR 027).
+   never as new classes.
 
 10. **Users express posture, never mechanics.** The surface is a small set
     of declared scalars in user-facing units, each under a platform ceiling
@@ -386,15 +386,12 @@ against them.
   checkpoint-pending VMs, and banked artifacts on every `NodeStatus`; the
   dispatcher and managers reconcile on boot and every sweep. This is the
   standing fix for the restart-wedge bug class, and the protocols are
-  model-checked (ADR 006). Three PlusCal specs live in
-  `projects/embervm/specs/` and run under TLC in the build: `adoption.tla`
-  (VM lifecycle and adoption), `bank_relight.tla` (session bank/relight
-  generation pairing), and `quota.tla` (the fail-closed per-principal daily
-  quota gate). Ten genrules drive `//bazel/tla:tlc.sh` across their cfgs, so
-  a spec violation is a red build rather than a report, and the layer-1
-  vocabulary guard (`vocabulary.exs`) keeps the specs honest against the
-  code. Layer-2 trace validation (op-log events mapped to TLA+ actions and
-  checked against a drill trace) is the part still deferred.
+  model-checked (ADR 006): three PlusCal specs in `projects/embervm/specs/`
+  (`adoption`, `bank_relight`, `quota`) run under TLC in the build, so a
+  spec violation is a red build rather than a report, and the vocabulary
+  guard (`vocabulary.exs`) keeps the specs honest against the code.
+  **Planned**: trace validation, op-log events checked against TLA+
+  actions.
 - **Cells** (ADR 007): the unit of horizontal scale is a cell, a complete
   single-writer control plane owning a bounded set of bricks and workloads,
   with one op-log appender (ordering is within-cell only). The seams exist
@@ -421,9 +418,9 @@ against them.
 
 ## 7. Capacity, bricks, and Kubernetes
 
-**A brick is the capacity unit everywhere** (ADR 013 section 7, as amended):
-a fixed-size noded Deployment pod in a T-shirt size class (v1: `small` for
-dense task packing, `large` for 1-2 serving/session VMs), with honest
+**A brick is the capacity unit everywhere** (ADR 013): a fixed-size noded
+Deployment pod in a T-shirt size class (`2gi` through `16gi`; small classes
+pack tasks densely, the largest hold 1-2 serving/session VMs), with honest
 Guaranteed requests, sized roughly 4-8x the largest VM of its class, a
 handful per node. The daemon is budget-agnostic: it reads its ceiling from
 its own cgroup, so a size class is a resources block, not a code fork, and
@@ -447,8 +444,7 @@ Disruption splits workloads into preemptible posture (task, isolated lane)
 and durable posture (session, stateful: continuity via banked-state
 durability, not node pinning). Remaining node lifetime is a placement input;
 a terminating node is a placement target for work that fits its horizon.
-Karpenter behaviour is drilled against kwok (a Kubernetes workload
-simulator) in CI, path-scoped to the Karpenter-facing modules.
+Karpenter behaviour is drilled against kwok in CI.
 
 **Brick discovery and scale**: bricks are the only source of node capacity,
 so the control plane picks the brick mix from placement demand rather than
@@ -466,7 +462,7 @@ lives in the fleet section.
 
 ## 8. Storage, artifacts, durability
 
-**Artifact model** (ADR 003 generalized by ADR 009): one typed verb family,
+**Artifact model** (ADRs 003, 009): one typed verb family,
 `ExportArtifact` / `RestoreArtifact` / `EvictArtifact`, over `ArtifactRef
 {kind: BASE | SESSION | SERVING | STATEFUL | GROUP_SET | VOLUME}`.
 Control-plane-driven, idempotent per key; evict refuses while referenced.
@@ -650,7 +646,7 @@ resource limits), and 42 (detection integrations).
   cluster whose etcd is precious.**
 - Warmth never crosses a CPU vendor until the CPU-template work lands, so
   artifacts are keyed per vendor and the gate fails closed at the daemon.
-  Both pools now hold their own warmth: `noded.warmRestoreWithVolumeClasses`
+  Both pools hold their own warmth: `noded.warmRestoreWithVolumeClasses`
   is armed uniformly across `2gi`, `4gi`, `8gi`, and `16gi` (never partial,
   per the rollback contract), and the Intel-pinned floor bricks restore from
   intel-keyed bases at the same 2.5ms load-to-resume as the AMD tier.
@@ -664,11 +660,10 @@ resource limits), and 42 (detection integrations).
   floor bricks pinned on node-1, node-2, and node-3; the 4gi and 8gi
   classes are present at zero replicas; chart clamps are min 16gi 1 and
   max 2gi 4 / 4gi 3 / 8gi 2 / 16gi 2.
-- The control plane runs one replica with `strategy: Recreate`. Its op-log is
-  a database on the shared `monolith-pg` CNPG cluster rather than a
-  node-pinned RWO volume, so durability no longer follows a Longhorn volume
-  around the fleet, but availability is unchanged: multi-replica needs ADR
-  007's single-writer-per-cell appender. CP rolls remain the availability
+- The control plane runs one replica with `strategy: Recreate`. Its op-log
+  is a database on the shared `monolith-pg` CNPG cluster, so durability does
+  not depend on a node-pinned volume; multi-replica needs ADR 007's
+  single-writer-per-cell appender. CP rolls are the availability
   events the node-local activator exists to survive. The op-log shares
   `monolith-pg` deliberately (a second CNPG cluster costs ~1Gi of requests
   on a fleet at 99% of memory limits on node-4), and the coupling is bounded
@@ -682,7 +677,7 @@ resource limits), and 42 (detection integrations).
 | CPU pivot | 1,024 MiB per vCPU | provisional, tracks hand-set declarations; replace from measured utilization |
 | Active brick utilization target | >90% | chosen by analogy; too high if shed events become common |
 | Stateful continuity floor | 8h (also the S3 stateful warmth TTL) | asserted; validate against rotation cadence |
-| Session live ceiling | 6h (`maxLifetimeSeconds`) | a version-convergence bound (ADR 030), not a durability claim; these two were once the same number chosen for symmetry, and no longer are |
+| Session live ceiling | 6h (`maxLifetimeSeconds`) | a version-convergence bound (ADR 030), not a durability claim; independent of the 8h continuity floor |
 | Brick silence timeout / grant expiry | ~6h range | the divergence bound and availability trade in one number |
 | Wake-grant gap budget | k=4 (default cadence class) | tolerates a CP gap with three noded restarts |
 | Definitions target | 100k+ | owner-set goal, not measured demand |
@@ -696,20 +691,19 @@ original R6 Facade, virtual control planes and hard tenancy, is demoted to
 Recorded pending real demand).
 
 R0 Tasks, R1 Zip lane, R2 Sessions, R3 Serving, R4 Stateful, R5 Composite,
-R6 Continuity, and R8 Consumers (agent threads on sessions, goosecracker
-retired) are **shipped**. R7 Distribution is decided (vendor-aware placement
-over the export/restore verbs; needs a second warm-capable node to matter).
-R9 Packaging (standalone open-sourceable artifact) is decided. In-flight
+R6 Continuity, and R8 Consumers (agent threads on sessions) are
+**shipped**; R5 has no live consumer, and `warmthS3Gc.allowEmptyKinds:
+"group"` is the operator statement to the GC that the class is legitimately
+empty. R7 Distribution is decided (vendor-aware placement over the
+export/restore verbs; needs a second warm-capable node to matter). R9
+Packaging (standalone open-sourceable artifact) is decided. In-flight
 engineering: promoting brick autoscale from `up` to `full`, node-local
-activator soak, and the conciseness program (issue #4009).
+activator soak, and the conciseness program (#4009).
 
 Decided direction, security: per-principal envelope encryption at rest and
 verified tuple-authorized restore (ADR 033, #4691), and the management
 surface's actor / principal / permission split (ADR 032). The threat model
 section carries the per-row state.
-
-R5 Composite has no live consumer; `warmthS3Gc.allowEmptyKinds: "group"`
-is the operator statement to the GC that the class is legitimately empty.
 
 The availability contract is spot semantics: a routine roll gives every
 workload up to two minutes of drain notice; state durability is the hard
@@ -750,13 +744,11 @@ serving.
 
 How to read a decision: start here, then open the ADR for rationale. Status
 is the ADR's own header plus its amendment trail. Draft ADRs are 014, 015,
-019-028, and 032. ADRs 019-027 are one design pass answering "what changes to
-manage 100k+ workload definitions" (see `docs/decisions/embervm/README.md`
-for their reading order); they are decided direction, not yet built. ADRs
-014 and 015 predate that pass and are a separate case. ADRs 014 and 015 have
-since been amended for fail-open metering. ADRs 029, 030, and 031 are
-Accepted and post-date that pass: 029 and 030 are shipped corrections to the
-session model, so read them as current behaviour rather than direction.
+019-028, and 032. ADRs 019-027 are one design pass answering "what changes
+to manage 100k+ workload definitions" (reading order in
+`docs/decisions/embervm/README.md`); they are decided direction, not yet
+built. ADRs 029 and 030 are shipped corrections to the session model: read
+them as current behaviour, not direction.
 
 | ADR | Decides | Status / superseded by |
 | --- | ------- | ---------------------- |
