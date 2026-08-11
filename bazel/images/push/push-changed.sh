@@ -157,11 +157,30 @@ PUSH_COUNT=$(grep -c . "$TO_PUSH" || true)
 echo ""
 echo "==> $PUSH_COUNT image(s) to push, $SKIPPED already published"
 
+# --remote_download_outputs=all overrides the --remote_download_minimal that
+# --config=ci sets, and only for the pushes. `bazel run` materialises the
+# generated push script but leaves the oci_image layout DIRECTORY at rest in
+# CAS, so push.sh.tpl's first jq reads a path that is not on disk:
+#
+#   jq: error: Could not open file projects/monolith/frontend/image/index.json
+#
+# `toplevel` is what the manifest build above uses and is not enough here: crane
+# uploads every blob in that layout, so the whole tree has to be local rather
+# than just the run target's own output.
+#
+# This is the one place in the deploy that genuinely needs the bytes, which is
+# why the flag is on this line and not in BAZEL_ARGS. The skip decision above is
+# what bounds the cost: only the images whose content actually changed, which is
+# normally one or two rather than all 24.
+#
+# The branch had never executed until 2026-08-11 (#4685). Every deploy for weeks
+# found all 24 images content-identical and took the skip path, so the first
+# commit that really needed a push turned main's deploy red.
 while IFS= read -r label || [ -n "$label" ]; do
 	[ -n "$label" ] || continue
 	echo ""
 	echo "==> push $label"
-	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}"
+	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" --remote_download_outputs=all
 done <"$TO_PUSH"
 
 # Charts LAST, and in their own multirun. Ordering is load-bearing now in a way

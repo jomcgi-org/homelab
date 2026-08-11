@@ -66,9 +66,15 @@ BUILD
 	printf '%s' "$manifest" >"$WORK/bazel-bin/bazel/images/digests/manifest.txt"
 
 	# Stub bazel: `run` appends its label to run.log, everything else is a no-op.
+	# argv.log keeps the WHOLE command line as well. The two are separate on
+	# purpose: most cases assert on labels alone and compare them exactly, so
+	# widening run.log would break them, while the flags are what case 9 needs.
 	cat >"$WORK/bin/bazel" <<'STUB'
 #!/usr/bin/env bash
-if [ "${1:-}" = "run" ]; then echo "$2" >>"$STUB_RUN_LOG"; fi
+if [ "${1:-}" = "run" ]; then
+	echo "$2" >>"$STUB_RUN_LOG"
+	echo "$*" >>"$STUB_ARGV_LOG"
+fi
 exit 0
 STUB
 
@@ -84,7 +90,9 @@ STUB
 
 	chmod +x "$WORK/bin/bazel" "$WORK/bin/crane"
 	export STUB_RUN_LOG="$WORK/run.log"
+	export STUB_ARGV_LOG="$WORK/argv.log"
 	: >"$STUB_RUN_LOG"
+	: >"$STUB_ARGV_LOG"
 }
 
 teardown() { rm -rf "$WORK"; }
@@ -219,6 +227,28 @@ if run_script >/dev/null 2>&1; then
 	fail "fails loudly on an empty manifest" "expected a non-zero exit"
 else
 	pass "fails loudly on an empty manifest"
+fi
+teardown
+
+# 9. An image push must ask for its layout to be materialised. --config=ci sets
+#    --remote_download_minimal, which leaves the oci_image layout directory in
+#    CAS, while push.sh.tpl reads index.json off local disk. Without the flag
+#    every push dies on `jq: Could not open file .../image/index.json` (#4685).
+#
+#    Pinned as a command line rather than as behaviour because the failure is a
+#    bazel download mode on a remote runner, which no local test can reproduce.
+#    The reason it needs pinning at all is that this branch does not run when
+#    every image is content-identical, so a regression here stays invisible
+#    until the next commit that genuinely publishes something.
+setup "$MANIFEST_3" ""
+OUT=$(run_script)
+IMAGE_ARGV=$(grep "alpha:image.push" "$STUB_ARGV_LOG" || true)
+if [ -z "$IMAGE_ARGV" ]; then
+	fail "image push materialises the image layout" "no image push was recorded"
+elif grep -q -- "--remote_download_outputs=all" <<<"$IMAGE_ARGV"; then
+	pass "image push materialises the image layout"
+else
+	fail "image push materialises the image layout" "$IMAGE_ARGV"
 fi
 teardown
 
