@@ -170,6 +170,48 @@ expect "second chart written" "0.1.2" \
 expect "authored by the bot" "chart-version-bot" \
 	"$(git -C "$clone" log -1 --format='%an' origin/main)" "loop guard depends on it"
 
+# 7. A REPOSITORY RULE REFUSAL FAILS FAST instead of being retried as a race.
+#
+# On 2026-08-10 main's ruleset refused the write-back because the pushing
+# identity could not bypass the required `pr-checks`. The loop reported it as
+# "another publish landed first" and spent all five attempts on a condition that
+# is identical every time. A pre-receive hook standing in for the ruleset lets
+# this assert the two things that were wrong: the exit is immediate, and the
+# reported cause is the real one.
+clone=$(new_env ruleviolation 0.1.0)
+origin="$TMP/ruleviolation.git"
+mkdir -p "$origin/hooks"
+cat >"$origin/hooks/pre-receive" <<'HOOK'
+#!/usr/bin/env bash
+echo "$(($(cat "$GIT_DIR/push-count" 2>/dev/null || echo 0) + 1))" >"$GIT_DIR/push-count"
+echo "error: GH013: Repository rule violations found for refs/heads/main." >&2
+echo "- Required status check \"pr-checks\" is expected." >&2
+exit 1
+HOOK
+chmod +x "$origin/hooks/pre-receive"
+
+record "$TMP/rec-rule" demo projects/demo/chart 0.1.4
+set +e
+rule_out=$(cd "$clone" && WRITE_BACK_TRIES=5 bash "$SCRIPT" "$TMP/rec-rule" 2>&1)
+rule_rc=$?
+set -e
+
+expect "rule violation exits non-zero" "1" "$rule_rc" "retrying cannot fix it"
+expect "pushed exactly once" "1" \
+	"$(cat "$origin/push-count" 2>/dev/null || echo 0)" "no wasted retries"
+if grep -q "another publish landed first" <<<"$rule_out"; then
+	echo "FAIL: reported a rule violation as a lost race" >&2
+	FAILURES=$((FAILURES + 1))
+else
+	echo "ok: reports the real cause (not a lost race)"
+fi
+if grep -q "repository rule" <<<"$rule_out"; then
+	echo "ok: names the repository rule in the error"
+else
+	echo "FAIL: error does not name the repository rule" >&2
+	FAILURES=$((FAILURES + 1))
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1

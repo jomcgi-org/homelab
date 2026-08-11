@@ -176,10 +176,33 @@ $(printf '%s\n' "${SUMMARY[@]}")
 
 Written back by write-back-versions.sh (ADR platform/009 decision 1)."
 
-	if git push --quiet origin HEAD:main; then
+	# `|| PUSH_RC=$?` keeps errexit from aborting on the very failure this loop
+	# exists to handle, and captures the message so the two causes below can be
+	# told apart.
+	PUSH_RC=0
+	PUSH_ERR=$(git push --quiet origin HEAD:main 2>&1) || PUSH_RC=$?
+	if [[ "$PUSH_RC" -eq 0 ]]; then
 		echo "Write-back pushed on attempt ${attempt}."
 		rm -rf "$RECORD_DIR"
 		exit 0
+	fi
+	[[ -n "$PUSH_ERR" ]] && echo "$PUSH_ERR" >&2
+
+	# Distinguish a LOSABLE RACE from a PERMANENT REFUSAL.
+	#
+	# Retrying is the right answer to the race this loop was written for:
+	# another publish landed first, so the rebase at the top of the loop wins
+	# the next attempt. A repository rule violation is not that. It is the same
+	# answer every time, and calling it "another publish landed first" is how a
+	# permission problem spent five attempts wearing a race's clothes on
+	# 2026-08-10, burning the retries and reporting the wrong cause.
+	if grep -qE 'GH013|Repository rule violations|protected branch|refusing to allow' <<<"$PUSH_ERR"; then
+		{
+			echo "ERROR: main refused the write-back on a repository rule, which retrying cannot fix."
+			echo "The identity pushing this must be able to bypass the ruleset on refs/heads/main."
+			echo "The charts ARE published; main's Chart.yaml just does not reference them yet."
+		} >&2
+		exit 1
 	fi
 
 	echo "Push rejected (another publish landed first); retrying (${attempt}/${TRIES})." >&2
