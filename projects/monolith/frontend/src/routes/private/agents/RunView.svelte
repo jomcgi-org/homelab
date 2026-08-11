@@ -23,6 +23,7 @@
   import PaneHeader from "./PaneHeader.svelte";
   import { crumbTrail } from "./lineage.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
+  import { claimStatus } from "./claims.js";
   let {
     run,
     view,
@@ -87,13 +88,16 @@
       {/each}
     </div>
   {:else}
+    {@const claim = claimStatus(run, view.now)}
     <PaneHeader
       kind={P.labels.run}
       crumbs={crumbTrail({ kind: "run", runTitle: firstLine(run.task.text) })}
       {onCrumb}
     >
       {#snippet chips()}
-        <span class={`state-chip s-${run.state}`}
+        <span
+          class={`state-chip s-${run.state}`}
+          class:unconfirmed={claim.unconfirmed}
           >{P.stateWords[run.state] || run.state}</span
         >
       {/snippet}
@@ -132,13 +136,32 @@
           )}{/if}
       {/if}
     </div>
-    {#if run.stranded}<div class="banner">
-        {P.labels.strandedBanner}
-        {P.labels.buildWord}
-        {run.app_version}
-        {P.punct.dot}
-        {P.labels.serverBuildWord}
-        {run.server_app_version}
+    {#if run.stranded}<div class="banner" data-register="belief">
+        <span class="register-tag">{P.labels.engineBelief}</span>
+        {joinMeta(
+          P.labels.strandedBanner,
+          run.app_version == null
+            ? null
+            : `${P.labels.buildWord} ${run.app_version}`,
+          run.server_app_version == null
+            ? null
+            : `${P.labels.serverBuildWord} ${run.server_app_version}`,
+        )}
+      </div>{/if}
+    {#if claim.terminal && claim.observation}<div
+        class="obs-line"
+        data-register="fact"
+      >
+        <span class="lbl">{P.labels.lastActivity}</span>
+        <span
+          >{joinMeta(
+            ago(claim.observation.observedAt),
+            claim.observation.nodeLabel,
+          )}</span
+        >
+      </div>{/if}
+    {#if claim.unconfirmed}<div class="conflict" data-register="belief">
+        {P.labels.stateConflict}
       </div>{/if}
     <div class="rv-actions">
       {#if active}<button
@@ -172,8 +195,11 @@
     </div>
     {#if run.deviations?.length}<div class="deviations" data-register="fact">
         <div class="stage-head">{P.labels.deviations}</div>
-        {#each run.deviations as deviation}<div class="deviation-text mono">
-            {deviation.text}
+        {#each run.deviations as deviation}<div class="deviation-text">
+            <span class="dev-chip"
+              >{P.deviationCodes[deviation.code] ?? deviation.code}</span
+            >
+            <span>{deviation.text}</span>
           </div>{/each}
       </div>{/if}
     <div
@@ -261,37 +287,46 @@
             >{/if}{/each}
       </div>{/if}
     {#each node.attempts ?? [] as attempt}
+      {@const attemptLine = attempt.ended_at
+        ? attemptMeta(
+            attempt.n,
+            null,
+            relSeconds(attempt.started_at, attempt.ended_at),
+            attempt.cost_usd,
+          )
+        : attemptMeta(
+            attempt.n,
+            P.stateWords.running,
+            since(attempt.started_at),
+            attempt.cost_usd,
+          )}
       <div>
+        <!-- The accessible name carries the attempt line as well as the
+             affordance. A bare aria-label of "open session" would replace the
+             name rather than add to it, so a screen reader would hear which
+             control this is but never which attempt it opens. -->
         <button
           class="log-entry"
           type="button"
+          aria-label={joinMeta(attemptLine, P.labels.openSession)}
           onclick={() =>
             attempt.session_id && onSelectSession(attempt.session_id)}
-          ><span class="entry-meta"
-            >{attempt.ended_at
-              ? attemptMeta(
-                  attempt.n,
-                  null,
-                  relSeconds(attempt.started_at, attempt.ended_at),
-                  attempt.cost_usd,
-                )
-              : attemptMeta(
-                  attempt.n,
-                  P.stateWords.running,
-                  since(attempt.started_at),
-                  attempt.cost_usd,
-                )}</span
-          >{#if attempt.state === "running" && attempt.live?.activity}<span
-              class="live-line"
-              ><span class="live-dot"></span><span class="live-act"
-                >{attempt.live.activity}</span
-              ><span class="live-when">{ago(attempt.live.observed_at)}</span
-              ></span
-            >{/if}{#if attempt.finding}<span class="finding"
-              >{attempt.finding.text}
-              {attempt.finding.observed_head ?? ""}</span
-            >{/if}</button
+          ><span class="entry-meta">{attemptLine}</span></button
         >
+        {#if attempt.state === "running" && attempt.live?.activity}<div
+            class="live-line"
+          >
+            <span class="live-dot" aria-hidden="true"></span>
+            <code class="act-cmd">{attempt.live.activity}</code>
+            <span class="act-when">{ago(attempt.live.observed_at)}</span>
+          </div>{/if}
+        {#if attempt.finding}<div class="evidence" data-register="fact">
+            <span class="ev-tag">{attempt.finding.code}</span>
+            <span>{attempt.finding.text}</span>
+            {#if attempt.finding.observed_head}<span class="sha"
+                >{attempt.finding.observed_head}</span
+              >{/if}
+          </div>{/if}
         {#if attempt.rationale?.parse_status === "parsed" || attempt.rationale?.parse_status === "unparseable"}
           <div class="testimony" data-register="testimony">
             <div class="testimony-attribution">
@@ -333,10 +368,11 @@
             >{shortSha(node.verdict.commit_sha)}</a
           >{/if}
       </div>{/if}
-    {#if node.evidence}<div class="log-entry">
-        <span class="entry-meta"
-          >{P.labels.evidence} {node.evidence.summary}</span
+    {#if node.evidence}<div class="evidence" data-register="fact">
+        <span class="ev-tag"
+          >{joinMeta(P.labels.evidence, node.evidence.kind)}</span
         >
+        <span>{node.evidence.summary}</span>
       </div>{/if}
     {#if node.blocked_on?.kind === "human"}<div class="rv-actions">
         <button class="btn-quiet btn-approve" type="button"
