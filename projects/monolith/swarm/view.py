@@ -53,10 +53,28 @@ def _input(status: Any) -> dict:
     return {}
 
 
-def _iso(value: Any) -> Any:
+def _iso(value: Any) -> str | None:
+    """Serialize a timestamp, or emit nothing at all.
+
+    Any non-datetime used to pass through untouched, so a value the server
+    could not serialize still reached the client and was parsed there. The run
+    header timestamp comes from the DBOS workflow status while attempt
+    timestamps come from session rows, and when the workflow side arrived as
+    something else, `Date.parse` returned NaN and the client's `Number(x) || 0`
+    laundered it into a confident "0s ago" printed beside a real elapsed time.
+
+    A timestamp that cannot be serialized is absent, and absent has to look
+    absent. Strings are trusted only if they parse as a timestamp.
+    """
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    return value
+    if isinstance(value, str) and value:
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return value
+    return None
 
 
 def _children(dbos: Any, workflow_id: str) -> list[Any]:
@@ -129,16 +147,39 @@ def _finding(code: str | None, observed: str | None, prior: str | None) -> dict 
     return {"code": code, "text": text, "observed_head": _short_sha(observed)}
 
 
-def _attempts(session_rows: list[Any], steps: list[Any], node_key: str) -> list[dict]:
-    rows = sorted(
-        [r for r in session_rows if _value(r, "node_key") == node_key],
-        key=lambda r: _value(r, "node_attempt", 0) or 0,
-    )
+def _branch_head_observations(steps: list[Any]) -> list[Any]:
+    """Every read_branch_head output in the run, in call order.
+
+    `implement_then_review` calls it only inside the implement loop, twice per
+    attempt: once before the turn and once after (`workflows.py:166,180`). The
+    list is therefore implement-lane evidence in `[prior, observed]` pairs, and
+    belongs to no other node.
+    """
     observations = []
     for step in steps:
         name = str(_value(step, "function_name", _value(step, "name", "")))
         if "read_branch_head" in name:
             observations.append(_step_output(step))
+    return observations
+
+
+def _attempts(
+    session_rows: list[Any], observations: list[Any], node_key: str
+) -> list[dict]:
+    """Attempts for one node, paired against observations that node produced.
+
+    Observations are passed in rather than derived from the run's steps.
+    Deriving them here gave every node the same undifferentiated list, so the
+    review node, which produces no head reads at all, was annotated with
+    implement attempt 1's pair and displayed its finding verbatim. Branch-head
+    movement is the routing signal in ADR 038 decision 1, so evidence attached
+    to the wrong node is the exact confusion that decision exists to prevent.
+    A caller that has no observations for a node passes none.
+    """
+    rows = sorted(
+        [r for r in session_rows if _value(r, "node_key") == node_key],
+        key=lambda r: _value(r, "node_attempt", 0) or 0,
+    )
     result = []
     for i, row in enumerate(rows):
         prior = observations[i * 2] if i * 2 < len(observations) else None
@@ -258,8 +299,13 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
     model_i = plan["implementer_model"]
     model_r = plan["reviewer_model"]
     sessions = list(session_rows or [])
-    implement_attempts = _attempts(sessions, steps, "implement")
-    review_attempts = _attempts(sessions, steps, "review")
+    # Only the implement lane reads the branch head, so only it gets the
+    # observations. The reviewer runs after the gate has already decided on
+    # them and never takes a reading of its own.
+    implement_attempts = _attempts(
+        sessions, _branch_head_observations(steps), "implement"
+    )
+    review_attempts = _attempts(sessions, [], "review")
     first = implement_attempts[0] if implement_attempts else None
     if raw == "CANCELLED":
         implement_state = "failed" if first else "cancelled"
