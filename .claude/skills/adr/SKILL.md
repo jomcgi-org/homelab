@@ -162,7 +162,7 @@ git commit -m "docs(adr): <short description>"
 | --------------------- | ---------------------------------------------------------------------------- |
 | **Draft**             | Under discussion, not yet decided                                            |
 | **Accepted**          | The decision is made. Set this when the decision lands, not when work ships. |
-| **Superseded by NNN** | Replaced by a newer ADR (link to it). Keep the file; it preserves context.   |
+| **Superseded by NNN** | Replaced by a newer ADR (link to it). Leave the file in place; a rollup removes it later. |
 | **Deprecated**        | Abandoned without replacement                                                |
 
 ## Superseding an ADR
@@ -171,7 +171,22 @@ When a decision is reversed or evolved:
 
 1. Create the new ADR with a `Supersedes:` field linking to the old one
 2. Update the old ADR's status to `Superseded by [NNN-slug](NNN-slug.md)`
-3. **Do not delete the old ADR**; it preserves the reasoning and context that led to the change
+3. **Do not delete the old ADR yourself.** Deletion is not an ADR-authoring
+   action; it is the last step of a domain rollup, and only once that domain's
+   `ARCHITECTURE.md` carries the current state and inbound links are repointed.
+   See `docs/runbooks/rollup-architecture-docs.md`.
+
+## ADRs are not permanent, and nothing should link to one
+
+An ADR is a write-and-forget rationale journal entry. Two consequences:
+
+- **Link to `projects/<domain>/ARCHITECTURE.md`, never to an ADR**, from code,
+  BUILD files, values files or READMEs. An ADR records what was decided, not
+  what shipped, so citing one as current state is how stale decisions get read
+  as fact.
+- **The file is not the archive; git history is.** A rollup harvests an ADR into
+  ARCHITECTURE.md and then deletes it. Write the rationale as fully as it
+  deserves, but do not write it on the assumption the file survives forever.
 
 ## Conventions
 
