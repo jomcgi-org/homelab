@@ -70,6 +70,13 @@ export const RUN_LEXICON = {
     parallel: "in parallel",
     byWord: "by",
     evidence: "evidence",
+    lastActivity: "last activity",
+    stateConflict:
+      "live activity disagrees with this state; treating it as unconfirmed",
+    engineBelief: "engine belief",
+    evidenceWord: "evidence",
+    testimonyWord: "testimony",
+    openSession: "open session",
     deviationWord: "deviation",
     approve: "approve",
     deny: "deny",
@@ -104,6 +111,13 @@ export const RUN_LEXICON = {
     noneYet: "none yet",
   },
   punct: { dot: "·", arrow: "→", colon: ":" },
+  deviationCodes: {
+    retry_taken: "retry taken",
+    budget_exceeded: "budget exceeded",
+    attempts_exhausted: "attempts exhausted",
+    model_mismatch: "model mismatch",
+    verdict_not_approve: "verdict",
+  },
   units: { s: "s", m: "m", h: "h", d: "d" },
   ordinals: { 1: "1st", 2: "2nd", 3: "3rd", other: "th" },
 };

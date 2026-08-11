@@ -109,6 +109,10 @@
   padding: 1px 7px;
   font: var(--size-meta) var(--font-mono);
 }
+.state-chip.unconfirmed {
+  border-style: dashed;
+  background: transparent;
+}
 .s-running,
 .s-reviewing {
   color: var(--ok);
@@ -208,6 +212,9 @@
   padding-top: 10px;
 }
 .deviation-text {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
   color: var(--text-soft);
   margin-top: 4px;
 }
@@ -319,7 +326,6 @@
   font-size: 13px;
   color: var(--text-soft);
 }
-.finding,
 .verdict-excerpt {
   display: block;
   margin-top: 3px;
@@ -328,6 +334,7 @@
   display: flex;
   gap: 7px;
   align-items: baseline;
+  margin-top: 4px;
 }
 .live-dot {
   width: 7px;
@@ -336,28 +343,65 @@
   background: var(--ok);
   flex: none;
 }
-.live-act {
+.act-cmd {
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
   font: var(--size-body-mono) var(--font-mono);
 }
 /* The observation time is its own element, never text trailing the command.
    Written as an adjacent text node it produced "... | head -405s ago". */
-.live-when {
+.act-when {
   margin-left: auto;
   flex: none;
   color: var(--muted);
   font: var(--size-meta) var(--font-mono);
 }
-/* A label introducing a sentence, so the gap is CSS. Rendered as a bare word
-   before the text it produced "deviation Vite runtime validation was ...",
-   where the label read as the sentence's first word. */
+.evidence {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+}
+/* Labels that introduce a sentence, so the gap is CSS on a flex parent and no
+   template whitespace can be trimmed away and glue them to the text. Rendered
+   as a bare word before its sentence, the deviation label produced "deviation
+   Vite runtime validation was ...", where it read as the first word. */
+.ev-tag,
+.sha,
 .dev-chip {
-  margin-right: 7px;
   padding: 0 5px;
   border: 1px solid var(--line-strong);
   border-radius: 3px;
   color: var(--muted);
   font: var(--size-meta) var(--font-mono);
   white-space: nowrap;
+}
+.sha {
+  color: var(--text-soft);
+}
+.obs-line {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  margin-top: 6px;
+}
+.lbl {
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+}
+.conflict {
+  margin-top: 5px;
+  color: var(--attn);
+  font-size: 13px;
+}
+.register-tag {
+  display: inline-block;
+  margin-right: 7px;
+  padding: 0 5px;
+  border: 1px solid var(--attn);
+  border-radius: 3px;
+  font: var(--size-meta) var(--font-mono);
 }
 .copy-id {
   margin-left: 7px;
