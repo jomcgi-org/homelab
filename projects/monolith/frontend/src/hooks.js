@@ -25,6 +25,10 @@ const APEX_PREFIX = "/public";
 // public tier: without this every path 404s locally because nothing maps the
 // un-prefixed browser path into /public. Prod never serves on these hosts.
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
+const LOCAL_TIER_HOSTS = {
+  "public.localhost": "/public",
+  "private.localhost": "/private",
+};
 
 // Top-level routes that intentionally live outside /public and /private.
 // The browser OTEL exporter posts to same-origin /otel/v1/traces and the
@@ -57,6 +61,10 @@ export function reroute({ url }) {
   // /chat/message.
   if (CHAT_PREFIX_MAP[url.pathname]) {
     return CHAT_PREFIX_MAP[url.pathname];
+  }
+  const localTier = LOCAL_TIER_HOSTS[url.hostname];
+  if (localTier && !url.pathname.startsWith(`${localTier}/`)) {
+    return `${localTier}${url.pathname}`;
   }
   for (const [domain, prefix] of Object.entries(DOMAIN_PREFIX_MAP)) {
     if (

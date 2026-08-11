@@ -29,7 +29,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://localhost:8000",
+      "/api": process.env.API_BASE || "http://localhost:8000",
     },
   },
 });
