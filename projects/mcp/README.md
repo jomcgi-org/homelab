@@ -2,6 +2,8 @@
 
 The cluster deployment of **Context Forge**, the MCP (Model Context Protocol) gateway that aggregates cluster-internal tools for agents. It is the single in-cluster entry point that lets Claude Code, Claude.ai, and other MCP clients reach cluster services (SigNoz, ArgoCD, etc.) without per-service auth workarounds.
 
+**How the whole surface fits together, including the parts that are not in this directory: [ARCHITECTURE.md](ARCHITECTURE.md).** That is the current-state document and the thing to link to. This README stays the operator's view of the deployment.
+
 See [ADR 003](../../docs/decisions/agents/003-context-forge.md) for the original design rationale and [ADR 011](../../docs/decisions/agents/011-cloudflare-managed-oauth.md) for the Cloudflare Managed OAuth model that superseded an earlier in-cluster OAuth proxy. Two later decisions matter before changing anything here:
 
 - [ADR 020](../../docs/decisions/agents/020-deprecate-context-forge-mcp-gateway.md) is **Accepted** and decides to delete Context Forge and serve MCP directly from the monolith. Execution is deferred and the live `mcp.jomcgi.dev` route is untouched, so everything below is still the deployed reality, but this component is on a path to removal (issues #3831, #3832, #3833).
