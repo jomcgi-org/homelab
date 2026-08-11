@@ -56,3 +56,26 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.syncServiceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Container image reference. Prefers the content-addressed digest, falling back to
+the tag when no digest is set.
+
+WHY THE DIGEST WINS. helm_images_values emits repository, tag AND digest, and
+the tag is build-timestamped: it moves on every commit to main even when the
+image bytes are identical. push-changed.sh skips pushing an image whose content
+digest is already in the registry, so that new tag is frequently never created,
+and deploying it is an ImagePullBackOff. That wedged monolith-public on
+2026-08-11 (PR #4680 fixed the shared homelab-library the same way; this chart
+does not use that library, so it needed its own).
+
+The tag fallback keeps the chart renderable when no digest is present, e.g. a
+plain `helm template` from source values.
+*/}}
+{{- define "oci-model-cache-operator.imageRef" -}}
+{{- if .Values.controllerManager.image.digest -}}
+{{ .Values.controllerManager.image.repository }}@{{ .Values.controllerManager.image.digest }}
+{{- else -}}
+{{ .Values.controllerManager.image.repository }}:{{ .Values.controllerManager.image.tag | default .Chart.AppVersion }}
+{{- end -}}
+{{- end }}
