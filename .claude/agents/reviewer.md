@@ -37,9 +37,21 @@ Ranked. Spend your effort at the top.
    migrations ConfigMap, a chart bump missing on a change that must deploy, sync
    Session calls inside `async def`. Semgrep catches some of these; check the
    ones it cannot.
-3. **Test coverage of the change.** New behaviour with no failing-then-passing
+3. **Config that looks live and is not.** For every flag, env var or values key
+   the diff adds, changes or relies on, ask two questions: is anything consuming
+   it, and is the branch that consumes it reachable? A key can be spelled
+   correctly, genuinely read by the application, and documented in the README,
+   and still be dead because a different flag disables the path that reads it.
+   `TRUST_PROXY_AUTH` is inert whenever `MCP_CLIENT_AUTH_ENABLED` is true, and
+   every mechanical check passes on it. Read the datapath, not the config.
+
+   Two shapes to watch for. A setting that does nothing, which reads as the
+   mechanism to the next person and sends them down a dead end. And a setting
+   that is deliberately inert until some other work lands, which is legitimate
+   but must say so where it is defined.
+4. **Test coverage of the change.** New behaviour with no failing-then-passing
    test, or a changed numeric constant whose assertions were not updated.
-4. **Simplification.** Only where it is a real reduction, not a rewrite in your
+5. **Simplification.** Only where it is a real reduction, not a rewrite in your
    preferred style.
 
 Match the surrounding code's conventions rather than imposing your own. If the

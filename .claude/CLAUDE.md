@@ -198,8 +198,9 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 | Alerting work | `docs/reference/observability-alerting.md` |
 | Frontend or design work: tokens, palette, motion, a11y | `.impeccable.md` (three scoped design systems, deliberately not converged) |
 | Operator changes | `projects/operators/best-practices.md` |
-| EmberVM: how it works today, invariants, ADR map | `projects/embervm/ARCHITECTURE.md` (source of truth for current state; the ADRs are rationale) |
-| Design proposals | `docs/decisions/`, numbered per category |
+| How a domain works today | `projects/<domain>/ARCHITECTURE.md` where one exists (`embervm` today). Source of truth for current state, and what to link to. The ADRs are rationale |
+| Design proposals and decision rationale | `docs/decisions/`, numbered per category. Never cite one as current state: an ADR records what was decided, not what shipped |
+| Rolling a domain's ADRs up into `ARCHITECTURE.md` | `docs/runbooks/rollup-architecture-docs.md` |
 
 **Skills** (`.claude/skills/`, auto-matched): `ship`, `adr`, `stpa`,
 `codex-implement`, `pr-workflow`, `ci-triage`, `improve-buildbuddy-usage`.
