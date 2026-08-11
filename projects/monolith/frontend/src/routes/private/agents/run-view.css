@@ -315,6 +315,39 @@
 .live-act {
   font: var(--size-body-mono) var(--font-mono);
 }
+/* The observation time is its own element, never text trailing the command.
+   Written as an adjacent text node it produced "... | head -405s ago". */
+.live-when {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+}
+/* A label introducing a sentence, so the gap is CSS. Rendered as a bare word
+   before the text it produced "deviation Vite runtime validation was ...",
+   where the label read as the sentence's first word. */
+.dev-chip {
+  margin-right: 7px;
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+  white-space: nowrap;
+}
+.copy-id {
+  margin-left: 7px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: var(--size-meta) var(--font-mono);
+  cursor: pointer;
+}
+.copy-id:hover {
+  color: var(--text-soft);
+}
 .decision {
   margin-top: 4px;
 }

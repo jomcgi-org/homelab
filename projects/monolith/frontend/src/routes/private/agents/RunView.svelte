@@ -7,7 +7,18 @@
     nodeStateClass,
     capacityPips,
   } from "./dag.js";
-  import { fmtCost, fmtDur, ordinal, relSeconds } from "./run-format.js";
+  import {
+    agoPhrase,
+    attemptMeta,
+    engineStale,
+    fmtCost,
+    joinMeta,
+    queuePosition,
+    queuedOnQueue,
+    relSeconds,
+    spendOfBudget,
+    startedAgo,
+  } from "./run-format.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   let {
     run,
@@ -27,17 +38,18 @@
   // would silently override the server, which owns every string this page
   // shows.
   const shortSha = (sha) => String(sha || "").slice(0, 8);
-  const ago = (value) => fmtDur(relSeconds(value, view.now));
-
-  // "running 2m" when the elapsed time is known, bare "running" when it is
-  // not. Interpolating the duration directly would print the text "null" now
-  // that formatters report absence honestly, which is a louder fabrication
-  // than the "0s" it replaced. The phrase layer generalises this.
-  const withDur = (word, seconds) => {
-    const duration = fmtDur(seconds);
-    return duration ? `${word} ${duration}` : word;
-  };
+  const since = (value) => relSeconds(value, view.now);
+  const ago = (value) => agoPhrase(since(value));
+  // Ids are plumbing: needed for copy and correlation, never for scanning.
+  const shortId = (id) => String(id || "").slice(-12);
   const path = (i, suffix) => `run.nodes[${i}]${suffix}`;
+  let copied = $state(false);
+
+  function copyWorkflowId() {
+    navigator.clipboard?.writeText(run.workflow_id);
+    copied = true;
+    setTimeout(() => (copied = false), 1200);
+  }
 </script>
 
 <div class:tier-stale={view.engine_tier === "stale"} class="runview">
@@ -60,13 +72,12 @@
             aria-hidden="true"
           ></span>
           <span class="sess-title">{session.title}</span><span class="sess-meta"
-            >{session.status}
-            {P.punct.dot}
-            {session.model}
-            {fmtCost(session.total_cost_usd)}
-            {P.punct.dot}
-            {ago(session.last_turn_at)}
-            {P.labels.ago}</span
+            >{joinMeta(
+              session.status,
+              session.model,
+              fmtCost(session.total_cost_usd),
+              ago(session.last_turn_at),
+            )}</span
           >
         </button>
       {/each}
@@ -79,18 +90,11 @@
     </div>
     <h2 class="rv-title">{run.task.text}</h2>
     <div class="rv-meta">
-      {run.work_branch}
-      {P.punct.dot}
-      {P.labels.started}
-      {ago(run.created_at)}
-      {P.labels.ago}
-      {#if run.plan?.budget_usd != null}
-        {P.punct.dot}
-        {fmtCost(run.cost_usd)}
-        {P.labels.of}
-        {fmtCost(run.plan.budget_usd)}
-        {P.labels.budgetWord}
-      {:else if fmtCost(run.cost_usd)}{P.punct.dot} {fmtCost(run.cost_usd)}{/if}
+      {joinMeta(
+        run.work_branch,
+        startedAgo(since(run.created_at)),
+        spendOfBudget(run.cost_usd, run.plan?.budget_usd),
+      )}
     </div>
     <div class="rv-statusline" data-register="fact">
       {#if run.state === "running" && attempts && run.plan?.pinned}
@@ -106,16 +110,16 @@
           >{P.punct.dot} {P.labels.retriesRemain}</span
         >
       {:else if run.completed_at}
-        {P.stateWords[run.state] || run.state}
-        {#if run.cancelled_by}
-          {P.labels.byWord} {run.cancelled_by.actor}{/if}
-        {ago(run.completed_at)}
-        {P.labels.ago}
+        {joinMeta(
+          run.cancelled_by
+            ? `${P.stateWords[run.state] || run.state} ${P.labels.byWord} ${run.cancelled_by.actor}`
+            : P.stateWords[run.state] || run.state,
+          ago(run.completed_at),
+        )}
       {:else if run.state === "queued"}
-        {#if run.nodes.find((node) => node.queue)}{ordinal(
+        {#if run.nodes.find((node) => node.queue)}{queuePosition(
             run.nodes.find((node) => node.queue).queue.position,
-          )}
-          {P.labels.positionWord}{/if}
+          )}{/if}
       {/if}
     </div>
     {#if run.stranded}<div class="banner">
@@ -167,13 +171,18 @@
       class:stale={view.engine_tier === "stale"}
       data-register="fact"
     >
-      <span class="rv-id">{run.workflow_id}</span>
+      <span class="rv-id"
+        >{P.labels.workflowWord}
+        {shortId(run.workflow_id)}</span
+      ><button
+        class="copy-id"
+        type="button"
+        title={run.workflow_id}
+        onclick={copyWorkflowId}
+        >{copied ? P.labels.copied : P.labels.copyId}</button
+      >
       {#if view.engine_tier !== "live"}
-        {P.punct.dot}
-        {P.labels.engine}{P.punct.colon}
-        {P.labels.staleShowing}
-        {fmtDur(view.snapshot_age_seconds)}
-        {P.labels.staleOld}
+        <span>{engineStale(view.snapshot_age_seconds)}</span>
       {/if}
     </div>
   {/if}
@@ -207,10 +216,7 @@
       </div>{/if}
     {#if node.model}<div class="entry-meta">{node.model}</div>{/if}
     {#if node.queue}<div class="log-entry" data-register="fact">
-        {ordinal(node.queue.position)}
-        {P.labels.queuedOn}
-        {node.queue.name}
-        {P.labels.queueWord}
+        {queuedOnQueue(node.queue.position, node.queue.name)}
       </div>{/if}
     {#if node.decision}<div
         class="decision"
@@ -252,22 +258,25 @@
           onclick={() =>
             attempt.session_id && onSelectSession(attempt.session_id)}
           ><span class="entry-meta"
-            >{P.labels.attempt}
-            {attempt.n}
-            {P.punct.dot}
-            {attempt.ended_at
-              ? fmtDur(relSeconds(attempt.started_at, attempt.ended_at))
-              : withDur(
+            >{attempt.ended_at
+              ? attemptMeta(
+                  attempt.n,
+                  null,
+                  relSeconds(attempt.started_at, attempt.ended_at),
+                  attempt.cost_usd,
+                )
+              : attemptMeta(
+                  attempt.n,
                   P.stateWords.running,
-                  relSeconds(attempt.started_at, view.now),
-                )}{#if fmtCost(attempt.cost_usd)}
-              {P.punct.dot} {fmtCost(attempt.cost_usd)}{/if}</span
+                  since(attempt.started_at),
+                  attempt.cost_usd,
+                )}</span
           >{#if attempt.state === "running" && attempt.live?.activity}<span
               class="live-line"
               ><span class="live-dot"></span><span class="live-act"
                 >{attempt.live.activity}</span
-              >{ago(attempt.live.observed_at)}
-              {P.labels.ago}</span
+              ><span class="live-when">{ago(attempt.live.observed_at)}</span
+              ></span
             >{/if}{#if attempt.finding}<span class="finding"
               >{attempt.finding.text}
               {attempt.finding.observed_head ?? ""}</span
@@ -276,23 +285,26 @@
         {#if attempt.rationale?.parse_status === "parsed" || attempt.rationale?.parse_status === "unparseable"}
           <div class="testimony" data-register="testimony">
             <div class="testimony-attribution">
-              {node.label}
-              {P.punct.dot}
-              {P.labels.attempt}
-              {attempt.n}{#if attempt.model}
-                {P.punct.dot} {attempt.model}{/if}
+              {joinMeta(
+                node.label,
+                `${P.labels.attempt} ${attempt.n}`,
+                attempt.model,
+              )}
             </div>
             {#if attempt.rationale.parse_status === "parsed"}
               {#each attempt.rationale.areas as area}
                 <div class="testimony-line">
-                  {area.area}{#if area.why}
-                    {P.punct.dot} {area.why}{/if}
+                  {joinMeta(area.area, area.why)}
                 </div>
               {/each}
               {#each attempt.rationale.deviations as deviation}
                 <div class="testimony-line">
-                  {P.labels.deviationWord}
-                  {deviation}
+                  <!-- The label is a chip, not the sentence's first word.
+                       Its gap is CSS, so no template whitespace can be
+                       trimmed away and glue it to the text. -->
+                  <span class="dev-chip">{P.labels.deviationWord}</span><span
+                    >{deviation}</span
+                  >
                 </div>
               {/each}
             {:else}

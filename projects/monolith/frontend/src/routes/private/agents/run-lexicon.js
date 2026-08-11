@@ -91,6 +91,13 @@ export const RUN_LEXICON = {
     creating: "creating…",
     startingRun: "starting…",
     deviations: "deviations",
+    noSpendYet: "nothing spent yet",
+    workflowWord: "workflow",
+    copyId: "copy id",
+    copied: "copied",
+    // staleShowing trails off into an age ("unreachable, showing"), so it
+    // cannot stand alone when the age was never measured.
+    staleUnreachable: "unreachable",
   },
   punct: { dot: "·", arrow: "→", colon: ":" },
   units: { s: "s", m: "m", h: "h", d: "d" },
