@@ -16,11 +16,19 @@ only the pushes that would actually change something.
 Digests are content-stable across rebuilds: --stamp feeds only oci_push's
 remote_tags, never the image itself. The missed-chart-bump guard
 (bazel/helm/check-missed-bump.sh) already depends on that same property.
+
+NAMING CONSTRAINT: this rule must not contain `oci_push`, `apko_push` or
+`helm_push` as a substring. `kind()` is a REGEX and
+validate-generate-scripts.sh's queries are unanchored, so an earlier
+`oci_push_manifest` was matched by `kind("oci_push", //...)` and then reported
+as missing from bazel/images/BUILD, which the grep generator never emits it
+into. The collision is invisible locally: it only shows up in pr-checks, since
+`ci test` does not run that validator.
 """
 
 load("//bazel/tools/oci:providers.bzl", "OciImageInfo")
 
-def _oci_push_manifest_impl(ctx):
+def _oci_digest_manifest_impl(ctx):
     output = ctx.actions.declare_file(ctx.label.name + ".txt")
 
     inputs = []
@@ -53,14 +61,14 @@ def _oci_push_manifest_impl(ctx):
         outputs = [output],
         inputs = depset(inputs),
         command = "\n".join(commands),
-        mnemonic = "OciPushManifest",
+        mnemonic = "OciDigestManifest",
         progress_message = "Writing image push manifest %s" % ctx.label,
     )
 
     return [DefaultInfo(files = depset([output]))]
 
-oci_push_manifest = rule(
-    implementation = _oci_push_manifest_impl,
+oci_digest_manifest = rule(
+    implementation = _oci_digest_manifest_impl,
     attrs = {
         "images": attr.label_keyed_string_dict(
             mandatory = True,

@@ -103,6 +103,16 @@ extract_targets_from_build bazel/images/BUILD >"$TMPDIR_VALIDATE/push_all_grep.t
 
 # Run equivalent bazel queries
 {
+	# `kind()` takes a REGEX and these are deliberately left unanchored, because
+	# rules_oci wraps `oci_push` in a same-named macro and the underlying rule
+	# kind is not verifiable outside CI; anchoring on a guess would silently
+	# empty the query and pass this check against nothing.
+	#
+	# The cost of that is a substring trap: an `oci_push_manifest` rule added
+	# anywhere in the repo IS matched here, and then reported as missing from
+	# bazel/images/BUILD, which the grep generator has no reason to list it in.
+	# That is why //bazel/tools/oci's manifest rule is called
+	# `oci_digest_manifest`. Do not name a new rule after one of these three.
 	bazel_query_retry 'kind("oci_push", //...)'
 	bazel_query_retry 'kind("apko_push", //...)'
 	bazel_query_retry 'kind("helm_push", //...)'
