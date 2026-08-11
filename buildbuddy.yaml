@@ -149,6 +149,17 @@ actions:
             # --depth=1, so a history lookup reads the graft boundary.
             python3 ./bazel/tools/format/doc_links/check_doc_links.py
 
+            # Two Helm invariants that fail silently and deploy the wrong
+            # thing: a vendored charts/*.tgz gone stale against its file://
+            # source (the tarball is what bazel ships, so the source fix never
+            # deploys), and a chart pinning a bazel-built image by its
+            # build-timestamped tag (push-changed.sh skips content-identical
+            # images, so that tag is often never pushed: ImagePullBackOff).
+            # Read-only here on purpose: sync-helm-deps.sh needs the helm CLI,
+            # which this runner does not have, so CI reports and the human
+            # fixes locally. Pure logic pinned by a bazel test.
+            python3 ./bazel/tools/format/helm_deps/check_helm_deps.py
+
             if git diff --exit-code; then
               echo "All files formatted correctly"
             else
@@ -338,6 +349,17 @@ actions:
             ./bazel/tools/hooks/validate-hooks-executable.sh
             python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
             python3 ./bazel/tools/format/doc_links/check_doc_links.py
+
+            # Two Helm invariants that fail silently and deploy the wrong
+            # thing: a vendored charts/*.tgz gone stale against its file://
+            # source (the tarball is what bazel ships, so the source fix never
+            # deploys), and a chart pinning a bazel-built image by its
+            # build-timestamped tag (push-changed.sh skips content-identical
+            # images, so that tag is often never pushed: ImagePullBackOff).
+            # Read-only here on purpose: sync-helm-deps.sh needs the helm CLI,
+            # which this runner does not have, so CI reports and the human
+            # fixes locally. Pure logic pinned by a bazel test.
+            python3 ./bazel/tools/format/helm_deps/check_helm_deps.py
 
             if ! git diff --exit-code; then
               echo "ERROR: Code not formatted or BUILD files out of sync."
