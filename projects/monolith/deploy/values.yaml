@@ -52,6 +52,11 @@ postgres:
   # that way: letting the SeaweedFS chart's bucket hook create it flips the
   # whole cluster's S3 to auth-enforced.
   #
+  # The path in the bucket looks doubled and is not a typo. barman appends
+  # serverName, which defaults to the cluster name, so objects land under
+  # s3://monolith-pg-backups/monolith-pg/monolith-pg/wals/. destinationPath is
+  # a root that several clusters could share, not a path to one catalogue.
+  #
   # Scope, so nobody mistakes this for DR: SeaweedFS is backed by the same
   # Longhorn layer as the Postgres PVCs, so this covers logical loss (a bad
   # migration, a dropped table, corruption of the Pg volumes) and NOT the loss
