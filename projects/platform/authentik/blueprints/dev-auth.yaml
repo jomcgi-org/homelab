@@ -1,0 +1,128 @@
+version: 1
+metadata:
+  name: homelab - dev environment auth
+  labels:
+    blueprints.goauthentik.io/description: |
+      OAuth2 provider and application for dev.jomcgi.dev, the standing dev
+      monolith. Envoy Gateway runs the OIDC redirect flow against this provider
+      for browsers, and validates a bearer token against the same issuer for
+      agents, so one lane serves both audiences.
+entries:
+  # ── 1. The provider Envoy Gateway authenticates against ──────────────────
+  # Separate from the preview and mcp-friends providers on purpose. Those gate
+  # a browser preview surface and the MCP gateway respectively; this one gates
+  # a full monolith holding a copy of PRODUCTION's data, so a token minted for
+  # one must not be accepted by another.
+  #
+  # client_secret comes from the environment, never from Git and never from
+  # authentik's own generator. Same two-item arrangement preview-auth.yaml
+  # documents:
+  #
+  #   vaults/k8s-homelab/items/authentik   field DEV_OIDC_CLIENT_SECRET
+  #     -> authentik-secrets Secret -> envFrom on both authentik pods -> !Env here
+  #   vaults/k8s-homelab/items/dev-oidc    field client-secret
+  #     -> dev-oidc-client Secret in the monolith-dev namespace -> SecurityPolicy
+  #
+  # Two items rather than one so monolith-dev does not receive authentik's whole
+  # secret bundle (its secret key and bootstrap credentials) to read one value.
+  #
+  # SCALAR form. `!Env [KEY]` is a one-element sequence, which authentik's tag
+  # constructor reads as node.value[1] with no length check, raising IndexError.
+  # blueprints_find() catches only YAMLError, so that escapes and aborts
+  # discovery for the ENTIRE /blueprints tree, including authentik's bundled
+  # defaults and the other lanes here. blueprint_tags_test.py pins this.
+  #
+  # No default, deliberately: a missing variable resolves to None and authentik
+  # rejects the provider, which is far better than an empty-string default
+  # quietly creating a provider whose secret nobody holds. Until the 1Password
+  # field exists this blueprint is EXPECTED to fail, and that failure is the
+  # signal, not a regression.
+  - model: authentik_providers_oauth2.oauth2provider
+    id: dev-provider
+    identifiers:
+      name: dev
+    attrs:
+      client_type: confidential
+      # Pinned rather than generated: it is not a secret, and the
+      # SecurityPolicy that consumes it lives in Git.
+      client_id: dev-monolith
+      client_secret: !Env DEV_OIDC_CLIENT_SECRET
+      # Both required when a provider is created from a blueprint. grant_types
+      # defaults to an EMPTY list on the model and both the authorize and token
+      # views reject anything absent from it, so omitting this yields a provider
+      # supporting no grant at all, failing on the first hop.
+      grant_types:
+        - authorization_code
+        - refresh_token
+      # Without a signing_key authentik falls back to HS256 signed with the
+      # client secret and the JWKS endpoint emits no keys. Envoy validates via
+      # remoteJWKS, so it would have nothing to validate with and would 401
+      # everything. Invisible to a discovery check: the well-known document
+      # still answers 200 with an empty JWKS behind it.
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, authentik Self-signed Certificate],
+        ]
+      # Must match the SecurityPolicy's redirectURL exactly, and must fall
+      # inside a path the target HTTPRoute serves or the callback 404s before
+      # Envoy sees it. The monolith's private route has a `/` catch-all rule, so
+      # this resolves.
+      redirect_uris:
+        - matching_mode: strict
+          url: https://dev.jomcgi.dev/oauth2/callback
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-implicit-consent],
+        ]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      # The three managed defaults, restated. Binding REPLACES the list rather
+      # than appending, and dropping `email` would leave the projected
+      # X-Auth-Email header empty while every other part of the flow looked
+      # healthy.
+      property_mappings:
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-openid],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-email],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-profile],
+          ]
+
+  # ── 2. The application, whose SLUG is the issuer URL ─────────────────────
+  # authentik derives the OIDC issuer from the APPLICATION slug, not the
+  # provider name: https://auth.jomcgi.dev/application/o/<slug>/. The
+  # SecurityPolicy builds both issuer and JWKS URI from this same slug, so
+  # renaming the application silently breaks token validation.
+  - model: authentik_core.application
+    id: dev-app
+    identifiers:
+      slug: dev
+    attrs:
+      name: Dev
+      provider: !KeyOf dev-provider
+      meta_description: The standing dev monolith at dev.jomcgi.dev.
+
+  # ── 3. Gate it ───────────────────────────────────────────────────────────
+  # Without a policy binding authentik lets EVERY authenticated account
+  # authorize the application. Bound to homelab-admin, and deliberately no
+  # wider: this environment holds a full copy of production's data, so its
+  # audience is the operator and the agents acting for them, never a guest
+  # group. That is a stricter posture than the preview lane needs and the same
+  # one production's private tier has.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf dev-app
+      group: !Find [authentik_core.group, [name, homelab-admin]]
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
