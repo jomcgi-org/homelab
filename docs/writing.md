@@ -7,7 +7,9 @@ comes from cutting, not compressing.
 
 The hard bans apply to everything written in this repo, including commit
 messages and PR bodies. The voice rules apply to any prose a human will
-read. The register section is about matching the reader.
+read. "Know the reader" is about matching the register to the audience.
+Site copy and posts speak in first person about Joe's work, so the
+self-praise and self-rating rules bite hardest there.
 
 ## Know the reader
 
@@ -30,7 +32,8 @@ below still apply in full.
 ## Hard bans (AI-tell rhetoric)
 
 - **No em-dashes.** Anywhere. Use a comma, colon, parentheses, or split
-  the sentence.
+  the sentence. Existing ones are grandfathered: never churn a file just
+  to strip them, but remove them from any prose you are rewriting anyway.
 - **No "not X, but Y" antithesis** ("a design input, not a postmortem").
   State the positive claim and stop.
 - **No arrow chains in prose** ("weeks -> minutes",
@@ -54,9 +57,10 @@ below still apply in full.
 - **No self-praise.** No quality adjectives about one's own work
   ("clean", "robust", "elegant"). Show the scope, the number, the
   boundary, and let it land.
-- **No self-rating labels.** "Owned it end-to-end" fails "would a staff
-  engineer say that?". Name the initiating act ("Found the gap") and let
-  verb-led clauses carry it; the reader concludes ownership.
+- **No self-rating labels.** Never label your own role ("owned it
+  end-to-end" fails "would you say that out loud to another engineer?").
+  Name the initiating act ("Found the gap") and let the verbs carry it;
+  the reader concludes ownership.
 - **No reviewer labels.** Never introduce evidence with an editorial
   label: "the sharpest case", "most notably", "the killer example",
   "crucially". That is a critic's voice narrating significance. State
@@ -70,7 +74,8 @@ below still apply in full.
   beats "The same red team has been trying since day one." The costume
   is exaggeration; the bare fact is stronger.
 - **Capability over artifact.** Describe what a thing enables, not what
-  was built ("building UIs" is noise).
+  was built ("a Svelte frontend" is noise; "apps that sleep when idle
+  and wake when called" is the hook).
 - **Prose is sentences, not inventory.** Each sentence explains itself
   ("stateful apps and databases that sleep when idle and wake when
   called"); a paragraph or bullet past ~200 words is a wall. Prefer
@@ -87,10 +92,11 @@ below still apply in full.
 
 ## Formal analysis reads as an outcome
 
-Present formal methods by what they found, never as a credential. "An
-STPA hazard analysis of the shipped code found two trust-boundary holes
-I hadn't documented, both on the remediation roadmap" is the register to
-copy for STPA and TLA+ material.
+Lead with what the analysis found, and let the findings say why the
+method was worth running. "An STPA hazard analysis of the shipped code
+found two trust-boundary holes I hadn't documented, both on the
+remediation roadmap" is the register to copy for STPA and TLA+
+material.
 
 ## Checklist before publishing
 
@@ -99,8 +105,13 @@ Grep the draft for the common violations:
 - em-dashes, and `->` in prose
 - "not just", "isn't just"
 - "sharpest", "most notably", "crucially", "killer"
-- "load-bearing", "center of gravity", "clean-sheet"
+- "load-bearing", "center of gravity", "clean-sheet", "making the hard
+  path the easy one"
+- "clean", "robust", "elegant" applied to one's own work
 - "red team" where the literal actor is friends
+
+The grep catches the vocabulary, never the shapes: antithesis,
+consequence narration, and reviewer labels only show up on a read.
 
 Then read it once asking only: does every sentence sound like Joe, and
 does every clause earn its place?
