@@ -278,8 +278,12 @@ def diagram($v):
        + "\n</details>\n\n"
     else "" end )
 
-+ "## Open questions\n\n"
-+ ( (.open_questions // []) | sort | map("- \(esc)") | join("\n") ) + "\n"
++ ( if (.open_questions // []) | length > 0
+    then "## Open questions\n\n"
+       + ( .open_questions | sort | map("- \(esc)") | join("\n") ) + "\n"
+    else "" end )
+
+| sub("\n+$"; "")
 JQ
 LC_ALL=C jq -rf /tmp/stpa-render.jq /tmp/stpa.json > /tmp/STPA.candidate.md
 # Compare against what origin/main actually has: this checkout's working tree

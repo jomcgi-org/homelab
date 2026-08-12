@@ -136,17 +136,3 @@ flowchart TD
 - **node-local activator on stateful defaults BlessedGeneration to 0 during control-plane absence**: a zero generation fails pairing and forces a cold boot rather than an incorrect relight, matching invariant 4's fail-open-to-cold-boot rule (noded/server/stateful_activator.go:361)
 - **orphan-destroy racing a live node-woken (ACTIVATOR-origin) stateful VM**: adopt_activator_stateful_vms runs on the same reconcile pass before the orphan-destroy loop, and the loop explicitly skips activator_origin? vms as belt-and-suspenders (control/lib/embervm/stateful_manager.ex:2031-2038)
 </details>
-
-## Open questions
-
-- None. Every residual gap above carries a tracking issue, and two were
-  split into their own issues on purpose: #4707 (dial-home re-registration
-  binding) is separate from #4693 because mTLS/SPIFFE closes the transport
-  gap without binding a registration to the brick that holds (node,
-  pod_uid); #4708 (authenticated store access) is separate from #4691
-  because at-rest encryption does not stop an anonymous caller overwriting
-  or deleting an object before it is read. The interruptible-bank
-  checkpoint commit/abort protocol, the one lifecycle sub-protocol with a
-  documented crash-ordering argument and zero model-checked coverage, is
-  #4704 in the TLA+ backlog (#4706).
-
