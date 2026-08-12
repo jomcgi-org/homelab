@@ -1,29 +1,19 @@
 # EmberVM Architecture
 
-A single, self-contained description of how EmberVM works: the current
-state and the decided future of one system, readable end to end.
+How EmberVM works: the current state and the decided future, readable end
+to end. Assumes Kubernetes and Linux virtualization; EmberVM terms are in
+the section 2 vocabulary. Claims carry four flags:
 
-This document presents the complete decided vision, not only what runs
-today, so every section reads as one coherent design. The reader is
-assumed to know Kubernetes and Linux virtualization primitives; every
-EmberVM-specific term is defined at first use or in the vocabulary block.
-Four kinds of statement appear:
-
-- **Built**: current behaviour.
-- **Planned**: designed work that is not yet implemented or is only partly
-  landed; scheduled work carries its tracking issue.
+- **Built**: current behaviour, and the default for any unflagged claim.
+  If reality disagrees with this document, one of them is a bug to fix.
+- **Planned**: designed, not yet or only partly landed; scheduled work
+  carries its tracking issue.
+- **Decided direction**: agreed design, not an implementation claim.
 - **Accepted risk**: an eyes-open trade, stated where it applies.
-- **Decided direction**: designed and agreed direction that is not a current
-  implementation claim.
 
-An unflagged claim means current behaviour; if reality and this document
-disagree, one of them is a bug to fix. **model-checked** means the named
-abstract protocol satisfies the stated property within the committed TLC
-model and bounds, re-run in the build; it does not prove implementation
-conformance, and trace-to-action validation is **Planned** (#4699).
-
-Claims verified by a TLA+ model name their spec in
-`projects/embervm/specs/`; those specs run under TLC in the build.
+**model-checked** means the named TLA+ spec in `projects/embervm/specs/`
+satisfies the stated property under TLC in the build; implementation
+conformance (trace-to-action validation) is **Planned** (#4699).
 
 ---
 
@@ -58,11 +48,11 @@ advanced classes); pretending capacity is infinite (queue depth, saturation
 signals, and admission control are the product surface instead).
 
 EmberVM keeps workload *definitions* in Kubernetes (low churn) and
-execution state in its own op-log and memory (high churn). The split is the
-point: per-job orchestration (an etcd object per job, a pod per step)
-prices out thousands of short tasks, and nothing pod-shaped offers
-millisecond warm restore or wake-on-connect at all, so the low-latency
-classes have no incumbent to compare against.
+execution state in its own op-log and memory (high churn). Per-job
+orchestration (an etcd object per job, a pod per step) prices out thousands
+of short tasks, and nothing pod-shaped offers millisecond warm restore or
+wake-on-connect at all, so the low-latency classes have no incumbent to
+compare against.
 
 ### Capability matrix
 
@@ -88,6 +78,9 @@ classes have no incumbent to compare against.
 
 ### Vocabulary
 
+<details>
+<summary><b>EmberVM terms</b>, used throughout without redefinition</summary>
+
 - **Kubernetes node**: a KVM-capable machine.
 - **brick**: a fixed-size capacity pod scheduled onto a Kubernetes node,
   several per node.
@@ -107,11 +100,18 @@ classes have no incumbent to compare against.
 - **dial-home**: noded registration and status sent to the control plane.
 - **warmth**: a reusable boot artifact, such as a base or banked snapshot,
   that can make the next start faster but is never correctness-critical.
+- **bundle**: the published set of artifacts needed to relight a workload.
+- **blessing**: the durable control-plane act that authorizes a volume
+  generation.
+- **wake grant**: a bounded authorization for an activator to advance a
+  workload wake during control-plane absence.
 
 The diagrams use vsock (Firecracker's host-guest socket), DNAT (destination
 network address translation), xDS (the Envoy configuration protocol), BEAM
 (the Erlang virtual machine), ETS (Erlang Term Storage), and CNPG
 (CloudNativePG).
+
+</details>
 
 ```mermaid
 graph TB
@@ -195,7 +195,7 @@ sequenceDiagram
 
 **A wake (a serving or stateful miss)** is normally coordinated by the
 control plane, which restores the VM and republishes the endpoint through
-its EndpointPublisher. The diagram shows that path:
+its EndpointPublisher:
 
 ```mermaid
 sequenceDiagram
@@ -205,7 +205,7 @@ sequenceDiagram
     participant CP as Control plane
     participant VM as Guest VM
     C->>E: request (workload scaled to zero)
-    E->>A: fallback endpoint; request parks
+    E->>A: fallback endpoint, request parks
     A->>CP: wake request
     CP->>VM: single-flighted restore or cold boot
     CP-->>E: real endpoint published via xDS
@@ -232,11 +232,11 @@ sequenceDiagram
     CP->>N: gRPC assign (primed VM)
     N->>VM: payload over vsock
     VM-->>N: result
-    N-->>CP: result; VM destroyed after one task
+    N-->>CP: result, VM destroyed after one task
 ```
 
-Can I run it: section 11's platform contract. What do I trust today:
-section 10's posture summary.
+The platform contract is in section 11; the security posture summary is in
+section 10.
 
 ---
 
@@ -275,8 +275,6 @@ are fetched and unpacked inside the disposable guest).
 
 ### Stateful bank/relight and the interruptible bank
 
-A bundle is the published set of artifacts needed to relight a workload.
-
 ```mermaid
 stateDiagram-v2
     [*] --> serving: wake (cold boot or relight)
@@ -309,8 +307,6 @@ Facts that make this safe:
 
 ### Generation blessing and quarantine
 
-A blessing is the durable control-plane act that authorizes a generation.
-
 The control plane is the adjudicator of volume generations, with exactly
 three legitimate issuance shapes:
 
@@ -337,9 +333,7 @@ volume (invariant 6).
 
 ### Wake path and the node-local activator
 
-A wake grant is a bounded authorization for an activator to advance a
-workload wake during control-plane absence. A request to a scaled-to-zero
-workload lands on a fallback endpoint, parks,
+A request to a scaled-to-zero workload lands on a fallback endpoint, parks,
 and triggers a single-flighted wake; the real endpoint is then published and
 bytes splice. The activator (L7 serving, L4 stateful/composite) belongs in
 noded rather than the CP pod so that a CP `Recreate` roll cannot black-hole
@@ -538,7 +532,9 @@ a human is paged, rather than overcommitting.
 **Built**: every brick and the serving relay run the cluster's disposable
 priority class, so guests are the first to yield under node memory
 pressure; QoS is always Guaranteed; per-workload arbitration happens only
-in CP dispatch. **Decided direction**: PriorityClass ranking of brick
+in CP dispatch.
+
+**Decided direction**: PriorityClass ranking of brick
 pools by lane with sacrificial balloon bricks for burst headroom, and
 remaining-node-lifetime as a placement input so a terminating node takes
 only work that fits its horizon. Disruption splits workloads into
@@ -685,39 +681,45 @@ model providers among them.
 
 ## 10. Threat model
 
-**Built**: Firecracker boundary; no NIC for task/session guests;
-principal-bound lineage; no cluster credential in guests; Envoy-only serving
-ingress. **Accepted risk**: unauthenticated noded gRPC on the pod network
-(#4693); self-asserted dial-home identity under a shared ServiceAccount, so a
-brick can re-register another brick's identity (#4707); an anonymous default
-object store, so any pod-network caller can write or delete artifacts (#4708);
-privileged noded with /dev/kvm; external-allow guest egress via the broker;
-taint optional. **Planned**: mTLS/SPIFFE and noded network policy (#4693);
-registration bound to brick identity (#4707); authenticated per-tuple store
-access (#4708); per-principal envelope encryption and tuple-authorized restore
-(#4691); granular containment.
+- **Built**: Firecracker boundary; no NIC for task/session guests;
+  principal-bound lineage; no cluster credential in guests; Envoy-only
+  serving ingress.
+- **Accepted risk**: unauthenticated noded gRPC on the pod network (#4693);
+  self-asserted dial-home identity under a shared ServiceAccount, so a
+  brick can re-register another brick's identity (#4707); an anonymous
+  default object store, so any pod-network caller can write or delete
+  artifacts (#4708); privileged noded with /dev/kvm; external-allow guest
+  egress via the broker; taint optional.
+- **Planned**: mTLS/SPIFFE and noded network policy (#4693); registration
+  bound to brick identity (#4707); authenticated per-tuple store access
+  (#4708); per-principal envelope encryption and tuple-authorized restore
+  (#4691); granular containment.
 
 EmberVM evaluates itself against the threat model published by
 [agent-substrate/substrate](https://github.com/agent-substrate/substrate/blob/main/docs/threat-model.md),
-adopted as EmberVM's external conformance frame. The frame is
-deliberately not ours: Substrate attacks the same problem from the density
-side (many actors multiplexed onto shared warm worker pods), and its threat
-enumeration is the most complete public statement of what a multi-tenant
-agent execution plane must defend. The external frame keeps these claims
-falsifiable and identifies controls that remain open mapping work.
+adopted as the external conformance frame (ADR embervm/033). Substrate
+attacks the same problem from the density side (many actors multiplexed
+onto shared warm worker pods); its threat enumeration is the most complete
+public statement of what a multi-tenant agent execution plane must defend.
 
-Vocabulary mapping: their *actor* is Ember's guest workload, their *worker
-pod* is a Firecracker slot on a brick, their *atelet* is noded, their
-*snapshot* is Ember's warmth artifact (memory snapshot, session bundle,
-volume archive). The threat numbering is ours: upstream rows are
-unnumbered, so threats are numbered 1 to 43 in upstream document order as
-of its 2026-06-25 revision. The enumeration is condensed below;
-shared-worker threats with no Ember analogue are answered by the "no reuse
-across principals" row, and five unmapped threats do bind on Ember and are
-open mapping work, not implied conformance: 8 (template-author reach into
+The enumeration is condensed in the tables below. Shared-worker threats
+with no Ember analogue are answered by the "no reuse across principals"
+row. Five threats remain unmapped and do bind on Ember, tracked as open
+mapping work, not implied conformance: 8 (template-author reach into
 storage), 21 (worker privilege: noded runs privileged with /dev/kvm), 26
 (policy propagated out of band with scheduling), 31 (image-extraction
 resource limits), and 42 (detection integrations).
+
+<details>
+<summary><b>Substrate mapping</b>: vocabulary and threat numbering</summary>
+
+Their *actor* is Ember's guest workload, their *worker pod* is a
+Firecracker slot on a brick, their *atelet* is noded, their *snapshot* is
+Ember's warmth artifact (memory snapshot, session bundle, volume archive).
+The threat numbering is ours: upstream rows are unnumbered, so threats are
+numbered 1 to 43 in upstream document order as of its 2026-06-25 revision.
+
+</details>
 
 The boundary in one picture: what untrusted code can reach, and what
 never crosses toward it.
@@ -744,8 +746,8 @@ graph LR
     G1 -- "plaintext egress" --> P
     G2 -- "plaintext egress" --> P
     P -- "fresh TLS, credential injected<br/>only for allowlisted hosts" --> X
-    N -- "facts (dial-home); no transport auth<br/>and self-asserted identity today (#4693, #4707)" --> F
-    N -- "snapshot bytes, never via the CP;<br/>anonymous store access today (#4708)" --> S
+    N -- "facts (dial-home), no transport auth<br/>and self-asserted identity today (#4693, #4707)" --> F
+    N -- "snapshot bytes, never via the CP,<br/>anonymous store access today (#4708)" --> S
 ```
 
 Trust diagram legend: every edge is a current path; the labelled exposures
@@ -852,13 +854,17 @@ shared Postgres) is in [deploy/README.md](deploy/README.md).
 The section 1 capability matrix carries per-capability status; this section
 is the current work and the decided directions behind it.
 
-**Decided direction**: distribution (vendor-aware placement over the
-export/restore verbs, needs a second warm-capable node to matter);
-standalone packaging; per-principal envelope encryption at rest and
-verified tuple-authorized restore (#4691); the management-surface actor /
-principal / permission split. Hard multi-tenancy (virtual control planes)
-is deferred pending real demand. (Internal rung IDs R0-R9 map onto the
-capabilities.)
+**Decided direction**:
+
+- distribution: vendor-aware placement over the export/restore verbs
+  (needs a second warm-capable node to matter)
+- standalone packaging
+- per-principal envelope encryption at rest and verified tuple-authorized
+  restore (#4691)
+- the management-surface actor / principal / permission split
+
+Hard multi-tenancy (virtual control planes) is deferred pending real
+demand. Internal rung IDs R0-R9 map onto the capabilities.
 
 **Current work**: promoting brick autoscale from `up` to `full`,
 node-local activator soak, and the conciseness program (#4009).
