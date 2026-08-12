@@ -134,6 +134,23 @@ def _docs(rendered: str):
             yield kind.group(1), name.group(1), doc
 
 
+_DESTINATION = re.compile(r"^\s*destinationPath:\s*(\S+)\s*$", re.M)
+
+
+def _write_forced_backup() -> Path:
+    """Values that force backups on, to prove the collision is real.
+
+    Used only by the positive control in
+    test_dev_does_not_write_to_productions_backup_store.
+    """
+    path = Path(tempfile.gettempdir()) / "monolith_forced_backup.yaml"
+    path.write_text("postgres:\n  backup:\n    enabled: true\n")
+    return path
+
+
+_FORCED_BACKUP = _write_forced_backup()
+
+
 _RELEASE_NAME = re.compile(r"^\s*releaseName:\s*(\S+)\s*$", re.M)
 
 
@@ -346,4 +363,64 @@ def test_refresh_job_does_not_run_the_extension_image(renders):
         f"the refresh job runs {ext.group(1)}, the declarative extension image. "
         "That artifact has no shell and the workflow cannot start. Use a "
         "postgres RUNTIME image carrying pg_dump, pg_restore and psql."
+    )
+
+
+def test_dev_does_not_write_to_productions_backup_store(renders):
+    """The backup destination is an identity too, and a destructive one.
+
+    postgres.backup.destinationPath is a fixed string in the chart's values
+    (s3://monolith-pg-backups/monolith-pg), not derived from the release. So
+    inheriting `enabled: true` does not give dev its own catalogue, it aims dev
+    at production's: two CNPG clusters writing one barman object store, where
+    dev's retentionPolicy prunes production's base backups and WALs. The
+    mechanism protecting production's data becomes the one deleting it, and
+    nothing errors at render time.
+
+    Same shape as the CronWorkflow case: a name that reads descriptive and is
+    already somebody's identity.
+    """
+
+    def destinations(env):
+        return {m.strip("\"'") for m in _DESTINATION.findall(renders[env])}
+
+    prod_dest = destinations("prod")
+    dev_dest = destinations("dev")
+
+    shared = prod_dest & dev_dest
+    assert not shared, (
+        f"dev and production both back up to {sorted(shared)}. One barman "
+        "catalogue with two clusters writing it: dev's retentionPolicy prunes "
+        "production's backups. Keep postgres.backup.enabled false in dev's "
+        "overlay, or give dev a release-scoped destinationPath."
+    )
+    # Guard the guard. Disjointness is vacuous if production stopped rendering a
+    # backup destination, which is exactly the state #4714 was filed about: the
+    # whole block sat behind `enabled: false` and every render was empty.
+    assert prod_dest, (
+        "production renders no backup destinationPath, so it has no backups at "
+        "all and this comparison proves nothing. Check "
+        "postgres.backup.enabled in projects/monolith/deploy/values.yaml."
+    )
+
+    # Positive control: dev is safe only because its overlay says so. Force
+    # backups on for dev and it lands on production's exact path. If this ever
+    # stops holding, the path became release-scoped and the assertion above can
+    # be relaxed; until then it is the only thing standing between the two.
+    chart = _chart_dir()
+    forced_dev = _render(
+        _release_name(Path(os.environ["DEV_APPLICATION"])),
+        [
+            chart / "values.yaml",
+            Path(os.environ["DEPLOY_VALUES"]),
+            Path(os.environ["DEV_VALUES"]),
+            _FORCED_BACKUP,
+        ],
+    )
+    forced_dest = {m.strip("\"'") for m in _DESTINATION.findall(forced_dev)}
+    assert forced_dest & prod_dest, (
+        "forcing backups on for dev no longer collides with production "
+        f"({sorted(forced_dest)} vs {sorted(prod_dest)}), so this test is no "
+        "longer guarding a live hazard. Either the path became release-scoped "
+        "(good, say so here) or the render broke."
     )

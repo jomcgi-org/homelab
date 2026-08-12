@@ -71,6 +71,18 @@ postgres:
   # Applications would fight over it on every sync.
   devRefresh:
     enabled: false
+  # Production owns the backups and dev must NOT take them. destinationPath is a
+  # fixed string in the chart's values (s3://monolith-pg-backups/monolith-pg),
+  # not derived from the release, so an inherited `true` would aim dev's
+  # monolith-dev-pg at production's barman catalogue: two clusters writing one
+  # object store, with dev's 14 day retention pruning production's base backups
+  # and WALs. The thing meant to protect production's data would be the thing
+  # deleting it.
+  #
+  # Dev is reseeded from production nightly, so it holds nothing a backup would
+  # protect. chart_env_identity_test asserts the two never share a destination.
+  backup:
+    enabled: false
 
 # The WhatsApp bridge holds a REAL external identity: it starts with
 # bot_number +12369923104, the production account, and a second bridge would
