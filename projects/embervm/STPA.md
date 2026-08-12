@@ -103,7 +103,7 @@ flowchart TD
 | `api.admit_task` | logical | Authenticate + admit a task/session submission | `api` → `dispatcher` | built | projects/embervm/control/lib/embervm/router.ex:33 |
 | `control-plane.grpc_command` | physical | BuildBase / Prime / Assign / Destroy / DeleteVolume / RestoreArtifact | `control-plane` → `noded` | built | projects/embervm/proto/embervm/node/v1/node.proto:57 |
 | `dispatcher.quota_gate` | logical | Fail-closed per-principal budget check before dispatch | `dispatcher` → `op-log` | built | projects/embervm/control/lib/embervm/dispatcher.ex:258 |
-| `egress-proxy.inject_credential` | physical | Header-inject a credential, host-keyed by egressTo | `egress-proxy` → `external-host` | built | projects/embervm/ARCHITECTURE.md:646 |
+| `egress-proxy.inject_credential` | physical | Header-inject a credential, host-keyed by egressTo | `egress-proxy` → `external-host` | built | projects/embervm/ARCHITECTURE.md:642 |
 | `node-envoy.dnat_route` | physical | Kernel DNAT of serving traffic into guest tap | `node-envoy` → `guest-vm` | built | projects/embervm/ARCHITECTURE.md:145 |
 | `noded.artifact_verb` | physical | ExportArtifact / RestoreArtifact / EvictArtifact | `noded` → `s3-store` | built | projects/embervm/proto/embervm/node/v1/node.proto:463 |
 | `noded.vsock_dispatch` | physical | Dispatch payload to guest over vsock (no NIC) | `noded` → `guest-vm` | built | projects/embervm/ARCHITECTURE.md:142 |
@@ -117,7 +117,7 @@ flowchart TD
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|----|
 | `control-plane.grpc_command.providing` | physical | `control-plane.grpc_command` | providing | an actor other than the control plane issues BuildBase/Prime/Assign/Destroy/DeleteVolume/RestoreArtifact to a brick, since noded runs with no bearer token and no NetworkPolicy selects it | high | open-node-control-channel | projects/embervm/noded/cmd/main.go:245 |
-| `egress-proxy.inject_credential.providing` | physical | `egress-proxy.inject_credential` | providing | the proxy injects a real credential into any request whose destination host is allowlisted, regardless of what the guest-originated request actually asks that host to do, so a prompt-injected guest can direct the credentialed call | medium | host-keyed-credential-overreach | projects/embervm/ARCHITECTURE.md:671 |
+| `egress-proxy.inject_credential.providing` | physical | `egress-proxy.inject_credential` | providing | the proxy injects a real credential into any request whose destination host is allowlisted, regardless of what the guest-originated request actually asks that host to do, so a prompt-injected guest can direct the credentialed call | medium | host-keyed-credential-overreach | projects/embervm/ARCHITECTURE.md:667 |
 
 ## Unsafe feedback
 
@@ -139,16 +139,14 @@ flowchart TD
 
 ## Open questions
 
-- The dial-home re-registration hijack is tracked separately from #4693 as
-  #4707: mTLS/SPIFFE closes the transport gap but does not by itself bind a
-  registration to the brick that holds (node, pod_uid) unless the client-cert
-  identity is checked against it, so #4707 covers that binding.
-- The anonymous default S3 gateway is tracked separately from #4691 as #4708:
-  at-rest encryption does not stop an anonymous caller from overwriting or
-  deleting an object before it is read, so #4708 covers authenticated store
-  access as a distinct integrity and availability control.
-- The interruptible-bank checkpoint commit/abort protocol is tracked as #4704
-  in the TLA+ backlog (#4706): it is the one lifecycle sub-protocol this
-  analysis found with a documented crash-ordering argument but zero
-  model-checked coverage.
+- None. Every residual gap above carries a tracking issue, and two were
+  split into their own issues on purpose: #4707 (dial-home re-registration
+  binding) is separate from #4693 because mTLS/SPIFFE closes the transport
+  gap without binding a registration to the brick that holds (node,
+  pod_uid); #4708 (authenticated store access) is separate from #4691
+  because at-rest encryption does not stop an anonymous caller overwriting
+  or deleting an object before it is read. The interruptible-bank
+  checkpoint commit/abort protocol, the one lifecycle sub-protocol with a
+  documented crash-ordering argument and zero model-checked coverage, is
+  #4704 in the TLA+ backlog (#4706).
 
