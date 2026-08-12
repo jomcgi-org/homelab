@@ -10,6 +10,20 @@ spec:
     # identical artifact with a thin values overlay, so what gets promoted is
     # what was exercised.
     #
+    # A STALE PIN HERE SILENTLY DISABLES DEV'S SAFETY GATES, and it did.
+    #
+    # Pinned at 0.288.3 while production ran 0.291.0, dev rendered
+    # ships.jomcgi.dev in monolith-dev alongside production's route on the same
+    # Gateway. The overlay sets cfIngress.shipsRedirect.enabled=false, but that
+    # gate was introduced in the SAME commit that introduced dev, so the chart
+    # version dev was pinned to had no `if` to read it. The value was set,
+    # spelled right, and consumed by nothing.
+    #
+    # Any dev-only guard added to this chart has that property: it lands in a
+    # chart version NEWER than whatever dev is pinned to, so dev is the one
+    # deployment it does not protect until this line moves. That is the argument
+    # for Kargo below, not merely convenience.
+    #
     # targetRevision here is owned by Kargo, which subscribes to this chart repo
     # by semver. Production's copy of this line is still written by the CI
     # write-back (bazel/helm/write-back-versions.sh), which resolves exactly one
@@ -18,7 +32,7 @@ spec:
     # PRODUCTION's pin is left alone.
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith
-      targetRevision: 0.288.3
+      targetRevision: 0.291.0
       helm:
         # releaseName MUST differ from production's. It briefly did not, and
         # ArgoCD refused the sync with:
