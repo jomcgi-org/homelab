@@ -48,6 +48,25 @@ promotion:
   # promotion is forward-only and cannot walk an environment backwards onto an
   # older chart.
   semverConstraint: ">=0.293.0"
+  # Written out because the CRD server-side defaults all three, and a field the
+  # chart omits but the API server sets is a diff ArgoCD can never close. The
+  # Warehouse sat permanently OutOfSync from the first install because of it.
+  #
+  # That is not cosmetic, and the failure it caused is worth the comment.
+  # selfHeal responds to drift by syncing ONLY the drifted resources, so a
+  # resource that can never converge emits a continuous stream of targeted
+  # single-resource syncs. Each one preempts the full sync, which then dies
+  # before reaching wave 1. Stage/prod was planned (`nil->obj`) and never
+  # applied, seven seconds before a Warehouse-only sync replaced the operation,
+  # and the Application reported Succeeded throughout because that targeted
+  # sync did succeed.
+  #
+  # So one unconvergeable resource starves every other resource in the same
+  # Application, with a green status the whole time. Values match what the API
+  # server sets; changing them here is fine, omitting them is not.
+  warehouseInterval: 5m0s
+  freightCreationPolicy: Automatic
+  discoveryLimit: 20
   # How the Applications spell their source. Helm wants registry + chart name
   # separately here, unlike the Warehouse above. Both environments run the SAME
   # chart, which is the whole point of the dev environment, so one pair covers
