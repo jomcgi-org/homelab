@@ -1256,6 +1256,42 @@ cfIngress:
     enabled: true
   private:
     enabled: true
+    # Which gate gets attached to this route. `cloudflare` is production's
+    # Access policy. `authentik` is for a deployment whose audience includes
+    # AGENTS: Access consumes the Authorization header at the edge, so a bearer
+    # token cannot survive it, and no amount of configuration changes that.
+    auth: cloudflare
+    # The GitHub Semgrep webhook route carries NO SecurityPolicy by design:
+    # GitHub bypasses Cloudflare Access at the edge via an IP-allowlist Bypass
+    # policy and sends no Access JWT, so any policy on it would reject every
+    # real delivery. Its gate is the handler's HMAC verification.
+    #
+    # That is correct for production and WRONG anywhere the hostname is not
+    # production's: an unauthenticated path on another host is a hole, and
+    # GitHub is not delivering there anyway. True here, false in dev.
+    githubWebhook:
+      enabled: true
+    authentik:
+      # authentik derives the OIDC issuer from the APPLICATION SLUG, not the
+      # provider name, so these two must track the slug in
+      # projects/platform/authentik/blueprints/dev-auth.yaml. Renaming the
+      # application silently breaks token validation.
+      issuer: "https://auth.jomcgi.dev/application/o/dev/"
+      jwksUri: "https://auth.jomcgi.dev/application/o/dev/jwks/"
+      # Pinned in Git in the blueprint too, because it is not a secret and this
+      # policy has to name it.
+      clientID: dev-monolith
+      # The provider's secret reaches this namespace through its OWN 1Password
+      # item, deliberately not authentik's, so this namespace never receives
+      # authentik's secret key and bootstrap credentials to read one value.
+      clientSecretName: dev-oidc-client
+      onepassword:
+        itemPath: "vaults/k8s-homelab/items/dev-oidc"
+      # Group NAMES (not ids) from authentik's default profile scope mapping.
+      # Renaming a group in authentik stops matching here, and the symptom is a
+      # 403 after a completely successful login.
+      allowedGroups:
+        - homelab-admin
     tier: trusted
     hostname: private.jomcgi.dev
     servicePort: 3000
