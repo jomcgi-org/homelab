@@ -57,7 +57,7 @@ Task recognition: phrases like "should deploy", "need to", "TODO", "blocked on",
 
 When a body names another distinct concept (a named tool, heuristic, person, framework, book, method, or term that could stand on its own as an atom), wrap it in `[[Concept Name]]`. Body wikilinks are how the graph grows: unresolved links queue as gaps that feed the research pipeline.
 
-- DO wikilink: named concepts that could each be their own atom (proper nouns, named heuristics/tools/frameworks, book titles). The load-bearing 3-5 references per atom.
+- DO wikilink: named concepts that could each be their own atom (proper nouns, named heuristics/tools/frameworks, book titles). The 3-5 references that carry the atom.
 - DON'T wikilink: generic words ("the team", "yesterday", "production"), multi-clause phrases, restatements of the atom's own title, or every domain noun. Quality over quantity.
 
 If a wikilink target already exists (check `search-knowledge`), prefer its exact slug. Otherwise write the natural title-cased form and let the gap-classifier/aliases system resolve it.

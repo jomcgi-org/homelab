@@ -78,7 +78,7 @@ Title rules: a concise title for the concept itself, matching the gap term's
 canonical form. Do NOT prefix with category labels like "(Concept)" (the `type`
 already captures that).
 
-## Aliases (load-bearing — this is how the gap resolves)
+## Aliases (this is how the gap resolves)
 
 `aliases` lists alternative human-readable forms of the title that resolve to
 this atom. A `[[wikilink]]` resolves against atom ids AND aliases. The gap term
@@ -96,8 +96,8 @@ atom (a named tool, theorem, person, framework, method, or term), wrap it in
 links queue as new gaps for a future research run.
 
 - DO wikilink: named concepts that could each be their own atom (proper nouns,
-  named theorems/tools/frameworks, people, book titles). The load-bearing 3-5
-  references per atom.
+  named theorems/tools/frameworks, people, book titles). The 3-5 references
+  that carry the atom.
 - DON'T wikilink: generic words, multi-clause phrases, restatements of the
   atom's own title, or every domain noun. Quality over quantity.
 

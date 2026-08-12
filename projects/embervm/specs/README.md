@@ -248,7 +248,7 @@ The invariants are:
   Unlike the six above, this one is maintained BY CONSTRUCTION (the two counters
   are only ever incremented together, and no action can separate them), so it
   documents the audit asymmetry rather than checking a property the model could
-  violate. It is listed for completeness, not as a load-bearing check.
+  violate. It is listed for completeness, and no audit result depends on it.
 
 The model uses uniform `TaskCost = 1` budget units. The implementation compares
 `used_cpu_ms / 1000 < budget` using FLOAT arithmetic, while the model uses integer
