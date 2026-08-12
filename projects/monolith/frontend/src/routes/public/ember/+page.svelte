@@ -125,7 +125,7 @@
     {
       done: true,
       name: "R6 continuity",
-      desc: "Snapshots and built boot images are recorded to S3: sessions restore after preemption, and a new node pulls ready images instead of rebuilding them. Workloads outlive the machine they ran on.",
+      desc: "Snapshots and built boot images are recorded to S3: sessions restore after preemption, and a new node pulls ready images instead of rebuilding them.",
     },
     {
       done: false,
@@ -135,12 +135,12 @@
     {
       done: true,
       name: "R8 consumers",
-      desc: "The agent platform runs on sessions as a first-class consumer, and the older per-agent daemon it grew out of is retired. Dogfooding was the acceptance test: the thing that runs this site's agents runs on the sandbox primitive.",
+      desc: "The agent platform runs on sessions as a first-class consumer, and the older per-agent daemon it grew out of is retired. Dogfooding was the acceptance test.",
     },
     {
       done: false,
       name: "R9 packaging",
-      desc: "Ember becomes a standalone artifact somebody else could run: no dependency on the rest of this cluster, an open-sourceable boundary rather than a folder in a homelab monorepo.",
+      desc: "Ember becomes a standalone artifact somebody else could run: no dependency on the rest of this cluster, a project somebody else could clone and run.",
     },
     {
       done: false,
@@ -150,7 +150,7 @@
     {
       done: false,
       name: "encryption at rest",
-      desc: "Each principal's snapshots and workspaces get their own envelope keys, platform-managed or held in the customer's own KMS, and a restore must prove principal, lineage, node, and lease before a key is released. A bulk copy of the store yields nothing readable.",
+      desc: "Each principal's snapshots and workspaces get their own envelope keys, platform-managed or held in the customer's own KMS, and a restore must prove principal, lineage, node, and lease before a key is released.",
     },
   ];
 </script>
@@ -170,7 +170,7 @@
     >
     {#if savedLine}
       <span class="saved"
-        >compute not spent while asleep · <b>{savedLine}</b></span
+        >memory-hours not spent while asleep · <b>{savedLine}</b></span
       >
     {/if}
   </header>
@@ -180,9 +180,8 @@
       <h1><span class="word">Ember</span></h1>
       <p class="lede">
         A workload orchestrator that runs untrusted code in hardware-isolated
-        <b>Firecracker microVMs</b>, built from scratch on this cluster: an
-        Elixir/OTP control plane scheduling onto a Go node daemon that drives
-        Firecracker directly. Services sleep as snapshots and wake on demand,
+        <b>Firecracker microVMs</b>, built from scratch on this cluster.
+        Services sleep as snapshots and wake on demand,
         <b>disk to answering queries in 78&nbsp;ms</b>.
       </p>
       <p class="live">
@@ -205,7 +204,7 @@
         <span class="sep">·</span>
         <span><b>~{vmRestore} ms</b> VM restore</span>
         <span class="sep">·</span>
-        <span>sleep state is live</span>
+        <span>sleeping now</span>
         <span class="sep">·</span>
         <a
           class="src"
@@ -217,23 +216,23 @@
 
     <section>
       <h2 class="h2" id="classes">
-        <a class="anchor" href="#classes">Three kinds of workload</a>
+        <a class="anchor" href="#classes">What Ember runs</a>
       </h2>
       <p class="body">
-        Everything Ember runs is declared as a Kubernetes custom resource. Three
-        classes are the core, and what separates them is
-        <b>how much of the machine the guest is allowed to touch</b>. Two more
-        are advanced options rather than pillars: <b>stateful</b> adds a disk
-        that outlives the VM (the database below), and <b>composite</b> groups several
-        VMs into one unit that wakes together.
+        Everything Ember runs is declared as a Kubernetes custom resource. There
+        are five workload classes: task, session, serving, stateful, and
+        composite. What separates them is <b
+          >how much of the machine the guest is allowed to touch</b
+        >. Stateful adds a disk that outlives the VM (the database below), and
+        composite groups several VMs into one unit that wakes together.
       </p>
       <dl class="classes">
         <div class="class">
           <dt>task<small>run once</small></dt>
           <dd>
             One-shot execution in a fresh or snapshot-restored VM.
-            <b>No network device at all</b>: the guest speaks only vsock to the
-            daemon, then the VM is destroyed.
+            <b>No network device at all</b>; the guest has one channel to the
+            host daemon and nothing else, then the VM is destroyed.
           </dd>
         </div>
         <div class="class">
@@ -249,12 +248,8 @@
         <div class="class">
           <dt>serving<small>always answering</small></dt>
           <dd>
-            A warm HTTP endpoint. The guest answers TCP over a tap NIC and a
-            per-node Envoy routes to it.
-            <b
-              >The control plane programs that Envoy and stays off the request
-              path</b
-            >.
+            A warm HTTP endpoint. Requests reach the guest directly; the control
+            plane is not in the path.
           </dd>
         </div>
       </dl>
@@ -265,11 +260,8 @@
         <a class="anchor" href="#uses">What that lets you run</a>
       </h2>
       <p class="body">
-        Three of the four run on this cluster today; the composite class
-        shipped, proved itself on a scratch Kubernetes cluster, and currently
-        waits for its next consumer. The design assumption behind each of them: <b
-          >the guest is hostile</b
-        >.
+        Three of the five have examples below. Every one of these assumes the
+        guest is hostile.
       </p>
       <dl class="classes">
         <div class="class">
@@ -290,20 +282,10 @@
           </dd>
         </div>
         <div class="class">
-          <dt>a Kubernetes cluster on demand<small>composite</small></dt>
-          <dd>
-            A scratch cluster (control plane and workers) as one composite
-            workload. The first <code>kubectl</code> woke
-            <b>the whole thing together</b>; the demo is retired, the class
-            remains.
-          </dd>
-        </div>
-        <div class="class">
           <dt>a public function, served warm<small>serving</small></dt>
           <dd>
             An image renderer answering real internet traffic from a warm
-            microVM, <b>rate-limited and quota-capped</b> so untrusted traffic cannot
-            spend more than it is allowed to.
+            microVM, <b>rate-limited and quota-capped</b>.
           </dd>
         </div>
       </dl>
@@ -494,16 +476,21 @@
       </div>
       <p class="arch-punch">
         <b>Serving requests never touch the control plane.</b> The edge routes to
-        a node-local Envoy the control plane has already programmed, and the kernel
-        DNATs the connection into the VM. The control plane can restart mid-request;
-        serving traffic notices nothing.
+        a node-local Envoy the control plane has already programmed, and the connection
+        goes straight into the VM. The control plane can restart mid-request; serving
+        traffic notices nothing.
       </p>
     </section>
 
     <section>
       <h2 class="h2" id="iso"><a class="anchor" href="#iso">Isolation</a></h2>
       <div class="iso">
-        <p><b>No VM and no snapshot lineage ever crosses a principal.</b></p>
+        <p>
+          <b
+            >No VM, and nothing it was restored from, is ever shared between two
+            customers.</b
+          >
+        </p>
         <p>
           The task class has <b>no network device at all</b>. The guest can
           reach exactly one thing: the daemon, over vsock.
@@ -512,10 +499,8 @@
           <b>Quotas fail closed.</b> A principal with quota 0 is hard-stopped at submit.
         </p>
         <p>
-          <b>Enforcement fails closed; counting fails open.</b> A node cut off from
-          the control plane keeps running and keeps counting, and unreconciled spend
-          is written off. Refusing to run a workload to protect an internal cost number
-          is the wrong trade.
+          If a node loses contact with the control plane it keeps running the
+          work and keeps its own tally.
         </p>
         <p>
           The one public route is scoped at <b>three independent layers</b>: the
@@ -529,11 +514,6 @@
       <h2 class="h2" id="live-exhibits">
         <a class="anchor" href="#live-exhibits">See it run</a>
       </h2>
-      <p class="body">
-        Three of these exhibits run on the live system, through the same wake
-        path production uses; the other two explain the resume itself and the
-        agent lifecycle.
-      </p>
       <div class="doors">
         <a class="door" href="/ember/postgres">
           <span class="k">live demo</span>

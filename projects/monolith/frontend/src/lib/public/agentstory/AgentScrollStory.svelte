@@ -340,7 +340,7 @@
         <p class="sub">Killed on idle, rebuilt from disk or S3 on resume.</p>
         <div class="stats">
           <span><b>2.5 ms</b> VM resume</span><span class="sep">·</span><span
-            ><b>20 s</b> idle → VM destroyed</span
+            ><b>20 s</b> idle, then the VM is destroyed</span
           ><span class="sep">·</span><span
             ><b>0</b> real credentials inside</span
           >
@@ -486,7 +486,7 @@
                   y="85"
                   text-anchor="middle">off</text
                 ><g id="g-ram"></g><text class="nsub" x="424" y="176"
-                  >shim :1027 · vsock · no NIC</text
+                  >no network card · one channel to the host</text
                 ></g
               >
               <g id="g-scratch"
@@ -631,7 +631,7 @@
                     height="30"
                     rx="6"
                   /><text class="nsub frost" x="370" y="443"
-                    >session-workspace/&lt;lineage&gt; · 7 d gc</text
+                    >session-workspace/&lt;lineage&gt; · deleted after 7 days</text
                   ></g
                 ></g
               ><g id="g-brick3"
@@ -684,7 +684,7 @@
                 id="p-egress"
                 d="M642,259 L694,259"
               /><text class="elabel el-good" id="l-egress" x="700" y="228"
-                >swap → real header</text
+                >swap in the real header</text
               ><path
                 class="epath ep-good"
                 id="p-git"
@@ -749,7 +749,9 @@
       </div>
       <div>
         <dt class="s3">seaweedfs s3</dt>
-        <dd>retired workspaces · <b>survives the machine</b> · 7 d gc</dd>
+        <dd>
+          retired workspaces · <b>survives the machine</b> · deleted after 7 days
+        </dd>
       </div>
     </dl>
     <h2 class="h2">Keep going</h2>

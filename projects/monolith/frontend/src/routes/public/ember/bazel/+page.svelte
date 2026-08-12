@@ -222,7 +222,7 @@
         return;
       }
       if (body.busy) {
-        runError = "both copies are busy right now, try again in a moment";
+        runError = "The demo is busy right now. Try again in a moment.";
         return;
       }
       if (body.error) {
@@ -408,7 +408,7 @@
   <title>Ember Bazel Skyframe Query</title>
   <meta
     name="description"
-    content="Bazel's analysis graph (Skyframe) lives only in server memory, so every cold start recomputes it. Here it was computed once for Abseil (514 targets), snapshotted with Firecracker, and every query restores a throwaway copy: cold analysis replaced by a sub-second round trip, proven by bazel's own zero-re-analysis line."
+    content="Bazel's analysis graph (Skyframe) lives only in server memory, so every cold start recomputes it. Here it was computed once for Abseil (514 targets), snapshotted with Firecracker, and every query restores a throwaway copy."
   />
 </svelte:head>
 
@@ -425,8 +425,8 @@
     <header class="masthead">
       <h1><span class="ember-word">Ember</span> Bazel Skyframe Query</h1>
       <p class="lede">
-        Bazel recomputes its analysis graph (Skyframe) on every cold start:
-        minutes on a large monorepo, and remote execution can't help.
+        Ask a question about a 514-target C++ build graph and get the answer in
+        under a second, from a build server that was frozen mid-thought.
       </p>
       <p class="subtitle">
         <a class="inline-link" href="https://github.com/abseil/abseil-cpp"

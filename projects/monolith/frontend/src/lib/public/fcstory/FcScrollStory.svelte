@@ -505,7 +505,7 @@
                 ></div>
               </div>
               <span class="bar-note" style="left: 34%"
-                >guest_wait_ready {coldWait.ms.toLocaleString()} ms</span
+                >waiting for a useful guest · {coldWait.ms.toLocaleString()} ms</span
               >
             </div>
           </div>
@@ -576,7 +576,7 @@
     <p>
       This button replays one of the {restores.length} recorded runs at its true speed.
       No cluster is touched: the timings below were captured from the live daemon
-      and baked into this page. Blink and you miss it.
+      and baked into this page.
     </p>
     <ReplayWidget {restores} {PHASE_HUMAN} />
   </section>
