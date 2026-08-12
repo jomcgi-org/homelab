@@ -199,6 +199,7 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 | Observability work | `docs/observability.md` |
 | Alerting work | `docs/reference/observability-alerting.md` |
 | Frontend or design work: tokens, palette, motion, a11y | `.impeccable.md` (three scoped design systems, deliberately not converged) |
+| Writing or editing prose humans read: site copy, READMEs, runbooks, posts | `docs/writing.md` |
 | Operator changes | `projects/operators/best-practices.md` |
 | How a domain works today | `projects/<domain>/ARCHITECTURE.md` where one exists (`embervm` today). Source of truth for current state, and what to link to. The ADRs are rationale |
 | Design proposals and decision rationale | `docs/decisions/`, numbered per category. Never cite one as current state: an ADR records what was decided, not what shipped |
