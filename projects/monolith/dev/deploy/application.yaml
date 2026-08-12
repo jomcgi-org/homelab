@@ -20,13 +20,27 @@ spec:
       chart: monolith
       targetRevision: 0.288.3
       helm:
-        # releaseName matches production ON PURPOSE. Helm prepends the release
-        # name to every resource, so an identical name means dev renders
-        # byte-identical object names and any diff between environments is
-        # purely values. A distinct release name would also silently rewrite
-        # every in-cluster service DNS name, which is the failure mode
-        # CLAUDE.md warns about. The namespace is what separates the two.
-        releaseName: monolith
+        # releaseName MUST differ from production's. It briefly did not, and
+        # ArgoCD refused the sync with:
+        #
+        #   ClusterRole/monolith is part of applications argocd/monolith-dev
+        #   and monolith
+        #
+        # The reasoning for matching it was that identical names make dev a pure
+        # values diff against prod. That holds only for NAMESPACED objects. This
+        # chart also renders ClusterRole and ClusterRoleBinding, which are
+        # cluster-scoped, so an identical release name is not a neutral choice
+        # there, it is the same object claimed by two Applications with selfHeal
+        # on. ArgoCD's shared-resource protection caught it and left production
+        # owning them, which is the only reason this was a degraded dev app
+        # rather than an outage.
+        #
+        # The cost this was avoiding is real but small: a distinct release name
+        # rewrites every in-cluster DNS name (monolith-dev-pg-rw, not
+        # monolith-pg-rw). Nothing in deploy/values.yaml hardcodes a service URL
+        # (grep returns 0), and the one consumer that cares, the refresh
+        # CronWorkflow, addresses dev explicitly.
+        releaseName: monolith-dev
         # ORDER IS LOAD-BEARING. Production's values first, dev's overrides
         # second, because Helm lets later files win. This is what makes dev the
         # same configuration as prod minus a deliberate, reviewable diff, rather

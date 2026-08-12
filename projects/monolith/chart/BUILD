@@ -40,6 +40,35 @@ helm_chart(
 )
 
 py_test(
+    name = "chart_env_identity_test",
+    srcs = ["chart_env_identity_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith:module_configs",
+        "//projects/monolith/dev/deploy:application",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "//projects/monolith/deploy:application",
+        "//projects/monolith/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
+        # The Applications, so releaseName is read from where it is DECLARED.
+        "PROD_APPLICATION": "$(rootpath //projects/monolith/deploy:application)",
+        "DEV_APPLICATION": "$(rootpath //projects/monolith/dev/deploy:application)",
+    },
+    deps = ["@pip//pytest"],
+)
+
+py_test(
     name = "chart_env_vars_test",
     srcs = ["chart_env_vars_test.py"],
     data = [

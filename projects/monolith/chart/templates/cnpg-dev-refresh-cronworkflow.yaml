@@ -77,13 +77,13 @@ spec:
           env:
             - name: PROD_PGHOST
               value: monolith-pg-ro.monolith.svc.cluster.local
-            # monolith-pg-rw, NOT monolith-dev-pg-rw. The dev Application uses
-            # releaseName `monolith` deliberately, so its resources carry the
-            # same names as production's and only the NAMESPACE differs. The
-            # namespace is therefore the only thing distinguishing these two
-            # hosts, which is exactly what the guard above checks for.
+            # monolith-dev-pg-rw: the dev Application runs this chart under
+            # releaseName `monolith-dev`, which it must, because the chart also
+            # renders cluster-scoped RBAC that two Applications cannot both own.
+            # So dev's resources carry a distinct prefix AND live in a distinct
+            # namespace, and the guard above checks the host for `monolith-dev`.
             - name: DEV_PGHOST
-              value: monolith-pg-rw.monolith-dev.svc.cluster.local
+              value: monolith-dev-pg-rw.monolith-dev.svc.cluster.local
             - name: DUMP_ROLE
               value: {{ .Values.postgres.devRefresh.role | quote }}
             - name: DUMP_PASSWORD
