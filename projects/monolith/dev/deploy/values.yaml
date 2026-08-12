@@ -71,3 +71,26 @@ postgres:
 # identity, and dev must not claim production's.
 whatsapp:
   enabled: false
+
+# NO Argo CronWorkflows in dev, and this is the third identity collision this
+# overlay has had to close.
+#
+# cronworkflows.yaml names each job `{{ .name }}` with NO release prefix, and
+# renders them into jobs.workflowNamespace (monolith-workflows) rather than the
+# release namespace. So dev and production render IDENTICALLY NAMED objects into
+# ONE namespace, and dev's Application took ownership of production's scheduled
+# jobs: campsites-refresh in monolith-workflows came back labelled
+# app.kubernetes.io/instance: monolith-dev.
+#
+# Their DATABASE_URL is jobs.dbSecretName, the Kyverno-cloned PRODUCTION
+# credential, so these run against production's database with whatever image
+# dev's chart version pins.
+#
+# Blanking jobs.image rather than emptying jobs.cronWorkflows, deliberately.
+# The list also drives ARGO_JOBS on the backend, which is what makes the app
+# SKIP registering these jobs in-process ("so they never run in both places").
+# Emptying the list would render no CronWorkflows and simultaneously re-enable
+# the in-process copies. Blanking the image disables the CronWorkflows at their
+# own gate while leaving ARGO_JOBS populated, so dev runs them nowhere.
+jobs:
+  image: ""
