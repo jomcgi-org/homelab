@@ -27,7 +27,7 @@
   <title>Ember Postgres</title>
   <meta
     name="description"
-    content="Postgres scaling to zero on Firecracker microVMs with sub-second resume from disk to memory. Query it live: every number on this page is a real measurement, not a mockup."
+    content="Postgres scaling to zero on Firecracker microVMs with sub-second resume from disk to memory. Query it live. Every number is a real measurement, baked in at build time."
   />
 </svelte:head>
 
@@ -46,8 +46,8 @@
     <header class="masthead">
       <h1><span class="ember-word">Ember</span> Postgres</h1>
       <p class="subtitle">
-        Postgres scaling to zero on Firecracker microVMs with sub-second resume
-        from disk to memory.
+        A real Postgres that sleeps when nobody is using it. Wake it yourself
+        and watch the clock.
       </p>
     </header>
 
