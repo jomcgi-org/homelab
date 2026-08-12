@@ -1,8 +1,8 @@
-{{- if .Values.devPromotion.enabled }}
+{{- if .Values.promotion.enabled }}
 {{- /*
-Kargo owns the dev environment's chart version, and NOTHING else.
+Kargo owns the monolith's chart version in both environments, and NOTHING else.
 
-WHY THIS EXISTS. projects/monolith/dev/deploy/application.yaml pins an OCI
+WHY THIS EXISTS. projects/monolith/dev/deploy/application.yaml pinned an OCI
 chart version that nothing moved. bazel/helm/write-back-versions.sh resolves
 exactly one deploy/application.yaml per chart, and that is production's, so dev
 was invisible to it. That stale pin failed twice in one night (#4728): once
@@ -19,50 +19,59 @@ descriptive and is already someone's identity.
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Project
 metadata:
-  name: {{ .Values.devPromotion.project }}
+  name: {{ .Values.promotion.project }}
   annotations:
-    # Wave 0: this Project CREATES the namespace the Warehouse and Stage live
+    # Wave 0: this Project CREATES the namespace the Warehouse and Stages live
     # in, so it must be admitted before they are applied. Without waves ArgoCD
-    # applies all three in one pass and the other two fail with
+    # applies them all in one pass and the rest fail with
     # `namespaces "kargo-monolith" not found`, which is what happened on the
     # first install.
     argocd.argoproj.io/sync-wave: "0"
 
 ---
 {{- /*
-AUTO-PROMOTION. Without this the Warehouse discovers Freight, the Stage reports
-"Stage has no current Freight", and NOTHING promotes: autoPromotionEnabled
-defaults to false, so a fresh install looks fully wired and silently does
-nothing. That is exactly what the first install did.
+AUTO-PROMOTION. Without this the Warehouse discovers Freight, each Stage
+reports "Stage has no current Freight", and NOTHING promotes:
+autoPromotionEnabled defaults to false, so a fresh install looks fully wired
+and silently does nothing. That is exactly what the first install did.
 
 It lives on ProjectConfig, not Project: in Kargo 1.9 the Project spec is empty
 and promotionPolicies moved here.
 
 stageSelector rather than the `stage` field, which the CRD marks deprecated.
-The selector takes a name directly, so this needs no labels on the Stage.
+The selector takes a name directly, so this needs no labels on the Stages.
 
-Auto-promotion is right for THIS stage specifically: the schema notes it is
-"commonly set to true for Stages that subscribe to Warehouses instead of other,
-upstream Stages". Dev subscribes to a Warehouse and has no upstream to gate on.
-A production stage would not want this.
+The schema notes auto-promotion is "commonly set to true for Stages that
+subscribe to Warehouses instead of other, upstream Stages", which is an
+argument for gating prod rather than a prohibition. It is on for prod anyway,
+and that is a deliberate first step: the pipeline is being proven end to end
+before a gate is added, and today it is risk-equivalent to the CI write-back it
+replaces. Flipping this one value to false is the hold, and is also the manual
+promotion path if that is wanted later.
 */}}
 apiVersion: kargo.akuity.io/v1alpha1
 kind: ProjectConfig
 metadata:
-  name: {{ .Values.devPromotion.project }}
-  namespace: {{ .Values.devPromotion.project }}
+  name: {{ .Values.promotion.project }}
+  namespace: {{ .Values.promotion.project }}
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   promotionPolicies:
+    {{- range .Values.promotion.stages }}
     - stageSelector:
-        name: dev
-      autoPromotionEnabled: true
+        name: {{ .name }}
+      autoPromotionEnabled: {{ .autoPromotion }}
+    {{- end }}
 ---
 {{- /*
 Subscribes to the chart repository, not to images. Images are already pinned by
 DIGEST into the chart at build time by helm_images_values, so the chart version
 is the only thing that moves and the only thing worth watching.
+
+ONE Warehouse for both Stages. Both environments run the same chart, so a
+second subscription would only create a second opinion about what "latest"
+means.
 
 An OCI chart repository holds versions of ONE chart, so Kargo identifies it by
 repoURL alone (no chart name field), unlike Helm which wants both.
@@ -77,12 +86,13 @@ metadata:
     # guaranteed failure; the retry covers the remaining race.
     argocd.argoproj.io/sync-wave: "1"
   name: monolith-chart
-  namespace: {{ .Values.devPromotion.project }}
+  namespace: {{ .Values.promotion.project }}
 spec:
   subscriptions:
     - chart:
-        repoURL: {{ .Values.devPromotion.chartRepo | quote }}
-        semverConstraint: {{ .Values.devPromotion.semverConstraint | quote }}
+        repoURL: {{ .Values.promotion.chartRepo | quote }}
+        semverConstraint: {{ .Values.promotion.semverConstraint | quote }}
+{{- range .Values.promotion.stages }}
 ---
 {{- /*
 PROMOTION PATCHES THE LIVE APPLICATION rather than committing to git, which is
@@ -93,19 +103,24 @@ Ruleset 9180009 on the default branch carries required_status_checks, and its
 only bypass actor is RepositoryRole 5 (admin). A push to main from a non-admin
 identity is refused, so the git path would need an ADMIN-scoped token living in
 the cluster. The repo's own guidance is never to make CI a ruleset bypass
-actor, and an admin PAT for a dev-only promotion is a far larger surface than
-the problem.
+actor, and an admin PAT is a far larger surface than the problem.
 
 argocd-update needs no credential at all: it is a Kubernetes RBAC permission
 the controller already holds, and the charts are public so the Warehouse needs
 no registry credential either. ADR 009 called the git write credential "the
 main new surface"; this design removes it.
 
-THE COST, stated plainly: dev's targetRevision stops being git truth. It lives
-in the live Application, and the `canada` root app must be told to ignore that
-one field or it will revert every promotion. That patch is manual and
-documented in this chart's README, because `canada` is a bootstrap resource and
-is not in this repo.
+THE COST, stated plainly: targetRevision stops being git truth. It lives in the
+live Application, and the `canada` root app must be told to ignore that one
+field per Application or it will revert every promotion. Those patches are
+manual and documented in this chart's README, because `canada` is a bootstrap
+resource and is not in this repo.
+
+That is also the REVERT LEVER, and the reason the CI write-back is being left
+in place for now rather than deleted alongside this. It keeps writing a correct
+value into production's application.yaml, so removing canada's
+ignoreDifferences entry hands production straight back to git with no
+scramble.
 */}}
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Stage
@@ -116,34 +131,48 @@ metadata:
     # admitted), so ArgoCD may still need one retry here. The wave removes the
     # guaranteed failure; the retry covers the remaining race.
     argocd.argoproj.io/sync-wave: "1"
-  name: dev
-  namespace: {{ .Values.devPromotion.project }}
+  name: {{ .name }}
+  namespace: {{ $.Values.promotion.project }}
 spec:
   requestedFreight:
     - origin:
         kind: Warehouse
         name: monolith-chart
       sources:
+        {{- if .upstream }}
+        # Receives only Freight an upstream Stage has already taken, so a chart
+        # cannot reach this environment without having deployed somewhere else
+        # first. `direct` is deliberately absent: setting both would let the
+        # Warehouse feed this Stage straight past its upstream, which silently
+        # removes the ordering this line exists to create.
+        stages:
+          {{- range .upstream }}
+          - {{ . }}
+          {{- end }}
+        {{- else }}
+        # Nothing upstream: subscribes to the Warehouse itself.
         direct: true
+        {{- end }}
   promotionTemplate:
     spec:
       steps:
         - uses: argocd-update
           config:
             apps:
-              - name: {{ .Values.devPromotion.application }}
+              - name: {{ .application }}
                 namespace: argocd
                 sources:
                   # Must match the Application's source EXACTLY or the step
                   # matches nothing and reports success having changed nothing.
-                  - repoURL: {{ .Values.devPromotion.appSourceRepo | quote }}
-                    chart: {{ .Values.devPromotion.appSourceChart | quote }}
+                  - repoURL: {{ $.Values.promotion.appSourceRepo | quote }}
+                    chart: {{ $.Values.promotion.appSourceChart | quote }}
                     # Kargo's expression syntax uses dollar-brace-brace, which COLLIDES
                     # with Helm's own delimiters: rendering it inline
                     # makes Helm try to evaluate chartFrom as a Helm function
                     # and fail with `function "chartFrom" not defined`. Held in
                     # values.yaml instead, where Helm treats it as data and
                     # passes it through untouched for Kargo to evaluate.
-                    desiredRevision: {{ .Values.devPromotion.desiredRevisionExpr | quote }}
+                    desiredRevision: {{ $.Values.promotion.desiredRevisionExpr | quote }}
                     updateTargetRevision: true
+{{- end }}
 {{- end }}

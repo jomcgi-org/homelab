@@ -3,12 +3,32 @@ kind: Application
 metadata:
   name: monolith
   namespace: argocd
+  annotations:
+    # Kargo cannot modify an Application that has not opted in, so this is what
+    # authorizes promotion into production. Authority flows from the resource
+    # being changed rather than from the controller doing the changing, which
+    # is why every other Application in the cluster is protected by the mere
+    # absence of this line.
+    kargo.akuity.io/authorized-stage: kargo-monolith:prod
 spec:
   project: default
   sources:
     # Chart from OCI registry (pushed by CI via Bazel helm_push)
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith
+      # OWNED BY KARGO AT RUNTIME, not by this line. The `canada` root app
+      # needs BOTH an ignoreDifferences entry for
+      # /spec/sources/0/targetRevision AND the RespectIgnoreDifferences=true
+      # sync option, or Kargo's promotion is overwritten. See the chart README:
+      # ignoreDifferences alone suppresses DIFFING, not APPLYING, so the field
+      # survives idle reconciliation and is stamped back by the next real sync.
+      #
+      # bazel/helm/write-back-versions.sh still maintains this value,
+      # deliberately. That is the revert lever: drop canada's entry and
+      # production is handed straight back to a correct, bot-maintained value
+      # with nothing to reconstruct. Retiring the write-back is the LAST step
+      # of the cutover, not part of it. It is also why this line keeps moving
+      # and conflicting on rebase, which is expected rather than a bug.
       targetRevision: 0.295.2
       helm:
         releaseName: monolith

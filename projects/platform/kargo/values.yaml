@@ -31,20 +31,27 @@ kargo:
       # leaving it on to be auto-detected as absent.
       integrationEnabled: false
 
-# The dev promotion pipeline. Gated so the controller can land and be observed
+# The promotion pipeline. Gated so the controller can land and be observed
 # before it is given anything to promote.
-devPromotion:
+#
+# Named `promotion` rather than `devPromotion` since it acquired a production
+# stage. A key called devPromotion that owns the production Application is the
+# same class of trap this chart's templates already warn about twice: a name
+# that reads narrower than what it controls.
+promotion:
   enabled: true
   # NOT "monolith" or "monolith-dev": a Kargo Project owns a namespace of that
   # name and both already exist with live workloads in them.
   project: kargo-monolith
   chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith
-  # Floor at the version dev is pinned to today, so the first promotion is
-  # forward-only and cannot walk dev backwards onto an older chart.
+  # Floor at the version dev was pinned to when this was built, so the first
+  # promotion is forward-only and cannot walk an environment backwards onto an
+  # older chart.
   semverConstraint: ">=0.293.0"
-  application: monolith-dev
-  # How the dev Application spells its source. Helm wants registry + chart name
-  # separately here, unlike the Warehouse above.
+  # How the Applications spell their source. Helm wants registry + chart name
+  # separately here, unlike the Warehouse above. Both environments run the SAME
+  # chart, which is the whole point of the dev environment, so one pair covers
+  # them.
   appSourceRepo: ghcr.io/jomcgi/homelab/charts
   appSourceChart: monolith
   # KARGO expression, not Helm. Kept here because ${{ }} collides with Helm's
@@ -55,3 +62,24 @@ devPromotion:
   # receives literal backslashes. expr accepts either quote style, so using
   # single quotes here means nothing needs escaping.
   desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith').Version }}"
+  # Order is the pipeline. `upstream` is what makes it one rather than two
+  # independent subscribers: prod can only receive Freight that dev has already
+  # taken, so a chart reaches production having run somewhere first.
+  #
+  # NO verification gate yet, deliberately. Kargo's verification needs Argo
+  # Rollouts AnalysisTemplates and Rollouts is not installed, so "dev took it"
+  # is the only gate today. That is honest rather than sufficient: it proves a
+  # chart deployed, not that it works. Synthetic checks are the follow-up, and
+  # until they exist this is risk-equivalent to the CI write-back it replaces,
+  # since both act on a chart that only exists because a PR passed CI.
+  stages:
+    - name: dev
+      application: monolith-dev
+      # Subscribes to the Warehouse directly: nothing is upstream of dev.
+      upstream: []
+      autoPromotion: true
+    - name: prod
+      application: monolith
+      upstream:
+        - dev
+      autoPromotion: true
