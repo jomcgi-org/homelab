@@ -291,7 +291,7 @@
         {:else}
           <p class="stats">
             {count} dark-sky sites{#if topClearDark != null}
-              &middot; best {topClearDark} clear-dark hrs{/if}{#if agoLabel}
+              &middot; best {topClearDark} hrs of clear dark sky{/if}{#if agoLabel}
               &middot; updated {agoLabel} ago{/if}
           </p>
         {/if}
@@ -371,9 +371,9 @@
            twilight windows (down to -10 deg) and says so. -->
       {#if darkness === "none"}
         <div class="panel disclaimer" role="status">
-          No usable stargazing windows in Scotland this week: right now the
-          summer sky never gets dark enough, even for twilight. Astronomical
-          darkness returns by August.
+          The Scottish sky never gets properly dark at this time of year, so
+          there is nothing worth planning this week. Real darkness returns by
+          August.
         </div>
       {:else if darkness === "twilight"}
         <div class="panel disclaimer" role="status">
@@ -432,7 +432,7 @@
 
       {#if historyError}
         <div class="panel empty-state" role="status">
-          Historical data is unavailable right now. Try another month or check
+          Historical data is unavailable right now. Switch to Live, or check
           back shortly.
         </div>
       {:else if historyLoading && !histReady}
@@ -441,8 +441,7 @@
         </div>
       {:else if histReady && histCount === 0}
         <div class="panel empty-state" role="status">
-          No clear dark hours {historyScope}. The seasonal baseline comes from
-          the ERA5 reanalysis backfill.
+          No clear dark hours {historyScope}. Try another month.
         </div>
       {/if}
     {/if}

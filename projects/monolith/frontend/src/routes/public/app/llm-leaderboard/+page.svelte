@@ -41,6 +41,17 @@
   };
 
   const toolLabel = (t) => (t >= 0.999 ? "ok" : t > 0 ? "flaky" : "none");
+  const fmtDate = (iso) => {
+    if (!iso) return "n/a";
+    const date = new Date(`${iso}T12:00:00Z`);
+    if (Number.isNaN(date.getTime())) return "n/a";
+    return date.toLocaleDateString("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    });
+  };
 </script>
 
 <svelte:head>
@@ -56,13 +67,11 @@
     <div class="hero-mark">MODEL-BENCH</div>
     <h1>LLM Leaderboard</h1>
     <p class="lede">
-      An <strong>agentic</strong> coding benchmark over this homelab's real
-      monolith. Each model is dropped into a snapshot of the repo with file
-      tools and has to make the change itself over multiple turns; it is then
-      graded by the repo's
-      <strong>own tests</strong>. Tasks are tiered: a model must clear every
-      <strong>easy + standard</strong> task to <strong>qualify</strong> as
-      viable, and the <strong>hard</strong> tasks plus cost and speed rank the ones
+      An agentic coding benchmark over this homelab's real monolith. Each model
+      is dropped into a snapshot of the repo with file tools and has to make the
+      change itself over multiple turns; it is then graded by the repo's own
+      tests. Tasks are tiered: a model must clear every easy + standard task to
+      qualify as viable, and the hard tasks plus cost and speed rank the ones
       that do.
     </p>
     <div class="meta">
@@ -74,7 +83,7 @@
       <span class="dot">·</span>
       <span>harness {lb.harness_version}</span>
       <span class="dot">·</span>
-      <span>{lb.generated_at}</span>
+      <span>{fmtDate(lb.generated_at)}</span>
     </div>
   </header>
 
@@ -193,16 +202,15 @@
     </div>
     <div class="legend">
       <span
-        ><b>Tokens / Turns / Wall-time</b> are the <b>mean per task</b> (not the median):
-        the tasks vary ~5x in size, so the mean keeps a blow-up on one hard task visible
-        instead of hiding it. Open a row for the per-task split.</span
+        >Tokens / Turns / Wall-time are the mean per task, so one task blowing
+        up stays visible. Open a row for the per-task split.</span
       >
       <span
-        ><b>Hard / Tokens / Turns / Tools</b> are model-intrinsic (the
-        <b>self-host lens</b>); <b>Wall-time / Cost / $-per-solve</b> are the
-        <b>cloud lens</b>: the real time and money to rent this model versus the
-        Claude
-        <b>anchor</b> rows you would be replacing. Wall-time is via OpenRouter.</span
+        >Two ways to read this table: what you can run on your own GPU, and what
+        you can call in the cloud. Hard, tokens, turns, and tools describe the
+        first view. Wall-time, cost, and $-per-solve describe the second,
+        including OpenRouter time and money compared with the Claude reference
+        rows.</span
       >
     </div>
   </section>
@@ -277,10 +285,7 @@
       OpenRouter at list price. Tasks carry a difficulty <em>tier</em>: easy +
       standard form the qualification floor (miss one and a model is
       disqualified as not yet viable), while the hard tasks and the cost and
-      speed columns rank the ones that clear it. Regenerate with
-      <code>python3 -m bench report --json-out</code>
-      in
-      <code>projects/model-bench</code>.
+      speed columns rank the ones that clear it.
     </p>
   </footer>
 </div>

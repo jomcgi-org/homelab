@@ -198,7 +198,7 @@
   }
 
   function daysLabel(n) {
-    return n === 1 ? "1 clear day" : `${n} clear days`;
+    return n === 1 ? "1 clear night" : `${n} clear nights`;
   }
 
   // Clicking a row selects (and pans the map via the bindable); clicking the
@@ -313,7 +313,7 @@
     </nav>
     <p class="crumb-note">
       {#if generatedAt}As of {fmtGeneratedAt(generatedAt)}.
-      {/if}Green = open AND clear skies.
+      {/if}Green means the site is open and the sky is forecast clear.
     </p>
   </div>
 
@@ -370,7 +370,7 @@
         </div>
         {#if activeDates.size === 0}
           <p class="nights-hint">
-            Pick the nights you can go to see matching parks.
+            Pick the nights you are free, and matching parks will appear.
           </p>
         {/if}
       </div>
@@ -388,7 +388,7 @@
           aria-expanded={listOpen}
           onclick={() => (listOpen = !listOpen)}
         >
-          {listOpen ? "Hide" : "List"}
+          {listOpen ? "Hide" : "Show"}
         </button>
       </div>
 
@@ -397,7 +397,7 @@
           <div class="sort-row">
             <span class="control-label">Sort</span>
             <div class="toggle" role="group" aria-label="Sort parks by">
-              {#each [["best_score", "Score"], ["good_days", "Days"], ["name", "Name"]] as [key, label] (key)}
+              {#each [["best_score", "Clear-sky score"], ["good_days", "Days"], ["name", "Name"]] as [key, label] (key)}
                 <button
                   type="button"
                   class="seg"
@@ -415,7 +415,7 @@
                 type="checkbox"
                 class="check-input"
                 bind:checked={clearOnly}
-                aria-label="Show only parks with at least one clear-sky day"
+                aria-label="show only sites with at least one clear night"
               />
               Clear nights only
             </label>
@@ -521,9 +521,10 @@
       </div>
 
       <p class="detail-legend">
-        Check = sites bookable. Color: green (clear) to grey (cloudy or closed).
-        Each cell shows max temp (&deg;) and rain (mm, blue when wet). Hover for
-        cloud cover.
+        A check means the site is bookable. Green fades to grey as forecast
+        cloud increases, and closed sites are grey. The clear-sky score runs 0
+        to 100, higher is clearer. Each cell shows max temp (&deg;) and rain
+        (mm, blue when wet).
       </p>
     </section>
   {/if}
@@ -1245,7 +1246,7 @@
       overflow: hidden;
     }
 
-    /* Hide the "As of HH:MM UTC. Green = open AND clear skies." note on mobile.
+    /* Hide the generated status note on mobile.
        The same context is available in the legend pop-out and on desktop. */
     .crumb-note {
       display: none;

@@ -350,7 +350,7 @@
       <div
         class="outcome-bar"
         role="img"
-        aria-label="Top-two finish {top2Pct}%, best third {thirdPct}%, eliminated {elimPct}%"
+        aria-label="Top-two finish {top2Pct}%, best third-place spot {thirdPct}%, eliminated {elimPct}%"
       >
         {#if top2Pct > 0}
           <div class="seg seg-top2" style="width:{top2Pct}%">
@@ -360,7 +360,7 @@
         {#if thirdPct > 0}
           <div class="seg seg-third" style="width:{thirdPct}%">
             <span class="seg-num">{thirdPct}%</span>
-            <span class="seg-label">Best third-placed route</span>
+            <span class="seg-label">Best third-place spot</span>
           </div>
         {/if}
         {#if elimPct > 0}
@@ -376,7 +376,7 @@
           <strong>{top2Pct}%</strong>
         </li>
         <li>
-          <span class="key key-third"></span>Best third
+          <span class="key key-third"></span>Best third-place spot
           <strong>{thirdPct}%</strong>
         </li>
         <li>
@@ -395,8 +395,8 @@
       <div class="explainer-body">
         <p>
           It's a Monte Carlo simulation. Every remaining group game is played
-          out {nSims} times, and Scotland's chance is the share of those runs where
-          they reach the Round of 32.
+          out {nSims} times, and {countryName}'s chance is the share of those
+          runs where they reach the Round of 32.
         </p>
         <ol class="explainer-steps">
           <li>
@@ -426,15 +426,10 @@
           </li>
           <li>
             <strong>Aggregate over the runs.</strong> Across all {nSims} runs, the
-            qualify chance, the top-two versus best-third split, and each match's
-            swing are all just counts from the same set of simulations.
+            qualify chance, the split between the top-two and third-place routes,
+            and each match's swing are all just counts from the same set of simulations.
           </li>
         </ol>
-        <p class="explainer-fine">
-          Matches are simulated independently, and the two lowest FIFA
-          tiebreakers (disciplinary record and world ranking) aren't modelled,
-          they're sampled as coin-flips.
-        </p>
       </div>
     </details>
 
@@ -518,7 +513,7 @@
       </div>
       <ul class="zone-legend">
         <li><span class="zone-key zone-top2"></span>1&ndash;2 qualify</li>
-        <li><span class="zone-key zone-third"></span>3rd: best-third route</li>
+        <li><span class="zone-key zone-third"></span>Best third-place spot</li>
         <li><span class="zone-key zone-out"></span>4th: out</li>
       </ul>
     </section>
@@ -528,8 +523,7 @@
       <h2 class="block-title">Matches that could change it</h2>
       <p class="block-sub">
         Each remaining match, ranked by how much its result moves {countryName}'s
-        qualify chance. The three figures are {countryName}'s qualify chance
-        after each outcome.
+        qualify chance.
       </p>
 
       {#if swings.length === 0}
@@ -547,8 +541,8 @@
               <div class="swing-head">
                 <span class="fixture">
                   <span class="rank">{String(i + 1).padStart(2, "0")}</span>
-                  {m.home_code} <span class="v">v</span>
-                  {m.away_code}
+                  {m.home_name} <span class="v">v</span>
+                  {m.away_name}
                   {#if m.is_own_match}
                     <span class="badge own">{countryName}</span>
                   {/if}
@@ -562,7 +556,7 @@
                     <span class="swing-fill" style="width:{swingBar(m.swing)}%"
                     ></span>
                   </span>
-                  &plusmn;{points(m.swing)}
+                  &plusmn;{points(m.swing)} pts
                 </span>
               </div>
               <p class="kickoff">{fmtKick(m.kickoff)}</p>
@@ -587,7 +581,7 @@
                   class="out {deltaClass(m.p_qualify_home_win)}"
                   class:best={pctNum(m.p_qualify_home_win) === best}
                 >
-                  <span class="out-label">If {m.home_code} win</span>
+                  <span class="out-label">If {m.home_name} win</span>
                   <span class="out-num">{pct(m.p_qualify_home_win)}</span>
                   {#if deltaAbs(m.p_qualify_home_win) > 0}
                     <span class="out-delta"
@@ -615,7 +609,7 @@
                   class="out {deltaClass(m.p_qualify_away_win)}"
                   class:best={pctNum(m.p_qualify_away_win) === best}
                 >
-                  <span class="out-label">If {m.away_code} win</span>
+                  <span class="out-label">If {m.away_name} win</span>
                   <span class="out-num">{pct(m.p_qualify_away_win)}</span>
                   {#if deltaAbs(m.p_qualify_away_win) > 0}
                     <span class="out-delta"

@@ -83,7 +83,7 @@
           CONTINUE THIS CHAT
         </button>
       {/if}
-      <a class="bar-btn" href="/public/app/notes">START YOUR OWN CHAT</a>
+      <a class="bar-btn" href="/app/notes">START YOUR OWN CHAT</a>
     </div>
 
     <div class="chat-transcript">
@@ -100,11 +100,11 @@
               <p class="bot-label">{BOT_LABEL}</p>
               <div class="turn-md">{@html renderReply(m.content)}</div>
               {#if m.touched && m.touched.length}
-                <!-- The same GROUNDED IN set the live app shows, persisted on
+                <!-- The same BASED ON set the live app shows, persisted on
                      the assistant turn and carried into the snapshot. Static
                      labels here (read-only view: there is no graph to open). -->
                 <div class="turn-touched">
-                  <span class="turn-touched-label">GROUNDED IN</span>
+                  <span class="turn-touched-label">BASED ON</span>
                   {#each m.touched as n}
                     <span class="touched-chip"
                       >{n.title || "untitled note"}</span
@@ -123,8 +123,7 @@
         <p class="fork-eyebrow">CONTINUE THIS CHAT</p>
         <p class="fork-copy">
           Solve the challenge to pick up this conversation in a fresh session.
-          The transcript above is carried over and you can keep asking from
-          there. No sign-in, no tracking beyond what keeps the bots out.
+          No sign-in, no tracking beyond what keeps the bots out.
         </p>
         <TurnstileGate
           siteKey={data.turnstileSiteKey}
@@ -136,12 +135,9 @@
 
     <div class="share-foot">
       <p class="share-foot-copy">
-        This is a read-only snapshot of a conversation with an open model
-        running on my homelab cluster.
+        A frozen copy of a chat with a model running on my own machines.
       </p>
-      <a class="share-cta" href="/public/app/notes"
-        >Start your own chat &rarr;</a
-      >
+      <a class="share-cta" href="/app/notes">Start your own chat &rarr;</a>
     </div>
   </section>
 </main>
@@ -407,7 +403,7 @@
     letter-spacing: 0.06em;
   }
 
-  /* Grounding chips under a bot turn: same look as the live app's GROUNDED IN
+  /* Grounding chips under a bot turn: same look as the live app's BASED ON
      row, but static (no graph to open in a read-only snapshot). */
   .turn-touched {
     display: flex;

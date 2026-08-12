@@ -233,7 +233,7 @@
     ...gpuItems,
     `CTX: ${fmtTokens(sessionTokens)} / ${CONTEXT_WINDOW / 1024}K`,
     `TOK/S: ${tokPerSec.toFixed(1)}`,
-    `KG: ${fmtCount(PUBLIC_NOTE_COUNT)} NOTES`,
+    `NOTES: ${fmtCount(PUBLIC_NOTE_COUNT)}`,
     "NO TOOLS / NO CLOUD / NO TELEMETRY",
   ]);
 
@@ -526,7 +526,7 @@
           <span class="panel-tag">PUBLIC CHAT</span>
           <span class="session" class:on={admitted}>
             <span class="led" class:on={admitted}></span>
-            {admitted ? "SESSION OPEN" : "LOCKED"}
+            {admitted ? "SESSION OPEN" : "NOT STARTED"}
           </span>
           <span class="panel-spacer"></span>
           {#if admitted && messages.length > 0}
@@ -629,9 +629,9 @@
                 ask my notes <span class="empty-hl">anything.</span>
               </h2>
               <p class="empty-sub">
-                There are {fmtCount(PUBLIC_NOTE_COUNT)} of them: coffee logs, ADRs,
-                dark-sky readings, half-finished side quests. An open model reads
-                the graph and answers. No tools, no cloud, no telemetry.
+                There are {fmtCount(PUBLIC_NOTE_COUNT)} of them: coffee logs, design
+                notes, dark-sky readings, half-finished side quests. A model running
+                on my own machines reads them and answers. Nothing leaves the house.
               </p>
               <div class="chat-examples">
                 {#each EXAMPLES as ex}
@@ -657,7 +657,7 @@
                   <div class="turn-md">{@html renderReply(m.content)}</div>
                   {#if m.touched && m.touched.length}
                     <div class="turn-touched">
-                      <span class="turn-touched-label">GROUNDED IN</span>
+                      <span class="turn-touched-label">BASED ON</span>
                       {#each m.touched as n}
                         <button
                           type="button"
