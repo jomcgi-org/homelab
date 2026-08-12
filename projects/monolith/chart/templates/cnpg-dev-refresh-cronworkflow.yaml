@@ -25,7 +25,7 @@ spec:
     templates:
       - name: refresh
         container:
-          image: {{ .Values.postgres.pgvector.image | quote }}
+          image: {{ .Values.postgres.devRefresh.refreshImage | quote }}
           command: ["/bin/sh", "-ceu"]
           args:
             - |

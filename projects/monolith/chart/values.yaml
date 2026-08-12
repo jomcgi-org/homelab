@@ -829,6 +829,21 @@ postgres:
     role: dump_reader
     # Argo CronWorkflow schedule, in UTC.
     cron: "0 4 * * *"
+    # The image the refresh JOB runs in. It needs a shell plus pg_dump,
+    # pg_restore and psql.
+    #
+    # NOT postgres.pgvector.image, which is what this first shipped as and could
+    # never work: that value is the declarative EXTENSION image for `vector`
+    # (see the extensions block above), a minimal artifact carrying extension
+    # binaries and no shell at all. The workflow died with
+    # `failed to find name in PATH: exec: "/bin/sh"`.
+    #
+    # Nor is it the cluster's own image: this chart never sets spec.imageName,
+    # so CNPG picks its operator default, and that default DIFFERS between
+    # clusters (production runs 18.1-system-trixie, dev 18.4). There is no
+    # in-chart value that names the running image, so pinning one here is the
+    # honest option rather than pretending to derive it.
+    refreshImage: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie
     # kubernetes.io/basic-auth secret in monolith, created out-of-band because
     # CNPG's passwordSecret needs a type and a cnpg.io/reload label that the
     # 1Password operator cannot emit (see deploy/embervm-oplog-secret.md). This

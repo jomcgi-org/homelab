@@ -265,3 +265,42 @@ def test_dev_mutes_leader_singletons_and_production_does_not(renders):
         'name: MONOLITH_LEADER_SINGLETONS\n              value: "true"'
         in renders["prod"]
     )
+
+
+def test_refresh_job_does_not_run_the_extension_image(renders):
+    """The refresh job needs a RUNTIME image, not an extension artifact.
+
+    This shipped pointing at postgres.pgvector.image, which is the declarative
+    EXTENSION image for `vector` (cnpg-cluster.yaml's extensions block): a
+    minimal artifact carrying extension binaries and no shell. The workflow
+    could never start:
+
+        failed to find name in PATH: exec: "/bin/sh": no such file or directory
+
+    It failed only when submitted by hand. On its own schedule it would have
+    failed at 04:00 with an exit code nobody was watching, leaving dev with an
+    empty database indefinitely.
+
+    Helm cannot check whether an image contains a shell, so this pins the thing
+    it CAN check: that the job and the extension are not the same image.
+    """
+    import re as _re
+
+    ext = _re.search(r"^\s+reference:\s*(\S+)\s*$", renders["prod"], _re.M)
+    assert ext, "no declarative extension image rendered; this test is inert"
+
+    job_images = _re.findall(
+        r"^\s+image:\s*[\"']?(\S+?)[\"']?\s*$",
+        "\n".join(
+            doc
+            for kind, _n, doc in _docs(renders["prod"])
+            if kind == "CronWorkflow" and "cnpg-dev-refresh" in doc
+        ),
+        _re.M,
+    )
+    assert job_images, "the refresh CronWorkflow did not render; this test is inert"
+    assert ext.group(1) not in job_images, (
+        f"the refresh job runs {ext.group(1)}, the declarative extension image. "
+        "That artifact has no shell and the workflow cannot start. Use a "
+        "postgres RUNTIME image carrying pg_dump, pg_restore and psql."
+    )
