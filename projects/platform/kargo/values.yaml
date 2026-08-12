@@ -1,0 +1,57 @@
+# Kargo, scoped to ONE job: owning the dev environment's chart version.
+#
+# Everything not needed for that is off, because each enabled integration
+# widens the controller's RBAC and the chart's own docs say explicitly
+# disabling is preferable to leaving an integration on and unused.
+kargo:
+  api:
+    # No UI or CLI surface for v1. It would need TLS, an ingress, and an auth
+    # decision (Dex or an admin account), none of which promotion requires:
+    # the CONTROLLER reconciles Warehouses, Stages and Promotions on its own.
+    # Kargo state is readable with kubectl until there is a reason to expose it.
+    enabled: false
+    rollouts:
+      integrationEnabled: false
+
+  controller:
+    argocd:
+      # REQUIRED, and the one integration that must stay on. The promotion step
+      # is argocd-update, which patches the Application; without this the
+      # controller does not watch Applications and "Argo CD-based promotion
+      # mechanisms will also fail" (chart docs).
+      integrationEnabled: true
+      namespace: argocd
+      # Applications live in argocd's own namespace here, but the chart's
+      # default (false) is the safe one and the docs advise leaving it.
+      watchArgocdNamespaceOnly: false
+    rollouts:
+      # Promotion needs NO Argo Rollouts. Rollouts is only for Kargo's
+      # verification features (AnalysisTemplates), which this stage does not
+      # use. Disabling explicitly grants the controller fewer permissions than
+      # leaving it on to be auto-detected as absent.
+      integrationEnabled: false
+
+# The dev promotion pipeline. Gated so the controller can land and be observed
+# before it is given anything to promote.
+devPromotion:
+  enabled: true
+  # NOT "monolith" or "monolith-dev": a Kargo Project owns a namespace of that
+  # name and both already exist with live workloads in them.
+  project: kargo-monolith
+  chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith
+  # Floor at the version dev is pinned to today, so the first promotion is
+  # forward-only and cannot walk dev backwards onto an older chart.
+  semverConstraint: ">=0.293.0"
+  application: monolith-dev
+  # How the dev Application spells its source. Helm wants registry + chart name
+  # separately here, unlike the Warehouse above.
+  appSourceRepo: ghcr.io/jomcgi/homelab/charts
+  appSourceChart: monolith
+  # KARGO expression, not Helm. Kept here because ${{ }} collides with Helm's
+  # delimiters and would be evaluated by the wrong engine if written inline.
+  # SINGLE quotes inside the expression, not double. Helm's `quote` wraps the
+  # value in double quotes and ESCAPES any inner ones, so a double-quoted
+  # argument renders as chartFrom(\"oci://...\") and Kargo's expression parser
+  # receives literal backslashes. expr accepts either quote style, so using
+  # single quotes here means nothing needs escaping.
+  desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith').Version }}"
