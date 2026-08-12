@@ -3,6 +3,20 @@ kind: Application
 metadata:
   name: monolith-dev
   namespace: argocd
+  annotations:
+    # Kargo will not touch an Application that has not opted in. Without this
+    # the promotion fails with:
+    #
+    #   Argo CD Application "monolith-dev" in namespace "argocd" is not authorized
+    #
+    # That is a deliberate guard, not an obstacle: it means installing Kargo
+    # cannot silently give it write access to every Application in the cluster,
+    # and production's Application is protected by simply never carrying this.
+    #
+    # Format is <kargo project>:<stage>. The project is kargo-monolith rather
+    # than monolith because a Kargo Project OWNS a namespace of its own name and
+    # both monolith and monolith-dev already exist.
+    kargo.akuity.io/authorized-stage: kargo-monolith:dev
 spec:
   project: default
   sources:
