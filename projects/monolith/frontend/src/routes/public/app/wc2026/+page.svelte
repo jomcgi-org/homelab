@@ -541,8 +541,9 @@
               <div class="swing-head">
                 <span class="fixture">
                   <span class="rank">{String(i + 1).padStart(2, "0")}</span>
-                  {m.home_name} <span class="v">v</span>
-                  {m.away_name}
+                  {codeToName[m.home_code] ?? m.home_code}
+                  <span class="v">v</span>
+                  {codeToName[m.away_code] ?? m.away_code}
                   {#if m.is_own_match}
                     <span class="badge own">{countryName}</span>
                   {/if}
@@ -581,7 +582,9 @@
                   class="out {deltaClass(m.p_qualify_home_win)}"
                   class:best={pctNum(m.p_qualify_home_win) === best}
                 >
-                  <span class="out-label">If {m.home_name} win</span>
+                  <span class="out-label"
+                    >If {codeToName[m.home_code] ?? m.home_code} win</span
+                  >
                   <span class="out-num">{pct(m.p_qualify_home_win)}</span>
                   {#if deltaAbs(m.p_qualify_home_win) > 0}
                     <span class="out-delta"
@@ -609,7 +612,9 @@
                   class="out {deltaClass(m.p_qualify_away_win)}"
                   class:best={pctNum(m.p_qualify_away_win) === best}
                 >
-                  <span class="out-label">If {m.away_name} win</span>
+                  <span class="out-label"
+                    >If {codeToName[m.away_code] ?? m.away_code} win</span
+                  >
                   <span class="out-num">{pct(m.p_qualify_away_win)}</span>
                   {#if deltaAbs(m.p_qualify_away_win) > 0}
                     <span class="out-delta"
