@@ -155,7 +155,7 @@ kill "$PF"
 ```
 
 The `headers` map reflects whatever the request carried, so exact keys vary; the
-load-bearing assertion is `body == "hello ember"` and `httpMethod == "POST"`.
+assertions that matter are `body == "hello ember"` and `httpMethod == "POST"`.
 
 **Timing:** the first `wait=true` after a fresh apply may 202-timeout (async)
 while the base is still building or the floor is priming; once the floor is

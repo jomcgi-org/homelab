@@ -39,7 +39,8 @@ routine): README prose is a human-voice artifact and Joe reviews it.
      deserves a bullet?
    - **Repo layout tree:** does every entry still exist? Is a genuinely major
      new project missing? The tree deliberately shows "major dirs" only, so do
-     NOT list every project, promote only ones that have become load-bearing.
+     NOT list every project, promote only ones the rest of the repo now
+     depends on.
    - **Infrastructure patterns table:** spot-check the volatile cells, model
      name and serving stack (grep `inference/` values and the actual deployed
      model), CI/GitOps/mesh tooling names. These drift silently.

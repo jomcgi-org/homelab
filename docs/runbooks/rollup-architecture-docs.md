@@ -144,7 +144,7 @@ A domain earns an `ARCHITECTURE.md` when an agent could read a stale decision
 as current state. Concretely, when either holds:
 
 - it has an ADR trail whose decisions were partially executed or reversed, or
-- its load-bearing knowledge spans three or more config files.
+- the knowledge other work depends on spans three or more config files.
 
 A domain failing both gets a good README as its entry point and nothing more.
 `projects/design-system` is a tokens directory whose real document is

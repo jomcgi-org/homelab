@@ -10,7 +10,7 @@ model-bench is an internal Python CLI that screens OpenRouter LLM models against
   file tools (`list_dir`/`read_file`/`write_file`/`done`) and edits the code itself over
   several turns. This is the primary contract: native tool-calling carries file content
   in API-serialized JSON, so the output-format noise that dominated single-shot is gone,
-  and it measures agentic reliability + token/turn efficiency, not just capability.
+  and it measures agentic reliability and token/turn efficiency alongside raw capability.
 
 ## SWE-bench-style real-monolith tasks
 

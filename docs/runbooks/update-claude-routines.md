@@ -113,7 +113,8 @@ spaces). The short names above already conform.
 6. **Build the API body.** Generate a fresh lowercase v4 UUID for
    `events[0].data.uuid` — yes, even on UPDATE. The API replaces the prior
    UUID without observable churn (verified empirically); preserving the
-   existing UUID via `RemoteTrigger get` is optional and not load-bearing.
+   existing UUID via `RemoteTrigger get` is optional; nothing depends on
+   the UUID surviving.
    The prompt content from the YAML goes in `events[0].data.message.content`
    verbatim.
 
