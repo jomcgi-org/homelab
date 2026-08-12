@@ -159,7 +159,7 @@
   <title>Ember · a workload orchestrator on Firecracker microVMs</title>
   <meta
     name="description"
-    content="A workload orchestrator that runs untrusted code in hardware-isolated Firecracker microVMs. Services sleep as snapshots and wake on demand, disk to memory in 78 ms. Includes a live Postgres you can wake yourself."
+    content="A workload orchestrator that runs untrusted code in hardware-isolated Firecracker microVMs. Services sleep as snapshots and wake on demand, disk to answering queries in 78 ms. Includes a live Postgres you can wake yourself."
   />
 </svelte:head>
 
@@ -183,7 +183,7 @@
         <b>Firecracker microVMs</b>, built from scratch on this cluster: an
         Elixir/OTP control plane scheduling onto a Go node daemon that drives
         Firecracker directly. Services sleep as snapshots and wake on demand,
-        <b>disk to memory in 78&nbsp;ms</b>.
+        <b>disk to answering queries in 78&nbsp;ms</b>.
       </p>
       <p class="live">
         <span class="dot {dotClass}"></span>
@@ -205,7 +205,7 @@
         <span class="sep">·</span>
         <span><b>~{vmRestore} ms</b> VM restore</span>
         <span class="sep">·</span>
-        <span>numbers are live</span>
+        <span>sleep state is live</span>
         <span class="sep">·</span>
         <a
           class="src"

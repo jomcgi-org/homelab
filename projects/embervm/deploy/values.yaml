@@ -231,12 +231,11 @@ bricks:
     mode: up
   # Per-node brick floor guarantees (PR-3, #35): pins one small brick onto a
   # specific node so it joins active duty instead of the fleet bin-packing
-  # everything onto node-4 and spilling under load. CANARY: node-1 only for
-  # now, to validate one floor brick before fanning out. node-2/node-3 are
-  # commented and ready; each needs its own scratch pre-flight (mountpoint +
-  # ~35Gi ext4 loop file) verified on the host BEFORE uncommenting - this is a
-  # values-only follow-up PR once the node-1 canary is confirmed healthy
-  # (registered in the CP, canary invoke lands a VM, no fleet_full flag).
+  # everything onto node-4 and spilling under load. All three master nodes
+  # (node-1/2/3) carry a live 2gi floor; each had its scratch pre-flight
+  # (mountpoint + ~35Gi ext4 loop file) verified on the host before being
+  # added. Adding a new floor node is a values-only change once that host's
+  # scratch is confirmed and a canary invoke lands a VM with no fleet_full flag.
   nodeFloors:
     - node: node-1
       class: 2gi
