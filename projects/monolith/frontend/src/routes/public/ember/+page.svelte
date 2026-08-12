@@ -120,7 +120,7 @@
     {
       done: true,
       name: "R5 composite",
-      desc: "A scratch Kubernetes cluster as one composite workload: control plane and workers wake together on the first kubectl.",
+      desc: "A scratch Kubernetes cluster as one composite workload: control plane and workers woke together on the first kubectl. The demo is since retired; the class awaits its next consumer.",
     },
     {
       done: true,
@@ -141,6 +141,16 @@
       done: false,
       name: "R9 packaging",
       desc: "Ember becomes a standalone artifact somebody else could run: no dependency on the rest of this cluster, an open-sourceable boundary rather than a folder in a homelab monorepo.",
+    },
+    {
+      done: false,
+      name: "transport auth",
+      desc: "Every control channel authenticates: a bearer token on the control-plane-to-daemon lane first, mTLS with per-node identity as the upgrade path.",
+    },
+    {
+      done: false,
+      name: "encryption at rest",
+      desc: "Each principal's snapshots and workspaces get their own envelope keys, platform-managed or held in the customer's own KMS, and a restore must prove principal, lineage, node, and lease before a key is released. A bulk copy of the store yields nothing readable.",
     },
   ];
 </script>
@@ -255,8 +265,11 @@
         <a class="anchor" href="#uses">What that lets you run</a>
       </h2>
       <p class="body">
-        All four run on this cluster today. The design assumption behind each of
-        them: <b>the guest is hostile</b>.
+        Three of the four run on this cluster today; the composite class
+        shipped, proved itself on a scratch Kubernetes cluster, and currently
+        waits for its next consumer. The design assumption behind each of them: <b
+          >the guest is hostile</b
+        >.
       </p>
       <dl class="classes">
         <div class="class">
@@ -280,8 +293,9 @@
           <dt>a Kubernetes cluster on demand<small>composite</small></dt>
           <dd>
             A scratch cluster (control plane and workers) as one composite
-            workload. The first <code>kubectl</code> wakes
-            <b>the whole thing together</b>.
+            workload. The first <code>kubectl</code> woke
+            <b>the whole thing together</b>; the demo is retired, the class
+            remains.
           </dd>
         </div>
         <div class="class">
