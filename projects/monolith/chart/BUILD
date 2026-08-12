@@ -47,10 +47,10 @@ py_test(
         "Chart.yaml",
         "values.yaml",
         "//projects/monolith:module_configs",
-        "//projects/monolith/dev/deploy:application",
-        "//projects/monolith/dev/deploy:deploy_values",
         "//projects/monolith/deploy:application",
         "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/dev/deploy:application",
+        "//projects/monolith/dev/deploy:deploy_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -93,6 +93,19 @@ py_test(
 semgrep_test(
     name = "chart_env_vars_test_semgrep_test",
     srcs = ["chart_env_vars_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "chart_env_identity_test_semgrep_test",
+    srcs = ["chart_env_identity_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",
