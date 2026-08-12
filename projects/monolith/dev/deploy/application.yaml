@@ -38,12 +38,25 @@ spec:
     # deployment it does not protect until this line moves. That is the argument
     # for Kargo below, not merely convenience.
     #
-    # targetRevision here is owned by Kargo, which subscribes to this chart repo
-    # by semver. Production's copy of this line is still written by the CI
-    # write-back (bazel/helm/write-back-versions.sh), which resolves exactly one
-    # deploy/application.yaml per chart and therefore cannot see this file. That
-    # split is deliberate: dev tracks automatically, and the script that moves
-    # PRODUCTION's pin is left alone.
+    # THE NUMBER BELOW IS NOT WHAT DEV IS RUNNING, and it never will be again.
+    #
+    # Kargo owns targetRevision at runtime for BOTH environments now (#4744),
+    # patching the live Application via argocd-update rather than committing
+    # here. `canada` carries an ignoreDifferences entry plus
+    # RespectIgnoreDifferences=true so the patch survives, which means ArgoCD
+    # reads this line only when the Application is first created. It is a
+    # bootstrap floor, not a record of anything.
+    #
+    # Read the live value instead:
+    #   kubectl get application monolith-dev -n argocd \
+    #     -o jsonpath='{.spec.sources[0].targetRevision}'
+    #
+    # Nothing updates this line: bazel/helm/write-back-versions.sh resolves
+    # exactly one deploy/application.yaml per chart and that is production's, so
+    # it cannot see this file. Production's copy IS still written by that
+    # script, deliberately and despite being inert, because it is the revert
+    # lever: drop canada's entry for `monolith` and production is handed back a
+    # current value with nothing to reconstruct.
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith
       targetRevision: 0.293.0
