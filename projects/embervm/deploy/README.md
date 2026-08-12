@@ -13,10 +13,12 @@ of the reference deployment in this monorepo.
 
 - The guest/etcd co-location clause from the architecture's deployment
   section is exercised here: the etcd masters carry task-class guests.
-- Live brick mix: `desiredReplicas` 2gi 1 and 16gi 1, with per-node 2gi
-  floor bricks pinned on node-1, node-2, and node-3; the 4gi and 8gi
-  classes are present at zero replicas; chart clamps are min 16gi 1 and
-  max 2gi 4 / 4gi 3 / 8gi 2 / 16gi 2.
+- Live brick mix: `desiredReplicas` 2gi 1 and 16gi 1, plus per-node 2gi
+  floor bricks pinned on node-1, node-2, node-3 and a second 16gi brick
+  pinned on node-4 (doubles session admission headroom and keeps one 16gi
+  brick up through every roll); the 4gi and 8gi classes are at zero
+  replicas; chart clamps are min 16gi 1 and max 2gi 4 / 4gi 3 / 8gi 2 /
+  16gi 2.
 - Warmth is vendor-keyed, so the Intel pool restores from intel-keyed
   bases and node-4 holds the AMD tier's; labelling a node of a new vendor
   into the pool refuses cross-vendor restores loudly rather than

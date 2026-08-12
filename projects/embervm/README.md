@@ -36,7 +36,8 @@ Five workload classes ride one substrate:
 | `noded/`    | Go node daemon: Firecracker driver, vsock, tap/DNAT, node-local activators |
 | `crd/`      | Workload CRD samples                                                   |
 | `proto/`    | gRPC contract between the control plane and noded                      |
-| `runtimes/` | Guest runtimes (Python zip lane; vsock guest contract in its README)   |
+| `runtimes/` | Guest runtimes (zip lane plus bazel, claude, k3s, postgres); vsock guest contract in its README |
+| `tokenbroker/`, `image/`, `scratch-prep/` | Token broker, base image build, scratch provisioning |
 | `xds/`      | Envoy endpoint publisher sidecar                                       |
 | `chart/`, `deploy/` | Helm chart and ArgoCD wiring                                   |
 | `specs/`    | TLA+ models for adoption, bank/relight, and quota protocols            |

@@ -193,10 +193,9 @@ sequenceDiagram
     VM-->>C: response
 ```
 
-**A wake (a serving or stateful miss)** normally coordinates through the
-control plane. The node-local activator additionally executes a bounded,
-grant-covered wake during control-plane absence. Delegated wakes splice via
-stable node-local DNAT and do not republish xDS mid-wake:
+**A wake (a serving or stateful miss)** is normally coordinated by the
+control plane, which restores the VM and republishes the endpoint through
+its EndpointPublisher. The diagram shows that path:
 
 ```mermaid
 sequenceDiagram
@@ -207,14 +206,19 @@ sequenceDiagram
     participant VM as Guest VM
     C->>E: request (workload scaled to zero)
     E->>A: fallback endpoint; request parks
-    A->>CP: normal wake coordination
-    A->>VM: single-flighted wake (restore or cold boot)
-    A-->>E: real endpoint published via xDS
+    A->>CP: wake request
+    CP->>VM: single-flighted restore or cold boot
+    CP-->>E: real endpoint published via xDS
     E->>VM: parked bytes splice through
     VM-->>C: response
 ```
 
-**A task (the all-miss case by policy)**, a fresh VM per invocation:
+The node-local activator (Planned, partially landed) runs the same wake
+node-side during control-plane absence: parked bytes splice via stable
+node-local DNAT with no mid-wake xDS republish.
+
+**A task (the all-miss case by policy)**, a fresh VM per invocation, async
+by default:
 
 ```mermaid
 sequenceDiagram
@@ -224,18 +228,12 @@ sequenceDiagram
     participant VM as Guest VM
     C->>CP: task POST /v1/workloads/:name/tasks
     CP->>CP: admission + quota, op-log append
+    CP-->>C: 202 + task_id (?wait=true parks instead)
     CP->>N: gRPC assign (primed VM)
     N->>VM: payload over vsock
     VM-->>N: result
     N-->>CP: result; VM destroyed after one task
-    CP-->>C: result
 ```
-
-A task requires synchronous control-plane admission and assignment. A
-serving or stateful miss normally requires the control plane; the node-local
-activator (Planned, partially landed) additionally executes a bounded,
-grant-covered wake during control-plane absence. Steady-state hits never
-touch the control plane.
 
 Can I run it: section 11's platform contract. What do I trust today:
 section 10's posture summary.
@@ -324,16 +322,18 @@ three legitimate issuance shapes:
    restarted CP prove the +1 was its own checkpoint and bless it instead of
    quarantining. Anything unproven stays quarantined; the break-glass
    runbook is `docs/runbooks/embervm-stateful-generation-quarantine.md`.
-3. **Delegated advancement**: a durable, bounded
-   `wake_grant{workload, volume_node, gen_floor, gen_ceiling, expires_at}`
-   (a bounded wake authorization) authorises the volume's anchor brick, the
-   brick holding its authoritative volume, to advance the generation while the
-   CP is away (gap budget, default k=4; a time-bounded class for
-   sub-second-banking demos). **Decided direction**: the north star is a
-   steady-state lease with brick-owned idle-bank.
+3. **Activator self-advance** (Built, Fork A): during control-plane
+   absence the volume's anchor brick (the brick holding its authoritative
+   volume) self-bumps the generation on wake. On CP return the fenced-writer
+   anchor-adoption rule trusts a self-bump from the current anchor and
+   backfills it; anything it cannot prove is quarantined. **Decided
+   direction** (Fork B): a durable bounded grant
+   (`{workload, volume_node, gen_floor, gen_ceiling, expires_at}`) that
+   pre-authorises the advance, moving toward a steady-state lease with
+   brick-owned idle-bank.
 
-An advancement no grant covers is quarantined on sight. The grant changes
-who may *issue* a generation, never who may *write* a volume (invariant 6).
+The advance changes who may *issue* a generation, never who may *write* a
+volume (invariant 6).
 
 ### Wake path and the node-local activator
 
@@ -358,8 +358,12 @@ and backfill on reconcile. **Planned**: partially landed, soak ongoing.
 
 Resume is one interface with four verbs: cold boot; base-snapshot restore;
 warm (memory) restore; base + workspace hydration. The CP picks the cheapest
-unexpired artifact; the session contract is instant for 6h, restorable for
-7 days. **Decided direction**: capture decouples from bank
+unexpired artifact. Two different windows apply: the same banked session
+is resumable for its warm-bank TTL (an hour in the agent lane, a deploy
+value), after which resume takes the session-expiry 410 path; the durable
+workspace lineage is adoptable for 7 days, so a new session generation
+inherits the prior workspace rather than starting blank. **Decided
+direction**: capture decouples from bank
 (close-triggered for no-memory-snapshot workloads), retention becomes
 `latest + N`, and the workspace size cap becomes a declared soft budget.
 
@@ -394,8 +398,8 @@ against them.
 1. **The hit/miss invariant.** A task requires synchronous control-plane
    admission and assignment. A serving or stateful miss normally requires
    the control plane; the node-local activator (Planned, partially landed)
-   additionally executes a bounded, grant-covered wake during control-plane
-   absence. Steady-state hits never touch the control plane.
+   additionally runs a bounded node-side wake during control-plane absence.
+   Steady-state hits never touch the control plane.
 
 2. **Facts through the control plane, payloads never.** Snapshot bytes move
    node-to-store via noded; serving traffic moves through Envoy; the control
@@ -531,15 +535,15 @@ On a fixed fleet a Pending brick **is** the fleet-full signal: the
 controller flags `:fleet_full`, the dispatcher refuses placement (503), and
 a human is paged, rather than overcommitting.
 
-Priority projects onto three axes: PriorityClass ranks brick pools by lane
-(occupied-capable bricks always run at default non-preempting priority;
-sacrificial low-priority balloon bricks are the burst headroom); QoS is
-always Guaranteed; per-workload arbitration happens only in CP dispatch.
-Disruption splits workloads into preemptible posture (task, isolated lane)
-and durable posture (session, stateful: continuity via banked-state
-durability, not node pinning). Remaining node lifetime is a placement input;
-a terminating node is a placement target for work that fits its horizon.
-Karpenter behaviour is drilled against kwok in CI.
+**Built**: every brick and the serving relay run the cluster's disposable
+priority class, so guests are the first to yield under node memory
+pressure; QoS is always Guaranteed; per-workload arbitration happens only
+in CP dispatch. **Decided direction**: PriorityClass ranking of brick
+pools by lane with sacrificial balloon bricks for burst headroom, and
+remaining-node-lifetime as a placement input so a terminating node takes
+only work that fits its horizon. Disruption splits workloads into
+preemptible posture (task, isolated lane) and durable posture (session,
+stateful: continuity via banked-state durability, not node pinning).
 
 **Brick discovery and scale**: bricks are the only source of node capacity,
 so the control plane picks the brick mix from placement demand rather than
@@ -837,39 +841,31 @@ shared Postgres) is in [deploy/README.md](deploy/README.md).
 | Active brick utilization target | >90% | **Built** | asserted; too high if shed events become common |
 | Stateful continuity floor | 8h (also the S3 stateful warmth TTL) | **Built** | asserted; validate against rotation cadence |
 | Session lifetime ceiling | 6h (`maxLifetimeSeconds`) | **Built** | asserted; version-convergence bound, not a durability claim |
-| Brick silence timeout / grant expiry | ~6h range | **Built** | asserted; divergence bound and availability trade |
-| Wake-grant gap budget | k=4 (default cadence class) | **Built** | asserted; tolerates a CP gap with three noded restarts |
+| Brick silence timeout | ~6h range | **Decided direction** | asserted; the divergence bound for the ownership-arbitration design |
+| Wake-grant gap budget | k=4 (default cadence class) | **Decided direction** | the Fork B grant; Fork A activator self-advance is what is Built |
 | Definitions target | 100k+ | **Planned** | provisional; owner-set goal, not measured demand |
 
 ---
 
 ## 12. Roadmap state
 
-Task execution, zip lane, sessions, serving, stateful, composite, continuity,
-and session consumers are **Built**; composite has no current consumer, and
-`warmthS3Gc.allowEmptyKinds:
-"group"` is the operator statement to the GC that the class is legitimately
-empty. Distribution is **Decided direction** (vendor-aware placement over the
-export/restore verbs; needs a second warm-capable node to matter). Standalone
-packaging is **Decided direction**; hard
-multi-tenancy (virtual control planes) is deferred pending real demand.
-(Internal rung IDs R0-R9 map onto these capabilities.) Current work:
-promoting brick autoscale from `up` to `full`, node-local activator soak,
-and the conciseness program (#4009).
+The section 1 capability matrix carries per-capability status; this section
+is the current work and the decided directions behind it.
 
-**Decided direction**, security: per-principal envelope encryption at rest and
-verified tuple-authorized restore (#4691), and the management surface's
-actor / principal / permission split. The threat model section carries the
-per-row state.
+**Decided direction**: distribution (vendor-aware placement over the
+export/restore verbs, needs a second warm-capable node to matter);
+standalone packaging; per-principal envelope encryption at rest and
+verified tuple-authorized restore (#4691); the management-surface actor /
+principal / permission split. Hard multi-tenancy (virtual control planes)
+is deferred pending real demand. (Internal rung IDs R0-R9 map onto the
+capabilities.)
+
+**Current work**: promoting brick autoscale from `up` to `full`,
+node-local activator soak, and the conciseness program (#4009).
 
 The availability contract is spot semantics: a routine roll gives every
 workload up to two minutes of drain notice; state durability within the
 stated archive interval is the guarantee, connection continuity is not
-(narrowed for stateful by the planned-drain contract).
-
-| Artifact kind | TTL | Live protection | Behaviour on empty CP store |
-| ------------- | --- | --------------- | ---------------------------- |
-| Stateful warmth | 8h | Newest reference per vendor and workload | Sweep aborts unless `allowEmptyKinds` permits empty |
-| Session memory | 7 days | Active instances and in-flight transitions | Sweep aborts unless explicitly permitted |
-| Serving snapshots | 7 days | Active instances and in-flight transitions | Sweep aborts unless explicitly permitted |
-| Session workspaces and group sets | 7 days | Active lineages and in-flight transitions | Sweep aborts unless explicitly permitted |
+(narrowed for stateful by the planned-drain contract). Artifact retention
+TTLs and the GC sweep behaviour are in
+[deploy/README.md](deploy/README.md).
