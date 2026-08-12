@@ -30,6 +30,46 @@ of the reference deployment in this monorepo.
   for secrets, Cloudflare Tunnel for the zero-trust edge, SigNoz for
   observability.
 
+## Node enrollment
+
+noded runs on every brick; bricks schedule onto Kubernetes nodes carrying
+the enrollment label. Each daemon dials home: on start and on a jittered
+interval it POSTs its identity to `/v1/nodes/register`, and the control
+plane adopts it keyed by `(node, pod_uid)`. A node label is node-lifecycle
+configuration, the same class as joining the node, so growing the fleet is
+a label, not a values edit:
+
+```bash
+kubectl label nodes node-1 node-2 node-3 homelab.io/firecracker=true
+```
+
+Serving-capable nodes also carry the serving label so the relay schedules
+there:
+
+```bash
+kubectl label nodes node-1 node-2 node-3 embervm.io/serving=true
+```
+
+Decided direction (#4696): both labels consolidate on one
+chart-configurable key, `embervm.jomcgi.dev/node`, with serving implied.
+Never remove the firecracker label from an enrolled node before every
+consumer of it has migrated; the label is overloaded beyond noded.
+
+Before labelling a node:
+
+- Bind-mount its real scratch device at `/var/lib/embervm/scratch` (fstab
+  entry or a systemd mount unit); the hostPath fails closed if the mount
+  is missing. Use a separate disk from the etcd WAL disk.
+- Expect vendor keying: memory snapshots never cross the AMD/Intel
+  boundary, so a node of a new CPU vendor refuses cross-vendor restores
+  loudly until its own warmth builds. This is the fail-closed gate, not a
+  fault.
+
+The hard node taint (`embervm.jomcgi.dev/node=true:NoSchedule`) stays a
+recorded option, not applied. If a node ever needs it, confirm the chart
+tolerations are live first: tolerations first, taint second, never the
+reverse.
+
 ## Operational entry points
 
 ArgoCD and SigNoz at `private.jomcgi.dev/app/*`, `kubectl get workloads`
