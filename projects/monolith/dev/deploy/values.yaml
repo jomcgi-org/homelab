@@ -24,24 +24,39 @@ backend:
   # truncates the outboxes, so the data holds nothing actionable either.
   leaderSingletons: false
 
-# INGRESS IS OFF, and this is the most safety-critical block in this file.
+# INGRESS: ONE hostname, both surfaces, authentik in front.
 #
-# Every HTTPRoute in this chart attaches to the ONE cloudflare-ingress Gateway
-# in envoy-gateway-system, and Gateway API MERGES routes that attach to the same
-# Gateway for the same hostname. Inheriting production's values unchanged would
-# have dev claim private.jomcgi.dev and ships.jomcgi.dev, and production traffic
-# could then be served by a dev build running against a copy of prod's data.
+# dev.jomcgi.dev is dev's OWN hostname, so this claims nothing production owns.
+# That is the only reason enabling it is safe: the guard in
+# chart/chart_env_identity_test.py checks the environments claim DISJOINT
+# hostnames, not that dev claims none, precisely so turning this on cannot
+# quietly disarm the check that caught dev claiming private.jomcgi.dev.
 #
-# Turning these off leaves dev reachable only in-cluster, which is correct until
-# it has a hostname of its OWN. That is deliberately not done here: the chart
-# emits a Cloudflare Access SecurityPolicy, and CF Access consumes the
-# Authorization header, so agents cannot authenticate through it. dev.jomcgi.dev
-# needs an authentik-gated variant (modelled on the working preview lane, with
-# extractFrom widened to accept bearer tokens), which is a chart addition rather
-# than a values change and lands separately.
+# One route serves BOTH surfaces. The private route has a `/` catch-all and the
+# chart applies no path rewrites anywhere, so /public/* and /private/* both
+# reach the app unmodified and the SvelteKit bundle carries both route groups.
+# Production splits them across two hostnames and two Applications only because
+# jomcgi.dev is a public origin; dev has no public audience to separate from.
+#
+# auth: authentik, NOT cloudflare, and this is the load-bearing line. Cloudflare
+# Access consumes the Authorization header at the edge, so an agent's bearer
+# token cannot survive it. Access would gate this fine for a browser and lock
+# every agent out, which is the opposite of what this environment is for.
+#
+# `tier: trusted` is inherited from production and left alone: it is the
+# cloudflared/gateway routing tier, not the auth mechanism.
 cfIngress:
   private:
-    enabled: false
+    enabled: true
+    hostname: dev.jomcgi.dev
+    auth: authentik
+    # No unauthenticated path on this host. GitHub delivers to production, and
+    # this route deliberately has no SecurityPolicy, so on dev it would be an
+    # open endpoint behind an otherwise authentik-gated hostname.
+    githubWebhook:
+      enabled: false
+  # Production's legacy ships.jomcgi.dev redirect. Nothing to do with dev, and
+  # claiming it would be a collision.
   shipsRedirect:
     enabled: false
 

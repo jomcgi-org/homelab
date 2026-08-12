@@ -92,12 +92,137 @@ spec:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.cfIngress.private.servicePort | int }}
 ---
+{{- if eq (.Values.cfIngress.private.auth | default "cloudflare") "authentik" }}
+{{- /*
+AUTHENTIK-GATED VARIANT of the private route's policy, for a deployment whose
+audience includes AGENTS rather than only a browser at a keyboard.
+
+Cloudflare Access cannot serve that audience: it consumes the Authorization
+header at the edge, so a bearer token never survives to reach Envoy. That is
+not a tuning problem, it is why this variant exists at all.
+
+The oidc and jwt blocks COMPOSE, they are not alternatives:
+
+  oidc  performs the browser redirect against authentik and stores the result
+        in a cookie. A bare jwt block cannot: it only validates a token already
+        present, so a browser arriving with none gets a 401 rather than a login
+        page.
+  jwt   validates what arrives, from EITHER that cookie or an Authorization
+        header, and projects a claim into a request header.
+
+extractFrom names BOTH sources, which is the whole point. Envoy's JWT filter
+defaults to the Authorization header, and naming any source REPLACES that
+default, so a cookies-only list (as the preview lane has) silently rejects every
+agent. Listing both keeps one policy serving both audiences.
+
+Modelled on projects/mcp/context-forge-gateway's preview lane, which proved this
+flow end to end; the deltas are the bearer source and the group.
+*/}}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "monolith.fullname" . }}-private-authentik
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "monolith.fullname" . }}-private
+  oidc:
+    provider:
+      issuer: {{ .Values.cfIngress.private.authentik.issuer | quote }}
+    clientID: {{ .Values.cfIngress.private.authentik.clientID | quote }}
+    clientSecret:
+      name: {{ .Values.cfIngress.private.authentik.clientSecretName | quote }}
+    redirectURL: {{ printf "https://%s/oauth2/callback" .Values.cfIngress.private.hostname | quote }}
+    logoutPath: /oauth2/logout
+    # Scoped to THIS host, never the apex. Envoy sets the cookie on the named
+    # domain AND its subdomains, and these cookies ARE the session. At the apex
+    # they would ride along to the public site, private, mcp and auth, so any
+    # header logging on any tier would capture a live session.
+    #
+    # Widening later is safe; narrowing is not. A stale wider-domain cookie
+    # shadows the narrower one and presents as a login LOOP rather than a
+    # rejection, fixable only by clearing browser cookies.
+    cookieDomain: {{ .Values.cfIngress.private.hostname | quote }}
+    # Named explicitly rather than defaulted, because the jwt block below
+    # extracts one of them BY NAME and a defaulted name is a silent coupling:
+    # if they drift, oidc logs the user in and jwt then rejects them, which
+    # presents as an infinite redirect rather than a 401.
+    cookieNames:
+      accessToken: dev-access-token
+      idToken: dev-id-token
+    scopes:
+      - email
+      - profile
+  jwt:
+    providers:
+      - name: authentik
+        issuer: {{ .Values.cfIngress.private.authentik.issuer | quote }}
+        remoteJWKS:
+          uri: {{ .Values.cfIngress.private.authentik.jwksUri | quote }}
+        extractFrom:
+          # The ID token, not the access token: OIDC REQUIRES the ID token to
+          # carry `email` when that scope is granted, whereas whether an access
+          # token does is provider-specific. This makes the projection below a
+          # spec guarantee rather than an authentik detail.
+          cookies:
+            - dev-id-token
+          # The agent path. Without this, naming cookies above would disable
+          # Envoy's default Authorization extraction entirely and every
+          # non-browser caller would 401.
+          headers:
+            - name: Authorization
+              valuePrefix: "Bearer "
+        claimToHeaders:
+          - claim: email
+            header: X-Auth-Email
+        recomputeRoute: true
+  # Authorization decides on the CLAIM, never the header projected above. A
+  # header can be sent by a caller; a claim sits inside a signature Envoy has
+  # just verified, so it cannot be forged at all.
+  #
+  # defaultAction Deny means a token that validates but carries no matching
+  # group is rejected rather than falling through to whatever the route would
+  # otherwise serve. That makes this a second, independent gate rather than a
+  # restatement of authentik's own application policy binding: authentik decides
+  # who may OBTAIN a token, this decides who may USE one here, and either
+  # misconfiguration fails closed on its own.
+  authorization:
+    defaultAction: Deny
+    rules:
+      - name: allow-dev-groups
+        action: Allow
+        principal:
+          jwt:
+            provider: authentik
+            claims:
+              - name: groups
+                valueType: StringArray
+                values:
+                  {{- range .Values.cfIngress.private.authentik.allowedGroups }}
+                  - {{ . | quote }}
+                  {{- end }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: {{ .Values.cfIngress.private.authentik.clientSecretName | quote }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  itemPath: {{ .Values.cfIngress.private.authentik.onepassword.itemPath | quote }}
+{{- else }}
 {{- $spParams := dict
   "name" (printf "%s-private" (include "monolith.fullname" .))
   "team" .Values.cfIngress.private.team
 }}
 {{- include "cf-ingress.security-policy" $spParams }}
+{{- end }}
 ---
+{{- if .Values.cfIngress.private.githubWebhook.enabled }}
 # GitHub Semgrep webhook route — a SEPARATE HTTPRoute on the same private gateway
 # and hostname, carrying ONLY the webhook path and routed to the FastAPI backend
 # port. It is deliberately its own route so the cf-access SecurityPolicy above
@@ -133,4 +258,5 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}
+{{- end }}
 {{- end }}

@@ -179,26 +179,69 @@ def test_dev_claims_no_cluster_scoped_object_production_owns(renders):
     assert prod, "production rendered no cluster-scoped objects; this test is inert"
 
 
-def test_dev_claims_no_hostname(renders):
-    """The ingress collision. Dev must claim nothing on the shared Gateway."""
-    dev_hosts = set()
-    for kind, _name, doc in _docs(renders["dev"]):
-        if kind == "HTTPRoute":
-            dev_hosts.update(_HOSTNAME.findall(doc))
-    assert not dev_hosts, (
-        f"dev renders HTTPRoutes claiming {sorted(dev_hosts)}. Every route "
-        "attaches to the one cloudflare-ingress Gateway, and Gateway API merges "
-        "routes claiming the same hostname, so production traffic could be "
-        "served by dev. Dev needs a hostname of its own before ingress is "
-        "enabled there."
+def test_dev_claims_no_hostname_production_claims(renders):
+    """The ingress collision, generalised now that dev has a hostname.
+
+    This began as "dev claims NO hostname", which was right while dev had none
+    of its own. Once dev.jomcgi.dev exists that phrasing would have to be
+    deleted to let dev work, and deleting it would silently remove the check
+    that caught dev claiming private.jomcgi.dev and ships.jomcgi.dev.
+
+    So it asserts the property that was always the real one: the environments
+    claim DISJOINT hostnames. Every HTTPRoute attaches to the one
+    cloudflare-ingress Gateway, and Gateway API merges routes claiming the same
+    hostname, so an overlap is production traffic reaching a dev build.
+    """
+
+    def hosts(env):
+        out = set()
+        for kind, _name, doc in _docs(renders[env]):
+            if kind == "HTTPRoute":
+                out.update(_HOSTNAME.findall(doc))
+        return out
+
+    shared = hosts("prod") & hosts("dev")
+    assert not shared, (
+        f"dev and production both claim {sorted(shared)}. Routes attaching to "
+        "one Gateway for one hostname are MERGED, so production traffic could "
+        "be served by a dev build running against a copy of production's data."
     )
-    # Guard the guard, as above: production must actually claim hostnames, or
-    # an empty dev set proves nothing about the mechanism.
-    prod_hosts = set()
-    for kind, _name, doc in _docs(renders["prod"]):
-        if kind == "HTTPRoute":
-            prod_hosts.update(_HOSTNAME.findall(doc))
-    assert prod_hosts, "production claimed no hostnames; this test is inert"
+    # Both halves must be non-empty or disjointness is vacuous: if dev stopped
+    # rendering ingress, or production did, this would pass while proving
+    # nothing about the mechanism.
+    assert hosts("prod"), "production claimed no hostname; this test is inert"
+    assert hosts("dev"), (
+        "dev claimed no hostname; this test is inert. If dev ingress was "
+        "deliberately disabled, assert that explicitly rather than leaving "
+        "this passing on an empty set."
+    )
+
+
+def test_dev_exposes_no_unauthenticated_path(renders):
+    """Everything on dev's hostname sits behind authentik.
+
+    The github-webhook route carries NO SecurityPolicy by design: GitHub
+    bypasses Cloudflare Access at the edge and sends no JWT, so a policy there
+    would reject every real delivery, and HMAC in the handler is its gate.
+
+    Correct for production, a hole anywhere else: an unauthenticated route on a
+    host that is otherwise gated, which GitHub is not even delivering to.
+    """
+    dev_routes = {
+        name for kind, name, _ in _docs(renders["dev"]) if kind == "HTTPRoute"
+    }
+    assert not any("github-webhook" in n for n in dev_routes), (
+        f"dev renders an ungated webhook route: {sorted(dev_routes)}. That "
+        "route intentionally has no SecurityPolicy, so on dev's hostname it is "
+        "an open endpoint."
+    )
+    prod_routes = {
+        name for kind, name, _ in _docs(renders["prod"]) if kind == "HTTPRoute"
+    }
+    assert any("github-webhook" in n for n in prod_routes), (
+        "production stopped rendering the webhook route; this test is inert "
+        "and GitHub deliveries are probably broken."
+    )
 
 
 def test_dev_claims_no_resource_pinned_outside_its_namespace(renders):
