@@ -88,10 +88,21 @@ metadata:
   name: monolith-chart
   namespace: {{ .Values.promotion.project }}
 spec:
+  # These three are CRD server-side defaults, written out because a field the
+  # chart omits and the API server sets is a diff ArgoCD can NEVER close. Omit
+  # them and this Warehouse is permanently OutOfSync, which is not cosmetic:
+  # selfHeal syncs only the DRIFTED resources, so an unconvergeable resource
+  # emits a continuous stream of targeted single-resource syncs that preempt the
+  # full sync. Stage/prod was planned (`nil->obj`) and never applied because a
+  # Warehouse-only sync replaced the operation seven seconds later, and the
+  # Application reported Succeeded the whole time because that sync did succeed.
+  interval: {{ .Values.promotion.warehouseInterval | quote }}
+  freightCreationPolicy: {{ .Values.promotion.freightCreationPolicy | quote }}
   subscriptions:
     - chart:
         repoURL: {{ .Values.promotion.chartRepo | quote }}
         semverConstraint: {{ .Values.promotion.semverConstraint | quote }}
+        discoveryLimit: {{ .Values.promotion.discoveryLimit }}
 {{- range .Values.promotion.stages }}
 ---
 {{- /*

@@ -125,6 +125,32 @@ No `verification` block on either Stage, therefore. A Stage with nothing to
 verify reports `Freight has been verified`, which reads like a gate passed and
 is really a gate absent.
 
+## Why the Warehouse spells out its defaults
+
+`interval`, `freightCreationPolicy` and `discoveryLimit` are CRD server-side
+defaults, and the chart writes them anyway. A field the chart omits and the API
+server sets is a diff ArgoCD can never close, so the Warehouse was permanently
+OutOfSync from the first install.
+
+That is not cosmetic. `selfHeal` syncs only the **drifted** resources, so an
+unconvergeable resource emits a continuous stream of targeted single-resource
+syncs, and each one preempts the full sync:
+
+```
+syncId=14233  Sync/1 kargo.akuity.io/Stage:kargo-monolith/prod  nil->obj   <- planned
+syncId=14241  (7s later) sync resources filter: [Warehouse/monolith-chart] <- replaced it
+```
+
+`Stage/prod` was planned and never applied, and the Application reported
+`Succeeded` throughout, because the Warehouse-only sync genuinely did succeed.
+One resource that cannot converge starves every other resource in the same
+Application behind a green status.
+
+Worth generalising when adding any CRD to a chart: check the live object for
+fields the API server added, and either write them or accept a permanent diff.
+`kubectl get <kind> <name> -o jsonpath='{.spec}'` against a freshly applied
+object is the whole check.
+
 ## Verifying it works
 
 Do not trust "the Promotion succeeded", and do not trust the Stage's verified
