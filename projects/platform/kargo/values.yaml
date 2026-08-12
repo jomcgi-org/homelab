@@ -1,15 +1,56 @@
-# Kargo, scoped to ONE job: owning the dev environment's chart version.
+# Kargo, owning the monolith's chart version in dev and production.
 #
 # Everything not needed for that is off, because each enabled integration
 # widens the controller's RBAC and the chart's own docs say explicitly
 # disabling is preferable to leaving an integration on and unused.
 kargo:
   api:
-    # No UI or CLI surface for v1. It would need TLS, an ingress, and an auth
-    # decision (Dex or an admin account), none of which promotion requires:
-    # the CONTROLLER reconciles Warehouses, Stages and Promotions on its own.
-    # Kargo state is readable with kubectl until there is a reason to expose it.
-    enabled: false
+    # The UI at private.jomcgi.dev/app/kargo. Off until now because it needed
+    # TLS, an ingress and an auth decision; all three are answered below and
+    # none of them cost a new credential.
+    enabled: true
+    host: private.jomcgi.dev
+    # Requires >= v1.11.0. The API server ALWAYS serves at the root, so the
+    # gateway strips this prefix before forwarding; basePath only tells the
+    # server what to put in issued URLs and what to inject as
+    # window.__KARGO_BASE_PATH__ for the UI to compose absolute links with.
+    basePath: /app/kargo
+    tls:
+      # Plain HTTP in-cluster: Cloudflare terminates TLS at the edge and the
+      # gateway talks to a Service, so a self-signed cert here would only give
+      # the gateway something it has to be told to distrust.
+      enabled: false
+      # LOAD-BEARING, and the one setting in this block still honoured when
+      # tls.enabled is false. Without it every URL the server issues is
+      # http://, including ADMIN_ACCOUNT_TOKEN_ISSUER and the OIDC redirect,
+      # while the browser arrives over https://. That mismatch presents as a
+      # login redirect loop or a rejected token, with nothing anywhere
+      # mentioning a protocol.
+      terminatedUpstream: true
+    adminAccount:
+      # No local password. authentik is the identity provider, so a second
+      # credential here would be one more thing to hold, rotate and leak.
+      enabled: false
+    oidc:
+      enabled: true
+      # authentik derives the issuer from the APPLICATION slug, not the
+      # provider name. Must match blueprints/kargo-auth.yaml's `slug: kargo`.
+      issuerURL: https://auth.jomcgi.dev/application/o/kargo/
+      clientID: kargo
+      admins:
+        # authentik emits `groups` in the default profile scope, which the
+        # blueprint's property_mappings include. This is Kargo's OWN authz,
+        # separate from authentik's policy binding: authentik decides who may
+        # obtain a token, this decides what a token holder may do. Both name
+        # homelab-admin so neither alone grants production promotion rights.
+        claims:
+          groups:
+            - homelab-admin
+      dex:
+        # Kargo bundles Dex to adapt IDPs that cannot do PKCE. authentik can,
+        # so Kargo talks to it directly and this stays off: Dex would be a
+        # second identity hop and a second thing to upgrade.
+        enabled: false
     rollouts:
       integrationEnabled: false
 
