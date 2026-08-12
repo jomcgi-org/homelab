@@ -9,6 +9,10 @@ dependencies:
   - name: kargo
     version: 1.11.1
     repository: oci://ghcr.io/akuity/kargo-charts
+  # Path-based private ingress helper, same as longhorn and argocd use.
+  - name: cf-ingress
+    version: 0.1.0
+    repository: "file://../cf-ingress-library"
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
   org.opencontainers.image.url: "https://github.com/jomcgi/homelab"

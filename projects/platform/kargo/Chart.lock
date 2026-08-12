@@ -2,5 +2,8 @@ dependencies:
 - name: kargo
   repository: oci://ghcr.io/akuity/kargo-charts
   version: 1.11.1
-digest: sha256:2c14e223a66b923f3c8abef28ce0c154fe854469daada02068eee167d9690c72
-generated: "2026-08-12T13:12:37.411211-07:00"
+- name: cf-ingress
+  repository: file://../cf-ingress-library
+  version: 0.1.0
+digest: sha256:048e77347a6c6fc1c26b57298519515731b67cb96e626489f63fee5591ad7460
+generated: "2026-08-12T15:17:16.077687-07:00"

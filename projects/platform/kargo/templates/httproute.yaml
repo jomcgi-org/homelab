@@ -1,0 +1,49 @@
+{{- /*
+Path-based private ingress: https://private.jomcgi.dev/app/kargo
+
+The /app/kargo prefix is forwarded INTACT. There is no rewritePrefix here, and
+that is deliberate: it contradicts the upstream chart's own values comment,
+which says the API server "always serves at the root" and the ingress must
+strip the prefix. That is wrong for 1.11.1.
+
+Asked the running binary through a port-forward rather than trusting either the
+values comment or pkg/server, which disagree with each other:
+
+  /            HTTP 404
+  /app/kargo/  HTTP 200, serves the UI
+  /app/kargo   HTTP 301 -> /app/kargo/
+
+So wrapWithBasePath is live: the server strips api.basePath itself and expects
+to RECEIVE the prefix. Stripping at the gateway as well would leave the inner
+mux with `/`, hit that 404, and read as a broken ingress rather than a doubled
+strip.
+
+Two consequences worth stating because they make this simpler than either
+precedent in the repo:
+
+  - No companion RequestRedirect route for the bare prefix, unlike longhorn.
+    Kargo issues that 301 itself, and the UI composes ABSOLUTE links from
+    window.__KARGO_BASE_PATH__ rather than relative ones, so there is no
+    parent-directory resolution to protect against.
+  - The cfingress-rewrite-needs-slash-redirect rule does not fire, since it
+    keys on rewritePrefix "/" which this route does not set. No nosemgrep
+    suppression needed.
+
+Auth is TWO layers and they answer different questions. This SecurityPolicy
+validates the Cloudflare Access JWT at the edge (who reached the host); Kargo
+then runs its own authentik OIDC flow (who you are, and whether you may promote
+to production). See blueprints/kargo-auth.yaml.
+*/}}
+{{- if .Values.cfIngress.enabled }}
+{{- include "cf-ingress.httproute" (dict
+  "name" "kargo-private"
+  "tier" .Values.cfIngress.tier
+  "hostname" .Values.cfIngress.hostname
+  "pathPrefix" .Values.cfIngress.pathPrefix
+  "serviceName" .Values.cfIngress.serviceName
+  "servicePort" .Values.cfIngress.servicePort
+  "gateway" .Values.cfIngress.gateway
+) }}
+---
+{{- include "cf-ingress.security-policy" (dict "name" "kargo-private") }}
+{{- end }}
