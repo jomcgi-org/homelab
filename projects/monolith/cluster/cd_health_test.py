@@ -57,6 +57,7 @@ async def test_app_mid_rollout_inside_grace_does_not_trip():
             "sync": "Synced",
             "health": "Progressing",
             "finished_at": recent,
+            "health_changed_at": recent,
         }
     ]
     assert (await mod._argocd_fault_real(apps, 900.0))[0] is None
@@ -75,6 +76,101 @@ async def test_app_with_no_finish_time_does_not_trip():
             "sync": "OutOfSync",
             "health": "Missing",
             "finished_at": None,
+            "health_changed_at": None,
+        }
+    ]
+    assert (await mod._argocd_fault_real(apps, 900.0))[0] is None
+
+
+@pytest.mark.asyncio
+async def test_a_settled_app_going_unhealthy_gets_its_full_grace():
+    """The defect that 503'd jomcgi.dev, in its exact shape.
+
+    embervm had been Synced and untouched since 07:36. When a brick could not
+    be scheduled it went Progressing, and the check dated that fault from the
+    last SYNC, computed 622 minutes, and blew past a 15 minute grace on the
+    first bad tick.
+
+    The inversion is what makes it worth a test rather than a comment: the more
+    settled an app is, the staler its finished_at, so the LESS grace it got.
+    A healthy deployment history actively reduced the protection.
+    """
+    apps = [
+        {
+            "name": "embervm",
+            "sync": "Synced",
+            "health": "Progressing",
+            "finished_at": _iso(datetime.now(timezone.utc) - timedelta(minutes=622)),
+            "health_changed_at": _iso(
+                datetime.now(timezone.utc) - timedelta(minutes=2)
+            ),
+        }
+    ]
+    assert (await mod._argocd_fault_real(apps, 900.0))[0] is None
+
+
+@pytest.mark.asyncio
+async def test_a_genuinely_stuck_app_still_trips_and_reports_the_right_age():
+    """The other half: the grace must still expire, and say so honestly.
+
+    Asserting the minutes matters. The old message read "for 622m" while the
+    app had been unhealthy for two, so the number was not merely early, it
+    described a different event.
+    """
+    apps = [
+        {
+            "name": "embervm",
+            "sync": "Synced",
+            "health": "Progressing",
+            "finished_at": _iso(datetime.now(timezone.utc) - timedelta(minutes=622)),
+            "health_changed_at": _iso(
+                datetime.now(timezone.utc) - timedelta(minutes=40)
+            ),
+        }
+    ]
+    fault, _note = await mod._argocd_fault_real(apps, 900.0)
+    assert fault is not None
+    assert "embervm is Synced/Progressing for 40m" in fault, fault
+
+
+@pytest.mark.asyncio
+async def test_outofsync_but_healthy_is_still_dated_from_the_last_sync():
+    """Unchanged, and deliberately so.
+
+    `.status.sync` carries no transition time, so the last sync attempt is the
+    only clock available. That is a weaker signal in the opposite direction,
+    since an app retrying forever keeps refreshing it (#4727), which this
+    change does not attempt to fix.
+    """
+    apps = [
+        {
+            "name": "kyverno",
+            "sync": "OutOfSync",
+            "health": "Healthy",
+            "finished_at": _iso(datetime.now(timezone.utc) - timedelta(minutes=40)),
+            "health_changed_at": _iso(datetime.now(timezone.utc) - timedelta(days=3)),
+        }
+    ]
+    fault, _note = await mod._argocd_fault_real(apps, 900.0)
+    assert fault is not None
+    assert "kyverno is OutOfSync/Healthy for 40m" in fault, fault
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_app_with_no_health_transition_does_not_trip():
+    """No fallback to finished_at, because that fallback IS the bug.
+
+    ArgoCD always stamps health.lastTransitionTime, so this is defensive. If it
+    is ever missing the honest move is to treat the app as undateable rather
+    than reach for the timestamp that caused the incident.
+    """
+    apps = [
+        {
+            "name": "embervm",
+            "sync": "Synced",
+            "health": "Degraded",
+            "finished_at": _iso(datetime.now(timezone.utc) - timedelta(minutes=622)),
+            "health_changed_at": None,
         }
     ]
     assert (await mod._argocd_fault_real(apps, 900.0))[0] is None
@@ -233,6 +329,7 @@ async def test_non_prod_app_is_reported_but_does_not_fault():
             "sync": "Synced",
             "health": "Degraded",
             "finished_at": old,
+            "health_changed_at": old,
         }
     ]
     fault, note = await mod._argocd_fault_real(
@@ -261,6 +358,7 @@ async def test_production_still_faults_alongside_a_non_prod_note():
             "sync": "Synced",
             "health": "Degraded",
             "finished_at": old,
+            "health_changed_at": old,
         },
     ]
     fault, note = await mod._argocd_fault_real(

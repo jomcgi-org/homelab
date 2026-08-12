@@ -120,12 +120,22 @@ class KubernetesClient:
         return len(result.get("items", []))
 
     async def list_argocd_app_health(self, namespace: str = "argocd") -> list[dict]:
-        """Return {name, sync, health, finished_at} for every ArgoCD Application.
+        """Return {name, sync, health, finished_at, health_changed_at} per app.
 
         One list call rather than N gets, because the cd health component reads
-        every app on each probe. `finished_at` is the last sync operation's
-        finish time, which is what dates a fault: an app that has been
-        not-Synced since a timestamp is distinguishable from one mid-rollout.
+        every app on each probe.
+
+        Two timestamps because the two faults are dated differently.
+        `finished_at` is the last sync operation's finish time, which is all
+        there is for a merely OutOfSync app: `.status.sync` carries no
+        transition time. `health_changed_at` is `.status.health`'s
+        lastTransitionTime, which is when the app's health ACTUALLY changed.
+
+        Reading finished_at for a health fault was a real defect: embervm last
+        synced 622 minutes before it went Progressing, so the 15 minute grace
+        was not shortened, it was skipped, and jomcgi.dev/health 503'd on the
+        first bad tick. The more settled an app is, the staler its finished_at,
+        so the less grace it got, which is exactly backwards.
         """
         api = await self._ensure_client()
         custom = client.CustomObjectsApi(api)
@@ -145,6 +155,9 @@ class KubernetesClient:
                     "health": (status.get("health") or {}).get("status"),
                     "finished_at": (status.get("operationState") or {}).get(
                         "finishedAt"
+                    ),
+                    "health_changed_at": (status.get("health") or {}).get(
+                        "lastTransitionTime"
                     ),
                 }
             )
