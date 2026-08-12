@@ -84,7 +84,7 @@
 
 <Seo
   title="Joe McGinley · Senior Platform Engineer"
-  description="Platform Engineer @ Semgrep. Observability obsessed. Caremad about developer experience."
+  description="Joe McGinley's homelab: a four-node Kubernetes cluster running agents, maps, and a knowledge graph."
   path="/"
 />
 

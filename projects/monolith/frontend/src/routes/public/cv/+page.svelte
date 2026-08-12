@@ -163,7 +163,7 @@
         <p class="cv-summary">{@render inline(summary)}</p>
       </div>
       <Sticker color="var(--accent)" rotate={-4} class="hero-sticker"
-        >Reliability-obsessed</Sticker
+        >BARE-METAL K3S</Sticker
       >
     </div>
   </header>

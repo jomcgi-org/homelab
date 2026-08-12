@@ -31,7 +31,7 @@ export const tagline =
   "Senior Platform Engineer @ Semgrep · AWS / EKS · Kubernetes · eBPF";
 
 export const summary =
-  "Mostly I build infrastructure and abstractions so that other engineers don't have to think about it - Kubernetes, eBPF, and everything in between. Caremad about developer and user experience.";
+  "Mostly I build infrastructure and abstractions so that other engineers don't have to think about it: Kubernetes, eBPF, and the layers under them. Caremad about developer and user experience.";
 
 export const jobs = [
   // Current role stays deliberately scope-level: what the job is, not a
@@ -55,16 +55,15 @@ export const jobs = [
     title: "Senior Software Engineer / SSE2",
     dates: "Oct 2022 – May 2025",
     blurb:
-      "Pharma R&D SaaS. Spent three years making the hard infrastructure path the easy one for other engineers. Promoted to SSE2 within 12 months.",
+      "Pharma R&D SaaS. Three years building the infrastructure other engineers deployed on. Promoted to SSE2 within 12 months.",
     highlights: [
       {
         title: "Event-Driven Data Platform",
-        kicker: "From weeks to minutes; $644 down to $69 per 2.5M docs",
         intro:
           "BenchSci turns 25M+ scientific papers into structured biomedical knowledge through NER, LLM extraction, and knowledge-graph linking. Document processing was a weekly batch with pipeline-granularity caching: data freshness capped what the product team could ship, and unchanged work was reprocessed every cycle.",
         bullets: [
           "**Rebuilt it event-driven on GKE**: per-document events, per-document caching, scale-to-zero, so only changed documents reprocess. Processing went from weeks to minutes, cost dropped **from $644 to $69 per 2.5M docs (−89%)**, and the platform scaled to 100K+ concurrent documents with the full 25M+ corpus reprocessable on demand.",
-          "**Made it the path of least resistance**: for the ML researchers using it, adoption was a decorator and a Python function. The framework owned deployment, event semantics, the message log, and live data testing. **~200 engineers adopted it** as the data platform's foundation.",
+          "**Made it the default**: for the ML researchers using it, adoption was a decorator and a Python function. The framework owned deployment, event semantics, the message log, and live data testing. **~200 engineers adopted it** as the data platform's foundation.",
         ],
       },
       {
@@ -72,7 +71,7 @@ export const jobs = [
         bullets: [
           "**OpenTelemetry org-wide adoption**: every team was rolling their own logs, metrics, and tracing. I drove a company-wide OTel rollout that gave every service all three by default. Incident **time-to-identify dropped from 94 to 23 minutes (−75%)** and false-alert volume fell 15%.",
           "**GPU inference at cloud-quota limits**: ran in-pod L4 inference for ~50 in-house ML models (paper extraction, entity enrichment, vision ML) inside the same event-driven pipeline, autoscaling across regions against a **~25K L4-GPU quota** and bursting onto spot capacity when available. Each document's work stayed in one region to avoid cross-region transfer.",
-          "**RCA squad lead**: the post-incident process was bespoke per team. I wrote the company RCA playbook and led a cross-functional squad through it. **Time-to-resolution fell 40%** and the recurring SLA violations stopped.",
+          "**Fixed the post-incident process**: it was bespoke per team. I wrote the company RCA playbook and led a cross-functional squad through it. **Time-to-resolution fell 40%** and the recurring SLA violations stopped.",
         ],
       },
     ],
