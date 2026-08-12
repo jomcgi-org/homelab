@@ -151,7 +151,7 @@
     <header class="board-head">
       <div class="crumb-row">
         <nav class="crumb" aria-label="Breadcrumb">
-          <a class="crumb-home" href="https://jomcgi.dev/"
+          <a class="crumb-home" href="/"
             >jomcgi.dev<span class="crumb-arrow" aria-hidden="true"
               >&nearr;</span
             ></a

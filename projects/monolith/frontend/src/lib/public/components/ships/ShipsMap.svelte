@@ -770,7 +770,7 @@
   <div class="map" bind:this={mapContainer}></div>
 
   <nav class="map-chip" aria-label="Breadcrumb">
-    <a class="chip-home" href="https://jomcgi.dev/"
+    <a class="chip-home" href="/"
       >jomcgi.dev<span class="chip-home-arrow" aria-hidden="true">↗</span></a
     >
     <span class="chip-sep">/</span>

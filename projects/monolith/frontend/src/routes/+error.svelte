@@ -147,7 +147,11 @@
     {/if}
 
     <div class="nf-cta">
-      <a href="https://jomcgi.dev/" class="btn btn-primary">
+      <!-- Relative, NOT https://jomcgi.dev/. This page renders on every host
+           that serves the bundle (private.jomcgi.dev, dev.jomcgi.dev), and an
+           absolute production URL sent people off the environment they were
+           actually using. `/` redirects to /public/. -->
+      <a href="/" class="btn btn-primary">
         <span class="btn-arr">←</span>&nbsp;BACK TO SOLID GROUND
       </a>
       <a href="/app/notes" class="btn btn-secondary">TALK TO MY NOTES</a>

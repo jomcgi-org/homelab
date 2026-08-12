@@ -149,7 +149,7 @@
 
 <header class="docs-topbar">
   <div class="docs-topbar-inner">
-    <a class="docs-back" href="https://jomcgi.dev/">
+    <a class="docs-back" href="/">
       <span class="docs-back-arrow" aria-hidden="true">&larr;</span>
       <span class="docs-back-label">jomcgi.dev</span>
     </a>

@@ -12,7 +12,7 @@
   // DOCS is reference material (repo docs + ADRs), a peer of ENGINEERING, not an
   // interactive app, so it sits in the top row rather than the APPS dropdown.
   const publicItems = [
-    { slug: "home", label: "HOME", href: "https://jomcgi.dev/" },
+    { slug: "home", label: "HOME", href: "/" },
     { slug: "engineering", label: "ENGINEERING", href: "/engineering" },
     { slug: "docs", label: "DOCS", href: "/docs" },
     { slug: "cv", label: "CV", href: "/cv" },
