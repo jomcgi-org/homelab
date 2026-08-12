@@ -19,36 +19,39 @@
     {
       status: "Planned",
       title: "Evidence-grounded verification",
-      body: "A trailing job re-checks every extracted stat against its source passage, corrects it or nulls it.",
+      body: "Every stat gets re-checked against the passage it came from, and fixed or removed if it does not match.",
     },
     {
       status: "Planned",
       title: "Alias merge",
-      body: 'Split-name twins ("Gundren" and "Gundren Rockseeker") get merged into one entity, report-first with a human approving every pair.',
+      body: 'Split-name twins ("Gundren" and "Gundren Rockseeker") get merged into one, with a person approving every pair.',
     },
     {
       status: "Designed",
       title: "One search everywhere",
-      body: "A single omnibox blending instant name matches with semantic hits over lore chunks and related entities.",
+      body: "One search box that finds a name as you type, and also finds the passages that describe it.",
     },
     {
       status: "Designed",
       title: "Live-play tools",
-      body: "DM advice capture and a live session view for use mid-encounter.",
+      body: "Notes and a live view to run a session from.",
     },
     {
       status: "Long term",
       title: "Loom migration",
-      body: "The schema is deliberately kept compatible with a governed lakehouse system of record, with per-session hot-tier checkouts when it lands.",
+      body: "Move the library onto Loom, so campaign data lives in one place with a record of every change.",
     },
   ];
 </script>
 
 <svelte:head>
-  <title>Grimoire: a grant-scoped D&D campaign manager · jomcgi.dev</title>
+  <title
+    >Grimoire: a D&D campaign manager where each player sees only what the DM
+    shares · jomcgi.dev</title
+  >
   <meta
     name="description"
-    content="Scan a sourcebook, extract its entities and relationships, then ask it questions with grounded, cited answers. Every player sees only what their DM has granted."
+    content="Scan a sourcebook, then ask it questions and get answers with the page they came from. Every player sees only what their DM has shared."
   />
   <!-- Only this landing page is crawlable: every other route under
        /public/app/grimoire stays noindex (see the layout's svelte:head). -->
@@ -64,9 +67,9 @@
       <span class="kn">demo</span>
     </div>
     <p class="block-lede">
-      The same entity renders differently for each player character, depending
-      on the scope their DM has granted. The creature below is invented for this
-      demo; the real corpus works the same way.
+      Each player sees the same creature differently, depending on how much
+      their DM has shared. The creature below is made up for this demo; real
+      ones work the same way.
     </p>
     <div class="grant-row">
       <article class="grant-card">
@@ -104,10 +107,6 @@
         </p>
       </article>
     </div>
-    <p class="block-note">
-      One visibility predicate covers entity lookups, search results, and the
-      reader's "entities on this page" chips.
-    </p>
   </section>
 
   <section class="block">

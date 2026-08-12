@@ -250,6 +250,7 @@
         applyEgo(id, res);
       } catch (e) {
         if (requestId !== egoRequestSeq) return;
+        console.error("Could not load world", e);
         loadError = e.message;
         ego = { nodes: [], edges: [] };
       } finally {
@@ -362,7 +363,9 @@
           <div class="skeleton"></div>
         </div>
       {:else if loadError && displayGraph.nodes.length === 0}
-        <p class="status-error">{loadError}</p>
+        <p class="status-error">
+          Could not load this right now. Try again in a moment.
+        </p>
       {:else if displayGraph.nodes.length === 0}
         <div class="empty">
           <p class="grim-title empty-lead">Nothing to show.</p>
@@ -379,7 +382,7 @@
         />
         {#if fellBackToFullEgo}
           <p class="fallback-note">
-            No neighbors in this scope/lens; showing the full world instead.
+            Nothing connects to this here. Showing the whole world instead.
           </p>
         {/if}
         {#if legendTypes.length}

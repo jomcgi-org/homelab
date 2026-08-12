@@ -29,6 +29,7 @@
     try {
       entity = await apiFetch(`/entities/${encodeURIComponent(id)}`);
     } catch (e) {
+      console.error("Could not load entity", e);
       const msg = String(e.message);
       if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
         notFound = true;
@@ -56,10 +57,12 @@
   {:else if notFound}
     <div class="empty">
       <p class="grim-title empty-lead">Not found.</p>
-      <p class="empty-help">This entity isn't in the loaded corpus.</p>
+      <p class="empty-help">Nothing by that name in the books loaded here.</p>
     </div>
   {:else if error}
-    <p class="status-error">{error}</p>
+    <p class="status-error">
+      Could not load this right now. Try again in a moment.
+    </p>
   {:else if entity}
     <EntityDetail {entity} />
 

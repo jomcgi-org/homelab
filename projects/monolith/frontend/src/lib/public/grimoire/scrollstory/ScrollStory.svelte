@@ -151,8 +151,8 @@
 
   const COUNTS = [
     ["books", story.corpus.books],
-    ["chunks", story.corpus.chunks],
-    ["entities", story.corpus.entities],
+    ["passages", story.corpus.chunks],
+    ["characters, places and items", story.corpus.entities],
     ["relationships", story.corpus.edges],
   ];
   const topTypes = Object.entries(story.corpus.byType)
@@ -161,16 +161,16 @@
 
   const CAPTIONS = {
     layout: [
-      "1 / LAYOUT DETECTION",
-      "Marker reads the scanned page and finds its structure: headers, columns, asides, art.",
+      "1 / Reading the page.",
+      "The scan gets picked apart into headers, columns, asides and art.",
     ],
     chunks: [
-      "2 / STRUCTURAL CHUNKING",
-      "Blocks become chunks in reading order, keyed to the section they belong to.",
+      "2 / Broken into passages.",
+      "The page becomes readable passages in the right order, each tagged with the section it came from.",
     ],
     entities: [
-      "3 / ENTITY EXTRACTION",
-      "An LLM reads each chunk and emits typed entities, and how they relate. Click a node.",
+      "3 / Who and what is on the page.",
+      "Every character, place and item gets picked out, along with how they connect.",
     ],
   };
 
@@ -901,7 +901,7 @@
             >Who is the Black Spider?</span
           >
         </h1>
-        <p>Scroll to watch Grimoire extract the answer.</p>
+        <p>Scroll to watch Grimoire find the answer.</p>
         <div class="cue">SCROLL <span class="arrow">&darr;</span></div>
       </div>
 
@@ -982,7 +982,7 @@
             {/each}
           </ul>
           <div class="pfoot">
-            extracted from {popData.nMentions} mention{popData.nMentions === 1
+            found in {popData.nMentions} mention{popData.nMentions === 1
               ? ""
               : "s"} on this page
           </div>
@@ -994,9 +994,11 @@
           Unearthed from this page
         </div>
         <div class="this-page">
-          <span>{story.bboxes.length} blocks</span><span class="k">/</span>
-          <span>{story.chunks.length} chunks</span><span class="k">/</span>
-          <span>{story.entities.length} entities</span><span class="k">/</span>
+          <span>{story.bboxes.length} text blocks</span><span class="k">/</span>
+          <span>{story.chunks.length} passages</span><span class="k">/</span>
+          <span>{story.entities.length} characters, places and items</span><span
+            class="k">/</span
+          >
           <span>{graphEdges.length} relationships</span>
         </div>
         <div class="scale-head grim-title section-head compendium-head">
@@ -1023,14 +1025,13 @@
       <div class="chat-head" bind:this={chatHeadEl}>
         <div class="scale-head grim-title">Ask the Grimoire.</div>
         <div class="chat-sub">
-          Every claim cites the chunks and entities it came from. Click a
-          citation.
+          Every claim links back to the passage it came from. Click one.
         </div>
       </div>
 
       <div class="chat" bind:this={chatEl}>
         {#if isPlaceholder}
-          <div class="mock-note">mock transcript</div>
+          <div class="mock-note">example conversation</div>
         {/if}
         <div class="bubble-q">{transcript.question}</div>
         <div class="bubble-a">
@@ -1060,7 +1061,7 @@
         </div>
         <div class="ctas" bind:this={ctasEl}>
           <a class="cta primary" href={chatHref()}>Ask the Grimoire</a>
-          <a class="cta ghost" href={worldHref()}>Wander the graph</a>
+          <a class="cta ghost" href={worldHref()}>Explore the world</a>
           <a class="cta ghost" href={libraryHref()}>Browse the library</a>
         </div>
       </div>
@@ -1094,20 +1095,19 @@
     <section class="static-hero">
       <h1 class="grim-title">
         <span class="line">Grimoire.</span><span class="line accent"
-          >Who is the Black Spider, and what does he actually want?</span
+          >Who is the Black Spider?</span
         >
       </h1>
       <p>
         The answer is buried in this page of Lost Mine of Phandelver. Grimoire
-        digs it out below: layout, chunks, entities, a graph, and a grounded
-        answer.
+        digs it out below.
       </p>
     </section>
 
     <section class="static-scene">
       <p class="static-cap">
-        <b>1 / Layout detection.</b> Marker reads the scanned page and finds its structure:
-        headers, columns, asides, art.
+        <b>1 / Reading the page.</b> The scan gets picked apart into headers, columns,
+        asides and art.
       </p>
       <div class="static-page" style="aspect-ratio:{aspect}">
         <img
@@ -1134,8 +1134,8 @@
 
     <section class="static-scene">
       <p class="static-cap">
-        <b>2 / Structural chunking.</b> Blocks become chunks in reading order, keyed
-        to the section they belong to.
+        <b>2 / Broken into passages.</b> The page becomes readable passages in the
+        right order, each tagged with the section it came from.
       </p>
       <div class="static-cards">
         {#each cards as c (c.id)}
@@ -1149,8 +1149,8 @@
 
     <section class="static-scene">
       <p class="static-cap">
-        <b>3 / Entity extraction.</b> An LLM reads each chunk and emits typed entities
-        and how they relate.
+        <b>3 / Who and what is on the page.</b> Every character, place and item gets
+        picked out, along with how they connect.
       </p>
       <svg
         class="static-graph"
@@ -1188,8 +1188,7 @@
 
     <section class="static-scene">
       <p class="static-cap">
-        <b>4 / The entire compendium.</b> You just watched a single page unearthed.
-        Every book in the compendium gets the same treatment.
+        <b>4 / Every book.</b>
       </p>
       <div class="static-counters">
         {#each COUNTS as [label, value] (label)}
@@ -1211,12 +1210,12 @@
 
     <section class="static-scene">
       <p class="static-cap">
-        <b>5 / Grounded answers.</b> Every claim cites the chunks and entities it
-        came from.
+        <b>5 / Grounded answers.</b> Every claim links back to the passage it came
+        from. Click one.
       </p>
       <div class="chat static-chat">
         {#if isPlaceholder}
-          <div class="mock-note">mock transcript</div>
+          <div class="mock-note">example conversation</div>
         {/if}
         <div class="bubble-q">{transcript.question}</div>
         <div class="bubble-a">
@@ -1239,7 +1238,7 @@
         </div>
         <div class="ctas static-ctas">
           <a class="cta primary" href={chatHref()}>Ask the Grimoire</a>
-          <a class="cta ghost" href={worldHref()}>Wander the graph</a>
+          <a class="cta ghost" href={worldHref()}>Explore the world</a>
           <a class="cta ghost" href={libraryHref()}>Browse the library</a>
         </div>
       </div>

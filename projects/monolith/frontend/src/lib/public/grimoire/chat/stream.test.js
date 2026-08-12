@@ -193,7 +193,9 @@ describe("streamChatMessage", () => {
     expect(frames).toHaveLength(1);
     expect(frames[0].type).toBe("error");
     expect(frames[0].data.code).toBe("max_turns");
-    expect(frames[0].data.message).toBe("limit");
+    expect(frames[0].data.message).toBe(
+      "This conversation has reached its length limit. Reload the page to start a new one.",
+    );
   });
 
   it("maps a 404 with no body to a friendly session-expired error", async () => {

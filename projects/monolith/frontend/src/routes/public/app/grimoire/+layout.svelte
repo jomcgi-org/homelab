@@ -99,7 +99,7 @@
     <title>Grimoire · jomcgi.dev</title>
     <meta
       name="description"
-      content="A read-only, link-shareable D&D sourcebook library: browse loaded books, read chunk by chunk, and look up creatures and lore."
+      content="Browse the D&D sourcebooks loaded here, read them page by page, and look up creatures, places and lore."
     />
     <meta name="robots" content="noindex, nofollow" />
   {/if}

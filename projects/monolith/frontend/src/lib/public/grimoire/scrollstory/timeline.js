@@ -37,7 +37,7 @@ export const PHASES = [
     end: 0.26,
     hold: 0.2,
     rest: 0.22,
-    label: "LAYOUT",
+    label: "PAGE",
   },
   {
     id: "chunks",
@@ -49,7 +49,7 @@ export const PHASES = [
     end: 0.44,
     hold: 0.42,
     rest: 0.43,
-    label: "CHUNKS",
+    label: "PASSAGES",
   },
   {
     id: "entities",
@@ -57,7 +57,7 @@ export const PHASES = [
     end: 0.66,
     hold: 0.56,
     rest: 0.6,
-    label: "ENTITIES",
+    label: "WHO AND WHAT",
   },
   {
     id: "scale",
@@ -65,7 +65,7 @@ export const PHASES = [
     end: 0.82,
     hold: 0.76,
     rest: 0.79,
-    label: "COMPENDIUM",
+    label: "EVERYTHING",
   },
   { id: "chat", start: 0.82, end: 1.0, hold: 0.97, rest: 1.0, label: "ASK" },
 ];

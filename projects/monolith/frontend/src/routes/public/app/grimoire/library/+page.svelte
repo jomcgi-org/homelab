@@ -25,6 +25,7 @@
     try {
       books = await apiFetch("/books");
     } catch (e) {
+      console.error("Could not load library", e);
       error = e.message;
     } finally {
       loading = false;
@@ -168,10 +169,12 @@
     <p class="summary">
       {totals.books.toLocaleString()}
       {totals.books === 1 ? "book" : "books"}, {totals.chunks.toLocaleString()}
-      pages of lore, {totals.entities.toLocaleString()} entities, synced {totals.synced}
+      pages of lore, {totals.entities.toLocaleString()} characters, places and items,
+      updated {totals.synced}
     </p>
     <p class="legend">
-      Open-licensed books are readable in full. Others are listed for reference.
+      Some books are free to read here in full. The rest are listed so you can
+      see what is loaded.
     </p>
     {#if readableCount > 0 && readableCount < totals.books}
       <div class="filter" role="tablist" aria-label="Filter books">
@@ -204,11 +207,13 @@
       {/each}
     </div>
   {:else if error}
-    <p class="status-error">{error}</p>
+    <p class="status-error">
+      Could not load this right now. Try again in a moment.
+    </p>
   {:else if books.length === 0}
     <div class="empty">
-      <p class="grim-title empty-lead">Nothing loaded yet.</p>
-      <p class="empty-help">Check back once a sourcebook has been uploaded.</p>
+      <p class="grim-title empty-lead">No books here yet.</p>
+      <p class="empty-help">Check back soon.</p>
     </div>
   {:else}
     {#each grouped as group (group.kind)}
