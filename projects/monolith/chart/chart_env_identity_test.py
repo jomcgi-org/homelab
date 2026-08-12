@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,29 @@ _DOC_NAME = re.compile(r"^\s{2}name:\s*(\S+)\s*$", re.M)
 _HOSTNAME = re.compile(r"^\s*-\s*[\"']?([a-z0-9.-]+\.jomcgi\.dev)[\"']?\s*$", re.M)
 
 
+def _write_forced_jobs_image() -> Path:
+    """jobs.image is injected at CHART BUILD TIME by helm_images_values.
+
+    A plain `helm template` therefore leaves it empty, cronworkflows.yaml is
+    gated on it, and NOTHING renders. That is not a harmless gap: a
+    `grep -c CronWorkflow` on an unforced render returns 0 for production too,
+    so an earlier check compared 0 against 0, reported the environments
+    identical, and missed dev owning production's scheduled jobs in the live
+    cluster.
+    """
+    path = Path(tempfile.gettempdir()) / "monolith_forced_jobs_image.yaml"
+    path.write_text(
+        "jobs:\n"
+        "  image:\n"
+        "    repository: registry.invalid/forced-for-test\n"
+        "    tag: test\n"
+    )
+    return path
+
+
+_FORCED_JOBS_IMAGE = _write_forced_jobs_image()
+
+
 def _chart_dir() -> Path:
     here = Path(__file__).resolve().parent
     if (here / "Chart.yaml").exists():
@@ -63,10 +87,43 @@ def _render(release: str, values: list[Path]) -> str:
     argv = [helm_bin, "template", release, str(_chart_dir()), "--namespace", release]
     for v in values:
         argv += ["--values", str(v)]
+    # jobs.image is injected at CHART BUILD TIME by helm_images_values, so a
+    # plain `helm template` leaves it empty and cronworkflows.yaml, gated on it,
+    # renders NOTHING. Forcing a value here is what makes the CronWorkflows
+    # visible to these comparisons at all.
+    #
+    # This is not a detail. A `grep -c CronWorkflow` on an unforced render
+    # returns 0 for production too, so an earlier version of this check compared
+    # 0 against 0 and reported the environments identical while dev was live in
+    # the cluster owning production's scheduled jobs.
+    # Forced through a values FILE inserted before the caller's, never --set.
+    #
+    # Two reasons, both learned by getting it wrong. jobs.image is a MAP (the
+    # template reads .repository), so `--set jobs.image=<str>` dies on the field
+    # access. And `--set` is applied LAST, so it would override dev's
+    # `jobs.image: ""` and make dev render the CronWorkflows it exists to
+    # suppress, turning a real assertion into a false failure.
+    #
+    # Ordering before the caller's files means production picks the forced image
+    # up (it has none locally) while dev's empty string still wins. Delete dev's
+    # override and dev inherits this instead, which is precisely the collision
+    # these comparisons must catch.
+    argv = argv[:4] + ["--values", str(_FORCED_JOBS_IMAGE)] + argv[4:]
     result = subprocess.run(argv, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"helm template failed: {result.stderr}")
     return result.stdout
+
+
+def _pinned_namespace(doc: str) -> str | None:
+    """The metadata.namespace a doc pins itself to, if any.
+
+    A resource that names its own namespace escapes the release namespace, so
+    the Application's destination does NOT separate it from production's copy.
+    That is the whole hazard class this file guards.
+    """
+    match = re.search(r"^\s{2}namespace:\s*(\S+)\s*$", doc, re.M)
+    return match.group(1) if match else None
 
 
 def _docs(rendered: str):
@@ -142,6 +199,45 @@ def test_dev_claims_no_hostname(renders):
         if kind == "HTTPRoute":
             prod_hosts.update(_HOSTNAME.findall(doc))
     assert prod_hosts, "production claimed no hostnames; this test is inert"
+
+
+def test_dev_claims_no_resource_pinned_outside_its_namespace(renders):
+    """The general form of the collision, and the one that actually bit.
+
+    Two earlier cases were special cases of this: cluster-scoped RBAC (no
+    namespace at all) and HTTPRoutes (namespaced, but attached to a Gateway
+    that merges by hostname). The third was CronWorkflows, which pin
+    metadata.namespace to jobs.workflowNamespace and are named `{{ .name }}`
+    with no release prefix, so dev and production render byte-identical
+    identities into monolith-workflows.
+
+    That one reached the cluster: campsites-refresh came back labelled
+    app.kubernetes.io/instance: monolith-dev, and its DATABASE_URL is the
+    Kyverno-cloned PRODUCTION credential.
+
+    An Application's destination namespace separates only the resources that
+    accept it. Anything naming its own namespace opts out of that separation.
+    """
+
+    def pinned(env):
+        out = set()
+        for kind, name, doc in _docs(renders[env]):
+            ns = _pinned_namespace(doc)
+            if ns:
+                out.add(f"{ns}/{kind}/{name}")
+        return out
+
+    shared = pinned("prod") & pinned("dev")
+    assert not shared, (
+        f"dev and production both render {sorted(shared)}. These pin their own "
+        "metadata.namespace, so the Application's destination does not separate "
+        "them: that is one object with two owners. Disable it in dev's overlay "
+        "or give it a release-scoped name."
+    )
+    assert pinned("prod"), (
+        "production pinned nothing outside its namespace; this test is inert. "
+        "If cronworkflows.yaml stopped rendering, check jobs.image is forced."
+    )
 
 
 def test_dev_does_not_render_the_refresh_workflow(renders):
