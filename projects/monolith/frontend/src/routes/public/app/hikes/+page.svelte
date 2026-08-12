@@ -371,6 +371,11 @@
           ></span>{/if}
         <span class="chev" aria-hidden="true">{filtersOpen ? "▴" : "▾"}</span>
       </button>
+      {#if filtered.length === 0}
+        <p class="geo-error">
+          No walks match these filters. Reset to see them all.
+        </p>
+      {/if}
     </div>
 
     {#if filtersOpen}

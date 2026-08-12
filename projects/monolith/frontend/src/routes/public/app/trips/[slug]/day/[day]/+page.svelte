@@ -404,7 +404,7 @@
             {:else}
               <div class="cell r1">
                 <div class="label">TELEMETRY</div>
-                <div class="val sm">--</div>
+                <div class="val sm">no data for this photo</div>
               </div>
             {/if}
           </div>

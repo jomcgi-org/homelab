@@ -71,9 +71,9 @@
   ];
 
   function fmtDate(iso) {
-    if (!iso) return "—";
+    if (!iso) return "n/a";
     const [y, m, d] = iso.split("-").map(Number);
-    if (!y || !m || !d) return "—";
+    if (!y || !m || !d) return "n/a";
     return `${d} ${MONTHS[m - 1]} ${y}`;
   }
 
@@ -189,7 +189,7 @@
             aria-pressed={view === "history"}
             onclick={() => (view = "history")}
           >
-            History ({historyJobs.length})
+            Past ({historyJobs.length})
           </button>
         </div>
 

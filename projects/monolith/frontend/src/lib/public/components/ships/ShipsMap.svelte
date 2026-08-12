@@ -812,7 +812,7 @@
     </div>
   {:else}
     <div class="legend">
-      <p class="eyebrow legend-title">Vessels / cell · all time</p>
+      <p class="eyebrow legend-title">Ships seen per map square</p>
       <ul class="heat-scale">
         {#each heatBreaks.slice(0, HEAT_COLORS.length) as br, i (br)}
           <li>
@@ -832,11 +832,13 @@
         aria-label="Close vessel panel">&times;</button
       >
       <h2 class="panel-name">
-        {selected.name || selected.ship_name || `MMSI ${selected.mmsi}`}
+        {selected.name ||
+          selected.ship_name ||
+          `MMSI ${selected.mmsi} (ship radio id)`}
       </h2>
       <dl class="panel-rows">
         <div>
-          <dt>MMSI</dt>
+          <dt title="a ship's radio id">MMSI</dt>
           <dd>{selected.mmsi}</dd>
         </div>
         <div>
