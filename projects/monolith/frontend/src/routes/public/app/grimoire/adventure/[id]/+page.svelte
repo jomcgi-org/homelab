@@ -25,6 +25,7 @@
     try {
       adventure = await apiFetch(`/adventures/${encodeURIComponent(id)}`);
     } catch (e) {
+      console.error("Could not load adventure", e);
       const msg = String(e.message);
       if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
         notFound = true;
@@ -57,10 +58,12 @@
   {:else if notFound}
     <div class="empty">
       <p class="grim-title empty-lead">Not found.</p>
-      <p class="empty-help">This adventure isn't in the loaded corpus.</p>
+      <p class="empty-help">Nothing by that name in the books loaded here.</p>
     </div>
   {:else if error}
-    <p class="status-error">{error}</p>
+    <p class="status-error">
+      Could not load this right now. Try again in a moment.
+    </p>
   {:else if adventure}
     <a class="eyebrow back-link" href={bookHref(adventure.book_id)}
       >&larr; {adventure.book_display_name.toUpperCase()}</a
@@ -91,7 +94,7 @@
       </section>
     {:else}
       <p class="empty-help roster-empty">
-        No entities extracted in this range yet.
+        No characters or places recorded for this adventure yet.
       </p>
     {/if}
   {/if}

@@ -176,16 +176,13 @@ export function applyFrame(state, frame) {
 // before any SSE starts) to a human message. The soft, retryable shed arrives
 // in-stream as a 200 `busy` frame; these are the terminal pre-stream cases.
 function messageForError(status, detail) {
-  if (detail && typeof detail.message === "string" && detail.message) {
-    return detail.message;
-  }
   switch (status) {
     case 400:
       return `That message is too long (max ${CHARACTER_LIMIT} characters). Please shorten it.`;
     case 404:
       return "Your chat session expired. Reload the page to start a new one.";
     case 429:
-      return "This chat session has reached its limit. Reload the page to start a new one.";
+      return "This conversation has reached its length limit. Reload the page to start a new one.";
     default:
       return FALLBACK_ERROR;
   }

@@ -170,9 +170,8 @@
         <p class="fork-eyebrow">CONTINUE THIS CHAT</p>
         <p class="fork-copy">
           Solve the challenge to pick up this conversation in a fresh session.
-          The transcript above is carried over and you can keep asking the
-          Grimoire from there. No sign-in, no tracking beyond what keeps the
-          bots out.
+          The transcript above is carried over. No sign-in, no tracking beyond
+          what keeps the bots out.
         </p>
         <TurnstileGate
           siteKey={data.turnstileSiteKey}
@@ -184,8 +183,8 @@
 
     <div class="share-foot">
       <p class="share-foot-copy">
-        This is a read-only snapshot of a conversation with the Grimoire, a sage
-        grounded in the D&D sourcebooks loaded on my homelab cluster.
+        A saved copy of a conversation with the Grimoire, a sage that answers
+        from my D&D sourcebooks.
       </p>
       <a class="share-cta" href="/app/grimoire/chat">Ask the Grimoire &rarr;</a>
     </div>

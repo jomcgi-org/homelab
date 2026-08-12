@@ -343,8 +343,8 @@
           <div class="chat-gate">
             <p class="eyebrow chat-gate-eyebrow">START CHATTING</p>
             <p class="chat-gate-copy">
-              Solve the challenge once to open a session. Every answer is
-              grounded in the loaded sourcebooks, cited, and never invented.
+              Solve the puzzle once to start. Every answer quotes the sourcebook
+              page it came from.
             </p>
             <TurnstileGate
               siteKey={data.turnstileSiteKey}
@@ -363,7 +363,7 @@
             <p class="empty-sub">
               Rules, spells, monsters, magic items, lore, adventures. A sage
               reads the loaded sourcebooks and answers, citing what it drew on.
-              No tools, no cloud, no telemetry.
+              Nothing leaves this machine.
             </p>
             <div class="chat-examples">
               {#each EXAMPLES as ex}
