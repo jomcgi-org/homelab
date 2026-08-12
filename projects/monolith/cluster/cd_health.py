@@ -83,10 +83,38 @@ async def _argocd_fault(grace_s: float) -> str | None:
     return await _argocd_fault_real(apps, grace_s)
 
 
-async def _argocd_fault_real(apps: list[dict], grace_s: float) -> str | None:
-    """Return a description of the unhealthy apps, or None if all are fine."""
+def _non_prod_apps() -> frozenset[str]:
+    """ArgoCD apps whose health is reported but does NOT fault this component.
+
+    This check was written when every ArgoCD app WAS production, so "any app
+    unhealthy" and "production unhealthy" were the same predicate. Introducing
+    monolith-dev broke that equivalence silently, and the check kept evaluating
+    the old one: a dev environment with a stuck Atlas migration took
+    jomcgi.dev/health to 503 while production was entirely fine.
+
+    These are still worth reporting. A dev environment that cannot sync is a
+    real signal and often an early one, since it runs the same chart production
+    is about to. It is just not a reason to tell the outside world that this
+    site is down.
+    """
+    raw = os.environ.get("CD_HEALTH_NON_PROD_APPS", "monolith-dev")
+    return frozenset(n.strip() for n in raw.split(",") if n.strip())
+
+
+async def _argocd_fault_real(
+    apps: list[dict], grace_s: float, non_prod: frozenset[str] | None = None
+) -> tuple[str | None, str | None]:
+    """Split unhealthy apps into (production faults, non-production notes).
+
+    Returns a pair so the caller can decide differently about each. Only the
+    first makes /api/health 503; the second rides along in the detail string so
+    the signal is kept rather than discarded.
+    """
+    if non_prod is None:
+        non_prod = _non_prod_apps()
     now = datetime.now(timezone.utc)
-    faults = []
+    faults: list[str] = []
+    notes: list[str] = []
     for app in apps:
         if app.get("sync") == "Synced" and app.get("health") == "Healthy":
             continue
@@ -98,11 +126,15 @@ async def _argocd_fault_real(apps: list[dict], grace_s: float) -> str | None:
             continue
         age_s = (now - finished).total_seconds()
         if age_s > grace_s:
-            faults.append(
+            line = (
                 f"{app['name']} is {app.get('sync')}/{app.get('health')} "
                 f"for {age_s / 60:.0f}m"
             )
-    return "; ".join(sorted(faults)) if faults else None
+            (notes if app.get("name") in non_prod else faults).append(line)
+    return (
+        "; ".join(sorted(faults)) if faults else None,
+        "; ".join(sorted(notes)) if notes else None,
+    )
 
 
 async def _ci_fault(red_window_s: float) -> str | None:
@@ -213,9 +245,15 @@ async def cd_health() -> dict:
         logger.warning("cd health: argocd check failed: %s", exc)
         details.append(f"argocd check unavailable ({exc})")
     else:
-        if argocd:
+        argocd_fault, argocd_note = argocd
+        if argocd_fault:
             ok = False
-            details.append(argocd)
+            details.append(argocd_fault)
+        if argocd_note:
+            # Reported, deliberately NOT faulting. See _non_prod_apps: a dev
+            # environment failing to sync is worth surfacing and is not a
+            # reason to tell the outside world this site is down.
+            details.append(f"non-prod: {argocd_note}")
 
     if not os.environ.get("GITHUB_API_TOKEN", ""):
         details.append("ci check disabled: no GITHUB_API_TOKEN")

@@ -34,7 +34,7 @@ async def test_all_apps_synced_healthy_is_ok():
     apps = [
         {"name": "monolith", "sync": "Synced", "health": "Healthy", "finished_at": None}
     ]
-    assert await mod._argocd_fault_real(apps, 900.0) is None
+    assert (await mod._argocd_fault_real(apps, 900.0))[0] is None
 
 
 @pytest.mark.asyncio
@@ -43,7 +43,7 @@ async def test_app_stuck_unsynced_past_grace_trips():
     apps = [
         {"name": "monolith", "sync": "Unknown", "health": "Healthy", "finished_at": old}
     ]
-    fault = await mod._argocd_fault_real(apps, 900.0)
+    fault, _note = await mod._argocd_fault_real(apps, 900.0)
     assert fault is not None
     assert "monolith is Unknown/Healthy" in fault
 
@@ -59,7 +59,7 @@ async def test_app_mid_rollout_inside_grace_does_not_trip():
             "finished_at": recent,
         }
     ]
-    assert await mod._argocd_fault_real(apps, 900.0) is None
+    assert (await mod._argocd_fault_real(apps, 900.0))[0] is None
 
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ async def test_app_with_no_finish_time_does_not_trip():
             "finished_at": None,
         }
     ]
-    assert await mod._argocd_fault_real(apps, 900.0) is None
+    assert (await mod._argocd_fault_real(apps, 900.0))[0] is None
 
 
 # --------------------------------------------------------------------------
@@ -166,7 +166,7 @@ async def test_missing_github_token_fails_open_but_says_so(monkeypatch):
     monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
 
     async def _no_argocd_fault(grace_s):
-        return None
+        return (None, None)
 
     monkeypatch.setattr(mod, "_argocd_fault", _no_argocd_fault)
     result = await mod.cd_health()
@@ -194,7 +194,7 @@ async def test_argocd_fault_makes_the_component_not_ok(monkeypatch):
     monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
 
     async def _fault(grace_s):
-        return "monolith is Unknown/Healthy for 40m"
+        return ("monolith is Unknown/Healthy for 40m", None)
 
     monkeypatch.setattr(mod, "_argocd_fault", _fault)
     result = await mod.cd_health()
@@ -210,9 +210,70 @@ async def test_result_is_cached(monkeypatch):
 
     async def _counting(grace_s):
         calls.append(1)
-        return None
+        return (None, None)
 
     monkeypatch.setattr(mod, "_argocd_fault", _counting)
     await mod.cd_health()
     await mod.cd_health()
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_prod_app_is_reported_but_does_not_fault():
+    """A dev environment must not 503 the public health endpoint.
+
+    This is the regression test for a real outage: monolith-dev sat
+    Synced/Degraded on a stuck Atlas migration and took jomcgi.dev/health to
+    503 while production was entirely healthy.
+    """
+    old = _iso(datetime.now(timezone.utc) - timedelta(minutes=40))
+    apps = [
+        {
+            "name": "monolith-dev",
+            "sync": "Synced",
+            "health": "Degraded",
+            "finished_at": old,
+        }
+    ]
+    fault, note = await mod._argocd_fault_real(
+        apps, 900.0, non_prod=frozenset({"monolith-dev"})
+    )
+    assert fault is None, "a non-production app must not fault the component"
+    assert note is not None and "monolith-dev is Synced/Degraded" in note, (
+        "it must still be REPORTED: a dev app failing to sync is an early "
+        "signal, since it runs the chart production is about to run"
+    )
+
+
+@pytest.mark.asyncio
+async def test_production_still_faults_alongside_a_non_prod_note():
+    """Scoping must not swallow the signal it was narrowed around."""
+    old = _iso(datetime.now(timezone.utc) - timedelta(minutes=40))
+    apps = [
+        {
+            "name": "monolith",
+            "sync": "Unknown",
+            "health": "Healthy",
+            "finished_at": old,
+        },
+        {
+            "name": "monolith-dev",
+            "sync": "Synced",
+            "health": "Degraded",
+            "finished_at": old,
+        },
+    ]
+    fault, note = await mod._argocd_fault_real(
+        apps, 900.0, non_prod=frozenset({"monolith-dev"})
+    )
+    assert fault is not None and "monolith is Unknown/Healthy" in fault
+    assert "monolith-dev" not in (fault or ""), "dev must not leak into the fault"
+    assert note is not None and "monolith-dev" in note
+
+
+@pytest.mark.asyncio
+async def test_non_prod_list_is_configurable_and_defaults_to_dev(monkeypatch):
+    monkeypatch.delenv("CD_HEALTH_NON_PROD_APPS", raising=False)
+    assert "monolith-dev" in mod._non_prod_apps()
+    monkeypatch.setenv("CD_HEALTH_NON_PROD_APPS", "a , b,")
+    assert mod._non_prod_apps() == frozenset({"a", "b"})
