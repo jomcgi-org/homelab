@@ -143,3 +143,36 @@ promotion:
       upstream:
         - dev
       autoPromotion: true
+
+# Private-tier ingress: https://private.jomcgi.dev/app/kargo
+#
+# The prefix is forwarded INTACT. No rewritePrefix, deliberately, and this is
+# the opposite of what the upstream chart's own values comment instructs
+# ("the user is responsible for configuring their Ingress controller to strip
+# the prefix"). That comment is wrong for 1.11.1. Asked the running binary
+# rather than the docs:
+#
+#   /            -> HTTP 404
+#   /app/kargo/  -> HTTP 200, serves the UI
+#   /app/kargo   -> HTTP 301 to /app/kargo/
+#
+# So the server strips basePath itself (pkg/server wrapWithBasePath) and
+# expects to RECEIVE the prefix. Stripping at the gateway too would 404 every
+# request, presenting as a broken ingress rather than a doubled strip.
+#
+# That 301 also means no companion RequestRedirect route is needed for the bare
+# path, unlike longhorn: Kargo issues the trailing-slash redirect itself. With
+# no rewritePrefix the cfingress-rewrite-needs-slash-redirect rule does not
+# apply either, so this route is simpler than either precedent in the repo.
+cfIngress:
+  enabled: true
+  tier: trusted
+  hostname: private.jomcgi.dev
+  pathPrefix: /app/kargo
+  serviceName: kargo-api
+  # Plain HTTP: api.tls.enabled is false because Cloudflare terminates at the
+  # edge. See the terminatedUpstream note above.
+  servicePort: 80
+  gateway:
+    name: cloudflare-ingress
+    namespace: envoy-gateway-system
