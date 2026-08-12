@@ -56,3 +56,18 @@ postgres:
   # Applications would fight over it on every sync.
   devRefresh:
     enabled: false
+
+# The WhatsApp bridge holds a REAL external identity: it starts with
+# bot_number +12369923104, the production account, and a second bridge would
+# contend for that one WhatsApp session.
+#
+# This is off for the same reason leaderSingletons is, and it is here because
+# that switch does NOT cover it. The five leader-elected singletons are one
+# mechanism; this is a separate Deployment that inherited straight through. The
+# rule is not "disable the leader singletons", it is "disable anything holding
+# an external identity", and that set spans more than one mechanism.
+#
+# Not an exception to keeping dev identical to prod: an external account is
+# identity, and dev must not claim production's.
+whatsapp:
+  enabled: false
