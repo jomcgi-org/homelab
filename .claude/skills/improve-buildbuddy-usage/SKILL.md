@@ -140,6 +140,42 @@ start.** The runner spins up, restores its snapshot, and only then runs step one
 `Format check`'s `ci-format-bot` author guard and `Buck2 rules`' `git diff` gate
 both prove this: they exit in 1 to 5 seconds and still cost GBs.
 
+## Test bytes are runfiles trees (settled 2026-08-12)
+
+For `CI test //...`, the governing equation is:
+
+    download = (test actions executing remotely) x (each one's runfiles tree)
+
+**Cache hit rate is not the driver, and neither is change size.** The worst
+invocation in the 3 days to 2026-08-12 moved 278.6 GB with **2 action cache
+misses**. It executed almost nothing. What it had was 4,470,260 CAS hits
+against a normal run's ~16,000.
+
+Correlate download against `casCacheHits`. Correlating against `actionCount`
+or `actionCacheMisses` points the wrong way: the 278.6 GB run had 729 actions
+while ordinary 12 GB runs have ~22,000.
+
+The proof is in the invocation's `buildToolLogs`, which are base64 in the API
+response. The critical path was a single test action,
+`//projects/monolith:ember_public_health_test`, reporting
+`input files: 19276, input bytes: 1007621375`, and process stats read
+`729 processes: ... 702 remote`. 702 remote actions each materialising a ~1 GB
+tree is the 278 GB. Fetch them with `mcp__buildbuddy__get_invocation` and
+`includeBuildToolLogs: true`; `SearchInvocation` does not return them, and the
+REST `/api/v1/GetInvocation` silently omits `buildMetadata` unless you pass
+`includeMetadata`.
+
+Consequence: **commit size predicts nothing.** A 13-line `ci-format-bot`
+auto-format of `projects/monolith/BUILD` cost 278.6 GB. A 7-line docs commit
+cost 48.8 GB. A 4-line `chart-version-bot` write-back cost 37.8 GB. Touching
+one BUILD file invalidates a tree that every test drags in, so look at what a
+commit INVALIDATES, never at how big it is.
+
+Root cause found the same day: all 25 `pkg_*` py_library targets in
+`projects/monolith/BUILD` declared a byte-identical 37-package `@pip//` list.
+The per-domain source split had been done, the wheel list had not, so moving a
+test off `monolith_backend` onto a `pkg_*` library saved exactly one package.
+
 ## Refuted, do not retry
 
 - **`--remote_local_fallback` is not the cause of the tail.** A 299 GB
@@ -171,7 +207,8 @@ both prove this: they exit in 1 to 5 seconds and still cost GBs.
 | #4587 | disabled `Buck2 rules` + `BDD future features` | 1,012 spin-ups, 558 GB/wk |
 | #4588 | removed the visual regression suite | ~176 GB/wk |
 | `d6b4041c6` | collapsed four actions into `pr-checks` + `deploy` | **split result.** `pr-checks` 7.8 -> 1.5 GB per push, 5x. `deploy` 7.8 -> 12.9 GB per push, a regression: it is a fourth workspace, the largest, and main-only |
-| this PR | main pushes only images whose digest is not already published | pending; re-measure after 2026-08-16 |
+| (2026-08-11) | main pushes only images whose digest is not already published | pending; re-measure after 2026-08-16 |
+| this PR | gave each monolith `pkg_*` library only the wheels it imports | mean pip closure 37 -> 21, libraries carrying 10+ heavy wheels 25/25 -> 0/25; byte effect pending, re-measure after 2026-08-19 |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
@@ -182,11 +219,9 @@ dragged all ~24 images out of CAS.
 Ranked by expected bytes saved. Everything here is a **hypothesis that must be
 confirmed against a real invocation** before you act on it.
 
-1. **`CI test //...` at 589 GB/day is now the largest source.** Untouched so far
-   and the only remaining item bigger than `deploy`. It is remote executors
-   fetching action inputs, so the lever is the build graph (input tree size,
-   how many actions miss the cache), not any client flag. Start by finding what
-   the 70+ GB `test //...` invocations do that the median one does not.
+1. **`CI test //...` at ~700 GB/day is the largest source.** Mechanism settled
+   2026-08-12, see "Test bytes are runfiles trees" below. The lever is the size
+   of each test's runfiles tree, not the cache hit rate.
 2. **Shrink `deploy`'s snapshot further.** This PR removes the image runfiles
    staging. If `deploy`'s cold unit does not fall from 33.1 GB toward
    `pr-checks`' 20.9 GB, the extra 12 GB is something else and worth finding.
