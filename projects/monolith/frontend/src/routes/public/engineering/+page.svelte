@@ -93,7 +93,7 @@
 </script>
 
 <svelte:head>
-  <title>Joe McGinley — Engineering</title>
+  <title>Joe McGinley · Engineering</title>
   <meta
     name="description"
     content="Engineering deep dives: agents, operators, data systems, and build tooling running on a bare-metal Kubernetes homelab."

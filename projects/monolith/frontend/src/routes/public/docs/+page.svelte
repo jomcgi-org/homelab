@@ -16,10 +16,8 @@
     <p class="eyebrow">Homelab</p>
     <h1>Documentation</h1>
     <p class="lede">
-      Project READMEs and architecture decision records for the secure
-      Kubernetes homelab: how the platform is built, why the decisions were
-      made, and how the services fit together. Rendered straight from the
-      repository.
+      Project READMEs and architecture decision records for the homelab,
+      rendered straight from the repository.
     </p>
   </header>
 

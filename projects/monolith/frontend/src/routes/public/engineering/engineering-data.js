@@ -56,11 +56,11 @@ export const projects = [
     oneLiner:
       "Autonomous agents that do real platform work, each running in its own hardware-isolated Firecracker microVM, snapshotted to near-zero cost when idle and restored from memory in tens of milliseconds on the next turn.",
     motivation:
-      "The first version ran unattended Claude agents in sandboxed Kubernetes pods dispatched over NATS. When Claude's terms of service changed around unattended agent use, that dispatch model no longer held. Rather than retire the idea, I split the execution substrate apart from the model choice and rebuilt the substrate on Firecracker: every agent request gets its own hardware-isolated microVM instead of a shared pod, paused and snapshotted when idle so it costs nothing, and restored in tens of milliseconds when woken. The durable pieces from v1 carried over (on-cluster inference, the MCP gateway, the knowledge-graph surface); the sandbox underneath them got much stronger.",
+      "The first version ran unattended Claude agents in sandboxed Kubernetes pods. When Claude's terms of service changed around unattended agent use, that dispatch model no longer held. I split the execution substrate apart from the model choice and rebuilt the substrate on Firecracker: every agent request gets its own hardware-isolated microVM, paused and snapshotted when idle so it costs nothing, and restored in tens of milliseconds when woken. The durable pieces from v1 carried over: on-cluster inference, the MCP gateway, the knowledge-graph surface.",
     facts: [
       {
         k: "MicroVM per request",
-        v: "Every agent request runs in a fresh Firecracker microVM (kata-fc on a bare-metal node), not a shared container. For untrusted, agent-written code the isolation boundary is hardware-level, not a userspace kernel.",
+        v: "Every agent request gets its own microVM with its own kernel, so code an agent writes runs behind a hardware boundary.",
       },
       {
         k: "Snapshot / restore",
@@ -72,7 +72,7 @@ export const projects = [
       },
       {
         k: "Postgres control plane",
-        v: "High-churn idle-agent state lives in Postgres, not etcd, keeping thousands of waiting threads off the cluster control plane. The same registry backs the list and resume catalog exposed over MCP.",
+        v: "High-churn idle-agent state lives in Postgres, keeping thousands of waiting threads off the cluster control plane. The same registry backs the list and resume catalog exposed over MCP.",
       },
       {
         k: "Local inference",
@@ -93,15 +93,15 @@ export const projects = [
     oneLiner:
       "A Firecracker microVM orchestrator: an Elixir control plane and a Go node daemon run one-shot tasks, bankable stateful sessions, and warm HTTP serving on the same substrate.",
     motivation:
-      "fc-invoke proved the substrate but hardcoded one workload shape: a stateless invoke. EmberVM is the successor, built by forking the node daemon and putting a BEAM control plane in front of it. Semgrep scans already run on it, a public image renderer serves warm from it, and fc-invoke is frozen with the goose agent as its last tenant. The design goal: the control plane owns placement and policy but stays off every serving hit path.",
+      "fc-invoke proved the substrate but hardcoded one workload shape: a stateless invoke. EmberVM is the successor, built by forking the node daemon and putting a BEAM control plane in front of it. Semgrep scans already run on it, a public image renderer serves warm from it, and fc-invoke is frozen with the goose agent as its last tenant. The control plane owns placement and policy and stays off every serving hit path.",
     facts: [
       {
         k: "Workload classes",
-        v: "task (one-shot, vsock-only guest with no NIC), session (a stateful sandbox, banked to disk when idle and relit on the next invoke), and serving (a warm HTTP endpoint on a tap NIC).",
+        v: "task (one-shot, no network card, one channel to the host), session (a stateful sandbox, banked to disk when idle and relit on the next invoke), serving (a warm HTTP endpoint reachable from the edge).",
       },
       {
         k: "Serving data path",
-        v: "The control plane publishes endpoints over xDS to a per-node Envoy; the node's kernel DNATs each connection into the VM's tap network. Requests never touch the control plane or the Kubernetes apiserver.",
+        v: "Traffic goes straight from the edge into the VM. The control plane hands out the routes and then stays out of the way; no request touches it or Kubernetes.",
       },
       {
         k: "Quotas and metering",
@@ -113,7 +113,7 @@ export const projects = [
       },
       {
         k: "State",
-        v: "A Postgres op-log, not etcd: a 30-day journal with 7-day terminal-task retention. The current design is maintained in projects/embervm/ARCHITECTURE.md.",
+        v: "A Postgres op-log: a 30-day journal with 7-day terminal-task retention. The current design is maintained in projects/embervm/ARCHITECTURE.md.",
       },
     ],
     links: [
@@ -130,7 +130,7 @@ export const projects = [
     oneLiner:
       "An LLM pipeline that decomposes my notes into structured facts, embeds them, and serves semantic search, both to my agents and to this site's search bar.",
     motivation:
-      "Notes are only useful if they come back at the right moment. The knowledge pipeline turns markdown into a queryable graph: an on-cluster LLM decomposes each note into atomic facts, critiques its own extraction, and stores embeddings for semantic recall.",
+      "An on-cluster model breaks each of my notes into atomic facts and stores them so a question pulls back the right one. The knowledge pipeline turns markdown into a queryable graph, critiques its own extraction, and stores embeddings for semantic recall.",
     facts: [
       {
         k: "Decomposition",
@@ -169,7 +169,7 @@ export const projects = [
     oneLiner:
       "An open-source take on Palantir Foundry: a typed-object data platform with lineage and governance built in, on a Rust + DataFusion + DuckLake core.",
     motivation:
-      "Operating a governed data platform should scale sub-linearly with data and org size: a new dataset, domain, or transform should add no new system to run. Loom is a collaborative bet on that premise, with governance treated as a safety property (STPA hazard analysis, where unsafe means a governance violation, not a crash).",
+      "Loom is a collaborative bet on a governed data platform where a new dataset, domain, or transform adds no new system to run. It treats governance as a safety property: the STPA hazard analysis defines unsafe as a governance violation.",
     facts: [
       {
         k: "Status",
@@ -189,7 +189,7 @@ export const projects = [
       },
       {
         k: "Governance",
-        v: "OpenLineage events plus STPA-derived constraints. The ontology and ACLs live next to the data they govern, not in a bolt-on service.",
+        v: "OpenLineage events plus STPA-derived constraints. The ontology and ACLs live next to the data they govern.",
       },
     ],
     links: [],
@@ -216,8 +216,8 @@ export const projects = [
         v: "Streams HuggingFace models into OCI layers: HTTP response to tar to io.Pipe to registry push. Zero disk I/O. Safetensors and GGUF formats.",
       },
       {
-        k: "Smart naming",
-        v: "The HuggingFace baseModels API resolves derivative models to their base, so derivatives share OCI layers with the base repo for deduplication.",
+        k: "Deduplication",
+        v: "The HuggingFace baseModels API resolves derivative models to their base, so derivatives share OCI layers with the base repo.",
       },
     ],
     snippet: {
@@ -238,7 +238,7 @@ export const projects = [
     oneLiner:
       "A code generator that turns YAML state-machine specs into type-safe Go, so invalid operator state transitions become compile errors.",
     motivation:
-      "Kubernetes operators are state machines, but we write them as imperative reconciliation loops. Every operator I wrote had the same bugs: invalid state transitions, forgotten error handling, missing metrics. Sextant defines the state machine declaratively and generates the boilerplate.",
+      "Sextant defines Kubernetes operator state machines declaratively and generates the boilerplate for their reconciliation loops. Every operator I wrote had the same bugs: invalid state transitions, forgotten error handling, missing metrics.",
     facts: [
       {
         k: "Compile-time safety",
@@ -250,7 +250,7 @@ export const projects = [
       },
       {
         k: "Guard conditions",
-        v: "Go expressions embedded in the YAML, evaluated at transition time. Invalid expressions fail at code-generation time, not in production.",
+        v: "Go expressions embedded in the YAML, evaluated at transition time. Invalid expressions fail at code-generation time.",
       },
       {
         k: "CI drift guard",
@@ -323,15 +323,15 @@ export const projects = [
       },
       {
         k: "Store",
-        v: "Postgres is the source of truth for trip points; folding trips into the monolith retired the old NATS event store. Image bytes live content-addressed in SeaweedFS, so a re-POST of the same frame is idempotent.",
+        v: "Postgres is the source of truth for trip points; folding trips into the monolith retired the old NATS event store. Image bytes live content-addressed in SeaweedFS.",
       },
       {
         k: "Delivery",
-        v: "imgproxy resizes originals on the fly and Cloudflare caches at the edge. Content-addressed keys mean cache invalidation is never needed.",
+        v: "imgproxy resizes originals on the fly and Cloudflare caches at the edge.",
       },
       {
         k: "Display",
-        v: "A read-only, SSR tier renders the public pages from localhost in-pod and is CDN-cached: MapLibre vector tiles with terrain hillshade, day-by-day galleries, and an elevation-profile scrubber. No live socket, the public reads never touch the write path.",
+        v: "A read-only, SSR tier renders the public pages from localhost in-pod and is CDN-cached: MapLibre vector tiles with terrain hillshade, day-by-day galleries, and an elevation-profile scrubber. The public reads never touch the write path.",
       },
     ],
     links: [{ label: "Live trips", href: "/app/trips" }],
@@ -347,19 +347,19 @@ export const projects = [
     facts: [
       {
         k: "AIS ingest",
-        v: "A supervised background task inside the monolith holds a websocket to AISStream.io, filters to a Pacific Northwest bounding box, and batches position reports. NATS is gone: it writes straight to Postgres, and an AISStream hiccup can never crash the app.",
+        v: "A background task inside the app holds a websocket to AISStream.io, filters to a Pacific Northwest box, and writes position reports straight to Postgres.",
       },
       {
         k: "Storage",
-        v: "Postgres is the single source of truth. ships.positions is range-partitioned by day, so retention drops whole partitions with zero vacuum churn; a stateless persister reads affected vessels back, dedups, and upserts a latest-positions serving table.",
+        v: "Postgres is the single source of truth. ships.positions is range-partitioned by day. A stateless persister reads affected vessels back, dedups, and upserts a latest-positions serving table.",
       },
       {
         k: "Ships API",
-        v: "SSR-only REST reached from localhost in-pod: a snapshot endpoint for the initial render and a per-vessel track on click. Both are CDN-cached with ETag 304s, so they run a few times a minute regardless of how many browsers are watching.",
+        v: "SSR-only REST is reached from localhost in-pod: a snapshot endpoint for the initial render and a per-vessel track on click. Both are CDN-cached with ETag 304s.",
       },
       {
         k: "MapLibre UI",
-        v: "Vessels render as a GPU GeoJSON symbol layer, directional icons by heading, so panning stays smooth at scale. A separate WebGL layer maps distinct-vessel traffic density per ~500m cell.",
+        v: "Vessels render as a GPU GeoJSON symbol layer with directional icons by heading. A separate WebGL layer maps distinct-vessel traffic density per ~500m cell.",
       },
     ],
     links: [
@@ -380,7 +380,7 @@ export const projects = [
     facts: [
       {
         k: "Site grid",
-        v: "A light-pollution grid of ~14k road-accessible dark sites is built offline and uploaded to SeaweedFS; a scheduled job wholesale-replaces the stars.sites table from it, so the scorer always works off a current site list.",
+        v: "A light-pollution grid of ~14k road-accessible dark sites is built offline and uploaded to SeaweedFS. A scheduled job wholesale-replaces the stars.sites table.",
       },
       {
         k: "Forecast scoring",
@@ -388,7 +388,7 @@ export const projects = [
       },
       {
         k: "Metric",
-        v: "The unit is clear-dark hours, not a single composite score. Qualifying hours land in Postgres (stars.site_hours); an hourly prune drops hours once their clock hour has elapsed.",
+        v: "The unit is clear-dark hours. Qualifying hours land in Postgres (stars.site_hours); an hourly prune drops hours once their clock hour has elapsed.",
       },
       {
         k: "Delivery",

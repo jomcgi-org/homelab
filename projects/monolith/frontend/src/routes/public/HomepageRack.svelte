@@ -60,7 +60,7 @@
         <div class="callout featured">
           <div class="chead">
             <h3>{app.label.toUpperCase()}</h3>
-            <span class="where">FLAGSHIP</span>
+            <span class="where">NODE-4</span>
           </div>
           {#if app.slug === "grimoire"}
             <p>
@@ -73,10 +73,8 @@
             <p>
               Boot a workload once, freeze it, restore the snapshot for every
               request. The guest never holds a real secret; an egress proxy
-              swaps placeholder tokens for credentials at the network hop.
-              <b>EmberVM</b> runs this substrate today: one-shot tasks, stateful
-              sessions, and warm HTTP serving. Watch a microVM restore from disk
-              in <b>{sandboxRestoreMs}ms</b>.
+              swaps placeholder tokens for credentials at the network hop. Watch
+              a microVM restore from disk in <b>{sandboxRestoreMs}ms</b>.
               <a class="more" href="/ember/firecracker"
                 >watch it restore &rarr;</a
               >
@@ -108,9 +106,9 @@
           <span class="where">NODE-4</span>
         </div>
         <p>
-          vLLM serving a <b>35B sparse-MoE</b> (~3B active), int4-mixed weights
-          with an fp8 KV-cache, <b>~170 tok/s</b> single-stream decode. Chat, the
-          agents, and the knowledge graph's RAG all share the 4090.
+          A <b>35B model</b> holds a conversation at <b>~170 tokens a second</b>
+          on one consumer RTX 4090, squeezed in with int4 weights and an fp8 KV-cache.
+          Chat, the agents, and note search all share the card.
         </p>
       </div>
       <div class="callout">
