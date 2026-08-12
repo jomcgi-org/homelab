@@ -138,6 +138,16 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
   now carries no bump, and the deploy lands one commit after the merge rather
   than in it. If a change has not rolled out, check that write-back commit
   landed before assuming a missed bump.
+- **For the monolith only, `targetRevision` in git no longer says what is
+  deployed.** Since #4744 Kargo owns it for `monolith` and `monolith-dev`,
+  patching the live Application (`argocd-update`); `canada` carries an
+  `ignoreDifferences` entry plus `RespectIgnoreDifferences=true` so ArgoCD does
+  not stamp the git value back. The write-back still maintains production's
+  copy on purpose, as the revert lever, so `git != live` is CORRECT here rather
+  than a stuck deploy. Read the live value:
+  `kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'`.
+  Dev's copy is frozen at a bootstrap floor (`0.293.0`) and drifts further
+  every publish, by design. Every other chart still deploys off the git value.
 - **Never hand-pin `@sha256:` digests in values files.** Bazel
   `helm_images_values` deep-merges pinned tags at build time. Hand-pinned digests
   go stale after the next CI rebuild and turn into `ImagePullBackOff`. Semgrep

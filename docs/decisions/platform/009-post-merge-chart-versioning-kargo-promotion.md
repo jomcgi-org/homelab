@@ -1,9 +1,10 @@
 # ADR 009: Post-Merge Chart Versioning and Kargo Promotion Pipeline
 
 **Author:** Joe McGinley
-**Status:** Accepted (decisions 1 and 2); Kargo promotion (decisions 3 and 4) remains Draft
+**Status:** Accepted (decisions 1, 2 and 3); decision 4 superseded in practice
 **Created:** 2026-06-20
 **Revised:** 2026-08-09 (decision 1 accepted with a CI write-back writer instead of Kargo; adopting GitHub's native merge queue added as the forcing driver; the main-branch publish race named and closed)
+**Revised:** 2026-08-12 (decision 3 implemented, but NOT as specified: promotion patches the live Application via `argocd-update` rather than committing to git, because the git path is blocked by a branch ruleset. Decision 4's data plane arrived by a different route. The verification gate decision 3 called for does NOT exist yet, tracked at #4745)
 **Relates to:** [ADR 005: Per-PR Preview Environments for the Monolith](005-per-pr-preview-environments.md), [Networking ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)
 
 ---
@@ -61,6 +62,38 @@ This decision is explicitly reversible. If decisions 3 and 4 (a `dev` stage with
 ### 3. Kargo owns promotion, when promotion is wanted
 
 Adopt [Kargo](https://kargo.akuity.io/) as a post-merge promotion controller. A **Warehouse** subscribes to the monolith chart repo in OCI and discovers new **Freight** (a resolved set of artifact versions) by semver. **Stages** (`dev` then `prod`) receive Freight via **Promotions**, whose steps clone the repo, write the stage's `targetRevision`, commit, push, and trigger the ArgoCD sync. Kargo is therefore the **only** writer of any `targetRevision`, serialized by the controller, which removes the deploy-side half of the conflict problem for good. Promotion from `dev` to `prod` is **gated on Argo Rollouts `AnalysisRun`s** (synthetic checks: health/smoke probes plus the visual-regression suite already in flight on `feat/public-visual-regression`). Green promotes; red holds at `dev`.
+
+**How this actually shipped (2026-08-12), which differs on both halves.**
+
+*Promotion writes to the cluster, not to git.* The clone-commit-push path above
+is blocked rather than merely inconvenient: ruleset `9180009` on the default
+branch carries `required_status_checks` whose only bypass actor is
+`RepositoryRole 5` (admin), so a push to `main` from a non-admin identity is
+refused. That path needs an **admin-scoped token living in the cluster**, and
+this repo's guidance is never to make CI a ruleset bypass actor. Promotion
+therefore uses Kargo's `argocd-update` step, which patches the live
+Application's `targetRevision` and needs no credential at all, being a
+Kubernetes RBAC permission the controller already holds. The charts are public,
+so the Warehouse needs no registry credential either. This ADR called the git
+write credential "the main new surface"; that surface no longer exists.
+
+*The cost, which this ADR's framing did not anticipate:* `targetRevision` stops
+being git truth. The value in `deploy/application.yaml` is inert, and
+`canada` must carry an `ignoreDifferences` entry per Application **plus**
+`RespectIgnoreDifferences=true`, or a sync stamps the git value back. So "what
+version is production on" is now a `kubectl` question. The CI write-back is
+deliberately left running as the revert lever rather than deleted per decision
+2's note: it keeps a correct value in git, so dropping the `ignoreDifferences`
+entry hands production straight back with nothing to reconstruct.
+
+*There is no verification gate.* Argo Rollouts is not installed and
+`controller.rollouts.integrationEnabled: false`, so no `AnalysisRun`s exist and
+neither Stage carries a `verification` block. Production receives Freight only
+via `sources.stages: [dev]`, so the sole gate is that dev took the chart first,
+which proves it deployed and not that it works. Note that a Stage with nothing
+to verify reports `Freight has been verified`, which reads like a gate passed.
+Tracked at #4745; until it is closed this is risk-equivalent to the write-back
+it replaced rather than an improvement on it.
 
 ### 4. The `dev` stage reuses ADR 005's data plane
 
