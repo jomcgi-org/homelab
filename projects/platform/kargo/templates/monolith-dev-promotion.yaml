@@ -20,6 +20,44 @@ apiVersion: kargo.akuity.io/v1alpha1
 kind: Project
 metadata:
   name: {{ .Values.devPromotion.project }}
+  annotations:
+    # Wave 0: this Project CREATES the namespace the Warehouse and Stage live
+    # in, so it must be admitted before they are applied. Without waves ArgoCD
+    # applies all three in one pass and the other two fail with
+    # `namespaces "kargo-monolith" not found`, which is what happened on the
+    # first install.
+    argocd.argoproj.io/sync-wave: "0"
+
+---
+{{- /*
+AUTO-PROMOTION. Without this the Warehouse discovers Freight, the Stage reports
+"Stage has no current Freight", and NOTHING promotes: autoPromotionEnabled
+defaults to false, so a fresh install looks fully wired and silently does
+nothing. That is exactly what the first install did.
+
+It lives on ProjectConfig, not Project: in Kargo 1.9 the Project spec is empty
+and promotionPolicies moved here.
+
+stageSelector rather than the `stage` field, which the CRD marks deprecated.
+The selector takes a name directly, so this needs no labels on the Stage.
+
+Auto-promotion is right for THIS stage specifically: the schema notes it is
+"commonly set to true for Stages that subscribe to Warehouses instead of other,
+upstream Stages". Dev subscribes to a Warehouse and has no upstream to gate on.
+A production stage would not want this.
+*/}}
+apiVersion: kargo.akuity.io/v1alpha1
+kind: ProjectConfig
+metadata:
+  name: {{ .Values.devPromotion.project }}
+  namespace: {{ .Values.devPromotion.project }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  promotionPolicies:
+    - stageSelector:
+        name: dev
+      autoPromotionEnabled: true
 ---
 {{- /*
 Subscribes to the chart repository, not to images. Images are already pinned by
@@ -32,6 +70,12 @@ repoURL alone (no chart name field), unlike Helm which wants both.
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Warehouse
 metadata:
+  annotations:
+    # Wave 1: after the Project's namespace exists. Namespace creation is
+    # asynchronous (Kargo's management controller does it once the Project is
+    # admitted), so ArgoCD may still need one retry here. The wave removes the
+    # guaranteed failure; the retry covers the remaining race.
+    argocd.argoproj.io/sync-wave: "1"
   name: monolith-chart
   namespace: {{ .Values.devPromotion.project }}
 spec:
@@ -66,6 +110,12 @@ is not in this repo.
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Stage
 metadata:
+  annotations:
+    # Wave 1: after the Project's namespace exists. Namespace creation is
+    # asynchronous (Kargo's management controller does it once the Project is
+    # admitted), so ArgoCD may still need one retry here. The wave removes the
+    # guaranteed failure; the retry covers the remaining race.
+    argocd.argoproj.io/sync-wave: "1"
   name: dev
   namespace: {{ .Values.devPromotion.project }}
 spec:
