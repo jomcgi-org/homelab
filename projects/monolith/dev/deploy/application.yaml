@@ -32,7 +32,7 @@ spec:
     # PRODUCTION's pin is left alone.
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith
-      targetRevision: 0.291.0
+      targetRevision: 0.293.0
       helm:
         # releaseName MUST differ from production's. It briefly did not, and
         # ArgoCD refused the sync with:
