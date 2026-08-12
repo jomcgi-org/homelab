@@ -77,6 +77,62 @@ async def test_count_argocd_applications(k8s_client):
     assert count == 2
 
 
+@pytest.mark.asyncio
+async def test_list_argocd_app_health_reads_both_clocks(k8s_client):
+    """The extraction, which the cd_health judge tests cannot cover.
+
+    Those tests feed the judge a dict directly, so a wrong field name here
+    would leave every one of them green while the judge received None and
+    silently declined to page. The payload below is the real shape off a live
+    Application, including the nesting of lastTransitionTime UNDER health
+    rather than beside it, which is the part that is easy to get wrong.
+    """
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.list_namespaced_custom_object = AsyncMock(
+        return_value={
+            "items": [
+                {
+                    "metadata": {"name": "embervm"},
+                    "status": {
+                        "sync": {"status": "Synced"},
+                        "health": {
+                            "status": "Progressing",
+                            "lastTransitionTime": "2026-08-12T17:55:00Z",
+                        },
+                        "operationState": {
+                            "finishedAt": "2026-08-12T07:36:24Z",
+                        },
+                    },
+                },
+                # An app ArgoCD has never synced: no operationState at all.
+                {
+                    "metadata": {"name": "fresh"},
+                    "status": {
+                        "sync": {"status": "OutOfSync"},
+                        "health": {"status": "Missing"},
+                    },
+                },
+            ]
+        }
+    )
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        apps = await k8s_client.list_argocd_app_health()
+
+    by_name = {a["name"]: a for a in apps}
+    assert by_name["embervm"]["health_changed_at"] == "2026-08-12T17:55:00Z"
+    assert by_name["embervm"]["finished_at"] == "2026-08-12T07:36:24Z", (
+        "both clocks must survive: the judge picks between them"
+    )
+    assert by_name["fresh"]["health_changed_at"] is None
+    assert by_name["fresh"]["finished_at"] is None
+
+
 def _node(name: str, allocatable: dict) -> MagicMock:
     node = MagicMock()
     node.metadata.name = name

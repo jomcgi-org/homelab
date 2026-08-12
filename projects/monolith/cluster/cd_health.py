@@ -14,6 +14,12 @@ component holds no state and needs no prober or latch table:
    Covers the unreachable-chart case above, a failed sync, and a degraded
    workload, without needing registry credentials: an app pinned to a chart
    that was never published does not reach Synced.
+
+   The two faults are dated from different clocks, which took an incident to
+   get right. A degraded app is dated by ``.status.health``'s
+   lastTransitionTime; a merely OutOfSync one by the last sync operation,
+   because ``.status.sync`` carries no transition time. Dating a health fault
+   from the last SYNC meant a settled app got no grace at all.
 2. main's CI: the most recent commit WITH A COMPLETED STATUS is red and older
    than the red window, or there were commits inside that window and none of
    them completed at all.
@@ -118,13 +124,31 @@ async def _argocd_fault_real(
     for app in apps:
         if app.get("sync") == "Synced" and app.get("health") == "Healthy":
             continue
-        finished = _parse_ts(app.get("finished_at"))
-        # No finish time means we cannot date the fault. Treat it as in-flight
-        # rather than page: a genuinely stuck app acquires one on its next
-        # attempt, and guessing here would page on every fresh rollout.
-        if finished is None:
+        # Date the fault by whatever actually went wrong, because the two
+        # faults have different clocks.
+        #
+        # A degraded app is dated by its health transition. Using the last SYNC
+        # time here was a defect: embervm last synced 622 minutes before it went
+        # Progressing, so the 15 minute grace was not shortened, it was skipped,
+        # and jomcgi.dev/health 503'd on the first bad tick. The inversion is
+        # the tell, since a settled app has the stalest finished_at and so got
+        # the least grace, which is backwards.
+        #
+        # A merely OutOfSync app has no transition time of its own
+        # (`.status.sync` carries none), so the last sync attempt stands. That
+        # is a weaker signal in the other direction, since an app that retries
+        # forever keeps refreshing it, which is #4727 and not fixed here.
+        if app.get("health") != "Healthy":
+            since = _parse_ts(app.get("health_changed_at"))
+        else:
+            since = _parse_ts(app.get("finished_at"))
+        # Undateable means in-flight rather than page. A genuinely stuck app
+        # acquires a timestamp on its next transition, and guessing here would
+        # page on every fresh rollout. Deliberately NOT falling back to
+        # finished_at for a health fault: that fallback IS the bug above.
+        if since is None:
             continue
-        age_s = (now - finished).total_seconds()
+        age_s = (now - since).total_seconds()
         if age_s > grace_s:
             line = (
                 f"{app['name']} is {app.get('sync')}/{app.get('health')} "
