@@ -11,6 +11,7 @@ resources:
   - ./cloudnative-pg/deploy
   - ./cloudflare-gateway # Envoy Gateway + Gateway API + Cloudflare Tunnel
   - ./coredns
+  - ./kargo # Promotion controller; owns ONLY the dev environment chart version (#4728)
   - ./keda
   - ./kyverno
   - ./longhorn

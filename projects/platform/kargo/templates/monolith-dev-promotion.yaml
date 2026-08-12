@@ -1,0 +1,99 @@
+{{- if .Values.devPromotion.enabled }}
+{{- /*
+Kargo owns the dev environment's chart version, and NOTHING else.
+
+WHY THIS EXISTS. projects/monolith/dev/deploy/application.yaml pins an OCI
+chart version that nothing moved. bazel/helm/write-back-versions.sh resolves
+exactly one deploy/application.yaml per chart, and that is production's, so dev
+was invisible to it. That stale pin failed twice in one night (#4728): once
+leaving a safety gate inert because the pinned chart had no `if` to read the
+value the overlay set, and once withholding a feature because the template
+lived in a newer chart.
+
+THE PROJECT NAME IS NOT "monolith" OR "monolith-dev" ON PURPOSE. A Kargo
+Project owns a NAMESPACE of the same name, and both of those namespaces already
+exist and hold live workloads. Adopting one would be the same class of
+collision that cost this repo three incidents in one evening: a name that looks
+descriptive and is already someone's identity.
+*/}}
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Project
+metadata:
+  name: {{ .Values.devPromotion.project }}
+---
+{{- /*
+Subscribes to the chart repository, not to images. Images are already pinned by
+DIGEST into the chart at build time by helm_images_values, so the chart version
+is the only thing that moves and the only thing worth watching.
+
+An OCI chart repository holds versions of ONE chart, so Kargo identifies it by
+repoURL alone (no chart name field), unlike Helm which wants both.
+*/}}
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: monolith-chart
+  namespace: {{ .Values.devPromotion.project }}
+spec:
+  subscriptions:
+    - chart:
+        repoURL: {{ .Values.devPromotion.chartRepo | quote }}
+        semverConstraint: {{ .Values.devPromotion.semverConstraint | quote }}
+---
+{{- /*
+PROMOTION PATCHES THE LIVE APPLICATION rather than committing to git, which is
+a deliberate deviation from ADR platform/009 decision 3 and the reason is a
+hard blocker, not a preference.
+
+Ruleset 9180009 on the default branch carries required_status_checks, and its
+only bypass actor is RepositoryRole 5 (admin). A push to main from a non-admin
+identity is refused, so the git path would need an ADMIN-scoped token living in
+the cluster. The repo's own guidance is never to make CI a ruleset bypass
+actor, and an admin PAT for a dev-only promotion is a far larger surface than
+the problem.
+
+argocd-update needs no credential at all: it is a Kubernetes RBAC permission
+the controller already holds, and the charts are public so the Warehouse needs
+no registry credential either. ADR 009 called the git write credential "the
+main new surface"; this design removes it.
+
+THE COST, stated plainly: dev's targetRevision stops being git truth. It lives
+in the live Application, and the `canada` root app must be told to ignore that
+one field or it will revert every promotion. That patch is manual and
+documented in this chart's README, because `canada` is a bootstrap resource and
+is not in this repo.
+*/}}
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: dev
+  namespace: {{ .Values.devPromotion.project }}
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: monolith-chart
+      sources:
+        direct: true
+  promotionTemplate:
+    spec:
+      steps:
+        - uses: argocd-update
+          config:
+            apps:
+              - name: {{ .Values.devPromotion.application }}
+                namespace: argocd
+                sources:
+                  # Must match the Application's source EXACTLY or the step
+                  # matches nothing and reports success having changed nothing.
+                  - repoURL: {{ .Values.devPromotion.appSourceRepo | quote }}
+                    chart: {{ .Values.devPromotion.appSourceChart | quote }}
+                    # Kargo's expression syntax uses dollar-brace-brace, which COLLIDES
+                    # with Helm's own delimiters: rendering it inline
+                    # makes Helm try to evaluate chartFrom as a Helm function
+                    # and fail with `function "chartFrom" not defined`. Held in
+                    # values.yaml instead, where Helm treats it as data and
+                    # passes it through untouched for Kargo to evaluate.
+                    desiredRevision: {{ .Values.devPromotion.desiredRevisionExpr | quote }}
+                    updateTargetRevision: true
+{{- end }}
