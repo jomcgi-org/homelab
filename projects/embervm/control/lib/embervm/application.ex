@@ -716,7 +716,7 @@ defmodule Embervm.Application do
   # set, caps each principal at that fraction of a workload's cap; unset (the
   # default) means the dynamic cap/active-principals split.
   defp dispatcher_opts do
-    [queue_depth_cap: queue_depth_cap()] ++ share_fraction_opt()
+    [queue_depth_cap: queue_depth_cap(), op_log: op_log_mod(), op_log_mod: op_log_mod()] ++ share_fraction_opt()
   end
 
   defp pool_opts, do: []

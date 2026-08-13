@@ -74,9 +74,13 @@ defmodule Embervm.TaskStore do
     GenServer.call(store, {:assign, task_id, nil})
   end
 
-  @spec assign(GenServer.server(), String.t(), binary() | nil) :: {:ok, map()} | {:error, term()}
+  @spec assign(GenServer.server(), String.t(), binary() | nil, binary() | nil) :: {:ok, map()} | {:error, term()}
+  def assign(store, task_id, vm_id, node_id) do
+    GenServer.call(store, {:assign, task_id, vm_id, node_id})
+  end
+
   def assign(store, task_id, vm_id) do
-    GenServer.call(store, {:assign, task_id, vm_id})
+    GenServer.call(store, {:assign, task_id, vm_id, nil})
   end
 
   @spec start(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
@@ -84,9 +88,13 @@ defmodule Embervm.TaskStore do
     GenServer.call(store, {:start, task_id, nil})
   end
 
-  @spec start(GenServer.server(), String.t(), binary() | nil) :: {:ok, map()} | {:error, term()}
+  @spec start(GenServer.server(), String.t(), binary() | nil, binary() | nil) :: {:ok, map()} | {:error, term()}
+  def start(store, task_id, vm_id, node_id) do
+    GenServer.call(store, {:start, task_id, vm_id, node_id})
+  end
+
   def start(store, task_id, vm_id) do
-    GenServer.call(store, {:start, task_id, vm_id})
+    GenServer.call(store, {:start, task_id, vm_id, nil})
   end
 
   @spec succeed(GenServer.server(), String.t(), map()) :: {:ok, map()} | {:error, term()}
@@ -436,12 +444,20 @@ defmodule Embervm.TaskStore do
     end
   end
 
+  def handle_call({:assign, task_id, vm_id, node_id}, _from, state) do
+    apply_lifecycle_transition(state, task_id, :assign, :assigned, vm_id, node_id)
+  end
+
   def handle_call({:assign, task_id, vm_id}, _from, state) do
-    apply_lifecycle_transition(state, task_id, :assign, :assigned, vm_id)
+    apply_lifecycle_transition(state, task_id, :assign, :assigned, vm_id, nil)
+  end
+
+  def handle_call({:start, task_id, vm_id, node_id}, _from, state) do
+    apply_lifecycle_transition(state, task_id, :start, :started, vm_id, node_id)
   end
 
   def handle_call({:start, task_id, vm_id}, _from, state) do
-    apply_lifecycle_transition(state, task_id, :start, :started, vm_id)
+    apply_lifecycle_transition(state, task_id, :start, :started, vm_id, nil)
   end
 
   def handle_call({:succeed, task_id, result, usage}, _from, state) do
@@ -456,7 +472,7 @@ defmodule Embervm.TaskStore do
       }
       |> maybe_put_usage(usage)
 
-    case apply_transition(state, task_id, :succeed, :succeeded, payload) do
+    case apply_payload_transition(state, task_id, :succeed, :succeeded, payload) do
       {:reply, {:ok, updated}, _state} = reply ->
         notify_metered(state, updated, usage)
         reply
@@ -690,12 +706,31 @@ defmodule Embervm.TaskStore do
 
   # -- transition helpers -----------------------------------------------------
 
-  # Shared path for the simple (state) x (event) x (op kind) transitions that
-  # don't need bespoke payload logic (assign, start, succeed): look up the
-  # task, ask the FSM for the next state, append, and on success update ETS.
-  defp apply_transition(state, task_id, event, op_kind, payload) do
+  defp apply_payload_transition(state, task_id, event, op_kind, payload) do
     with {:ok, task} <- fetch_task(state, task_id),
          {:ok, next} <- TaskState.transition(task.state, event) do
+      case append_and_update(state, task, op_kind, next, payload) do
+        {:ok, updated} -> {:reply, {:ok, updated}, state}
+        {:error, _reason} = error -> {:reply, error, state}
+      end
+    else
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # Shared path for the dispatch lifecycle transitions (assign, start): look up
+  # the task, ask the FSM for the next state, append, and update ETS on success.
+  defp apply_transition(state, task_id, event, op_kind, vm_id, node_id) do
+    with {:ok, task} <- fetch_task(state, task_id),
+         {:ok, next} <- TaskState.transition(task.state, event) do
+      payload =
+        if op_kind in [:assigned, :started] do
+          # node_id is the K8s node where the VM primed/started.
+          %{epoch: task.attempt, vm_id: vm_id, node_id: node_id}
+        else
+          %{}
+        end
+
       case append_and_update(state, task, op_kind, next, payload) do
         {:ok, updated} -> {:reply, {:ok, updated}, state}
         {:error, _reason} = error -> {:reply, error, state}
@@ -716,15 +751,15 @@ defmodule Embervm.TaskStore do
   # reconcile-DESTROYED, so a lost task lifecycle write is self-healing without a
   # discriminator). vm_id is registered as a pending write anyway, for parity with
   # the session path and so a shared reconciler could consult it if ever needed.
-  defp apply_lifecycle_transition(state, task_id, event, op_kind, vm_id) do
+  defp apply_lifecycle_transition(state, task_id, event, op_kind, vm_id, node_id) do
     if state.async_lifecycle_writes do
-      apply_transition_async(state, task_id, event, op_kind, vm_id)
+      apply_transition_async(state, task_id, event, op_kind, vm_id, node_id)
     else
-      apply_transition(state, task_id, event, op_kind, %{})
+      apply_transition(state, task_id, event, op_kind, vm_id, node_id)
     end
   end
 
-  defp apply_transition_async(state, task_id, event, op_kind, vm_id) do
+  defp apply_transition_async(state, task_id, event, op_kind, vm_id, node_id) do
     with {:ok, task} <- fetch_task(state, task_id),
          {:ok, next} <- TaskState.transition(task.state, event) do
       ts = state.clock.()
@@ -746,7 +781,8 @@ defmodule Embervm.TaskStore do
         # `:retried` past this attempt, so a stale attempt-N :assigned/:started that
         # lands after a retry re-queued the task (attempt N+1) is dropped instead of
         # re-assigning a worker that no longer exists.
-        payload: %{epoch: task.attempt}
+        # node_id is the K8s node where the VM primed/started.
+        payload: %{epoch: task.attempt, vm_id: vm_id, node_id: node_id}
       }
 
       Embervm.AsyncWriter.enqueue(state.async_writer, %{

@@ -128,4 +128,51 @@ defmodule Embervm.SpecVocabularyTest do
                "layer 1: the manifest must not claim to model what the specs do not)."
     end
   end
+
+  # Strip `#` comments and @doc/@moduledoc heredocs before looking for an atom.
+  # Both are why the naive greps failed: `:primed` appeared in a base_builder
+  # comment, and async_writer's @moduledoc names four kinds it does not append.
+  defp executable_source(path) do
+    path
+    |> File.read!()
+    |> then(&Regex.replace(~r/@(?:moduledoc|doc|typedoc)\s+"""(?:.|\n)*?"""/, &1, ""))
+    |> then(&Regex.replace(~r/@(?:moduledoc|doc|typedoc)\s+"(?:[^"\\]|\\.)*"/, &1, ""))
+    |> String.split("\n")
+    |> Enum.reject(&String.starts_with?(String.trim_leading(&1), "#"))
+    |> Enum.join("\n")
+  end
+
+  # Layer 1's #4756 guard: every MODELED op kind must be appended by the module
+  # vocabulary.exs names. See the op_kind_sites comment there for why this is a
+  # declared registry and not a grep (both greps were tried; one was vacuous,
+  # the other failed 8 kinds that are genuinely emitted).
+  test "every modeled op kind has a declared, real append site" do
+    lib_dir = Path.expand("../../lib", __DIR__)
+    {modeled, _excluded} = partition(:op_kinds)
+    sites = Map.fetch!(@vocabulary, :op_kind_sites)
+    declared = MapSet.new(Map.keys(sites))
+
+    # The registry must PARTITION the modeled kinds: a kind added to `modeled`
+    # with no declared site fails here rather than being silently unchecked.
+    assert MapSet.equal?(declared, modeled),
+           "op_kind_sites must name an append site for exactly the modeled op " <>
+             "kinds. Missing: #{inspect(MapSet.to_list(MapSet.difference(modeled, declared)))}. " <>
+             "Extra: #{inspect(MapSet.to_list(MapSet.difference(declared, modeled)))}."
+
+    for {kind, basename} <- sites do
+      matches = Path.wildcard(Path.join([lib_dir, "**", basename]))
+
+      assert matches != [],
+             "op_kind_sites names #{basename} as the append site for " <>
+               "#{inspect(kind)}, but no such file exists under #{lib_dir}."
+
+      source = Enum.map_join(matches, "\n", &executable_source/1)
+
+      assert Regex.match?(~r/:#{kind}\b/, source),
+             "modeled op kind #{inspect(kind)} is declared to be appended by " <>
+               "#{basename}, but that file never mentions it outside comments " <>
+               "and docs. Either add the append, or move the kind to `excluded` " <>
+               "in vocabulary.exs with a reason (see #4756)."
+    end
+  end
 end

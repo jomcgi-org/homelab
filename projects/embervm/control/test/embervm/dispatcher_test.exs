@@ -36,6 +36,13 @@ defmodule Embervm.DispatcherTest do
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
     {:ok, store} = TaskStore.start_link(name: nil, op_log: op_log, on_queued: fn t -> Dispatcher.enqueue(disp_name, t) end)
 
+    dispatcher_op_log_opts =
+      if Keyword.get(opts, :configure_op_log, false) do
+        [op_log: op_log, op_log_mod: SQLite]
+      else
+        []
+      end
+
     disp_opts =
       [
         name: disp_name,
@@ -49,7 +56,10 @@ defmodule Embervm.DispatcherTest do
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-#{System.unique_integer([:positive])}"}} end),
         start_sweep: false
       ] ++
+        dispatcher_op_log_opts ++
         Keyword.take(opts, [
+          :op_log,
+          :op_log_mod,
           :queue_depth_cap,
           :share_fraction,
           :stale_after_ms,
@@ -57,12 +67,21 @@ defmodule Embervm.DispatcherTest do
           :quota_table,
           :wall_clock,
           :assign_watchdog_margin_ms,
-          :assign_watchdog_ms
+          :assign_watchdog_ms,
+          :tenant
         ])
 
     {:ok, disp} = Dispatcher.start_link(disp_opts)
 
-    %{disp: disp, name: disp_name, store: store, cap_table: cap_table, cat_table: cat_table, depth_table: depth_table}
+    %{
+      disp: disp,
+      name: disp_name,
+      store: store,
+      op_log: op_log,
+      cap_table: cap_table,
+      cat_table: cat_table,
+      depth_table: depth_table
+    }
   end
 
   defp success_resp(code \\ 200, body \\ "ok") do
@@ -308,6 +327,34 @@ defmodule Embervm.DispatcherTest do
     stats = Dispatcher.stats(ctx.name)
     assert stats.misses >= 1
     assert stats.warm_hits == 0
+  end
+
+  test "priming appends :primed op to op_log when configured" do
+    ctx =
+      start_stack(
+        configure_op_log: true,
+        tenant: "tenant-prime",
+        wall_clock: fn -> 123_456 end,
+        prime_fun: fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-prime-1"}} end
+      )
+
+    put_catalog(ctx, "wl-prime", cap: 10)
+    put_facts(ctx, "wl-prime", free: 0, live: 0, max: 8)
+    tid = submit(ctx, "wl-prime", "p1")
+
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+    assert {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+
+    assert [%{kind: :primed} = op] = Enum.filter(ops, &(&1.kind == :primed))
+    assert op.tenant == "tenant-prime"
+    assert op.workload == "wl-prime"
+    assert op.ts == 123_456
+    assert op.payload == %{
+             "vm_id" => "vm-prime-1",
+             "node_id" => "node-4",
+             "workload" => "wl-prime",
+             "lane" => "task"
+           }
   end
 
   test "a miss commits and retries in Score.order order" do
