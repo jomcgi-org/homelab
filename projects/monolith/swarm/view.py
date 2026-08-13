@@ -277,18 +277,16 @@ def _derived_state(
 
 
 def _structured_verdict(output: dict, repo: str | None) -> dict | None:
-    verdict_text = output.get("review_text")
-    if not verdict_text:
+    value = output.get("review_verdict")
+    if not value:
         return None
-    from swarm.policy import parse_review_verdict
-
-    value = parse_review_verdict(verdict_text)
+    verdict_text = output.get("review_text", "")
     summary_plain = {
         "approve": "approved the changes",
         "request_changes": "requested changes",
         "blocked": "blocked the review",
         "unparseable": "verdict could not be parsed",
-    }[value]
+    }.get(value, "verdict unclear")
     commit_sha = output.get("commit_sha")
     return {
         "value": value,
