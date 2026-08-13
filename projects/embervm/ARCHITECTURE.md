@@ -482,9 +482,13 @@ against them.
   model-checked: three PlusCal specs in `projects/embervm/specs/`
   (`adoption`, `bank_relight`, `quota`) run under TLC in the build, so a
   spec violation is a red build rather than a report, and the vocabulary
-  guard (`vocabulary.exs`) keeps the specs honest against the code.
+  guard (`vocabulary.exs`) keeps the specs honest against the code, though
+  only against the spec text: it cannot see whether a modeled op kind is
+  ever appended (#4756) or whether the gate it needs is armed in the
+  deployed config (#4758), and it passed on both.
   **Planned**: trace validation, op-log events checked against TLA+
-  actions.
+  actions. Still planned, not built; ADR embervm/034 records how it is to
+  be delivered.
 - **Cells**: the unit of horizontal scale is a cell, a complete
   single-writer control plane owning a bounded set of bricks and workloads,
   with one op-log appender (ordering is within-cell only). The seams exist
