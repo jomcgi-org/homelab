@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from agent_sessions.rationale import rationale_trailer_instruction
+
 
 def work_branch(workflow_id: str) -> str:
     """The scratch branch one swarm run pushes its implementation to.
@@ -40,12 +42,8 @@ def implementer_prompt(task: str, branch: str, previous_failure: str | None) -> 
         f"Implement this task: {task}\n"
         f"Create branch {branch} from the base branch, make the change, commit it, "
         f"and push {branch} to GitHub. Do not open a pull request. Do not push to main."
-        "\nEnd your reply with a plain-text trailer in exactly this shape:\n"
-        "\nRATIONALE\n"
-        "- area: <file or component> · why: <one or two sentences>\n"
-        "- area: ... (repeat per important area, most important first)\n"
-        "- deviation: <anything you did differently from the task, and why> (zero or more)\n"
-        "\nKeep it under 12 lines. Do not use markdown formatting inside the trailer."
+        "\n"
+        f"{rationale_trailer_instruction()}"
     )
     if previous_failure:
         prompt += f"\nPrevious attempt failed: {previous_failure}"

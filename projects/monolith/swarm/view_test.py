@@ -204,7 +204,7 @@ def _running_implement(workflow_id):
             "last_turn_at": datetime(2026, 8, 10, 22, 56, tzinfo=timezone.utc),
             "total_cost_usd": 0.09,
             "final_result_text": (
-                "RATIONALE\n- area: swarm/view.py · why: attaches testimony\n"
+                "RATIONALE\n- path: swarm/view.py · why: attaches testimony\n"
                 "- deviation: no routing changes"
             ),
         }

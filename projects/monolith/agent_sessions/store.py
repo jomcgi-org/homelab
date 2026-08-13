@@ -260,6 +260,25 @@ def get_turn(session: Session, session_id: int, turn_seq: int) -> AgentTurn | No
     ).first()
 
 
+def update_turn_shas(
+    session: Session,
+    session_id: int,
+    turn_seq: int,
+    base_sha: str | None,
+    commit_sha: str | None,
+) -> AgentTurn | None:
+    """Attach branch heads to a turn after the swarm observes its completion."""
+    row = get_turn(session, session_id, turn_seq)
+    if row is None:
+        return None
+    row.base_sha = base_sha
+    row.commit_sha = commit_sha
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
 def lexical_search(session: Session, query_text: str, limit: int = 20) -> list[dict]:
     """Search agent turns and return ranked session/turn result dictionaries."""
     if not query_text or not query_text.strip():

@@ -11,6 +11,7 @@ from sqlmodel import Session
 from agent_sessions import model_family, store
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.mcp import (
+    _append_rationale_trailer,
     _clear_ember_bindings_for,
     _load_session_row,
     _persist_pending_message,
@@ -146,6 +147,7 @@ async def start_session_for_thread(
         model,
         repo,
         discord_thread=thread_id,
+        system_prompt=_append_rationale_trailer(None, repo),
     )
     await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     login = await codex_login_gate(model)

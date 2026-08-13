@@ -1024,7 +1024,7 @@ def test_start_session_marks_message_ui_originated(client, session, monkeypatch)
     mcp._ui_originated.clear()
 
 
-def test_start_session_for_discord_thread_has_no_system_prompt(session, monkeypatch):
+def test_start_session_for_discord_thread_adds_rationale_prompt(session, monkeypatch):
     async def broker_request(*args):
         return {"state": "granted"}
 
@@ -1047,7 +1047,7 @@ def test_start_session_for_discord_thread_has_no_system_prompt(session, monkeypa
 
     row = store.get_session(session, session_id)
     assert row.discord_thread == "thread-1"
-    assert row.system_prompt is None
+    assert "RATIONALE" in row.system_prompt
 
 
 @pytest.mark.parametrize("model", ["opus", "qwen"])
