@@ -353,7 +353,7 @@ def test_session_keys_are_deterministic_and_distinct(monkeypatch):
     assert keys == [
         workflows.session_key("implement-1"),
         workflows.session_key("implement-2"),
-        workflows.session_key("review"),
+        workflows.session_key("review-1"),
     ]
     assert len(set(keys)) == 3
 
@@ -395,7 +395,7 @@ def test_request_changes_triggers_new_implement_attempt(monkeypatch):
     assert result["attempts"] == 2
     assert result["commit_sha"] == "def"
     assert result["review_verdict"] == "approve"
-    assert result["cost_usd"] == 6
+    assert result["cost_usd"] == 4
     assert [(call[-2], call[-1]) for call in calls] == [
         ("implement", 1),
         ("review", 1),
