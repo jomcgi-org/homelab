@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick } from "svelte";
-  import { pushState, replaceState } from "$app/navigation";
+  import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { renderAgentMarkdown } from "./markdown.js";
   import { RUN_FIXTURES } from "./run-fixtures.js";
@@ -505,14 +505,32 @@
   // URL in the address bar that nobody types or shares, and it only failed
   // quietly because the reroute guard skips paths already under /private/.
   // Keep whichever path the browser actually arrived on.
+  //
+  // goto, not pushState/replaceState from $app/navigation. Shallow routing
+  // moves the address bar and sets page.state, but it never reassigns
+  // page.url (only update_url() does, on a real navigation or popstate), so
+  // every selection derived from page.url.searchParams recomputed to the
+  // same string and the transcript pane never loaded. Deep links worked
+  // because the server load set page.url; clicks did not. Do not "optimise"
+  // this back. Semgrep no-shallow-routing-for-url-state guards it.
+  //
+  // noScroll keeps the transcript where it was, keepFocus is load-bearing
+  // for the mobile drill below, which hand-manages focus after selection.
   function navigateTo(search) {
-    pushState(withSearch($page.url.pathname, search), {});
+    goto(withSearch($page.url.pathname, search), {
+      noScroll: true,
+      keepFocus: true,
+    });
   }
 
   // Correcting the URL for a selection that no longer exists, so it must not
   // add a history entry the back button has to walk back through.
   function replaceWith(search) {
-    replaceState(withSearch($page.url.pathname, search), {});
+    goto(withSearch($page.url.pathname, search), {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true,
+    });
   }
 
   function selectRun(runOrId) {

@@ -1,0 +1,32 @@
+rules:
+  - id: no-shallow-routing-for-url-state
+    languages: [generic]
+    severity: ERROR
+    paths:
+      include:
+        - "**/projects/**/*.svelte"
+        - "**/projects/**/*.js"
+        - "**/projects/**/*.ts"
+    message: >-
+      This file imports pushState or replaceState from $app/navigation and also
+      reads page.url.searchParams. Shallow routing writes the address bar and
+      page.state, but it never reassigns page.url (only a real navigation or a
+      popstate does), so any $derived built on page.url.searchParams recomputes
+      to the same value and never fires. Deep links work, clicks do not. Use
+      goto(url, { noScroll: true, keepFocus: true }) instead, adding
+      replaceState: true when the change must not add a history entry. Keep
+      pushState only for genuine shallow routing that reads page.state.
+    metadata:
+      category: correctness
+      subcategory: sveltekit-routing
+      confidence: HIGH
+      likelihood: HIGH
+      impact: HIGH
+      technology: [svelte, sveltekit, typescript]
+      description: shallow routing driving state derived from page.url.searchParams
+    # One spanning regex rather than a `patterns:` conjunction: the import and
+    # the searchParams read are on different lines, and semgrep requires the
+    # operands of `patterns:` to overlap. Imports precede use in module scope,
+    # so anchoring on the import and scanning forward is sound. Non-greedy so
+    # the reported finding stops at the first offending read.
+    pattern-regex: 'import\s*\{[^}]*\b(?:pushState|replaceState)\b[^}]*\}\s*from\s*[''"]\$app/navigation[''"][\s\S]*?\$?page\.url\.searchParams'

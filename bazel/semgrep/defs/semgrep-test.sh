@@ -158,6 +158,12 @@ detect_lang() {
 	java) echo "java" ;;
 	rb) echo "ruby" ;;
 	rs) echo "rust" ;;
+	# semgrep-core has no Svelte parser. The repo's Svelte rules are all
+	# languages: [generic] regex rules, so map .svelte onto the generic
+	# analyzer. Without this the extension falls through to "", the file
+	# contributes no language, and a Svelte-only target scans nothing and
+	# reports PASSED.
+	svelte) echo "generic" ;;
 	*) echo "" ;;
 	esac
 }
