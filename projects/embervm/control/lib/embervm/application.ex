@@ -86,7 +86,20 @@ defmodule Embervm.Application do
       # roll loses no pending append. Started unconditionally: with the gate OFF it
       # receives no work (the stores keep write-through ordering), so it is inert.
       Embervm.AsyncWriter,
-      Embervm.SpecTrace,
+      # SpecTrace: writer, store and compactor. All three return :ignore when
+      # the gate is off, which is load-bearing rather than tidiness. Left
+      # unguarded, a DISABLED trace would still open a postgrex connection to
+      # the SHARED production cluster and run a periodic DELETE sweep against
+      # it, for a feature that emits nothing. "Default off" has to mean no
+      # connection and no writes, or the debug facility carries a standing
+      # production cost.
+      {Embervm.SpecTrace, store_mod: spec_trace_mod(), store: spec_trace_mod()},
+      spec_trace_store_child_spec(),
+      {Embervm.SpecTrace.Compactor,
+       spec_trace: spec_trace_mod(),
+       spec_trace_mod: spec_trace_mod(),
+       interval_ms: spec_trace_sweep_interval_ms(),
+       ttl_ms: spec_trace_ttl_ms()},
       # TaskStore fires on_metered after a :succeeded/:failed op with usage lands,
       # so Embervm.Metering charges the quota cache off the same durable write.
       # async_writer + async_lifecycle_writes wire the gated off-hot-path append of
@@ -448,6 +461,49 @@ defmodule Embervm.Application do
     case trimmed_env("EMBERVM_OPLOG_DSN") do
       "" -> Embervm.OpLog.SQLite
       _dsn -> Embervm.OpLog.Postgres
+    end
+  end
+
+  @doc false
+  def spec_trace_mod do
+    case trimmed_env("EMBERVM_OPLOG_DSN") do
+      "" -> Embervm.SpecTrace.Store.SQLite
+      _ -> Embervm.SpecTrace.Store.Postgres
+    end
+  end
+
+  defp spec_trace_store_child_spec do
+    case spec_trace_mod() do
+      Embervm.SpecTrace.Store.SQLite ->
+        {Embervm.SpecTrace.Store.SQLite, path: spec_trace_path()}
+
+      Embervm.SpecTrace.Store.Postgres ->
+        {Embervm.SpecTrace.Store.Postgres, dsn: trimmed_env("EMBERVM_OPLOG_DSN")}
+    end
+  end
+
+  # Retention and sweep cadence for the trace, read from the environment the
+  # chart renders. The compactor previously inherited the OP-LOG's sweep
+  # interval and never received a ttl at all, so it silently used its own
+  # default: the chart's knobs would have been inert config, a values key that
+  # reads as live and changes nothing. Config with no reader is worse than no
+  # config, because it invites someone to tune it during an incident.
+  defp spec_trace_ttl_ms, do: env_ms("EMBERVM_SPEC_TRACE_TTL_MS", 86_400_000)
+
+  defp spec_trace_sweep_interval_ms,
+    do: env_ms("EMBERVM_SPEC_TRACE_SWEEP_INTERVAL_MS", sweep_interval_ms())
+
+  defp env_ms(name, default) do
+    case Integer.parse(trimmed_env(name)) do
+      {ms, _} when ms > 0 -> ms
+      _ -> default
+    end
+  end
+
+  defp spec_trace_path do
+    case trimmed_env("EMBERVM_SPEC_TRACE_PATH") do
+      "" -> ":memory:"
+      path -> path
     end
   end
 

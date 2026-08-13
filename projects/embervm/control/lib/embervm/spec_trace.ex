@@ -1,9 +1,10 @@
 defmodule Embervm.SpecTrace do
-  @moduledoc "Debug-only, spec-shaped NDJSON trace."
+  @moduledoc "Debug-only, spec-shaped trace emitted to a Store."
 
   @writer Embervm.SpecTrace.Writer
   @enabled_key {__MODULE__, :enabled}
   @dropped_key {__MODULE__, :dropped}
+  @run_id_key {__MODULE__, :run_id}
   # Mailbox depth past which emitters stop enqueueing. Generous relative to any
   # real burst (a sweep emits one Checkpoint), small enough that a stalled
   # writer cannot accumulate meaningful heap.
@@ -17,6 +18,36 @@ defmodule Embervm.SpecTrace do
     enabled = System.get_env("EMBERVM_SPEC_TRACE", "off") |> enabled?()
     :persistent_term.put(@enabled_key, enabled)
     enabled
+  end
+
+  @doc """
+  The CP incarnation id, stable across writer restarts.
+
+  Deliberately NOT minted in the writer's `init/1`. The writer is supervised, so
+  a crash (a store call timing out, say) restarts it, and a per-writer id would
+  mint a fresh `run_id` while the CONTROL PLANE had not restarted at all. A
+  checker keying on run_id would read that as a crash-restart, which is exactly
+  the event `adoption.tla` reasons about: the trace would fabricate the
+  phenomenon it exists to observe.
+
+  Generated once per BEAM and only if absent, so repeated `configure/0` calls
+  from supervisor restarts do not replace it.
+  """
+  @spec run_id() :: String.t()
+  def run_id do
+    case :persistent_term.get(@run_id_key, nil) do
+      nil ->
+        id = fresh_run_id()
+        :persistent_term.put(@run_id_key, id)
+        id
+
+      id ->
+        id
+    end
+  end
+
+  defp fresh_run_id do
+    16 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
   end
 
   @spec emit(atom() | String.t(), atom() | String.t(), map()) :: :ok
@@ -94,15 +125,16 @@ defmodule Embervm.SpecTrace do
   def max_queue, do: @max_queue
   @doc false
   def enabled_now?, do: :persistent_term.get(@enabled_key, false)
+  @doc false
+  def note_drop, do: :persistent_term.put(@dropped_key, :persistent_term.get(@dropped_key, 0) + 1)
 end
 
 defmodule Embervm.SpecTrace.Writer do
   use GenServer
   require Logger
 
-  @default_segment_bytes 64 * 1024 * 1024
-  @default_segments 3
-  @default_dir "/var/lib/embervm/scratch/spec-trace"
+  @default_batch_size 100
+  @default_flush_ms 1000
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -113,12 +145,24 @@ defmodule Embervm.SpecTrace.Writer do
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
-    dir = Keyword.get(opts, :dir, System.get_env("EMBERVM_SPEC_TRACE_DIR", @default_dir))
-    cap = Keyword.get(opts, :segment_bytes, env_integer("EMBERVM_SPEC_TRACE_SEGMENT_BYTES", @default_segment_bytes))
-    segments = Keyword.get(opts, :segments, env_integer("EMBERVM_SPEC_TRACE_SEGMENTS", @default_segments))
-    state = %{dir: dir, cap: max(cap, 1), segments: max(segments, 1), index: 0, size: 0, seq: 0, run_id: uuid(), io: nil}
-    {:ok, open_segment(state), {:continue, :preamble}}
+    store_mod = Keyword.get(opts, :store_mod, Embervm.SpecTrace.Store.SQLite)
+    store = Keyword.get(opts, :store, store_mod)
+    batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
+    flush_ms = Keyword.get(opts, :flush_ms, @default_flush_ms)
+    # Embervm.SpecTrace.run_id/0, NOT a fresh id per writer: this process is
+    # supervised, so a crash would otherwise mint a new incarnation id while the
+    # control plane kept running, and a checker would read that as a
+    # crash-restart that never happened.
+    state = %{
+      store_mod: store_mod,
+      store: store,
+      batch_size: batch_size,
+      flush_ms: flush_ms,
+      records: [],
+      seq: 0,
+      run_id: Embervm.SpecTrace.run_id()
+    }
+    {:ok, state, {:continue, :preamble}}
   end
 
   @impl true
@@ -130,9 +174,7 @@ defmodule Embervm.SpecTrace.Writer do
     # refuses to emit a PASS/FAIL verdict against a trace whose gate it cannot
     # confirm.
     preamble = %{
-      "run_id" => state.run_id,
-      "seq" => 0,
-      "mono" => nil,
+      "run_id" => state.run_id, "seq" => 0, "mono" => 1,
       "ts" => System.system_time(:millisecond),
       "spec" => "spec_trace",
       "action" => "preamble",
@@ -140,68 +182,52 @@ defmodule Embervm.SpecTrace.Writer do
         "schema_version" => Embervm.SpecTrace.schema_version(),
         "enabled" => Embervm.SpecTrace.enabled_now?(),
         "max_queue" => Embervm.SpecTrace.max_queue(),
-        "segment_bytes" => state.cap,
-        "segments" => state.segments
+        "ttl_ms" => 86_400_000
       }
     }
-    {:noreply, write_record(state, preamble)}
+    {:noreply, schedule_flush(%{state | records: [preamble]})}
   end
 
   @impl true
   def handle_info({:emit, spec, action, vars, mono, ts}, state) do
     seq = state.seq + 1
     record = %{"run_id" => state.run_id, "seq" => seq, "mono" => mono, "ts" => ts, "spec" => stringify(spec), "action" => stringify(action), "vars" => jsonable(vars)}
-    {:noreply, write_record(%{state | seq: seq}, record)}
+    state = %{state | seq: seq, records: [record | state.records]}
+    if length(state.records) >= state.batch_size, do: {:noreply, flush(state)}, else: {:noreply, schedule_flush(state)}
   rescue
     error ->
       Logger.warning("embervm spec_trace write failed", error: inspect(error))
       {:noreply, state}
   end
 
-  @impl true
-  def handle_call(:drain, _from, state), do: {:reply, :ok, state}
+  def handle_info(:flush, state), do: {:noreply, flush(state)}
 
   @impl true
-  def terminate(_reason, %{io: io}) when not is_nil(io), do: File.close(io)
-  def terminate(_reason, _state), do: :ok
+  def handle_call(:drain, _from, state), do: {:reply, :ok, flush(state)}
 
-  defp write_record(state, record) do
-    line = Jason.encode!(record) <> "\n"
-    state = if state.size > 0 and state.size + byte_size(line) > state.cap, do: rotate(state), else: state
+  defp flush(%{records: []} = state), do: schedule_flush(state)
 
-    case IO.binwrite(state.io, line) do
-      :ok -> %{state | size: state.size + byte_size(line)}
-      {:error, reason} ->
-        Logger.warning("embervm spec_trace disk write failed", reason: inspect(reason))
-        state
+  # A HANGING store must be survivable, not just an erroring one. The backends
+  # write via GenServer.call, whose timeout raises an EXIT rather than an
+  # exception, so `rescue` alone does not catch it and the writer would die.
+  # That matters beyond losing a batch: a supervised restart used to mint a new
+  # run_id, so a stalled Postgres insert would fabricate a control-plane
+  # incarnation in the trace. run_id is now stable (see SpecTrace.run_id/0) and
+  # the exit is caught here, so a stall costs counted drops and nothing else.
+  defp flush(state) do
+    case state.store_mod.write(state.store, Enum.reverse(state.records)) do
+      :ok -> schedule_flush(%{state | records: []})
+      {:error, reason} -> Embervm.SpecTrace.note_drop(); Logger.warning("embervm spec_trace store write failed", reason: inspect(reason)); schedule_flush(%{state | records: []})
     end
+  catch
+    :exit, reason ->
+      Embervm.SpecTrace.note_drop()
+      Logger.warning("embervm spec_trace store write timed out or died", reason: inspect(reason))
+      schedule_flush(%{state | records: []})
   rescue
-    error ->
-      Logger.warning("embervm spec_trace serialization failed", error: inspect(error))
-      state
+    error -> Embervm.SpecTrace.note_drop(); Logger.warning("embervm spec_trace store write failed", error: inspect(error)); schedule_flush(%{state | records: []})
   end
-
-  defp rotate(state) do
-    File.close(state.io)
-    index = rem(state.index + 1, state.segments)
-    {:ok, io} = File.open(segment_path(state.dir, index), [:write, :binary])
-    %{state | index: index, size: 0, io: io}
-  end
-
-  defp open_segment(state) do
-    File.mkdir_p!(state.dir)
-    {:ok, io} = File.open(segment_path(state.dir, state.index), [:write, :binary])
-    %{state | io: io}
-  end
-
-  defp segment_path(dir, index), do: Path.join(dir, "segment-#{String.pad_leading(Integer.to_string(index), 3, "0")}.ndjson")
-
-  defp env_integer(name, default) do
-    case Integer.parse(System.get_env(name, "")) do
-      {value, ""} when value > 0 -> value
-      _ -> default
-    end
-  end
+  defp schedule_flush(state), do: (Process.send_after(self(), :flush, state.flush_ms); state)
 
   defp stringify(value) when is_atom(value), do: Atom.to_string(value)
   defp stringify(value), do: value
