@@ -1,6 +1,12 @@
 from datetime import datetime, timezone
 
-from swarm.view import compose_master, compose_run
+from swarm.view import (
+    _disposition,
+    _event_stream,
+    _structured_verdict,
+    compose_master,
+    compose_run,
+)
 
 
 class Status:
@@ -329,7 +335,7 @@ def test_compose_run_disposition_approved():
     )
     assert run["disposition"] == {
         "state": "approved",
-        "reason": "Reviewer approved the changes",
+        "reason": "the reviewer approved the changes",
         "next": None,
     }
 
@@ -349,8 +355,11 @@ def test_compose_run_disposition_cycles_exhausted():
     run = compose_run(
         DBOS(Workflow(status, {"plan": plan})), status.workflow_id, [], "unknown"
     )
-    assert run["disposition"]["state"] == "cycles_exhausted"
-    assert "review cycle 2" in run["disposition"]["reason"]
+    assert run["disposition"]["state"] == "review_cycles_exhausted"
+    assert (
+        run["disposition"]["reason"]
+        == "the maximum number of review cycles was reached"
+    )
 
 
 def test_compose_run_disposition_unparseable():
@@ -361,8 +370,60 @@ def test_compose_run_disposition_unparseable():
         {"status": "review", "review_verdict": "unparseable"},
     )
     run = compose_run(DBOS(Workflow(status)), status.workflow_id, [], "unknown")
-    assert run["disposition"]["state"] == "unparseable_verdict"
-    assert "could not be parsed" in run["disposition"]["reason"]
+    assert run["disposition"]["state"] == "escalated"
+
+
+def test_structured_verdict_parses_approve():
+    verdict = _structured_verdict(
+        {"review_text": "Looks good.\nVERDICT: APPROVE", "commit_sha": "1234567890"},
+        "jomcgi/homelab",
+    )
+    assert verdict["value"] == "approve"
+    assert verdict["summary_plain"] == "approved the changes"
+    assert verdict["commit_sha"] == "12345678"
+
+
+def test_structured_verdict_handles_unparseable():
+    verdict = _structured_verdict({"review_text": "No verdict here"}, "repo")
+    assert verdict["value"] == "unparseable"
+    assert verdict["summary_plain"] == "verdict could not be parsed"
+
+
+def test_event_stream_orders_chronologically():
+    events = _event_stream(
+        "workflow-123456",
+        "SUCCESS",
+        datetime(2026, 8, 10, 4, 6, 45, tzinfo=timezone.utc),
+        [
+            {
+                "n": 1,
+                "started_at": "2026-08-10T04:08:00Z",
+                "ended_at": "2026-08-10T04:09:00Z",
+                "state": "completed",
+                "model": "luna",
+                "session_id": 1,
+                "rationale": {},
+                "finding": {"observed_head": "12345678"},
+            }
+        ],
+        [],
+        {},
+        "repo",
+        False,
+    )
+    assert [event["at"] for event in events] == sorted(event["at"] for event in events)
+
+
+def test_disposition_shows_changes_requested():
+    disposition = _disposition("SUCCESS", "changes_requested", {}, [], {})
+    assert disposition["state"] == "changes_requested"
+
+
+def test_disposition_shows_review_cycles_exhausted():
+    disposition = _disposition(
+        "SUCCESS", "changes_requested", {"status": "review_cycles_exhausted"}, [], {}
+    )
+    assert disposition["state"] == "review_cycles_exhausted"
 
 
 def test_compose_run_disposition_cancelled():
@@ -374,7 +435,7 @@ def test_compose_run_disposition_cancelled():
         "unknown",
     )
     assert run["disposition"]["state"] == "cancelled"
-    assert run["disposition"]["reason"] == "Run was cancelled by joe"
+    assert run["disposition"]["reason"] == "this run was cancelled"
 
 
 def test_compose_run_verdict_structured():
