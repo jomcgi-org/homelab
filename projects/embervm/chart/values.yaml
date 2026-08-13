@@ -1114,6 +1114,34 @@ bricks:
   # EMBERVM_NODED_DAEMON_RESERVE_MIB default; this single source renders both.
   daemonReserveMib: 512
   classes:
+    # THE SMALLEST CLASS THAT CAN HOST ANYTHING, and the arithmetic is the
+    # reason rather than a preference: daemonReserveMib (512) is subtracted from
+    # the class limit to get guest-schedulable capacity, so 1Gi yields 512Mi for
+    # guests (four 128Mi microVMs) and a 512Mi class would yield ZERO. Do not add
+    # a class at or below daemonReserveMib; it renders a brick that can never
+    # admit a VM, and nothing validates that today.
+    #
+    # Exists for the conformance work (#4762): checking a spec invariant needs
+    # LIFECYCLE EVENTS per unit of memory, not compute, so many tiny VMs beat few
+    # large ones, and tiny VMs are cheap enough to destroy deliberately, which is
+    # what fault injection requires.
+    #
+    # Rendering a class does NOT create a brick: replicas reads
+    # `desiredReplicas[class] | default 0` (brick-deployment.yaml), and an
+    # unlisted class also reads maxReplicas max(desired, min) = 0, so the
+    # BrickController cannot scale it either. Production lists no 1gi desired
+    # replicas, so this adds an empty Deployment and no pods. The dev
+    # environment opts in by listing it.
+    - name: 1gi
+      resources:
+        requests:
+          # Same as 2gi. A guest still pays full boot cost regardless of its
+          # memory footprint, so starving CPU would slow the very lifecycle
+          # transitions this class exists to produce.
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          memory: 1Gi
     - name: 2gi
       resources:
         requests:
