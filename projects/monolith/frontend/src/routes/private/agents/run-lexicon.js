@@ -54,6 +54,7 @@ export const RUN_LEXICON = {
     buildWord: "build",
     serverBuildWord: "server",
     attempts: "attempts",
+    pushAttempts: "push attempts",
     retriesRemain: "retries remain",
     waitsOn: "waits on",
     needsYou: "needs you",

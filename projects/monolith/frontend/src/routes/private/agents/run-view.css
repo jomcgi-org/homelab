@@ -500,6 +500,35 @@
   align-items: baseline;
   padding: 7px 2px;
   border-bottom: 1px solid var(--line);
+  width: 100%;
+  color: inherit;
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  text-align: left;
+  font: inherit;
+}
+.sess-row:hover {
+  background: var(--hover);
+}
+/* Neutral by default. ADR 054 decision 6 reserves amber for blocked-on-human,
+   and this box wraps every verdict including approve, so tinting it amber
+   unconditionally would spend the one colour that means "act" on the outcome
+   that needs nothing. The amber variant below is applied only when the
+   verdict actually wants a human. */
+.verdict-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--panel-bg);
+  color: var(--text-soft);
+}
+.verdict-box.wants-human {
+  border-left-color: var(--attn);
+  background: var(--attn-soft);
 }
 .sess-title {
   font-size: 13px;

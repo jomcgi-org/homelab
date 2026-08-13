@@ -261,6 +261,22 @@ const approved = run("approved", "approved", {
   ],
 });
 
+const requestChanges = run("request-changes", "changes_requested", {
+  dbos_status: "SUCCESS",
+  nodes: [
+    node("implement", "implement", "done", { attempts: [attempt(1, "done")] }),
+    node("push_gate", "push gate", "passed"),
+    node("review", "review", "done", {
+      verdict: {
+        value: "request_changes",
+        excerpt: "Please address the requested changes before merging.",
+        commit_sha: "86dcbf41",
+        commit_url: "https://github.com/jomcgi/homelab/commit/86dcbf41",
+      },
+    }),
+  ],
+});
+
 const terminalExample = run("terminal-example", "approved", {
   dbos_status: "SUCCESS",
   completed_at: "2026-08-10T22:55:00Z",
@@ -330,6 +346,7 @@ export const RUN_FIXTURES = {
   queued: entry(queued),
   cancelled: entry(cancelled),
   approved: entry(approved),
+  "request-changes": entry(requestChanges),
   "terminal-example": entry(terminalExample),
   stranded: entry(stranded),
   unpinned: entry(unpinned, [

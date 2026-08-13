@@ -1633,7 +1633,7 @@
 
 {#snippet terminalRunRow(run)}
   <button
-    class="group-header group-main run-entry"
+    class="group-header group-main run-entry run-row"
     class:chosen={String(selectedRunId) === String(run.workflow_id)}
     type="button"
     title={run.workflow_id}
@@ -1656,7 +1656,7 @@
 
 {#snippet runRow(run)}
   <button
-    class="group-header group-main run-entry"
+    class="group-header group-main run-entry run-row"
     class:chosen={String(selectedRunId) === String(run.workflow_id)}
     type="button"
     title={run.workflow_id}
@@ -1843,6 +1843,10 @@
     background: var(--hover);
   }
   .session-row.chosen {
+    background: var(--panel-bg);
+    border-color: var(--line);
+  }
+  .run-row.chosen {
     background: var(--panel-bg);
     border-color: var(--line);
   }
@@ -2110,6 +2114,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .session-title:focus:not(:focus-visible) {
+    outline: none;
   }
   .session-context {
     margin-top: 3px;
