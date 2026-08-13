@@ -288,6 +288,32 @@ def test_shas_render_at_eight_characters():
     )
 
 
+def test_request_changes_run_paints_completed_nodes_and_timestamps():
+    status = Status(
+        "wf-request-changes",
+        "SUCCESS",
+        ["task", "repo", "main"],
+        output={
+            "status": "review",
+            "review_verdict": "request_changes",
+        },
+        created_at=1783725765000,
+        updated_at=1783726258000,
+        completed_at=1783726258000,
+    )
+    run = compose_run(
+        DBOS(Workflow(status)),
+        "wf-request-changes",
+        [session(1, status="completed"), session(2, status="completed", node="review")],
+        "unknown",
+    )
+    assert [node["state"] for node in run["nodes"]] == ["done", "passed", "done"]
+    # 1783725765000 ms since the epoch, computed rather than eyeballed.
+    assert run["created_at"] == "2026-07-10T23:22:45Z"
+    assert run["updated_at"] == "2026-07-10T23:30:58Z"
+    assert run["completed_at"] == "2026-07-10T23:30:58Z"
+
+
 def test_attempt_carries_prior_head_alongside_finding():
     status = Status("wf-prior", "SUCCESS", ["task", "repo", "main"])
     run = compose_run(
@@ -343,14 +369,9 @@ def test_review_does_not_inherit_the_implement_lane_head_reads():
 
 
 def test_unserializable_timestamp_is_absent_not_passed_through():
-    """A timestamp the server cannot serialize must not reach the client.
-
-    It used to pass through untouched, where Date.parse returned NaN and the
-    client's `Number(x) || 0` printed it as a confident "0s ago" beside a real
-    elapsed time.
-    """
+    """A timestamp the server cannot serialize must not reach the client."""
     status = Status("wf-clock", "SUCCESS", ["task", "repo", "main"])
-    status.created_at = 1786423167
+    status.created_at = object()
     run = compose_run(DBOS(Workflow(status)), "wf-clock", [], "unknown")
     assert run["created_at"] is None
 

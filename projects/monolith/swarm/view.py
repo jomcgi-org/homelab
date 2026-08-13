@@ -70,6 +70,15 @@ def _iso(value: Any) -> str | None:
     A timestamp that cannot be serialized is absent, and absent has to look
     absent. Strings are trusted only if they parse as a timestamp.
     """
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            return (
+                datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        except (OverflowError, OSError, ValueError):
+            return None
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     if isinstance(value, str) and value:
@@ -316,7 +325,15 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
         gate_state, review_state = "cancelled", "cancelled"
     elif output.get("status") == "escalated":
         implement_state, gate_state, review_state = "escalated", "refused", "cancelled"
-    elif output.get("review_verdict") == "approve":
+    elif output.get("review_verdict") == "unparseable":
+        # parse_review_verdict is fail-closed and says so: "routing must never
+        # guess a verdict". Painting the review node done would put a check
+        # mark on an outcome the server explicitly does not know. Implement and
+        # the gate are still facts (the head moved, which is why review ran).
+        implement_state, gate_state, review_state = "done", "passed", "escalated"
+    elif output.get("review_verdict") in {"approve", "request_changes", "blocked"}:
+        # The review node ran to completion in all three cases. Which way it
+        # went is the run's state and the verdict box, not the node's.
         implement_state, gate_state, review_state = "done", "passed", "done"
     elif review_attempts and _value(review_attempts[-1], "state") == "running":
         implement_state, gate_state, review_state = "done", "passed", "running"

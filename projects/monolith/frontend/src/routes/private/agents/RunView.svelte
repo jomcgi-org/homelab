@@ -248,8 +248,10 @@
           {#each capacityPips(run.plan, node) as pip}<span class={pip}
             ></span>{/each}
         </span>
-        {#if run.plan?.pinned}<span class="entry-meta"
-            >{run.plan.max_attempts} {P.labels.attempts}</span
+        {#if run.plan?.pinned && node.attempts.length > 1}<span
+            class="entry-meta"
+            >{run.plan.max_attempts}
+            {P.labels.pushAttempts}</span
           >{/if}
       {/if}
       {#if node.state === "escalated" || node.blocked_on?.kind === "human"}<span
@@ -368,8 +370,15 @@
         {/if}
       </div>
     {/each}
-    {#if node.verdict}<div class="verdict-box" data-register="belief">
-        <div class="verdict-word">{P.labels.verdict} {node.verdict.value}</div>
+    {#if node.verdict}<div
+        class="verdict-box"
+        class:wants-human={node.verdict.value !== "approve"}
+        data-register="belief"
+      >
+        <div class="verdict-word">
+          {P.labels.verdict}
+          {P.stateWords[node.verdict.value] || node.verdict.value}
+        </div>
         <div class="verdict-excerpt">{node.verdict.excerpt}</div>
         {#if node.verdict.commit_url}<a
             class="commit-link"
