@@ -1825,7 +1825,7 @@ defmodule Embervm.SessionManager do
     case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id,
            dial_id, [rejoin_failure_fun: failure_fun]) do
       {:ok, pid} ->
-        case SessionStore.transition(state.session_store, session_id, :rejoin_ready, :session_relit,
+        case SessionStore.transition(state.session_store, session_id, :rejoin_ready, :session_rejoined,
                %{volume_node_id: session.volume_node_id}, %{node_id: node_id, vm_id: vm_id}) do
           {:ok, _} -> drain_relight_into_process(state, session_id, pid)
           {:error, reason} ->
