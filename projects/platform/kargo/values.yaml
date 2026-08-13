@@ -159,16 +159,20 @@ promotion:
       application: monolith
       upstream:
         - dev
-      # Dev must hold this Freight healthily for 15 minutes before prod may
-      # take it. Chosen as the smallest window that would have caught a rollout
-      # that comes up and falls over shortly after, which a point-in-time check
-      # cannot see; it is not a soak in the load-testing sense and is not tuned
-      # against any measured failure-onset time. Raising it delays every deploy
-      # by the same amount, so it trades release latency directly for exposure.
+      # Dev must hold this Freight healthily for 2 minutes before prod may take
+      # it. Deliberately short, and a SETTLING window rather than a soak in the
+      # load-testing sense: it catches the pod that comes up Healthy and then
+      # crashloops, which argocd-wait's point-in-time check cannot see, and it
+      # costs every production deploy two minutes.
+      #
+      # Stated honestly so nobody reads more into it: it will NOT catch a
+      # slower-onset regression, and lengthening it trades release latency for
+      # exposure linearly. If a failure class shows up that this misses, raise
+      # it against a measured onset time rather than by feel.
       #
       # Dev has no soak: nothing is upstream of it, and a delay there would only
       # postpone the environment that exists to find problems first.
-      requiredSoakTime: 15m
+      requiredSoakTime: 2m
       autoPromotion: true
 
 # Private-tier ingress: https://private.jomcgi.dev/app/kargo
