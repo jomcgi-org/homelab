@@ -183,6 +183,14 @@ defmodule Embervm.NodeRegistry do
     GenServer.call(server, :status)
   end
 
+  @doc "Return the health state for every registered node instance."
+  @spec node_health(GenServer.server()) :: %{String.t() => atom()}
+  def node_health(server \\ __MODULE__) do
+    server
+    |> status()
+    |> Map.new(fn {instance_id, facts} -> {instance_id, facts.health} end)
+  end
+
   @doc """
   Applies one `NodeStatus` as if it arrived from the given node's current stream.
   Test/operational seam: production status flows in from the streamer process,

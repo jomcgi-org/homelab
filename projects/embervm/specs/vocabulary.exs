@@ -191,5 +191,26 @@
     session_evicted: "session_manager.ex",
     session_destroying: "session_manager.ex",
     session_destroyed: "session_manager.ex"
+  },
+  # -- SpecTrace emission sites (#4770) ---------------------------------------
+  # Which module EMITS each spec action, mirroring op_kind_sites above. Name the
+  # emission site, NOT `spec_trace.ex`: that module is the transport, and every
+  # action passes through it, so declaring it would make this registry
+  # unfalsifiable. The first run of this test caught exactly that mistake.
+  #
+  # Same limitation as op_kind_sites, stated so nobody mistakes it for more: this
+  # proves a site EXISTS, not that the path RUNS. #4765 was an append on a code
+  # path production never took, and no static registry can see that. The runtime
+  # half is the harness coverage assertion (a run with zero `prime` records
+  # alongside `assigned` ops is VACUOUS, not PASS).
+  spec_trace_sites: %{
+    # One hook inside the shared builder covers all three prime sites
+    # (dispatcher cold-miss, PoolManager refill, SessionManager session prime).
+    prime: "primed_op.ex",
+    # On the dispatcher's sweep, emitted EVEN WHEN NOTHING ELSE FIRES. A wedge
+    # is the control plane failing to adopt, and absence is invisible in an
+    # event stream, so this periodic state observation is what makes
+    # non-progress detectable at all.
+    checkpoint: "dispatcher.ex"
   }
 }

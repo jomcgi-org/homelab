@@ -38,6 +38,7 @@ defmodule Embervm.Application do
     # the usage-admin list per request) see them. Empty budgets = quota off.
     Application.put_env(:embervm, :quota, quota_config())
     Application.put_env(:embervm, :usage_admins, usage_admins())
+    Embervm.SpecTrace.configure()
 
     # The noded ServiceAccount username the router authenticates dial-home
     # registrations against (R0 PR-2), from EMBERVM_NODED_SERVICE_ACCOUNT. Set
@@ -85,6 +86,7 @@ defmodule Embervm.Application do
       # roll loses no pending append. Started unconditionally: with the gate OFF it
       # receives no work (the stores keep write-through ordering), so it is inert.
       Embervm.AsyncWriter,
+      Embervm.SpecTrace,
       # TaskStore fires on_metered after a :succeeded/:failed op with usage lands,
       # so Embervm.Metering charges the quota cache off the same durable write.
       # async_writer + async_lifecycle_writes wire the gated off-hot-path append of
