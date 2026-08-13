@@ -1,4 +1,4 @@
-# STPA Control Analysis: monolith @ ed077ec74a88
+# STPA Control Analysis: monolith @ 605ec320a
 
 _Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there. Two views: logical (functional control flow) and physical (deployment)._
 

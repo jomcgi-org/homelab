@@ -1,4 +1,4 @@
-# STPA Control Analysis: EmberVM @ 8f47da3cd
+# STPA Control Analysis: EmberVM @ 605ec320a
 
 _Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there. Two views: logical (functional control flow) and physical (deployment)._
 
