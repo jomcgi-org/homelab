@@ -99,7 +99,19 @@ defmodule Embervm.OpLog do
     :session_banked,
     :session_parked,
     :session_parking,
+    # NOTE: Pre-split history ambiguity. Before this change, :session_relit was
+    # also emitted by the rejoin path (filesystem lineage restore, no generation
+    # pairing). Production has about 59 such rows, distinguishable by the
+    # absence of `generation` in the payload. Any consumer reading historical
+    # :session_relit rows must treat absence of `generation` as a rejoin
+    # (filesystem restore) rather than a relight (memory snapshot restore). This
+    # payload-based discriminator is self-describing and correct forever,
+    # unlike a time-based watermark that would break on restore.
     :session_relit,
+    # Rejoin restores a filesystem lineage volume (ADR 027 memory:false),
+    # participates in no generation pairing, and is distinct from
+    # :session_relit (memory snapshot with generation).
+    :session_rejoined,
     :session_expired,
     :session_evicted,
     # session_destroying is the durable destroy INTENT (ADR embervm/014 decision 5):

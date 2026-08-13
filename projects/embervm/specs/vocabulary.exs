@@ -80,6 +80,14 @@
         # protocol 2): bank/relight generation pairing + the ADR 014 node-confirmed
         # destroy carve-out (session_destroying intent -> node confirm ->
         # session_destroyed record).
+        # NOTE: Pre-split history ambiguity. Before this change, :session_relit was
+        # also emitted by the rejoin path (filesystem lineage restore, no generation
+        # pairing). Production has about 59 such rows, distinguishable by the
+        # absence of `generation` in the payload. Any consumer reading historical
+        # :session_relit rows must treat absence of `generation` as a rejoin
+        # (filesystem restore) rather than a relight (memory snapshot restore). This
+        # payload-based discriminator is self-describing and correct forever,
+        # unlike a time-based watermark that would break on restore.
         ~w(session_banked session_relit session_evicted session_destroying
            session_destroyed)a ++
         # R0 quota gate protocol 3: quota.tla models the submit-time quota
@@ -101,7 +109,9 @@
       # outside the adoption pilot and outside bank_relight.tla's bank/relight
       # generation pairing (a parked session holds a filesystem lineage volume,
       # not a memory snapshot, so it pairs with no generation).
-      ~w(session_parking session_parked)a ++
+      # session_rejoined is not modeled by bank_relight.tla (filesystem lineage,
+      # no generation pairing).
+      ~w(session_parking session_parked session_rejoined)a ++
         ~w(started vm_destroyed base_built denied drain retried
            redrive dead_lettered failed)a ++
         # Remaining R2 session lifecycle kinds still out of scope. The bank/relight,

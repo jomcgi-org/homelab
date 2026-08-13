@@ -113,6 +113,28 @@ defmodule Embervm.OpLog.SessionProjectionTest do
     :ok = GenServer.stop(server)
   end
 
+  test "session_rejoined projects a parked filesystem lineage session as running", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, created_op("s-rejoin", "p1", 100))
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :session_rejoined,
+        tenant: "t1",
+        principal: "p1",
+        workload: "sandbox-session",
+        session_id: "s-rejoin",
+        ts: 200,
+        payload: %{volume_node_id: "node-9"}
+      })
+
+    s = session_by_id(server)["s-rejoin"]
+    assert s.state == "running"
+
+    :ok = GenServer.stop(server)
+  end
+
   test "a session_created op with an explicit lineage_id in its payload projects it verbatim, not defaulted", %{path: path} do
     server = start_server(path)
 

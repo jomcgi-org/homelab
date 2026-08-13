@@ -779,6 +779,9 @@ defmodule Embervm.OpLog.Postgres do
     )
   end
 
+  defp project(conn, %Op{kind: :session_rejoined} = op, _seq),
+    do: project(conn, %{op | kind: :session_relit}, nil)
+
   # session_destroying: the durable destroy INTENT (ADR embervm/014 decision 5).
   # A non-terminal state marker appended BEFORE the teardown, so a CP crash
   # mid-destroy rebuilds as destroying and re-drives it rather than forgetting.
