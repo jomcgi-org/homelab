@@ -2229,6 +2229,18 @@ py_test(
 )
 
 py_test(
+    name = "models_test",
+    srcs = ["swarm/models_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "rationale_test",
     srcs = ["swarm/rationale_test.py"],
     imports = ["."],
