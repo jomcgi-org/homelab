@@ -14,13 +14,6 @@ export function computeRanks(nodes) {
   return groups;
 }
 
-export function isWide(run) {
-  return (
-    computeRanks(run.nodes).some((group) => group.length > 1) ||
-    run.nodes.some((node) => node.kind === "expansion")
-  );
-}
-
 export function nodeIconKey(node) {
   if (node.state === "blocked")
     return node.blocked_on?.kind === "human" ? "blocked_human" : "blocked_dep";

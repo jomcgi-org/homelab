@@ -7,12 +7,16 @@ workflow state or compose evidence-bearing prose.
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 from swarm import config
 from swarm.rationale import parse_rationale
 from swarm.deviations import compute_deviations
+
+logger = logging.getLogger(__name__)
 
 
 def _value(obj: Any, name: str, default: Any = None) -> Any:
@@ -452,14 +456,18 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
     }
 
 
-def compose_master(dbos, active, session_costs, server_app_version) -> dict:
+def compose_master(
+    dbos, active, session_costs, server_app_version, limit: int = 50
+) -> dict:
+    limit = max(1, min(50, limit))
     kwargs = {"has_parent": False, "load_input": True}
     if active:
         kwargs["status"] = ["PENDING", "ENQUEUED"]
     else:
-        kwargs.update(limit=50, sort_desc=True)
+        kwargs.update(limit=limit, sort_desc=True)
     statuses = list(dbos.list_workflows(**kwargs) or [])
     runs = []
+    started = time.perf_counter() if not active else None
     for workflow in statuses:
         status = _status(workflow)
         wf_id = _value(status, "workflow_id", _value(workflow, "workflow_id"))
@@ -508,6 +516,7 @@ def compose_master(dbos, active, session_costs, server_app_version) -> dict:
         runs.append(
             {
                 "workflow_id": wf_id,
+                "dbos_status": run["dbos_status"],
                 "state": run["state"],
                 "title": run["task"]["text"].splitlines()[0],
                 "current": {"label": current["label"], "state": current["state"]},
@@ -527,6 +536,12 @@ def compose_master(dbos, active, session_costs, server_app_version) -> dict:
                 else None,
                 "updated_at": run["updated_at"],
             }
+        )
+    if started is not None:
+        logger.info(
+            "compose_master active=false loop completed in %.2f ms (%d workflows)",
+            (time.perf_counter() - started) * 1000,
+            len(statuses),
         )
     queued = getattr(dbos, "list_queued_workflows", lambda **_: [])(queue_name="codex")
     waiting = len(queued or [])

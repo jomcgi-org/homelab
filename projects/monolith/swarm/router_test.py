@@ -239,3 +239,32 @@ def test_server_app_version_is_empty_when_dbos_has_not_launched(monkeypatch):
 
     monkeypatch.setattr(GlobalParams, "app_version", "")
     assert swarm_router._server_app_version() == ""
+
+
+def test_list_runs_clamps_limit_query_parameter(monkeypatch):
+    captured = []
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.engine = engine
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def compose(*args, **kwargs):
+        captured.append(kwargs["limit"])
+        return {"runs": []}
+
+    monkeypatch.setattr("core.db.get_engine", lambda: object())
+    monkeypatch.setattr("sqlmodel.Session", FakeSession)
+    monkeypatch.setattr("swarm.rows.swarm_session_views", lambda session: {})
+    monkeypatch.setattr(swarm_router, "_dbos", lambda: object())
+    monkeypatch.setattr(swarm_router, "_server_app_version", lambda: "version")
+    monkeypatch.setattr("swarm.view.compose_master", compose)
+
+    assert client().get("/api/swarm/runs?active=false&limit=100").status_code == 200
+    assert client().get("/api/swarm/runs?active=false&limit=0").status_code == 200
+    assert captured == [50, 1]

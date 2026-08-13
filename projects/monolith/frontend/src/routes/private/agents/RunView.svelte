@@ -2,7 +2,6 @@
   import StateIcon from "./StateIcon.svelte";
   import {
     computeRanks,
-    isWide,
     nodeIconKey,
     nodeStateClass,
     capacityPips,
