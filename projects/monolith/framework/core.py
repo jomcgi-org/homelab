@@ -268,10 +268,12 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
         health_logger = logging.getLogger("monolith.public")
         health_message = "public health check failed"
         component_message = "public health components unhealthy"
+        advisory_message = "public health advisory components degraded"
     else:
         health_logger = logger
         health_message = "deep health check failed"
         component_message = "deep health components unhealthy"
+        advisory_message = "deep health advisory components degraded"
 
     component_checks: dict[str, HealthCheck] = {}
     for m in modules:
@@ -294,8 +296,9 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
         this route; a DB outage returns a clean 503 (logged once per probe)
         instead of a traceback. Module-contributed components (see
         ``Module.register_health``) run alongside SELECT 1 and are folded
-        into a ``components`` map; any component not ok makes the whole
-        response 503, same as the SELECT 1 baseline.
+        into a ``components`` map. Fatal components make the response 503;
+        advisory components are reported in ``degraded`` while the response
+        remains 200.
         """
         from sqlmodel import Session, text
 
@@ -317,25 +320,38 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
             )
             components = dict(zip(names, results))
 
-        all_ok = db_ok and all(c.get("ok") for c in components.values())
+        fatal = {
+            n: c
+            for n, c in components.items()
+            if not c.get("advisory") and not c.get("ok")
+        }
+        advisory = {
+            n: c for n, c in components.items() if c.get("advisory") and not c.get("ok")
+        }
+        all_ok = db_ok and not fatal
         # Ember checks return {"ok": False, detail} in-band and never raise
         # (see ember_public/synthetic_probe.py), so _run_component's exception
         # log never fires for them and a component-caused 503 was silent. This
-        # warning is the only server-side record of which component tripped.
-        if not all_ok:
-            failing = {n: c for n, c in components.items() if not c.get("ok")}
-            if failing:
-                health_logger.warning(
-                    "%s: %s",
-                    component_message,
-                    "; ".join(
-                        f"{n}={c.get('detail') or 'no detail'}"
-                        for n, c in sorted(failing.items())
-                    ),
-                )
+        # This warning is the server-side record for fatal component failures.
+        if fatal:
+            health_logger.warning(
+                "%s: %s",
+                component_message,
+                "; ".join(
+                    f"{n}={c.get('detail') or 'no detail'}"
+                    for n, c in sorted(fatal.items())
+                ),
+            )
+        if advisory:
+            # INFO, and deliberately NOT component_message. SigNoz alerts and
+            # runbooks key on that exact warning text, so an advisory component
+            # emitting it would move the pager rather than remove it.
+            health_logger.info("%s: %s", advisory_message, ", ".join(sorted(advisory)))
         body = {"status": "ok" if all_ok else "unhealthy"}
         if components:
             body["components"] = components
+        if advisory:
+            body["degraded"] = sorted(advisory)
         if not all_ok:
             return JSONResponse(body, status_code=503)
         return body

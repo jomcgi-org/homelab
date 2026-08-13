@@ -948,9 +948,9 @@ knowledge:
 # response, which UptimeRobot polls offsite. Tunables live here so changing what
 # pages does not need a rebuild.
 cdHealth:
-  # An ArgoCD app not Synced+Healthy for longer than this trips the component.
-  # Long enough that a normal rollout never pages.
-  syncGraceSeconds: 900
+  # How far behind the newest published chart production may fall before cd
+  # reports degraded. This does not page.
+  chartLagSeconds: 7200
   # main's CI red for longer than this trips it. Red is only a fault once it
   # persists; a run being actively fixed must not page.
   ciRedWindowSeconds: 3600

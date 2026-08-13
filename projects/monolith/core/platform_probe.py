@@ -94,19 +94,28 @@ async def write_probe(name: str, ok: bool, detail: str) -> None:
     await asyncio.to_thread(_write_sync, name, ok, detail)
 
 
-def probe_health(name: str, staleness_s: float):
+def probe_health(name: str, staleness_s: float, advisory: bool = False):
     """Build a health component that reads one latch row.
 
     Mirrors ember_public.health.synthetic_probe_health, which reads the ember
     latch. Staleness matters as much as the ok flag: a writer that has died
     leaves a stale green row, and reporting that as healthy is the exact
     meta-monitoring gap this component exists to close.
+
+    ``advisory`` means the component reports but never contributes to the 503
+    decision. The flag is included on every result so it describes the
+    component rather than its current outcome.
     """
 
     async def check() -> dict:
+        def _result(**values) -> dict:
+            if advisory:
+                values["advisory"] = True
+            return values
+
         row = await read_probe(name)
         if row is None:
-            return {"ok": True, "detail": "no probe recorded yet"}
+            return _result(ok=True, detail="no probe recorded yet")
 
         now = datetime.now(timezone.utc)
 
@@ -118,14 +127,14 @@ def probe_health(name: str, staleness_s: float):
             if row.last_ok_at is not None:
                 down_s = max(0.0, (now - _utc(row.last_ok_at)).total_seconds())
                 detail = f"{detail}, down for {down_s / 60:.0f}m"
-            return {"ok": False, "detail": detail}
+            return _result(ok=False, detail=detail)
 
         age_s = (now - _utc(row.checked_at)).total_seconds()
         if age_s > staleness_s:
-            return {
-                "ok": False,
-                "detail": f"last probe was {age_s / 60:.0f}m ago, writer may be dead",
-            }
-        return {"ok": True, "detail": row.detail or "ok"}
+            return _result(
+                ok=False,
+                detail=f"last probe was {age_s / 60:.0f}m ago, writer may be dead",
+            )
+        return _result(ok=True, detail=row.detail or "ok")
 
     return check

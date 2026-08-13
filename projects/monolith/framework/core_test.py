@@ -193,6 +193,61 @@ def test_public_tier_health_folds_in_module_components(_sqlite_engine):
     assert body["components"] == {"widget": {"ok": True, "detail": "all good"}}
 
 
+def test_advisory_failure_returns_200_degraded_and_logs_info(
+    _sqlite_engine, caplog, _public_app_with_logs
+):
+    async def unhealthy_check():
+        return {"ok": False, "detail": "widget is behind", "advisory": True}
+
+    module = Module(
+        name="m",
+        register_public=lambda app: None,
+        register_health={"widget": unhealthy_check},
+    )
+    app = _public_app_with_logs([module])
+    with caplog.at_level(logging.INFO, logger="monolith.public"):
+        resp = TestClient(app).get("/api/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["degraded"] == ["widget"]
+    assert not any(
+        "public health components unhealthy" in r.message for r in caplog.records
+    )
+    assert any(
+        r.levelno == logging.INFO
+        and "public health advisory components degraded" in r.message
+        for r in caplog.records
+    )
+
+
+def test_fatal_failure_alongside_advisory_still_503s_and_warns(
+    _sqlite_engine, caplog, _public_app_with_logs
+):
+    async def advisory_check():
+        return {"ok": False, "advisory": True}
+
+    async def fatal_check():
+        return {"ok": False, "detail": "fatal"}
+
+    module = Module(
+        name="m",
+        register_public=lambda app: None,
+        register_health={"widget": advisory_check, "database": fatal_check},
+    )
+    app = _public_app_with_logs([module])
+    with caplog.at_level(logging.INFO, logger="monolith.public"):
+        resp = TestClient(app).get("/api/health")
+    assert resp.status_code == 503
+    assert resp.json()["degraded"] == ["widget"]
+    assert any(
+        r.levelno == logging.WARNING
+        and "public health components unhealthy" in r.message
+        and "database" in r.message
+        for r in caplog.records
+    )
+
+
 def test_public_tier_health_503_logs_failing_component(
     _sqlite_engine, caplog, _public_app_with_logs
 ):

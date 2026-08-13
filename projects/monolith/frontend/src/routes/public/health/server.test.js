@@ -31,6 +31,24 @@ describe("/public/health GET", () => {
     expect(HEALTH_CACHE_CONTROL).not.toContain("stale-while-revalidate");
   });
 
+  it("returns degraded names on 200 without component details", async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: "ok",
+        degraded: ["cd"],
+        components: { cd: { ok: false, detail: "secret chart version" } },
+      }),
+    });
+
+    const res = await GET({ fetch });
+    const body = await res.json();
+    expect(body).toEqual({ status: "ok", degraded: ["cd"] });
+    expect(JSON.stringify(body)).not.toContain("components");
+    expect(JSON.stringify(body)).not.toContain("detail");
+  });
+
   it("returns an uncached 503 when the backend reports unhealthy", async () => {
     const fetch = vi.fn().mockResolvedValue({
       ok: false,
