@@ -1070,6 +1070,7 @@ defmodule Embervm.SessionManager do
       expires_at: state.clock.() + entry.session.max_lifetime_seconds * 1000
     }
 
+    # node_id is the K8s node where the VM primed/started; SessionStore carries it into session_created.
     case SessionStore.create(state.session_store, attrs) do
       {:ok, %{session_id: session_id} = created} ->
         case start_session_process(state, session_id, workload, principal, entry, node_id, vm_id, dial_id) do
@@ -2186,6 +2187,7 @@ defmodule Embervm.SessionManager do
       {:ok, node_id, vm_id, relight_ms, dial_id} ->
         session = get_session!(state, session_id)
 
+        # node_id is the K8s node where the VM primed/started; SessionStore carries it into session_relit.
         # The wake hot-path durable append (session_relit): deferred to AsyncWriter
         # under EMBERVM_ASYNC_LIFECYCLE_WRITES (ADR embervm/014 decision 2), so the
         # woken session's durable write is off the wake path; the ETS row advances
@@ -2197,7 +2199,8 @@ defmodule Embervm.SessionManager do
             session_id,
             :relight_ready,
             :session_relit,
-            %{snapshot_ref: session.snapshot_ref, generation: session.generation, relight_ms: relight_ms},
+            %{snapshot_ref: session.snapshot_ref, generation: session.generation, relight_ms: relight_ms,
+              node_id: node_id, vm_id: vm_id},
             %{node_id: node_id, vm_id: vm_id},
             vm_id
           )

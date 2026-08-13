@@ -479,6 +479,7 @@ defmodule Embervm.SessionStore do
           ts: state.clock.(),
           payload: %{
             node_id: session.node_id,
+            vm_id: session.vm_id,
             volume_node_id: session.volume_node_id,
             base_snapshot_ref: session.base_snapshot_ref,
             base_digest: session.base_digest,
@@ -567,6 +568,7 @@ defmodule Embervm.SessionStore do
 
     payload = %{
       node_id: Map.get(attrs, :node_id),
+      vm_id: Map.get(attrs, :vm_id),
       volume_node_id: Map.get(attrs, :volume_node_id),
       base_snapshot_ref: Map.get(attrs, :base_snapshot_ref),
       base_digest: Map.get(attrs, :base_digest),

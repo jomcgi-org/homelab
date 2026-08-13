@@ -89,8 +89,8 @@
       # R0 task/VM lifecycle kinds the spec does NOT model as distinct actions.
       # vm_destroyed is the durable audit kind for a VM teardown; the spec models
       # the VM state reaching "destroyed" (Succeed / AbandonClaim / CrashNode) but
-      # not the log-emission verb as a named action, so the atom vm_destroyed is
-      # excluded (its string is absent from the spec by design). started collapses
+      # not the log-emission verb as a named action. Task-lane VMs are reclaimed by
+      # the node, not CP; there is no append site. started collapses
       # into assigned (the spec's taskState has no separate running state);
       # base_built pairs with the excluded BuildBase verb. denied remains excluded
       # because it covers auth-forbidden and per-principal queue-depth audit kinds;
@@ -140,5 +140,42 @@
         # R6 continuity (node drain + off-node artifact) kinds, out of scope.
         ~w(node_drain_started node_drain_finished artifact_exported
            artifact_restored artifact_evicted_remote)a
+  },
+  # -- append sites for every MODELED op kind (layer 1, the #4756 guard) -------
+  # Which control-plane module actually appends each modeled kind, declared
+  # rather than inferred. spec_vocabulary_test.exs asserts the keys exactly
+  # partition the modeled op kinds, the file exists, and the atom appears in it
+  # outside `#` comments and @doc/@moduledoc heredocs.
+  #
+  # WHY A DECLARED REGISTRY RATHER THAN A GREP. #4756: `:primed` and
+  # `:vm_destroyed` sat in the closed @kinds enum with NO append site, and layer
+  # 1 passed because it only checked enum against spec. Two greps were tried and
+  # both failed, which is why this is a manifest:
+  #
+  #   bare `:atom` anywhere in lib      -> too LOOSE. `:primed` matched a metrics
+  #     counter key in base_builder.ex (`Map.get(entry, :primed, 0)`) and a prose
+  #     comment, so it was green before any emission existed.
+  #   `kind: :atom` literal              -> too STRICT. Only `:primed` is built
+  #     literally; every other kind is threaded as a VARIABLE across a module
+  #     boundary (`%Op{kind: op_kind}` in task_store, `SessionStore.transition(
+  #     ..., :session_banked, ...)` in session_manager), so it failed 8 kinds
+  #     that are genuinely emitted.
+  #
+  # Naming the module is the part a grep cannot infer and a reviewer can check.
+  # A kind with no honest site cannot be given one here, which forces the
+  # decision the enum's closed-ness was supposed to force: emit it, or move it
+  # to `excluded` with a reason (as vm_destroyed now is, since task-lane VMs are
+  # reclaimed by the node and no CP-side teardown exists).
+  op_kind_sites: %{
+    submitted: "task_store.ex",
+    assigned: "task_store.ex",
+    succeeded: "task_store.ex",
+    primed: "dispatcher.ex",
+    quota_enforced: "metering.ex",
+    session_banked: "session_manager.ex",
+    session_relit: "session_manager.ex",
+    session_evicted: "session_manager.ex",
+    session_destroying: "session_manager.ex",
+    session_destroyed: "session_manager.ex"
   }
 }

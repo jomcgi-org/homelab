@@ -98,6 +98,7 @@ defmodule Embervm.Dispatcher do
   require OpenTelemetry.Tracer, as: Tracer
 
   alias Embervm.{Brick, NodeCapacity, WorkloadCatalog}
+  alias Embervm.OpLog.Op
   alias Embervm.Scheduler
   alias Embervm.Scheduler.Request
 
@@ -232,6 +233,13 @@ defmodule Embervm.Dispatcher do
 
     state = %{
       task_store: task_store,
+      op_log: Keyword.get(opts, :op_log, nil),
+      op_log_mod: Keyword.get(opts, :op_log_mod, nil),
+      # `%Op{}` enforces :tenant, and the dispatcher otherwise has no concept of
+      # one: priming is workload-scoped (PrimeRequest carries the workload, no
+      # principal), so there is no per-task tenant to inherit here. Same default
+      # as Embervm.Metering, which faces the same problem for its audit ops.
+      tenant: Keyword.get(opts, :tenant, "homelab"),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
       depth_table: Keyword.get(opts, :depth_table, @depth_table),
@@ -527,8 +535,8 @@ defmodule Embervm.Dispatcher do
     # sees the write in flight. nil for a miss (its vm_id is minted in the worker);
     # inert under the gate off. The ETS FSM advance and the queued-race guard here
     # are unchanged (Option A): only the durable append moves off the hot path.
-    with {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.assign(state.task_store, task_id, vm_id) end),
-         {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.start(state.task_store, task_id, vm_id) end) do
+    with {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.assign(state.task_store, task_id, vm_id, node_id) end),
+         {:ok, {:ok, _}} <- safe_call(fn -> Embervm.TaskStore.start(state.task_store, task_id, vm_id, node_id) end) do
       # Task left the queue: release its depth reservation and dedupe slot.
       release_depth(state, wl, pr)
 
@@ -733,10 +741,17 @@ defmodule Embervm.Dispatcher do
     assign_fun = state.assign_fun
     prime_fun = state.prime_fun
     get_request_fun = state.get_request_fun
+    op_log = state.op_log
+    op_log_mod = state.op_log_mod
+    wall_clock = state.wall_clock
     wall = state.wall_clock.()
 
     ctx = %{
       task_id: task_id,
+      op_log: op_log,
+      op_log_mod: op_log_mod,
+      wall_clock: wall_clock,
+      tenant: state.tenant,
       workload: wl,
       principal: pr,
       node_id: node_id,
@@ -958,6 +973,10 @@ defmodule Embervm.Dispatcher do
 
     case Embervm.Scheduler.Retry.run(ctx.candidates, attempt_fun) do
       {:ok, {vm_id, node_id, channel}} ->
+        # Instrumentation covers task-lane priming only. Session, serving, and
+        # stateful lane priming is not yet instrumented. Append once, after the
+        # retry policy has selected the successful prime attempt.
+        _ = safe_call(fn -> append_primed(ctx, vm_id, node_id) end)
         {:ok, vm_id, node_id, channel}
 
       {:error, {:prime_failed, reason}} ->
@@ -1001,6 +1020,22 @@ defmodule Embervm.Dispatcher do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp append_primed(ctx, vm_id, node_id) do
+    if ctx.op_log == nil do
+      :ok
+    else
+      op = %Op{
+        kind: :primed,
+        tenant: ctx.tenant,
+        workload: ctx.workload,
+        ts: ctx.wall_clock.(),
+        payload: %{vm_id: vm_id, node_id: node_id, workload: ctx.workload, lane: :task}
+      }
+
+      ctx.op_log_mod.append(ctx.op_log, op)
     end
   end
 
