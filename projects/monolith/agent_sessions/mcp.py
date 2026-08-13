@@ -18,6 +18,7 @@ import httpx
 import agent.api as agent_api
 from agent_sessions import store, voice
 from agent_sessions import model_family
+from agent_sessions.rationale import rationale_trailer_instruction
 from agent_sessions.models import AgentSession, AgentTurn
 from agent_sessions.transport import (
     EmberSession,
@@ -156,6 +157,18 @@ def _persist_pending_message(
         row = store.create_pending_message(db_session, session_id, message_text, model)
         assert row.seq is not None
         return row.seq
+
+
+def _append_rationale_trailer(
+    system_prompt: str | None, repo: str | None
+) -> str | None:
+    """Add walkthrough rationale guidance when the session has a repository."""
+    if repo is None:
+        return system_prompt
+    trailer = rationale_trailer_instruction()
+    if system_prompt is None:
+        return trailer
+    return f"{system_prompt.rstrip()}\n\n{trailer}"
 
 
 def _persist_session(
@@ -682,7 +695,7 @@ async def monolith_agent_session_start(
         model,
         selected_repo,
         discord_thread=None,
-        system_prompt=voice.VOICE_INSTRUCTION,
+        system_prompt=_append_rationale_trailer(voice.VOICE_INSTRUCTION, selected_repo),
     )
     turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     _schedule_next_message(row.id)

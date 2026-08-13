@@ -346,9 +346,9 @@
               )}
             </div>
             {#if attempt.rationale.parse_status === "parsed"}
-              {#each attempt.rationale.areas as area}
+              {#each attempt.rationale.paths as path}
                 <div class="testimony-line">
-                  {joinMeta(area.area, area.why)}
+                  {joinMeta(path.path, path.why)}
                 </div>
               {/each}
               {#each attempt.rationale.deviations as deviation}

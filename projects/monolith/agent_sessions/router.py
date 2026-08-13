@@ -18,6 +18,7 @@ from agent_sessions import model_family, store
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
+    _append_rationale_trailer,
     _clear_ember_bindings_for,
     _load_session_row,
     _mark_ui_originated,
@@ -458,6 +459,7 @@ def get_session_detail(
                 "stop_reason": turn.stop_reason,
                 "permission_denials": _decode(turn.permission_denials, []),
                 "commit_sha": turn.commit_sha,
+                "base_sha": turn.base_sha,
                 "usage": _decode(turn.usage_json, {}),
                 "cost_usd": turn.cost_usd,
                 "created_at": _iso(turn.created_at),
@@ -501,6 +503,7 @@ async def start_session(request: Request, start_request: StartRequest) -> dict:
         start_request.branch,
         start_request.model,
         start_request.repo,
+        system_prompt=_append_rationale_trailer(None, start_request.repo),
         triggered_by=triggered_by,
     )
     turn = await asyncio.to_thread(

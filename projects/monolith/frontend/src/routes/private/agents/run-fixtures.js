@@ -167,11 +167,11 @@ const running = run("running", "running", {
             observed_head: "86dcbf41",
           },
           rationale: {
-            raw: "RATIONALE\n- area: swarm/rows.py · why: carries the final turn\n- area: run view · why: shows testimony\n- deviation: kept routing unchanged",
+            raw: "RATIONALE\n- path: swarm/rows.py · why: carries the final turn\n- path: swarm/run_view.py · why: shows testimony\n- deviation: kept routing unchanged",
             parse_status: "parsed",
-            areas: [
-              { area: "swarm/rows.py", why: "carries the final turn" },
-              { area: "run view", why: "shows testimony" },
+            paths: [
+              { path: "swarm/rows.py", why: "carries the final turn" },
+              { path: "swarm/run_view.py", why: "shows testimony" },
             ],
             deviations: ["kept routing unchanged"],
             parser_version: 1,
@@ -186,7 +186,7 @@ const running = run("running", "running", {
           rationale: {
             raw: null,
             parse_status: "none",
-            areas: [],
+            paths: [],
             deviations: [],
             parser_version: 1,
           },

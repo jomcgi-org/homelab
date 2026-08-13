@@ -88,6 +88,7 @@ class AgentTurn(SQLModel, table=True):
     stop_reason: str | None = Field(default=None)
     permission_denials: str | None = Field(default=None)
     commit_sha: str | None = Field(default=None, index=True)
+    base_sha: str | None = Field(default=None, index=True)
     usage_json: str | None = Field(default=None)
     cost_usd: float | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

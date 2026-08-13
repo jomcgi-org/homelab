@@ -90,6 +90,23 @@ def poll_turn(session_id: int, after_seq: int) -> dict | None:
         }
 
 
+@DBOS.step()
+def update_turn_shas(
+    session_id: int, turn_seq: int, base_sha: str | None, commit_sha: str | None
+) -> bool:
+    """Attach the swarm's pre- and post-attempt heads to a persisted turn."""
+    from sqlmodel import Session
+
+    from agent_sessions import store
+    from core.db import get_engine
+
+    with Session(get_engine()) as session:
+        return (
+            store.update_turn_shas(session, session_id, turn_seq, base_sha, commit_sha)
+            is not None
+        )
+
+
 @DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
 def read_branch_head(repo: str, branch: str) -> str | None:
     """Read a pushed branch head from GitHub, independently of the agent claim."""

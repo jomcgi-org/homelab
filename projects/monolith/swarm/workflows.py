@@ -12,7 +12,13 @@ from swarm.policy import (
     work_branch,
 )
 from swarm.queues import codex_queue
-from swarm.steps import pin_plan, poll_turn, read_branch_head, start_agent_session
+from swarm.steps import (
+    pin_plan,
+    poll_turn,
+    read_branch_head,
+    start_agent_session,
+    update_turn_shas,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +165,7 @@ def implement_then_review(
     previous_failure = None
     implementer_session_id = None
     implementer_turn = None
+    base_sha = None
     commit_sha = None
 
     while attempt < max_attempts:
@@ -178,6 +185,28 @@ def implement_then_review(
             implementer_session_id, 0, plan["turn_timeout_seconds"]
         )
         head_sha = read_branch_head(repo, branch_name)
+        base_sha = prior_sha
+        if implementer_turn is not None:
+            # Recording the heads is a convenience write for the walkthrough,
+            # not part of the decision this loop makes: next_action reads
+            # head_sha and prior_sha directly, just below. A failure here must
+            # not be able to fail the attempt, for the same reason the pinned
+            # plan copy above is guarded. The heads are lost for that turn and
+            # the run continues.
+            try:
+                update_turn_shas(
+                    implementer_session_id,
+                    implementer_turn["seq"],
+                    base_sha,
+                    head_sha,
+                )
+            except Exception:  # noqa: BLE001 - the attempt outranks the record
+                logger.warning(
+                    "failed to record turn heads for session %s seq %s",
+                    implementer_session_id,
+                    implementer_turn["seq"],
+                    exc_info=True,
+                )
         action = next_action(attempt, max_attempts, head_sha, prior_sha)
         if action == "review":
             commit_sha = head_sha

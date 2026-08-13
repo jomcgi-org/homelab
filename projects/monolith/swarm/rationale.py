@@ -7,8 +7,10 @@ import re
 
 _RATIONALE_TAIL_LINES = 12
 _HEADER = re.compile(r"RATIONALE", re.IGNORECASE)
-_AREA = re.compile(
-    r"area\s*:\s*(?P<area>.+?)(?:\s+(?:·|-|–)\s*why\s*:\s*(?P<why>.*))?$",
+_PATH = re.compile(
+    r"path\s*:\s*"
+    r"(?P<path>(?!/)(?!\./)(?!\.\./)(?![A-Za-z]:[\\/])[^\s·]+(?:/[^\s·]+)*)"
+    r"(?:\s+(?:·|-|–)\s*why\s*:\s*(?P<why>.*))?$",
     re.IGNORECASE,
 )
 _DEVIATION = re.compile(r"deviation\s*:\s*(?P<deviation>.+)$", re.IGNORECASE)
@@ -18,7 +20,7 @@ def _empty(status: str, raw: str | None = None) -> dict:
     return {
         "raw": raw,
         "parse_status": status,
-        "areas": [],
+        "paths": [],
         "deviations": [],
         "parser_version": 1,
     }
@@ -48,7 +50,7 @@ def parse_rationale(text: str | None) -> dict:
 
         header = headers[0]
         raw = "\n".join(lines[header:])
-        areas = []
+        paths = []
         deviations = []
         meaningful = 0
         for line in lines[header + 1 :]:
@@ -56,14 +58,14 @@ def parse_rationale(text: str | None) -> dict:
             if not stripped:
                 continue
             bullet = stripped.lstrip("-* \t")
-            area = _AREA.fullmatch(bullet)
+            path = _PATH.fullmatch(bullet)
             deviation = _DEVIATION.fullmatch(bullet)
-            if area:
+            if path:
                 meaningful += 1
-                areas.append(
+                paths.append(
                     {
-                        "area": area.group("area").strip(),
-                        "why": (area.group("why") or "").strip(),
+                        "path": path.group("path").strip(),
+                        "why": (path.group("why") or "").strip(),
                     }
                 )
             elif deviation:
@@ -78,7 +80,7 @@ def parse_rationale(text: str | None) -> dict:
         return {
             "raw": raw,
             "parse_status": "parsed",
-            "areas": areas,
+            "paths": paths,
             "deviations": deviations,
             "parser_version": 1,
         }

@@ -41,6 +41,7 @@ def run(monkeypatch, turns, heads=None):
         },
     )
     monkeypatch.setattr(workflows, "start_agent_session", lambda *args: 0)
+    monkeypatch.setattr(workflows, "update_turn_shas", lambda *args: True)
     monkeypatch.setattr(workflows, "_await_turn", lambda session, *_: turns[session])
     monkeypatch.setattr(workflows, "read_branch_head", lambda *_: next(branch_heads))
     monkeypatch.setattr(
