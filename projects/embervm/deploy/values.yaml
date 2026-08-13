@@ -592,3 +592,10 @@ claudeRuntimeWorkload:
   # another 4 GiB per brick until the GC is fixed, so watch headroom under
   # /var/lib/embervm/scratch on node-1/2/3 rather than on node-4.
   persistenceEnabled: true
+
+# SpecTrace gate for spec validation (GitHub issue #4770). Debug-gated, spec-shaped
+# trace that validates TLA+ specs against real behaviour. Deliberately OFF in production.
+# Chart defaults are all OFF; flip specTrace.enabled=true locally or in a dev values
+# override to enable spec validation.
+# specTrace:
+#   enabled: false
