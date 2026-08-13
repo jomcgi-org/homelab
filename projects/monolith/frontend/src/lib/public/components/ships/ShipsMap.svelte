@@ -812,7 +812,7 @@
     </div>
   {:else}
     <div class="legend">
-      <p class="eyebrow legend-title">Ships seen per map square</p>
+      <p class="eyebrow legend-title">Ships seen per map square, all time</p>
       <ul class="heat-scale">
         {#each heatBreaks.slice(0, HEAT_COLORS.length) as br, i (br)}
           <li>

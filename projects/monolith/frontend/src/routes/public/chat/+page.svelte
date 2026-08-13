@@ -17,7 +17,7 @@
 <main class="chat-shell">
   <h1>Chat</h1>
   {#if admitted}
-    <p>You're in. Chat isn't open yet, but your seat is saved.</p>
+    <p>You're in. The chat itself isn't open yet.</p>
   {:else}
     <p>Solve the challenge to start chatting.</p>
     <TurnstileGate

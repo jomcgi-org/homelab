@@ -340,7 +340,7 @@
         <p class="sub">Killed on idle, rebuilt from disk or S3 on resume.</p>
         <div class="stats">
           <span><b>2.5 ms</b> VM resume</span><span class="sep">·</span><span
-            ><b>20 s</b> idle, then the VM is destroyed</span
+            ><b>20 s</b> idle before the VM is destroyed</span
           ><span class="sep">·</span><span
             ><b>0</b> real credentials inside</span
           >

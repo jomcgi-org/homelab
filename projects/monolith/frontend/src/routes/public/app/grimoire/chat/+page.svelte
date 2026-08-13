@@ -343,7 +343,7 @@
           <div class="chat-gate">
             <p class="eyebrow chat-gate-eyebrow">START CHATTING</p>
             <p class="chat-gate-copy">
-              Solve the puzzle once to start. Every answer quotes the sourcebook
+              Solve the puzzle once to start. Every answer shows the sourcebook
               page it came from.
             </p>
             <TurnstileGate
@@ -363,7 +363,7 @@
             <p class="empty-sub">
               Rules, spells, monsters, magic items, lore, adventures. A sage
               reads the loaded sourcebooks and answers, citing what it drew on.
-              Nothing leaves this machine.
+              Your questions never leave my homelab.
             </p>
             <div class="chat-examples">
               {#each EXAMPLES as ex}
@@ -404,7 +404,7 @@
                               ? n.entity_type
                               : 'class'}, currentColor)"
                           >
-                            {n.title || "untitled entity"}
+                            {n.title || "untitled"}
                           </a>
                         {:else}
                           <button
@@ -450,7 +450,7 @@
       {#if constellation.nodes.length > 0}
         <aside
           class="constellation"
-          aria-label="Entities this conversation has drawn on"
+          aria-label="People and places this conversation has drawn on"
         >
           <span class="constellation-cap">SESSION CONSTELLATION</span>
           <MiniConstellation

@@ -94,7 +94,7 @@
     item?.kind === "entity" ? entityHref(item.id) : null,
   );
   const kindLabel = $derived(
-    item?.kind === "entity" ? item.entity_type || "entity" : "passage",
+    item?.kind === "entity" ? item.entity_type || "person or place" : "passage",
   );
   const headerLabel = $derived(
     item?.kind === "entity" && entity

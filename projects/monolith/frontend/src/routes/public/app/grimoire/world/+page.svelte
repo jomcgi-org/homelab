@@ -369,7 +369,9 @@
       {:else if displayGraph.nodes.length === 0}
         <div class="empty">
           <p class="grim-title empty-lead">Nothing to show.</p>
-          <p class="empty-help">Search for an entity to see its world.</p>
+          <p class="empty-help">
+            Search for a person or place to see their world.
+          </p>
         </div>
       {:else}
         <ExploreCanvas
@@ -382,7 +384,8 @@
         />
         {#if fellBackToFullEgo}
           <p class="fallback-note">
-            Nothing connects to this here. Showing the whole world instead.
+            Nothing connects to this in the chosen book and view. Showing the
+            whole world instead.
           </p>
         {/if}
         {#if legendTypes.length}

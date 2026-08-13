@@ -735,7 +735,7 @@
     bind:this={canvasEl}
     class:dragging
     role="application"
-    aria-label={`Entity relationship graph, ${nodes.length} entities, ${edges.length} relationships shown. Tap or click a node to open its detail, drag to pan, scroll or pinch to zoom.`}
+    aria-label={`People and places relationship graph, ${nodes.length} people and places, ${edges.length} relationships shown. Tap or click a node to open its detail, drag to pan, scroll or pinch to zoom.`}
   ></canvas>
 </div>
 

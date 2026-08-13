@@ -459,7 +459,7 @@
     {#if sortedFindings.length === 0 && scanErrors.length === 0}
       <p class="empty-state">
         {#if result}
-          clean. no findings in this snippet. try another.
+          no findings in this snippet. try another.
         {:else}
           findings land on their lines as the scan passes them.
         {/if}

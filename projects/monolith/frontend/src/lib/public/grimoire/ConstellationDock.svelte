@@ -61,7 +61,7 @@
       <div
         class="dock-panel"
         role="dialog"
-        aria-label="Entities you've explored"
+        aria-label="People and places you've explored"
       >
         <div class="dock-panel-head">
           <span class="dock-panel-title">YOUR TRAIL</span>
@@ -96,7 +96,7 @@
       class="dock-pill"
       onclick={toggle}
       aria-expanded={expanded}
-      aria-label={`${state.nodes.length} entities in your trail, ${expanded ? "collapse" : "expand"}`}
+      aria-label={`${state.nodes.length} people and places in your trail, ${expanded ? "collapse" : "expand"}`}
     >
       <span class="dock-preview">
         <MiniConstellation

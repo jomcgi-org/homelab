@@ -169,12 +169,11 @@
     <p class="summary">
       {totals.books.toLocaleString()}
       {totals.books === 1 ? "book" : "books"}, {totals.chunks.toLocaleString()}
-      pages of lore, {totals.entities.toLocaleString()} characters, places and items,
-      updated {totals.synced}
+      pages of lore, {totals.entities.toLocaleString()} people and places{#if totals.synced !== "never"},
+        updated {totals.synced}{/if}
     </p>
     <p class="legend">
-      Some books are free to read here in full. The rest are listed so you can
-      see what is loaded.
+      Some books are free to read here in full. The rest are reference only.
     </p>
     {#if readableCount > 0 && readableCount < totals.books}
       <div class="filter" role="tablist" aria-label="Filter books">
@@ -290,7 +289,7 @@
                 <span class="kind-label grim-smallcaps">{group.label}</span>
                 <span class="chips">
                   <span class="chip"
-                    >{book.entity_count.toLocaleString()} entities</span
+                    >{book.entity_count.toLocaleString()} people and places</span
                   >
                   <span class="chip"
                     >{book.image_count.toLocaleString()} images</span

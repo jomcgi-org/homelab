@@ -175,7 +175,7 @@ export function applyFrame(state, frame) {
 // Map a pre-stream HTTP error (the proxy relays the backend status + body
 // before any SSE starts) to a human message. The soft, retryable shed arrives
 // in-stream as a 200 `busy` frame; these are the terminal pre-stream cases.
-function messageForError(status, detail) {
+function messageForError(status) {
   switch (status) {
     case 400:
       return `That message is too long (max ${CHARACTER_LIMIT} characters). Please shorten it.`;
@@ -221,7 +221,7 @@ export async function streamChatMessage(
       type: "error",
       data: {
         code: detail.code ?? "error",
-        message: messageForError(resp.status, detail),
+        message: messageForError(resp.status),
       },
     });
     return;

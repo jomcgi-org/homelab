@@ -101,7 +101,7 @@ export const projects = [
       },
       {
         k: "Serving data path",
-        v: "Traffic goes straight from the edge into the VM. The control plane hands out the routes and then stays out of the way; no request touches it or Kubernetes.",
+        v: "The control plane hands out the routes; requests go from the edge into the VM without touching it or Kubernetes.",
       },
       {
         k: "Quotas and metering",
@@ -130,7 +130,7 @@ export const projects = [
     oneLiner:
       "An LLM pipeline that decomposes my notes into structured facts, embeds them, and serves semantic search, both to my agents and to this site's search bar.",
     motivation:
-      "An on-cluster model breaks each of my notes into atomic facts and stores them so a question pulls back the right one. The knowledge pipeline turns markdown into a queryable graph, critiques its own extraction, and stores embeddings for semantic recall.",
+      "An on-cluster model breaks each of my notes into atomic facts and stores them so a question pulls back the right one.",
     facts: [
       {
         k: "Decomposition",
@@ -238,7 +238,7 @@ export const projects = [
     oneLiner:
       "A code generator that turns YAML state-machine specs into type-safe Go, so invalid operator state transitions become compile errors.",
     motivation:
-      "Sextant defines Kubernetes operator state machines declaratively and generates the boilerplate for their reconciliation loops. Every operator I wrote had the same bugs: invalid state transitions, forgotten error handling, missing metrics.",
+      "Every operator I wrote had the same bugs: invalid state transitions, forgotten error handling, missing metrics. Sextant defines Kubernetes operator state machines declaratively and generates the boilerplate for their reconciliation loops.",
     facts: [
       {
         k: "Compile-time safety",
@@ -347,7 +347,7 @@ export const projects = [
     facts: [
       {
         k: "AIS ingest",
-        v: "A background task inside the app holds a websocket to AISStream.io, filters to a Pacific Northwest box, and writes position reports straight to Postgres.",
+        v: "A background task inside the monolith holds a websocket to AISStream.io, filters to a Pacific Northwest box, and writes position reports straight to Postgres.",
       },
       {
         k: "Storage",

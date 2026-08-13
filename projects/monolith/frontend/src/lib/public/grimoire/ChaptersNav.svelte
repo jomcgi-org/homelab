@@ -174,7 +174,7 @@
       {:else if error}
         <p class="pub-chapters-status">{error}</p>
       {:else if tree.length === 0}
-        <p class="pub-chapters-status">This book has no chunks yet.</p>
+        <p class="pub-chapters-status">This book has no passages yet.</p>
       {:else}
         {@render branch(tree)}
       {/if}

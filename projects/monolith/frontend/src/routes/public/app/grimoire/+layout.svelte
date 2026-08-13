@@ -99,7 +99,7 @@
     <title>Grimoire · jomcgi.dev</title>
     <meta
       name="description"
-      content="Browse the D&D sourcebooks loaded here, read them page by page, and look up creatures, places and lore."
+      content="Browse the D&D sourcebooks loaded here, read them page by page, and look up the people, places and lore inside them."
     />
     <meta name="robots" content="noindex, nofollow" />
   {/if}

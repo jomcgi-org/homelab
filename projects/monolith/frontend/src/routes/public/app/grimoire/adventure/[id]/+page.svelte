@@ -94,7 +94,7 @@
       </section>
     {:else}
       <p class="empty-help roster-empty">
-        No characters or places recorded for this adventure yet.
+        No people or places recorded for this adventure yet.
       </p>
     {/if}
   {/if}

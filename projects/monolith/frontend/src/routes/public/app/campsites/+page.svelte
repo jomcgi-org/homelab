@@ -397,7 +397,7 @@
           <div class="sort-row">
             <span class="control-label">Sort</span>
             <div class="toggle" role="group" aria-label="Sort parks by">
-              {#each [["best_score", "Clear-sky score"], ["good_days", "Days"], ["name", "Name"]] as [key, label] (key)}
+              {#each [["best_score", "Sky score"], ["good_days", "Nights"], ["name", "Name"]] as [key, label] (key)}
                 <button
                   type="button"
                   class="seg"
@@ -521,10 +521,10 @@
       </div>
 
       <p class="detail-legend">
-        A check means the site is bookable. Green fades to grey as forecast
-        cloud increases, and closed sites are grey. The clear-sky score runs 0
-        to 100, higher is clearer. Each cell shows max temp (&deg;) and rain
-        (mm, blue when wet).
+        A check means the site is bookable. Green fades to grey as the forecast
+        worsens, and closed sites are grey. The clear-sky score runs 0 to 100,
+        higher is clearer. Each cell shows max temp (&deg;) and rain (mm, blue
+        when wet).
       </p>
     </section>
   {/if}

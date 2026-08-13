@@ -441,7 +441,9 @@
         </div>
       {:else if histReady && histCount === 0}
         <div class="panel empty-state" role="status">
-          No clear dark hours {historyScope}. Try another month.
+          No clear dark hours {historyScope}{selectedMonth === ALL_YEAR
+            ? "."
+            : ". Try another month."}
         </div>
       {/if}
     {/if}
