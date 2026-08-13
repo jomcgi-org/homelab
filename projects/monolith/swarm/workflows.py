@@ -118,6 +118,7 @@ def _escalated(
     turn: dict | None,
     branch_name: str,
     branch_head: str | None = None,
+    cost_usd: float | None = None,
 ) -> dict:
     # commit_sha stays None on escalation: nothing was verified for review.
     # branch_head carries the last observed remote head so a triager can see
@@ -134,7 +135,7 @@ def _escalated(
         "reviewer_session_id": None,
         "review_text": None,
         "review_verdict": None,
-        "cost_usd": _cost(turn),
+        "cost_usd": _cost(turn) if cost_usd is None else cost_usd,
     }
 
 
@@ -161,12 +162,14 @@ def implement_then_review(
             )
     branch_name = work_branch(workflow_id or "unknown")
     max_attempts = plan["max_attempts"]
+    max_review_cycles = plan["max_review_cycles"]
     attempt = 0
     previous_failure = None
     implementer_session_id = None
     implementer_turn = None
     base_sha = None
     commit_sha = None
+    total_cost = 0.0
 
     while attempt < max_attempts:
         attempt += 1
@@ -184,6 +187,7 @@ def implement_then_review(
         implementer_turn = _await_turn(
             implementer_session_id, 0, plan["turn_timeout_seconds"]
         )
+        total_cost += _cost(implementer_turn)
         head_sha = read_branch_head(repo, branch_name)
         base_sha = prior_sha
         if implementer_turn is not None:
@@ -218,6 +222,7 @@ def implement_then_review(
                 implementer_turn,
                 branch_name,
                 branch_head=head_sha,
+                cost_usd=total_cost,
             )
         if head_sha:
             previous_failure = (
@@ -237,25 +242,111 @@ def implement_then_review(
         # Defensive: next_action should have escalated already. Never fall
         # through into the reviewer without a commit to review.
         return _escalated(
-            attempt, implementer_session_id, implementer_turn, branch_name
+            attempt,
+            implementer_session_id,
+            implementer_turn,
+            branch_name,
+            cost_usd=total_cost,
         )
 
-    # The reviewer gets a FRESH session (ADR 038 decision 3). It is never
-    # handed the implementer's lineage: a prompt-injected implementer could
-    # plant CLAUDE.md, AGENTS.md, or a git hook that the reviewer's CLI would
-    # read as instructions, so an inherited workspace would let the auditee
-    # prepare its auditor's room.
-    reviewer_session_id = _queued_session(
-        session_key("review"),
-        reviewer_prompt(task, branch_name, commit_sha),
-        plan["reviewer_model"],
-        repo,
-        branch,
-        workflow_id,
-        node_key="review",
-        node_attempt=1,
-    )
-    reviewer_turn = _await_turn(reviewer_session_id, 0, plan["turn_timeout_seconds"])
+    reviewer_session_id = None
+    reviewer_turn = None
+    verdict = "unparseable"
+    review_cycles = 0
+    review_feedback = None
+
+    while True:
+        # Every reviewer gets a FRESH session (ADR 038 decision 3), and each
+        # review node starts at node_attempt 1. The implementer's workspace is
+        # never handed to the reviewer.
+        reviewer_session_id = _queued_session(
+            session_key(f"review-{review_cycles + 1}"),
+            reviewer_prompt(task, branch_name, commit_sha),
+            plan["reviewer_model"],
+            repo,
+            branch,
+            workflow_id,
+            node_key="review",
+            node_attempt=1,
+        )
+        reviewer_turn = _await_turn(
+            reviewer_session_id, 0, plan["turn_timeout_seconds"]
+        )
+        total_cost += _cost(reviewer_turn)
+        verdict = parse_review_verdict(
+            reviewer_turn.get("result_text") if reviewer_turn else None
+        )
+
+        if verdict == "request_changes" and review_cycles < max_review_cycles:
+            review_cycles += 1
+            review_feedback = (
+                reviewer_turn.get("result_text") if reviewer_turn else None
+            )
+            prior_sha = read_branch_head(repo, branch_name)
+            attempt += 1
+            implementer_session_id = _queued_session(
+                session_key(f"implement-{attempt}"),
+                implementer_prompt(
+                    task,
+                    branch_name,
+                    review_feedback=review_feedback,
+                ),
+                plan["implementer_model"],
+                repo,
+                branch,
+                workflow_id,
+                node_key="implement",
+                node_attempt=attempt,
+            )
+            implementer_turn = _await_turn(
+                implementer_session_id, 0, plan["turn_timeout_seconds"]
+            )
+            total_cost += _cost(implementer_turn)
+            head_sha = read_branch_head(repo, branch_name)
+            base_sha = prior_sha
+            if implementer_turn is not None:
+                try:
+                    update_turn_shas(
+                        implementer_session_id,
+                        implementer_turn["seq"],
+                        base_sha,
+                        head_sha,
+                    )
+                except Exception:  # noqa: BLE001 - recording is best effort
+                    logger.warning(
+                        "failed to record turn heads for session %s seq %s",
+                        implementer_session_id,
+                        implementer_turn["seq"],
+                        exc_info=True,
+                    )
+            if implementer_turn is None or not head_sha or head_sha == prior_sha:
+                return _escalated(
+                    attempt,
+                    implementer_session_id,
+                    implementer_turn,
+                    branch_name,
+                    branch_head=head_sha,
+                    cost_usd=total_cost,
+                )
+            commit_sha = head_sha
+            continue
+
+        if verdict == "request_changes" and review_cycles >= max_review_cycles:
+            return {
+                "status": "review_cycles_exhausted",
+                "attempts": attempt,
+                "implementer_session_id": implementer_session_id,
+                "commit_sha": commit_sha,
+                "work_branch": branch_name,
+                "reviewer_session_id": reviewer_session_id,
+                "review_text": reviewer_turn.get("result_text")
+                if reviewer_turn
+                else None,
+                "review_verdict": verdict,
+                "cost_usd": total_cost,
+            }
+        break
+
     return {
         "status": "review",
         "attempts": attempt,
@@ -264,10 +355,8 @@ def implement_then_review(
         "work_branch": branch_name,
         "reviewer_session_id": reviewer_session_id,
         "review_text": reviewer_turn.get("result_text") if reviewer_turn else None,
-        "review_verdict": parse_review_verdict(
-            reviewer_turn.get("result_text") if reviewer_turn else None
-        ),
-        "cost_usd": _cost(implementer_turn) + _cost(reviewer_turn),
+        "review_verdict": verdict,
+        "cost_usd": total_cost,
     }
 
 

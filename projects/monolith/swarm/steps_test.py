@@ -32,6 +32,7 @@ def test_pin_plan_resolves_config_once(monkeypatch):
     assert steps.pin_plan.__wrapped__(2.0) == {
         "version": 1,
         "max_attempts": 1,
+        "max_review_cycles": 2,
         "implementer_model": "implementer",
         "reviewer_model": "reviewer",
         "turn_timeout_seconds": 42,
