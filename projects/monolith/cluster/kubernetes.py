@@ -194,9 +194,10 @@ class KubernetesClient:
                 plural="applications",
                 name=name,
             )
-        except client.exceptions.ApiException as exc:
-            if exc.status == 404:
-                return None
+        except client.exceptions.ApiException:
+            # Every API failure reads the same to the caller, which reports
+            # "prod chart version unreadable" and deliberately does not fault:
+            # a broken checker must not masquerade as a broken platform.
             return None
         status = result.get("status") or {}
         sync = status.get("sync") or {}
