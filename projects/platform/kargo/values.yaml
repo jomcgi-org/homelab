@@ -122,16 +122,33 @@ promotion:
   # receives literal backslashes. expr accepts either quote style, so using
   # single quotes here means nothing needs escaping.
   desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith').Version }}"
+  # How long a Promotion may wait for its Application to go Synced + Healthy
+  # before the Promotion fails. A failed Promotion never marks its Freight
+  # verified, which is exactly what stops a bad chart at dev.
+  #
+  # 10m is deliberately longer than any healthy rollout here (dev's measured at
+  # 10s) because this bound is not the detector. ArgoCD's own
+  # progressDeadlineSeconds trips the Application to Degraded first, and
+  # argocd-wait fails fast on that transition, so this only catches a workload
+  # that never reaches a terminal state at all.
+  waitTimeout: 10m
   # Order is the pipeline. `upstream` is what makes it one rather than two
   # independent subscribers: prod can only receive Freight that dev has already
   # taken, so a chart reaches production having run somewhere first.
   #
-  # NO verification gate yet, deliberately. Kargo's verification needs Argo
-  # Rollouts AnalysisTemplates and Rollouts is not installed, so "dev took it"
-  # is the only gate today. That is honest rather than sufficient: it proves a
-  # chart deployed, not that it works. Synthetic checks are the follow-up, and
-  # until they exist this is risk-equivalent to the CI write-back it replaces,
-  # since both act on a chart that only exists because a PR passed CI.
+  # THE GATE IS argocd-wait PLUS SOAK, not Kargo `verification`. Kargo's
+  # verification block needs Argo Rollouts AnalysisTemplates and Rollouts stays
+  # off (see controller.rollouts above), so the assertions live in the
+  # promotion steps instead. A Stage with no `verification` reports "Freight has
+  # been verified" the moment its Promotion succeeds, so that status is not the
+  # signal; the Promotion succeeding is.
+  #
+  # What that buys, honestly: the promoted chart reached the environment, the
+  # sync finished, the workload came Healthy (readiness probe /healthz), and for
+  # prod it stayed that way for the soak. What it still does not buy: any
+  # functional assertion beyond the readiness probe, and no revision-aware
+  # health sample (see the residual race in monolith-promotion.yaml). #4745
+  # tracks the rest.
   stages:
     - name: dev
       application: monolith-dev
@@ -142,6 +159,16 @@ promotion:
       application: monolith
       upstream:
         - dev
+      # Dev must hold this Freight healthily for 15 minutes before prod may
+      # take it. Chosen as the smallest window that would have caught a rollout
+      # that comes up and falls over shortly after, which a point-in-time check
+      # cannot see; it is not a soak in the load-testing sense and is not tuned
+      # against any measured failure-onset time. Raising it delays every deploy
+      # by the same amount, so it trades release latency directly for exposure.
+      #
+      # Dev has no soak: nothing is upstream of it, and a delay there would only
+      # postpone the environment that exists to find problems first.
+      requiredSoakTime: 15m
       autoPromotion: true
 
 # Private-tier ingress: https://private.jomcgi.dev/app/kargo

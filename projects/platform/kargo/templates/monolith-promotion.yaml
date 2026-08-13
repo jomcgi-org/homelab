@@ -160,6 +160,20 @@ spec:
           {{- range .upstream }}
           - {{ . }}
           {{- end }}
+        {{- if .requiredSoakTime }}
+        # The Freight must occupy the upstream Stage for this long before it is
+        # available here. argocd-wait (below) proves the upstream went healthy
+        # at one instant; this is what turns that instant into "and it stayed
+        # up", which is the half of the gate a point-in-time check cannot give.
+        #
+        # NOT a hotfix trap: the CRD is explicit that "a manual approval for
+        # promotion to this Stage will supersede any soak time requirement", so
+        # the Freight-approval lever in the UI bypasses it. That lever is also
+        # the escape hatch for a Stage wedged by a failed argocd-wait, since a
+        # Promotion that fails never marks its Freight verified and would
+        # otherwise strand the chart upstream forever.
+        requiredSoakTime: {{ .requiredSoakTime | quote }}
+        {{- end }}
         {{- else }}
         # Nothing upstream: subscribes to the Warehouse itself.
         direct: true
@@ -185,5 +199,62 @@ spec:
                     # passes it through untouched for Kargo to evaluate.
                     desiredRevision: {{ $.Values.promotion.desiredRevisionExpr | quote }}
                     updateTargetRevision: true
+        {{- /*
+        WITHOUT THIS STEP THE PIPELINE VERIFIES FREIGHT BEFORE THE WORKLOAD CAN
+        SERVE. argocd-update applies and returns; it registers an ongoing health
+        check on the Stage but never blocks on the rollout. Measured on the
+        2026-08-12 20:28 promotion of chart 0.296.2:
+
+          20:28:37  dev Promotion starts
+          20:28:43  new dev pod created
+          20:28:44  dev Promotion SUCCEEDS, Freight marked verified
+          20:28:53  new dev pod becomes Ready
+          20:30:15  prod Promotion starts
+
+        Freight was verified nine seconds before anything could answer a
+        request, and prod followed 91 seconds later on nothing but luck. A dev
+        pod that crashlooped after the sync would not have held prod back.
+
+        WHAT THIS ASSERTS. waitFor is the default set, written out because it is
+        load-bearing rather than incidental: `sync` (Synced), `operation` (no
+        sync in flight) and `health` (Healthy) are ANDed, and for a Deployment
+        ArgoCD only reports Healthy once observedGeneration has caught up and
+        the new pods pass their probes. The monolith's readiness probe is
+        /healthz, so waiting for Healthy IS the assertion that the promoted
+        chart's health check went green, reached over the Kubernetes API the
+        controller already has RBAC for. No HTTP path to the workload, which
+        matters: monolith-dev sits behind the `monolith-dev-api-ingress` Cilium
+        allowlist and the kargo namespace is not on it, so an http step would
+        silently dial-timeout rather than fail honestly.
+
+        THE RESIDUAL RACE, stated plainly because it is the same class of bug
+        this step fixes. argocd-wait has NO desiredRevision field; it asserts
+        against whatever target is current. argocd-update runs first and waits
+        for its sync operation, so the applied manifests are the promoted
+        chart's by the time this starts, but ArgoCD's status refresh can still
+        briefly report the pre-apply Healthy. The window is bounded by that
+        refresh, not by the rollout. Closing it entirely needs revision-aware
+        verification (Argo Rollouts AnalysisTemplates, ADR platform/009's
+        option A) or the trace validation in #4745.
+
+        Degraded is fail-fast, not a wait: if the Application transitions to
+        Degraded from a state that was neither Degraded nor Unknown, the step
+        fails immediately instead of burning the timeout.
+        */}}
+        - uses: argocd-wait
+          retry:
+            # Bounded so a wedged environment fails the Promotion rather than
+            # hanging it. Generous against a real rollout (dev's took 10s) and
+            # mostly redundant with the Degraded fail-fast above, which trips
+            # first for the common failure.
+            timeout: {{ $.Values.promotion.waitTimeout | quote }}
+          config:
+            apps:
+              - name: {{ .application }}
+                namespace: argocd
+                waitFor:
+                  - health
+                  - sync
+                  - operation
 {{- end }}
 {{- end }}

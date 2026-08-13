@@ -3,9 +3,12 @@
 Owns **one thing**: the monolith's chart version, in dev and then in production.
 
 The pipeline is `dev` then `prod`. Both run the same chart, so production can
-only receive Freight that dev has already taken. That ordering is the only gate
-today, and it proves a chart deployed rather than that it works. Synthetic
-verification is the follow-up; see "What is deliberately off".
+only receive Freight that dev has already taken. That ordering is joined by two
+assertions, both promotion steps rather than a Kargo `verification` block: an
+`argocd-wait` that holds each Promotion until its Application is Synced and
+Healthy, and a 15 minute `requiredSoakTime` before prod may take dev's Freight.
+A Promotion that fails never marks its Freight verified, which is the mechanism
+that stops a bad chart at dev. See "What the gate does and does not assert".
 
 `projects/monolith/dev/deploy/application.yaml` pinned an OCI chart version that
 nothing moved. `bazel/helm/write-back-versions.sh` resolves exactly one
@@ -117,13 +120,50 @@ and the only symptom is that environment staying on its old chart.
 
 | Setting | Why |
 | --- | --- |
-| `api.enabled: false` | No UI or CLI for v1. It needs TLS, an ingress and an auth decision; the controller reconciles without it |
-| `controller.rollouts.integrationEnabled: false` | Rollouts is only for Kargo's *verification* features, and Rollouts is not installed. **This is what stops `prod` having a real gate**, so it is the thing to change when synthetic checks arrive |
-| `controller.argocd.integrationEnabled: true` | **Required.** Without it the controller does not watch Applications and argocd-update fails |
+| `controller.rollouts.integrationEnabled: false` | Rollouts is only for Kargo's `verification` block, which is why the gate is built from promotion steps instead. Turning it on is still the path to revision-aware analysis (ADR platform/009 option A) |
+| `controller.argocd.integrationEnabled: true` | **Required.** Without it the controller does not watch Applications, and both argocd-update and argocd-wait fail |
+| `api.oidc.dex.enabled: false` | authentik does PKCE, so Kargo talks to it directly. Dex would be a second identity hop and a second thing to upgrade |
+| `api.adminAccount.enabled: false` | authentik is the identity provider; a local password would be one more credential to hold and rotate |
 
-No `verification` block on either Stage, therefore. A Stage with nothing to
-verify reports `Freight has been verified`, which reads like a gate passed and
-is really a gate absent.
+No `verification` block on either Stage, therefore. That matters for how you
+read the UI: a Stage with nothing to verify reports `Freight has been verified`
+the moment its Promotion succeeds, so that status reflects the Promotion, not
+the gate. Read the Promotion's step results instead.
+
+## What the gate does and does not assert
+
+**Asserts.** The promoted chart reached the environment, the sync operation
+finished, and the workload came back Healthy. For a Deployment, ArgoCD reports
+Healthy only once `observedGeneration` has caught up and the new pods pass their
+probes, and the monolith's readiness probe is `/healthz`. So waiting for Healthy
+is the assertion that the promoted chart's health check went green. Production
+additionally requires dev to have held the Freight for 15 minutes.
+
+**Does not assert.** Anything functional beyond the readiness probe. The obvious
+next step, an `http` step against dev's deep `/api/health`, is blocked twice
+over and both are worth knowing before anyone tries it:
+
+1. `monolith-dev`'s `/api/health` returns **503 today and always has**, because
+   the `stars` component fails closed on an empty `stars.sites` table and dev
+   has no stars data. The ember components fail *open* ("no probe recorded
+   yet"), so they are not the problem. Gating on that endpoint would freeze
+   production permanently.
+2. The `monolith-dev-api-ingress` CiliumNetworkPolicy allowlists
+   `envoy-gateway-system`, `mcp`, `monolith-workflows` jobs, the whatsapp
+   sidecar and `embervm`. The `kargo` namespace is **not** on it, so an `http`
+   step would silently dial-timeout rather than fail honestly. That policy
+   exists to limit who can send the `X-Auth-Email` identity header, so adding
+   Kargo is an auth-surface decision, not a config tweak.
+
+There is also a residual race: `argocd-wait` has no `desiredRevision` field, so
+it asserts against whatever target is current. `argocd-update` waits for its
+sync operation first, so the applied manifests are the promoted chart's, but
+ArgoCD's status refresh can still briefly report the pre-apply Healthy. #4745
+tracks closing this properly.
+
+**If a Promotion wedges.** A failed Promotion never verifies its Freight, so the
+chart is stranded upstream. The lever is Freight approval in the UI, which
+supersedes both upstream verification and the soak time.
 
 ## Why the Warehouse spells out its defaults
 
