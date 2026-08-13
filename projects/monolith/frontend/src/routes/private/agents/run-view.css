@@ -546,3 +546,74 @@
 [data-register="belief"] {
   color: var(--muted);
 }
+
+/* Attention band: blocked-on-human case.
+ * ADR 054 decision 6: amber is reserved for this case.
+ * Decision 12: state colour is reserved for fact, never derived.
+ */
+.att-band {
+  background: var(--attn-soft);
+  border: 1px solid var(--attn);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.att-band .col-label {
+  color: var(--attn);
+  display: block;
+  font-size: var(--size-meta);
+  font-weight: 650;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.att-row {
+  display: block;
+  width: 100%;
+  padding: 8px 0;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--attn);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.att-row:last-child {
+  border-bottom: 0;
+}
+.att-row:hover {
+  background: rgba(178, 94, 0, 0.05);
+}
+.att-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+.att-title .entry-meta {
+  color: var(--attn);
+  font-size: var(--size-meta);
+}
+.att-reason {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+/* Quiet state: nothing needs you.
+ * Deliberately subordinate to launcher above it.
+ */
+.m-quiet {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 10px 0;
+  text-align: center;
+}
+
+/* Master view container. Inherits from .runview.
+ */
+.master-view {
+  --tier-stale-filter: grayscale(0.6) opacity(0.85);
+}
