@@ -170,7 +170,11 @@
     submitted: "task_store.ex",
     assigned: "task_store.ex",
     succeeded: "task_store.ex",
-    primed: "dispatcher.ex",
+    # :primed builder (Embervm.PrimedOp) is invoked from multiple sites
+    # (dispatcher, pool_manager, session_manager), so a shared builder centralizes
+    # the payload structure. The guard verifies the builder exists; runtime coverage
+    # is the checker's assertion (zero :primed alongside :assigned is vacuous, not passing).
+    primed: "primed_op.ex",
     quota_enforced: "metering.ex",
     session_banked: "session_manager.ex",
     session_relit: "session_manager.ex",

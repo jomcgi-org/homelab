@@ -2,6 +2,7 @@ defmodule Embervm.OpLogPayloadsTest do
   use ExUnit.Case, async: true
 
   alias Embervm.OpLog.SQLite
+  alias Embervm.PrimedOp
   alias Embervm.SessionStore
   alias Embervm.TaskStore
 
@@ -99,5 +100,26 @@ defmodule Embervm.OpLogPayloadsTest do
     assert op.payload["snapshot_ref"] == "snap-2"
     assert op.payload["generation"] == 4
     assert op.payload["relight_ms"] == 27
+  end
+
+  test "PrimedOp.build produces consistent payload shape across lanes" do
+    task = PrimedOp.build("homelab", "wl", "vm-task", "node-4", :task)
+    session = PrimedOp.build("homelab", "wl", "vm-session", "node-4", :session)
+
+    assert MapSet.new(Map.keys(task.payload)) == MapSet.new(Map.keys(session.payload))
+    assert MapSet.new(Map.keys(task.payload)) == MapSet.new([:lane, :workload, :vm_id, :node_id])
+  end
+
+  # ts is taken inside the builder on purpose (see Embervm.PrimedOp), because
+  # the two calling modules spell a monotonic and a wall clock the same way.
+  # A monotonic value has an arbitrary origin, so this asserts the op carries a
+  # plausible epoch-millisecond timestamp rather than an interval counter.
+  test "PrimedOp.build stamps a wall-clock timestamp, not a monotonic one" do
+    op = PrimedOp.build("homelab", "wl", "vm-1", "node-4", :task)
+    now = System.system_time(:millisecond)
+
+    assert is_integer(op.ts)
+    assert op.ts > 1_700_000_000_000, "ts is not a plausible epoch millisecond"
+    assert abs(now - op.ts) < 60_000
   end
 end
