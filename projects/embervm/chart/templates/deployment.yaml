@@ -107,6 +107,20 @@ spec:
               value: {{ mul .Values.opLog.sweepIntervalSeconds 1000 | quote }}
             - name: EMBERVM_OPLOG_JOURNAL_HORIZON_MS
               value: {{ mul .Values.opLog.journalHorizonDays 86400 1000 | quote }}
+            # SpecTrace gate for spec validation (GitHub issue #4770):
+            # the debug-gated, spec-shaped trace reads once at boot.
+            # OFF means no process, no connection, no sweep.
+            - name: EMBERVM_SPEC_TRACE
+              value: {{ if .Values.specTrace.enabled }}"on"{{ else }}"off"{{ end }}
+            {{- if .Values.specTrace.path }}
+            - name: EMBERVM_SPEC_TRACE_PATH
+              value: {{ .Values.specTrace.path | quote }}
+            {{- end }}
+            # SpecTrace retention and sweep interval (seconds converted to ms).
+            - name: EMBERVM_SPEC_TRACE_TTL_MS
+              value: {{ mul .Values.specTrace.ttlSeconds 1000 | quote }}
+            - name: EMBERVM_SPEC_TRACE_SWEEP_INTERVAL_MS
+              value: {{ mul .Values.specTrace.sweepIntervalSeconds 1000 | quote }}
             # Node membership for Embervm.NodeRegistry. Dial-home registration
             # (R0 PR-2, ADR embervm/005): each noded instance POSTs its identity to
             # /v1/nodes/register and the control plane adopts it keyed by

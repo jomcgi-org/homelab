@@ -150,6 +150,26 @@ opLog:
   # audit lives in SigNoz.
   journalHorizonDays: 30
 
+# SpecTrace gate for spec validation (GitHub issue #4770). A debug-gated, spec-shaped
+# trace that validates TLA+ specs against real behaviour, read once at boot. OFF means
+# no process, no connection, no sweep.
+#
+# Backend selection reuses EMBERVM_OPLOG_DSN: set means the Postgres backend (its own
+# table in the existing `embervm_oplog` database), unset means SQLite. This mirrors the
+# existing op_log_mod/0 selection and avoids inventing a second switch.
+specTrace:
+  # Default OFF in production. ON in dev for local spec validation.
+  enabled: false
+  # SQLite path for spec trace rows, used only when EMBERVM_OPLOG_DSN is unset.
+  # Empty string means in-memory database.
+  path: ""
+  # Retention for trace rows (seconds).
+  ttlSeconds: 86400
+  # How often the supervised sweeper runs compaction (seconds). Matches opLog's hourly
+  # cadence for consistency; correctness is enforced at read time, so this only governs
+  # how promptly reclaimed space is freed.
+  sweepIntervalSeconds: 3600
+
 # Node discovery for the control plane (artifact-decoupling PR-C, C4). noded is a
 # DaemonSet behind a HEADLESS Service, so the control plane DISCOVERS every
 # daemon's individual pod endpoint via EndpointSlice discovery and dials each one
