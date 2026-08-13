@@ -1726,12 +1726,6 @@
   }
 
   .console {
-    --font-ui:
-      system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
-    --size-meta: 11.5px;
-    --size-body-mono: 12.5px;
-    --size-body: 14px;
     color-scheme: light;
     height: 100dvh;
     display: grid;
@@ -1990,7 +1984,7 @@
   }
   .group-run-meta {
     flex: 0 0 auto;
-    color: var(--muted);
+    color: var(--text-soft);
     text-align: right;
   }
   .group-id {
@@ -2049,13 +2043,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text);
-    font-size: 13px;
+    font-size: var(--size-detail);
   }
   .row-sub,
   .row-cost,
   .result-meta,
   .session-context {
-    color: var(--muted);
+    color: var(--text-soft);
     font-size: var(--size-meta);
   }
   .back-to-run {
@@ -2083,7 +2077,7 @@
   }
   .snippet {
     color: var(--text-soft);
-    font-size: 13px;
+    font-size: var(--size-detail);
     line-height: 1.35;
     display: -webkit-box;
     -webkit-line-clamp: 2;
@@ -2109,7 +2103,7 @@
   }
   .session-title {
     margin: 0;
-    font-size: 15px;
+    font-size: var(--size-title);
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2151,7 +2145,7 @@
     background: var(--info-soft);
   }
   .session-state.warn {
-    color: var(--attn);
+    color: var(--attn-text);
     background: var(--attn-soft);
   }
   .session-state.needs_input {
@@ -2289,10 +2283,10 @@
   .result-md :global(h3) {
     color: var(--text);
     margin: 16px 0 6px;
-    font-size: 15px;
+    font-size: var(--size-title);
   }
   .result-md :global(h3) {
-    font-size: 14px;
+    font-size: var(--size-body);
   }
   .result-md :global(ul),
   .result-md :global(ol) {
@@ -2355,7 +2349,7 @@
     display: flex;
     gap: 12px;
     margin-top: 10px;
-    color: var(--muted);
+    color: var(--text-soft);
     font-size: var(--size-meta);
   }
   .badge-failed {
@@ -2457,7 +2451,7 @@
   .empty {
     padding: 10px 4px;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--size-detail);
   }
   .blank-state {
     margin: auto;
@@ -2475,7 +2469,7 @@
     border-radius: 6px;
     color: var(--err);
     background: var(--err-bg);
-    font-size: 13px;
+    font-size: var(--size-detail);
   }
   @media (prefers-reduced-motion: no-preference) {
     .dot.working,
