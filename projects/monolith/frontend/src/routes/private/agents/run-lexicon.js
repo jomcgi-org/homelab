@@ -168,6 +168,28 @@ export const RUN_LEXICON = {
     model_mismatch: "model mismatch",
     verdict_not_approve: "verdict",
   },
+  eventWords: {
+    started: "started",
+    completed: "completed",
+    pushed: "pushed commit",
+    gated: "passed gate",
+    reviewed: "reviewed",
+    canceled: "canceled by",
+  },
+  dispositionStates: {
+    running: "running",
+    approved: "approved",
+    changes_requested: "changes requested, awaiting decision",
+    escalated: "escalated, awaiting decision",
+    cancelled: "cancelled",
+    review_cycles_exhausted: "review cycles exhausted, awaiting decision",
+  },
+  verdictCodes: {
+    approve: "approved",
+    request_changes: "changes requested",
+    blocked: "blocked",
+    unparseable: "unable to parse",
+  },
   units: { s: "s", m: "m", h: "h", d: "d" },
   ordinals: { 1: "1st", 2: "2nd", 3: "3rd", other: "th" },
 };
