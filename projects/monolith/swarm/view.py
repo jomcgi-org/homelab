@@ -276,6 +276,442 @@ def _derived_state(
     return "running"
 
 
+def _structured_verdict(
+    value: Any, text: Any, commit_sha: Any, repo_slug: Any
+) -> dict | None:
+    summaries = {
+        "approve": "approved the changes",
+        "request_changes": "requested changes",
+        "unparseable": "escalated with no clear verdict",
+        "blocked": "blocked",
+    }
+    short_sha = _short_sha(commit_sha)
+    return {
+        "value": value,
+        "summary_plain": summaries.get(value, "escalated with no clear verdict"),
+        "text_md": text or "",
+        "commit_sha": short_sha,
+        "commit_url": (
+            f"https://github.com/{repo_slug}/commit/{commit_sha}"
+            if repo_slug and commit_sha
+            else None
+        ),
+    }
+
+
+def _disposition(
+    raw_dbos_status: str,
+    output_dict: dict,
+    nodes_list: list[dict],
+    *,
+    plan: dict | None = None,
+    stranded: bool = False,
+    app_version: Any = None,
+    server_app_version: Any = None,
+    cancelled_by: dict | None = None,
+) -> dict | None:
+    plan = plan or {}
+    if raw_dbos_status == "CANCELLED":
+        actor = (cancelled_by or {}).get("actor", "unknown")
+        return {
+            "state": "cancelled",
+            "reason": f"Run was cancelled by {actor}",
+            "next": None,
+        }
+    if stranded:
+        return {
+            "state": "stranded",
+            "reason": (
+                f"Started on build {app_version}, server is on {server_app_version}; "
+                "will not resume unaided"
+            ),
+            "next": None,
+        }
+    if raw_dbos_status in ("PENDING", "ENQUEUED") and any(
+        node.get("state") in {"running", "queued", "blocked", "waiting"}
+        for node in nodes_list
+    ):
+        return None
+    if raw_dbos_status == "SUCCESS":
+        if output_dict.get("status") == "review_cycles_exhausted":
+            maximum = plan.get(
+                "max_review_cycles", output_dict.get("max_review_cycles")
+            )
+            return {
+                "state": "cycles_exhausted",
+                "reason": (
+                    f"Reviewer requested changes for review cycle {maximum} "
+                    "and no more cycles remain"
+                ),
+                "next": "Amend the plan if the feedback should be incorporated",
+            }
+        verdict = output_dict.get("review_verdict")
+        if verdict == "approve":
+            return {
+                "state": "approved",
+                "reason": "Reviewer approved the changes",
+                "next": None,
+            }
+        if verdict == "request_changes":
+            maximum = plan.get("max_review_cycles", 0) or 0
+            cycles = output_dict.get("review_cycles")
+            if cycles is None:
+                cycles = sum(
+                    len(node.get("attempts") or [])
+                    for node in nodes_list
+                    if node.get("key") == "review"
+                )
+            return {
+                "state": "changes_requested_cycles_remaining",
+                "reason": f"Reviewer requested changes, {maximum - cycles} cycle(s) remain",
+                "next": "Implement will retry with the reviewer's feedback",
+            }
+        if verdict == "unparseable":
+            return {
+                "state": "unparseable_verdict",
+                "reason": "Reviewer's verdict could not be parsed as approved/denied",
+                "next": "Review the feedback and decide whether to amend the plan",
+            }
+        if verdict == "blocked":
+            return {"state": "escalated", "reason": "Reviewer escalated", "next": None}
+        if output_dict.get("status") == "escalated":
+            return {
+                "state": "escalated",
+                "reason": "Run escalated before reaching review",
+                "next": None,
+            }
+    return {"state": "escalated", "reason": "final state reached", "next": None}
+
+
+def _build_events(
+    output: dict, nodes: list[dict], sessions: list[Any], steps: list[Any]
+) -> list[dict]:
+    events = []
+    order = 0
+
+    def add(
+        at,
+        register,
+        text,
+        node="implement",
+        attempt=None,
+        session_id=None,
+        sha=None,
+        url=None,
+    ):
+        nonlocal order
+        events.append(
+            {
+                "at": _iso(at),
+                "register": register,
+                "text": text,
+                "refs": {
+                    "node": node,
+                    "attempt": attempt,
+                    "session_id": session_id,
+                    "sha": _short_sha(sha),
+                    "url": url,
+                },
+                "_order": order,
+            }
+        )
+        order += 1
+
+    for row in sorted(
+        sessions,
+        key=lambda value: _iso(_value(value, "created_at")) or "",
+    ):
+        node = _value(row, "node_key", "implement")
+        attempt = _value(row, "node_attempt")
+        session_id = _value(row, "id")
+        if node == "implement":
+            add(
+                _value(row, "created_at"),
+                "fact",
+                f"Implement attempt {attempt} started",
+                node,
+                attempt,
+                session_id,
+            )
+            if _value(row, "status") != "running":
+                add(
+                    _value(row, "last_turn_at"),
+                    "fact",
+                    f"Implement attempt {attempt} ended",
+                    node,
+                    attempt,
+                    session_id,
+                )
+            rationale = _value(row, "final_result_text")
+            if rationale:
+                add(
+                    None,
+                    "testimony",
+                    f"Attempt {attempt} implementer: {rationale}",
+                    node,
+                    attempt,
+                    session_id,
+                )
+        elif node == "review" and _value(row, "status") != "running":
+            add(
+                _value(row, "last_turn_at"),
+                "fact",
+                f"Review cycle {attempt} ended",
+                node,
+                attempt,
+                session_id,
+            )
+
+    if output.get("branch_head"):
+        sha = output["branch_head"]
+        add(
+            output.get("gate_at") or output.get("updated_at"),
+            "fact",
+            "Gate decision: head moved",
+            "push_gate",
+            sha=sha,
+        )
+    else:
+        heads = [
+            _step_output(step)
+            for step in steps
+            if "read_branch_head"
+            in str(_value(step, "function_name", _value(step, "name", "")))
+        ]
+        if len(heads) >= 2 and heads[-1] == heads[-2]:
+            add(
+                output.get("gate_at") or output.get("updated_at"),
+                "fact",
+                "Gate decision: head unchanged",
+                "push_gate",
+            )
+        elif output.get("status") == "escalated":
+            add(
+                output.get("gate_at") or output.get("updated_at"),
+                "fact",
+                "Gate decision: timeout",
+                "push_gate",
+            )
+    verdict = output.get("review_verdict")
+    if verdict:
+        structured = _structured_verdict(
+            verdict, output.get("review_text"), output.get("commit_sha"), None
+        )
+        add(
+            output.get("verdict_at") or output.get("updated_at"),
+            "fact",
+            f"Review verdict parsed: {verdict} ({structured['summary_plain']})",
+            "review",
+            sha=output.get("commit_sha"),
+        )
+        if output.get("review_text"):
+            cycle = output.get("review_cycles", 0) or 0
+            add(
+                None,
+                "testimony",
+                f"Reviewer cycle {cycle}: {output['review_text']}",
+                "review",
+                cycle,
+                sha=output.get("commit_sha"),
+            )
+    terminal = None
+    if output.get("status") == "review_cycles_exhausted":
+        terminal = "cycles exhausted"
+    elif output.get("status") == "escalated" or verdict in {"blocked", "unparseable"}:
+        terminal = "escalated"
+    elif verdict == "approve":
+        terminal = "approved"
+    if terminal:
+        add(
+            output.get("completed_at") or output.get("updated_at"),
+            "fact",
+            f"Run terminal state reached: {terminal}",
+            "run",
+        )
+    for event in events:
+        event.pop("_order", None)
+    events.sort(key=lambda event: (event["at"] is None, event["at"] or ""))
+    return events
+
+
+def _structured_verdict(output: dict, repo: str | None) -> dict | None:
+    verdict_text = output.get("review_text")
+    if not verdict_text:
+        return None
+    from swarm.policy import parse_review_verdict
+
+    value = parse_review_verdict(verdict_text)
+    summary_plain = {
+        "approve": "approved the changes",
+        "request_changes": "requested changes",
+        "blocked": "blocked the review",
+        "unparseable": "verdict could not be parsed",
+    }[value]
+    commit_sha = output.get("commit_sha")
+    return {
+        "value": value,
+        "summary_plain": summary_plain,
+        "text_md": verdict_text,
+        "commit_sha": _short_sha(commit_sha),
+        "commit_url": f"https://github.com/{repo or 'unknown/repo'}/commit/{commit_sha}"
+        if commit_sha
+        else None,
+    }
+
+
+def _event_stream(
+    workflow_id,
+    dbos_status,
+    created_at,
+    implement_attempts,
+    review_attempts,
+    output,
+    repo,
+    stranded,
+):
+    events = []
+
+    def add(at, register, text, refs):
+        timestamp = _iso(at)
+        if timestamp:
+            events.append(
+                {"at": timestamp, "register": register, "text": text, "refs": refs}
+            )
+
+    add(
+        created_at,
+        "fact",
+        f"started run {_short_sha(workflow_id)}",
+        {"workflow_id": workflow_id},
+    )
+    for attempt in implement_attempts:
+        if attempt.get("started_at"):
+            add(
+                attempt["started_at"],
+                "fact",
+                f"implement attempt {attempt['n']} started with {attempt['model']}",
+                {
+                    "node": "implement",
+                    "attempt": attempt["n"],
+                    "session_id": attempt["session_id"],
+                },
+            )
+        rationale = attempt.get("rationale") or {}
+        if rationale.get("raw"):
+            add(
+                attempt.get("ended_at") or attempt.get("started_at"),
+                "testimony",
+                f"implementer reported (attempt {attempt['n']})",
+                {
+                    "node": "implement",
+                    "attempt": attempt["n"],
+                    "session_id": attempt["session_id"],
+                    "rationale_key": "paths",
+                },
+            )
+        if attempt.get("ended_at"):
+            if attempt.get("state") == "gated":
+                add(
+                    attempt["ended_at"],
+                    "fact",
+                    f"attempt {attempt['n']} head did not move, passed to gate for decision",
+                    {
+                        "node": "implement",
+                        "attempt": attempt["n"],
+                        "prior_head": attempt.get("prior_head"),
+                    },
+                )
+            elif attempt.get("state") in ("completed", "failed"):
+                observed = (attempt.get("finding") or {}).get("observed_head")
+                text = (
+                    f"attempt {attempt['n']} advanced to {observed}"
+                    if observed
+                    else f"attempt {attempt['n']} complete"
+                )
+                add(
+                    attempt["ended_at"],
+                    "fact",
+                    text,
+                    {
+                        "node": "implement",
+                        "attempt": attempt["n"],
+                        "session_id": attempt["session_id"],
+                        "sha": observed,
+                    },
+                )
+    for attempt in review_attempts:
+        if attempt.get("started_at"):
+            add(
+                attempt["started_at"],
+                "fact",
+                f"review attempt {attempt['n']} started with {attempt['model']}",
+                {
+                    "node": "review",
+                    "attempt": attempt["n"],
+                    "session_id": attempt["session_id"],
+                },
+            )
+    verdict = _structured_verdict(output, repo)
+    if verdict and review_attempts:
+        attempt = review_attempts[-1]
+        add(
+            attempt.get("ended_at") or attempt.get("started_at"),
+            "testimony",
+            f"reviewer {verdict['summary_plain']}",
+            {
+                "node": "review",
+                "attempt": attempt["n"],
+                "session_id": attempt["session_id"],
+                "verdict_value": verdict["value"],
+                "commit_sha": verdict["commit_sha"],
+                "commit_url": verdict["commit_url"],
+            },
+        )
+    if dbos_status == "CANCELLED":
+        add(
+            output.get("completed_at") or created_at,
+            "fact",
+            "run cancelled",
+            {"workflow_id": workflow_id},
+        )
+    indexed = enumerate(events)
+    return [
+        event for _, event in sorted(indexed, key=lambda item: (item[1]["at"], item[0]))
+    ]
+
+
+def _disposition(dbos_status, state, output, nodes, plan):
+    if dbos_status == "CANCELLED":
+        return {"state": "cancelled", "reason": "this run was cancelled", "next": None}
+    if state == "approved":
+        return {
+            "state": "approved",
+            "reason": "the reviewer approved the changes",
+            "next": None,
+        }
+    if state == "changes_requested":
+        if output.get("status") == "review_cycles_exhausted":
+            return {
+                "state": "review_cycles_exhausted",
+                "reason": "the maximum number of review cycles was reached",
+                "next": "amend the plan to retry",
+            }
+        return {
+            "state": "changes_requested",
+            "reason": "the reviewer requested changes",
+            "next": "awaiting plan amendment or manual retry",
+        }
+    if state == "escalated":
+        return {
+            "state": "escalated",
+            "reason": "the run was escalated, awaiting human review",
+            "next": None,
+        }
+    if state in ("running", "queued", "reviewing", "blocked"):
+        return {"state": "running", "reason": "this run is in progress", "next": None}
+    return {"state": state, "reason": f"state: {state}", "next": None}
+
+
 def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | None:
     workflow = dbos.retrieve_workflow(workflow_id)
     if workflow is None:
@@ -421,16 +857,7 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
             "attempts": review_attempts,
             "queue": None,
             "decision": None,
-            "verdict": (
-                {
-                    "value": output.get("review_verdict"),
-                    "excerpt": (output.get("review_text") or "")[:240],
-                    "commit_sha": output.get("commit_sha"),
-                    "commit_url": f"https://github.com/{inp.get('repo')}/commit/{output.get('commit_sha')}",
-                }
-                if output.get("review_verdict")
-                else None
-            ),
+            "verdict": _structured_verdict(output, inp.get("repo")),
             "note": "never dispatched: nothing was verified for review"
             if review_state == "cancelled" and gate_state == "refused"
             else None,
@@ -444,11 +871,24 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
         for row in sessions
     )
     state = _derived_state(raw, output, nodes, stranded)
+    disposition = _disposition(raw, state, output, nodes, plan)
+    events = _event_stream(
+        workflow_id,
+        raw,
+        _value(status, "created_at"),
+        implement_attempts,
+        review_attempts,
+        output,
+        inp.get("repo"),
+        stranded,
+    )
     work_branch = output.get("work_branch") or f"claude/swarm-{workflow_id}"
     return {
         "workflow_id": workflow_id,
         "dbos_status": raw,
         "state": state,
+        "disposition": disposition,
+        "events": events,
         "task": {
             "text": inp.get("task", ""),
             "repo": inp.get("repo"),

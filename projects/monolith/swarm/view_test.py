@@ -314,6 +314,116 @@ def test_request_changes_run_paints_completed_nodes_and_timestamps():
     assert run["completed_at"] == "2026-07-10T23:30:58Z"
 
 
+def test_compose_run_disposition_approved():
+    status = Status(
+        "wf-disposition-approved",
+        "SUCCESS",
+        ["task", "jomcgi/homelab", "main"],
+        {"status": "review", "review_verdict": "approve"},
+    )
+    run = compose_run(
+        DBOS(Workflow(status, {"plan": FX4_EXPECTED_PLAN})),
+        status.workflow_id,
+        [],
+        "unknown",
+    )
+    assert run["disposition"] == {
+        "state": "approved",
+        "reason": "Reviewer approved the changes",
+        "next": None,
+    }
+
+
+def test_compose_run_disposition_cycles_exhausted():
+    plan = {**FX4_EXPECTED_PLAN, "max_review_cycles": 2}
+    status = Status(
+        "wf-disposition-exhausted",
+        "SUCCESS",
+        ["task", "jomcgi/homelab", "main"],
+        {
+            "status": "review_cycles_exhausted",
+            "review_verdict": "request_changes",
+            "review_text": "Please address this.",
+        },
+    )
+    run = compose_run(
+        DBOS(Workflow(status, {"plan": plan})), status.workflow_id, [], "unknown"
+    )
+    assert run["disposition"]["state"] == "cycles_exhausted"
+    assert "review cycle 2" in run["disposition"]["reason"]
+
+
+def test_compose_run_disposition_unparseable():
+    status = Status(
+        "wf-disposition-unparseable",
+        "SUCCESS",
+        ["task", "jomcgi/homelab", "main"],
+        {"status": "review", "review_verdict": "unparseable"},
+    )
+    run = compose_run(DBOS(Workflow(status)), status.workflow_id, [], "unknown")
+    assert run["disposition"]["state"] == "unparseable_verdict"
+    assert "could not be parsed" in run["disposition"]["reason"]
+
+
+def test_compose_run_disposition_cancelled():
+    status = Status("wf-disposition-cancelled", "CANCELLED", ["task", "repo", "main"])
+    run = compose_run(
+        DBOS(Workflow(status, {"cancelled_by": {"actor": "joe"}})),
+        status.workflow_id,
+        [],
+        "unknown",
+    )
+    assert run["disposition"]["state"] == "cancelled"
+    assert run["disposition"]["reason"] == "Run was cancelled by joe"
+
+
+def test_compose_run_verdict_structured():
+    full_sha = "86dcbf416158031d18c65a3c37120e044dc13fbc"
+    status = Status(
+        "wf-verdict-structured",
+        "SUCCESS",
+        ["task", "jomcgi/homelab", "main"],
+        {
+            "status": "review",
+            "review_verdict": "approve",
+            "review_text": "The change is ready to merge.",
+            "commit_sha": full_sha,
+        },
+    )
+    run = compose_run(DBOS(Workflow(status)), status.workflow_id, [], "unknown")
+    verdict = run["nodes"][2]["verdict"]
+    assert verdict == {
+        "value": "approve",
+        "summary_plain": "approved the changes",
+        "text_md": "The change is ready to merge.",
+        "commit_sha": "86dcbf41",
+        "commit_url": f"https://github.com/jomcgi/homelab/commit/{full_sha}",
+    }
+
+
+def test_compose_run_events_full_sequence():
+    status = Status(
+        "wf-events",
+        "SUCCESS",
+        ["task", "jomcgi/homelab", "main"],
+        {
+            "status": "review",
+            "review_verdict": "approve",
+            "review_text": "Approved.",
+            "updated_at": "2026-08-10T04:11:00Z",
+        },
+    )
+    rows = [
+        session(1, status="completed"),
+        session(2, status="completed", node="review"),
+    ]
+    run = compose_run(DBOS(Workflow(status)), status.workflow_id, rows, "unknown")
+    assert run["events"]
+    assert {event["register"] for event in run["events"]} == {"fact", "testimony"}
+    assert any("started" in event["text"] for event in run["events"])
+    assert any("approved" in event["text"] for event in run["events"])
+
+
 def test_attempt_carries_prior_head_alongside_finding():
     status = Status("wf-prior", "SUCCESS", ["task", "repo", "main"])
     run = compose_run(

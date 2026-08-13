@@ -7,6 +7,7 @@ const plan = {
   implementer_model: "luna",
   reviewer_model: "opus",
   turn_timeout_seconds: 1800,
+  max_review_cycles: 2,
   version: 1,
   budget_usd: null,
 };
@@ -18,6 +19,8 @@ function attempt(n, state, extra = {}) {
     local_session_id: `fixture-implement-${n}`,
     model: "luna",
     state,
+    disposition: null,
+    events: [],
     started_at: "2026-08-10T22:40:00Z",
     ended_at: state === "running" ? null : "2026-08-10T22:48:00Z",
     cost_usd: n === 1 ? 0.08 : 0.12,
@@ -253,7 +256,8 @@ const approved = run("approved", "approved", {
     node("review", "review", "done", {
       verdict: {
         value: "approve",
-        excerpt: "The change is ready to merge.",
+        summary_plain: "approved the changes",
+        text_md: "The change is ready to merge.",
         commit_sha: "86dcbf41",
         commit_url: "https://github.com/jomcgi/homelab/commit/86dcbf41",
       },
@@ -269,11 +273,245 @@ const requestChanges = run("request-changes", "changes_requested", {
     node("review", "review", "done", {
       verdict: {
         value: "request_changes",
-        excerpt: "Please address the requested changes before merging.",
+        summary_plain: "requested changes",
+        text_md: `Please address the requested changes before merging.
+
+The branch is otherwise ready for another review cycle.`,
         commit_sha: "86dcbf41",
         commit_url: "https://github.com/jomcgi/homelab/commit/86dcbf41",
       },
     }),
+  ],
+});
+
+const fullEventStream = run("complete-approved", "approved", {
+  dbos_status: "SUCCESS",
+  disposition: {
+    state: "approved",
+    reason: "Reviewer approved the changes",
+    next: null,
+  },
+  nodes: approved.nodes,
+  events: [
+    {
+      at: "2026-08-10T22:40:00Z",
+      register: "fact",
+      text: "Implement attempt 1 started",
+      refs: {
+        node: "implement",
+        attempt: 1,
+        session_id: 171,
+        sha: null,
+        url: null,
+      },
+    },
+    {
+      at: "2026-08-10T22:48:00Z",
+      register: "fact",
+      text: "Implement attempt 1 ended",
+      refs: {
+        node: "implement",
+        attempt: 1,
+        session_id: 171,
+        sha: null,
+        url: null,
+      },
+    },
+    {
+      at: "2026-08-10T22:48:01Z",
+      register: "fact",
+      text: "Gate decision: head moved",
+      refs: {
+        node: "push_gate",
+        attempt: null,
+        session_id: null,
+        sha: "86dcbf41",
+        url: null,
+      },
+    },
+    {
+      at: "2026-08-10T22:52:00Z",
+      register: "fact",
+      text: "Review verdict parsed: approve (approved the changes)",
+      refs: {
+        node: "review",
+        attempt: 1,
+        session_id: 172,
+        sha: "86dcbf41",
+        url: "https://github.com/jomcgi/homelab/commit/86dcbf41",
+      },
+    },
+    {
+      at: "2026-08-10T22:52:01Z",
+      register: "testimony",
+      text: "Reviewer cycle 1: The change is ready to merge.",
+      refs: {
+        node: "review",
+        attempt: 1,
+        session_id: 172,
+        sha: "86dcbf41",
+        url: null,
+      },
+    },
+    {
+      at: "2026-08-10T22:53:00Z",
+      register: "fact",
+      text: "Run terminal state reached: approved",
+      refs: {
+        node: "run",
+        attempt: null,
+        session_id: null,
+        sha: null,
+        url: null,
+      },
+    },
+  ],
+});
+
+const requestChangesDisposition = run("request-changes", "changes_requested", {
+  dbos_status: "SUCCESS",
+  disposition: {
+    state: "changes_requested",
+    reason: "the reviewer requested changes",
+    next: "awaiting plan amendment or manual retry",
+  },
+  events: [
+    {
+      at: "2026-08-10T22:40:00Z",
+      register: "fact",
+      text: "Implement attempt 1 started",
+      refs: {
+        node: "implement",
+        attempt: 1,
+        session_id: 171,
+        sha: null,
+        url: null,
+      },
+    },
+    {
+      at: "2026-08-10T22:48:00Z",
+      register: "fact",
+      text: "Implement attempt 1 ended",
+      refs: {
+        node: "implement",
+        attempt: 1,
+        session_id: 171,
+        sha: null,
+        url: null,
+      },
+    },
+    {
+      at: "2026-08-10T22:52:00Z",
+      register: "fact",
+      text: "Review verdict parsed: request_changes (requested changes)",
+      refs: {
+        node: "review",
+        attempt: 1,
+        session_id: 172,
+        sha: "86dcbf41",
+        url: null,
+      },
+    },
+    {
+      at: "2026-08-10T22:52:01Z",
+      register: "testimony",
+      text: "Reviewer cycle 1: Please address the requested changes before merging.",
+      refs: {
+        node: "review",
+        attempt: 1,
+        session_id: 172,
+        sha: null,
+        url: null,
+      },
+    },
+  ],
+});
+
+const cyclesExhaustedDisposition = run(
+  "review-cycles-exhausted",
+  "changes_requested",
+  {
+    dbos_status: "SUCCESS",
+    disposition: {
+      state: "review_cycles_exhausted",
+      reason: "the maximum number of review cycles was reached",
+      next: "amend the plan to retry",
+    },
+    nodes: requestChanges.nodes,
+    events: requestChangesDisposition.events.concat([
+      {
+        at: "2026-08-10T22:55:00Z",
+        register: "testimony",
+        text: "Reviewer cycle 2: The requested changes remain outstanding.",
+        refs: {
+          node: "review",
+          attempt: 2,
+          session_id: 173,
+          sha: null,
+          url: null,
+        },
+      },
+      {
+        at: "2026-08-10T22:55:01Z",
+        register: "fact",
+        text: "Run terminal state reached: cycles exhausted",
+        refs: {
+          node: "run",
+          attempt: null,
+          session_id: null,
+          sha: null,
+          url: null,
+        },
+      },
+    ]),
+  },
+);
+
+const unparseableVerdictDisposition = run("unparseable-verdict", "escalated", {
+  dbos_status: "SUCCESS",
+  disposition: {
+    state: "escalated",
+    reason: "the run was escalated, awaiting human review",
+    next: null,
+  },
+  nodes: [
+    node("implement", "implement", "done"),
+    node("push_gate", "push gate", "passed"),
+    node("review", "review", "escalated", {
+      verdict: {
+        value: "unparseable",
+        summary_plain: "verdict could not be parsed",
+        text_md: "The reviewer did not provide a clear verdict.",
+        commit_sha: "86dcbf41",
+        commit_url: "https://github.com/jomcgi/homelab/commit/86dcbf41",
+      },
+    }),
+  ],
+  events: [
+    {
+      at: "2026-08-10T22:54:00Z",
+      register: "testimony",
+      text: "Reviewer cycle 1: The reviewer did not provide a clear verdict.",
+      refs: {
+        node: "review",
+        attempt: 1,
+        session_id: 172,
+        sha: null,
+        url: null,
+      },
+    },
+    {
+      at: "2026-08-10T22:54:01Z",
+      register: "fact",
+      text: "Run terminal state reached: escalated",
+      refs: {
+        node: "run",
+        attempt: null,
+        session_id: null,
+        sha: null,
+        url: null,
+      },
+    },
   ],
 });
 
@@ -347,6 +585,9 @@ export const RUN_FIXTURES = {
   cancelled: entry(cancelled),
   approved: entry(approved),
   "request-changes": entry(requestChanges),
+  "complete-approved": entry(fullEventStream),
+  "review-cycles-exhausted": entry(cyclesExhaustedDisposition),
+  "unparseable-verdict": entry(unparseableVerdictDisposition),
   "terminal-example": entry(terminalExample),
   stranded: entry(stranded),
   unpinned: entry(unpinned, [
