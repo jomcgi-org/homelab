@@ -5,6 +5,7 @@ export const RUN_LEXICON = {
     reviewing: "reviewing",
     approved: "approved",
     changes_requested: "changes requested",
+    review_cycles_exhausted: "cycles exhausted",
     escalated: "escalated",
     failed: "failed",
     cancelled: "cancelled",
