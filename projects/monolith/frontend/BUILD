@@ -4,6 +4,7 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@npm//projects/monolith/frontend:vite/package_json.bzl", vite_bin = "bin")
 load("@npm//projects/monolith/frontend:vitest/package_json.bzl", vitest_bin = "bin")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 npm_link_all_packages(name = "node_modules")
@@ -223,6 +224,18 @@ vitest_bin.vitest_test(
         ":src",
         ":test_lib",
     ],
+)
+
+# Scans the Svelte tree for shallow routing driving URL-derived state. Wired to
+# the single rule rather than :typescript_rules on purpose: semgrep-core ignores
+# each rule's paths: filter, so the broad filegroup would run every TypeScript
+# rule against every component. Widening this is a separate decision, and
+# svelte-hardcoded-color-in-style currently has findings here.
+semgrep_test(
+    name = "svelte_url_state_semgrep_test",
+    srcs = glob(["src/**/*.svelte"]),
+    rules = ["//bazel/semgrep/rules:no_shallow_routing_for_url_state_rule"],
+    tags = ["semgrep"],
 )
 
 apko_image(

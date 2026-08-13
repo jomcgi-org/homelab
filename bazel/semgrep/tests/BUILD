@@ -63,6 +63,16 @@ filegroup(
     srcs = ["fixtures/no-create-event-dispatcher-runes.svelte"],
 )
 
+# Fixtures for the no-shallow-routing-for-url-state rule (languages: generic).
+# The rule matches across lines (import, then the searchParams read), so a single
+# file cannot hold both a violating and a non-violating case: the spanning regex
+# would join them. Split into bad/ok files like memory-request-ne-limit.
+# Referenced by //bazel/semgrep/rules:no_shallow_routing_for_url_state_test.
+filegroup(
+    name = "no_shallow_routing_for_url_state_fixtures",
+    srcs = glob(["svelte/no-shallow-routing-for-url-state/*.svelte"]),
+)
+
 # Fixture for the svelte-hardcoded-color-in-style rule (languages: generic, paths: **/*.svelte).
 # Referenced by //bazel/semgrep/rules:svelte_hardcoded_color_in_style_test.
 filegroup(

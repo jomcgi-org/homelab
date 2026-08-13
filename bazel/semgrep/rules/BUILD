@@ -480,6 +480,24 @@ semgrep_test(
     tags = ["semgrep"],
 )
 
+# no-shallow-routing-for-url-state uses languages: [generic] scoped to projects sources.
+# Wired to its own bad/ok .svelte annotation fixtures independently of
+# typescript_rules_test (which only scans *.ts fixtures). The rule also runs for
+# real against the frontend Svelte tree via
+# //projects/monolith/frontend:svelte_url_state_semgrep_test.
+filegroup(
+    name = "no_shallow_routing_for_url_state_rule",
+    srcs = ["typescript/no-shallow-routing-for-url-state.yaml"],
+)
+
+semgrep_test(
+    name = "no_shallow_routing_for_url_state_test",
+    srcs = ["//bazel/semgrep/tests:no_shallow_routing_for_url_state_fixtures"],
+    env = {"SEMGREP_TEST_MODE": "1"},
+    rules = [":no_shallow_routing_for_url_state_rule"],
+    tags = ["semgrep"],
+)
+
 # svelte-hardcoded-color-in-style uses languages: [generic] scoped to **/*.svelte.
 # Wired to its own .svelte annotation fixture independently of typescript_rules_test
 # (which only scans *.ts fixtures).
