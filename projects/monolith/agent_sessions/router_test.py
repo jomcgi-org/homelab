@@ -1041,13 +1041,22 @@ def test_start_session_for_discord_thread_adds_rationale_prompt(session, monkeyp
         ),
     )
 
-    session_id = asyncio.run(
+    # A path-anchored trailer is meaningless without a repo to anchor into,
+    # so a repo-less session must not be asked for one. Both directions are
+    # asserted: an absent trailer here is the intended behaviour, not a gap.
+    repoless_id = asyncio.run(
         api.start_session_for_thread("thread-1", "Hello", repo=None)
     )
+    repoless = store.get_session(session, repoless_id)
+    assert repoless.discord_thread == "thread-1"
+    assert repoless.system_prompt is None
 
-    row = store.get_session(session, session_id)
-    assert row.discord_thread == "thread-1"
-    assert "RATIONALE" in row.system_prompt
+    with_repo_id = asyncio.run(
+        api.start_session_for_thread("thread-2", "Hello", repo="jomcgi/homelab")
+    )
+    with_repo = store.get_session(session, with_repo_id)
+    assert "RATIONALE" in with_repo.system_prompt
+    assert "path:" in with_repo.system_prompt
 
 
 @pytest.mark.parametrize("model", ["opus", "qwen"])
