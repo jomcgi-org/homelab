@@ -1166,4 +1166,87 @@ defmodule Embervm.DispatcherTest do
       end
     end
   end
+
+  # THE REGRESSION TEST FOR #4768's PROVENANCE FIX.
+  #
+  # An adopted vm is reconciled back INTO inventory after a control-plane
+  # restart, so a task that takes it takes it from inventory: a WARM hit. The
+  # trace must record provenance :adopted rather than :warm, because a checker
+  # asserting "assigned implies previously primed" otherwise reports a false
+  # violation for every adopted vm (measured at 2 of 4 assignments in the ten
+  # minutes after a real restart).
+  #
+  # The dispatch happens in a LATER sweep than the adoption on purpose. An
+  # earlier revision cleared the adoption set at the top of every sweep, which
+  # left provenance correct only for a dispatch in the same sweep that adopted
+  # the vm, i.e. almost never. Asserting across sweeps is what pins that.
+  test "an adopted vm dispatched in a LATER sweep records provenance :adopted" do
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path = Path.join(System.tmp_dir!(), "spec_trace_prov_#{System.unique_integer([:positive])}.db")
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      File.rm_rf!(trace_path)
+    end)
+
+    store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer = start_supervised!({Embervm.SpecTrace.Writer, store_mod: Embervm.SpecTrace.Store.SQLite, store: store, batch_size: 1, flush_ms: 5})
+
+    ctx = start_stack()
+    put_catalog(ctx, "wl-a", cap: 10)
+
+    # Sweep 1 adopts the node-reported vm with no task waiting, so nothing
+    # consumes it and it stays resident in inventory.
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-adopted-1"], live: 8, max: 8)
+    Dispatcher.sweep(ctx.name)
+
+    # Sweep 2 (a separate sweep) is where the dispatch happens.
+    tid = submit(ctx, "wl-a", "p1")
+    Dispatcher.sweep(ctx.name)
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(store, action: "dispatch_warm")
+
+    record = Enum.find(records, &(&1["vars"]["vm_id"] == "vm-adopted-1"))
+    assert record, "no dispatch_warm record for the adopted vm: #{inspect(records)}"
+    assert record["vars"]["provenance"] == "adopted"
+    assert record["vars"]["task_id"] == tid
+  end
+
+  # The negative half: adoption that adopts NOTHING must emit no record.
+  # adopt_inventory is additive and idempotent and runs every sweep, so emitting
+  # per sweep would flood the trace with no-ops and make a genuine adoption
+  # indistinguishable from background noise.
+  test "a sweep that adopts nothing emits no adopt_inventory record" do
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path = Path.join(System.tmp_dir!(), "spec_trace_noadopt_#{System.unique_integer([:positive])}.db")
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      File.rm_rf!(trace_path)
+    end)
+
+    store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer = start_supervised!({Embervm.SpecTrace.Writer, store_mod: Embervm.SpecTrace.Store.SQLite, store: store, batch_size: 1, flush_ms: 5})
+
+    ctx = start_stack()
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-1"], live: 8, max: 8)
+
+    # First sweep adopts vm-1. The second and third adopt nothing new.
+    Dispatcher.sweep(ctx.name)
+    Dispatcher.sweep(ctx.name)
+    Dispatcher.sweep(ctx.name)
+
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(store, action: "adopt_inventory")
+
+    assert length(records) == 1,
+           "adopt_inventory must emit once for one genuine adoption, got #{length(records)}"
+  end
 end

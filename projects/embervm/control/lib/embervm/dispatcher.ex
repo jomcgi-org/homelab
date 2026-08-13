@@ -279,7 +279,8 @@ defmodule Embervm.Dispatcher do
       retry_timers: %{},
       denials: %{cap: 0, principal_share: 0, stale_capacity: 0, no_capacity: 0, quota: 0},
       warm_hits: 0,
-      misses: 0
+      misses: 0,
+      adoption_vm_ids: MapSet.new()
     }
 
     # Named + public so the router's admit?/3 reads it lock-free. Owned here so it
@@ -298,6 +299,14 @@ defmodule Embervm.Dispatcher do
   @impl true
   def handle_continue(:boot_sweep, state) do
     state = run_sweep(state)
+    # The CP incarnation id, NOT a fresh unique integer. This record marks the
+    # boundary between incarnations, so it is only useful if it matches the
+    # run_id stamped on every other record in the trace; an arbitrary number
+    # correlates with nothing and makes the boundary unfindable. SpecTrace.run_id/0
+    # is stable across writer restarts for the same reason.
+    Embervm.SpecTrace.emit(:adoption, :restart_cp, %{
+      "incarnation_id" => Embervm.SpecTrace.run_id()
+    })
     schedule_sweep(state)
     {:noreply, state}
   end
@@ -712,6 +721,12 @@ defmodule Embervm.Dispatcher do
 
     case :queue.out(q) do
       {{:value, vm_id}, rest} ->
+        # NOTE: the vm is NOT dropped from adoption_vm_ids here, deliberately.
+        # spawn_assign_worker snapshots the set into the worker ctx AFTER this
+        # runs, and the dispatch emission reads that snapshot to record
+        # provenance. Removing here means the snapshot never contains the vm, so
+        # an adopted vm records `warm` and #4768 stays unfixed. The removal
+        # happens in spawn_assign_worker, once the snapshot has been taken.
         {%{state | inventory: Map.put(state.inventory, {node_id, wl}, rest)}, vm_id}
 
       {:empty, _} ->
@@ -757,6 +772,7 @@ defmodule Embervm.Dispatcher do
       node_id: node_id,
       mode: mode,
       vm_id: vm_id,
+      adoption_vm_ids: state.adoption_vm_ids,
       # The dispatcher pid, so a MISS worker can report the vm_id it primes back
       # here the instant it has one (see ensure_vm): that closes the window where
       # a just-primed miss VM is reported primed by the node but invisible to
@@ -809,7 +825,17 @@ defmodule Embervm.Dispatcher do
       watchdog_started_at: System.monotonic_time(:millisecond),
       watchdog_ms: watchdog_ms
     }
-    %{state | workers: Map.put(state.workers, pid, meta)}
+    # The adopted-provenance drop happens HERE, not in reserve_vm, because ctx
+    # above snapshots adoption_vm_ids for the worker's dispatch emission. Drop
+    # any earlier and the snapshot loses the vm and an adopted dispatch records
+    # `warm`, which is #4768 unfixed. Task-lane vms are single-use, so a
+    # dispatched vm never returns to inventory and this keeps the set bounded to
+    # currently-resident adopted vms.
+    %{
+      state
+      | workers: Map.put(state.workers, pid, meta),
+        adoption_vm_ids: MapSet.delete(state.adoption_vm_ids, vm_id)
+    }
   end
 
   # The worker body (runs OFF this GenServer). Fetches the guest request from the
@@ -892,6 +918,34 @@ defmodule Embervm.Dispatcher do
     # below dials the winning brick's channel, not the committed one.
     case acquire_vm(ctx, channel_fun, invalidate_fun, prime_fun) do
       {:ok, vm_id, node_id, channel} ->
+        case ctx.mode do
+          # PROVENANCE BELONGS ON THE WARM BRANCH, and this is the whole point
+          # of the emission (#4768). An ADOPTED vm is reconciled back INTO
+          # inventory after a control-plane restart, so a task that takes it
+          # takes it from inventory: that is a warm hit, never a miss. A miss
+          # Primes a fresh vm, which by definition was not adopted.
+          #
+          # Getting this backwards is not cosmetic: it leaves every adopted vm
+          # recorded as an ordinary warm hit, a checker still cannot tell it
+          # from a primed one, and the ~50% post-restart false-violation rate
+          # #4768 measured stays exactly where it was.
+          :warm ->
+            Embervm.SpecTrace.emit(:adoption, :dispatch_warm, %{
+              "task_id" => ctx.task_id,
+              "vm_id" => vm_id,
+              "node_id" => node_id,
+              "provenance" =>
+                if(MapSet.member?(ctx.adoption_vm_ids, vm_id), do: :adopted, else: :warm)
+            })
+
+          :miss ->
+            Embervm.SpecTrace.emit(:adoption, :dispatch_miss, %{
+              "task_id" => ctx.task_id,
+              "vm_id" => vm_id,
+              "node_id" => node_id,
+              "provenance" => :miss
+            })
+        end
         guest_req = build_guest_request(req_env, ctx.invoke_path)
 
         assign_req = %AssignRequest{
@@ -1261,17 +1315,34 @@ defmodule Embervm.Dispatcher do
   defp adopt_inventory(state) do
     facts = NodeCapacity.all(state.capacity_table)
 
-    Enum.reduce(facts, state, fn f, acc ->
+    {state, adopted} = Enum.reduce(facts, {state, %{}}, fn f, {acc, adopted} ->
       # Key the adopted inventory by the INSTANCE id ("node/pod_uid"), the same key
       # pick_node dispatches against, so an adopted warm pool is reachable (R0 PR-2).
       node_id = instance_id_of(f)
 
-      Enum.reduce(f.workloads || %{}, acc, fn {wl, wc}, acc2 ->
-        Enum.reduce(Map.get(wc, :primed_vm_ids, []) || [], acc2, fn vm_id, acc3 ->
-          put_vm_if_unknown(acc3, node_id, wl, vm_id)
+      Enum.reduce(f.workloads || %{}, {acc, adopted}, fn {wl, wc}, {acc2, adopted2} ->
+        Enum.reduce(Map.get(wc, :primed_vm_ids, []) || [], {acc2, adopted2}, fn vm_id, {acc3, adopted3} ->
+          if MapSet.member?(known_vm_ids(acc3), vm_id) do
+            {acc3, adopted3}
+          else
+            acc4 = put_vm_if_unknown(acc3, node_id, wl, vm_id)
+            {
+              %{acc4 | adoption_vm_ids: MapSet.put(acc4.adoption_vm_ids, vm_id)},
+              Map.update(adopted3, node_id, [vm_id], &[vm_id | &1])
+            }
+          end
         end)
       end)
     end)
+
+    for {node_id, vm_ids} <- adopted do
+      Embervm.SpecTrace.emit(:adoption, :adopt_inventory, %{
+        "node_id" => node_id,
+        "adopted" => Enum.sort(vm_ids)
+      })
+    end
+
+    state
   end
 
   # Enqueue a primed vm_id into the {node,wl} inventory unless we already hold it

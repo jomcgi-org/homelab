@@ -366,7 +366,17 @@ defmodule Embervm.NodeRegistry do
   @impl true
   def handle_info({:node_status, pid, status}, state) do
     case Map.get(state.streamers, pid) do
-      nil -> {:noreply, state}
+      nil ->
+        Embervm.SpecTrace.emit(:adoption, :recv_status, %{
+          "gen" => nil,
+          "accepted" => false,
+          "rejected" => true,
+          "reason" => :stale_stream,
+          "msg_primed" => primed_vm_ids(status),
+          "health" => nil
+        })
+
+        {:noreply, state}
       node_id -> {:noreply, apply_status(state, node_id, status)}
     end
   end
@@ -545,8 +555,18 @@ defmodule Embervm.NodeRegistry do
     prev = state.node_runtime[instance_id]
     rt = %{prev | last_status_at: now, health: :healthy, draining: status.draining}
     state = put_in(state.node_runtime[instance_id], rt)
+    Embervm.SpecTrace.emit(:adoption, :recv_status, %{
+      "gen" => rt.gen,
+      "accepted" => true,
+      "msg_primed" => primed_vm_ids(status),
+      "health" => rt.health
+    })
     notify_drain_edge(state, rt, prev, status)
     refresh_capacity(state, instance_id, status)
+  end
+
+  defp primed_vm_ids(%NodeStatus{workloads: workloads}) do
+    for %WorkloadCapacity{primed_vm_ids: vm_ids} <- workloads, vm_id <- vm_ids, do: vm_id
   end
 
   # On the RISING edge of draining (false -> true) notify the drain listener exactly
@@ -1068,6 +1088,24 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp apply_health_transition(state, node_id, old_health, new_health) do
+    rt = state.node_runtime[node_id]
+
+    case new_health do
+      :unknown ->
+        Embervm.SpecTrace.emit(:adoption, :age_to_unknown, %{
+          "node_id" => node_id,
+          "last_gen" => rt.gen,
+          "health" => new_health
+        })
+
+      :down ->
+        Embervm.SpecTrace.emit(:adoption, :age_to_down, %{
+          "node_id" => node_id,
+          "last_gen" => rt.gen,
+          "health" => new_health
+        })
+    end
+
     state = put_in(state, [:node_runtime, node_id, :health], new_health)
     state = retract_capacity(state, node_id)
 
@@ -1127,6 +1165,8 @@ defmodule Embervm.NodeRegistry do
   # result even if the watch raises.
   defp start_streamer(state, node_id) do
     rt = state.node_runtime[node_id]
+    gen = Map.get(rt, :gen, 0) + 1
+    Embervm.SpecTrace.emit(:adoption, :reconnect, %{"node_id" => node_id, "gen" => gen})
     owner = self()
     address = rt.address
     configured_id = rt.configured_id
@@ -1173,7 +1213,7 @@ defmodule Embervm.NodeRegistry do
         send(owner, {:watch_result, streamer, result})
       end)
 
-    rt = %{rt | streamer: {pid, ref}, watch_started_at: state.clock.()}
+    rt = %{rt | streamer: {pid, ref}, watch_started_at: state.clock.(), gen: gen}
 
     state
     |> put_in([:node_runtime, node_id], rt)
@@ -1409,7 +1449,8 @@ defmodule Embervm.NodeRegistry do
       # two-signal expiry (the other is a dead stream).
       last_registered_at: nil,
       health: :starting,
-      draining: false
+      draining: false,
+      gen: 0
     }
   end
 

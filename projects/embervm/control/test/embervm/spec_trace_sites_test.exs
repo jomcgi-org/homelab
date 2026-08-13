@@ -59,4 +59,5 @@ defmodule Embervm.SpecTraceSitesTest do
                "passes through)."
     end
   end
+
 end
