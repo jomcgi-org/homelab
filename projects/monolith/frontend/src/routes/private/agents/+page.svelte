@@ -876,7 +876,14 @@
     if (runId != null) loadRunDetail(runId, runRequestSequence);
     if (sessionId != null) loadDetail(sessionId, requestSequence);
 
-    if (isMobileViewport() && sessionId != null) {
+    // Every tier, not just mobile. goto keeps focus rather than dropping it
+    // to <body>, so without this the ring stays on the sidebar row you
+    // clicked while the pane beside it is what actually changed. Moving it
+    // to the title announces the session to a screen reader and puts the
+    // focus mark on the content you navigated to. titleEl is tabindex="-1"
+    // and renders from the already-loaded session row, so it exists by the
+    // time tick() resolves, before the detail fetch returns.
+    if (sessionId != null) {
       tick().then(() => titleEl?.focus({ preventScroll: true }));
     } else if (
       isMobileViewport() &&
@@ -1791,6 +1798,31 @@
     display: flex;
     justify-content: space-between;
     margin: 12px 4px 6px;
+  }
+  /* The runs heading is a button (clicking it clears the selection and
+     returns to the swarm home) sitting beside the plain-text sessions
+     heading. Without this reset it kept the UA button chrome, a bordered
+     lowercase pill, and the two collection headings read as different
+     kinds of thing. Every other button in this console carries an explicit
+     reset for the same reason; see .session-row. Inherit rather than
+     restate the .group-title type so the two headings cannot drift apart. */
+  .section-link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    text-align: left;
+  }
+  .section-link:hover {
+    color: var(--text);
+  }
+  .section-link:focus-visible {
+    outline: none;
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
   .history-title {
     margin-top: 18px;
