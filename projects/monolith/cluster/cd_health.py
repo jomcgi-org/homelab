@@ -1,4 +1,4 @@
-"""CD health: can the platform's desired state actually reach the cluster?
+"""Advisory CD health: is production keeping up with published chart Freight?
 
 Folded into the deep ``/api/health`` response as the ``cd`` component, which
 UptimeRobot already polls offsite. Issue #4597 has the full rationale; the short
@@ -7,19 +7,18 @@ chart was never published, and ArgoCD's ``targetRevision`` pointed at something
 that does not exist for ~35 minutes. Nothing alerted, because every alerting
 path in this repo lives inside the cluster it is watching.
 
-Two signals, both derived from timestamps the upstreams already carry, so this
-component holds no state and needs no prober or latch table:
+This component is advisory. A deploy in progress or production behind a chart
+is not the public site being down, so the signal is reported as metadata and
+does not make the health endpoint return 503.
 
-1. An ArgoCD Application not Synced+Healthy for longer than the grace period.
-   Covers the unreachable-chart case above, a failed sync, and a degraded
-   workload, without needing registry credentials: an app pinned to a chart
-   that was never published does not reach Synced.
-
-   The two faults are dated from different clocks, which took an incident to
-   get right. A degraded app is dated by ``.status.health``'s
-   lastTransitionTime; a merely OutOfSync one by the last sync operation,
-   because ``.status.sync`` carries no transition time. Dating a health fault
-   from the last SYNC meant a settled app got no grace at all.
+1. Production's live monolith chart is behind the newest monolith chart Kargo
+   has published Freight for longer than the lag window. The old ArgoCD sweep
+   faulted on permanently unconvergeable OutOfSync/Healthy diffs in authentik,
+   argocd, kyverno, and context-forge-gateway, so it was always red and
+   monitored nothing. The original #4597 fault class, a targetRevision for a
+   chart that was never published, is structurally impossible now that Kargo
+   owns targetRevision and only promotes discovered Freight. What can still
+   happen is production sitting on an old chart while newer charts pile up.
 2. main's CI: the most recent commit WITH A COMPLETED STATUS is red and older
    than the red window, or there were commits inside that window and none of
    them completed at all.
@@ -81,84 +80,67 @@ def _parse_ts(value: str | None) -> datetime | None:
         return None
 
 
-async def _argocd_fault(grace_s: float) -> str | None:
-    """Fetch the apps, then judge them. I/O here, decision in _argocd_fault_real."""
+PROD_APP_NAME = "monolith"
+KARGO_NAMESPACE = "kargo-monolith"
+
+
+def _chart_version(value: str | None) -> tuple[int, int, int] | None:
+    try:
+        parts = value.split(".") if value is not None else []
+        if len(parts) != 3 or any(not part.isdigit() for part in parts):
+            return None
+        return tuple(int(part) for part in parts)  # type: ignore[return-value]
+    except (AttributeError, ValueError):
+        return None
+
+
+def _evaluate_chart_lag(
+    live_version: str | None, freight: list[dict], lag_s: float, now: datetime
+) -> tuple[str | None, str | None]:
+    """Judge production chart lag without doing any I/O."""
+    live = _chart_version(live_version)
+    if live is None:
+        return None, "prod chart version unreadable"
+
+    newer = []
+    for item in freight:
+        version = _chart_version(item.get("version"))
+        if version is not None and version > live and _parse_ts(item.get("created_at")):
+            newer.append(item)
+    if not newer:
+        return None, f"prod on {live_version}, up to date"
+
+    # The oldest unpromoted Freight owns the clock. New charts arriving every
+    # 20 minutes must not reset how long production has actually been behind.
+    oldest = min(newer, key=lambda item: _parse_ts(item["created_at"]))
+    since = _parse_ts(oldest["created_at"])
+    assert since is not None
+    age_s = max(0.0, (now - since).total_seconds())
+    count = len(newer)
+    newest = max(newer, key=lambda item: _chart_version(item["version"]) or (0, 0, 0))
+    # Kargo's creationTimestamp is when its Warehouse discovered the chart, up
+    # to one poll interval (5m) after publication. Against 2h, that slack is
+    # immaterial, but it should not surprise the next reader.
+    if age_s > lag_s:
+        return (
+            f"prod on {live_version}, {count} chart(s) behind through "
+            f"{newest['version']}, waiting {age_s / 60:.0f}m",
+            None,
+        )
+    return None, (
+        f"prod {count} chart(s) behind through {newest['version']} "
+        f"for {age_s / 60:.0f}m"
+    )
+
+
+async def _chart_lag_fault(lag_s: float) -> tuple[str | None, str | None]:
+    """Read the live Application and Kargo Freight, then judge chart lag."""
     from cluster.kubernetes import KubernetesClient  # noqa: PLC0415
 
-    apps = await KubernetesClient().list_argocd_app_health()
-    return await _argocd_fault_real(apps, grace_s)
-
-
-def _non_prod_apps() -> frozenset[str]:
-    """ArgoCD apps whose health is reported but does NOT fault this component.
-
-    This check was written when every ArgoCD app WAS production, so "any app
-    unhealthy" and "production unhealthy" were the same predicate. Introducing
-    monolith-dev broke that equivalence silently, and the check kept evaluating
-    the old one: a dev environment with a stuck Atlas migration took
-    jomcgi.dev/health to 503 while production was entirely fine.
-
-    These are still worth reporting. A dev environment that cannot sync is a
-    real signal and often an early one, since it runs the same chart production
-    is about to. It is just not a reason to tell the outside world that this
-    site is down.
-    """
-    raw = os.environ.get("CD_HEALTH_NON_PROD_APPS", "monolith-dev")
-    return frozenset(n.strip() for n in raw.split(",") if n.strip())
-
-
-async def _argocd_fault_real(
-    apps: list[dict], grace_s: float, non_prod: frozenset[str] | None = None
-) -> tuple[str | None, str | None]:
-    """Split unhealthy apps into (production faults, non-production notes).
-
-    Returns a pair so the caller can decide differently about each. Only the
-    first makes /api/health 503; the second rides along in the detail string so
-    the signal is kept rather than discarded.
-    """
-    if non_prod is None:
-        non_prod = _non_prod_apps()
-    now = datetime.now(timezone.utc)
-    faults: list[str] = []
-    notes: list[str] = []
-    for app in apps:
-        if app.get("sync") == "Synced" and app.get("health") == "Healthy":
-            continue
-        # Date the fault by whatever actually went wrong, because the two
-        # faults have different clocks.
-        #
-        # A degraded app is dated by its health transition. Using the last SYNC
-        # time here was a defect: embervm last synced 622 minutes before it went
-        # Progressing, so the 15 minute grace was not shortened, it was skipped,
-        # and jomcgi.dev/health 503'd on the first bad tick. The inversion is
-        # the tell, since a settled app has the stalest finished_at and so got
-        # the least grace, which is backwards.
-        #
-        # A merely OutOfSync app has no transition time of its own
-        # (`.status.sync` carries none), so the last sync attempt stands. That
-        # is a weaker signal in the other direction, since an app that retries
-        # forever keeps refreshing it, which is #4727 and not fixed here.
-        if app.get("health") != "Healthy":
-            since = _parse_ts(app.get("health_changed_at"))
-        else:
-            since = _parse_ts(app.get("finished_at"))
-        # Undateable means in-flight rather than page. A genuinely stuck app
-        # acquires a timestamp on its next transition, and guessing here would
-        # page on every fresh rollout. Deliberately NOT falling back to
-        # finished_at for a health fault: that fallback IS the bug above.
-        if since is None:
-            continue
-        age_s = (now - since).total_seconds()
-        if age_s > grace_s:
-            line = (
-                f"{app['name']} is {app.get('sync')}/{app.get('health')} "
-                f"for {age_s / 60:.0f}m"
-            )
-            (notes if app.get("name") in non_prod else faults).append(line)
-    return (
-        "; ".join(sorted(faults)) if faults else None,
-        "; ".join(sorted(notes)) if notes else None,
-    )
+    kubernetes = KubernetesClient()
+    live = await kubernetes.get_argocd_app_target_revision(PROD_APP_NAME)
+    freight = await kubernetes.list_kargo_freight(KARGO_NAMESPACE)
+    return _evaluate_chart_lag(live, freight, lag_s, datetime.now(timezone.utc))
 
 
 async def _ci_fault(red_window_s: float) -> str | None:
@@ -250,34 +232,31 @@ def _evaluate_ci(
 
 
 async def cd_health() -> dict:
-    """The ``cd`` health component. Any fault makes /api/health return 503."""
+    """The advisory ``cd`` health component, plus the existing CI signal."""
     global _cache
     if _cache is not None and (time.monotonic() - _cache[0]) < _CACHE_TTL_S:
         return _cache[1]
 
-    grace_s = _env_seconds("CD_HEALTH_SYNC_GRACE_S", 900.0)
+    lag_s = _env_seconds("CD_HEALTH_CHART_LAG_S", 7200.0)
     red_window_s = _env_seconds("CD_HEALTH_CI_RED_WINDOW_S", 3600.0)
 
     details: list[str] = []
     ok = True
 
     try:  # nosemgrep: no-broad-except-swallow - reported in-band, logged below
-        argocd = await _argocd_fault(grace_s)
+        chart_lag = await _chart_lag_fault(lag_s)
     except Exception as exc:  # noqa: BLE001
         # Includes the Forbidden an RBAC gap would produce. Report it rather
         # than 503: a broken checker must not masquerade as a broken platform.
-        logger.warning("cd health: argocd check failed: %s", exc)
-        details.append(f"argocd check unavailable ({exc})")
+        logger.warning("cd health: chart lag check failed: %s", exc)
+        details.append(f"chart lag check unavailable ({exc})")
     else:
-        argocd_fault, argocd_note = argocd
-        if argocd_fault:
+        chart_lag_fault, chart_lag_note = chart_lag
+        if chart_lag_fault:
             ok = False
-            details.append(argocd_fault)
-        if argocd_note:
-            # Reported, deliberately NOT faulting. See _non_prod_apps: a dev
-            # environment failing to sync is worth surfacing and is not a
-            # reason to tell the outside world this site is down.
-            details.append(f"non-prod: {argocd_note}")
+            details.append(chart_lag_fault)
+        if chart_lag_note:
+            details.append(chart_lag_note)
 
     if not os.environ.get("GITHUB_API_TOKEN", ""):
         details.append("ci check disabled: no GITHUB_API_TOKEN")

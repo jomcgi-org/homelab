@@ -24,6 +24,10 @@ rules:
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
     verbs: ["get", "list", "patch"]
+  # cd health reads Freight to learn which chart versions have been published.
+  - apiGroups: ["kargo.akuity.io"]
+    resources: ["freights"]
+    verbs: ["get", "list"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes", "pods"]
     verbs: ["get", "list"]

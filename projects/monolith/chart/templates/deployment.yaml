@@ -287,9 +287,10 @@ spec:
             {{- end }}
             {{- end }}
             # cd health component thresholds (issue #4597). Values, not code
-            # constants, so retuning what pages does not need a rebuild.
-            - name: CD_HEALTH_SYNC_GRACE_S
-              value: {{ .Values.cdHealth.syncGraceSeconds | quote }}
+            # constants, so retuning the signal does not need a rebuild. The
+            # component is advisory: it reports on a 200 and pages nobody.
+            - name: CD_HEALTH_CHART_LAG_S
+              value: {{ .Values.cdHealth.chartLagSeconds | quote }}
             - name: CD_HEALTH_CI_RED_WINDOW_S
               value: {{ .Values.cdHealth.ciRedWindowSeconds | quote }}
             - name: CD_PROBE_INTERVAL_S

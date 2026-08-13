@@ -186,6 +186,63 @@ class KubernetesClient:
             return None
         return result.get("status")
 
+    async def list_kargo_freight(self, namespace: str = "kargo-monolith") -> list[dict]:
+        """Return published monolith chart Freight in creation order-independent form.
+
+        Kargo stores ``charts`` at the TOP LEVEL of a Freight object, not under
+        ``spec`` or ``status``. For each Freight, use the first chart whose
+        repoURL identifies the monolith chart and skip Freight without one.
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        result = await custom.list_namespaced_custom_object(
+            group="kargo.akuity.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="freights",
+        )
+        freight = []
+        for item in result.get("items", []):
+            metadata = item.get("metadata") or {}
+            for chart in item.get("charts") or []:
+                if (chart.get("repoURL") or "").endswith("/charts/monolith"):
+                    freight.append(
+                        {
+                            "name": metadata.get("name"),
+                            "version": chart.get("version"),
+                            "created_at": metadata.get("creationTimestamp"),
+                        }
+                    )
+                    break
+        return freight
+
+    async def get_argocd_app_target_revision(
+        self, name: str, namespace: str = "argocd"
+    ) -> str | None:
+        """Return an Application's live target revision, or None when absent.
+
+        Supports both the multi-source ``.spec.sources[0]`` shape and the
+        legacy single-source ``.spec.source`` shape. A missing Application is
+        treated like ``get_argocd_app_status`` treats it.
+        """
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        try:
+            result = await custom.get_namespaced_custom_object(
+                group="argoproj.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="applications",
+                name=name,
+            )
+        except client.exceptions.ApiException:
+            return None
+        spec = result.get("spec") or {}
+        sources = spec.get("sources") or []
+        if sources:
+            return sources[0].get("targetRevision")
+        return (spec.get("source") or {}).get("targetRevision")
+
     async def _node_rss_bytes(self, v1: "client.CoreV1Api", node: str) -> float | None:
         """Anonymous resident memory for one node, from the kubelet Summary API.
 

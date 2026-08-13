@@ -36,5 +36,9 @@ MODULE = _Module(
     # module is in both the private and public registries, so registering the
     # reader here is what puts the component on the tier UptimeRobot polls.
     # The public tier needs no new privilege to serve it, which is the point.
-    register_health={"cd": probe_health("cd", _CD_STALENESS_S)},
+    # Production being behind on a chart, or a mid-flight deploy, is not the
+    # public site being down, so report it as metadata on a 200 rather than
+    # paging. Nothing pages on cd now, it is a payload signal that must be
+    # looked at.
+    register_health={"cd": probe_health("cd", _CD_STALENESS_S, advisory=True)},
 )

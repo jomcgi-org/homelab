@@ -49,7 +49,20 @@ export async function GET({ fetch }) {
     );
   }
 
-  return json(await res.json(), {
-    headers: { "cache-control": HEALTH_CACHE_CONTROL },
-  });
+  const body = await res.json();
+  const degraded =
+    body.degraded ??
+    Object.entries(body.components ?? {})
+      .filter(([, component]) => !component?.ok)
+      .map(([name]) => name)
+      .sort();
+  return json(
+    {
+      status: body.status,
+      ...(degraded.length ? { degraded } : {}),
+    },
+    {
+      headers: { "cache-control": HEALTH_CACHE_CONTROL },
+    },
+  );
 }
