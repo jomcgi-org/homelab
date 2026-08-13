@@ -582,8 +582,11 @@
 .att-row:last-child {
   border-bottom: 0;
 }
+/* Derived from --attn rather than restating its value. The literal
+   rgba(178, 94, 0, ...) is #b25e00 spelled out, so it would drift silently
+   the first time the token changes. */
 .att-row:hover {
-  background: rgba(178, 94, 0, 0.05);
+  background: color-mix(in srgb, var(--attn) 5%, transparent);
 }
 .att-title {
   display: flex;
@@ -612,8 +615,6 @@
   text-align: center;
 }
 
-/* Master view container. Inherits from .runview.
- */
-.master-view {
-  --tier-stale-filter: grayscale(0.6) opacity(0.85);
-}
+/* Master view container. Inherits from .runview. The stale-tier treatment
+   lives in MasterView.svelte's scoped block, which applies the filter and
+   opacity directly to .activity-row, .att-row and .queue-line. */
