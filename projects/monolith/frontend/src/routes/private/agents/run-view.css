@@ -1,3 +1,6 @@
+/* Scale: spacing is 4px, 8px, 12px, 16px, or 20px, with clamp() retained
+   for responsive surfaces. Radii are 3px chips, 4px cards, and 6px panels;
+   50% is reserved for circular status dots. */
 .runview {
   container-type: inline-size;
   padding: clamp(12px, 2.5cqi, 20px) clamp(12px, 3cqi, 22px) 12px;
@@ -30,7 +33,7 @@
   text-decoration: underline;
 }
 .crumb-sep {
-  margin: 0 6px;
+  margin: 0 8px;
 }
 .kind-row {
   display: flex;
@@ -55,30 +58,30 @@
   font: var(--size-meta) var(--font-mono);
 }
 .rv-title {
-  margin: 6px 0 2px;
-  font-size: clamp(15px, 2.6cqi + 8px, 19px);
+  margin: 8px 0 4px;
+  font-size: var(--size-title);
   font-weight: 650;
   line-height: 1.3;
 }
 .rv-statusline {
   margin-top: 8px;
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: var(--size-detail);
 }
 .rv-task-details {
   margin-top: 8px;
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: var(--size-detail);
 }
 .rv-task-details pre {
-  margin: 6px 0 0;
+  margin: 8px 0 0;
   white-space: pre-wrap;
   font: inherit;
 }
 .rv-actions {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 12px;
   flex-wrap: wrap;
   align-items: center;
 }
@@ -88,7 +91,7 @@
   color: var(--text-soft);
   height: 28px;
   padding: 0 12px;
-  font-size: 13px;
+  font-size: var(--size-detail);
 }
 .btn-quiet:hover {
   background: var(--hover);
@@ -116,7 +119,7 @@
   border-radius: 3px;
   color: var(--text-soft);
   background: var(--panel-bg);
-  padding: 1px 7px;
+  padding: 4px 8px;
   font: var(--size-meta) var(--font-mono);
 }
 .state-chip.unconfirmed {
@@ -132,7 +135,7 @@
 .s-escalated,
 .s-stranded,
 .s-changes_requested {
-  color: var(--attn);
+  color: var(--attn-text);
   border-color: var(--attn);
   background: var(--attn-soft);
 }
@@ -201,18 +204,18 @@
   }
 }
 .banner {
-  margin-top: 10px;
+  margin-top: 12px;
   border: 1px solid var(--attn);
   background: var(--attn-soft);
-  color: var(--attn);
+  color: var(--attn-text);
   border-radius: 4px;
-  padding: 8px 10px;
-  font-size: 13px;
+  padding: 8px 12px;
+  font-size: var(--size-detail);
 }
 .staged {
   display: flex;
   flex-direction: column;
-  margin-top: 14px;
+  margin-top: 16px;
   border-top: 1px solid var(--line);
   padding-top: 12px;
 }
@@ -266,20 +269,20 @@
   white-space: pre-wrap;
 }
 .deviations {
-  margin-top: 14px;
+  margin-top: 16px;
   border-top: 1px solid var(--line);
-  padding-top: 10px;
+  padding-top: 8px;
 }
 .deviation-text {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: 8px;
   color: var(--text-soft);
   margin-top: 4px;
 }
 .connector {
   border-left: 1px solid var(--line-strong);
-  margin-left: 7px;
+  margin-left: 8px;
   height: clamp(8px, 1.5cqi, 14px);
 }
 .stage {
@@ -290,14 +293,14 @@
 .stage-head,
 .col-label {
   color: var(--muted);
-  font: 10.5px var(--font-mono);
+  font: var(--size-meta) var(--font-mono);
   letter-spacing: 0.09em;
   text-transform: uppercase;
   margin-bottom: 8px;
 }
 .lanes {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 @container (max-width: 520px) {
@@ -309,7 +312,7 @@
 .node-card {
   border: 1px solid var(--line);
   border-radius: 4px;
-  padding: clamp(7px, 1.4cqi, 10px);
+  padding: clamp(8px, 1.4cqi, 12px);
   min-width: 0;
 }
 .node-card {
@@ -328,20 +331,20 @@
 }
 .card-head .card-label {
   font-weight: 550;
-  font-size: 13.5px;
+  font-size: var(--size-detail);
 }
 .is-running .card-label {
   font-weight: 700;
 }
 .pips {
   display: inline-flex;
-  gap: 3px;
+  gap: 4px;
   align-items: center;
 }
 .pip {
   width: 7px;
   height: 7px;
-  border-radius: 2px;
+  border-radius: 3px;
   background: var(--text);
 }
 .pip.bad {
@@ -355,18 +358,18 @@
   border: 1px solid var(--line-strong);
 }
 .dep-chips {
-  margin-top: 5px;
+  margin-top: 4px;
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 6px;
+  gap: 4px 8px;
   align-items: baseline;
 }
 .chip-dep {
   border: 1px solid var(--line-strong);
   border-radius: 3px;
-  padding: 0 6px;
+  padding: 0 8px;
   display: inline-flex;
-  gap: 5px;
+  gap: 4px;
   align-items: baseline;
   white-space: nowrap;
   font: var(--size-meta) var(--font-mono);
@@ -374,24 +377,24 @@
 .needs-tag {
   border: 1px solid var(--attn);
   border-radius: 3px;
-  padding: 0 6px;
-  color: var(--attn);
+  padding: 0 8px;
+  color: var(--attn-text);
   background: var(--attn-soft);
   white-space: nowrap;
   font: var(--size-meta) var(--font-mono);
 }
 .log-entry {
   margin-top: 4px;
-  font-size: 13px;
+  font-size: var(--size-detail);
   color: var(--text-soft);
 }
 .verdict-excerpt {
   display: block;
-  margin-top: 3px;
+  margin-top: 4px;
 }
 .live-line {
   display: flex;
-  gap: 7px;
+  gap: 8px;
   align-items: baseline;
   margin-top: 4px;
 }
@@ -419,7 +422,7 @@
 .evidence {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 8px;
   margin-top: 4px;
 }
 /* Labels that introduce a sentence, so the gap is CSS on a flex parent and no
@@ -429,7 +432,7 @@
 .ev-tag,
 .sha,
 .dev-chip {
-  padding: 0 5px;
+  padding: 0 4px;
   border: 1px solid var(--line-strong);
   border-radius: 3px;
   color: var(--muted);
@@ -441,30 +444,30 @@
 }
 .obs-line {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: baseline;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .lbl {
   color: var(--muted);
   font: var(--size-meta) var(--font-mono);
 }
 .conflict {
-  margin-top: 5px;
-  color: var(--attn);
-  font-size: 13px;
+  margin-top: 4px;
+  color: var(--attn-text);
+  font-size: var(--size-detail);
 }
 .register-tag {
   display: inline-block;
-  margin-right: 7px;
-  padding: 0 5px;
+  margin-right: 8px;
+  padding: 0 4px;
   border: 1px solid var(--attn);
   border-radius: 3px;
   font: var(--size-meta) var(--font-mono);
 }
 .copy-id {
-  margin-left: 7px;
-  padding: 0 6px;
+  margin-left: 8px;
+  padding: 0 8px;
   border: 1px solid var(--line-strong);
   border-radius: 4px;
   background: transparent;
@@ -482,7 +485,7 @@
   border-collapse: collapse;
 }
 .decision td {
-  padding: 1px 8px 1px 0;
+  padding: 4px 8px 4px 0;
   font: var(--size-body-mono) var(--font-mono);
 }
 .verdict-word {
@@ -491,13 +494,13 @@
 }
 .node-note {
   margin-top: 4px;
-  color: var(--attn);
+  color: var(--attn-text);
   font: var(--size-body-mono) var(--font-mono);
 }
 .testimony {
   margin-top: 8px;
   border-left: 2px solid var(--line-strong);
-  padding: 4px 0 4px 14px;
+  padding: 4px 0 4px 16px;
   font-family: var(--font-ui);
 }
 .testimony-attribution {
@@ -505,20 +508,20 @@
   font: var(--size-meta) var(--font-mono);
 }
 .testimony-line {
-  margin-top: 3px;
+  margin-top: 4px;
 }
 .testimony-raw {
-  margin: 6px 0 0;
+  margin: 8px 0 0;
   white-space: pre-wrap;
   font: inherit;
 }
 .rv-foot {
-  margin-top: 14px;
+  margin-top: 16px;
   border-top: 1px solid var(--line);
   padding-top: 8px;
 }
 .rv-foot.stale {
-  color: var(--attn);
+  color: var(--attn-text);
 }
 .rv-foot.absent {
   color: var(--err);
@@ -528,15 +531,14 @@
 .tier-stale .rv-statusline,
 .tier-stale .run-strip {
   filter: grayscale(0.6);
-  opacity: 0.85;
 }
 .tier-stale [data-register="belief"] {
   display: none;
 }
 .absent-note {
   color: var(--err);
-  font-size: 13px;
-  margin: 6px 0 10px;
+  font-size: var(--size-detail);
+  margin: 8px 0 12px;
 }
 .sess-list {
   display: flex;
@@ -547,7 +549,7 @@
   display: flex;
   gap: 8px;
   align-items: baseline;
-  padding: 7px 2px;
+  padding: 8px 4px;
   border-bottom: 1px solid var(--line);
   width: 100%;
   color: inherit;
@@ -568,7 +570,7 @@
    verdict actually wants a human. */
 .verdict-box {
   margin-top: 8px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-left: 3px solid var(--line-strong);
   border-radius: 4px;
@@ -580,7 +582,7 @@
   background: var(--attn-soft);
 }
 .sess-title {
-  font-size: 13px;
+  font-size: var(--size-detail);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -588,7 +590,7 @@
 }
 .sess-meta {
   margin-left: auto;
-  color: var(--muted);
+  color: var(--text-soft);
   font: var(--size-meta) var(--font-mono);
   flex: none;
 }
@@ -600,7 +602,7 @@
   display: flex;
   gap: 8px;
   align-items: baseline;
-  padding: 8px 2px;
+  padding: 8px 4px;
   border-bottom: 1px solid var(--line);
 }
 .m-title {
@@ -609,17 +611,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--size-detail);
 }
 .m-meta,
 .m-totals,
 .queue-line {
-  color: var(--muted);
+  color: var(--text-soft);
   font: var(--size-meta) var(--font-mono);
 }
 .m-totals,
 .queue-line {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 [data-register="belief"] {
   color: var(--muted);
@@ -633,17 +635,17 @@
   background: var(--attn-soft);
   border: 1px solid var(--attn);
   border-radius: 6px;
-  padding: 10px 12px;
+  padding: 12px 12px;
   margin-bottom: 12px;
 }
 .att-band .col-label {
-  color: var(--attn);
+  color: var(--attn-text);
   display: block;
   font-size: var(--size-meta);
   font-weight: 650;
   letter-spacing: 0.13em;
   text-transform: uppercase;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 .att-row {
   display: block;
@@ -671,15 +673,15 @@
   align-items: center;
   gap: 8px;
   margin-bottom: 4px;
-  font-size: 13px;
+  font-size: var(--size-detail);
 }
 .att-title .entry-meta {
-  color: var(--attn);
+  color: var(--attn-text);
   font-size: var(--size-meta);
 }
 .att-reason {
   color: var(--text-soft);
-  font-size: 12px;
+  font-size: var(--size-meta);
   line-height: 1.3;
 }
 
@@ -688,8 +690,8 @@
  */
 .m-quiet {
   color: var(--muted);
-  font-size: 13px;
-  padding: 10px 0;
+  font-size: var(--size-detail);
+  padding: 12px 0;
   text-align: center;
 }
 

@@ -399,7 +399,7 @@
   .activity-cost,
   .activity-footer,
   .activity-more {
-    color: var(--muted);
+    color: var(--text-soft);
     font: var(--size-meta) var(--font-mono);
   }
   .activity-more {
