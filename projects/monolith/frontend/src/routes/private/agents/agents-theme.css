@@ -11,32 +11,43 @@
  * through size, never through washout (see .impeccable.md).
  */
 .console {
+  /* Neutral surface, line, and text tokens: vary per period via
+     .shell.dawn/.shell.dusk/.shell.night overrides. */
   --page-bg: #eef0f2;
   --panel-bg: #ffffff;
   --text: #14171a;
   --text-soft: #3d434a;
   --muted: #5f6971;
   --line: #dfe3e6;
-  --line-strong: #c3c9ce;
+  /* 3.09:1 against the white panel, >= 3:1 for inputs and controls. */
+  --line-strong: #8a949c;
   --hover: #e6e9eb;
   --ink: #1c2024;
   --ink-text: #ffffff;
+  --code-bg: #eef0f2;
+  /* 3.66:1 on white background, 3.20:1 on --page-bg. */
+  --dot-idle: #7e878e;
+
+  /* State tokens: period-invariant, never overridden. */
   --ok: #0a7c3c;
   --ok-soft: #dcf2e5;
   --attn: #b25e00;
+  /* Before 4.09:1 on --attn-soft, after 6.01:1 on --attn-soft and
+     6.86:1 on white. */
+  --attn-text: #8a4a00;
   --attn-soft: #fdeed8;
   --info: #1e5fc4;
   --info-soft: #e3edfc;
   --err: #c62f22;
   --err-bg: #fdeae7;
   --err-line: #f0b9b1;
-  --code-bg: #eef0f2;
-  --dot-idle: #c3c9ce;
   --font-ui:
     system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   --size-meta: 11.5px;
   --size-body-mono: 12.5px;
   --size-body: 14px;
+  --size-detail: 13px;
+  --size-title: clamp(15px, 2.6cqi + 8px, 19px);
   --scrim-bg: rgba(20, 23, 26, 0.45);
 }
