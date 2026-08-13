@@ -6,7 +6,7 @@ The pipeline is `dev` then `prod`. Both run the same chart, so production can
 only receive Freight that dev has already taken. That ordering is joined by two
 assertions, both promotion steps rather than a Kargo `verification` block: an
 `argocd-wait` that holds each Promotion until its Application is Synced and
-Healthy, and a 15 minute `requiredSoakTime` before prod may take dev's Freight.
+Healthy, and a 2 minute `requiredSoakTime` before prod may take dev's Freight.
 A Promotion that fails never marks its Freight verified, which is the mechanism
 that stops a bad chart at dev. See "What the gate does and does not assert".
 
@@ -137,7 +137,9 @@ finished, and the workload came back Healthy. For a Deployment, ArgoCD reports
 Healthy only once `observedGeneration` has caught up and the new pods pass their
 probes, and the monolith's readiness probe is `/healthz`. So waiting for Healthy
 is the assertion that the promoted chart's health check went green. Production
-additionally requires dev to have held the Freight for 15 minutes.
+additionally requires dev to have held the Freight for 2 minutes, which catches
+a rollout that comes up Healthy and then crashloops but is explicitly not long
+enough to catch a slower-onset regression.
 
 **Does not assert.** Anything functional beyond the readiness probe. The obvious
 next step, an `http` step against dev's deep `/api/health`, is blocked twice
