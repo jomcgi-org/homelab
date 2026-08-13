@@ -19,6 +19,10 @@ def max_attempts() -> int:
     return int(os.environ.get("SWARM_MAX_ATTEMPTS", "2"))
 
 
+def max_review_cycles() -> int:
+    return int(os.environ.get("SWARM_MAX_REVIEW_CYCLES", "2"))
+
+
 def turn_timeout_seconds() -> int:
     return int(os.environ.get("SWARM_TURN_TIMEOUT_SECONDS", "1800"))
 

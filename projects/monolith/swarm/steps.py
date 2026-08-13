@@ -19,6 +19,7 @@ def pin_plan(budget_usd: float | None = None) -> dict:
     return {
         "version": 1,
         "max_attempts": max(1, config.max_attempts()),
+        "max_review_cycles": max(1, config.max_review_cycles()),
         "implementer_model": config.implementer_model(),
         "reviewer_model": config.reviewer_model(),
         "turn_timeout_seconds": config.turn_timeout_seconds(),

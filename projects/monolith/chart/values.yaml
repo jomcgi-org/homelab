@@ -1060,6 +1060,7 @@ swarm:
   # budget but can never extend it, which is what keeps "retry N times" a
   # budget rather than a suggestion.
   maxAttempts: 2
+  maxReviewCycles: 2
   turnTimeoutSeconds: 1800
   # Concurrent Codex dispatches. Three concurrent dispatches have been killed
   # before, so this stays at 2 until there is evidence it can go higher.

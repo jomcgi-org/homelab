@@ -34,6 +34,7 @@ def run(monkeypatch, turns, heads=None):
         lambda budget_usd=None: {
             "version": 1,
             "max_attempts": max(1, config.max_attempts()),
+            "max_review_cycles": max(1, config.max_review_cycles()),
             "implementer_model": config.implementer_model(),
             "reviewer_model": config.reviewer_model(),
             "turn_timeout_seconds": config.turn_timeout_seconds(),
@@ -117,6 +118,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
         lambda budget_usd=None: {
             "version": 1,
             "max_attempts": max(1, config.max_attempts()),
+            "max_review_cycles": max(1, config.max_review_cycles()),
             "implementer_model": config.implementer_model(),
             "reviewer_model": config.reviewer_model(),
             "turn_timeout_seconds": config.turn_timeout_seconds(),
@@ -158,6 +160,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
                 "plan": {
                     "version": 1,
                     "max_attempts": 2,
+                    "max_review_cycles": 2,
                     "implementer_model": "luna",
                     "reviewer_model": "opus",
                     "turn_timeout_seconds": 1800,
@@ -366,3 +369,140 @@ def test_unparseable_reviewer_reply_is_returned_without_crashing(monkeypatch):
     )
     result = workflow("task", "jomcgi/homelab", "main")
     assert result["review_verdict"] == "unparseable"
+
+
+def test_request_changes_triggers_new_implement_attempt(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "Needs a fix\nVERDICT: REQUEST_CHANGES",
+                "cost_usd": 1,
+            },
+            102: {"commit_sha": "def", "result_text": "done", "cost_usd": 1},
+            202: {
+                "commit_sha": None,
+                "result_text": "Looks good\nVERDICT: APPROVE",
+                "cost_usd": 1,
+            },
+        },
+        heads=[None, "abc", "abc", "def"],
+    )
+    result = workflow("task", "jomcgi/homelab", "main")
+    assert result["status"] == "review"
+    assert result["attempts"] == 2
+    assert result["commit_sha"] == "def"
+    assert result["review_verdict"] == "approve"
+    assert result["cost_usd"] == 6
+    assert [(call[-2], call[-1]) for call in calls] == [
+        ("implement", 1),
+        ("review", 1),
+        ("implement", 2),
+        ("review", 1),
+    ]
+    assert calls[1][0] == workflows.session_key("review-1")
+    assert calls[3][0] == workflows.session_key("review-2")
+
+
+def test_review_cycles_exhausted_on_persistent_request_changes(monkeypatch):
+    monkeypatch.setenv("SWARM_MAX_REVIEW_CYCLES", "1")
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: REQUEST_CHANGES",
+                "cost_usd": 1,
+            },
+            102: {"commit_sha": "def", "result_text": "done", "cost_usd": 1},
+            202: {
+                "commit_sha": None,
+                "result_text": "VERDICT: REQUEST_CHANGES",
+                "cost_usd": 1,
+            },
+        },
+        heads=[None, "abc", "abc", "def"],
+    )
+    result = workflow("task", "jomcgi/homelab", "main")
+    assert result["status"] == "review_cycles_exhausted"
+    assert result["review_verdict"] == "request_changes"
+    assert result["attempts"] == 2
+    assert len(calls) == 4
+
+
+def test_pinned_review_cycle_bound_survives_config_change(monkeypatch):
+    monkeypatch.setenv("SWARM_MAX_REVIEW_CYCLES", "1")
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: REQUEST_CHANGES",
+                "cost_usd": 1,
+            },
+            102: {"commit_sha": "def", "result_text": "done", "cost_usd": 1},
+            202: {
+                "commit_sha": None,
+                "result_text": "VERDICT: REQUEST_CHANGES",
+                "cost_usd": 1,
+            },
+        },
+        heads=[None, "abc", "abc", "def"],
+    )
+    original_await = workflows._await_turn
+
+    def await_turn(session, *args):
+        turn = original_await(session, *args)
+        if session == 201:
+            monkeypatch.setenv("SWARM_MAX_REVIEW_CYCLES", "0")
+        return turn
+
+    monkeypatch.setattr(workflows, "_await_turn", await_turn)
+    result = workflow("task", "jomcgi/homelab", "main")
+    assert result["status"] == "review_cycles_exhausted"
+    assert len(calls) == 4
+
+
+def test_unparseable_verdict_does_not_trigger_requeue(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {"commit_sha": None, "result_text": "Needs work", "cost_usd": 1},
+        },
+    )
+    result = workflow("task", "jomcgi/homelab", "main")
+    assert result["status"] == "review"
+    assert result["review_verdict"] == "unparseable"
+    assert len(calls) == 2
+
+
+def test_review_feedback_passed_to_implementer_prompt(monkeypatch):
+    feedback = []
+    original_prompt = workflows.implementer_prompt
+
+    def capture_prompt(task, branch, previous_failure=None, review_feedback=None):
+        feedback.append(review_feedback)
+        return original_prompt(task, branch, previous_failure, review_feedback)
+
+    monkeypatch.setattr(workflows, "implementer_prompt", capture_prompt)
+    run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "Fix X\nVERDICT: REQUEST_CHANGES",
+                "cost_usd": 1,
+            },
+            102: {"commit_sha": "def", "result_text": "done", "cost_usd": 1},
+            202: {"commit_sha": None, "result_text": "VERDICT: APPROVE", "cost_usd": 1},
+        },
+        heads=[None, "abc", "abc", "def"],
+    )
+    workflow("task", "jomcgi/homelab", "main")
+    assert feedback == [None, "Fix X\nVERDICT: REQUEST_CHANGES"]

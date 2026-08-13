@@ -37,7 +37,12 @@ def next_action(
     return "escalate"
 
 
-def implementer_prompt(task: str, branch: str, previous_failure: str | None) -> str:
+def implementer_prompt(
+    task: str,
+    branch: str,
+    previous_failure: str | None = None,
+    review_feedback: str | None = None,
+) -> str:
     prompt = (
         f"Implement this task: {task}\n"
         f"Create branch {branch} from the base branch, make the change, commit it, "
@@ -47,6 +52,8 @@ def implementer_prompt(task: str, branch: str, previous_failure: str | None) -> 
     )
     if previous_failure:
         prompt += f"\nPrevious attempt failed: {previous_failure}"
+    if review_feedback:
+        prompt += f"\nThe reviewer requested changes: {review_feedback}"
     return prompt
 
 

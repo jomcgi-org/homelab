@@ -151,6 +151,8 @@ spec:
               value: {{ .Values.swarm.reviewerModel | quote }}
             - name: SWARM_MAX_ATTEMPTS
               value: {{ .Values.swarm.maxAttempts | quote }}
+            - name: SWARM_MAX_REVIEW_CYCLES
+              value: {{ .Values.swarm.maxReviewCycles | quote }}
             - name: SWARM_TURN_TIMEOUT_SECONDS
               value: {{ .Values.swarm.turnTimeoutSeconds | quote }}
             - name: SWARM_CODEX_CONCURRENCY
