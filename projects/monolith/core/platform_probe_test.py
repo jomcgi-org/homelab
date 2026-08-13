@@ -49,28 +49,7 @@ async def test_fresh_ok_row_is_healthy(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_advisory_flag_is_present_on_ok_not_ok_and_stale(monkeypatch):
-    async def _ok(name):
-        return _Row(ok=True, detail="cd ok")
-
-    monkeypatch.setattr(mod, "read_probe", _ok)
-    assert (await mod.probe_health("cd", 750.0, advisory=True)())["advisory"] is True
-
-    async def _bad(name):
-        return _Row(ok=False, detail="behind")
-
-    monkeypatch.setattr(mod, "read_probe", _bad)
-    assert (await mod.probe_health("cd", 750.0, advisory=True)())["advisory"] is True
-
-    async def _stale(name):
-        return _Row(ok=True, checked_at=datetime.now(timezone.utc) - timedelta(hours=3))
-
-    monkeypatch.setattr(mod, "read_probe", _stale)
-    assert (await mod.probe_health("cd", 750.0, advisory=True)())["advisory"] is True
-
-
-@pytest.mark.asyncio
-async def test_advisory_flag_is_absent_by_default(monkeypatch):
+async def test_probe_results_have_no_advisory_flag(monkeypatch):
     async def _row(name):
         return _Row(ok=True)
 

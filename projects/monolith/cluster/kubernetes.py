@@ -119,50 +119,6 @@ class KubernetesClient:
         )
         return len(result.get("items", []))
 
-    async def list_argocd_app_health(self, namespace: str = "argocd") -> list[dict]:
-        """Return {name, sync, health, finished_at, health_changed_at} per app.
-
-        One list call rather than N gets, because the cd health component reads
-        every app on each probe.
-
-        Two timestamps because the two faults are dated differently.
-        `finished_at` is the last sync operation's finish time, which is all
-        there is for a merely OutOfSync app: `.status.sync` carries no
-        transition time. `health_changed_at` is `.status.health`'s
-        lastTransitionTime, which is when the app's health ACTUALLY changed.
-
-        Reading finished_at for a health fault was a real defect: embervm last
-        synced 622 minutes before it went Progressing, so the 15 minute grace
-        was not shortened, it was skipped, and jomcgi.dev/health 503'd on the
-        first bad tick. The more settled an app is, the staler its finished_at,
-        so the less grace it got, which is exactly backwards.
-        """
-        api = await self._ensure_client()
-        custom = client.CustomObjectsApi(api)
-        result = await custom.list_namespaced_custom_object(
-            group="argoproj.io",
-            version="v1alpha1",
-            namespace=namespace,
-            plural="applications",
-        )
-        apps = []
-        for item in result.get("items", []):
-            status = item.get("status") or {}
-            apps.append(
-                {
-                    "name": (item.get("metadata") or {}).get("name", "?"),
-                    "sync": (status.get("sync") or {}).get("status"),
-                    "health": (status.get("health") or {}).get("status"),
-                    "finished_at": (status.get("operationState") or {}).get(
-                        "finishedAt"
-                    ),
-                    "health_changed_at": (status.get("health") or {}).get(
-                        "lastTransitionTime"
-                    ),
-                }
-            )
-        return apps
-
     async def get_argocd_app_status(
         self, name: str, namespace: str = "argocd"
     ) -> dict | None:
@@ -216,14 +172,17 @@ class KubernetesClient:
                     break
         return freight
 
-    async def get_argocd_app_target_revision(
+    async def get_argocd_app_deployed_revision(
         self, name: str, namespace: str = "argocd"
     ) -> str | None:
-        """Return an Application's live target revision, or None when absent.
+        """Return the revision deployed by an Application, or None on 404.
 
-        Supports both the multi-source ``.spec.sources[0]`` shape and the
-        legacy single-source ``.spec.source`` shape. A missing Application is
-        treated like ``get_argocd_app_status`` treats it.
+        Prefer status because Kargo's ``argocd-update`` patches
+        ``targetRevision`` before ``argocd-wait``. If a promotion patches the
+        target and then fails, the target can point at a new chart with nothing
+        serving it. The deployed revision in status keeps that incomplete
+        promotion visible. The spec fallbacks cover an Application that has
+        never synced and both multi-source and legacy single-source shapes.
         """
         api = await self._ensure_client()
         custom = client.CustomObjectsApi(api)
@@ -235,8 +194,17 @@ class KubernetesClient:
                 plural="applications",
                 name=name,
             )
-        except client.exceptions.ApiException:
+        except client.exceptions.ApiException as exc:
+            if exc.status == 404:
+                return None
             return None
+        status = result.get("status") or {}
+        sync = status.get("sync") or {}
+        revisions = sync.get("revisions") or []
+        if revisions and revisions[0]:
+            return revisions[0]
+        if sync.get("revision"):
+            return sync["revision"]
         spec = result.get("spec") or {}
         sources = spec.get("sources") or []
         if sources:

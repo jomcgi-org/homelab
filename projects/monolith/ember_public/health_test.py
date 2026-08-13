@@ -26,6 +26,10 @@ def test_module_registers_synthetic_postgres_health_hook():
     }
 
 
+def test_module_has_no_advisory_health_components():
+    assert MODULE.register_health_advisory is None
+
+
 @pytest.mark.asyncio
 async def test_probe_postgres_unconfigured_is_not_ok(monkeypatch):
     monkeypatch.delenv("DEMO_POSTGRES_DSN", raising=False)

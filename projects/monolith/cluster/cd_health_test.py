@@ -37,6 +37,15 @@ def test_up_to_date_is_ok():
     assert note == "prod on 0.301.1, up to date"
 
 
+def test_empty_freight_faults_instead_of_saying_up_to_date():
+    fault, note = mod._evaluate_chart_lag(
+        "0.301.1", [], 7200, datetime.now(timezone.utc)
+    )
+    assert fault is not None and "no monolith Freight found" in fault
+    assert note is None
+    assert "up to date" not in fault
+
+
 def test_behind_inside_window_does_not_fault_and_says_how_far():
     now = datetime.now(timezone.utc)
     fault, note = mod._evaluate_chart_lag(

@@ -40,5 +40,5 @@ MODULE = _Module(
     # public site being down, so report it as metadata on a 200 rather than
     # paging. Nothing pages on cd now, it is a payload signal that must be
     # looked at.
-    register_health={"cd": probe_health("cd", _CD_STALENESS_S, advisory=True)},
+    register_health_advisory={"cd": probe_health("cd", _CD_STALENESS_S)},
 )

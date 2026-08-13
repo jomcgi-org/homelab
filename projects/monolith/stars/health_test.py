@@ -20,6 +20,7 @@ def _snapshot(**overrides):
 
 def test_module_registers_stars_health():
     assert MODULE.register_health == {"stars": health.stars_health}
+    assert MODULE.register_health_advisory is None
 
 
 @pytest.mark.asyncio

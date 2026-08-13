@@ -78,41 +78,24 @@ async def test_count_argocd_applications(k8s_client):
 
 
 @pytest.mark.asyncio
-async def test_list_argocd_app_health_reads_both_clocks(k8s_client):
-    """The extraction, which the cd_health judge tests cannot cover.
-
-    Those tests feed the judge a dict directly, so a wrong field name here
-    would leave every one of them green while the judge received None and
-    silently declined to page. The payload below is the real shape off a live
-    Application, including the nesting of lastTransitionTime UNDER health
-    rather than beside it, which is the part that is easy to get wrong.
-    """
+async def test_list_kargo_freight_parses_real_shape(k8s_client):
     mock_api = MagicMock()
     mock_custom = MagicMock()
     mock_custom.list_namespaced_custom_object = AsyncMock(
         return_value={
             "items": [
                 {
-                    "metadata": {"name": "embervm"},
-                    "status": {
-                        "sync": {"status": "Synced"},
-                        "health": {
-                            "status": "Progressing",
-                            "lastTransitionTime": "2026-08-12T17:55:00Z",
-                        },
-                        "operationState": {
-                            "finishedAt": "2026-08-12T07:36:24Z",
-                        },
+                    "metadata": {
+                        "name": "freight-123",
+                        "creationTimestamp": "2026-08-13T10:00:00Z",
                     },
-                },
-                # An app ArgoCD has never synced: no operationState at all.
-                {
-                    "metadata": {"name": "fresh"},
-                    "status": {
-                        "sync": {"status": "OutOfSync"},
-                        "health": {"status": "Missing"},
-                    },
-                },
+                    "charts": [
+                        {
+                            "repoURL": "oci://ghcr.io/jomcgi/homelab/charts/monolith",
+                            "version": "0.301.1",
+                        }
+                    ],
+                }
             ]
         }
     )
@@ -122,15 +105,118 @@ async def test_list_argocd_app_health_reads_both_clocks(k8s_client):
         patch("cluster.kubernetes.ApiClient", return_value=mock_api),
         patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
     ):
-        apps = await k8s_client.list_argocd_app_health()
+        result = await k8s_client.list_kargo_freight()
+    assert result == [
+        {
+            "name": "freight-123",
+            "version": "0.301.1",
+            "created_at": "2026-08-13T10:00:00Z",
+        }
+    ]
 
-    by_name = {a["name"]: a for a in apps}
-    assert by_name["embervm"]["health_changed_at"] == "2026-08-12T17:55:00Z"
-    assert by_name["embervm"]["finished_at"] == "2026-08-12T07:36:24Z", (
-        "both clocks must survive: the judge picks between them"
+
+@pytest.mark.asyncio
+async def test_list_kargo_freight_skips_non_monolith_and_missing_charts(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.list_namespaced_custom_object = AsyncMock(
+        return_value={
+            "items": [
+                {
+                    "metadata": {"name": "other"},
+                    "charts": [
+                        {"repoURL": "oci://example/charts/other", "version": "1.0.0"}
+                    ],
+                },
+                {"metadata": {"name": "missing"}},
+            ]
+        }
     )
-    assert by_name["fresh"]["health_changed_at"] is None
-    assert by_name["fresh"]["finished_at"] is None
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        assert await k8s_client.list_kargo_freight() == []
+
+
+async def _deployed_revision(k8s_client, result):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.get_namespaced_custom_object = AsyncMock(return_value=result)
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        return await k8s_client.get_argocd_app_deployed_revision("monolith")
+
+
+@pytest.mark.asyncio
+async def test_deployed_revision_prefers_status_over_spec(k8s_client):
+    assert (
+        await _deployed_revision(
+            k8s_client,
+            {
+                "status": {
+                    "sync": {
+                        "revisions": [
+                            "0.301.1",
+                            "7a0c8c25c48fbb65d18b62f4e93fc4231629f8a0",
+                        ]
+                    }
+                },
+                "spec": {"sources": [{"targetRevision": "0.302.0"}]},
+            },
+        )
+        == "0.301.1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deployed_revision_falls_back_to_spec(k8s_client):
+    assert (
+        await _deployed_revision(
+            k8s_client, {"spec": {"sources": [{"targetRevision": "0.302.0"}]}}
+        )
+        == "0.302.0"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deployed_revision_handles_single_source_legacy_shape(k8s_client):
+    assert (
+        await _deployed_revision(
+            k8s_client,
+            {
+                "status": {"sync": {"revision": "0.301.1"}},
+                "spec": {"sources": [], "source": {"targetRevision": "0.300.9"}},
+            },
+        )
+        == "0.301.1"
+    )
+    assert (
+        await _deployed_revision(
+            k8s_client,
+            {"spec": {"sources": [], "source": {"targetRevision": "0.300.9"}}},
+        )
+        == "0.300.9"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deployed_revision_returns_none_on_404(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.get_namespaced_custom_object = AsyncMock(
+        side_effect=ApiException(status=404)
+    )
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        assert await k8s_client.get_argocd_app_deployed_revision("missing") is None
 
 
 def _node(name: str, allocatable: dict) -> MagicMock:

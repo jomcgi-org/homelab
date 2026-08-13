@@ -11,9 +11,9 @@ This component is advisory. A deploy in progress or production behind a chart
 is not the public site being down, so the signal is reported as metadata and
 does not make the health endpoint return 503.
 
-1. Production's live monolith chart is behind the newest monolith chart Kargo
-   has published Freight for longer than the lag window. The old ArgoCD sweep
-   faulted on permanently unconvergeable OutOfSync/Healthy diffs in authentik,
+1. Production's live monolith chart is older than the oldest unpromoted monolith
+   chart Kargo has discovered, for longer than the lag window. The old ArgoCD
+   sweep faulted on permanently unconvergeable OutOfSync/Healthy diffs in authentik,
    argocd, kyverno, and context-forge-gateway, so it was always red and
    monitored nothing. The original #4597 fault class, a targetRevision for a
    chart that was never published, is structurally impossible now that Kargo
@@ -101,6 +101,10 @@ def _evaluate_chart_lag(
     live = _chart_version(live_version)
     if live is None:
         return None, "prod chart version unreadable"
+    if not freight:
+        # This component is advisory and pages nobody, so a false positive is
+        # acceptable, but a false negative when the entire signal dies is not.
+        return "no monolith Freight found, chart discovery may be broken", None
 
     newer = []
     for item in freight:
@@ -138,7 +142,7 @@ async def _chart_lag_fault(lag_s: float) -> tuple[str | None, str | None]:
     from cluster.kubernetes import KubernetesClient  # noqa: PLC0415
 
     kubernetes = KubernetesClient()
-    live = await kubernetes.get_argocd_app_target_revision(PROD_APP_NAME)
+    live = await kubernetes.get_argocd_app_deployed_revision(PROD_APP_NAME)
     freight = await kubernetes.list_kargo_freight(KARGO_NAMESPACE)
     return _evaluate_chart_lag(live, freight, lag_s, datetime.now(timezone.utc))
 

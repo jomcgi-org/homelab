@@ -197,12 +197,12 @@ def test_advisory_failure_returns_200_degraded_and_logs_info(
     _sqlite_engine, caplog, _public_app_with_logs
 ):
     async def unhealthy_check():
-        return {"ok": False, "detail": "widget is behind", "advisory": True}
+        return {"ok": False, "detail": "widget is behind"}
 
     module = Module(
         name="m",
         register_public=lambda app: None,
-        register_health={"widget": unhealthy_check},
+        register_health_advisory={"widget": unhealthy_check},
     )
     app = _public_app_with_logs([module])
     with caplog.at_level(logging.INFO, logger="monolith.public"):
@@ -225,7 +225,7 @@ def test_fatal_failure_alongside_advisory_still_503s_and_warns(
     _sqlite_engine, caplog, _public_app_with_logs
 ):
     async def advisory_check():
-        return {"ok": False, "advisory": True}
+        return {"ok": False}
 
     async def fatal_check():
         return {"ok": False, "detail": "fatal"}
@@ -233,7 +233,8 @@ def test_fatal_failure_alongside_advisory_still_503s_and_warns(
     module = Module(
         name="m",
         register_public=lambda app: None,
-        register_health={"widget": advisory_check, "database": fatal_check},
+        register_health={"database": fatal_check},
+        register_health_advisory={"widget": advisory_check},
     )
     app = _public_app_with_logs([module])
     with caplog.at_level(logging.INFO, logger="monolith.public"):
@@ -246,6 +247,24 @@ def test_fatal_failure_alongside_advisory_still_503s_and_warns(
         and "database" in r.message
         for r in caplog.records
     )
+
+
+def test_raising_advisory_stays_200_and_is_degraded(
+    _sqlite_engine, caplog, _public_app_with_logs
+):
+    async def crashing_check():
+        raise RuntimeError("advisory boom")
+
+    module = Module(
+        name="m",
+        register_public=lambda app: None,
+        register_health_advisory={"widget": crashing_check},
+    )
+    app = _public_app_with_logs([module])
+    with caplog.at_level(logging.INFO, logger="monolith.public"):
+        resp = TestClient(app).get("/api/health")
+    assert resp.status_code == 200
+    assert resp.json()["degraded"] == ["widget"]
 
 
 def test_public_tier_health_503_logs_failing_component(
