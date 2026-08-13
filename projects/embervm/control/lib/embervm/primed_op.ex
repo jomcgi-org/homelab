@@ -31,12 +31,21 @@ defmodule Embervm.PrimedOp do
 
   @spec build(String.t(), String.t(), String.t(), String.t(), atom()) :: Op.t()
   def build(tenant, workload, vm_id, node_id, lane) do
-    %Op{
+    op = %Op{
       kind: :primed,
       tenant: tenant,
       workload: workload,
       ts: System.system_time(:millisecond),
       payload: %{lane: lane, workload: workload, vm_id: vm_id, node_id: node_id}
     }
+
+    Embervm.SpecTrace.emit(:adoption, :prime, %{
+      "vm_id" => vm_id,
+      "node_id" => node_id,
+      "workload" => workload,
+      "lane" => lane
+    })
+
+    op
   end
 end

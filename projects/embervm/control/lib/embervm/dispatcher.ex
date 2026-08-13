@@ -1206,11 +1206,41 @@ defmodule Embervm.Dispatcher do
         state
         |> reduce_backlog(backlog, tracked)
         |> adopt_inventory()
+        |> emit_spec_trace_checkpoint()
         |> drain_all()
 
       _ ->
         state
     end
+  end
+
+  defp emit_spec_trace_checkpoint(state) do
+    node_workload_vm_ids =
+      for {{node_id, workload}, queue} <- state.inventory, into: %{} do
+        {"#{node_id}:#{workload}", :queue.to_list(queue)}
+      end
+
+    reserved_vm_ids =
+      state.workers
+      |> Map.values()
+      |> Enum.map(&Map.get(&1, :vm_id))
+      |> Enum.filter(&is_binary/1)
+
+    Embervm.SpecTrace.emit(:adoption, :checkpoint, %{
+      "node_workload_vm_ids" => node_workload_vm_ids,
+      "reserved_vm_ids" => reserved_vm_ids,
+      "node_health" => safe_node_health()
+    })
+
+    state
+  rescue
+    _ -> state
+  end
+
+  defp safe_node_health do
+    Embervm.NodeRegistry.node_health()
+  catch
+    :exit, _ -> %{}
   end
 
   # Reconcile the dispatch inventory with each node's reported primed pool: adopt
