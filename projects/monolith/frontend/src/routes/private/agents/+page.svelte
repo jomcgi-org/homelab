@@ -32,6 +32,8 @@
   let { data } = $props();
 
   const MODELS = ["opus", "fable", "sonnet", "luna", "terra", "sol", "qwen"];
+  // Sidebar RECENT is a 24-hour navigation convenience. MasterView's activity
+  // summary intentionally uses a separate seven-day window.
   const RECENT_HISTORY_MS = 24 * 60 * 60 * 1000;
   const ATTENTION_MS = 60 * 60 * 1000;
   // hasOwn, not a bare index: ?fixture=constructor would otherwise resolve to
@@ -157,6 +159,19 @@
       (session) => Date.now() - lastActiveAt(session) < RECENT_HISTORY_MS,
     ),
   );
+  const masterActivity = $derived([
+    ...runs.map((run) => ({ kind: "run", value: run, cost: run.cost_usd })),
+    ...terminalRuns.map((run) => ({
+      kind: "run",
+      value: run,
+      cost: run.cost_usd,
+    })),
+    ...sessions.filter(isStandalone).map((session) => ({
+      kind: "session",
+      value: session,
+      cost: session.total_cost_usd,
+    })),
+  ]);
   const visibleHistorySessions = $derived(
     showAllHistory ? historySessions : recentHistorySessions,
   );
@@ -970,7 +985,12 @@
   });
 
   $effect(() => {
-    if (showNewPanel && !reposLoaded && !repoLoading) {
+    if (
+      !fixture &&
+      ((!selectedId && !selectedRunId) || showNewPanel) &&
+      !reposLoaded &&
+      !repoLoading
+    ) {
       loadRepos();
     }
   });
@@ -1167,7 +1187,7 @@
       aria-label={P.labels.backToSessions}
       onclick={returnToSessionList}>{P.labels.mobileBack}</button
     >
-    {#if fixture}
+    {#if fixture && !fixture.home}
       <RunView
         run={fixture.run}
         view={fixture.view}
@@ -1417,10 +1437,26 @@
       {:else}<div class="empty blank-state">{P.labels.loadingRun}</div>{/if}
     {:else}
       <MasterView
-        master={runMaster}
+        master={fixture?.home ? fixture.master : runMaster}
+        activity={fixture?.home ? fixture.activity : masterActivity}
+        sessions={fixture?.home ? fixture.sessions : sessions}
+        {newSession}
+        {newRun}
+        {repos}
+        {branches}
+        {repoLoading}
+        {branchLoading}
+        {modelPicker}
+        onChangeSession={(field, value) => (newSession[field] = value)}
+        onChangeRun={(field, value) => (newRun[field] = value)}
+        onLoadBranches={loadBranches}
+        onCreateSession={createSession}
+        onCreateRun={createRun}
         onSelectRun={selectRun}
+        onSelectSession={selectSession}
+        {relativeTime}
         onStartRun={() => openNewPanel("run")}
-        view={masterView}
+        view={fixture?.home ? fixture.view : masterView}
       />
     {/if}
   </section>

@@ -98,6 +98,49 @@ function entry(runValue, sessions = []) {
   };
 }
 
+function homeEntry(name, runs, sessions, view = {}) {
+  return {
+    home: true,
+    master: { runs, queues: [] },
+    activity: [
+      ...runs.map((value) => ({ kind: "run", value, cost: value.cost_usd })),
+      ...sessions.map((value) => ({
+        kind: "session",
+        value,
+        cost: value.total_cost_usd,
+      })),
+    ],
+    sessions,
+    view: { engine_tier: "live", snapshot_age_seconds: 0, ...view },
+    name,
+  };
+}
+
+const homeSession = (id, title, at, extra = {}) => ({
+  id,
+  title,
+  local_session_id: `fixture-home-${id}`,
+  status: "completed",
+  model: "luna",
+  created_at: at,
+  last_turn_at: at,
+  total_cost_usd: 0.06,
+  ...extra,
+});
+
+const homeActivityRun = run("home-activity", "approved", {
+  title: "summarize the past week's work",
+  created_at: "2026-08-03T22:40:00Z",
+  updated_at: "2026-08-10T22:53:00Z",
+  completed_at: "2026-08-10T22:53:00Z",
+  cost_usd: 0.29,
+});
+
+const homeAttentionRun = run("home-attention", "escalated", {
+  title: "review the deployment plan",
+  needs: { reason: "branch head needs a decision" },
+});
+
 const running = run("running", "running", {
   plan: { ...plan, budget_usd: 0.15 },
   deviations: [
@@ -298,4 +341,24 @@ export const RUN_FIXTURES = {
     },
   ]),
   wide: entry(wide),
+  "home-with-activity": homeEntry(
+    "home-with-activity",
+    [homeActivityRun],
+    [
+      homeSession(201, "Test session 123 acknowledged", "2026-08-07T22:53:00Z"),
+      homeSession(202, "add docstring to queues.py", "2026-08-06T22:53:00Z", {
+        total_cost_usd: 0,
+      }),
+    ],
+  ),
+  "home-with-attention": homeEntry(
+    "home-with-attention",
+    [homeAttentionRun],
+    [homeSession(203, "quiet session", "2026-08-09T22:53:00Z")],
+  ),
+  "home-empty": homeEntry("home-empty", [], []),
+  "home-stale-tier": homeEntry("home-stale-tier", [homeActivityRun], [], {
+    engine_tier: "stale",
+    snapshot_age_seconds: 180,
+  }),
 };
