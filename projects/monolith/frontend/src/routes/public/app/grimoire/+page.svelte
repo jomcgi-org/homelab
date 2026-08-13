@@ -45,10 +45,7 @@
 </script>
 
 <svelte:head>
-  <title
-    >Grimoire: a D&D campaign manager where each player sees only what the DM
-    shares · jomcgi.dev</title
-  >
+  <title>Grimoire: a D&D campaign manager · jomcgi.dev</title>
   <meta
     name="description"
     content="Scan a sourcebook, then ask it questions and get answers with the page they came from. Every player sees only what their DM has shared."
@@ -175,14 +172,6 @@
     max-width: 68ch;
     color: var(--grim-text-dim);
     font-size: 14px;
-    line-height: 1.6;
-  }
-
-  .block-note {
-    margin: 20px 8px 0;
-    max-width: 68ch;
-    color: var(--grim-text-faint);
-    font-size: 12.5px;
     line-height: 1.6;
   }
 

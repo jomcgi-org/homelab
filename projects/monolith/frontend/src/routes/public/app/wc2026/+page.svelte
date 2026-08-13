@@ -430,6 +430,10 @@
             and each match's swing are all just counts from the same set of simulations.
           </li>
         </ol>
+        <p class="explainer-fine">
+          The two lowest FIFA tiebreakers, discipline and world ranking, are
+          coin-flips here.
+        </p>
       </div>
     </details>
 
@@ -513,7 +517,9 @@
       </div>
       <ul class="zone-legend">
         <li><span class="zone-key zone-top2"></span>1&ndash;2 qualify</li>
-        <li><span class="zone-key zone-third"></span>Best third-place spot</li>
+        <li>
+          <span class="zone-key zone-third"></span>3rd: best third-place spot
+        </li>
         <li><span class="zone-key zone-out"></span>4th: out</li>
       </ul>
     </section>

@@ -343,9 +343,9 @@ def probe():
 
     <h1><span class="ember-word">Ember</span> Semgrep</h1>
     <p class="lede">
-      The production security scanner behind this cluster's CI, pointed at your
-      own snippet. A <b>Semgrep Pro</b> engine loaded its 1,600 rules once, then
-      was frozen as a microVM snapshot. Every scan thaws its own fresh copy in
+      Point the production security scanner behind this cluster's CI at your own
+      snippet. A <b>Semgrep Pro</b> engine loaded its 1,600 rules once, then was
+      frozen as a microVM snapshot. Every scan thaws its own fresh copy in
       <b>21 ms</b>.
     </p>
 

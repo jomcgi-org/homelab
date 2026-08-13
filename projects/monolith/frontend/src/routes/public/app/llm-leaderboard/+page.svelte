@@ -206,11 +206,9 @@
         up stays visible. Open a row for the per-task split.</span
       >
       <span
-        >Two ways to read this table: what you can run on your own GPU, and what
-        you can call in the cloud. Hard, tokens, turns, and tools describe the
-        first view. Wall-time, cost, and $-per-solve describe the second,
-        including OpenRouter time and money compared with the Claude reference
-        rows.</span
+        >Hard, tokens, turns, and tools tell you how a model behaves on your own
+        GPU. Wall-time, cost, and $-per-solve tell you what it costs to rent,
+        timed through OpenRouter against the Claude reference rows.</span
       >
     </div>
   </section>

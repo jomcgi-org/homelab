@@ -60,7 +60,9 @@
         <div class="callout featured">
           <div class="chead">
             <h3>{app.label.toUpperCase()}</h3>
-            <span class="where">NODE-4</span>
+            <span class="where"
+              >{app.slug === "grimoire" ? "NODE-2" : "NODE-4"}</span
+            >
           </div>
           {#if app.slug === "grimoire"}
             <p>
@@ -106,9 +108,10 @@
           <span class="where">NODE-4</span>
         </div>
         <p>
-          A <b>35B model</b> holds a conversation at <b>~170 tokens a second</b>
-          on one consumer RTX 4090, squeezed in with int4 weights and an fp8 KV-cache.
-          Chat, the agents, and note search all share the card.
+          A <b>35B model</b> with only 3B active at a time answers at
+          <b>~170 tokens a second</b> on one consumer RTX 4090. Int4 weights and an
+          fp8 KV-cache squeeze it into the card's 24 GB. Chat, the agents, and note
+          search all share it.
         </p>
       </div>
       <div class="callout">

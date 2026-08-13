@@ -191,7 +191,7 @@
       bind:this={inputEl}
       class="search-input"
       type="text"
-      placeholder="Search entities..."
+      placeholder="Search people and places..."
       autocomplete="off"
       role="combobox"
       aria-expanded={open}
@@ -200,7 +200,7 @@
         ? optionId(activeIdx)
         : null}
       aria-autocomplete="list"
-      aria-label="Search entities"
+      aria-label="Search people and places"
       bind:value={q}
       oninput={onInput}
       onfocus={onFocus}
@@ -247,7 +247,11 @@
     {/if}
   </div>
 
-  <div class="chips" role="group" aria-label="Filter search by entity type">
+  <div
+    class="chips"
+    role="group"
+    aria-label="Filter search by people and place type"
+  >
     {#each TYPE_CHIPS as t (t.value)}
       <button
         type="button"

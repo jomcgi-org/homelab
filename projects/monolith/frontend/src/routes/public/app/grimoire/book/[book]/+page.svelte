@@ -78,7 +78,9 @@
             {#if adv.summary}
               <p class="adventure-summary">{adv.summary}</p>
             {/if}
-            <span class="adventure-count">{adv.entity_count} ENTITIES</span>
+            <span class="adventure-count"
+              >{adv.entity_count} PEOPLE &amp; PLACES</span
+            >
           </a>
         </li>
       {/each}

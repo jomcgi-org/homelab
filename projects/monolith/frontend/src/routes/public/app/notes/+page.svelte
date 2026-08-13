@@ -631,7 +631,8 @@
               <p class="empty-sub">
                 There are {fmtCount(PUBLIC_NOTE_COUNT)} of them: coffee logs, design
                 notes, dark-sky readings, half-finished side quests. A model running
-                on my own machines reads them and answers. Nothing leaves the house.
+                on my own machines reads them and answers. Your questions never go
+                to a model vendor.
               </p>
               <div class="chat-examples">
                 {#each EXAMPLES as ex}

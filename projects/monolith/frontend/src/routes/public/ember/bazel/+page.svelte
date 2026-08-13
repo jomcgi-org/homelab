@@ -425,8 +425,9 @@
     <header class="masthead">
       <h1><span class="ember-word">Ember</span> Bazel Skyframe Query</h1>
       <p class="lede">
-        Ask a question about a 514-target C++ build graph and get the answer in
-        under a second, from a build server that was frozen mid-thought.
+        Ask a question about a C++ build graph and get the answer in under a
+        second, from a build server that was frozen mid-thought. Computing that
+        graph from scratch takes 13.8 seconds.
       </p>
       <p class="subtitle">
         <a class="inline-link" href="https://github.com/abseil/abseil-cpp"

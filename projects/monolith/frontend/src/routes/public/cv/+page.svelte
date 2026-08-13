@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { Footer, Sticker, Marquee, Seo } from "$lib/public/components";
+  import { Footer, Marquee, Seo } from "$lib/public/components";
   import {
     contact,
     name,
@@ -162,9 +162,6 @@
         <span class="summary-tab mono">Profile</span>
         <p class="cv-summary">{@render inline(summary)}</p>
       </div>
-      <Sticker color="var(--accent)" rotate={-4} class="hero-sticker"
-        >BARE-METAL K3S</Sticker
-      >
     </div>
   </header>
 
@@ -199,9 +196,6 @@
               {#each job.highlights as highlight}
                 <div class="highlight">
                   <h4 class="highlight-title mono">{highlight.title}</h4>
-                  {#if highlight.kicker}
-                    <p class="highlight-kicker">{highlight.kicker}</p>
-                  {/if}
                   {#if highlight.intro}
                     <p class="highlight-intro">
                       {@render inline(highlight.intro)}
@@ -502,14 +496,6 @@
     background: var(--accent);
     border: 2px solid var(--ink);
     flex-shrink: 0;
-  }
-  .highlight-kicker {
-    font-family: var(--sans);
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 1.45;
-    color: var(--ink);
-    margin: 0 0 8px;
   }
   .highlight-intro {
     font-family: var(--sans);

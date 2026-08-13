@@ -120,7 +120,7 @@
     {
       done: true,
       name: "R5 composite",
-      desc: "A scratch Kubernetes cluster as one composite workload: control plane and workers woke together on the first kubectl. The demo is since retired; the class awaits its next consumer.",
+      desc: "A scratch Kubernetes cluster as one composite workload: control plane and workers woke together on the first kubectl.",
     },
     {
       done: true,
@@ -140,7 +140,7 @@
     {
       done: false,
       name: "R9 packaging",
-      desc: "Ember becomes a standalone artifact somebody else could run: no dependency on the rest of this cluster, a project somebody else could clone and run.",
+      desc: "Ember becomes a standalone artifact somebody else could run: no dependency on the rest of this cluster.",
     },
     {
       done: false,
@@ -204,7 +204,7 @@
         <span class="sep">·</span>
         <span><b>~{vmRestore} ms</b> VM restore</span>
         <span class="sep">·</span>
-        <span>sleeping now</span>
+        <span>{stateWord ?? "asleep"} now</span>
         <span class="sep">·</span>
         <a
           class="src"
@@ -221,7 +221,7 @@
       <p class="body">
         Everything Ember runs is declared as a Kubernetes custom resource. There
         are five workload classes: task, session, serving, stateful, and
-        composite. What separates them is <b
+        composite. Three of them differ by <b
           >how much of the machine the guest is allowed to touch</b
         >. Stateful adds a disk that outlives the VM (the database below), and
         composite groups several VMs into one unit that wakes together.
@@ -493,14 +493,14 @@
         </p>
         <p>
           The task class has <b>no network device at all</b>. The guest can
-          reach exactly one thing: the daemon, over vsock.
+          reach exactly one thing: its channel to the host daemon.
         </p>
         <p>
-          <b>Quotas fail closed.</b> A principal with quota 0 is hard-stopped at submit.
+          <b>Quotas fail closed.</b> A customer with quota 0 is hard-stopped at submit.
         </p>
         <p>
-          If a node loses contact with the control plane it keeps running the
-          work and keeps its own tally.
+          The spend tally fails open: a node cut off from the control plane
+          keeps running the work and keeps its own tally.
         </p>
         <p>
           The one public route is scoped at <b>three independent layers</b>: the

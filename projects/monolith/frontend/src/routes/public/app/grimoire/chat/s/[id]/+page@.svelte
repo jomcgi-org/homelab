@@ -78,7 +78,7 @@
   <meta name="robots" content="noindex" />
   <meta
     name="description"
-    content="A read-only snapshot of a conversation with the Grimoire, a D&D sourcebook sage grounded in my loaded sourcebooks."
+    content="A saved copy of a conversation with the Grimoire, a sage that answers from my D&D sourcebooks."
   />
 </svelte:head>
 
@@ -148,7 +148,7 @@
                             ? n.entity_type
                             : 'class'}, currentColor)"
                         >
-                          {n.title || "untitled entity"}
+                          {n.title || "untitled"}
                         </a>
                       {:else}
                         <span class="touched-chip"
@@ -169,9 +169,9 @@
       <div class="fork-panel">
         <p class="fork-eyebrow">CONTINUE THIS CHAT</p>
         <p class="fork-copy">
-          Solve the challenge to pick up this conversation in a fresh session.
-          The transcript above is carried over. No sign-in, no tracking beyond
-          what keeps the bots out.
+          Solve the puzzle to pick up this conversation in a fresh session. The
+          transcript above is carried over. No sign-in, no tracking beyond what
+          keeps the bots out.
         </p>
         <TurnstileGate
           siteKey={data.turnstileSiteKey}

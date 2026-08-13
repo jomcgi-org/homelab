@@ -152,7 +152,7 @@
   const COUNTS = [
     ["books", story.corpus.books],
     ["passages", story.corpus.chunks],
-    ["characters, places and items", story.corpus.entities],
+    ["people and places", story.corpus.entities],
     ["relationships", story.corpus.edges],
   ];
   const topTypes = Object.entries(story.corpus.byType)
@@ -994,11 +994,9 @@
           Unearthed from this page
         </div>
         <div class="this-page">
-          <span>{story.bboxes.length} text blocks</span><span class="k">/</span>
-          <span>{story.chunks.length} passages</span><span class="k">/</span>
-          <span>{story.entities.length} characters, places and items</span><span
-            class="k">/</span
-          >
+          <span>{story.bboxes.length} text blocks /</span>
+          <span>{story.chunks.length} passages /</span>
+          <span>{story.entities.length} people and places /</span>
           <span>{graphEdges.length} relationships</span>
         </div>
         <div class="scale-head grim-title section-head compendium-head">
@@ -1025,7 +1023,7 @@
       <div class="chat-head" bind:this={chatHeadEl}>
         <div class="scale-head grim-title">Ask the Grimoire.</div>
         <div class="chat-sub">
-          Every claim links back to the passage it came from. Click one.
+          Every claim shows what it drew on. Click one to see it on the page.
         </div>
       </div>
 
@@ -1157,7 +1155,7 @@
         viewBox="0 0 100 100"
         preserveAspectRatio="xMidYMid meet"
         role="img"
-        aria-label="Relationship graph of the entities on this page"
+        aria-label="Relationship graph of the people and places on this page"
       >
         {#each graphEdges as e, i (i)}
           <line
@@ -1188,7 +1186,7 @@
 
     <section class="static-scene">
       <p class="static-cap">
-        <b>4 / Every book.</b>
+        <b>4 / Every book in the library gets the same treatment. In total:</b>
       </p>
       <div class="static-counters">
         {#each COUNTS as [label, value] (label)}
@@ -1210,8 +1208,7 @@
 
     <section class="static-scene">
       <p class="static-cap">
-        <b>5 / Grounded answers.</b> Every claim links back to the passage it came
-        from. Click one.
+        <b>5 / Grounded answers.</b> Every claim shows what it drew on.
       </p>
       <div class="chat static-chat">
         {#if isPlaceholder}
