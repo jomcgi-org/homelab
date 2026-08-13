@@ -71,6 +71,7 @@ defmodule Embervm.PoolManager do
   require Logger
 
   alias Embervm.{NodeCapacity, WorkloadCatalog}
+  alias Embervm.PrimedOp
   alias Embervm.Scheduler
   alias Embervm.Scheduler.Request
   alias Embervm.Node.V1.{PrimeRequest, PrimeResponse, Trace}
@@ -121,6 +122,9 @@ defmodule Embervm.PoolManager do
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
       deposit_fun: Keyword.get(opts, :deposit_fun, &Embervm.Dispatcher.deposit/4),
+      op_log: Keyword.get(opts, :op_log, nil),
+      op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+      tenant: Keyword.get(opts, :tenant, "homelab"),
       status_writer: Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3),
       refill_interval_ms: Keyword.get(opts, :refill_interval_ms, @refill_interval_ms),
       max_concurrent_primes: Keyword.get(opts, :max_concurrent_primes, @max_concurrent_primes),
@@ -169,6 +173,7 @@ defmodule Embervm.PoolManager do
 
         case result do
           {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" ->
+            _ = safe(fn -> append_primed(state, wl, vm_id, node_id) end)
             _ = safe(fn -> state.deposit_fun.(state.dispatcher, node_id, wl, vm_id) end)
 
           {:error, reason} ->
@@ -592,6 +597,13 @@ defmodule Embervm.PoolManager do
     catch
       _, _ -> :error
     end
+  end
+
+  defp append_primed(%{op_log: nil}, _workload, _vm_id, _node_id), do: :ok
+
+  defp append_primed(state, workload, vm_id, node_id) do
+    op = PrimedOp.build(state.tenant, workload, vm_id, node_id, :task)
+    state.op_log_mod.append(state.op_log, op)
   end
 
   defp default_mono, do: System.monotonic_time(:millisecond)

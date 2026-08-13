@@ -98,7 +98,7 @@ defmodule Embervm.Dispatcher do
   require OpenTelemetry.Tracer, as: Tracer
 
   alias Embervm.{Brick, NodeCapacity, WorkloadCatalog}
-  alias Embervm.OpLog.Op
+  alias Embervm.PrimedOp
   alias Embervm.Scheduler
   alias Embervm.Scheduler.Request
 
@@ -1027,13 +1027,7 @@ defmodule Embervm.Dispatcher do
     if ctx.op_log == nil do
       :ok
     else
-      op = %Op{
-        kind: :primed,
-        tenant: ctx.tenant,
-        workload: ctx.workload,
-        ts: ctx.wall_clock.(),
-        payload: %{vm_id: vm_id, node_id: node_id, workload: ctx.workload, lane: :task}
-      }
+      op = PrimedOp.build(ctx.tenant, ctx.workload, vm_id, node_id, :task)
 
       ctx.op_log_mod.append(ctx.op_log, op)
     end

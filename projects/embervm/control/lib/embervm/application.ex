@@ -719,7 +719,7 @@ defmodule Embervm.Application do
     [queue_depth_cap: queue_depth_cap(), op_log: op_log_mod(), op_log_mod: op_log_mod()] ++ share_fraction_opt()
   end
 
-  defp pool_opts, do: []
+  defp pool_opts, do: [op_log: op_log_mod(), op_log_mod: op_log_mod()]
 
   # Extra opts threaded into every Embervm.Session the SessionManager starts. Empty
   # in production (the session process uses its real NodeChannel/SessionAssign

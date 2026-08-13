@@ -57,6 +57,7 @@ defmodule Embervm.SessionManager do
   alias Embervm.{Brick, NodeCapacity, SessionState, SessionStore, SessionTrace, WakeInstance, WorkloadCatalog}
   alias Embervm.Scheduler.Request
   alias Embervm.Scheduler
+  alias Embervm.PrimedOp
 
   alias Embervm.Node.V1.{
     ArtifactRef,
@@ -796,7 +797,7 @@ defmodule Embervm.SessionManager do
       end
 
     with {:ok, restored} <- restore_session_workspace(state, dial_id, workload, restore_lineage),
-         {:ok, vm_id} <- prime(state, dial_id, snapshot_ref, entry, restore_lineage) do
+         {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, restore_lineage) do
       {:ok, vm_id, restored}
     end
   end
@@ -951,7 +952,7 @@ defmodule Embervm.SessionManager do
   defp claim_or_prime(state, node_id, workload, snapshot_ref, entry, lineage_id) do
     if persistence_enabled_workload?(entry) do
       Tracer.set_attributes(%{"ember.pool_hit" => false})
-      prime(state, node_id, snapshot_ref, entry, lineage_id)
+      prime(state, node_id, workload, snapshot_ref, entry, lineage_id)
     else
       case state.claim_fun.(state.dispatcher, node_id, workload) do
         {:ok, vm_id} ->
@@ -962,7 +963,7 @@ defmodule Embervm.SessionManager do
 
         :miss ->
           Tracer.set_attributes(%{"ember.pool_hit" => false})
-          prime(state, node_id, snapshot_ref, entry, lineage_id)
+          prime(state, node_id, workload, snapshot_ref, entry, lineage_id)
       end
     end
   end
@@ -980,7 +981,7 @@ defmodule Embervm.SessionManager do
   defp normalize_restore_lineage(lineage) when is_binary(lineage) and lineage != "", do: lineage
   defp normalize_restore_lineage(_other), do: nil
 
-  defp prime(state, node_id, snapshot_ref, entry, lineage_id) do
+  defp prime(state, node_id, workload, snapshot_ref, entry, lineage_id) do
     # A prime failure is NOT a capacity problem, and reporting it as one cost a
     # whole debugging cycle: the persistence flip denied every create with
     # :no_capacity while the real reason (a rejected Prime) never left this
@@ -989,6 +990,7 @@ defmodule Embervm.SessionManager do
       {:ok, channel} ->
         case safe_prime(state, channel, snapshot_ref, entry, lineage_id) do
           {:ok, %PrimeResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" ->
+            _ = safe(fn -> append_primed(state, workload, vm_id, node_id) end)
             {:ok, vm_id}
 
           other ->
@@ -1029,6 +1031,23 @@ defmodule Embervm.SessionManager do
     _ -> {:error, :prime_crashed}
   catch
     _, _ -> {:error, :prime_crashed}
+  end
+
+  defp append_primed(%{op_log: nil}, _workload, _vm_id, _node_id), do: :ok
+
+  defp append_primed(state, workload, vm_id, node_id) do
+    op = PrimedOp.build(state.tenant, workload, vm_id, node_id, :session)
+    state.op_log_mod.append(state.op_log, op)
+  end
+
+  defp safe(fun) do
+    try do
+      fun.()
+    rescue
+      _ -> :error
+    catch
+      _, _ -> :error
+    end
   end
 
   # Append session_created (mints id + token), then start the session process. The
@@ -1765,7 +1784,7 @@ defmodule Embervm.SessionManager do
          dial_id <- Brick.dial_id(brick),
          {:ok, _restored} <- restore_session_workspace(state, dial_id, workload, lineage_id),
          snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
-         {:ok, vm_id} <- prime(state, dial_id, snapshot_ref, entry, lineage_id) do
+         {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
       {:ok, vm_id, dial_id}
     else
       {:error, reason} -> {:error, reason}

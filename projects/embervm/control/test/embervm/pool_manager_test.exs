@@ -13,6 +13,13 @@ defmodule Embervm.PoolManagerTest do
   alias Embervm.{NodeCapacity, PoolManager, WorkloadCatalog}
   alias Embervm.Node.V1.{PrimeRequest, PrimeResponse, Trace}
 
+  defmodule OpLogRecorder do
+    def append(agent, op) do
+      Agent.update(agent, &[op | &1])
+      :ok
+    end
+  end
+
   defp start_pool(opts \\ []) do
     suffix = System.unique_integer([:positive])
     cap_table = :"pcap_#{suffix}"
@@ -52,6 +59,10 @@ defmodule Embervm.PoolManagerTest do
           invalidate_fun: invalidate_fun,
           prime_fun: prime_fun,
           deposit_fun: fn _srv, _node, _wl, _vm -> :ok end,
+          op_log: Keyword.get(opts, :op_log),
+          op_log_mod: Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite),
+          tenant: Keyword.get(opts, :tenant, "homelab"),
+          monotonic_clock: Keyword.get(opts, :monotonic_clock, fn -> 2_000_000 end),
           status_writer: status_writer,
           max_concurrent_primes: Keyword.get(opts, :max_concurrent_primes, 100),
           start_refill: false
@@ -115,6 +126,24 @@ defmodule Embervm.PoolManagerTest do
     ctx.primes |> Agent.get(& &1) |> Enum.frequencies()
   end
 
+  defp eventually(fun, timeout \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_eventually(fun, deadline)
+  end
+
+  defp do_eventually(fun, deadline) do
+    if fun.() do
+      true
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        false
+      else
+        Process.sleep(10)
+        do_eventually(fun, deadline)
+      end
+    end
+  end
+
   test "a transport-dead Prime invalidates the channel so the next tick re-dials" do
     # Regression for the noded-pod-restart wedge: a Prime failing because the channel's
     # transport is dead (wrapped by the Mint adapter as an RPCError) must tear the
@@ -133,6 +162,22 @@ defmodule Embervm.PoolManagerTest do
     :ok = PoolManager.refill(ctx.pool)
 
     assert_receive {:invalidated, "node-4", :ch}, 1_000
+  end
+
+  test "records primed op on successful refill prime" do
+    {:ok, op_log} = Agent.start_link(fn -> [] end)
+    ctx = start_pool(op_log: op_log, op_log_mod: OpLogRecorder)
+    put_catalog(ctx, "wl-prime", 1)
+    put_facts(ctx, [{"wl-prime", 0}], max: 10)
+
+    :ok = PoolManager.refill(ctx.pool)
+
+    assert eventually(fn -> Agent.get(op_log, &length/1) == 1 end)
+    assert [%{kind: :primed, workload: "wl-prime", tenant: "homelab", payload: payload}] = Agent.get(op_log, & &1)
+    assert payload.lane == :task
+    assert payload.workload == "wl-prime"
+    assert payload.node_id == "node-4"
+    assert String.starts_with?(payload.vm_id, "vm-")
   end
 
   test "a server-status Prime failure leaves the channel up (no needless invalidate)" do

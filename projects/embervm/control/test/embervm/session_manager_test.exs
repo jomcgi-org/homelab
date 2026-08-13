@@ -17,6 +17,13 @@ defmodule Embervm.SessionManagerTest do
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, UsageStats}
 
+  defmodule OpLogRecorder do
+    def append(agent, op) do
+      Agent.update(agent, &[op | &1])
+      :ok
+    end
+  end
+
   # A stub op-log whose append/2 blocks until the test sends :go, so a test can hold
   # one async write "in flight" (pending) while it runs a reconcile pass, modelling
   # the writer-stalled-between-RPC-and-append window the adopt-and-backfill repair
@@ -51,6 +58,7 @@ defmodule Embervm.SessionManagerTest do
     on_exit(fn -> File.rm_rf!(path) end)
 
     {:ok, op_log} = SQLite.start_link(name: nil, path: path)
+    manager_op_log = Keyword.get(opts, :op_log, op_log)
 
     # A shared AsyncWriter (ADR embervm/014 decision 2), threaded into BOTH the store
     # and the manager so an async-gated stack defers appends through the same writer
@@ -109,7 +117,10 @@ defmodule Embervm.SessionManagerTest do
         delete_session_volume_fun: Keyword.get(opts, :delete_session_volume_fun, fn _ch, _req -> {:ok, %{}} end),
         session_opts: session_opts,
         async_writer: writer,
-        async_lifecycle_writes: async
+        async_lifecycle_writes: async,
+        op_log: manager_op_log,
+        op_log_mod: Keyword.get(opts, :op_log_mod, SQLite),
+        tenant: Keyword.get(opts, :tenant, "homelab")
       ] ++
         Keyword.take(opts, [
           :quota_config,
@@ -420,6 +431,24 @@ defmodule Embervm.SessionManagerTest do
     assert session.state == :running
     # A live session has a process registered under its id.
     assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+  end
+
+  test "records primed op on successful session create prime" do
+    {:ok, op_log} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        op_log: op_log,
+        op_log_mod: OpLogRecorder,
+        claim_fun: fn _dispatcher, _node, _workload -> :miss end,
+        prime_fun: fake_prime_fun("vm-session-prime")
+      )
+
+    put_session_workload(ctx, "wl-session-prime")
+    assert {:ok, _created} = SessionManager.create(ctx.mgr, "wl-session-prime", "p1")
+
+    assert [%{kind: :primed, tenant: "homelab", workload: "wl-session-prime", payload: payload}] = Agent.get(op_log, & &1)
+    assert payload == %{lane: :session, workload: "wl-session-prime", vm_id: "vm-session-prime", node_id: "node-4"}
   end
 
   test "create denies unknown workload (404-shaped reason)" do

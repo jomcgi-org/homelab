@@ -348,7 +348,13 @@ defmodule Embervm.DispatcherTest do
     assert [%{kind: :primed} = op] = Enum.filter(ops, &(&1.kind == :primed))
     assert op.tenant == "tenant-prime"
     assert op.workload == "wl-prime"
-    assert op.ts == 123_456
+    # ts is taken inside Embervm.PrimedOp and is deliberately NOT injectable:
+    # this module's `wall_clock` is wall time but PoolManager's `clock` is
+    # monotonic, so a threaded clock silently stamps an arbitrary-origin value
+    # into the field a trace validator orders by. Assert the property instead.
+    assert is_integer(op.ts)
+    assert op.ts > 1_700_000_000_000
+    assert abs(System.system_time(:millisecond) - op.ts) < 60_000
     assert op.payload == %{
              "vm_id" => "vm-prime-1",
              "node_id" => "node-4",
