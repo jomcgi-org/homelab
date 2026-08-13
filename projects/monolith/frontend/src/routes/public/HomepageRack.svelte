@@ -84,61 +84,32 @@
           {/if}
         </div>
       {/each}
-      <div class="callout">
-        <div class="chead">
-          <h3>AGENT PLATFORM</h3>
-          <span class="where">NODE-4</span>
-        </div>
-        <p>
-          Tag <b>@Bosun</b> in a Discord thread and the chat bot answers: Qwen
-          served from this rack, per-channel and per-user ACLs, and a per-user
-          trust ledger that scores every interaction and soft-locks repeat
-          offenders. Underneath, <b>EmberVM</b> runs one microVM per workload: headless
-          Claude Code sessions, semgrep scans, warm HTTP serving, and a scale-to-zero
-          Postgres.
-        </p>
-        <div class="clinks">
-          <a class="more" href="/ember">how &rarr;</a>
-          <a class="more" href="/docs/projects/embervm">docs &rarr;</a>
-        </div>
-      </div>
-      <div class="callout">
-        <div class="chead">
-          <h3>INFERENCE</h3>
-          <span class="where">NODE-4</span>
-        </div>
-        <p>
-          A <b>35B model</b> with only 3B active at a time answers at
-          <b>~170 tokens a second</b> on one consumer RTX 4090. Int4 weights and an
-          fp8 KV-cache squeeze it into the card's 24 GB. Chat, the agents, and note
-          search all share it.
-        </p>
-      </div>
-      <div class="callout">
-        <div class="chead">
-          <h3>POSTGRES</h3>
-          <span class="where">NODE-1</span>
-        </div>
-        <p>
-          One Postgres backs every app; pgvector indexes the embeddings for a
-          fileless knowledge graph.
-          <a class="more" href="/app/notes">notes</a> is a public RAG over it. Declarative
-          migrations applied by an operator, volumes replicated across nodes.
-        </p>
-      </div>
-      <div class="callout">
-        <div class="chead">
-          <h3>PLATFORM PLUMBING</h3>
-          <span class="where">ALL NODES</span>
-        </div>
-        <p>
-          Five custom Bazel rulesets build every image dual-arch and pin digests
-          into versioned OCI Helm charts; ArgoCD reconciles the cluster from the
-          repo.
-        </p>
-        <div class="clinks">
-          <a class="more" href="/docs/contributing">the pipeline &rarr;</a>
-        </div>
+      <div class="hood">
+        <span class="lbl">Under the hood</span>
+        <ul>
+          <li>
+            Tag <b>@Bosun</b> in a Discord thread and an agent answers;
+            <b>EmberVM</b>
+            gives every job its own microVM.
+            <a class="more" href="/ember">how &rarr;</a>
+          </li>
+          <li>
+            A <b>35B model</b> on the RTX 4090 answers at
+            <b>~170 tokens a second</b>; chat, the agents, and note search share
+            it.
+          </li>
+          <li>
+            One Postgres backs every app; <a class="more" href="/app/notes"
+              >notes</a
+            > is a public RAG over it.
+          </li>
+          <li>
+            Bazel builds every image, ArgoCD ships the repo. <a
+              class="more"
+              href="/docs/contributing">the pipeline &rarr;</a
+            >
+          </li>
+        </ul>
       </div>
     </div>
   </div>
@@ -289,12 +260,6 @@
     color: var(--ink);
     margin: 0;
   }
-  .callout code {
-    font-family: var(--mono);
-    font-size: 12px;
-    background: var(--cream);
-    padding: 1px 4px;
-  }
   .more {
     font-family: var(--mono);
     font-size: 10.5px;
@@ -308,10 +273,33 @@
   .more:hover {
     background: var(--accent);
   }
-  .clinks {
+  .hood {
+    padding: 2px 2px 0;
+  }
+  .hood .lbl {
+    display: block;
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    margin-bottom: 10px;
+  }
+  .hood ul {
     display: flex;
-    gap: 14px;
-    margin-top: 10px;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding-left: 18px;
+  }
+  .hood li {
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--ink-2);
+  }
+  .hood b {
+    color: var(--ink);
   }
   @media (max-width: 820px) {
     .rack-grid {
