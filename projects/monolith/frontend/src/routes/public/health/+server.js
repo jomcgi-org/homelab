@@ -50,12 +50,7 @@ export async function GET({ fetch }) {
   }
 
   const body = await res.json();
-  const degraded =
-    body.degraded ??
-    Object.entries(body.components ?? {})
-      .filter(([, component]) => !component?.ok)
-      .map(([name]) => name)
-      .sort();
+  const degraded = body.degraded ?? [];
   return json(
     {
       status: body.status,

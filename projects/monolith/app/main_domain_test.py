@@ -119,5 +119,11 @@ def test_cd_component_is_registered_on_the_private_tier():
     """Guards the join that broke: component registered, endpoint present."""
     from app.modules_private import ALL_MODULES
 
-    names = {n for m in ALL_MODULES if m.register_health for n in m.register_health}
+    names = {
+        n
+        for m in ALL_MODULES
+        for checks in (m.register_health, m.register_health_advisory)
+        if checks
+        for n in checks
+    }
     assert "cd" in names

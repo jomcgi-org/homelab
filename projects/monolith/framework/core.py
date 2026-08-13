@@ -153,6 +153,8 @@ class Module:
       into the deep ``/api/health`` response (see ``_add_health``). A check
       returns ``{"ok": bool, "detail": str}``; a crashing check is caught by
       the framework and reported not-ok rather than 500ing the whole handler.
+    - ``register_health_advisory``: optional ``{name: async check}`` components
+      reported but never contributes to the 503 decision.
     - ``requires_secrets``: secret env names the module's PRIVATE surface
       uses (leader hooks, MCP, write routers). A restricted private profile
       refuses to compose such a module; the public tier ignores it because it
@@ -167,6 +169,7 @@ class Module:
     leader_start: LeaderStartHook | None = None
     leader_stop: LeaderStopHook | None = None
     register_health: dict[str, HealthCheck] | None = None
+    register_health_advisory: dict[str, HealthCheck] | None = None
     requires_secrets: frozenset[str] = frozenset()
 
 
@@ -279,6 +282,15 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
     for m in modules:
         if m.register_health:
             component_checks.update(m.register_health)
+    advisory_names = {
+        name
+        for m in modules
+        if m.register_health_advisory
+        for name in m.register_health_advisory
+    }
+    for m in modules:
+        if m.register_health_advisory:
+            component_checks.update(m.register_health_advisory)
 
     async def _run_component(name: str, check: HealthCheck) -> dict:
         try:  # nosemgrep: no-broad-except-swallow - logged via health_logger below
@@ -323,10 +335,12 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
         fatal = {
             n: c
             for n, c in components.items()
-            if not c.get("advisory") and not c.get("ok")
+            if n not in advisory_names and not c.get("ok")
         }
         advisory = {
-            n: c for n, c in components.items() if c.get("advisory") and not c.get("ok")
+            n: c
+            for n, c in components.items()
+            if n in advisory_names and not c.get("ok")
         }
         all_ok = db_ok and not fatal
         # Ember checks return {"ok": False, detail} in-band and never raise
