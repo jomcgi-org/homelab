@@ -211,6 +211,14 @@
     # is the control plane failing to adopt, and absence is invisible in an
     # event stream, so this periodic state observation is what makes
     # non-progress detectable at all.
-    checkpoint: "dispatcher.ex"
+    checkpoint: "dispatcher.ex",
+    recv_status: "node_registry.ex",
+    adopt_inventory: "dispatcher.ex",
+    dispatch_warm: "dispatcher.ex",
+    dispatch_miss: "dispatcher.ex",
+    age_to_unknown: "node_registry.ex",
+    age_to_down: "node_registry.ex",
+    reconnect: "node_registry.ex",
+    restart_cp: "dispatcher.ex"
   }
 }
