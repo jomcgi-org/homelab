@@ -52,7 +52,11 @@ def test_session_start_stores_voice_system_prompt(monkeypatch, session):
     result = asyncio.run(mcp.monolith_agent_session_start("hello"))
 
     row = store.get_session(session, result["session_id"])
-    assert row.system_prompt == voice.VOICE_INSTRUCTION
+    # The voice instruction is no longer the whole prompt: repo-backed
+    # sessions also carry the walkthrough rationale trailer, appended rather
+    # than replacing what the caller set (ADR 056 decision 9).
+    assert row.system_prompt.startswith(voice.VOICE_INSTRUCTION)
+    assert "RATIONALE" in row.system_prompt
 
 
 def test_execute_pending_message_forwards_system_prompt_only_when_set(

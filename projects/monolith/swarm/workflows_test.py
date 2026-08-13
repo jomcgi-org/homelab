@@ -42,7 +42,14 @@ def run(monkeypatch, turns, heads=None):
     )
     monkeypatch.setattr(workflows, "start_agent_session", lambda *args: 0)
     monkeypatch.setattr(workflows, "update_turn_shas", lambda *args: True)
-    monkeypatch.setattr(workflows, "_await_turn", lambda session, *_: turns[session])
+    # seq is part of poll_turn's real contract (swarm/steps.py), so the stub
+    # carries it too. Defaulted rather than added to every literal below, and
+    # overridable by any stub that cares which turn it is.
+    monkeypatch.setattr(
+        workflows,
+        "_await_turn",
+        lambda session, *_: {"seq": 0, **turns[session]},
+    )
     monkeypatch.setattr(workflows, "read_branch_head", lambda *_: next(branch_heads))
     monkeypatch.setattr(
         workflows,
@@ -136,7 +143,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
         "_await_turn",
         lambda session, *_: (
             monkeypatch.setenv("SWARM_MAX_ATTEMPTS", "5")
-            or {"result_text": "no", "cost_usd": 1}
+            or {"seq": 0, "result_text": "no", "cost_usd": 1}
         ),
     )
 
