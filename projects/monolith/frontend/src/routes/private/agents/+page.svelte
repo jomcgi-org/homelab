@@ -22,6 +22,7 @@
   import StateIcon from "./StateIcon.svelte";
   import { nodeIconKey, nodeStateClass } from "./dag.js";
   import { firstLine, fmtCost, joinMeta } from "./run-format.js";
+  import { partitionRuns, recentRuns, runActivityAt } from "./run-history.js";
   import { crumbTrail, sessionLineage } from "./lineage.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import PaneHeader from "./PaneHeader.svelte";
@@ -59,6 +60,8 @@
   }
   let sessions = $state(data.sessions ?? []);
   let runs = $state([]);
+  let showTerminalHistory = $state(false);
+  let terminalRuns = $state([]);
   let runMaster = $state({ runs: [], queues: [] });
   let masterView = $state({
     engine_tier: "live",
@@ -141,6 +144,10 @@
     [...runs].sort(
       (a, b) => Number(Boolean(b.needs)) - Number(Boolean(a.needs)),
     ),
+  );
+  const recentTerminalRuns = $derived(recentRuns(terminalRuns));
+  const visibleTerminalRuns = $derived(
+    showTerminalHistory ? terminalRuns : recentTerminalRuns,
   );
   const historySessions = $derived(
     sessions.filter((session) => !isActive(session)).sort(compareSessions),
@@ -420,11 +427,23 @@
   async function loadRuns() {
     if (fixture) return;
     try {
-      const response = await fetch("/agents/runs");
-      if (!response.ok) throw new Error("swarm runs unavailable");
-      const body = await response.json();
-      runMaster = body.master ?? body;
-      runs = runMaster.runs ?? [];
+      const responses = await Promise.all([
+        fetch("/agents/runs?active=true"),
+        fetch("/agents/runs?active=false"),
+      ]);
+      if (responses.some((response) => !response.ok)) {
+        throw new Error("swarm runs unavailable");
+      }
+      const [activeBody, terminalBody] = await Promise.all(
+        responses.map((response) => response.json()),
+      );
+      runMaster = activeBody.master ?? activeBody;
+      const activePartition = partitionRuns(runMaster.runs ?? []);
+      const terminalPartition = partitionRuns(
+        (terminalBody.master ?? terminalBody).runs ?? [],
+      );
+      runs = activePartition.inFlight;
+      terminalRuns = terminalPartition.terminal;
       masterSnapshotFetchedAt = Date.now();
       masterHasSnapshot = true;
       masterView = { engine_tier: "live", snapshot_age_seconds: 0 };
@@ -1088,6 +1107,24 @@
           {@render runRow(run)}
         {:else}<div class="empty">{P.labels.noneYet}</div>{/each}
       </div>
+      <div class="group-title history-title">
+        {P.labels.earlierRuns} <span>{terminalRuns.length}</span>
+      </div>
+      <div class="session-list runs-list">
+        {#each visibleTerminalRuns as run (run.workflow_id)}
+          {@render terminalRunRow(run)}
+        {:else}<div class="empty">{P.labels.noEarlierRuns}</div>{/each}
+      </div>
+      {#if terminalRuns.length > visibleTerminalRuns.length}
+        <button
+          class="history-toggle"
+          type="button"
+          onclick={() => (showTerminalHistory = !showTerminalHistory)}
+          >{showTerminalHistory
+            ? P.labels.showRecentOnly
+            : `${P.labels.showAll} (${terminalRuns.length})`}</button
+        >
+      {/if}
       {#if standaloneActive.length}
         <div class="group-title">
           Active <span>{standaloneActive.length}</span>
@@ -1555,6 +1592,29 @@
     {#if cost(session.total_cost_usd)}
       <span class="row-cost mono">{cost(session.total_cost_usd)}</span>
     {/if}
+  </button>
+{/snippet}
+
+{#snippet terminalRunRow(run)}
+  <button
+    class="group-header group-main run-entry"
+    class:chosen={String(selectedRunId) === String(run.workflow_id)}
+    type="button"
+    title={run.workflow_id}
+    onclick={() => selectRun(run.workflow_id)}
+  >
+    <StateIcon
+      icon={nodeIconKey({ state: run.state })}
+      class={nodeStateClass({ state: run.state })}
+    />
+    <span class="group-run-title">{firstLine(run.title)}</span>
+    <span class="group-run-meta mono"
+      >{joinMeta(
+        P.stateWords[run.state] || run.state,
+        fmtCost(run.cost_usd),
+        relativeTime(runActivityAt(run)),
+      )}</span
+    >
   </button>
 {/snippet}
 

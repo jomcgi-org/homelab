@@ -218,6 +218,11 @@ const approved = run("approved", "approved", {
   ],
 });
 
+const terminalExample = run("terminal-example", "approved", {
+  dbos_status: "SUCCESS",
+  completed_at: "2026-08-10T22:55:00Z",
+});
+
 const stranded = run("stranded", "stranded", {
   app_version: "old-build",
   server_app_version: "new-build",
@@ -282,6 +287,7 @@ export const RUN_FIXTURES = {
   queued: entry(queued),
   cancelled: entry(cancelled),
   approved: entry(approved),
+  "terminal-example": entry(terminalExample),
   stranded: entry(stranded),
   unpinned: entry(unpinned, [
     {

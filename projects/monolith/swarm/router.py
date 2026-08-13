@@ -128,7 +128,7 @@ def get_run(workflow_id: str) -> dict:
 
 
 @router.get("/runs")
-def list_runs(active: bool = True) -> dict:
+def list_runs(request: Request, active: bool = True, limit: int = 50) -> dict:
     from swarm.view import compose_master
     from core.db import get_engine
     from sqlmodel import Session
@@ -136,7 +136,14 @@ def list_runs(active: bool = True) -> dict:
 
     with Session(get_engine()) as session:
         session_costs = swarm_session_views(session)
-    return compose_master(_dbos(), active, session_costs, _server_app_version())
+    try:
+        requested_limit = int(request.query_params.get("limit", limit))
+    except (TypeError, ValueError):
+        requested_limit = 50
+    limit = max(1, min(50, requested_limit))
+    return compose_master(
+        _dbos(), active, session_costs, _server_app_version(), limit=limit
+    )
 
 
 @router.post("/runs/{workflow_id}/cancel")

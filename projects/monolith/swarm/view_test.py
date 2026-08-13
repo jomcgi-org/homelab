@@ -374,3 +374,37 @@ def test_master_rows_include_active_and_shape():
         {"key": "push_gate", "kind": "gate", "state": "future"},
         {"key": "review", "kind": "work", "state": "future"},
     ]
+
+
+def test_master_terminal_listing_uses_limit_and_descending_sort():
+    status = Status("wf-master-terminal", "SUCCESS", ["task", "repo", "main"])
+
+    class ListingDBOS(DBOS):
+        def list_workflows(self, **kwargs):
+            if "parent_workflow_id" in kwargs:
+                return []
+            assert kwargs["limit"] == 3
+            assert kwargs["sort_desc"] is True
+            return [self.workflow]
+
+    result = compose_master(
+        ListingDBOS(Workflow(status)),
+        False,
+        {"wf-master-terminal": []},
+        "unknown",
+        limit=3,
+    )
+    assert result["runs"][0]["dbos_status"] == "SUCCESS"
+
+
+def test_master_row_includes_dbos_status():
+    status = Status("wf-master-status", "CANCELLED", ["task", "repo", "main"])
+
+    class ListingDBOS(DBOS):
+        def list_workflows(self, **kwargs):
+            return [self.workflow]
+
+    result = compose_master(
+        ListingDBOS(Workflow(status)), True, {"wf-master-status": []}, "unknown"
+    )
+    assert result["runs"][0]["dbos_status"] == "CANCELLED"
