@@ -214,6 +214,12 @@ EOF
 cat >"$TMP/bb_status_3_propagates" <<'EOF'
 Executed 5 out of 5 tests: 5 tests pass.
 EOF
+cat >"$TMP/duplicate_range_apk_download" <<'EOF'
+WARNING: Download from https://packages.wolfi.dev/os/x86_64/erlang-27-27.3.4.2-r0.apk failed:
+  UnrecoverableHttpException Multiple entries with same key: Range=[bytes=19853679-] and Range=[bytes=3585-55274638]
+ERROR: no package
+ERROR: Analysis of target '//projects/embervm/image:image_base_amd64' failed; build aborted
+EOF
 cat >"$TMP/red_run_with_runner_markers" <<'EOF'
 Executed 10 out of 10 tests: 8 tests pass, 2 fail locally.
 //projects/foo:bar FAILED in 2s
@@ -299,6 +305,29 @@ if [[ "$singular_red_status" -ne 0 ]] &&
 	pass "singular_red_diagnosed"
 else
 	fail "singular_red_diagnosed" "expected red-run diagnosis, got exit $singular_red_status: $(tr '\n' ' ' <"$singular_red_stderr")"
+fi
+
+duplicate_range_output="$TMP/duplicate_range_apk_download.out"
+duplicate_range_status=0
+if (cd "$FAKE_ROOT" && HOME="$TMP/duplicate_range_apk_download-home" \
+	XDG_CACHE_HOME="$TMP/duplicate_range_apk_download-xdg-cache" \
+	PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
+	BB_FIXTURE="$TMP/duplicate_range_apk_download" BB_STATUS=0 "$CI" test \
+	>"$duplicate_range_output" 2>&1); then
+	duplicate_range_status=0
+else
+	duplicate_range_status=$?
+fi
+duplicate_range_note="duplicate Range in apk download for https://packages.wolfi.dev/os/x86_64/erlang-27-27.3.4.2-r0.apk"
+duplicate_range_note_line="$(grep -nF "$duplicate_range_note" "$duplicate_range_output" | cut -d: -f1 || true)"
+duplicate_range_summary_line="$(grep -nF "no bazel test summary was found" "$duplicate_range_output" | cut -d: -f1 || true)"
+if [[ "$duplicate_range_status" -eq 1 ]] &&
+	grep -qF "$duplicate_range_note" "$duplicate_range_output" &&
+	grep -qF "aborted before any test ran; re-running usually succeeds (issue #4849)" "$duplicate_range_output" &&
+	[[ "$duplicate_range_note_line" -lt "$duplicate_range_summary_line" ]]; then
+	pass "duplicate_range_apk_download_diagnosed"
+else
+	fail "duplicate_range_apk_download_diagnosed" "expected duplicate Range diagnosis before missing summary, got exit $duplicate_range_status: $(tr '\n' ' ' <"$duplicate_range_output")"
 fi
 
 echo "--- $PASS passed, $FAIL failed ---"

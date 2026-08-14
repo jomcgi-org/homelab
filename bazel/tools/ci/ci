@@ -330,6 +330,16 @@ cmd_test() {
 		return 1
 	fi
 	if ! grep -qE 'Executed [0-9]+ out of [0-9]+ tests?' "$out"; then
+		if grep -qF 'Multiple entries with same key: Range' "$out"; then
+			local apk_url
+			apk_url="$(sed -nE 's/.*Download from ([^[:space:]]+) failed:.*/\1/p' "$out" | head -n 1)"
+			if [[ -n "$apk_url" ]]; then
+				err "duplicate Range in apk download for $apk_url"
+			else
+				err "duplicate Range in apk download"
+			fi
+			dim "the build aborted before any test ran; re-running usually succeeds (issue #4849)"
+		fi
 		err "no bazel test summary was found, so nothing was verified (issue #4118)"
 		if [[ "$bb_status" -ne 0 ]]; then
 			return "$bb_status"
