@@ -8,16 +8,31 @@ defmodule Embervm.SpecTrace.CheckerTest do
   setup do
     System.put_env("EMBERVM_SPEC_TRACE", "on")
     SpecTrace.configure()
+
+    # The gate lives in `:persistent_term`, which is global to the BEAM and is
+    # NOT rolled back between test modules. Without this restore, every module
+    # ordered after this one starts with the trace enabled, and `async: false`
+    # means that is decided by the ExUnit seed rather than by anything visible
+    # in the file. It failed exactly that way: router_test's conformance cases
+    # assert `enabled == false`, saw a leaked `true`, queried a store that is
+    # not running in their context, and got a 500 whose body has no "verdicts"
+    # key at all.
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      SpecTrace.configure()
+    end)
+
     store = start_supervised!({SQLite, name: nil, path: ":memory:"})
     {:ok, store: store}
   end
 
   describe "negative fixtures" do
     # health_monotonic was the ONE invariant shipped without a fixture, and it was
-    # also the one that could not run: it used Enum.filter_map/3, removed in Elixir
-    # 1.9, on a path no test reached. The untested path and the broken path were the
-    # same path, which is the argument for a fixture per invariant rather than per
-    # feature.
+    # also the one that was wrong. Two real bugs sat on a path no test reached: it
+    # grouped ALL records rather than health records, and its reducer discarded the
+    # accumulator, so every age_to_down halted as a violation and a node that merely
+    # went unknown reported one. The untested path and the broken path were the same
+    # path, which is the argument for a fixture per invariant rather than per feature.
     test "health_monotonic fails on age_to_down with no preceding age_to_unknown", %{store: store} do
       run_id = "test-run-health"
 
