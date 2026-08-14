@@ -100,7 +100,11 @@ def _application_name(application_yaml: Path) -> str:
 _APP_NAME = re.compile(r"^\s{2}name:\s*(\S+)\s*$", re.M)
 
 # Module-level, used by the isolation assertions at the bottom.
-_HOSTPATH = re.compile(r"^\s*path: (/\S+)\s*$", re.M)
+# ANCHORED on the hostPath key, not any `path:`. An unanchored version matched
+# HTTP probe paths (`path: /healthz`) and reported /healthz as a shared hostPath,
+# which is a false positive of exactly the kind that drives an override rate:
+# the assertion fires, nobody can act on it, and the next person widens it.
+_HOSTPATH = re.compile(r"hostPath:\s*\n\s+path: (/\S+)", re.M)
 _ROOTFS_PATH = re.compile(r"BASE_ROOTFS_PATH\"?\s*\n\s*value: \"?(/\S+?)\"?\s*$", re.M)
 
 
