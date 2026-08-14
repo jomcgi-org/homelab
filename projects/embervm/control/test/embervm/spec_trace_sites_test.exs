@@ -60,4 +60,36 @@ defmodule Embervm.SpecTraceSitesTest do
     end
   end
 
+  # The exclusion registry has to be load-bearing or it is decoration, which is
+  # the declared-but-unwired shape this repo keeps rediscovering. #4800 will
+  # assert the full identity against the spec's prose map:
+  #
+  #   keys(spec_trace_sites) + keys(spec_trace_excluded) == actions(adoption.tla)
+  #
+  # That needs a prose-map parser. Until then, assert the half that needs no
+  # parser and that catches the realistic drift: an exclusion that has quietly
+  # become a site, and an exclusion with no stated reason.
+  test "every declared exclusion is disjoint from the sites and carries a reason" do
+    {vocabulary, _binding} = Code.eval_file(Path.join(@specs_dir, "vocabulary.exs"))
+    sites = Map.fetch!(vocabulary, :spec_trace_sites)
+    excluded = Map.fetch!(vocabulary, :spec_trace_excluded)
+
+    assert map_size(excluded) > 0,
+           "spec_trace_excluded is empty, so this test asserts nothing"
+
+    overlap = MapSet.intersection(MapSet.new(Map.keys(sites)), MapSet.new(Map.keys(excluded)))
+
+    assert MapSet.size(overlap) == 0,
+           "#{inspect(MapSet.to_list(overlap))} is both a declared emission site and a " <>
+             "declared exclusion. An exclusion that gained a code site is stale: remove " <>
+             "it from spec_trace_excluded, or the manifest claims the action is both " <>
+             "observed and deliberately unobserved."
+
+    for {action, reason} <- excluded do
+      assert is_binary(reason) and String.length(reason) > 40,
+             "exclusion #{inspect(action)} needs a reason stating WHY it is out of scope. " <>
+               "An exclusion without a reason is indistinguishable from an omission, which " <>
+               "is the thing this registry exists to prevent."
+    end
+  end
 end
