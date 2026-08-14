@@ -42,22 +42,33 @@ def ember_synthetic_trigger() -> None:
     """Trigger the synthetic probes in the monolith API pod.
 
     Deliberately lightweight: it POSTs the running API pod's internal endpoint,
-    which fires all four probes IN THAT process (where the EmberVM credentials,
+    which fires the demo probes IN THAT process (where the EmberVM credentials,
     DEMO_POSTGRES_DSN, and a DB session already live). The
     probes run in the API pod, not this ephemeral job pod, so the job needs
     only HTTP access, not tokens or DB.
     """
+    _post_synthetic("/internal/ember/synthetic-probe", "ember-synthetic-trigger")
+
+
+@app.command("ember-qwen-synthetic-trigger")
+def ember_qwen_synthetic_trigger() -> None:
+    """Trigger the qwen session synthetic in the monolith API pod."""
+    _post_synthetic(
+        "/internal/ember/qwen-session-probe", "ember-qwen-synthetic-trigger"
+    )
+
+
+def _post_synthetic(path: str, name: str) -> None:
     import httpx
 
     configure_logging()
     url = os.environ.get("MONOLITH_INTERNAL_URL", "")
     if not url:
         raise RuntimeError("MONOLITH_INTERNAL_URL is not set")
-    logger.info("ember-synthetic-trigger: POST %s/internal/ember/synthetic-probe", url)
-    resp = httpx.post(f"{url}/internal/ember/synthetic-probe", timeout=180)
+    logger.info("%s: POST %s%s", name, url, path)
+    resp = httpx.post(f"{url}{path}", timeout=180)
     resp.raise_for_status()
-    body = resp.json()
-    logger.info("ember-synthetic-trigger: %s", body)
+    logger.info("%s: %s", name, resp.json())
 
 
 @app.callback()

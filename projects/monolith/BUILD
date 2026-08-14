@@ -6250,6 +6250,15 @@ py_test(
     srcs = ["ember_public/synthetic_probe_test.py"],
     imports = ["."],
     deps = [
+        # probe_qwen imports agent_sessions.api lazily, inside the function, so
+        # the public binary never pulls it in at module load (main_public_imports
+        # _test stays green and the public-tier boundary is unaffected). The
+        # probe endpoint is served by the PRIVATE monolith, which is where the
+        # trigger POSTs, so the lazy import resolves at runtime. The test still
+        # needs the real module on the path because it monkeypatches
+        # agent_sessions.api.run_synthetic_session, and monkeypatch imports the
+        # target module to resolve the attribute.
+        ":pkg_agent_sessions",
         ":pkg_ember_public",
         "@pip//httpx",
         "@pip//pytest",
