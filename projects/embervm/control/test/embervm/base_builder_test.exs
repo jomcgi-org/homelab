@@ -1873,7 +1873,9 @@ defmodule Embervm.BaseBuilderTest do
 
     # The node now AFFIRMATIVELY reports the recorded base absent (a cold-start /
     # node replacement / scratch loss), the sole restore-first trigger.
-    put_base_fact(table, "node-4", "big", "w", "", :BASE_BUILD_STATE_NONE, false)
+    # Keep the ref even when NONE so snapshot_refs_by_vendor can find it for
+    # vendor-aware hydrate matching.
+    put_base_fact(table, "node-4", "big", "w", "snap1", :BASE_BUILD_STATE_NONE, false)
 
     {builder, agent, table}
   end
