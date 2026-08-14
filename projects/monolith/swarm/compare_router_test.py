@@ -100,6 +100,13 @@ async def test_branch_and_absence_resolution(monkeypatch):
     result = await mod.compare_stats(1, 1)
     assert result["resolution_rung"] == 3
     assert result["error"] == "no_compare_available"
+    # Issue #4817. This turn's trailer names a.py and no diff was fetched, so
+    # the old set difference reported a.py as contradicted: the agent accused
+    # of describing work it did not do, on the strength of no evidence at all.
+    # The cross-check has to be absent here, not empty and not populated.
+    assert result["cross_checked"] is False
+    assert "contradicted_paths" not in result
+    assert "unexplained_files" not in result
 
 
 @pytest.mark.asyncio
@@ -121,6 +128,7 @@ async def test_truncation_activities_and_cross_checks(monkeypatch):
     result = await mod.compare_stats(1, 1)
     assert result["activities_truncated"] is True
     assert result["stats"]["truncated_at"] == 300
+    assert result["cross_checked"] is True
     assert result["unexplained_files"] == ["a.py", "generated.py"]
     assert result["contradicted_paths"] == ["missing.py"]
 
