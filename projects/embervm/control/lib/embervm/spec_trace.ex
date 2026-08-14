@@ -5,6 +5,7 @@ defmodule Embervm.SpecTrace do
   @enabled_key {__MODULE__, :enabled}
   @dropped_key {__MODULE__, :dropped}
   @run_id_key {__MODULE__, :run_id}
+  @writer_key {__MODULE__, :writer_name}
   # Mailbox depth past which emitters stop enqueueing. Generous relative to any
   # real burst (a sweep emits one Checkpoint), small enough that a stalled
   # writer cannot accumulate meaningful heap.
@@ -56,7 +57,7 @@ defmodule Embervm.SpecTrace do
       mono = System.monotonic_time(:nanosecond)
       ts = System.system_time(:millisecond)
 
-      case Process.whereis(@writer) do
+      case Process.whereis(writer_name()) do
         pid when is_pid(pid) -> maybe_send(pid, {:emit, spec, action, vars, mono, ts})
         _ -> :ok
       end
@@ -94,6 +95,34 @@ defmodule Embervm.SpecTrace do
   defp put_dropped(msg, 0), do: msg
   defp put_dropped({:emit, spec, action, vars, mono, ts}, n),
     do: {:emit, spec, action, Map.put(vars, :spec_trace_dropped_before, n), mono, ts}
+
+  @doc """
+  The registered name `emit/3` resolves the writer through.
+
+  Defaults to the module, which is production's only shape. A test can point
+  emissions at ITS OWN writer via `scope_writer/1`, which matters because the
+  writer was a single global name: a scenario that started a writer captured
+  emissions from every other test in the same BEAM, so its store was per-test
+  while its TRACE was not.
+
+  That is not a cosmetic test concern. The restart-wedge scenario asserted on its
+  own trace and caught `health_monotonic` failing for a node it never created,
+  and the same mixing can just as easily SUPPLY the record that satisfies an
+  invariant's precondition, so a passing run is not evidence either. #4833.
+
+  Still one `:persistent_term.get/2` on the emit path, and the disabled path short
+  circuits before reaching it, so the hot path cost is unchanged.
+  """
+  @spec writer_name() :: atom()
+  def writer_name, do: :persistent_term.get(@writer_key, @writer)
+
+  @doc """
+  Point `emit/3` at `name` for the rest of this BEAM, or back at the default with
+  `nil`. Test-only: production never calls this, and the default is the module.
+  """
+  @spec scope_writer(atom() | nil) :: :ok
+  def scope_writer(nil), do: :persistent_term.put(@writer_key, @writer)
+  def scope_writer(name) when is_atom(name), do: :persistent_term.put(@writer_key, name)
 
   @doc "Wait until all events already sent to the named writer are written."
   @spec drain(GenServer.server()) :: :ok

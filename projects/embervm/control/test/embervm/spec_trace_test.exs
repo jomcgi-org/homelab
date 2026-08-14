@@ -121,6 +121,43 @@ defmodule Embervm.SpecTraceTest do
     assert seqs == Enum.uniq(seqs), "duplicate seq values: #{inspect(seqs)}"
   end
 
+  # Emissions follow the SCOPED writer, so one test's trace cannot contain
+  # another's records.
+  #
+  # emit/3 resolved the writer through a single global name, so whichever test
+  # had started a writer captured every other test's emissions in the same BEAM:
+  # per-test store, shared trace. A scenario could not make a clean claim about
+  # what its own actions produced, and the mixing cuts both ways, since a foreign
+  # record can supply the precondition an invariant needs. #4833.
+  test "emissions go to the scoped writer, not the default one", %{writer: default_writer, store: default_store} do
+    {:ok, other_store} = SQLite.start_link(name: nil, path: ":memory:")
+    other_name = :"scoped_writer_#{System.unique_integer([:positive])}"
+
+    other_writer =
+      start_supervised!(
+        {SpecTrace.Writer,
+         name: other_name, store_mod: SQLite, store: other_store, batch_size: 1, flush_ms: 5},
+        id: :other_writer
+      )
+
+    SpecTrace.scope_writer(other_name)
+    on_exit(fn -> SpecTrace.scope_writer(nil) end)
+
+    SpecTrace.emit(:adoption, :prime, %{"vm_id" => "vm-scoped"})
+    :ok = SpecTrace.drain(other_writer)
+    :ok = SpecTrace.drain(default_writer)
+
+    assert {:ok, scoped} = SQLite.read_window(other_store, spec: "adoption")
+    assert "vm-scoped" in Enum.map(scoped, & &1["vars"]["vm_id"]),
+           "the scoped writer did not receive the emission: #{inspect(scoped)}"
+
+    assert {:ok, leaked} = SQLite.read_window(default_store, spec: "adoption")
+
+    refute "vm-scoped" in Enum.map(leaked, & &1["vars"]["vm_id"]),
+           "the emission ALSO landed in the default writer's store, so scoping does " <>
+             "not isolate and a scenario's trace can still contain foreign records"
+  end
+
   test "round trips records and preamble", %{writer: writer, store: store} do
     SpecTrace.emit(:adoption, :prime, %{"vm_id" => "vm-1", lane: :task})
     :ok = SpecTrace.drain(writer)

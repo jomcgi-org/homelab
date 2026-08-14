@@ -24,10 +24,26 @@ defmodule Embervm.RestartWedgeScenarioTest do
     # what the checker can see is a conclusion about an empty store.
     {:ok, trace_store} = TraceSQLite.start_link(name: nil, path: ":memory:")
 
+    # A SCOPED writer name, so this scenario's trace contains only this
+    # scenario's emissions.
+    #
+    # The writer used to be one global name resolved by Process.whereis, so
+    # whichever test happened to have started a writer captured emissions from
+    # every other test in the BEAM. The store was per-test; the trace was not.
+    # This scenario caught it by asserting on its own trace and finding
+    # health_monotonic failing for a node it never created, and the mixing cuts
+    # both ways: a foreign record can just as easily supply the precondition an
+    # invariant needs, so a green run was not evidence either. #4833.
+    writer_name = :"wedge_trace_writer_#{System.unique_integer([:positive])}"
+
     trace_writer =
       start_supervised!(
-        {SpecTrace.Writer, store_mod: TraceSQLite, store: trace_store, batch_size: 1, flush_ms: 5}
+        {SpecTrace.Writer,
+         name: writer_name, store_mod: TraceSQLite, store: trace_store, batch_size: 1, flush_ms: 5}
       )
+
+    SpecTrace.scope_writer(writer_name)
+    on_exit(fn -> SpecTrace.scope_writer(nil) end)
 
     context = [trace_store: trace_store, trace_writer: trace_writer]
 
