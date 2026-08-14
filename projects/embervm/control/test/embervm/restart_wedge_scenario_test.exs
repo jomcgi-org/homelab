@@ -18,9 +18,26 @@ defmodule Embervm.RestartWedgeScenarioTest do
       SpecTrace.configure()
     end)
 
+    # A REGISTERED writer, because SpecTrace.emit/3 resolves it via
+    # Process.whereis/1. An unnamed writer means every emission silently finds
+    # nothing, the scenario records zero events, and any conclusion drawn about
+    # what the checker can see is a conclusion about an empty store.
+    {:ok, trace_store} = TraceSQLite.start_link(name: nil, path: ":memory:")
+
+    trace_writer =
+      start_supervised!(
+        {SpecTrace.Writer, store_mod: TraceSQLite, store: trace_store, batch_size: 1, flush_ms: 5}
+      )
+
+    context = [trace_store: trace_store, trace_writer: trace_writer]
+
     case System.get_env("EMBERVM_FAKE_NODE_BIN") do
-      nil -> {:ok, skip: "EMBERVM_FAKE_NODE_BIN is not staged in the ordinary Mix test", fake: nil}
-      bin -> start_fake_node(bin)
+      nil ->
+        {:ok, [skip: "EMBERVM_FAKE_NODE_BIN is not staged", fake: nil] ++ context}
+
+      bin ->
+        {:ok, fake_ctx} = start_fake_node(bin)
+        {:ok, Keyword.merge(context, Enum.to_list(fake_ctx))}
     end
   end
 
@@ -74,26 +91,50 @@ defmodule Embervm.RestartWedgeScenarioTest do
     _wedge_task = submit(store)
     refute eventually(fn -> Agent.get(dispatched, & &1) == 2 end, 5_000)
 
-    {:ok, trace_store} = TraceSQLite.start_link(name: nil, path: ":memory:")
-    :ok =
-      TraceSQLite.write(trace_store, [
-        %{
-          "run_id" => "restart-wedge",
-          "seq" => 1,
-          "mono" => 1,
-          "ts" => 1,
-          "spec" => "adoption",
-          "action" => "preamble",
-          "vars" => %{}
-        }
-      ])
+    # The checker runs over the WEDGE'S OWN trace, captured by the writer started
+    # in setup, never over a store this test fabricates. An earlier revision
+    # created a fresh store, wrote one preamble record, ran the checker over that
+    # and concluded "the checker cannot see the wedge". It could not see
+    # anything: there was nothing there. Testing the wrong artifact produces a
+    # finding about the wrong artifact.
+    :ok = SpecTrace.drain(trace_writer)
+    {:ok, records} = TraceSQLite.read_window(trace_store, spec: "adoption")
+
+    assert records != [],
+           "the wedge produced NO trace records, so any conclusion about what the " <>
+             "checker can or cannot see is unfounded. Check the writer is running and " <>
+             "the gate is on."
+
+    checkpoints = Enum.filter(records, &(&1["action"] == "checkpoint"))
+
+    assert checkpoints != [],
+           "no checkpoint records. Checkpoint is emitted every sweep EVEN WHEN NOTHING " <>
+             "ELSE FIRES precisely so that non-progress is observable, and a wedge is " <>
+             "non-progress. Without it this scenario cannot be distinguished from a quiet " <>
+             "healthy run by any means."
 
     verdicts = Checker.run(TraceSQLite, trace_store)
 
-    # The current checker is trace-only. A quiet run has no illegal transition,
-    # so it reports vacuous coverage rather than proving that adoption happened.
-    assert Enum.any?(verdicts, &(&1.verdict == :vacuous))
-    refute Enum.any?(verdicts, &(&1.verdict == :fail))
+    # THE FINDING, and it is the honest one #4761 asked for.
+    #
+    # The records needed to see the wedge ARE present: checkpoints carry the
+    # inventory every sweep, so a starving control plane is visible as inventory
+    # that never becomes a dispatch. What is missing is an INVARIANT that reads
+    # them for non-progress. Every current invariant asks "did an illegal
+    # transition occur", and a wedge is the absence of a legal one.
+    #
+    # So the checker reports vacuous or pass here, and that is a true statement
+    # about the invariants rather than about the trace. The gap is a missing
+    # liveness invariant (adoption.tla's EventuallyDispatched, bounded), not
+    # missing instrumentation. Filed as the next slice of #4761.
+    refute Enum.any?(verdicts, &(&1.verdict == :fail)),
+           "a FAIL here would mean an invariant already detects the wedge, which would " <>
+             "make this comment wrong and is worth knowing: #{inspect(verdicts)}"
+
+    dispatch_verdict = Enum.find(verdicts, &(&1.invariant == :dispatch_provenance))
+
+    assert dispatch_verdict.verdict in [:pass, :vacuous],
+           "unexpected verdict shape: #{inspect(dispatch_verdict)}"
   end
 
   defp start_fake_node(bin) do
