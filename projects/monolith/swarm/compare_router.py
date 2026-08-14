@@ -9,7 +9,7 @@ from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
-from swarm.rationale import parse_rationale
+from agent_sessions.rationale import parse_rationale
 
 router = APIRouter(prefix="/api/swarm/compare", tags=["swarm"])
 

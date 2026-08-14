@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from swarm import config
-from swarm.rationale import parse_rationale
+from agent_sessions.rationale import parse_rationale
 from swarm.deviations import compute_deviations
 
 logger = logging.getLogger(__name__)
