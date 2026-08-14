@@ -965,6 +965,10 @@ chat:
   llamaCppUrl: ""
   embeddingUrl: ""
   searxngUrl: ""
+  # Discord attachment bytes are stored in SeaweedFS (content-addressed at
+  # blobs/<sha256>) rather than inline in Postgres. Reuses the shared SeaweedFS
+  # S3 endpoint/creds emitted alongside the stars block.
+  blobBucket: "chat"
   onepassword:
     itemPath: ""
 
@@ -1227,12 +1231,6 @@ stars:
   historyMapKey: "history-map.json"
   s3AccessKeyId: "duckdb"
   s3SecretAccessKey: "duckdb"
-
-# Chat: Discord attachment bytes are stored in SeaweedFS (content-addressed at
-# blobs/<sha256>) rather than inline in Postgres. Reuses the shared SeaweedFS S3
-# endpoint/creds emitted alongside the stars block.
-chat:
-  blobBucket: "chat"
 
 # goosecracker artifact store (ADR 024). The full monolith writes agent-built
 # HTML to s3://<bucket>/<id>/index.html (reusing the shared SeaweedFS S3
