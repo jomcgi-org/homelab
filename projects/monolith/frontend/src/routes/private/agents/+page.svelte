@@ -26,6 +26,7 @@
   import { crumbTrail, sessionLineage } from "./lineage.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import PaneHeader from "./PaneHeader.svelte";
+  import SessionWalkthrough from "./SessionWalkthrough.svelte";
 
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
 
@@ -1156,7 +1157,21 @@
       aria-label={P.labels.backToSessions}
       onclick={returnToSessionList}>{P.labels.mobileBack}</button
     >
-    {#if fixture && !fixture.home}
+    {#if fixture?.walkthrough}
+      <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
+           component gets its payload inline and never fetches. -->
+      <div class="turns">
+        <div class="turns-inner">
+          <article class="turn">
+            <SessionWalkthrough
+              turnSeq={fixture.walkthrough.turnSeq}
+              model={fixture.walkthrough.model}
+              fixture={fixture.walkthrough}
+            />
+          </article>
+        </div>
+      </div>
+    {:else if fixture && !fixture.home}
       <RunView
         run={fixture.run}
         view={fixture.view}
@@ -1253,6 +1268,13 @@
                 <div class="result-md">
                   {@html renderAgentMarkdown(turn.result_text)}
                 </div>
+              {/if}
+              {#if selectedSession.repo}
+                <SessionWalkthrough
+                  sessionId={selectedSession.id}
+                  turnSeq={turn.seq}
+                  model={turn.model || selectedSession.model || "luna"}
+                />
               {/if}
               <div class="turn-meta mono">
                 <span>{turn.model || selectedSession.model || "luna"}</span>

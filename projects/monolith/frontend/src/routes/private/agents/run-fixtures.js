@@ -571,6 +571,126 @@ const wide = run("wide", "running", {
   ],
 });
 
+// --- Session walkthrough fixtures (ADR 056) -------------------------------
+// One fixture per degradation-ladder rung, plus the cross-check and scale
+// cases. Shapes mirror GET /api/swarm/compare/{session}/{turn}
+// (swarm/compare_router.py) and swarm/rationale.py's parsed trailer; patches
+// are embedded so previews never fetch.
+
+function walkFile(
+  path,
+  classification,
+  additions,
+  deletions,
+  status = "modified",
+) {
+  return {
+    path,
+    status,
+    additions,
+    deletions,
+    changes: additions + deletions,
+    classification,
+    patch_url:
+      classification === "authored"
+        ? `/api/swarm/compare/301/2/patch?path=${encodeURIComponent(path)}`
+        : null,
+  };
+}
+
+function walkRationale(paths, deviations = []) {
+  return {
+    raw: "RATIONALE",
+    parse_status: "parsed",
+    paths,
+    deviations,
+    parser_version: 1,
+  };
+}
+
+function walkEntry(compare, rationale = null, patches = {}) {
+  return {
+    walkthrough: { turnSeq: 2, model: "luna", compare, rationale, patches },
+  };
+}
+
+const walkPatchRows = [
+  "@@ -41,7 +41,9 @@ def read_turn(session_id, seq):",
+  "     turn = store.get_turn(db, session_id, seq)",
+  "     if turn is None:",
+  "-        return None",
+  "+        raise HTTPException(status_code=404)",
+  "+    if turn.result_text is None:",
+  "+        return empty_turn(turn)",
+  "     return turn",
+].join("\n");
+
+const walkPatchView = [
+  "@@ -12,6 +12,8 @@ export function turnView(turn) {",
+  "   return {",
+  "     seq: turn.seq,",
+  "+    // The walkthrough needs the recorded head to resolve a compare.",
+  "+    commit_sha: turn.commit_sha,",
+  "     model: turn.model,",
+  "   };",
+  " }",
+].join("\n");
+
+const walkFullCompare = {
+  resolution_rung: 1,
+  diff_type: "sha",
+  base_sha: "9f2c11ab",
+  commit_sha: "86dcbf41",
+  branch: "claude/fixture-walk",
+  trailer_parsed: true,
+  files: [
+    walkFile("swarm/rows.py", "authored", 12, 3),
+    walkFile("swarm/view.py", "authored", 8, 2),
+    walkFile("swarm/view_test.py", "authored", 31, 0),
+    walkFile("swarm/quiet.py", "authored", 2, 2),
+    walkFile("charts/monolith/index.yaml", "mechanical", 4, 4),
+    walkFile("charts/monolith/lock.json", "mechanical", 40, 40),
+    walkFile("projects/home-cluster/kustomization.yaml", "mechanical", 1, 1),
+  ],
+  stats: { total_files: 7 },
+  authored_file_paths: [
+    "swarm/quiet.py",
+    "swarm/rows.py",
+    "swarm/view.py",
+    "swarm/view_test.py",
+  ],
+  unexplained_files: [
+    "charts/monolith/index.yaml",
+    "charts/monolith/lock.json",
+    "projects/home-cluster/kustomization.yaml",
+    "swarm/quiet.py",
+  ],
+  contradicted_paths: ["swarm/legacy_rollup.py"],
+};
+
+const walkFullRationale = walkRationale(
+  [
+    { path: "swarm/view.py", why: "serves the recorded head to the console" },
+    {
+      path: "swarm/view_test.py",
+      why: "locks the new field into the contract",
+    },
+    { path: "swarm/rows.py", why: "404s a missing turn instead of nulling" },
+    {
+      path: "swarm/legacy_rollup.py",
+      why: "deleted the rollup the run view replaced",
+    },
+  ],
+  ["left the sidebar rollup untouched; it is owned by another change"],
+);
+
+const walkFullPatches = {
+  "swarm/rows.py": walkPatchRows,
+  "swarm/view.py": walkPatchView,
+  "swarm/view_test.py": walkPatchView,
+  "swarm/quiet.py": walkPatchRows,
+};
+
 export const RUN_FIXTURES = {
   running: entry(running, [
     {
@@ -623,4 +743,148 @@ export const RUN_FIXTURES = {
     engine_tier: "absent",
     snapshot_age_seconds: 0,
   }),
+  // Ladder rung 1: SHAs recorded, trailer parsed. Also carries the two
+  // cross-check states: swarm/quiet.py is authored but unexplained, and
+  // swarm/legacy_rollup.py is claimed but absent from the diff.
+  "walk-full": walkEntry(walkFullCompare, walkFullRationale, walkFullPatches),
+  // Rung 2: no SHAs, branch still resolvable; same walk labelled ephemeral.
+  "walk-ephemeral": walkEntry(
+    {
+      ...walkFullCompare,
+      resolution_rung: 2,
+      diff_type: "branch_ephemeral",
+      base_sha: null,
+      commit_sha: null,
+    },
+    walkFullRationale,
+    walkFullPatches,
+  ),
+  // Rung 3: no compare resolves; quoted testimony plus the touched list,
+  // no diff panes. contradicted_paths deliberately carries every trailer
+  // path (the server set-difference against an empty diff) to prove the
+  // client does not render phantom contradictions.
+  "walk-testimony-only": walkEntry(
+    {
+      resolution_rung: 3,
+      diff_type: null,
+      base_sha: null,
+      commit_sha: null,
+      branch: null,
+      trailer_parsed: true,
+      files: [],
+      stats: { total_files: 0 },
+      authored_file_paths: ["swarm/rows.py", "swarm/view.py"],
+      unexplained_files: [],
+      contradicted_paths: ["swarm/rows.py", "swarm/view.py"],
+      error: "no_compare_available",
+    },
+    walkRationale([
+      { path: "swarm/rows.py", why: "404s a missing turn instead of nulling" },
+      { path: "swarm/view.py", why: "serves the recorded head to the console" },
+    ]),
+  ),
+  // Rung 4: no compare, no trailer, many files: declines to walk and shows
+  // stats plus the touched list, labelled. A requirement, not a shortfall.
+  "walk-stats-only": walkEntry({
+    resolution_rung: 3,
+    diff_type: null,
+    base_sha: null,
+    commit_sha: null,
+    branch: null,
+    trailer_parsed: false,
+    files: [],
+    stats: { total_files: 0 },
+    authored_file_paths: Array.from(
+      { length: 23 },
+      (_, i) => `pkg/generated/module_${String(i).padStart(2, "0")}.py`,
+    ),
+    unexplained_files: [],
+    contradicted_paths: [],
+    error: "no_compare_available",
+  }),
+  // Rung 5: nothing at all; the section says so and stops.
+  "walk-empty": walkEntry({
+    resolution_rung: 3,
+    diff_type: null,
+    base_sha: null,
+    commit_sha: null,
+    branch: null,
+    trailer_parsed: false,
+    files: [],
+    stats: { total_files: 0 },
+    authored_file_paths: [],
+    unexplained_files: [],
+    contradicted_paths: [],
+    error: "no_compare_available",
+  }),
+  // A generator-dominated turn: 143 mechanical files collapse to one step
+  // with a count, and the GitHub files cap renders as a labelled fact.
+  "walk-mechanical-large": walkEntry(
+    {
+      ...walkFullCompare,
+      files: [
+        walkFile("bazel/tools/regen.bzl", "authored", 6, 1),
+        ...Array.from({ length: 143 }, (_, i) =>
+          walkFile(
+            `projects/charts/rendered/out_${String(i).padStart(3, "0")}.yaml`,
+            "mechanical",
+            3,
+            3,
+          ),
+        ),
+      ],
+      stats: {
+        total_files: 144,
+        truncated_at: 300,
+        truncated_reason: "GitHub files array capped at 300",
+      },
+      activities_truncated: true,
+      activities_truncated_reason: "activities ingest capped at 300",
+      authored_file_paths: ["bazel/tools/regen.bzl"],
+      unexplained_files: [],
+      contradicted_paths: [],
+    },
+    walkRationale([
+      { path: "bazel/tools/regen.bzl", why: "widened the regen glob" },
+    ]),
+    { "bazel/tools/regen.bzl": walkPatchRows },
+  ),
+  // A changed file no point mentions: flagged in system voice, never blocking.
+  "walk-unexplained": walkEntry(
+    {
+      ...walkFullCompare,
+      files: [
+        walkFile("swarm/rows.py", "authored", 12, 3),
+        walkFile("swarm/quiet.py", "authored", 2, 2),
+      ],
+      stats: { total_files: 2 },
+      authored_file_paths: ["swarm/quiet.py", "swarm/rows.py"],
+      unexplained_files: ["swarm/quiet.py"],
+      contradicted_paths: [],
+    },
+    walkRationale([
+      { path: "swarm/rows.py", why: "404s a missing turn instead of nulling" },
+    ]),
+    { "swarm/rows.py": walkPatchRows, "swarm/quiet.py": walkPatchRows },
+  ),
+  // A point naming a file absent from the diff: juxtaposed with the claim,
+  // never merged and never dropped.
+  "walk-contradicted": walkEntry(
+    {
+      ...walkFullCompare,
+      files: [walkFile("swarm/rows.py", "authored", 12, 3)],
+      stats: { total_files: 1 },
+      authored_file_paths: ["swarm/rows.py"],
+      unexplained_files: [],
+      contradicted_paths: ["swarm/legacy_rollup.py"],
+    },
+    walkRationale([
+      { path: "swarm/rows.py", why: "404s a missing turn instead of nulling" },
+      {
+        path: "swarm/legacy_rollup.py",
+        why: "deleted the rollup the run view replaced",
+      },
+    ]),
+    { "swarm/rows.py": walkPatchRows },
+  ),
 };
