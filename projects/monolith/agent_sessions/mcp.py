@@ -29,7 +29,7 @@ from agent_sessions.transport import (
 from core.db import get_engine
 from core.mcp_app import mcp
 from goosecracker.api import REPO_CATALOG
-from swarm.rationale import parse_rationale
+from agent_sessions.rationale import parse_rationale
 
 # Voice and MCP sessions hydrate this repo unless the caller names another. The
 # /agents console makes the choice explicit in a dropdown; there is no dropdown

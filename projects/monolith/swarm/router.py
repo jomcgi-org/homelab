@@ -12,7 +12,7 @@ from goosecracker.api import REPO_CATALOG
 from swarm import config, runtime
 from swarm.compare_router import router as compare_router
 from swarm.compare_router import compare_stats
-from swarm.rationale import parse_rationale
+from agent_sessions.rationale import parse_rationale
 from swarm.walkthrough_composer import compose_walkthrough
 
 router = APIRouter(prefix="/api/swarm", tags=["swarm"])

@@ -74,7 +74,7 @@ def poll_turn(session_id: int, after_seq: int) -> dict | None:
 
     from agent_sessions.models import AgentTurn
     from core.db import get_engine
-    from swarm.rationale import parse_rationale
+    from agent_sessions.rationale import parse_rationale
 
     with Session(get_engine()) as session:
         turn = session.exec(

@@ -31,7 +31,7 @@ from agent_sessions.mcp import (
 from core.db import get_session
 from faas.embervm_client import EmberVMTransportError
 from goosecracker.api import REPO_CATALOG
-from swarm.rationale import parse_rationale
+from agent_sessions.rationale import parse_rationale
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["agents"])

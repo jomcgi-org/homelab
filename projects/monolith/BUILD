@@ -1114,6 +1114,13 @@ py_library(
 )
 
 py_library(
+    name = "agent_sessions_rationale",
+    srcs = ["agent_sessions/rationale.py"],
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+)
+
+py_library(
     name = "pkg_agent_sessions",
     srcs = glob(
         [
@@ -1123,11 +1130,13 @@ py_library(
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
+            "agent_sessions/rationale.py",
         ],
     ),
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":agent_sessions_rationale",
         ":pkg_core",
         ":pkg_cyclegroup",
         ":pkg_faas",
@@ -1154,6 +1163,14 @@ py_library(
 )
 
 py_library(
+    name = "swarm_rationale",
+    srcs = ["swarm/rationale.py"],
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [":agent_sessions_rationale"],
+)
+
+py_library(
     name = "pkg_swarm",
     srcs = glob(
         ["swarm/**/*.py"],
@@ -1161,11 +1178,13 @@ py_library(
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
+            "swarm/rationale.py",
         ],
     ),
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":agent_sessions_rationale",
         ":pkg_agent_sessions",
         ":pkg_core",
         ":pkg_framework",
@@ -1808,6 +1827,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_swarm",
+        ":swarm_rationale",
         "@pip//pytest",
     ],
 )
