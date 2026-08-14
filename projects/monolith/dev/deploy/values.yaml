@@ -20,8 +20,7 @@
 # This is a values choice, not a guard. Nothing rejects a paid model here, so
 # a NEW model-consuming feature has to be pointed at the free lane in this
 # file too, or dev will quietly inherit production's provider. See issue #4859
-# for the console's offered list, which is still a bundle literal and so is
-# NOT covered by anything in this file.
+# for the fuller console configuration change this defers.
 
 backend:
   # THE side-effect mute. One switch covers all five leader singletons (Discord
@@ -161,6 +160,9 @@ tokenBroker:
 # own gate while leaving ARGO_JOBS populated, so dev runs them nowhere.
 jobs:
   image: ""
+
+agents:
+  localModelsOnly: true
 
 # EVERY MODEL IN DEV POINTS AT THE IN-CLUSTER QWEN.
 #

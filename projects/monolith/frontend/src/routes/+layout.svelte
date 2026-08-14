@@ -42,6 +42,7 @@
   // to /ember.
   let hideNav = $derived(
     isPrivate ||
+      /^\/private(?:\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?artifact(\/|$)/.test($page.url.pathname) ||

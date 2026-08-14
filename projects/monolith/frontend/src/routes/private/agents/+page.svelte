@@ -33,6 +33,7 @@
   let { data } = $props();
 
   const MODELS = ["opus", "fable", "sonnet", "luna", "terra", "sol", "qwen"];
+  const DEV_MODELS = ["qwen"];
   // Sidebar RECENT is a 24-hour navigation convenience. MasterView's activity
   // summary intentionally uses a separate seven-day window.
   const RECENT_HISTORY_MS = 24 * 60 * 60 * 1000;
@@ -67,6 +68,7 @@
     }
   }
   let sessions = $state(data.sessions ?? []);
+  let availableModels = $state(MODELS);
   let runs = $state([]);
   let showTerminalHistory = $state(false);
   let terminalRuns = $state([]);
@@ -440,6 +442,10 @@
       if (!response.ok) throw new Error("Unable to refresh sessions");
       const body = await response.json();
       sessions = Array.isArray(body) ? body : (body.sessions ?? []);
+      availableModels =
+        !Array.isArray(body) && body.localModelsOnly === true
+          ? DEV_MODELS
+          : MODELS;
       await loadRuns();
       errorMessage = null;
       if (
@@ -1686,7 +1692,7 @@
       aria-pressed={!current}
       onclick={() => choose("")}>{P.labels.defaultWord}</button
     >
-    {#each MODELS as model}
+    {#each availableModels as model}
       <button
         type="button"
         class="chip"
@@ -1705,10 +1711,11 @@
       onchange={(event) => choose(event.currentTarget.value)}
     >
       <option value="">{P.labels.defaultWord}</option>
-      {#if current && !MODELS.includes(current)}
+      {#if current && !availableModels.includes(current)}
         <option value={current}>{current}</option>
       {/if}
-      {#each MODELS as model}<option value={model}>{model}</option>{/each}
+      {#each availableModels as model}<option value={model}>{model}</option
+        >{/each}
     </select>
   </label>
 {/snippet}
