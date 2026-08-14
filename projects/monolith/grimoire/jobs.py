@@ -31,6 +31,7 @@ import os
 from sqlmodel import Session, select
 
 from grimoire.models import KnowledgeChunk
+import shared.inference
 
 logger = logging.getLogger("monolith.grimoire.jobs")
 
@@ -40,10 +41,11 @@ DEFAULT_BUCKET = "grimoire"
 # as a gzipped ``output.json``. Mirrors ingest.DEFAULT_PREFIX.
 _BOOKS_PREFIX = "books/"
 DEFAULT_EXTRACT_LIMIT = 25
-# Concurrent extract calls; kept below vLLM --max-num-seqs (8) so this bulk job
-# leaves decode-slot headroom for trusted interactive callers. See
+# Concurrent extract calls. Extraction is asynchronous bulk work, so it gets the
+# async slot budget of one decode slot and never makes an interactive caller
+# queue. See shared.inference.ASYNC_SLOT_BUDGET and
 # grimoire.extract.DEFAULT_CONCURRENCY.
-DEFAULT_EXTRACT_CONCURRENCY = 6
+DEFAULT_EXTRACT_CONCURRENCY = shared.inference.ASYNC_SLOT_BUDGET
 
 
 def _embedding_client():

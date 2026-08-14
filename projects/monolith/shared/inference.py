@@ -21,6 +21,27 @@ from typing import Any
 
 REASONING_EFFORTS: frozenset[str] = frozenset({"xhigh", "medium", "low"})
 
+# Decode-slot policy for the shared in-cluster engine.
+#
+# Synchronous callers (a human is waiting: Discord chat, private chat) are NOT
+# capped. They take whatever slots they need, and latency for a waiting human is
+# the thing the GPU exists to protect.
+#
+# Asynchronous callers (grimoire extraction, generation, background jobs) get
+# exactly ONE slot each. Bulk work is throughput-shaped, not latency-shaped, so
+# the difference between finishing in an hour and ninety minutes does not matter,
+# whereas a background job that occupies the whole GPU makes every interactive
+# reply queue behind it. This is why the number is 1 rather than "one less than
+# the slot count": the goal is that async work is never the reason a human waits.
+#
+# Import this rather than hardcoding a literal, so the policy has one home.
+#
+# Caveat worth knowing: this bounds fan-out WITHIN one job process. It is not a
+# cross-pod semaphore, so two async jobs running at once can still take two
+# slots. chat_public solves the cross-pod version with Postgres advisory locks
+# if this ever needs to be enforced globally rather than by convention.
+ASYNC_SLOT_BUDGET = 1
+
 
 def thinking_off() -> dict[str, dict[str, bool]]:
     """Return the chat-template options that disable Qwen thinking."""
