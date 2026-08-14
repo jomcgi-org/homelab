@@ -496,6 +496,47 @@ defmodule Embervm.SpecTrace.CheckerTest do
     end
   end
 
+  describe "inventory reconciliation" do
+    test "inventory_reconciled fails on a suppress-primed wedge", %{store: store} do
+      :ok = SQLite.write(store, [inventory_checkpoint("wedge", 100, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 1, "primed_count" => 0, "connected" => true}})])
+
+      verdict = inventory_verdict(Checker.run(SQLite, store))
+
+      assert verdict[:verdict] == :fail
+      assert verdict[:oracle] == :node_reconciled
+      assert verdict[:coverage] == 1
+      assert verdict[:detail] =~ "node-1"
+      assert verdict[:detail] =~ "1"
+      assert verdict[:detail] =~ "100"
+    end
+
+    test "inventory_reconciled does not fail for an idle node", %{store: store} do
+      :ok = SQLite.write(store, [inventory_checkpoint("idle", 200, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 0, "primed_count" => 0, "connected" => true}})])
+
+      assert inventory_verdict(Checker.run(SQLite, store))[:verdict] == :pass
+    end
+
+    test "inventory_reconciled is vacuous when node_reported is absent", %{store: store} do
+      record = inventory_checkpoint("absent", 300, %{"node-1:wl" => []}, nil)
+      record = update_in(record, ["vars"], &Map.delete(&1, "node_reported"))
+      :ok = SQLite.write(store, [record])
+
+      verdict = inventory_verdict(Checker.run(SQLite, store))
+
+      assert verdict[:verdict] == :vacuous
+      assert verdict[:detail] =~ "absent"
+    end
+
+    test "inventory_reconciled is vacuous for disconnected-only nodes", %{store: store} do
+      :ok = SQLite.write(store, [inventory_checkpoint("disconnected", 400, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 1, "primed_count" => 0, "connected" => false}})])
+
+      verdict = inventory_verdict(Checker.run(SQLite, store))
+
+      assert verdict[:verdict] == :vacuous
+      assert verdict[:detail] =~ "disconnected"
+    end
+  end
+
   describe "destroy invariants" do
     test "destroy_intent_precedes_record passes when gate on and begin precedes confirm", %{store: store} do
       :ok = SQLite.write(store, destroy_records(true, true, true, 100, 200))
@@ -673,6 +714,25 @@ defmodule Embervm.SpecTrace.CheckerTest do
 
   defp destroy_verdict(verdicts, invariant) do
     Enum.find(verdicts, &(&1[:invariant] == invariant))
+  end
+
+  defp inventory_verdict(verdicts) do
+    Enum.find(verdicts, &(&1[:invariant] == :inventory_reconciled))
+  end
+
+  defp inventory_checkpoint(run_id, mono, inventory, node_reported) do
+    vars = %{"node_workload_vm_ids" => inventory}
+    vars = if is_nil(node_reported), do: vars, else: Map.put(vars, "node_reported", node_reported)
+
+    %{
+      "run_id" => "test-run-#{run_id}",
+      "seq" => mono,
+      "mono" => mono,
+      "ts" => mono * 10,
+      "spec" => "adoption",
+      "action" => "checkpoint",
+      "vars" => vars
+    }
   end
 
   defp destroy_records(gate, node_confirmed, _begin_gate, begin_mono, confirm_mono) do

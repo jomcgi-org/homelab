@@ -20,11 +20,11 @@ defmodule Embervm.SpecTrace.Checker do
   `coverage` is how many instances were actually examined. A verdict without a
   denominator overclaims.
 
-  `oracle` records what the verdict was checked against. Everything in this PR
-  is `:trace_only` (the trace is control-plane testimony). Node reconciliation
-  against `GET /v1/nodes` is later work, and the field exists so a report can
-  never render "the system does what the spec says" and "the log agrees with
-  itself" identically.
+  `oracle` records what the verdict was checked against. Most invariants are
+  `:trace_only` (the trace is control-plane testimony). `:node_reconciled`
+  invariants also use node testimony recorded at checkpoint time, so a report
+  can never render "the system does what the spec says" and "the log agrees
+  with itself" identically.
 
   Invariants (from adoption.tla):
 
@@ -59,6 +59,14 @@ defmodule Embervm.SpecTrace.Checker do
      N must be assigned or succeeded by checkpoint N+K if inventory persists
      across the window.
 
+  9. **InventoryReconciled**: at a checkpoint, a dispatchable node instance
+     reporting `live_vms > 0` must not have an empty control-plane inventory.
+     The only invariant whose oracle is not the trace alone: the node's own
+     count is recorded into the checkpoint, so a suppress-primed wedge (the
+     node stops reporting its pool, the CP's inventory genuinely empties) is
+     distinguishable from an idle control plane, which no trace-only invariant
+     can do (#4838).
+
   This list is the fourth copy of the invariant set (#4802): `invariants/0` is
   the source, `check_invariant/2` dispatches on it, and the router reads it. The
   prose here drifted first, documenting 6 of 8 while numbering the last one 8,
@@ -83,7 +91,8 @@ defmodule Embervm.SpecTrace.Checker do
       :prime_before_checkpoint,
       :destroy_intent_precedes_record,
       :no_destroy_before_confirm,
-      :eventually_dispatched
+      :eventually_dispatched,
+      :inventory_reconciled
     ]
   end
 
@@ -119,6 +128,7 @@ defmodule Embervm.SpecTrace.Checker do
   defp check_invariant(:health_monotonic, records), do: check_health_monotonic(records)
   defp check_invariant(:prime_before_checkpoint, records), do: check_prime_before_checkpoint(records)
   defp check_invariant(:eventually_dispatched, records), do: check_eventually_dispatched(records)
+  defp check_invariant(:inventory_reconciled, records), do: check_inventory_reconciled(records)
 
   defp check_invariant(:destroy_intent_precedes_record, records),
     do: check_destroy_intent_precedes_record(records)
@@ -593,6 +603,107 @@ defmodule Embervm.SpecTrace.Checker do
             }
         end
     end
+  end
+
+  defp check_inventory_reconciled(records) do
+    checkpoints = Enum.filter(records, &(&1["action"] == "checkpoint"))
+    reported = Enum.map(checkpoints, &get_in(&1, ["vars", "node_reported"]))
+
+    cond do
+      checkpoints == [] ->
+        inventory_reconciled_vacuous("no checkpoint records in trace")
+
+      Enum.all?(reported, &(not is_map(&1))) ->
+        inventory_reconciled_vacuous("node_reconciled oracle input is absent from every checkpoint")
+
+      true ->
+        observations =
+          Enum.flat_map(checkpoints, fn checkpoint ->
+            node_reported = get_in(checkpoint, ["vars", "node_reported"])
+
+            if is_map(node_reported) do
+              Enum.map(node_reported, fn {instance_id, report} ->
+                {checkpoint, instance_id, report}
+              end)
+            else
+              []
+            end
+          end)
+
+        missing_live_vms = Enum.filter(observations, fn {_checkpoint, _instance_id, report} ->
+          not is_map(report) or not Map.has_key?(report, "live_vms")
+        end)
+
+        connected = Enum.filter(observations, fn {_checkpoint, _instance_id, report} ->
+          is_map(report) and Map.get(report, "connected", false) == true
+        end)
+
+        cond do
+          missing_live_vms != [] ->
+            inventory_reconciled_vacuous("node_reconciled oracle input is missing live_vms")
+
+          connected == [] ->
+            inventory_reconciled_vacuous("every examined node instance is disconnected")
+
+          true ->
+            violations = Enum.filter(connected, fn {checkpoint, instance_id, report} ->
+              live_vms = Map.get(report, "live_vms", 0)
+              live_vms > 0 and checkpoint_inventory_empty?(checkpoint, instance_id)
+            end)
+
+            case violations do
+              [{checkpoint, instance_id, report} | _] ->
+                %{
+                  invariant: :inventory_reconciled,
+                  verdict: :fail,
+                  coverage: connected_instance_count(connected),
+                  oracle: :node_reconciled,
+                  detail:
+                    "instance #{instance_id} reports #{report["live_vms"]} live_vms with empty checkpoint inventory at mono #{checkpoint["mono"]}"
+                }
+
+              [] ->
+                %{
+                  invariant: :inventory_reconciled,
+                  verdict: :pass,
+                  coverage: connected_instance_count(connected),
+                  oracle: :node_reconciled,
+                  detail: "every connected instance with live_vms had checkpoint inventory"
+                }
+            end
+        end
+    end
+  end
+
+  defp checkpoint_inventory_empty?(checkpoint, instance_id) do
+    checkpoint
+    |> get_in(["vars", "node_workload_vm_ids"])
+    |> case do
+      inventory when is_map(inventory) ->
+        inventory
+        |> Enum.filter(fn {key, _vm_ids} -> String.starts_with?(to_string(key), "#{instance_id}:") end)
+        |> Enum.all?(fn {_key, vm_ids} -> not is_list(vm_ids) or vm_ids == [] end)
+
+      _ ->
+        true
+    end
+  end
+
+  defp connected_instance_count(observations) do
+    observations
+    |> Enum.map(fn {_checkpoint, instance_id, _report} -> instance_id end)
+    |> MapSet.new()
+    |> MapSet.size()
+  end
+
+  defp inventory_reconciled_vacuous(detail) do
+    %{
+      invariant: :inventory_reconciled,
+      verdict: :vacuous,
+      coverage: 0,
+      oracle: :node_reconciled,
+      detail: detail
+    }
   end
 
   defp eventually_dispatched_vacuous(coverage, detail) do
