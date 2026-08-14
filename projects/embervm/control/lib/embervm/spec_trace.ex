@@ -232,6 +232,24 @@ defmodule Embervm.SpecTrace.Writer do
   defp stringify(value) when is_atom(value), do: Atom.to_string(value)
   defp stringify(value), do: value
 
+  # Booleans and nil MUST come before the is_atom/1 clause. In Elixir `true`,
+  # `false` and `nil` are atoms, so a bare is_atom/1 clause converts them to the
+  # strings "true"/"false"/"nil". That is silently destructive here: JSON has
+  # native booleans and null, the SQLite backend round-trips via term_to_binary
+  # and would have preserved the real value, and every consumer comparing
+  # `vars["gate"] == false` gets a mismatch that reads as "the condition is not
+  # met" rather than as a type error.
+  #
+  # It cost a false PASS before it was caught. The destroy invariants compare
+  # `gate` and `node_confirmed` against booleans; against stringified data the
+  # vacuous arm never fires and the violation filter never matches, so the
+  # checker reported PASS on a trace it had not actually evaluated. A
+  # verification tool returning green because its own transport corrupted the
+  # data is the exact failure this facility exists to detect.
+  #
+  # Non-boolean atoms are still stringified on purpose: `:adopted`, `:warm`,
+  # `:miss` are enum-like labels and consumers compare them as strings.
+  defp jsonable(value) when is_boolean(value) or is_nil(value), do: value
   defp jsonable(value) when is_atom(value), do: Atom.to_string(value)
   defp jsonable(value) when is_list(value), do: Enum.map(value, &jsonable/1)
   defp jsonable(value) when is_map(value), do: Map.new(value, fn {key, value} -> {stringify(key), jsonable(value)} end)
