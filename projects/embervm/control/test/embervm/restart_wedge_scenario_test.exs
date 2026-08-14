@@ -193,6 +193,12 @@ defmodule Embervm.RestartWedgeScenarioTest do
   # rather than a race against process teardown.
   defp crash_dispatcher(name) do
     pid = Process.whereis(name)
+
+    # UNLINK first. The dispatcher is started with start_link, so it is linked to
+    # this test process, and a :kill exit propagates down the link and takes the
+    # test with it (** (EXIT from #PID<...>) killed). Monitoring is what we want
+    # here instead: observe the death without sharing it.
+    Process.unlink(pid)
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
 
