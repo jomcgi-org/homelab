@@ -97,13 +97,15 @@ defmodule Embervm.SpecTraceTest do
     assert before != []
 
     # Same store, fresh writer: the restart.
-    :ok = Supervisor.stop(writer, :normal)
+    #
+    # stop_supervised!, not Supervisor.stop: the writer is an ExUnit-supervised
+    # child AND registers under a global name, so anything that leaves the old
+    # process alive makes the second start fail with :already_started rather
+    # than exercising the restart this test is about.
+    :ok = stop_supervised!(SpecTrace.Writer)
 
     restarted =
-      start_supervised!(
-        {SpecTrace.Writer, store_mod: SQLite, store: store, batch_size: 1, flush_ms: 5},
-        id: :restarted_writer
-      )
+      start_supervised!({SpecTrace.Writer, store_mod: SQLite, store: store, batch_size: 1, flush_ms: 5})
 
     SpecTrace.emit(:adoption, :prime, %{"vm_id" => "vm-after"})
     :ok = SpecTrace.drain(restarted)
