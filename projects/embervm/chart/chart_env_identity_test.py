@@ -84,7 +84,6 @@ def _application_name(application_yaml: Path) -> str:
     EmberVM Applications don't use a separate releaseName field; the
     Application's name IS the release name (embervm or embervm-dev).
     """
-    _APP_NAME = re.compile(r"^\s{2}name:\s*(\S+)\s*$", re.M)
     content = application_yaml.read_text()
     # Skip the namespace line and find the first name after metadata.
     in_metadata = False
@@ -96,6 +95,13 @@ def _application_name(application_yaml: Path) -> str:
             if match:
                 return match.group(1)
     raise RuntimeError(f"Could not find Application name in {application_yaml}")
+
+
+_APP_NAME = re.compile(r"^\s{2}name:\s*(\S+)\s*$", re.M)
+
+# Module-level, used by the isolation assertions at the bottom.
+_HOSTPATH = re.compile(r"^\s*path: (/\S+)\s*$", re.M)
+_ROOTFS_PATH = re.compile(r"BASE_ROOTFS_PATH\"?\s*\n\s*value: \"?(/\S+?)\"?\s*$", re.M)
 
 
 @pytest.fixture(scope="module")
@@ -280,3 +286,102 @@ def test_noded_bucket_path_configuration(renders):
         "dev rendered no noded store path; this test is inert. "
         "Check noded.store.path in dev values."
     )
+
+
+def test_dev_hostpaths_are_under_production_scratch_never_beside_it(renders):
+    """Dev's hostPaths must be UNDER production's, not siblings of it.
+
+    A plain inequality assertion would be wrong and would have passed the bug.
+    Dev's scratch was `/var/lib/embervm/scratch-dev`, which differs from
+    production's `/var/lib/embervm/scratch` while being a SIBLING of the NVMe
+    mount point, so it was a plain directory on the node's root filesystem: the
+    only scratch path in this system with no capacity bound, on the node that
+    also runs production's brick-16gi-node-4 and brick-2gi. ADR 012's uniform cap
+    exists for that, and six base builders writing multi-GB images to an uncapped
+    root filesystem is a DiskPressure eviction of production waiting on one
+    mkdir.
+
+    So the property is containment, not difference. See #4832, #4837.
+    """
+    prod_paths = set(_HOSTPATH.findall(renders["prod"]))
+    dev_paths = set(_HOSTPATH.findall(renders["dev"]))
+
+    assert dev_paths, "no hostPaths in the dev render; this assertion is inert"
+
+    # Device paths are legitimately shared: /dev/kvm is the same device on the
+    # same node for both, and is not storage anything can fill.
+    dev_storage = {p for p in dev_paths if not p.startswith("/dev/")}
+    prod_storage = {p for p in prod_paths if not p.startswith("/dev/")}
+
+    for path in dev_storage:
+        if path in prod_storage:
+            raise AssertionError(
+                f"dev mounts production's hostPath {path} directly, so the two "
+                "environments share the same scratch and production GC can reach "
+                "dev artifacts"
+            )
+
+        under = any(path.startswith(prod.rstrip("/") + "/") for prod in prod_storage)
+        assert under, (
+            f"dev hostPath {path} is not under any production hostPath "
+            f"{sorted(prod_storage)}. A sibling of the NVMe mount point is a plain "
+            "directory on the node's ROOT filesystem with no capacity bound (#4832). "
+            "Point it under the mount so it inherits that mount's capacity."
+        )
+
+
+def test_dev_rootfs_paths_are_under_dev_scratch(renders):
+    """Every dev rootfsPath must live under dev's own nvmeRoot.
+
+    `rootfsPath` is a SEPARATE key from `noded.firecracker.nvmeRoot`, and
+    overriding only the latter is not enough: `_noded-pod.tpl` renders
+    BASE_ROOTFS_PATH from rootfsPath and mounts only nvmeRoot, so a rootfsPath
+    left pointing at production's scratch is UNBACKED inside the container and
+    mkfs writes multi-GB base images to the container's writable layer on the
+    node's root filesystem.
+
+    This is the assertion that would have caught it. See #4837.
+    """
+    dev_paths = [
+        p for p in set(_HOSTPATH.findall(renders["dev"])) if not p.startswith("/dev/")
+    ]
+    assert dev_paths, "no dev hostPaths found; this assertion is inert"
+
+    rootfs_paths = set(_ROOTFS_PATH.findall(renders["dev"]))
+    assert rootfs_paths, (
+        "no BASE_ROOTFS_PATH values in the dev render. Either the brick renders no "
+        "base builders, which is fine, or this regex has drifted and the assertion "
+        "is inert. Check before deleting."
+    )
+
+    for rootfs in rootfs_paths:
+        under = any(rootfs.startswith(mount.rstrip("/") + "/") for mount in dev_paths)
+        assert under, (
+            f"dev BASE_ROOTFS_PATH {rootfs} is not under any hostPath dev actually "
+            f"mounts {sorted(dev_paths)}. The path is unbacked in the container, so "
+            "the builder writes a multi-GB image to the node's root filesystem and "
+            "rebuilds it on every restart (#4837)."
+        )
+
+
+def test_dev_never_dials_production_control_plane(renders):
+    """No dev value may resolve into production's namespace.
+
+    noded streams its full `primed_vm_ids` set to whatever control plane it
+    registers with, and adoption is ADDITIVE, so a brick reachable by both
+    control planes is cross-control-plane double assignment by design, with no
+    attacker required. #4762 puts brick overlap explicitly out of scope for
+    exactly this reason.
+    """
+    dev = renders["dev"]
+
+    for needle, why in (
+        (".embervm.svc", "production's service DNS"),
+        ("namespace: embervm\n", "production's namespace"),
+        ("serviceaccount:embervm:", "production's ServiceAccount"),
+    ):
+        assert needle not in dev, (
+            f"the dev render references {why} ({needle!r}). A dev brick that can "
+            "reach production's control plane is double-assigned by design, since "
+            "adoption is additive over whatever primed_vm_ids a node reports."
+        )
