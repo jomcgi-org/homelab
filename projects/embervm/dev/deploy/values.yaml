@@ -194,3 +194,19 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/scratch-postgres/rootfs.ext4
   bazelQuery:
     rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/bazel-query/rootfs.ext4
+
+# The serving lane, off. Dev exercises task-class lifecycle for the conformance
+# harness, not serving or stateful workloads.
+#
+# It was CrashLoopBackOff on the first sync, and the cause is structural rather
+# than a misconfiguration: envoy's bootstrap subscribes to CDS over ADS and
+# blocks initialisation until its first response. With no live brick and no
+# serving workload the control plane's xds snapshot is empty, so the initial
+# fetch times out ("initial fetch timed out for ...v3.Cluster"), the pod never
+# reports ready, and the probe restarts it. Production does not hit this because
+# it always has serving config to send.
+#
+# Turn this back on if dev ever needs the serving lane, and expect it to stay
+# unready until something is actually being served.
+servingEnvoy:
+  enabled: false
