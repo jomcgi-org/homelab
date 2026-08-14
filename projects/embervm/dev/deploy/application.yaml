@@ -3,6 +3,25 @@ kind: Application
 metadata:
   name: embervm-dev
   namespace: argocd
+  annotations:
+    # Kargo will not touch an Application that has not opted in. Without this
+    # the promotion fails with:
+    #
+    #   Argo CD Application "embervm-dev" in namespace "argocd" is not authorized
+    #
+    # which is exactly how #4863 shipped: the Warehouse discovered Freight
+    # within seconds, the dev Promotion ran, and it Errored on step-1. Nothing
+    # else reported a problem, because an unauthorized Promotion is Kargo
+    # declining rather than anything being broken.
+    #
+    # That is a deliberate guard, not an obstacle: installing Kargo cannot
+    # silently give it write access to every Application in the cluster, and an
+    # Application is protected by simply never carrying this.
+    #
+    # Format is <kargo project>:<stage>. The project is kargo-embervm rather
+    # than embervm because a Kargo Project OWNS a namespace of its own name and
+    # both embervm and embervm-dev already exist holding live workloads.
+    kargo.akuity.io/authorized-stage: kargo-embervm:dev
 spec:
   project: default
   sources:
