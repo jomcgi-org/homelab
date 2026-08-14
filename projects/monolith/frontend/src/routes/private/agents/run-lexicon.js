@@ -97,6 +97,8 @@ export const RUN_LEXICON = {
     creating: "creating…",
     startingRun: "starting…",
     deviations: "deviations",
+    reason: "reason:",
+    next: "next:",
     noSpendYet: "nothing spent yet",
     workflowWord: "workflow",
     copyId: "copy id",
@@ -213,6 +215,7 @@ export const RUN_LEXICON = {
     cancelled: "cancelled",
     review_cycles_exhausted: "review cycles exhausted, awaiting decision",
     gated: "waiting at a gate",
+    failed: "failed",
   },
   verdictCodes: {
     approve: "approved",
