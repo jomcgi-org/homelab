@@ -23,15 +23,23 @@ specTrace:
 # All other classes are explicitly zero. No autoscale in dev.
 bricks:
   enabled: true
+  # ALL ZERO. desiredReplicas renders an UNPINNED brick per class, and nodeFloors
+  # renders an ADDITIONAL pinned one: the floor does not pin the desired-replicas
+  # brick, it adds a second Deployment beside it.
+  #
+  # Setting 1gi: 1 here produced two live bricks, one of them free to schedule
+  # anywhere, including onto a master. #4290 is that failure: an unpinned brick
+  # fills a master's 35GiB scratch on any chart bump, and a second control plane
+  # priming bases makes it worse. Dev gets exactly one brick and it is pinned.
   desiredReplicas:
-    1gi: 1
+    1gi: 0
     2gi: 0
     4gi: 0
     8gi: 0
     16gi: 0
   autoscale:
     mode: observe
-  # Per-node brick floor guarantees: pins the dev brick to node-4.
+  # The ONLY live brick in dev: one 1gi class, pinned to node-4. Never a master.
   nodeFloors:
     - node: node-4
       class: 1gi
@@ -99,3 +107,15 @@ auth:
 
 usageAdmins:
   - system:serviceaccount:embervm-dev:embervm-dev-embervm
+
+# ARMED in dev, and this is the point of the environment.
+#
+# #4758: EMBERVM_NODE_CONFIRMED_DESTROY has been read by the control plane since
+# ADR embervm/014 landed and rendered by no template, so the node-confirmed
+# ordering has never executed anywhere. adoption.tla's NoDestroyBeforeConfirm
+# and DestroyIntentPrecedesRecord model behaviour production has never run.
+#
+# Dev is where that ordering runs for the first time, under the conformance
+# harness, with EMBERVM_SPEC_TRACE on so the destroy invariants have data. Prod
+# stays false until this has soaked.
+nodeConfirmedDestroy: true
