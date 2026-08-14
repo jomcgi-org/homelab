@@ -9,6 +9,27 @@ load("@npm//:defs.bzl", "npm_link_all_packages")
 npm_link_all_packages(name = "node_modules")
 
 # gazelle:prefix github.com/jomcgi/homelab
+# How gazelle labels deps that live in EXTERNAL Go repos. Under bzlmod the
+# go_deps extension generates targets with the "import" convention (the target
+# is named for the Go package, so the label is @repo//pkg/authn, and
+# @repo//pkg/v1:pkg where the package name differs from the directory). Gazelle
+# still defaults this to the legacy "go_default_library", so without this
+# directive every `ci regen` rewrites all external Go deps to
+# @repo//pkg/authn:go_default_library. Those targets do not exist, and the tree
+# then fails ANALYSIS rather than anything obvious: `//bazel/semgrep/defs/gazelle
+# :gazelle_test` aborts the build before a single test runs. The repo's own Go
+# targets already match the default, so only the external convention is set.
+# gazelle:go_naming_convention_external import
+# bazel_gazelle is brought in under the repo name `gazelle`, and its targets use
+# the import convention. Gazelle's resolver does not know either fact about
+# itself, so without these it rewrites this repo's two gazelle plugins to
+# @bazel_gazelle//config:go_default_library and friends, which do not exist.
+# gazelle:resolve go github.com/bazelbuild/bazel-gazelle/config @gazelle//config
+# gazelle:resolve go github.com/bazelbuild/bazel-gazelle/label @gazelle//label
+# gazelle:resolve go github.com/bazelbuild/bazel-gazelle/language @gazelle//language
+# gazelle:resolve go github.com/bazelbuild/bazel-gazelle/repo @gazelle//repo
+# gazelle:resolve go github.com/bazelbuild/bazel-gazelle/resolve @gazelle//resolve
+# gazelle:resolve go github.com/bazelbuild/bazel-gazelle/rule @gazelle//rule
 # gazelle:exclude .claude
 # Explicit-only agent procedures + helper scripts (not py packages; imports are
 # runtime/monolith paths Gazelle cannot resolve). Same class as .claude/skills.
