@@ -1371,8 +1371,38 @@ defmodule Embervm.SessionManager do
           end
         else
           if memory_false_without_filesystem?(state, session.workload) do
-            destroy_live_legacy(state, session)
-            {:ok, state}
+            case SessionStore.transition(
+                   state.session_store,
+                   session_id,
+                   :begin_destroy,
+                   :session_destroying,
+                   %{reason: :destroyed},
+                   %{}
+                 ) do
+              {:ok, _} ->
+                Embervm.SpecTrace.emit(:adoption, :begin_destroy, %{
+                  "session_id" => session_id,
+                  "vm_id" => session.vm_id,
+                  "node_id" => session.node_id,
+                  "gate" => state.node_confirmed_destroy,
+                  "resumed" => false
+                })
+
+                case SessionStore.get(state.session_store, session_id) do
+                  {:ok, updated_session} ->
+                    {destroy_reply, state} = destroy_live_legacy(state, updated_session)
+                    case destroy_reply do
+                      {:ok, _} -> {:ok, state}
+                      other -> {other, state}
+                    end
+
+                  :error ->
+                    {{:error, :not_found}, state}
+                end
+
+              {:error, _reason} = error ->
+                {error, state}
+            end
           else
             cond do
               bank_at_cap?(state, node_id) ->

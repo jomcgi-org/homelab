@@ -738,6 +738,76 @@ defmodule Embervm.SessionManagerTest do
     assert session.state == :destroyed
     assert :session_destroyed in op_kinds_for(ctx, created.session_id)
   end
+  test "memory false with filesystem disabled emits session_destroying before session_destroyed" do
+    {trace_store, writer} = start_spec_trace()
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-no-fs-destroy", persistence: %{memory: false, filesystem: %{enabled: false}})
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-no-fs-destroy", "p1")
+
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+
+    kinds = op_kinds_for(ctx, created.session_id)
+    assert :session_destroying in kinds
+    assert :session_destroyed in kinds
+    assert index_of(kinds, :session_destroying) < index_of(kinds, :session_destroyed)
+
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store)
+    destroy_records = Enum.filter(records, &(&1["action"] in ["begin_destroy", "confirm_destroy"]))
+
+    assert Enum.map(destroy_records, & &1["action"]) == ["begin_destroy", "confirm_destroy"]
+    [begin_destroy, _confirm_destroy] = destroy_records
+    assert begin_destroy["vars"]["session_id"] == created.session_id
+    assert begin_destroy["vars"]["gate"] == false
+    assert begin_destroy["vars"]["resumed"] == false
+  end
+
+  test "memory false with filesystem disabled and unconfirmed teardown stays destroying" do
+    ctx =
+      start_stack(
+        destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: false}} end
+      )
+
+    put_session_workload(ctx, "wl-no-fs-unconf", persistence: %{memory: false, filesystem: %{enabled: false}})
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-no-fs-unconf", "p1")
+
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroying
+
+    kinds = op_kinds_for(ctx, created.session_id)
+    assert :session_destroying in kinds
+    refute :session_destroyed in kinds
+  end
+
+  test "memory false with filesystem disabled reconcile redrives destroying to destroyed" do
+    ctx =
+      start_stack(
+        session_channel_fun: fn _node -> {:ok, :ch} end,
+        destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end
+      )
+
+    put_session_workload(ctx, "wl-no-fs-redrive", persistence: %{memory: false, filesystem: %{enabled: false}})
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-no-fs-redrive", "p1")
+
+    # Force the session into destroying with the node still reporting its VM, then
+    # reconcile: the re-drive re-issues destroy, confirms, and records destroyed.
+    {:ok, _} =
+      SessionStore.transition(ctx.store, created.session_id, :begin_destroy, :session_destroying, %{reason: :destroyed}, %{})
+
+    report_session_vm(ctx, created.session_id, "wl-no-fs-redrive")
+
+    :ok = SessionManager.reconcile(ctx.mgr)
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+
+    kinds = op_kinds_for(ctx, created.session_id)
+    assert :session_destroying in kinds
+    assert :session_destroyed in kinds
+  end
 
   test "invoke_on_parked_reprimes_on_volume_node" do
     ctx =
