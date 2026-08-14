@@ -2,9 +2,12 @@ import pytest
 
 from swarm.policy import (
     implementer_prompt,
+    implementer_prompt_parts,
     next_action,
     parse_review_verdict,
     reviewer_prompt,
+    reviewer_prompt_parts,
+    verdict_trailer_instruction,
     work_branch,
 )
 
@@ -79,6 +82,38 @@ def test_implementer_retry_appends_previous_failure_after_rationale():
 
 def test_reviewer_prompt_does_not_contain_rationale_trailer_instruction():
     assert "RATIONALE" not in reviewer_prompt("t", "b", "sha")
+
+
+def test_verdict_trailer_instruction_exists():
+    instruction = verdict_trailer_instruction()
+    assert isinstance(instruction, str)
+    assert "VERDICT: APPROVE" in instruction
+    assert "VERDICT: REQUEST_CHANGES" in instruction
+    assert "VERDICT: BLOCKED" in instruction
+
+
+def test_implementer_prompt_parts_returns_tuple():
+    parts = implementer_prompt_parts("t", "b")
+    assert isinstance(parts, tuple)
+    assert len(parts) == 2
+    assert all(isinstance(part, str) for part in parts)
+
+
+def test_reviewer_prompt_parts_returns_tuple():
+    parts = reviewer_prompt_parts("t", "b", "sha")
+    assert isinstance(parts, tuple)
+    assert len(parts) == 2
+    assert all(isinstance(part, str) for part in parts)
+
+
+def test_sent_prompt_is_byte_identical_implementer():
+    args = ("t", "b", "failed", "please fix")
+    assert implementer_prompt(*args) == "\n".join(implementer_prompt_parts(*args))
+
+
+def test_sent_prompt_is_byte_identical_reviewer():
+    args = ("t", "b", "sha")
+    assert reviewer_prompt(*args) == "\n".join(reviewer_prompt_parts(*args))
 
 
 @pytest.mark.parametrize(

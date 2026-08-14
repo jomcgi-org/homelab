@@ -205,12 +205,14 @@ def create_turn(
     cost_usd: float | None,
     cli_session_id: str | None = None,
     model: str | None = None,
+    prompt_intent: str | None = None,
 ) -> AgentTurn:
     row = AgentTurn(
         session_id=session_id,
         seq=seq,
         model=model,
         prompt=prompt,
+        prompt_intent=prompt_intent,
         voice_summary=voice_summary,
         result_text=result_text,
         terminal_reason=terminal_reason,
@@ -273,6 +275,23 @@ def update_turn_shas(
         return None
     row.base_sha = base_sha
     row.commit_sha = commit_sha
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def update_turn_prompt_intent(
+    session: Session,
+    session_id: int,
+    turn_seq: int,
+    prompt_intent: str | None,
+) -> AgentTurn | None:
+    """Attach the server-owned intent to a persisted turn."""
+    row = get_turn(session, session_id, turn_seq)
+    if row is None:
+        return None
+    row.prompt_intent = prompt_intent
     session.add(row)
     session.commit()
     session.refresh(row)
