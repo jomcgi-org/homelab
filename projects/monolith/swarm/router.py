@@ -46,6 +46,7 @@ class RunRequest(BaseModel):
 
 class ClassifyAndStartRequest(BaseModel):
     task: str
+    task_id: str | None = None
     repo: str | None = None
     branch: str | None = None
     model: str
@@ -54,9 +55,11 @@ class ClassifyAndStartRequest(BaseModel):
 
 class ClassifyAndStartResponse(BaseModel):
     task_id: str
+    classification: str
     session_id: int | None = None
     workflow_id: str | None = None
     kind: str
+    needs_input: dict[str, bool] | None = None
 
 
 class PromoteSessionRequest(BaseModel):
@@ -246,6 +249,24 @@ def _set_task_link_sync(task_id: str, **links) -> None:
         update_task_links(task_id, session=db, **links)
 
 
+def _update_task_inputs_sync(
+    task_id: str, repo: str | None, branch: str | None
+) -> None:
+    """Fill in the repository inputs on a task being resubmitted."""
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm.models import SwarmTask
+
+    with Session(get_engine()) as db:
+        row = db.get(SwarmTask, task_id)
+        if row is None:
+            raise ValueError(f"Unknown swarm task {task_id}")
+        row.repo = repo
+        row.base_branch = branch
+        db.add(row)
+        db.commit()
+
+
 @router.post("/classify-and-start", response_model=ClassifyAndStartResponse)
 async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
     task = body.task.strip()
@@ -257,31 +278,47 @@ async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
 
     from swarm import classifier, models
 
-    task_id = models.mint_task_id()
-    await asyncio.to_thread(
-        _create_task_sync, task_id, task, body.repo, body.branch, body.budget_usd
-    )
+    is_resubmission = body.task_id is not None
+    task_id = body.task_id or models.mint_task_id()
+    if is_resubmission:
+        try:
+            await asyncio.to_thread(
+                _update_task_inputs_sync, task_id, body.repo, body.branch
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        await asyncio.to_thread(
+            _create_task_sync, task_id, task, body.repo, body.branch, body.budget_usd
+        )
     (
         classification,
         latency_ms,
         outcome,
         refusal_code,
     ) = await classifier.classify_task_with_outcome(task)
-    await asyncio.to_thread(
-        _record_classification_sync,
-        task_id,
-        task,
-        classification,
-        latency_ms,
-        outcome,
-        refusal_code,
-        body.budget_usd,
-    )
+    if not is_resubmission:
+        await asyncio.to_thread(
+            _record_classification_sync,
+            task_id,
+            task,
+            classification,
+            latency_ms,
+            outcome,
+            refusal_code,
+            body.budget_usd,
+        )
 
     if classification == "planned":
         if not body.repo or not body.branch:
-            raise HTTPException(
-                status_code=400, detail="planned tasks require repo and branch"
+            return ClassifyAndStartResponse(
+                task_id=task_id,
+                classification=classification,
+                kind="needs_input",
+                needs_input={
+                    "repo": not bool(body.repo),
+                    "branch": not bool(body.branch),
+                },
             )
         try:
             result = start_run(
@@ -303,7 +340,10 @@ async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
             _set_task_link_sync, task_id, workflow_id=result["workflow_id"]
         )
         return ClassifyAndStartResponse(
-            task_id=task_id, workflow_id=result["workflow_id"], kind="run"
+            task_id=task_id,
+            classification=classification,
+            workflow_id=result["workflow_id"],
+            kind="run",
         )
 
     from agent_sessions.router import StartRequest, start_session
@@ -330,7 +370,10 @@ async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
         _set_task_link_sync, task_id, session_id=result["session_id"]
     )
     return ClassifyAndStartResponse(
-        task_id=task_id, session_id=result["session_id"], kind="session"
+        task_id=task_id,
+        classification=classification,
+        session_id=result["session_id"],
+        kind="session",
     )
 
 
