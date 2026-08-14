@@ -11,11 +11,28 @@ from pydantic import BaseModel
 from goosecracker.api import REPO_CATALOG
 from swarm import config, runtime
 from swarm.compare_router import router as compare_router
+from swarm.compare_router import compare_stats
+from swarm.rationale import parse_rationale
+from swarm.walkthrough_composer import compose_walkthrough
 
 router = APIRouter(prefix="/api/swarm", tags=["swarm"])
 logger = logging.getLogger(__name__)
 
 router.include_router(compare_router)
+
+
+@router.get("/walkthrough/{session_id}/{turn_seq}")
+async def walkthrough(session_id: int, turn_seq: int) -> dict:
+    """Return the composed session-tier walkthrough for one turn."""
+    from swarm.compare_router import _decode, _turn_data
+
+    data = await asyncio.to_thread(_turn_data, session_id, turn_seq)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Agent turn not found")
+    compare = await compare_stats(session_id, turn_seq)
+    rationale = parse_rationale(data["result_text"])
+    usage = _decode(data.get("usage_json"), {})
+    return compose_walkthrough(session_id, turn_seq, compare, rationale, usage)
 
 
 class RunRequest(BaseModel):
