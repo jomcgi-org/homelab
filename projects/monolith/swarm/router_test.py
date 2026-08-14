@@ -96,7 +96,120 @@ def test_start_run_passes_budget(monkeypatch):
         },
     )
     assert response.status_code == 200
-    assert captured[0][1:] == ("fix", "jomcgi/homelab", "main", 2.0)
+    assert captured[0][1:] == ("fix", "jomcgi/homelab", "main", 2.0, None)
+
+
+def test_planned_run_with_explicit_model(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    captured = []
+
+    class Handle:
+        workflow_id = "wf-planned"
+
+    class FakeDBOS:
+        def start_workflow(self, *args):
+            captured.append(args)
+            return Handle()
+
+    async def classify(_task):
+        return "planned", 1, "success", None
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
+    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
+    monkeypatch.setattr(
+        swarm_router, "_set_task_link_sync", lambda *args, **kwargs: None
+    )
+
+    response = client().post(
+        "/api/swarm/classify-and-start",
+        json={
+            "task": "fix",
+            "repo": "jomcgi/homelab",
+            "branch": "main",
+            "model": "terra",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured[0][1:] == ("fix", "jomcgi/homelab", "main", None, "terra")
+
+
+def test_planned_run_rejects_unknown_model(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+
+    async def classify(_task):
+        return "planned", 1, "success", None
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
+    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
+
+    response = client().post(
+        "/api/swarm/classify-and-start",
+        json={
+            "task": "fix",
+            "repo": "jomcgi/homelab",
+            "branch": "main",
+            "model": "invalid",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Unknown model" in response.json()["detail"]
+
+
+def test_promote_session_carries_model(monkeypatch):
+    captured = []
+    row = type(
+        "Row",
+        (),
+        {"id": 7, "repo": "jomcgi/homelab", "branch": "main", "model": "qwen"},
+    )()
+    turn = type("Turn", (), {"prompt": "fix"})()
+
+    class Result:
+        def first(self):
+            return turn
+
+    class FakeSession:
+        def __init__(self, _engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, _model, _session_id):
+            return row
+
+        def exec(self, _statement):
+            return Result()
+
+    monkeypatch.setattr("core.db.get_engine", lambda: object())
+    monkeypatch.setattr("sqlmodel.Session", FakeSession)
+    monkeypatch.setattr(
+        swarm_router,
+        "start_run",
+        lambda request: captured.append(request) or {"workflow_id": "wf-promoted"},
+    )
+    monkeypatch.setattr("swarm.models.mint_task_id", lambda: "task-1")
+    monkeypatch.setattr("swarm.models.create_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "swarm.models.append_plan_version", lambda *args, **kwargs: None
+    )
+
+    response = client().put(
+        "/api/swarm/promote-session",
+        json={"session_id": 7},
+    )
+
+    assert response.status_code == 200
+    assert captured[0].model == "qwen"
 
 
 def test_follower_replica_returns_503(monkeypatch):

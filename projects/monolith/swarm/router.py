@@ -41,6 +41,7 @@ class RunRequest(BaseModel):
     branch: str
     idempotency_key: str | None = None
     budget_usd: float | None = None
+    model: str | None = None
 
 
 class ClassifyAndStartRequest(BaseModel):
@@ -126,6 +127,13 @@ def start_run(request: RunRequest) -> dict:
         raise HTTPException(status_code=400, detail=f"unknown repo {request.repo}")
     if request.budget_usd is not None and request.budget_usd <= 0:
         raise HTTPException(status_code=400, detail="budget_usd must be positive")
+    if request.model is not None:
+        from agent_sessions import model_family
+
+        try:
+            model_family(request.model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     from swarm.workflows import implement_then_review
 
     dbos = _dbos()
@@ -142,6 +150,7 @@ def start_run(request: RunRequest) -> dict:
                 request.repo,
                 request.branch,
                 request.budget_usd,
+                request.model,
             )
     else:
         handle = dbos.start_workflow(
@@ -150,6 +159,7 @@ def start_run(request: RunRequest) -> dict:
             request.repo,
             request.branch,
             request.budget_usd,
+            request.model,
         )
     return {"workflow_id": handle.workflow_id}
 
@@ -280,6 +290,7 @@ async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
                     repo=body.repo,
                     branch=body.branch,
                     budget_usd=body.budget_usd,
+                    model=model,
                 )
             )
         except HTTPException:
@@ -352,7 +363,7 @@ def promote_session(request: Request, body: PromoteSessionRequest):
         repo, branch, model = row.repo, row.branch, row.model or "luna"
     if not repo or not branch:
         raise HTTPException(status_code=400, detail="session has no repo and branch")
-    result = start_run(RunRequest(task=task, repo=repo, branch=branch))
+    result = start_run(RunRequest(task=task, repo=repo, branch=branch, model=model))
     task_id = models.mint_task_id()
     models.create_task(
         task_id,

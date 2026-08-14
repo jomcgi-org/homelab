@@ -141,9 +141,13 @@ def _escalated(
 
 @DBOS.workflow()
 def implement_then_review(
-    task: str, repo: str, branch: str, budget_usd: float | None = None
+    task: str,
+    repo: str,
+    branch: str,
+    budget_usd: float | None = None,
+    model: str | None = None,
 ) -> dict:
-    plan = pin_plan(budget_usd)
+    plan = pin_plan(budget_usd, model)
     try:
         workflow_id = DBOS.workflow_id
     except Exception:  # noqa: BLE001 - no workflow context

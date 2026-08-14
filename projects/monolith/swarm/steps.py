@@ -7,7 +7,7 @@ from dbos import DBOS
 
 
 @DBOS.step()
-def pin_plan(budget_usd: float | None = None) -> dict:
+def pin_plan(budget_usd: float | None = None, model: str | None = None) -> dict:
     """Resolve run config ONCE and checkpoint it.
 
     The workflow body must never read config.* directly: recovery re-executes
@@ -20,7 +20,7 @@ def pin_plan(budget_usd: float | None = None) -> dict:
         "version": 1,
         "max_attempts": max(1, config.max_attempts()),
         "max_review_cycles": max(1, config.max_review_cycles()),
-        "implementer_model": config.implementer_model(),
+        "implementer_model": model or config.implementer_model(),
         "reviewer_model": config.reviewer_model(),
         "turn_timeout_seconds": config.turn_timeout_seconds(),
         "budget_usd": budget_usd,
