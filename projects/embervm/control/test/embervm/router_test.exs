@@ -1077,4 +1077,69 @@ defmodule Embervm.RouterTest do
     with_stateful_manager_fake()
     assert req(:delete, "/v1/stateful/wl-clean/volume").status == 401
   end
+
+  describe "GET /v1/conformance" do
+    setup do
+      Application.put_env(:embervm, :authenticator, FakeAuth)
+      on_exit(fn -> Application.delete_env(:embervm, :authenticator) end)
+      :ok
+    end
+
+    # THE TEST THAT MATTERS MOST for this endpoint. Both a disabled gate and an
+    # empty trace are legitimately VACUOUS, but they must never render alike: an
+    # operator reaching for this during an incident is exactly the person who
+    # would read "nothing to report" as "the system is conforming". #4758 is the
+    # precedent, a gate defaulted off with nothing in the data saying so.
+    test "with the trace gate OFF, reports vacuous and says so, never passing" do
+      {:ok, resp} =
+        Finch.build(:get, "http://127.0.0.1:8080/v1/conformance", [{"authorization", "Bearer good"}])
+        |> Finch.request(Embervm.Finch)
+
+      assert resp.status == 200
+      body = Jason.decode!(resp.body)
+
+      # Disabled is stated, not inferred from an absence.
+      assert body["enabled"] == false
+
+      verdicts = body["verdicts"]
+      assert verdicts != [] and verdicts != nil,
+             "a disabled gate must still enumerate the invariants, not return an empty list"
+
+      # Every invariant vacuous, NONE passing. A pass here would be a claim about
+      # a system nothing observed.
+      assert Enum.all?(verdicts, &(&1["verdict"] == "vacuous")),
+             "expected all vacuous, got #{inspect(Enum.map(verdicts, & &1["verdict"]))}"
+
+      refute Enum.any?(verdicts, &(&1["verdict"] == "pass"))
+
+      # The reason names the gate, so the caller can tell this from an empty trace.
+      assert Enum.all?(verdicts, fn v -> v["detail"] =~ "gate" end),
+             "the vacuous reason must name the disabled gate so it is distinguishable from an empty trace"
+    end
+
+    test "the verdict triple is present, never flattened to pass/fail" do
+      {:ok, resp} =
+        Finch.build(:get, "http://127.0.0.1:8080/v1/conformance", [{"authorization", "Bearer good"}])
+        |> Finch.request(Embervm.Finch)
+
+      body = Jason.decode!(resp.body)
+      verdict = List.first(body["verdicts"])
+
+      # coverage and oracle are what stop a green tick being read as more than it
+      # checked; a caller must be able to tell "checked 400, all clean" from
+      # "checked nothing".
+      assert Map.has_key?(verdict, "verdict")
+      assert Map.has_key?(verdict, "coverage")
+      assert Map.has_key?(verdict, "oracle")
+      assert verdict["oracle"] == "trace_only"
+    end
+
+    test "requires auth like every other /v1 route" do
+      {:ok, resp} =
+        Finch.build(:get, "http://127.0.0.1:8080/v1/conformance")
+        |> Finch.request(Embervm.Finch)
+
+      assert resp.status == 401
+    end
+  end
 end

@@ -50,8 +50,17 @@ defmodule Embervm.SpecTrace.Checker do
   alias Embervm.SpecTrace.Store
 
   @spec run(module(), GenServer.server(), keyword()) :: [map()]
-  def run(store_mod, store, _opts \\ []) do
-    case store_mod.read_window(store, spec: "adoption") do
+  # `spec: "adoption"` is a DEFAULT rather than a hardcode: callers may narrow
+  # the window (a time range, a run_id) without accidentally widening the spec.
+  # Dropping the filter entirely would let these invariants examine
+  # bank_relight and quota records, which inflates every coverage count with
+  # records the checks then ignore, and a coverage number that counts records
+  # it never examined is exactly the overclaim the verdict triple exists to
+  # prevent.
+  def run(store_mod, store, opts \\ []) do
+    opts = Keyword.put_new(opts, :spec, "adoption")
+
+    case store_mod.read_window(store, opts) do
       {:ok, records} ->
         records_by_run = Enum.group_by(records, & &1["run_id"])
         run_ids = Map.keys(records_by_run)
