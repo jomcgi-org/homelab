@@ -212,6 +212,59 @@ else
 	FAILURES=$((FAILURES + 1))
 fi
 
+# Add a dev-environment Application beside the production one, pinned BEHIND it,
+# with or without the opt-in marker. Committed through the clone so origin/main
+# carries it before the script runs.
+add_dev_app() {
+	local clone="$1" version="$2" marker="$3" path="$clone/projects/demo/dev/deploy"
+	mkdir -p "$path"
+	{
+		echo "spec:"
+		echo "  sources:"
+		echo "    - repoURL: oci://ghcr.io/jomcgi/homelab/charts"
+		echo "      chart: demo"
+		if [[ "$marker" == "marked" ]]; then
+			echo "      # chart-version-bot: manage-target-revision"
+		fi
+		echo "      targetRevision: ${version}"
+		echo "    - repoURL: https://github.com/jomcgi/homelab"
+		echo "      targetRevision: HEAD"
+		echo "      ref: values"
+	} >"$path/application.yaml"
+	git -C "$clone" add -A
+	git -C "$clone" commit --quiet -m "chore: seed dev application"
+	git -C "$clone" push --quiet origin main
+}
+
+# 7. An opted-in dev Application advances with the chart, in one jump. Without
+# this the dev pin freezes at whatever bootstrapped it and drifts further from
+# production on every publish, which is what #4832 recorded.
+clone=$(new_env devopt 0.1.0)
+add_dev_app "$clone" 0.0.9 marked
+record "$TMP/rec-devopt" demo projects/demo/chart 0.2.0
+(cd "$clone" && bash "$SCRIPT" "$TMP/rec-devopt" >/dev/null 2>&1)
+git -C "$clone" fetch --quiet origin main
+expect "opted-in dev pin advances" "0.2.0" \
+	"$(version_on_main "$clone" projects/demo/dev/deploy/application.yaml)" "marker present"
+expect "dev \$values ref survives" "1" \
+	"$(git -C "$clone" show origin/main:projects/demo/dev/deploy/application.yaml |
+		grep -c 'targetRevision: HEAD')" "same anchored pattern as production"
+
+# 8. THE ONE THAT MATTERS. A dev Application with no marker is not ours to
+# write. This is monolith-dev: Kargo owns its targetRevision at runtime (#4744),
+# and the committed value is a deliberately frozen bootstrap floor kept as the
+# revert lever. A path-based rule matching */dev/deploy/ would rewrite it on
+# every publish, fight the promotion pipeline, and destroy the lever silently.
+clone=$(new_env devunmarked 0.1.0)
+add_dev_app "$clone" 0.0.9 plain
+record "$TMP/rec-devplain" demo projects/demo/chart 0.2.0
+(cd "$clone" && bash "$SCRIPT" "$TMP/rec-devplain" >/dev/null 2>&1)
+git -C "$clone" fetch --quiet origin main
+expect "unmarked dev pin untouched" "0.0.9" \
+	"$(version_on_main "$clone" projects/demo/dev/deploy/application.yaml)" "no marker, not ours to write"
+expect "production advances regardless" "0.2.0" \
+	"$(version_on_main "$clone" projects/demo/deploy/application.yaml)" "dev opt-in does not gate production"
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1

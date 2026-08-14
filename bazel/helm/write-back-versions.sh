@@ -84,6 +84,67 @@ _app_yaml_for() {
 	echo ""
 }
 
+# Further Applications whose chart pin this bot maintains, beyond the production
+# one _app_yaml_for finds. One per line, empty if none.
+#
+# OPT-IN BY MARKER, NOT BY PATH CONVENTION, and the distinction is the whole
+# point. `projects/<svc>/dev/deploy/application.yaml` is not uniformly ours to
+# write: Kargo owns monolith-dev's targetRevision at runtime (#4744), and the
+# value committed there is a deliberately frozen bootstrap floor that drifts
+# from the live one on purpose. A path rule matching `*/dev/deploy/` would
+# rewrite that floor on every publish, fighting the promotion pipeline and
+# destroying the revert lever the committed value exists to be. So an
+# Application joins the write-back only by saying so in its own file.
+#
+# A dev Application that opts in catches up in ONE jump the next time its chart
+# publishes, rather than walking forward one version at a time, because the
+# version written is whatever main just published.
+MANAGED_MARKER='chart-version-bot: manage-target-revision'
+
+_opted_in_app_yamls_for() {
+	local chart_dir="$1" svc_dir candidate
+	svc_dir="$(dirname "$chart_dir")"
+	shopt -s nullglob
+	for candidate in "${svc_dir}"/*/deploy/application.yaml; do
+		if [[ -f "$candidate" ]] && grep -qF "$MANAGED_MARKER" "$candidate"; then
+			echo "$candidate"
+		fi
+	done
+	shopt -u nullglob
+	return 0
+}
+
+# Point one Application's semver targetRevision at `version`, staging it if it
+# moved. Split out of the main loop so production and every opted-in
+# Application go through the SAME anchoring and verification, rather than the
+# dev path getting a looser copy of it.
+_rewrite_target_revision() {
+	local app_yaml="$1" version="$2" tr_count old_tr
+	# Match ONLY a semver targetRevision. deploy/application.yaml is a
+	# multi-source Application: the chart source is pinned to a version,
+	# and the $values source is a GIT REF (`targetRevision: HEAD`).
+	# A loose `grep targetRevision: | head -1` would eventually rewrite
+	# that git ref into a chart version and break the values source, so
+	# the pattern is anchored to a semver and the count is asserted.
+	# This mirrors bump-chart.sh, which got it right first.
+	tr_count=$(grep -cE "$SEMVER_TR_RE" "$app_yaml" || true)
+	if [[ "$tr_count" -ne 1 ]]; then
+		echo "WARNING: ${app_yaml} has ${tr_count} semver targetRevision line(s), expected 1; leaving it alone." >&2
+		return 0
+	fi
+	old_tr=$(grep -E "$SEMVER_TR_RE" "$app_yaml" | head -1 | awk '{print $2}' | tr -d '"')
+	if [[ "$old_tr" == "$version" ]]; then
+		return 0
+	fi
+	sed "s/targetRevision: ${old_tr}\$/targetRevision: ${version}/" "$app_yaml" >"${app_yaml}.tmp"
+	mv "${app_yaml}.tmp" "$app_yaml"
+	if ! grep -qF "targetRevision: ${version}" "$app_yaml"; then
+		echo "ERROR: failed to rewrite targetRevision in ${app_yaml} (unusual formatting?)." >&2
+		exit 1
+	fi
+	git add "$app_yaml"
+}
+
 git config user.name "chart-version-bot"
 git config user.email "chart-version-bot@users.noreply.github.com"
 
@@ -124,29 +185,20 @@ while [[ "$attempt" -le "$TRIES" ]]; do
 
 		APP_YAML="$(_app_yaml_for "$CHART_DIR")"
 		if [[ -n "$APP_YAML" ]]; then
-			# Match ONLY a semver targetRevision. deploy/application.yaml is a
-			# multi-source Application: the chart source is pinned to a version,
-			# and the $values source is a GIT REF (`targetRevision: HEAD`).
-			# A loose `grep targetRevision: | head -1` would eventually rewrite
-			# that git ref into a chart version and break the values source, so
-			# the pattern is anchored to a semver and the count is asserted.
-			# This mirrors bump-chart.sh, which got it right first.
-			TR_COUNT=$(grep -cE "$SEMVER_TR_RE" "$APP_YAML" || true)
-			if [[ "$TR_COUNT" -ne 1 ]]; then
-				echo "WARNING: ${APP_YAML} has ${TR_COUNT} semver targetRevision line(s), expected 1; leaving it alone." >&2
-			else
-				OLD_TR=$(grep -E "$SEMVER_TR_RE" "$APP_YAML" | head -1 | awk '{print $2}' | tr -d '"')
-				if [[ "$OLD_TR" != "$VERSION" ]]; then
-					sed "s/targetRevision: ${OLD_TR}\$/targetRevision: ${VERSION}/" "$APP_YAML" >"${APP_YAML}.tmp"
-					mv "${APP_YAML}.tmp" "$APP_YAML"
-					if ! grep -qF "targetRevision: ${VERSION}" "$APP_YAML"; then
-						echo "ERROR: failed to rewrite targetRevision in ${APP_YAML} (unusual formatting?)." >&2
-						exit 1
-					fi
-					git add "$APP_YAML"
-				fi
-			fi
+			_rewrite_target_revision "$APP_YAML" "$VERSION"
 		fi
+
+		# Opted-in Applications (a dev environment tracking the same chart).
+		# Read into an array first: _rewrite_target_revision runs `git add`, and
+		# piping the loop's input from a process substitution while git writes
+		# the index has bitten this repo before.
+		OPTED_IN=()
+		while IFS= read -r extra_yaml; do
+			[[ -n "$extra_yaml" ]] && OPTED_IN+=("$extra_yaml")
+		done < <(_opted_in_app_yamls_for "$CHART_DIR")
+		for extra_yaml in "${OPTED_IN[@]+"${OPTED_IN[@]}"}"; do
+			_rewrite_target_revision "$extra_yaml" "$VERSION"
+		done
 
 		SUMMARY+=("${CHART_DIR}: ${ON_MAIN} -> ${VERSION}")
 		CHANGED=$((CHANGED + 1))

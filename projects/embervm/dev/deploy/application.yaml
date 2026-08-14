@@ -7,6 +7,16 @@ spec:
   project: default
   sources:
     # Chart from OCI (pushed by CI via Bazel helm_push); image tag pinned at build.
+    #
+    # chart-version-bot: manage-target-revision
+    #
+    # Opts this pin into the post-merge write-back, so dev advances with the
+    # chart instead of freezing at whatever it was bootstrapped to (#4832).
+    # The marker is required rather than implied by the path: monolith-dev's
+    # equivalent is Kargo-owned (#4744) and its committed value is a frozen
+    # revert lever, so the bot must never assume a dev Application is its to
+    # write. EmberVM has no promotion pipeline yet (#4762 deferred it), which
+    # is exactly why this one wants the bot.
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: embervm
       targetRevision: 0.12.2
