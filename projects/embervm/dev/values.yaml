@@ -1,0 +1,101 @@
+# EmberVM dev environment overrides. Production defaults from chart/values.yaml
+# are inherited; only dev-specific settings appear here.
+
+# Op-log: SQLite on PVC (disjoint from production's monolith-pg Postgres).
+# The chart falls back to EMBERVM_OPLOG_PATH=/var/lib/embervm/oplog.db when
+# postgres.enabled is false. PVC-backed SQLite survives control-plane restarts.
+opLog:
+  postgres:
+    enabled: false
+  persistentVolume: true
+  size: 1Gi
+
+# SpecTrace validation (issue #4770). Dev-only spec-driven state machine tracing
+# to validate TLA+ specs against live behaviour. Off in production by default.
+specTrace:
+  enabled: true
+  path: /var/lib/embervm/spec-trace.db
+  ttlSeconds: 86400
+  sweepIntervalSeconds: 3600
+
+# Size-class brick cutover. Dev runs ONE tiny 1gi brick, pinned to node-4.
+# NEVER the masters: #4290 fills their 35 GiB scratch on any chart bump.
+# All other classes are explicitly zero. No autoscale in dev.
+bricks:
+  enabled: true
+  desiredReplicas:
+    1gi: 1
+    2gi: 0
+    4gi: 0
+    8gi: 0
+    16gi: 0
+  autoscale:
+    mode: observe
+  # Per-node brick floor guarantees: pins the dev brick to node-4.
+  nodeFloors:
+    - node: node-4
+      class: 1gi
+
+# S3 bucket split. Dev uses embervm-dev; production uses embervm.
+# Warmth GC and base retention operate on S3; separate buckets prevent
+# production GC from deleting dev artifacts. The store endpoint and bucket are
+# rendered into noded's config for S3 warmth export/restore.
+noded:
+  store:
+    bucket: embervm-dev
+
+# nvmeRoot split. Dev bricks use /var/lib/embervm/scratch-dev, separate from
+# production's shared node-4 NVMe scratch. Scratch is shared metal; the split
+# prevents prod GC and dev artifacts from colliding.
+  firecracker:
+    nvmeRoot: /var/lib/embervm/scratch-dev
+
+  # Node capacity. Dev runs one tiny brick, so use the smaller default.
+  maxLiveVMs: 8
+
+  # Disable warmth restore in dev. The machines are small and sessions are ephemeral.
+  warmRestoreWithVolumeClasses: []
+
+# Disable production workloads. Dev runs only sandbox (smallest).
+claudeRuntimeWorkload:
+  enabled: false
+
+scratchPostgres:
+  enabled: false
+
+demoPostgres:
+  enabled: false
+
+# Control-plane resources. Same as production (SigNoz 7-day-peak); scale later.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+# Base retention and GC: keep disabled in dev. The 1gi class is small and
+# the build cost is negligible.
+baseRetention:
+  sweepEnabled: ""
+  diskDrivenEnabled: ""
+  remoteSweepEnabled: ""
+
+warmthRetention:
+  sweepEnabled: ""
+
+warmthS3Gc:
+  enabled: ""
+
+# Tracing: reuse production endpoint (if available).
+tracing:
+  endpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4317"
+  serviceName: embervm-dev-control
+
+# Auth: own ServiceAccount, isolated from production.
+auth:
+  allowedServiceAccounts:
+    - system:serviceaccount:embervm-dev:embervm-dev-embervm
+
+usageAdmins:
+  - system:serviceaccount:embervm-dev:embervm-dev-embervm

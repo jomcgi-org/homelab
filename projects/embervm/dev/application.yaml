@@ -1,0 +1,54 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: embervm-dev
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    # Chart from OCI (pushed by CI via Bazel helm_push); image tag pinned at build.
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: embervm
+      targetRevision: 0.1.0
+      helm:
+        valueFiles:
+          - $values/projects/embervm/dev/values.yaml
+    # Git repo for environment-specific values.
+    - repoURL: https://github.com/jomcgi/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    # Dev namespace, isolated from production.
+    namespace: embervm-dev
+  ignoreDifferences:
+    # The BrickController owns each brick Deployment's replica count: the chart
+    # value is only the count at FIRST create, and the controller PATCHes /scale
+    # thereafter from demand-driven autoscale. With selfHeal on, ArgoCD would
+    # revert every scale decision back to the chart value, so /spec/replicas has
+    # to stay out of the diff for this app.
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+    # The token broker owns the OAuth grant Secrets' DATA: the chart declares
+    # each embervm-oauth-grant-* Secret empty (so RBAC resourceNames can scope
+    # to it) and the broker writes the rotating bundle at login and on every
+    # refresh. With selfHeal on, diffing /data would revert the bundle to the
+    # empty chart declaration, silently revoking the grant. One entry PER GRANT.
+    - kind: Secret
+      name: embervm-dev-oauth-grant-codex-cluster
+      jsonPointers:
+        - /data
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
