@@ -50,7 +50,8 @@ go_test(
 # (Wolfi base + ca-certificates) rather than a distroless go_image so it carries
 # a CA bundle for TLS to WhatsApp's servers and Postgres. The Go binary is
 # cross-compiled per arch and layered at /usr/local/bin/whatsapp (the apko
-# entrypoint). apko appends _amd64/_arm64 to the base per arch.
+# entrypoint). amd64 only, so the tar is named per arch rather than via
+# multiarch_tars.
 
 platform_transition_filegroup(
     name = "whatsapp_amd64_bin",
@@ -66,24 +67,14 @@ tar(
     ],
 )
 
-platform_transition_filegroup(
-    name = "whatsapp_arm64_bin",
-    srcs = ["//projects/monolith/whatsapp/cmd:whatsapp"],
-    target_platform = "@rules_go//go/toolchain:linux_arm64",
-)
-
-tar(
-    name = "whatsapp_tar_arm64",
-    srcs = [":whatsapp_arm64_bin"],
-    mtree = [
-        "./usr/local/bin/whatsapp type=file content=$(execpath :whatsapp_arm64_bin) mode=0755 uid=0 gid=0",
-    ],
-)
-
 apko_image(
     name = "image",
+    # amd64 only: see the `arm64` arg in apko_image.bzl.
+    arm64 = False,
     config = "apko.yaml",
     contents = "@whatsapp_lock//:contents",
-    multiarch_tars = [":whatsapp_tar"],
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/whatsapp",
+    tars = [
+        ":whatsapp_tar_amd64",
+    ],
 )

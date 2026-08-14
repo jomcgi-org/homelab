@@ -51,29 +51,15 @@ tar(
     ],
 )
 
-platform_transition_filegroup(
-    name = "guest_init_arm64_bin",
-    srcs = ["//projects/embervm/runtimes/python/guest-init/cmd"],
-    target_platform = "@rules_go//go/toolchain:linux_arm64",
-)
-
-tar(
-    name = "guest_init_tar_arm64",
-    srcs = [":guest_init_arm64_bin"],
-    mtree = [
-        "./usr/local/bin/ember-runtime-guest-init type=file content=$(execpath :guest_init_arm64_bin) mode=0755 uid=0 gid=0",
-    ],
-)
-
 apko_image(
     name = "image",
+    # amd64 only: see the `arm64` arg in apko_image.bzl.
+    arm64 = False,
     config = "apko.yaml",
     contents = "@embervm_runtime_python_lock//:contents",
-    multiarch_tars = [
-        ":guest_init_tar",
-    ],
     repository = "ghcr.io/jomcgi/homelab/projects/embervm/runtimes/python",
     tars = [
+        ":guest_init_tar_amd64",
         ":shim_tar",
     ],
 )

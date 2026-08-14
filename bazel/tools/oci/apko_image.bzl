@@ -25,11 +25,26 @@ def apko_image(
         name: The name of the image.
         config: The apko config file (should define both x86_64 and aarch64 in archs
                 list, unless arm64 = False, in which case only x86_64).
-        arm64: Whether to build the aarch64 variant. Defaults to True (dual-arch).
-               Set False for images that carry an architecture-specific artifact the
-               build cannot produce for arm64 (e.g. a compiled NIF built on the amd64
-               executor); the apko config's archs list must then be x86_64-only too.
-               When False, :{name} is a single-platform amd64 image, not an index.
+        arm64: Whether to build the aarch64 variant. Defaults to True, but every
+               caller in this repo now passes False: all four cluster nodes are
+               amd64, no chart carries a kubernetes.io/arch selector, and the
+               Firecracker guests run on those same amd64 nodes, so the aarch64
+               manifest had no consumer. Kept as a parameter rather than deleted
+               so re-adding an architecture stays a one-line change.
+
+               Also pass False for an image carrying an architecture-specific
+               artifact the build cannot produce for arm64 (e.g. a compiled NIF
+               built on the amd64 executor); the apko config's archs list must
+               then be x86_64-only too.
+
+               When False, :{name} is a single-platform amd64 image, NOT an
+               index, so its digest changes and the workload rolls once.
+
+               MUST be paired with per-arch tars, `tars = [":x_tar_amd64"]`
+               rather than `multiarch_tars = [":x_tar"]`. False WITH
+               multiarch_tars is an untested apko path that fails to push a
+               layer blob, and it fails at PUSH time, so PR CI stays green and
+               the main deploy is what breaks.
         contents: The apko contents (lock file).
         repository: The container registry repository (e.g., "ghcr.io/jomcgi/homelab/my-app").
                    Defaults to "ghcr.io/jomcgi/homelab/{package_name}".

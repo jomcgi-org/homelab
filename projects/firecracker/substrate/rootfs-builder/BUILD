@@ -6,6 +6,8 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 # fc-invoke chart values (rootfsBuilder.image).
 apko_image(
     name = "image",
+    # amd64 only: see the `arm64` arg in apko_image.bzl.
+    arm64 = False,
     config = "apko.yaml",
     contents = "@rootfs_builder_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/firecracker/substrate/rootfs-builder",

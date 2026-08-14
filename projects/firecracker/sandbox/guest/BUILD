@@ -51,29 +51,15 @@ tar(
     ],
 )
 
-platform_transition_filegroup(
-    name = "sandbox_guest_init_arm64_bin",
-    srcs = ["//projects/firecracker/sandbox/guest-init/cmd"],
-    target_platform = "@rules_go//go/toolchain:linux_arm64",
-)
-
-tar(
-    name = "sandbox_guest_init_tar_arm64",
-    srcs = [":sandbox_guest_init_arm64_bin"],
-    mtree = [
-        "./usr/local/bin/sandbox-guest-init type=file content=$(execpath :sandbox_guest_init_arm64_bin) mode=0755 uid=0 gid=0",
-    ],
-)
-
 apko_image(
     name = "image",
+    # amd64 only: see the `arm64` arg in apko_image.bzl.
+    arm64 = False,
     config = "apko.yaml",
     contents = "@sandbox_guest_lock//:contents",
-    multiarch_tars = [
-        ":sandbox_guest_init_tar",
-    ],
     repository = "ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/guest",
     tars = [
+        ":sandbox_guest_init_tar_amd64",
         ":environment_md_tar",
         ":sandbox_tools_tar",
     ],

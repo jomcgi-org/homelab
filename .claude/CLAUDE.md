@@ -129,7 +129,7 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 
 - **Deploys are triggered by chart version, not by image tags, and the version
   is written AFTER merge.** There is no ArgoCD Image Updater. CI rebuilds
-  dual-arch images with a build-time-pinned tag, and ArgoCD only picks them up
+  images with a build-time-pinned tag, and ArgoCD only picks them up
   when the chart version moves. Since ADR platform/009 decision 1 that move
   happens on `main`, not on the branch: **a PR must not touch `Chart.yaml`
   `version:` or `deploy/application.yaml` `targetRevision:` at all.** Main's
@@ -175,8 +175,11 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
   log. Truncated reads are how false-green reports happen, and `ci test`
   has exited 0 without running anything (#4118). Judge a run by its
   `Executed N out of M tests` summary line, never by exit code alone.
-- **Images are apko plus `rules_apko`, never Dockerfiles**, always dual-arch
-  (x86_64 and aarch64), always non-root on uid 65532 with `runAsNonRoot: true`.
+- **Images are apko plus `rules_apko`, never Dockerfiles**, amd64 only, always
+  non-root on uid 65532 with `runAsNonRoot: true`. Every node is amd64 and no
+  chart pins an arch, so the aarch64 half had no consumer. To re-add one, pass
+  `arm64 = True` **and** per-arch `tars`: `arm64 = False` with `multiarch_tars`
+  fails to push a layer blob, at push time, so PR CI stays green.
 - **Python deps are `@pip//package` via `aspect_rules_py`.** This repo does not
   use `@rules_python`, so `requirement()` syntax is wrong. JS is pnpm plus
   `rules_js`.
