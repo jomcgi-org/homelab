@@ -14,6 +14,7 @@
     branches = [],
     repoLoading = false,
     branchLoading = false,
+    creating = false,
     modelPicker,
     onChangeSession = () => {},
     onLoadBranches = () => {},
@@ -184,7 +185,8 @@
       <button
         class="launcher-submit"
         type="submit"
-        disabled={!newSession.prompt.trim()}>{P.labels.submitTask}</button
+        disabled={creating || !newSession.prompt.trim()}
+        >{creating ? P.labels.creating : P.labels.submitTask}</button
       >
     </form>
   </section>

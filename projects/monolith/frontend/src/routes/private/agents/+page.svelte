@@ -794,12 +794,16 @@
       const body = await response.json();
       if (!response.ok)
         throw new Error(body.detail || P.labels.taskCreateFailed);
-      creating = false;
       closeNewPanel();
       newSession = { prompt: "", model: "", repo: "", branch: "" };
       branches = [];
       if (body.kind === "run" && body.workflow_id) selectRun(body.workflow_id);
       else if (body.session_id) selectSession(body.session_id);
+      // Released only after navigation, not before it. Clearing this on the
+      // line after the fetch resolved re-enabled the button while the panel
+      // was still on screen, which is a wide enough window on a phone to
+      // land a second tap and start a second session.
+      creating = false;
     } catch (error) {
       errorMessage = error.message;
       creating = false;
@@ -1413,6 +1417,7 @@
         {modelPicker}
         onChangeSession={(field, value) => (newSession[field] = value)}
         onLoadBranches={loadBranches}
+        {creating}
         onCreateTask={createTask}
         onSelectRun={selectRun}
         onSelectSession={selectSession}
