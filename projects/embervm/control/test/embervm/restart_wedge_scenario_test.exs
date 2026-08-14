@@ -98,6 +98,17 @@ defmodule Embervm.RestartWedgeScenarioTest do
     _wedge_task = submit(store)
     refute eventually(fn -> Agent.get(dispatched, & &1) == 2 end, 5_000)
 
+    # Force enough sweeps to FORM a liveness window. `eventually_dispatched` is
+    # bounded at K=2, so it needs K+1 checkpoints before it can say anything, and
+    # a checkpoint is emitted once per sweep. Without these the scenario returns
+    # vacuous ("fewer than 3 checkpoints, so no bounded window could be formed"),
+    # which is the checker being honest about a trace too short to judge.
+    #
+    # The fix belongs here rather than in K. Shrinking the bound so a thin
+    # scenario passes is how a liveness gate ratchets itself into never firing,
+    # which is #4759's override-rate kill point arriving by increments.
+    for _ <- 1..(2 + 1), do: assert(:ok = Dispatcher.sweep(dispatcher_name))
+
     # The checker runs over the WEDGE'S OWN trace, captured by the writer started
     # in setup, never over a store this test fabricates. An earlier revision
     # created a fresh store, wrote one preamble record, ran the checker over that

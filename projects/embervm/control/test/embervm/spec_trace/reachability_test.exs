@@ -107,9 +107,15 @@ defmodule Embervm.SpecTrace.ReachabilityTest do
       vacuous: [{"adoption", "prime", %{"vm_id" => "vm-prime"}}]
     },
     eventually_dispatched: %{
+      # THREE checkpoints, because K is 2 and a window is K+1. Two would render
+      # vacuous ("no bounded window could be formed"), and the fix for that is a
+      # longer scenario, never a smaller K: shrinking the bound to fit the test
+      # is how a liveness gate ratchets itself into never firing.
       pass: [
         {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}}},
-        {"adoption", "dispatch_warm", %{"vm_id" => "vm-pass"}}
+        {"adoption", "dispatch_warm", %{"vm_id" => "vm-pass"}},
+        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}}},
+        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}}}
       ],
       fail: [
         {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}}},
