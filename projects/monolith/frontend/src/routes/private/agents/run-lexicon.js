@@ -151,6 +151,8 @@ export const RUN_LEXICON = {
     launcherPromptPlaceholder: "what should the agent do?",
     submitTask: "submit task",
     taskCreateFailed: "Task was not created",
+    plannedNeedsRepoBranch:
+      "This planned task needs a repository and branch before it can start.",
     classify: "classify",
     recentHeading: "recent",
     noRecentActivity: "no activity in the last 7 days",

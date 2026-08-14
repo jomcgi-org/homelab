@@ -87,9 +87,12 @@
   let composerModelOverride = $state(null);
   let sending = $state(false);
   let creating = $state(false);
+  let needsInputState = $state(false);
+  let pendingTaskId = $state(null);
   let showNewPanel = $state(false);
   let newButtonEl = $state(null);
   let newPromptEl = $state(null);
+  let repoControlEl = $state(null);
   let titleEl = $state(null);
   let focusSessionId = null;
   let previousSessionId = null;
@@ -690,10 +693,14 @@
 
   function closeNewPanel() {
     showNewPanel = false;
+    needsInputState = false;
+    pendingTaskId = null;
     tick().then(() => newButtonEl?.focus({ preventScroll: true }));
   }
 
   function openNewPanel() {
+    needsInputState = false;
+    pendingTaskId = null;
     showNewPanel = true;
   }
 
@@ -790,6 +797,7 @@
     try {
       const requestBody = {
         task: newSession.prompt.trim(),
+        ...(pendingTaskId ? { task_id: pendingTaskId } : {}),
         model: newSession.model,
         repo: newSession.repo || null,
         branch: newSession.branch || null,
@@ -802,9 +810,19 @@
       const body = await response.json();
       if (!response.ok)
         throw new Error(body.detail || P.labels.taskCreateFailed);
+      if (body.kind === "needs_input" && body.needs_input) {
+        needsInputState = true;
+        pendingTaskId = body.task_id;
+        creating = false;
+        await tick();
+        repoControlEl?.focus({ preventScroll: true });
+        return;
+      }
       closeNewPanel();
       newSession = { prompt: "", model: "", repo: "", branch: "" };
       branches = [];
+      needsInputState = false;
+      pendingTaskId = null;
       if (body.kind === "run" && body.workflow_id) selectRun(body.workflow_id);
       else if (body.session_id) selectSession(body.session_id);
       // Released only after navigation, not before it. Clearing this on the
@@ -1517,6 +1535,9 @@
         </div>
         <label
           >{P.labels.repoWord}<select
+            bind:this={repoControlEl}
+            class:needs-input={needsInputState}
+            aria-invalid={needsInputState}
             class="mono"
             bind:value={newSession.repo}
             disabled={repoLoading}
@@ -1537,6 +1558,11 @@
             {/if}
           </select></label
         >
+        {#if needsInputState}
+          <div class="needs-input-message" role="status">
+            {P.labels.plannedNeedsRepoBranch}
+          </div>
+        {/if}
         <label>
           branch<select
             class="mono"
@@ -2413,6 +2439,14 @@
     text-transform: none;
     letter-spacing: normal;
     font-size: var(--size-body);
+  }
+  .new-panel select.needs-input {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .needs-input-message {
+    color: var(--accent);
+    font-size: var(--size-meta);
   }
   .new-actions {
     justify-content: flex-end;

@@ -161,6 +161,118 @@ def test_planned_run_rejects_unknown_model(monkeypatch):
     assert "Unknown model" in response.json()["detail"]
 
 
+def test_planned_without_repo_returns_needs_input(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    recorded = []
+
+    async def classify(_task):
+        return "planned", 1, "success", None
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr("swarm.models.mint_task_id", lambda: "task-1")
+    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
+    monkeypatch.setattr(
+        swarm_router, "_record_classification_sync", lambda *args: recorded.append(args)
+    )
+    monkeypatch.setattr(
+        swarm_router,
+        "start_run",
+        lambda _request: (_ for _ in ()).throw(AssertionError("run must not start")),
+    )
+
+    response = client().post(
+        "/api/swarm/classify-and-start",
+        json={"task": "fix", "model": "terra"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "task_id": "task-1",
+        "classification": "planned",
+        "session_id": None,
+        "workflow_id": None,
+        "kind": "needs_input",
+        "needs_input": {"repo": True, "branch": True},
+    }
+    assert recorded
+
+
+def test_planned_resubmission_reuses_task_id(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    started = []
+    updated = []
+
+    async def classify(_task):
+        return "planned", 1, "success", None
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr("swarm.models.mint_task_id", lambda: "task-1")
+    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
+    monkeypatch.setattr(
+        swarm_router,
+        "_update_task_inputs_sync",
+        lambda *args: updated.append(args),
+    )
+    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
+    monkeypatch.setattr(
+        swarm_router,
+        "start_run",
+        lambda request: started.append(request) or {"workflow_id": "wf-1"},
+    )
+    monkeypatch.setattr(
+        swarm_router, "_set_task_link_sync", lambda *args, **kwargs: None
+    )
+
+    first = client().post(
+        "/api/swarm/classify-and-start",
+        json={"task": "fix", "model": "terra"},
+    )
+    second = client().post(
+        "/api/swarm/classify-and-start",
+        json={
+            "task": "fix",
+            "task_id": first.json()["task_id"],
+            "repo": "jomcgi/homelab",
+            "branch": "main",
+            "model": "terra",
+        },
+    )
+
+    assert first.json()["task_id"] == "task-1"
+    assert second.status_code == 200
+    assert second.json()["task_id"] == "task-1"
+    assert second.json()["kind"] == "run"
+    assert len(updated) == 1
+    assert len(started) == 1
+
+
+def test_one_shot_without_repo_starts_session(monkeypatch):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+
+    async def classify(_task):
+        return "one_shot", 1, "success", None
+
+    async def start_session(_request, _body):
+        return {"session_id": 42}
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
+    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
+    monkeypatch.setattr("agent_sessions.router.start_session", start_session)
+    monkeypatch.setattr(
+        swarm_router, "_set_task_link_sync", lambda *args, **kwargs: None
+    )
+
+    response = client().post(
+        "/api/swarm/classify-and-start",
+        json={"task": "explain", "model": "terra"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["kind"] == "session"
+    assert response.json()["session_id"] == 42
+
+
 def test_promote_session_carries_model(monkeypatch):
     captured = []
     row = type(
