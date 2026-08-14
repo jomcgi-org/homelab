@@ -273,7 +273,9 @@ cmd_test() {
 	dim "  bb remote --os=linux --arch=amd64 ${bazel_args[*]}"
 	dim "  (include-secrets=true: runner may receive org secrets; treat as CI)"
 
-	# Match the Test action's `resource_requests.disk` in buildbuddy.yaml (120GB).
+	# Match the Test action's `resource_requests` in buildbuddy.yaml: disk 120GB,
+	# cpu 8, memory 10GB.
+	#
 	# Parity with CI was previously argv-only: targets, --config, --deleted_packages
 	# and --test_tag_filters all matched, but resource requests live in the YAML
 	# rather than the bazel command line, so they were never mirrored and this path
@@ -284,6 +286,23 @@ cmd_test() {
 	# the failing target moves between runs, and it is never the target you changed.
 	# Confirmed not to be runner-recycling debris; a fresh runner
 	# (recycle-runner=false) ran out of disk the same way.
+	#
+	# CPU and memory are the same omission, one step further on. The images apko
+	# builds are `no-remote-exec` (rules_apko sets it), so they run ON the runner
+	# rather than on RBE and their concurrency is capped by its cores, not by
+	# --jobs. A default-sized runner therefore serialises the slowest part of a
+	# cold //... here while CI runs it 8-wide, which is the opposite of what "1:1
+	# with the Test action" claims.
+	#
+	# Memory is raised alongside deliberately, not for its own sake: 8 concurrent
+	# apko builds on a default memory allowance is how you trade a slow run for an
+	# OOM. The pair matches buildbuddy.yaml rather than being tuned independently.
+	#
+	# Property names are exact and case-insensitive on lookup: EstimatedCPU takes
+	# cores or an `m` suffix, EstimatedMemory takes an IEC string. A typo here does
+	# NOT fail, it silently falls back to the default (milliCPUProp/iecBytesProp
+	# return defaultValue on a parse error), so changing these means re-reading the
+	# runner's actual size rather than trusting the flag went through.
 	local out
 	out="$(mktemp)"
 	trap 'rm -f "${out:-}"' RETURN INT TERM
@@ -292,6 +311,8 @@ cmd_test() {
 	bb remote --os=linux --arch=amd64 \
 		--runner_exec_properties=include-secrets=true \
 		--runner_exec_properties=EstimatedFreeDiskBytes=120GB \
+		--runner_exec_properties=EstimatedCPU=8 \
+		--runner_exec_properties=EstimatedMemory=10GB \
 		"${bazel_args[@]}" 2>&1 | tee "$out" || bb_status=$?
 
 	# bb remote exits 0 when the remote ACTION fails, so require positive evidence
