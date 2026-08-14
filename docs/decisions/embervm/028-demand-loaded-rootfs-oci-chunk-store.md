@@ -1,11 +1,12 @@
-# ADR 028: Demand-Loaded Rootfs: OCI Registration, Content-Addressed Chunk Store, ublk Presentation
+# ADR 028: Eager-Local Rootfs: OCI Registration, Account Chunk Store, ublk Presentation
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-07-31
+**Updated:** 2026-08-14
 **Supersedes in part:** [005 - EmberVM scale-out on EKS](005-embervm-eks-scale-out-metal-pool-bricks.md) (decision 3's Pattern A guest-base pipeline, and the initContainer bake that shipped in its place)
-**Amends:** the invariant-4 premise recorded in `projects/embervm/ARCHITECTURE.md` section 5, scoped to the rootfs plane only (the chunk store becomes a runtime dependency for code paths a restored guest never exercised before banking; volumes and memory snapshots are untouched). The amendment lands with the mechanism, not with this draft.
-**Builds on:** [025](025-local-disk-authoritative-s3-archive-interval.md) (content-addressed archiving discipline, principal-scoped erasure, the cross-principal dedup prohibition), [026](026-template-composition-gitops-registration.md) (the `apply(scope, generation, desired_set)` reconcile conversion hooks into), [027](027-snapshot-modes-workload-property.md) (the `shared/<principal>` keyspace precedent and the read-only-rootfs facts), [019](019-op-log-data-structure-payload-separation.md) (principal-scoped erasure as a schema invariant), [020](020-admission-control-plane-token-routing-peer-redistribution.md) (the admission surface registration extends)
+**Amends:** `projects/embervm/ARCHITECTURE.md` invariant 3, scoped to immutable derived rootfs chunks only. Mutable VM state and snapshot lineage remain principal-scoped and never deduplicate across principals. Immutable private rootfs chunks may deduplicate within one Account, with mount authorization still checked per principal. Explicitly published platform chunks may deduplicate globally.
+**Builds on:** [025](025-local-disk-authoritative-s3-archive-interval.md) (content-addressed archiving discipline for mutable state), [026](026-template-composition-gitops-registration.md) (the `apply(scope, generation, desired_set)` reconcile conversion hooks into), [027](027-snapshot-modes-workload-property.md) (the read-only-rootfs facts), [019](019-op-log-data-structure-payload-separation.md) (principal-scoped erasure), [020](020-admission-control-plane-token-routing-peer-redistribution.md) (the admission surface registration extends), and [033](033-substrate-threat-model-conformance-encryption-at-rest.md) (random per-artifact encryption for mutable state and shared immutable platform bases)
 
 ---
 
@@ -42,17 +43,21 @@ neither survives third-party images: Pattern A assumes the platform's own
 Bazel pipeline builds every guest image, and tenancy breaks that premise.
 
 The design goal, stated as the destination rather than a ladder of interim
-rungs: **performant on the homelab, tolerant of cold load and boot from
-the network.** A network-served cold path is an accepted property of the
-design, not a compromise to be engineered away later.
+rungs: **performant on the homelab, minimal physical footprint for the active
+image set, and no network dependency after a rootfs is declared ready.** A
+brick hydrates every chunk of an active manifest before it advertises that
+rootfs as ready. The object store is a preparation dependency, never a live
+guest block-read dependency.
 
 Prior art is Brooker et al., "On-demand Container Loading in AWS Lambda"
 (USENIX ATC 2023): flatten OCI layers to one filesystem image, chunk,
-convergent-encrypt, demand-load into Firecracker. This ADR takes its
-manifest plane separation, its salt-in-key-derivation, and its
-deterministic-flattening requirement, and deliberately does not take its
-AZ cache fleet, erasure coding, compression, write-overlay bitmap, or
-cross-customer dedup, each rejected below with reasons.
+convergent-encrypt, and demand-load into Firecracker. Lambda deduplicates
+convergently encrypted chunks while a per-customer KMS key protects only the
+manifest's chunk-key table. Its varying salt is an operational blast-radius
+control, not the customer authorization boundary. This ADR takes the manifest
+plane separation and deterministic flattening, changes the private dedup scope
+to Account, and deliberately does not take network demand loading, its AZ cache
+fleet, erasure coding, compression, or write-overlay bitmap.
 
 ---
 
@@ -120,43 +125,43 @@ garbage collection can enumerate chunk references without holding any key
 that can read them. Chunk universes and manifests are per-arch. Chunks
 are not compressed: `CONFIG_EROFS_FS_ZIP` makes compressed EROFS
 available in the guest kernel, but compression before encryption is a
-plaintext-size side channel, every principal's chunks being encrypted
+plaintext-size side channel, every private Account's chunks being encrypted
 under decision 3, and the bandwidth benefit is marginal on both LAN
 SeaweedFS and same-region S3.
 
-**3. The chunk store is single-tier, one keyspace per principal, and
-invariant 3 stands unamended.** Every principal, including the platform's
-own first-party images, encrypts its chunks under its own salt: key =
-H(salt_principal, plaintext), AES-CTR, chunk named by the ciphertext hash,
-stored under that principal's prefix. No chunk is ever referenced across a
-principal boundary, in either direction. The per-principal salt makes
-invariant 3 hold cryptographically rather than by policy: identical
-content in two principals produces different keys, different ciphertexts,
-and different names, so no chunk is ever shared between manifests that
-belong to different principals, and ADR 019's erasure stays an indexed
-prefix delete of exactly one principal's keyspace. The salt field exists
-in the key derivation from day one regardless of tier count, so a future
-dedup-scope change is a salt-policy change, never a format change.
+**3. Immutable rootfs chunks deduplicate within an Account, while mutable
+state remains principal-scoped.** Account is the storage and encryption domain
+for private image chunks. The current `tenant` deployment constant occupies
+that Account slot. Conversion derives deterministic chunk ciphertext under an
+Account-scoped secret salt, names the chunk by its ciphertext hash, and stores
+it under `rootfs/account/<account>/<epoch>/<ciphertext-hash>`. Identical content
+in two principals in the same Account produces one stored chunk. Identical
+content in different Accounts produces different keys, ciphertext, and names.
 
-An earlier draft of this decision kept a second, unencrypted "platform"
-tier that first-party images deduped against across principals. That is
-content-addressed dedup across principals, which invariant 3 forbids in
-plain text ("Content-addressed dedup across principals is forbidden," ADR
-025). The draft defended itself against the invariant's rationale, that
-erasure stays a prefix delete, rather than against the rule itself, and a
-platform tier's own chunk deletion would in any case have been a
-cross-principal reference-counting problem the moment a platform image
-retired: exactly the failure mode ADR 025 and ADR 027 name. Dropping the
-tier is what makes the heading claim "invariant 3 stands unamended" true
-rather than asserted.
+Authorization remains narrower than encryption scope. A manifest is owned by
+an Account and workload, while a dispatch capability names the principal that
+may mount it. A brick receives neither the Account salt nor the Account KEK. It
+receives only an authenticated key table and a bounded capability scoped to
+`(account, principal, manifest digest, workload, brick, expiry)`. Sharing
+physical ciphertext therefore grants no principal the authority to select or
+mount another principal's image.
 
-What this gives up: a base layer common to several principals is now
-stored once per principal rather than once globally, so an image common
-to ten tenants costs ten copies of its unchanged chunks instead of one.
-That is judged an acceptable cost, because dedup at this layer is a
-cache-warmth optimisation, not an economic necessity at this scale, and
-Phase 0's cross-image commonality measurement sizes what is being
-forgone rather than assuming it away.
+An optional `rootfs/platform/<epoch>/<ciphertext-hash>` universe holds chunks
+from explicitly published platform roots. A private conversion may reference a
+platform chunk only when its plaintext digest and boundary match a chunk in an
+allow-listed platform manifest. This is a provenance check, not a heuristic
+"common bytes" promotion. Platform chunks may be convergently encrypted under a
+platform key or stored plaintext when their publication contract already makes
+them public. Phase 0 measures whether this second universe earns its GC and
+operational cost before it is built.
+
+This amends invariant 3 only for immutable, reconstructable rootfs content.
+Memory snapshots, session workspaces, stateful volumes, and every other mutable
+artifact retain ADR 025 and ADR 033's rule: unique per-artifact data key,
+principal KEK, and no cross-principal deduplication. Principal erasure deletes
+its manifests and wrapped key material; Account erasure is an indexed deletion
+of the Account chunk prefix. Physical chunks shared by another principal in the
+same Account are Account-owned derived content, not residual principal state.
 
 **4. Presentation is ublk, a chosen direction with two parts gated on
 Phase 0 validation: one read-only block device per in-use manifest, at a
@@ -202,93 +207,45 @@ are verified at kernel 6.8; the EKS AMI is not verified for any of these
 requirements. One device is shared read-only by every VM on the brick
 using that image, exactly as the baked file is today.
 
-**5. Cache policy: pin what a manifest served, LRU-evict the rest, collect
-garbage aggressively; and the invariant-4 premise is amended for the
-rootfs plane.** The pin set is computed per (brick, manifest), not per
-instance: decision 4 gives one shared read-only device per manifest per
-brick, the Linux block layer hands the ublk backend sector requests with
-no originating-VM attribution and may merge adjacent ones, and a repeat
-read from a second instance is absorbed by host page cache before it ever
-reaches the backend. Per-instance pinning is therefore not computable from
-where the backend sits. The backend instead records the union of chunks
-it has served for a given manifest on that brick, which is free to
-compute and is the same granularity this decision's own GC-root list
-already implies. Chunks in a manifest's served-chunk union for a live or banked
-instance are pinned; everything else is LRU under real disk pressure, and
-GC is deliberately aggressive because a cold load from the network is
-fast by design. The coarser granularity pins slightly more than strict
-per-instance tracking would, which is the safe direction.
+**5. A rootfs is fully hydrated and verified before READY; ublk never performs
+a network read for a live guest.** The local cache stores encrypted chunks once
+per dedup domain. Hydrating a manifest fetches only chunks not already present,
+verifies every ciphertext name and manifest authentication tag, then atomically
+publishes the manifest as locally ready. Only after that transition may noded
+create its read-only ublk device, advertise the base, or restore a bundle that
+references the manifest.
 
-What makes the weaker rule safe, and where it stops holding, needs both
-halves stated. The premise is sound and was checked against the code: a
-Firecracker memory snapshot captures guest RAM including resident page
-cache, there is no balloon device and no `drop_caches` call anywhere in
-noded or the runtimes, and restore is `LoadSnapshot` against a File memory
-backend, so nothing invalidates that cache between bank and relight. But
-the conclusion that a restored VM "touches the block device only for code
-paths it had not exercised before banking" does not follow from that
-premise alone, for two reasons. First, Linux may reclaim clean
-page-cache pages under memory pressure before the bank runs, so a path the
-guest read earlier can still be absent from the snapshot. Second, the pin
-set does not travel with the instance: it lives on the brick that served
-those chunks, so a cross-brick relight, the group and stateful classes'
-normal case, lands on a brick where nothing for that instance is pinned or
-cached, and exposure there is everything outside guest RAM, not merely the
-paths unexercised before banking.
+The complete chunk set of every locally READY manifest is pinned while any of
+these roots exists: a synced workload registry entry placed on the brick, a
+READY warm base, a live VM, or a bank bundle restorable on that brick. Chunks
+with no root enter LRU eligibility under actual disk pressure. GC follows the
+paper's generational discipline: a retired root enters an expired alarm window
+before deletion, and any access during that window halts the sweep. Liveness is
+explicit digest references, never a directory pointer or a sampled read set.
 
-Decision 5 is sound today for a narrower reason than "the snapshot has the
-working set": it depends on bank never reclaiming guest memory first. The
-natural future optimisation for the 7-day S3 snapshot tier, shrinking
-memfiles by balloon inflate or a guest-side `drop_caches` before banking,
-would gut this premise outright: the restored guest would fault its whole
-working set from the network on relight, not just the cold tail. This is
-recorded as an explicit constraint: **bank must not be preceded by guest
-memory reclaim without revisiting this premise.**
+Full hydration does not recreate the current catalogue-sized footprint. The
+brick hydrates the active manifest set, not every registered image, and stores
+each account or platform chunk once even when many fully hydrated manifests
+reference it. ublk exposes distinct virtual block devices over that shared local
+chunk set without materializing one complete EROFS file per image. Host page
+cache and the backend's decrypted-chunk cache are optimizations only; correctness
+depends solely on the pinned encrypted chunks on NVMe.
 
-What narrows the cross-brick exposure without changing the pin
-architecture: the bank bundle records the served-chunk-id list for the
-instance being banked, alongside the manifest digest. It is a subset of
-the manifest's cleartext chunk-id plane, so it is small and needs no keys.
-Any brick can then prefetch that read set on relight regardless of which
-brick pinned it originally, which is what makes the cross-brick case
-tolerable rather than a full cold load. Retrofitting this later leaves
-every bundle banked before the change unable to prefetch on relight, which
-is why it belongs in the format freeze (item 3 of the implementation
-issue) rather than added after bundles exist in the wild.
+The availability contract therefore remains the existing one. An object-store
+outage prevents a new or evicted manifest from becoming READY, while existing
+local execution, bank, and relight continue without network I/O. There is no
+block-read path that can leave a guest in uninterruptible sleep waiting for S3,
+no served-chunk union to persist, and no bank-time read-set sidecar. Future
+memory reclaim before bank does not change rootfs availability because the
+complete manifest remains local.
 
-Full local hydration is not rejected here, it is unquantified. The prior
-argument, "it puts per-node storage back at catalogue size", compares a
-targeted bank precondition against eager hydration of the entire
-catalogue, which is not the actual choice: hydrating only the manifests
-in use by live or banked instances is the active set, a small fraction of
-the catalogue on any real node. Whether that active-set hydration is
-worth doing for banked or availability-sensitive workloads is Open
-Question 7, settled by Phase 0's measurement of what that active set
-actually is, not decided by this ADR.
-
-The residual is stated rather than buried: **the chunk store becomes a
-runtime dependency for genuinely-new code paths on a running restored
-guest**, which cannot happen today, where a baked rootfs is complete on
-local NVMe. A store outage no longer only slows warmth; a live request
-that faults an uncached chunk blocks until the store answers. This is the
-same trade every network-backed block device makes, and it is confined to
-the rootfs plane: stateful volumes stay local-authoritative (ADR 025) and
-memory snapshots stay fail-open-to-cold-boot. Invariant 4's enforcement
-arm is unchanged; its premise ("warmth artifacts are never
-correctness-critical") is narrowed for rootfs reads only, and
-ARCHITECTURE.md section 5 is updated when the mechanism lands, not on this
-draft, so the document keeps describing what is true now.
-
-Provenance strengthens at the same time: the manifest digest is recorded
-in every bank bundle and verified at relight. A mismatch discards warmth
-and cold-boots (fail open on warmth, fail closed on provenance), which
-upgrades today's unverifiable "never overwrite another rootfs-*.ext4"
-convention into a checkable invariant. Rootfs and chunk GC liveness
-becomes explicit digest references (workload registry entries, READY
-bases, bank bundles), replacing liveness-by-directory-pointer, and the
-paper's expired-state discipline is imported: a retired GC root passes
-through an expired window in which any access raises an alarm and halts
-further deletion.
+Provenance strengthens at the same time: the manifest digest is recorded in
+every bank bundle and verified at relight. A mismatch discards warmth and
+cold-boots (fail open on warmth, fail closed on provenance), which upgrades
+today's unverifiable "never overwrite another rootfs-*.ext4" convention into a
+checkable invariant. The versioned bundle and ext4 rootfs-digest foundation for
+this has already shipped under issue #4182; chunk-backed bundles add the
+presentation version and manifest digest without changing that fail-closed rule.
 
 **6. A Kubernetes Job is the conversion worker primitive, never the
 control plane and never noded; its reconcile design is not decided
@@ -328,16 +285,22 @@ queue limits, all declared scalars in user-facing units. Without them the
 converter is a denial-of-service target. This surface does not exist
 today and ships with the converter, not after it.
 
-**8. Key custody: control-plane wrap keys as brick leases now, KMS at
-EKS, no format change.** Each principal's manifest key tables are wrapped
-under a per-principal key. Before EKS those wrap keys are held by the
-control plane and released to bricks at dispatch as memory-only leases
-sealed to the brick's dial-home identity, the same class-2 credential
-shape section 9 of ARCHITECTURE.md already defines; a key table is a
-small lifecycle-rate fact, consistent with invariant 2. The stated
-limitation is that control-plane compromise reads all tenant images. At
-EKS, custody swaps to per-principal KMS keys with zero format change,
-which is the property that matters.
+**8. Key custody: Account convergence secrets stay in the converter and key
+service; bricks receive manifest capabilities.** Each private manifest key
+table is wrapped under an Account-scoped KEK. The secret salt that derives
+deterministic chunk keys is available only to the converter and key service. A
+brick receives neither secret. At placement it receives the decrypted key table
+through a short-lived capability scoped to `(account, principal, manifest
+digest, workload, brick, expiry)`, the same class-2 credential shape section 9
+of ARCHITECTURE.md already defines. The key table is a small lifecycle-rate
+fact, consistent with invariant 2.
+
+Before EKS, the control plane holds the Account KEKs and salt material, and
+seals bounded manifest capabilities to the brick's dial-home identity. The
+stated limitation is that control-plane compromise reads all private images in
+every Account. At EKS, custody swaps to per-Account KMS keys with zero manifest
+format change. Mutable artifact encryption remains per principal under ADR 033
+and is not widened to Account scope by this decision.
 
 ---
 
@@ -347,8 +310,8 @@ ADR 025's "local disk is authoritative" is scoped to stateful volumes:
 durable, single-writer tenant data whose only truth is the bytes on that
 node. A rootfs is the opposite shape: derived data whose origin of truth
 is a registry ref and a deterministic conversion. Losing every cached
-chunk on a node loses nothing; the store rebuilds the node's working set
-on demand and the converter rebuilds the store from the registry. So the
+chunk on a node loses nothing; hydration rebuilds the node's active set
+before READY and the converter rebuilds the store from the registry. So the
 chunk store being authoritative for the rootfs plane sits alongside ADR
 025 rather than contradicting it, and "local is authoritative" must not
 be read as a global rule: it is a property of volumes, not of the
@@ -398,29 +361,34 @@ ordinary per-image image swap.
 graph TB
     subgraph reg [Registration]
         WL["Workload definition<br/>source.image: OCI ref"]
-        CONV["Converter Job (CP-created,<br/>general pool, no /dev/kvm)<br/>resolve digest, flatten to EROFS,<br/>CDC chunk, salt + encrypt, upload"]
+        CONV["Converter Job (CP-created,<br/>general pool, no /dev/kvm)<br/>resolve digest, flatten to EROFS,<br/>CDC chunk, Account-encrypt, upload"]
     end
     subgraph cp [Control plane]
         API["apply(scope, gen, desired_set)"]
-        FACT["manifest digest recorded as fact;<br/>key-table lease at dispatch"]
+        FACT["manifest digest recorded as fact;<br/>scoped capability at dispatch"]
     end
     subgraph store [Chunk store: SeaweedFS S3 today, S3 on EKS]
-        TEN[("per-principal tiers<br/>each salted, encrypted, own prefix")]
+        TEN[("private Account chunks<br/>Account-salted and encrypted")]
+        PUB[("allow-listed platform chunks<br/>global immutable universe")]
         MAN[("manifests: cleartext id plane<br/>+ encrypted key table")]
     end
     subgraph brick [Brick, noded]
-        BE["ublk backend<br/>chunk cache on scratch NVMe<br/>pin served-chunk union, LRU the rest"]
+        HYD["eager hydrator<br/>fetch every missing chunk,<br/>verify, then publish READY"]
+        BE["ublk backend<br/>local chunks only<br/>no network read path"]
         DEV["/var/lib/embervm/rootfs/&lt;digest&gt;<br/>symlink to /dev/ublkbN, RO"]
         FC["Firecracker VMs<br/>ordinary virtio-blk drive;<br/>bank bundle carries manifest digest"]
     end
     WL --> API
     API --> CONV
     CONV --> TEN
+    CONV --> PUB
     CONV --> MAN
     CONV --> FACT
     FACT --> BE
-    MAN --> BE
-    TEN -->|chunk fault| BE
+    MAN --> HYD
+    TEN --> HYD
+    PUB --> HYD
+    HYD -->|all chunks local| BE
     BE --> DEV --> FC
 ```
 
@@ -433,11 +401,13 @@ graph TB
 | vhost-user-blk presentation | Firecracker v1.12.1 cannot snapshot a microVM with vhost-user devices, and bank/relight is how every class works, task's own warm start included; disqualifying, not a caveat. Revisit if FC ships vhost-user snapshot support |
 | FUSE file presented as the drive | The paper's own stated regret: four scheduler hops per miss, jitter under load; adopting the paper as written adopts the regret |
 | Fixed-offset 512 KiB chunks over deterministic ext4 (the paper's shape) | Requires a custom serial allocator to make similar inputs block-stable; content-defined chunking gets shift-resistance from the chunker instead, and stock EROFS clears the remaining (reproducibility) bar, pending Phase 0's confirmation |
-| Full local hydration, hydration-complete as a bank precondition | Not rejected, unquantified: the catalogue-size argument compares against eager hydration of the whole catalogue, not the active set of manifests in use by live or banked instances; Phase 0 must measure that active set (Open Question 7) |
-| Whole-image lazy blob fetch (ADR 005 Pattern A, repaired) | Simpler, but no cross-image sharing of base chunks, eviction granularity is a whole image, and the 5 to 30 s first fetch lands on fresh nodes at spike time; it also keeps the platform-builds-everything premise tenancy breaks |
+| Network demand loading after rootfs READY | Makes the object store correctness-critical for a running guest: a cold block fault during an outage can leave the guest in uninterruptible sleep, and cold boot from the same store is not a fail-open path. Eager hydration keeps the existing local-execution availability contract |
+| Materialize one fully hydrated EROFS file per active image | Avoids network demand loading but loses local cross-image sharing. Hydrating chunks and presenting them through ublk makes the active set fully local without reconstructing one complete file per manifest |
+| Whole-image lazy blob fetch (ADR 005 Pattern A, repaired) | Simpler, but no cross-image sharing of base chunks and eviction granularity is a whole image; it also keeps the platform-builds-everything premise tenancy breaks |
 | Middle cache tier and erasure coding | No cache fleet to stripe at 10 to 50 nodes; on EKS, S3 same-region reads are free bandwidth while a cross-AZ peer cache pays per GB both ways, so a peer cache loses on cost and only wins latency intra-AZ; erasure coding has no substrate without a fleet |
-| Cross-principal dedup, including a shared platform tier for first-party images (amending invariant 3) | Invariant 3 forbids content-addressed dedup across principals in plain text, not just by its erasure-stays-a-prefix-delete rationale; a shared tier's own GC would itself be a cross-principal reference-counting problem on retirement. Rejected outright, not just among tenants; each principal, platform included, pays its own storage cost for common base layers, sized by Phase 0's cross-image commonality measurement |
-| Chunk or EROFS compression | Compression before encryption is a plaintext-size side channel; every principal's chunks are encrypted under decision 3, so there is no plaintext tier for the exemption to apply to; benefit marginal at LAN and same-region bandwidth regardless |
+| Global deduplication of private chunks, matching Lambda exactly | Makes equality and GC global, conflicts with Account erasure, and exceeds the sharing required here. Private chunks deduplicate within an Account; only allow-listed published platform chunks may cross Accounts |
+| Per-principal private chunk universes | Preserves the blanket invariant but duplicates the same immutable apko base for every principal in one Account. Mutable state still needs that boundary; immutable derived rootfs chunks do not |
+| Chunk or EROFS compression | Compression before encryption is a plaintext-size side channel; every private Account's chunks are encrypted under decision 3, so there is no private plaintext tier for the exemption to apply to; benefit marginal at LAN and same-region bandwidth regardless |
 | Write-overlay bitmap (the paper's CoW path) | The rootfs is already read-only with tmpfs scratch, and ADR 027's capture drive is a separate device; there is nothing for an overlay to do |
 | Conversion inside the control plane | Multi-GB payloads through the BEAM violate invariant 2 and block the coordinator |
 | Conversion on noded | Contends with microVM capacity on the nodes sized for VMs, and needs no `/dev/kvm`; on EKS it would occupy metal for work the general pool does cheaper |
@@ -450,22 +420,27 @@ graph TB
 
 Baseline: [docs/security.md](../../security.md).
 
-- **Every principal's image content is that principal's code at rest,
-  including the platform's own.** Every tier is encrypted with
-  per-principal salted convergent encryption; the SeaweedFS S3 gateway is
-  anonymous by standing decision, so ciphertext-plus-external-keys is the
-  access control for that store, and it remains defense in depth once EKS
-  IAM exists.
-- **The per-principal salt kills the confirmation-of-file attack across
-  principals**: an observer cannot test whether another principal's image
-  contains a known file, because the same plaintext yields a different
-  chunk name per principal. Within a principal it reveals only what the
-  principal already knows.
-- **Erasure stays an indexed prefix delete** (ADR 019): no chunk is ever
-  referenced outside the principal that owns it, so deleting a principal's
-  keyspace prefix is complete by construction; there is no shared tier
-  whose own garbage collection would need cross-principal reference
-  counting.
+- **Private image content is encrypted at Account scope.** Every private chunk
+  uses Account-salted convergent encryption; the SeaweedFS S3 gateway is
+  anonymous by standing decision, so ciphertext plus external keys is the
+  confidentiality boundary for that store, and remains defense in depth once
+  EKS IAM exists. Equality is revealed within one Account by design and hidden
+  across Accounts because the same plaintext produces different ciphertext and
+  names.
+- **Sharing ciphertext does not grant mount authority.** The Account salt and
+  KEK never reach a brick. A brick gets only one authenticated manifest key
+  table under a capability naming the account, principal, manifest, workload,
+  brick, and expiry. An object-store read by itself cannot select or decrypt an
+  arbitrary private rootfs.
+- **Erasure follows ownership.** Principal erasure removes the principal's
+  manifests, grants, and wrapped key material. Shared physical chunks are
+  Account-owned derived content and remain only while another Account manifest
+  roots them. Account erasure is an indexed prefix delete. Mutable principal
+  artifacts never enter this keyspace and retain principal-prefix deletion.
+- **The platform universe is publication-only.** A converter can reference it
+  only through an allow-listed platform manifest and an exact plaintext digest
+  plus boundary match. Tenant-controlled popularity can never promote a private
+  chunk into the global universe.
 - **On-read chunk integrity verification is required, and its absence is
   load-bearing.** The SeaweedFS S3 gateway's anonymity covers writes as
   well as reads (`noded/config/config.go`), so without verification any
@@ -489,11 +464,11 @@ Baseline: [docs/security.md](../../security.md).
   byte count, file count, layer count, xattr size, and sparse extents, and
   registry pull credentials scoped to the converter Job rather than held
   more broadly.
-- **Pre-EKS custody limitation, stated**: the control plane holds the
-  wrap keys, so control-plane compromise reads all tenant images. Leases
-  to bricks are memory-only and sealed to dial-home identity (the class-2
-  shape). KMS custody at EKS removes the central readable keyring with no
-  format change.
+- **Pre-EKS custody limitation, stated**: the control plane holds Account wrap
+  keys and convergence salts, so control-plane compromise reads all private
+  images. Capabilities to bricks are bounded and sealed to dial-home identity
+  (the class-2 shape). KMS custody at EKS removes the central readable keyring
+  with no format change.
 - **The converter is the one component with registry egress.** Guests
   never pull images; the converter Job pulls the registered ref under the
   admission caps of decision 7, with per-principal pull credentials
@@ -508,11 +483,11 @@ Baseline: [docs/security.md](../../security.md).
 
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
-| Store outage blocks a running restored guest's first touch of an unexercised code path (new failure semantics on the rootfs plane) | Medium | **High** | An alarmed backend metric is observation, not mitigation, and a shared per-manifest device correlates the stall across every VM using that image: a guest blocked on a root block read enters uninterruptible D state, where hung-task warnings do not recover it and signals do not complete it, and cold boot from the same unavailable store is not a fail-open path either. Required: bounded block-request and network deadlines, circuit breaking, a defined EIO behaviour, a VM watchdog and reap policy, queue isolation, and thundering-herd admission control on store recovery |
-| GC or LRU evicts a chunk the pin set should have held (bookkeeping bug class; the rootfs GC already leaked once by pointer-liveness) | Medium | High | Liveness is explicit digest references, not directory pointers; expired-window alarm halts deletion on any access; cold boot is the recovery |
+| Store outage prevents a missing manifest from becoming READY | Medium | Medium | Hydration is a bounded preparation operation with explicit Unavailable status and retry; already READY manifests continue locally, and dispatch never reaches a partially hydrated device |
+| GC or LRU evicts a chunk a READY manifest roots (bookkeeping bug class; the rootfs GC already leaked once by pointer-liveness) | Medium | High | Liveness is the complete manifest chunk set rooted by registry, base, VM, and bank references; atomic READY publish; expired-window alarm halts deletion on any access |
 | Converter abused as a DoS target (40 GB image, tar bombs, slow registries) | High | Medium | Decision 7's caps ship with the converter: size ceiling, timeout, per-principal concurrency and queue depth; extractor isolation and expansion limits per the Security section |
-| Dedup ratio and boot working set are unknown for this image population | High | Medium | The sizing spike measures both before parameters freeze; the design's latency case does not depend on dedup being good |
-| SeaweedFS chunk-GET tail latency at 512 KiB under concurrency is unmeasured | Medium | Medium | Spike measures it; levers are chunk size and read-ahead, never a cache tier |
+| Dedup ratio and active-set footprint are unknown for this image population | High | Medium | The sizing spike measures chunk reuse before parameters freeze; active manifests and complete chunk sets are measured from brick inventory before cache sizing freezes |
+| SeaweedFS chunk-GET tail latency at 512 KiB under concurrent hydration is unmeasured | Medium | Medium | Spike measures preparation throughput; bounded hydration concurrency and admission prevent a fresh brick from stampeding the store |
 | The ublk symlink mechanism is unvalidated: whether Firecracker serializes the symlink spelling or a resolved `/dev/ublkbN` path into the snapshot is unknown, and a repointed symlink does nothing for a VM already running against a failed device | Medium | High | Gated on the Phase 0 symlink experiment before ublk is frozen as the presentation mechanism; a running VM against a failed device needs its own recovery path regardless of the symlink outcome |
 | ublk device state does not survive a noded restart | High | Low | Devices are re-created from the persisted registry on start and the digest-named symlink re-pointed before any restore; the registry-survives-restart pattern already exists |
 | Conversion queue backs up registration (a slow registry stalls the reconcile) | Medium | Low | Conversion is async off the reconcile; the workload stays unready with a stated reason until its manifest fact lands |
@@ -525,27 +500,25 @@ Baseline: [docs/security.md](../../security.md).
 
 1. **CDC parameters**: target chunk size and cut policy, settled by the
    sizing spike rather than imported from the paper's 512 KiB legacy.
-2. **Pin-set persistence at manifest granularity**: whether the
-   per-(brick, manifest) served-chunk union is persisted with the registry
-   across noded restarts or rebuilt lazily from bank bundles on first
-   touch.
-3. **Salt rotation**: the field exists from day one; whether rotation
-   machinery (time, popularity, placement) is ever worth building at this
-   blast radius, or the principal dimension alone is the permanent answer.
+2. **Platform universe**: whether measured cross-Account reuse justifies its
+   separate provenance and GC machinery. The private Account universe does not
+   depend on it and ships first if the measurement is weak.
+3. **Account salt rotation**: the epoch field exists from day one; whether
+   rotation machinery by time or blast radius is worth building, and how long
+   old epochs remain readable during manifest migration.
 4. **Private-registry credentials** for tenant OCI refs: per-principal
    pull secrets at conversion time, their storage shape, and their
    admission review.
-5. **Eager warming for serving and stateful classes**: whether
-   long-running classes should prefetch their manifest's full chunk set in
-   the background as a posture choice, given task and session need not.
-6. **Whether EROFS compression is worth adopting for any principal**,
+5. **Hydration concurrency and admission**: the per-brick and fleet-wide bounds
+   that fill a fresh active set quickly without turning a node replacement into
+   a SeaweedFS request storm.
+6. **Whether EROFS compression is worth adopting for any Account**,
    now that every tier is encrypted and there is no plaintext tier for the
    side-channel exemption to apply to.
-7. **Whether full hydration is required for banked or availability-
-   sensitive classes**: rejected only as an eager catalogue-wide default,
-   not as a targeted policy; Phase 0 must measure the active banked-
-   manifest set (the manifests used by live or banked instances, not the
-   whole catalogue) before this is settled.
+7. **Offline capability continuity**: whether an active manifest capability is
+   reissued only after dial-home or sealed locally to the brick identity for at
+   most the brick-silence timeout, so a noded restart during a control-plane gap
+   can still relight already authorized local state.
 8. **The converter's reconcile state machine**: deterministic Job
    identity, restart adoption, stale-completion rejection after a ref
    update, deletion while running, retry exhaustion, result retrieval and
@@ -563,14 +536,14 @@ Baseline: [docs/security.md](../../security.md).
 
 | Resource | Relevance |
 | -------- | --------- |
-| Brooker et al., "On-demand Container Loading in AWS Lambda", USENIX ATC 2023 ([arXiv 2305.13162](https://arxiv.org/abs/2305.13162)) | The manifest plane separation, salt-in-key-derivation, deterministic flattening requirement, and expired-window GC discipline this adopts; the cache fleet, erasure coding, compression, and write overlay it deliberately does not |
+| Brooker et al., "On-demand Container Loading in AWS Lambda", USENIX ATC 2023 ([paper](https://www.usenix.org/system/files/atc23-brooker.pdf)) | The deterministic flattening, convergent chunk encryption, per-customer encrypted key table, manifest plane separation, and expired-window GC discipline this adapts; the network demand loading, cache fleet, erasure coding, compression, and write overlay it deliberately does not |
 | [ADR 005](005-embervm-eks-scale-out-metal-pool-bricks.md) | Decision 3 (Pattern A) this supersedes; the Pending-brick Karpenter contract that makes node readiness the binding constraint |
-| [ADR 025](025-local-disk-authoritative-s3-archive-interval.md) | The local-authoritative scope this ADR bounds to volumes; principal-scoped erasure; the cross-principal dedup prohibition the single-tier store enforces cryptographically |
+| [ADR 025](025-local-disk-authoritative-s3-archive-interval.md) | Principal-scoped encryption and dedup rules for mutable archives, which this ADR leaves unchanged while separating immutable rootfs chunks from that artifact class |
 | [ADR 026](026-template-composition-gitops-registration.md) | The `apply` reconcile conversion triggers from; Draft and not yet implemented, a prerequisite for decision 6 |
-| [ADR 027](027-snapshot-modes-workload-property.md) | The `shared/<principal>` keyspace precedent; the read-only rootfs and separate capture-drive facts that eliminate the write overlay |
-| [ADR 019](019-op-log-data-structure-payload-separation.md) | Erasure as an indexed principal-scoped delete, which the per-principal store keeps true |
+| [ADR 027](027-snapshot-modes-workload-property.md) | The read-only rootfs and separate capture-drive facts that eliminate the write overlay; its mutable shared-blob keyspace remains principal-scoped |
+| [ADR 019](019-op-log-data-structure-payload-separation.md) | Principal-scoped erasure for mutable state; private rootfs chunk ownership moves to Account while principal manifests and key material remain directly erasable |
 | [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) | The admission posture decision 7's caps extend |
-| `projects/embervm/ARCHITECTURE.md` | Invariants 2, 3, and 4; the class-2 credential lease shape decision 8 reuses; the invariant-4 premise amendment lands with the mechanism |
+| `projects/embervm/ARCHITECTURE.md` | Invariants 2, 3, and 4; this ADR narrows invariant 3 for immutable rootfs chunks and preserves invariant 4 by requiring local hydration before READY |
 | `projects/embervm/chart/crds/workload-crd.yaml` | `image.ref` is an unconstrained string, so mutable tags are permitted today; the basis for decision 1's digest-resolution requirement |
 | `projects/embervm/chart/templates/_noded-pod.tpl` | The per-image initContainer range this retires |
 | `projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml` | The runtime bake script this retires |
@@ -578,7 +551,8 @@ Baseline: [docs/security.md](../../security.md).
 | `projects/embervm/noded/fcvm/driver/driver.go` | `loadInto` restores via `LoadSnapshot` without ever reissuing `PutDrive`, so drive configuration comes from the snapshot itself; the basis for decision 4's symlink validation gate and the cutover section |
 | `projects/embervm/noded/config/config.go` | The SeaweedFS S3 gateway's anonymity is a standing decision covering writes as well as reads; the basis for the Security section's on-read verification requirement |
 | `projects/embervm/noded/server/store.go` | `RestoreArtifact`'s existing per-file checksum verification, the precedent the Security section's chunk-integrity requirement follows |
-| `projects/embervm/proto/embervm/node/v1/node.proto` | `BankResponse` carries only `snapshot_ref` and `size_bytes` today; motivates decision 5's served-chunk-id addition to the bank bundle |
+| `projects/embervm/rootfs/measure_chunks.py` | Phase 0 harness comparing per-image, principal, Account, and global chunk footprints over candidate flattened images; measurement only, not the production chunker |
+| `projects/embervm/proto/embervm/node/v1/node.proto` | `BankResponse.rootfs_digest` and versioned bundle provenance already shipped under issue #4182; the chunk format extends that identity with a presentation version and manifest digest |
 | `projects/embervm/control/lib/embervm/session_manager.ex` | `base_digest/1` is currently a placeholder equal to the image ref, one of several competing rootfs identities the format freeze (implementation issue item 3) must settle |
 | `projects/embervm/control/lib/embervm/base_builder.ex` | Owns workload `Ready` conditions today; the open Ready-ownership question in decision 6 |
 | Firecracker v1.12.1 `docs/api_requests/block-vhost-user.md` | "At the moment, snapshotting is not supported for microVMs that have vhost-user devices configured": the fact that decides ublk over vhost-user-blk |

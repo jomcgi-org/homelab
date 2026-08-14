@@ -68,7 +68,7 @@ compare against.
 | Brick autoscale | **Built** at rung `up`; **Planned** scale-down | Full ladder remains |
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
 | Transport auth CP-to-noded | **Planned** | mTLS/SPIFFE, #4693 |
-| Encryption at rest | **Planned** | Per-principal envelope encryption, #4691 |
+| Encryption at rest | **Planned** | Per-principal mutable artifacts (#4691); Account-scoped immutable rootfs chunks (ADR 028, #4182) |
 | Cells / multi-cell | **Built** seams, single cell | Second-cell fleet layer is future work |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
 
@@ -400,10 +400,14 @@ against them.
    plane carries facts. The two deliberate exceptions are lifecycle-rate:
    the parked first request after a serving miss, and task dispatch/results.
 
-3. **No VM or snapshot lineage ever crosses a principal.** Content-addressed
-   dedup across principals is forbidden (erasure would become a cross-tenant
-   reference-counting problem). The workload-class table in section 3
-   carries the per-class network and state boundaries.
+3. **No mutable VM or snapshot lineage ever crosses a principal.** Memory
+   snapshots, workspaces, volumes, and other mutable artifacts never deduplicate
+   across principals (erasure would become a cross-tenant reference-counting
+   problem). ADR 028 defines the narrow exception for immutable,
+   reconstructable rootfs chunks: private chunks may deduplicate within one
+   Account, explicitly published platform chunks may deduplicate globally, and
+   principal-scoped mount authorization remains mandatory. The workload-class
+   table in section 3 carries the per-class network and state boundaries.
 
 4. **Fail closed on enforcement, fail open on warmth, and metering is not
    enforcement.** Containment (concurrency caps, fair queues, admission, the
@@ -567,6 +571,14 @@ lives in the fleet section.
 Control-plane-driven, idempotent per key; evict refuses while referenced.
 Keys are namespaced by workload (and vendor, below); the principal-scoped
 `shared/<principal>/<sha256>` keyspace is a deliberate, named exception.
+
+**Planned rootfs plane (ADR 028, #4182)**: OCI images convert to deterministic
+flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
+`rootfs/account/<account>/...`; allow-listed published platform chunks may use
+`rootfs/platform/...`. A brick fully hydrates and verifies every chunk of an
+active manifest before reporting the rootfs READY, then presents a local-only
+read-only ublk device. The object store is a preparation dependency, never a
+live guest block-read dependency.
 
 | Failure | task | session | serving | stateful |
 | ------- | ---- | ------- | ------- | -------- |
@@ -765,7 +777,7 @@ are the Accepted risks tracked by #4693, #4707, and #4708.
 | Default-deny actor networking (17) | **Built** for the cross-actor half: task and session guests have no NIC at all, vsock only, so no actor-to-actor network path exists. Serving guests get a tap device reachable solely via node Envoy authority matches and kernel DNAT (section 2). Egress is the deliberate exception: the brokered proxy lane defaults internal-deny but external-allow (`EGRESS_EXTERNAL: allow`), so guests read the public internet by design, and the credential boundary rather than reachability is the control there (section 9). |
 | No guest access to node services, metadata, or cluster DNS (16, 19, 34) | **Built**, with named exceptions: a vsock guest reaches the shim contract plus the deployment-declared internal egress allowlist (two entries in the reference deployment; the values file records that adding an entry is a security decision). No host network namespace, no metadata service, no cluster DNS inside the guest. |
 | No Kubernetes or management-API escalation from guests (20, 22) | **Built**: a guest holds no cluster credential by construction (no NIC, no mounted ServiceAccount). The audience-scoped projected guest token is **Planned**. Definitions are CP-owned and there is no self-modification verb. |
-| Worker state fully reset between actors (18, 27, 30) | **Built**: Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, placement is CP-owned, never guest-chosen, and each VM's rootfs and scratch are private to it: no filesystem is shared between guests. |
+| Worker state fully reset between actors (18, 27, 30) | **Built**: Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no mutable VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, placement is CP-owned, never guest-chosen, and each VM sees an immutable rootfs plus private scratch. ADR 028's Planned physical chunk sharing cannot expose another manifest or writable filesystem. |
 | Credentials never inside the sandbox by default (28, 29) | **Built**: class 1 derivable short-lived credentials may enter PLATFORM-TRUSTED guest classes only and are revoked at bank; the brick-local egress proxy holds other real credentials and injects them only at the sidecar hop, only for hosts in that secret's `egressTo`. UNTRUSTED workload guests never receive any credential class. Revocation at the validator is the control, and RAM scrubbing is rejected as a mechanism (section 9). **Planned**: per-principal grants at the credential broker and request-scoped GitHub tool mediation replacing host-keyed injection. |
 | Quotas and rate limits on creation and spend (9, 33) | **Built** as enforcement machinery, model-checked (`quota.tla`): admission fails closed, a configured quota of 0 is a hard stop at submit, and metering rides the operation (invariant 4). The per-principal daily budget is deliberately unset in the reference deployment (`deploy/values.yaml`), so spend is bounded by admission caps and concurrency, not by a per-principal quota, until a budget is set. |
 | Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Planned**: per-principal envelope encryption of mutable warmth, digest-verified manifests, and restore authorized by the tuple (principal, lineage, brick, workload, generation, lease) (#4691), over authenticated per-tuple store access (#4708). **Accepted risk** today: the default object store is anonymous, so any pod-network caller can write, substitute, or delete an artifact, and a same-vendor substitution passes the vendor stamp silently. The vendor stamp defends against accidents, not against an adversary with store reach. |
@@ -786,7 +798,7 @@ are the Accepted risks tracked by #4693, #4707, and #4708.
 | ---------------------------- | ----------- |
 | Node storage access scoped to actors scheduled on it (36, 37) | **Planned**: a brick receives a short-lived decryption capability for exactly the tuple it is waking (#4691), over authenticated store access (#4708), so a compromised brick or a bulk bucket copy yields nothing readable beyond its own current assignments. Today the default store is anonymous, so any pod-network caller can read, write, or delete any warmth object. |
 | Node API access scoped to its own actors (38) | **Built** for the substantive control: node reports are authoritative only for instances anchored to that node, and wake grants are gated on the volume's anchor (section 4). **Accepted risk**: the (node, pod uid) registration identity is self-asserted under a shared ServiceAccount, so a brick can re-register another brick's identity and become its authoritative source; **Planned** binding to brick identity (#4707). |
-| Granular admin access and envelope encryption at rest (39, 40) | **Planned** for principal warmth (#4691), with two KEK custody modes: platform-managed, or customer-managed in the principal's own KMS with wrap/unwrap grants only, so key material never enters the platform and revocation is the customer's unilateral act. The op-log deliberately shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
+| Granular admin access and envelope encryption at rest (39, 40) | **Planned** for principal warmth (#4691), with two KEK custody modes: platform-managed, or customer-managed in the principal's own KMS with wrap/unwrap grants only, so key material never enters the platform and revocation is the customer's unilateral act. Immutable private rootfs chunks use Account-scoped convergent encryption with per-manifest principal authorization (ADR 028, #4182); this does not widen mutable artifact encryption. The op-log deliberately shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
 | Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). The journal is prefix-compacted past 30 days; older audit lives only in the observability stack. |
 | Containment of a detected-bad actor (43) | **Built** for one lever: principal cutoff as an admission action, stop minting tokens, 402 at the edge. The volume quarantine is a data-integrity guard against generation divergence, not an adversary control; no brick- or principal-level quarantine primitive exists, and an automatic containment policy is not decided. |
 
