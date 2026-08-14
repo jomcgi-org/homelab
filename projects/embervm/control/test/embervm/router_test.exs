@@ -1125,6 +1125,9 @@ defmodule Embervm.RouterTest do
       # The reason names the gate, so the caller can tell this from an empty trace.
       assert Enum.all?(verdicts, fn v -> v["detail"] =~ "gate" end),
              "the vacuous reason must name the disabled gate so it is distinguishable from an empty trace"
+
+      assert Enum.map(verdicts, &String.to_existing_atom(&1["invariant"])) ==
+               Embervm.SpecTrace.Checker.invariants()
     end
 
     test "the verdict triple is present, never flattened to pass/fail" do

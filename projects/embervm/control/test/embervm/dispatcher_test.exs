@@ -1280,6 +1280,20 @@ defmodule Embervm.DispatcherTest do
     assert record, "no dispatch_warm record for the adopted vm: #{inspect(records)}"
     assert record["vars"]["provenance"] == "adopted"
     assert record["vars"]["task_id"] == tid
+
+    # Pin the adopt_inventory KEY against the real emitter. It shipped as
+    # "adopted" while the checker read "vm_ids" in five places, so the adopted
+    # set was empty on every production trace and the fixtures, which use
+    # "vm_ids", all passed. Two opposite consequences: adopt_idempotent returned
+    # PASS over zero vm_ids with a non-zero coverage, and prime_before_checkpoint
+    # returned FAIL after a control-plane restart, because run_id is per
+    # incarnation so an adopted vm's prime record sits in the previous run's
+    # group and the adopted set that should have covered it was empty.
+    {:ok, adopts} = Embervm.SpecTrace.Store.SQLite.read_window(store, action: "adopt_inventory")
+    adopt = Enum.find(adopts, &("vm-adopted-1" in (&1["vars"]["vm_ids"] || [])))
+
+    assert adopt,
+           "adopt_inventory must carry the adopted vm under vm_ids: #{inspect(adopts)}"
   end
 
   # The negative half: adoption that adopts NOTHING must emit no record.

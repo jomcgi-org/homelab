@@ -1670,6 +1670,10 @@ defmodule Embervm.SessionManagerTest do
     assert confirm_destroy["vars"]["session_id"] == created.session_id
     assert confirm_destroy["vars"]["gate"] == true
     assert confirm_destroy["vars"]["node_confirmed"] == true
+    # had_vm asserted HERE, against the real emitter, not only in a fixture. Both
+    # destroy invariants filter on it, so if a site stopped setting it they would
+    # go permanently vacuous in production while the suite stayed green.
+    assert confirm_destroy["vars"]["had_vm"] == true
     assert confirm_destroy["vars"]["confirmed_by"] == "teardown"
     assert confirm_destroy["mono"] > begin_destroy["mono"]
   end
@@ -1694,6 +1698,10 @@ defmodule Embervm.SessionManagerTest do
     assert confirm_destroy["vars"]["session_id"] == created.session_id
     assert confirm_destroy["vars"]["gate"] == false
     assert confirm_destroy["vars"]["node_confirmed"] == true
+    # had_vm asserted HERE, against the real emitter, not only in a fixture. Both
+    # destroy invariants filter on it, so if a site stopped setting it they would
+    # go permanently vacuous in production while the suite stayed green.
+    assert confirm_destroy["vars"]["had_vm"] == true
     assert confirm_destroy["vars"]["confirmed_by"] == "none"
   end
 
