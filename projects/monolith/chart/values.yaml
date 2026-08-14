@@ -748,7 +748,7 @@ jobs:
       concurrencyPolicy: Forbid
       # The trigger allows 180s for a demo-postgres cold boot, plus margin.
       activeDeadlineSeconds: 300
-      # ARMED 2026-07-27 after a live API-pod run returned all four green:
+      # ARMED 2026-07-27 after a live API-pod run returned all four probes green:
       #   bazel    ok  "warm, 501ms"       (was 403: wrong ServiceAccount)
       #   semgrep  ok  "5 finding(s)"      (was missing EmberVM credentials)
       #   pages    ok  "all pages, 311ms"
@@ -766,6 +766,29 @@ jobs:
       env:
         # The in-cluster API service the trigger POSTs; injected here (not baked
         # in code) so a release rename cannot silently break the DNS name.
+        MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
+
+    # The qwen session synthetic is deliberately separate from the original
+    # demo probes so its hourly cadence does not turn a local-model VM test
+    # into a five-minute workload. It is suspended until Joe watches a live
+    # run return a completed turn with a non-empty result and confirms that
+    # the session is destroyed afterward. Landing a prober you have not
+    # watched succeed is how #4074 paged on its own gaps.
+    - name: ember-qwen-session-synthetic
+      args: ["ember-qwen-synthetic-trigger"]
+      schedule: "0 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      # Joe arms this after watching the first green live run. That run must
+      # show a completed, non-empty qwen turn and a destroyed EmberVM session.
+      suspend: true
+      env:
         MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
       resources:
         requests:

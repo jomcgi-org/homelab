@@ -43,7 +43,7 @@ _probe_in_flight = False
 
 @internal_router.post("/synthetic-probe")
 async def synthetic_probe_endpoint() -> dict:
-    """Run all four ember probes concurrently and record their latch rows."""
+    """Run all four demo probes concurrently and record their latch rows."""
     global _probe_in_flight
 
     if _probe_in_flight:
@@ -75,5 +75,27 @@ async def synthetic_probe_endpoint() -> dict:
             *(synthetic_probe.record(demo, result) for demo, result in results.items())
         )
         return results
+    finally:
+        _probe_in_flight = False
+
+
+@internal_router.post("/qwen-session-probe")
+async def qwen_session_probe_endpoint() -> dict:
+    """Run and latch only the qwen session synthetic."""
+    global _probe_in_flight
+
+    if _probe_in_flight:
+        logger.info("synthetic probe already in flight, skipping this trigger")
+        return {"skipped": True, "detail": "already running"}
+
+    _probe_in_flight = True
+    try:
+        from ember_public import synthetic_probe
+
+        result = await synthetic_probe.probe_qwen()
+        if not result["ok"]:
+            logger.warning("ember synthetic qwen failed: %s", result["detail"])
+        await synthetic_probe.record("qwen", result)
+        return {"qwen": result}
     finally:
         _probe_in_flight = False

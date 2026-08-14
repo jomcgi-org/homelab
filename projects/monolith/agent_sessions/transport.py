@@ -519,10 +519,17 @@ class EmberVmShimTransport:
                 )
                 raise EmberVMTimeout(str(exc)) from exc
             except httpx.HTTPStatusError as exc:
+                # _status_error_detail, not str(exc): the guest reports WHY in
+                # the response body, and this log is what a human reads first.
+                # #4884 was a bare "422 Unprocessable Content" here for every
+                # qwen session, while the body said "File Not Found" (llama.cpp
+                # rejecting the absolute-form request line the egress proxy
+                # forwarded). The body reached the raised error downstream but
+                # never the log, so the one layer that saw the cause dropped it.
                 logger.warning(
                     "embervm invoke failed for session %s: %s",
                     current.session_id,
-                    exc,
+                    _status_error_detail(exc),
                 )
                 raise
             except httpx.TransportError as exc:
