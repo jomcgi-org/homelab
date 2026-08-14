@@ -95,13 +95,16 @@ EXTRACT_READ_TIMEOUT = 120.0  # frontier-model completions are slower than embed
 DEFAULT_LIMIT = 25
 # Concurrent in-flight extract calls. The per-chunk work is GPU inference on
 # the shared vLLM server, and a sequential (one-at-a-time) client starves
-# vLLM's continuous batcher, so the GPU runs at batch size 1 (its worst case).
-# Firing several requests concurrently lets vLLM batch them. Kept BELOW the
-# server's --max-num-seqs (8) so this bulk job leaves decode-slot headroom for
-# latency-sensitive trusted callers (public chat is separately hard-capped at 2
-# by chat_public.limits; Discord / private chat / agents share the rest). It
+# the server's batcher, so the GPU runs at batch size 1 (its worst case). It
 # also bounds the group size for the incremental per-group commit below.
-DEFAULT_CONCURRENCY = 6
+#
+# Extraction is asynchronous bulk work, so it gets the async slot budget: one
+# decode slot, leaving the other two free for whoever is actually waiting on a
+# reply. This deliberately gives up the batching win that a wider fan-out used
+# to buy, because that win accrued to a job nobody is watching while the cost
+# landed on interactive latency. See shared.inference.ASYNC_SLOT_BUDGET for the
+# policy and its cross-pod caveat.
+DEFAULT_CONCURRENCY = shared.inference.ASYNC_SLOT_BUDGET
 
 # v4 generic typed-extraction taxonomy (spec v4), widened to 19 types by v6's
 # ``table``. Grouped by the DERIVED category: lore (unchanged from v1), gameplay

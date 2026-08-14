@@ -1110,10 +1110,14 @@ grimoire:
   # Unset here so the code default (25) applies; set to tune without a code
   # change.
   extractLimit: ""
-  # extractConcurrency: cap on concurrent extract calls. The code default (6)
-  # suits the local GPU's 8 decode slots; a hosted provider (OpenRouter) has no
-  # such limit, so deploy/values.yaml raises it (the client backs off on 429).
-  # Empty here so the code default applies.
+  # extractConcurrency: cap on concurrent extract calls. The code default (1)
+  # is the async slot budget (see shared.inference); a hosted provider has
+  # no such limit, so deploy/values.yaml raises it (the client backs off on
+  # 429). Empty here so the code default applies. Note "empty" reaches the code
+  # as an empty string rather than an unset variable, so the fallback runs
+  # through the invalid-value branch and logs a warning before using the
+  # default; that is pre-existing and harmless, but it is why the default is
+  # the number that actually matters here.
   extractConcurrency: ""
 
 # ADR 036 orchestrator brief compiler: a host-side OpenRouter call that routes

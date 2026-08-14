@@ -227,12 +227,13 @@ vllm:
     - "--reasoning-config"
     - '{"reasoning_start_str": "<think>", "reasoning_end_str": "</think>"}'
     # Total concurrent decode sequences. Widened 3 -> 8 so the shared vLLM can
-    # batch bulk callers (grimoire entity extraction fans out ~6 concurrent
-    # short requests) alongside interactive traffic instead of forcing batch
+    # batch bulk callers alongside interactive traffic instead of forcing batch
     # size 1. KV memory is a fixed pool (gpu-memory-utilization below); more
     # seqs just share it, with graceful preemption on a rare full-context req.
-    # Consumers budget against this: chat_public caps public at 2, grimoire at
-    # 6, leaving headroom for Discord / private chat / agents.
+    # Only read when llm.engine is "vllm". Note the consumer budget has since
+    # been resized for the llama.cpp path (3 slots, grimoire at 3), so on a
+    # revert to vLLM these 8 slots would be undersubscribed rather than
+    # oversubscribed, which is the safe direction.
     - "--max-num-seqs"
     - "8"
     - "--kv-cache-dtype"
@@ -263,11 +264,14 @@ llamacpp:
   # ~1 GiB compute buffers leaves ~6.2 GiB for KV. Qwen3.8-27B carries KV on
   # only 16 of its 64 layers (the rest are Gated DeltaNet linear attention), but
   # head_dim is 256, so a 32k sequence still costs a full 1.00 GiB at q8_0.
-  # 4 slots = ~4 GiB and leaves real margin. Raise toward 6 only after reading
-  # steady-state VRAM: this is a Recreate deployment on a single GPU, so an
-  # over-committed KV pool is a crash loop, not a degraded pod.
-  ctxSize: 131072
-  parallel: 4
+  #
+  # Measured at 4 slots: 22562 of 24564 MiB resident, ie under 2 GiB spare, one
+  # slot from the ceiling. 3 slots (98304 / 3 = 32768 each) gives back a full
+  # GiB. Do not raise this without re-reading steady-state VRAM: this is a
+  # Recreate deployment on a single GPU, so an over-committed KV pool is a crash
+  # loop with the previous engine already torn down, not a degraded pod.
+  ctxSize: 98304
+  parallel: 3
   # Quantized V cache requires flash attention; leaving this off silently forces
   # the cache back to f16 and doubles the table above.
   flashAttn: "on"

@@ -213,7 +213,7 @@ spec:
             # Concurrent extract calls. Bounded by vLLM --max-num-seqs for a
             # local endpoint, but a hosted provider (OpenRouter) has no such
             # limit, so production runs wide (the client backs off on 429).
-            # Empty falls back to the code default (6).
+            # Empty falls back to the code default (1, the async slot budget).
             - name: GRIMOIRE_EXTRACT_CONCURRENCY
               value: {{ $.Values.grimoire.extractConcurrency | quote }}
             {{- end }}
