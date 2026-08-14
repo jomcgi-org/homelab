@@ -118,3 +118,40 @@ async def test_error_fails_closed(monkeypatch):
     assert classification == "one_shot"
     assert outcome == "error"
     assert refusal == "down"
+
+
+@pytest.mark.asyncio
+async def test_request_leaves_room_for_a_reasoning_model(monkeypatch):
+    """The request must not budget for a one-line answer alone.
+
+    The alias resolves to a reasoning model, whose reasoning tokens count
+    against max_tokens even when the server routes them into a separate
+    field. A 64 token budget was spent thinking, `content` came back empty,
+    and the classifier failed closed to one_shot for every task, so no run
+    could ever start. Assert both halves of the fix: thinking is disabled,
+    and the budget is large enough to survive a server that ignores that.
+    """
+    captured = {}
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, *args, **kwargs):
+            captured["json"] = kwargs["json"]
+            return FakeResponse("CLASSIFICATION: planned")
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeAsyncClient)
+    classification, _, outcome, _ = await classify_task_with_outcome("ship a feature")
+
+    assert classification == "planned"
+    assert outcome == "success"
+    assert captured["json"]["chat_template_kwargs"]["enable_thinking"] is False
+    assert captured["json"]["max_tokens"] >= 256
+    assert captured["timeout"] >= 10
