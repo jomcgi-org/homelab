@@ -1447,6 +1447,7 @@ defmodule Embervm.BaseBuilderTest do
       node_id: node_id,
       configured_id: node_id,
       instance_id: "#{node_id}/#{pod_uid}",
+      cpu_vendor: Keyword.get(opts, :cpu_vendor, "amd"),
       size_class: Keyword.get(opts, :size_class, "8gi"),
       mem_budget_mib: Keyword.get(opts, :mem_budget, 8_192),
       mem_headroom_mib: Keyword.get(opts, :mem_headroom, 8_000),
@@ -1853,7 +1854,15 @@ defmodule Embervm.BaseBuilderTest do
             send(test_pid, {:exported, ref.ref})
             {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
           end
-        ] ++ Keyword.take(opts, [:restore_fun, :op_log, :op_log_mod, :hydrate_poll_interval_ms, :hydrate_poll_max])
+        ] ++
+          Keyword.take(opts, [
+            :connect_fun,
+            :restore_fun,
+            :op_log,
+            :op_log_mod,
+            :hydrate_poll_interval_ms,
+            :hydrate_poll_max
+          ])
       )
 
     put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
@@ -2655,6 +2664,31 @@ defmodule Embervm.BaseBuilderTest do
     :ok = BaseBuilder.note_base_missing(builder, "w", "node-9")
 
     assert_receive {:restore_called, "snap1"}, 1_000
+  end
+
+  test "note_base_missing hydrates the anchor vendor ref, not the builder vendor ref" do
+    test_pid = self()
+
+    restore_fun = fn :fake_channel, %Embervm.Node.V1.RestoreArtifactRequest{artifact: ref} ->
+      send(test_pid, {:restore_called, ref.ref})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    {builder, _agent, table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    put_brick(table, "node-1", "intel", cpu_vendor: "intel", mem_budget: 16_384, mem_headroom: 16_000)
+    put_vendor_fact(table, "node-1", "intel", "w", "snap-intel", "intel")
+    :ok = BaseBuilder.add_node(builder, "node-1/intel", "a1")
+
+    :ok = BaseBuilder.note_base_missing(builder, "w", "node-1")
+
+    assert_receive {:restore_called, "snap-intel"}, 1_000
+    refute_receive {:restore_called, "snap1"}, 100
   end
 
   test "note_base_missing spawns ONE hydrate for a repeating wake failure" do

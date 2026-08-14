@@ -511,6 +511,14 @@ defmodule Embervm.BaseBuilder do
   end
 
   def handle_cast({:reconcile_force_rebuild, workload_name, signature_at_start}, state) do
+    handle_force_rebuild(state, workload_name, signature_at_start, nil)
+  end
+
+  def handle_cast({:reconcile_force_rebuild, workload_name, signature_at_start, anchor_node}, state) do
+    handle_force_rebuild(state, workload_name, signature_at_start, anchor_node)
+  end
+
+  defp handle_force_rebuild(state, workload_name, signature_at_start, anchor_node) do
     case Map.get(state.workloads, workload_name) do
       nil ->
         {:noreply, state}
@@ -527,7 +535,24 @@ defmodule Embervm.BaseBuilder do
 
           w = %{w | built_signature: nil, snapshot_ref: nil}
           state = put_in(state.workloads[workload_name], w)
-          {:noreply, reconcile_desc(state, hydrate_fallback_desc(w))}
+
+          case anchor_node && build_instance_on_node(state, w, anchor_node) do
+            nil ->
+              {:noreply, reconcile_desc(state, hydrate_fallback_desc(w))}
+
+            anchor_instance ->
+              w = %{w | node_id: anchor_instance}
+              state = put_in(state.workloads[workload_name], w)
+
+              state =
+                state
+                |> cancel_pending_retry(workload_name)
+                |> enqueue(anchor_instance, workload_name)
+                |> write_base_status(w, :building)
+                |> maybe_start_build(anchor_instance)
+
+              {:noreply, state}
+          end
         end
     end
   end
@@ -767,8 +792,23 @@ defmodule Embervm.BaseBuilder do
         state
 
       true ->
-        case build_instance_on_node(state, w, node_id) do
-          nil ->
+        anchor_vendor = Embervm.NodeCapacity.vendor_for(state.capacity_table, node_id)
+        vendor_refs_map = snapshot_refs_by_vendor(state, w)
+        vendor_ref = Map.get(vendor_refs_map, anchor_vendor, []) |> List.first()
+
+        # Use anchor vendor's ref if available. If anchor vendor has no ref,
+        # skip hydrate to avoid wrong vendor stamp, letting the normal build path
+        # handle it. This prevents replicating the bug we are fixing in the
+        # no-facts-reported window.
+        ref_to_hydrate = vendor_ref
+
+        case {ref_to_hydrate, build_instance_on_node(state, w, node_id)} do
+          {nil, _} ->
+            # No vendor ref available for anchor. Skip hydrate to avoid wrong
+            # vendor stamp. Return unchanged.
+            state
+
+          {_ref, nil} ->
             # No build-eligible instance on the anchor node. Loud, because the wake
             # will keep failing and no hydrate can help: the anchor itself is wrong
             # (stale volume debris flapping it, #4127) or the node is not eligible.
@@ -779,15 +819,17 @@ defmodule Embervm.BaseBuilder do
 
             state
 
-          instance_id ->
+          {ref_to_use, instance_id} ->
+            anchor_node = instance_id |> String.split("/", parts: 2) |> hd()
+
             Logger.warning(
-              "embervm base builder: hydrating #{workload} onto #{instance_id} after a wake " <>
-                "found no base on its anchor node #{node_id}"
+              "embervm base builder: hydrating #{workload}/#{ref_to_use} onto #{instance_id} " <>
+                "after a wake found no base on its anchor node #{node_id}"
             )
 
             state
             |> mark_hydrating(workload)
-            |> spawn_hydrate(%{w | node_id: instance_id})
+            |> spawn_hydrate(%{w | node_id: instance_id, snapshot_ref: ref_to_use}, anchor_node)
         end
     end
   end
@@ -842,7 +884,7 @@ defmodule Embervm.BaseBuilder do
   # BaseBuilder's build state (the base's presence lives on the node's own fact,
   # read back on the next status), so a crashed worker only needs the in-flight
   # guard cleared, which the {:hydrate_done, ...} in `after` guarantees.
-  defp spawn_hydrate(state, w) do
+  defp spawn_hydrate(state, w, anchor_node \\ nil) do
     owner = self()
     name = w.name
     signature_at_start = signature(w)
@@ -886,7 +928,7 @@ defmodule Embervm.BaseBuilder do
               "embervm base builder: hydrate #{name}/#{ref} fell back, forcing a rebuild (#{inspect(reason)})"
             )
 
-            GenServer.cast(owner, {:reconcile_force_rebuild, name, signature_at_start})
+            GenServer.cast(owner, {:reconcile_force_rebuild, name, signature_at_start, anchor_node})
         end
       after
         send(owner, {:hydrate_done, name})
