@@ -388,7 +388,15 @@ defmodule Embervm.Dispatcher do
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
     case Map.get(state.workers, pid) do
       nil -> {:noreply, state}
-      _ -> {:noreply, finish_worker(state, pid, {:failed, :transport, {:worker_down, reason}, nil}, :no_flush)}
+      meta ->
+        if meta.mode == :miss do
+          Embervm.SpecTrace.emit(:adoption, :abandon_claim, %{
+            "task_id" => meta.task_id,
+            "vm_id" => meta.vm_id
+          })
+        end
+
+        {:noreply, finish_worker(state, pid, {:failed, :transport, {:worker_down, reason}, nil}, :no_flush)}
     end
   end
 
@@ -1200,7 +1208,14 @@ defmodule Embervm.Dispatcher do
   end
 
   defp apply_outcome(state, meta, {:succeeded, result, stats}) do
-    _ = safe(fn -> Embervm.TaskStore.succeed(state.task_store, meta.task_id, result, stats) end)
+    result = safe_call(fn -> Embervm.TaskStore.succeed(state.task_store, meta.task_id, result, stats) end)
+
+    case result do
+      {:ok, {:ok, _task}} -> emit_succeed(meta, state)
+      {:ok, {:ok, _task, _}} -> emit_succeed(meta, state)
+      _ -> :ok
+    end
+
     state
   end
 
@@ -1211,8 +1226,45 @@ defmodule Embervm.Dispatcher do
   # Usage-less fallbacks (a bare `{:failed, reason}` from a path that never saw a
   # guest response): bill nothing.
   defp apply_outcome(state, meta, {:succeeded, result}) do
-    _ = safe(fn -> Embervm.TaskStore.succeed(state.task_store, meta.task_id, result) end)
+    result = safe_call(fn -> Embervm.TaskStore.succeed(state.task_store, meta.task_id, result) end)
+
+    case result do
+      {:ok, {:ok, _task}} -> emit_succeed(meta, state)
+      {:ok, {:ok, _task, _}} -> emit_succeed(meta, state)
+      _ -> :ok
+    end
+
     state
+  end
+
+  defp emit_succeed(meta, state) do
+    # Check the gate BEFORE the lookup, not just inside emit/3. The TaskStore
+    # call is a GenServer.call from the single Dispatcher process into the single
+    # TaskStore process, so running it unconditionally doubles store round trips
+    # per completion on a hot path, in production, purely to populate a debug
+    # record that is then discarded because the trace is off. safe_call/1 catches
+    # an exit but does not shorten the default 5s timeout, so a slow TaskStore
+    # would block the dispatcher an extra 5s per completed task with the facility
+    # disabled.
+    if Embervm.SpecTrace.enabled_now?() do
+      do_emit_succeed(meta, state)
+    end
+
+    :ok
+  end
+
+  defp do_emit_succeed(meta, state) do
+    session_id =
+      case safe_call(fn -> Embervm.TaskStore.get(state.task_store, meta.task_id) end) do
+        {:ok, {:ok, task}} -> Map.get(task, :session_id) || Map.get(task, "session_id")
+        _ -> nil
+      end
+
+    Embervm.SpecTrace.emit(:adoption, :succeed, %{
+      "task_id" => meta.task_id,
+      "vm_id" => meta.vm_id,
+      "session_id" => session_id
+    })
   end
 
   defp apply_outcome(state, meta, {:failed, reason, _detail}) do
