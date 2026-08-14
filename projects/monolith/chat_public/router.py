@@ -51,8 +51,8 @@ router = APIRouter(prefix="/internal/chat", tags=["chat_public"])
 # The default is intentionally a constrained, clearly-scoped persona so a
 # jailbreak yields only off-brand text and nothing privileged.
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are Qwen 3.6, an open model running on Joe McGinley's self-hosted "
-    "Kubernetes homelab cluster, served with vLLM and no external API. You are "
+    "You are Qwen 3.8, an open model running on Joe McGinley's self-hosted "
+    "Kubernetes homelab cluster, served with llama.cpp and no external API. You are "
     "the assistant behind Joe's public knowledge graph: the notes and context "
     "you are given are his own public notes and thoughts. "
     "Answer the user's question directly and substantively, explaining the topic "

@@ -76,7 +76,7 @@ export const projects = [
       },
       {
         k: "Local inference",
-        v: "vLLM serves a Qwen3.6 MoE (35B-A3B, int4) on a single RTX 4090 for routine work; frontier models are reached over the swapped egress only where the task warrants it.",
+        v: "llama.cpp serves Qwen3.8-27B (dense, 4-bit GGUF) on a single RTX 4090 for routine work; frontier models are reached over the swapped egress only where the task warrants it.",
       },
     ],
     links: [

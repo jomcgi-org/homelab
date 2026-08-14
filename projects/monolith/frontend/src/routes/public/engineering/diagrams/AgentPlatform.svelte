@@ -23,7 +23,7 @@
   <DBox role="store" sub="placeholder to real key">TLS egress proxy</DBox>
   <DArrow />
   <DGroup label="Models" stack>
-    <DBox role="output" sub="vLLM on 4090">Qwen3.6 MoE</DBox>
+    <DBox role="output" sub="llama.cpp on 4090">Qwen3.8 27B</DBox>
     <DBox role="external" sub="over swapped egress">Frontier API</DBox>
   </DGroup>
 </Diagram>
