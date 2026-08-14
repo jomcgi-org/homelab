@@ -86,7 +86,7 @@ defmodule Embervm.RestartWedgeScenarioTest do
     assert :ok = Dispatcher.sweep(dispatcher_name)
     task_id = submit(store)
     assert eventually(fn -> Agent.get(dispatched, & &1) == 1 end)
-    assert {:ok, %{id: ^task_id}} = TaskStore.get(store, task_id)
+    assert {:ok, %{task_id: ^task_id, state: :succeeded}} = TaskStore.get(store, task_id)
 
     assert control(fake.control_port, :post, "/fault/suppress-primed") == 204
     {:ok, stream} = NodeService.Stub.watch_node(fake.channel, %Embervm.Node.V1.WatchNodeRequest{node_id: "node-4"})
