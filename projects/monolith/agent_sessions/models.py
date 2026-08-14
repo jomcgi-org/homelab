@@ -81,6 +81,7 @@ class AgentTurn(SQLModel, table=True):
     session_id: int = Field(foreign_key="agent_sessions.agent_sessions.id", index=True)
     seq: int = Field(index=True)
     prompt: str
+    prompt_intent: str | None = Field(default=None)
     model: str | None = Field(default=None)
     voice_summary: str | None = Field(default=None)
     result_text: str

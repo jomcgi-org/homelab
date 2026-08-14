@@ -37,34 +37,55 @@ def next_action(
     return "escalate"
 
 
+def verdict_trailer_instruction() -> str:
+    """Return the plain-text verdict trailer instruction for reviewers."""
+    return (
+        "End your reply with a verdict on its own final line, plain text, "
+        "no markdown formatting and no trailing punctuation, exactly one of:\n"
+        "VERDICT: APPROVE\nVERDICT: REQUEST_CHANGES\nVERDICT: BLOCKED"
+    )
+
+
+def implementer_prompt_parts(
+    task: str,
+    branch: str,
+    previous_failure: str | None = None,
+    review_feedback: str | None = None,
+) -> tuple[str, str]:
+    intent = (
+        f"Implement this task: {task}\n"
+        f"Create branch {branch} from the base branch, make the change, commit it, "
+        f"and push {branch} to GitHub. Do not open a pull request. Do not push to main."
+    )
+    protocol = rationale_trailer_instruction()
+    if previous_failure:
+        protocol += f"\nPrevious attempt failed: {previous_failure}"
+    if review_feedback:
+        protocol += f"\nThe reviewer requested changes: {review_feedback}"
+    return intent, protocol
+
+
+def reviewer_prompt_parts(task: str, branch: str, commit_sha: str) -> tuple[str, str]:
+    intent = (
+        f"Review the pushed branch {branch} for this task: {task}\n"
+        f"Branch: {branch}\nCommit: {commit_sha}"
+    )
+    return intent, verdict_trailer_instruction()
+
+
 def implementer_prompt(
     task: str,
     branch: str,
     previous_failure: str | None = None,
     review_feedback: str | None = None,
 ) -> str:
-    prompt = (
-        f"Implement this task: {task}\n"
-        f"Create branch {branch} from the base branch, make the change, commit it, "
-        f"and push {branch} to GitHub. Do not open a pull request. Do not push to main."
-        "\n"
-        f"{rationale_trailer_instruction()}"
+    return "\n".join(
+        implementer_prompt_parts(task, branch, previous_failure, review_feedback)
     )
-    if previous_failure:
-        prompt += f"\nPrevious attempt failed: {previous_failure}"
-    if review_feedback:
-        prompt += f"\nThe reviewer requested changes: {review_feedback}"
-    return prompt
 
 
 def reviewer_prompt(task: str, branch: str, commit_sha: str) -> str:
-    return (
-        f"Review the pushed branch {branch} for this task: {task}\n"
-        f"Branch: {branch}\nCommit: {commit_sha}"
-        "\nEnd your reply with a verdict on its own final line, plain text, "
-        "no markdown formatting and no trailing punctuation, exactly one of:\n"
-        "VERDICT: APPROVE\nVERDICT: REQUEST_CHANGES\nVERDICT: BLOCKED"
-    )
+    return "\n".join(reviewer_prompt_parts(task, branch, commit_sha))
 
 
 # Markdown-writing reviewers decorate the verdict line (bold, bullets,
