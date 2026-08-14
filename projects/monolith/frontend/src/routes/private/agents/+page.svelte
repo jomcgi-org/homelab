@@ -1762,19 +1762,19 @@
   input,
   textarea,
   select {
-    border-radius: 6px;
+    border-radius: var(--radius-lg);
   }
   button:focus-visible,
   input:focus-visible,
   textarea:focus-visible,
   select:focus-visible,
   .steps summary:focus-visible {
-    outline: 2px solid var(--info);
-    outline-offset: 1px;
+    outline: 4px solid var(--info);
+    outline-offset: 4px;
   }
   .sidebar {
     min-height: 0;
-    border-right: 1px solid var(--line);
+    border-right: 4px solid var(--line);
     padding: 16px 12px;
     overflow: auto;
   }
@@ -1807,7 +1807,7 @@
   .send-button {
     height: 30px;
     padding: 0 12px;
-    border: 1px solid var(--line-strong);
+    border: 4px solid var(--line-strong);
     font-size: var(--size-meta);
     line-height: 1;
   }
@@ -1857,8 +1857,8 @@
     width: 100%;
     color: var(--text);
     background: var(--panel-bg);
-    border: 1px solid var(--line-strong);
-    padding: 0 9px;
+    border: 4px solid var(--line-strong);
+    padding: 0 8px;
     outline: none;
   }
   .search-label input,
@@ -1868,7 +1868,7 @@
   }
   .new-panel textarea,
   .composer textarea {
-    padding: 8px 10px;
+    padding: 8px 8px;
   }
   input:focus,
   textarea:focus,
@@ -1884,14 +1884,14 @@
   }
   .search-pulse {
     position: absolute;
-    top: 5px;
-    right: 9px;
+    top: 4px;
+    right: 8px;
     color: var(--muted);
   }
   .group-title {
     display: flex;
     justify-content: space-between;
-    margin: 12px 4px 6px;
+    margin: 12px 4px 8px;
   }
   /* The runs heading is a button (clicking it clears the selection and
      returns to the swarm home) sitting beside the plain-text sessions
@@ -1916,14 +1916,14 @@
   .section-link:focus-visible {
     outline: none;
     text-decoration: underline;
-    text-underline-offset: 3px;
+    text-underline-offset: 4px;
   }
   .history-title {
-    margin-top: 18px;
+    margin-top: 16px;
   }
   .history-toggle {
     margin: 8px 4px;
-    padding: 2px 0;
+    padding: 4px 0;
     border: 0;
     background: none;
     color: var(--info);
@@ -1932,7 +1932,7 @@
   .session-list {
     min-height: 0;
     display: grid;
-    gap: 2px;
+    gap: 4px;
   }
   .session-group {
     min-width: 0;
@@ -1943,9 +1943,9 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 5px 8px;
-    border: 1px solid transparent;
+    gap: 8px;
+    padding: 4px 8px;
+    border: 4px solid transparent;
     color: var(--muted);
     background: transparent;
     text-align: left;
@@ -1971,7 +1971,7 @@
     height: 1.05em;
     display: inline-flex;
     align-items: center;
-    gap: 2px;
+    gap: 4px;
     overflow: hidden;
   }
   .group-run-title {
@@ -1999,7 +1999,7 @@
   }
   .group-members {
     grid-column: 1 / -1;
-    padding-left: 10px;
+    padding-left: 8px;
   }
   .session-row,
   .search-result {
@@ -2007,20 +2007,20 @@
     text-align: left;
     color: inherit;
     background: transparent;
-    border: 1px solid transparent;
-    padding: 7px 8px;
+    border: 4px solid transparent;
+    padding: 8px 8px;
     display: flex;
     gap: 8px;
     align-items: flex-start;
     min-width: 0;
   }
   .dot {
-    flex: 0 0 7px;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
+    flex: 0 0 8px;
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-circle);
     background: var(--dot-idle);
-    margin-top: 6px;
+    margin-top: 8px;
   }
   .dot.running,
   .dot.working {
@@ -2036,7 +2036,7 @@
     min-width: 0;
     flex: 1;
     display: grid;
-    gap: 2px;
+    gap: 4px;
   }
   .session-name {
     overflow: hidden;
@@ -2069,7 +2069,7 @@
   }
   .row-cost {
     white-space: nowrap;
-    margin-top: 1px;
+    margin-top: 4px;
   }
   .search-result {
     display: grid;
@@ -2093,8 +2093,8 @@
   }
   .transcript-head {
     display: block;
-    padding: 14px 28px;
-    border-bottom: 1px solid var(--line);
+    padding: 12px 28px;
+    border-bottom: 4px solid var(--line);
   }
   .head-right {
     display: flex;
@@ -2113,14 +2113,14 @@
     outline: none;
   }
   .session-context {
-    margin-top: 3px;
+    margin-top: 4px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .session-state {
-    border-radius: 999px;
-    padding: 4px 10px;
+    border-radius: var(--radius-pill);
+    padding: 4px 8px;
     font-size: var(--size-meta);
     text-transform: lowercase;
     white-space: nowrap;
@@ -2128,8 +2128,8 @@
   /* Soft tinted fills matching the session-state pills: state reads from
      color, not from a hard outline. */
   .vm-chip {
-    border-radius: 999px;
-    padding: 4px 10px;
+    border-radius: var(--radius-pill);
+    padding: 4px 8px;
     font-family: var(--font-mono);
     font-size: var(--size-meta);
     color: var(--muted);
@@ -2167,20 +2167,20 @@
     margin: 0 auto;
   }
   .turn {
-    padding: 18px 0 14px;
-    border-top: 1px solid var(--line);
+    padding: 16px 0 12px;
+    border-top: 4px solid var(--line);
   }
   .turn:first-child {
     border-top: 0;
   }
   .prompt {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     align-items: baseline;
     background: var(--page-bg);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 10px 12px;
+    border: 4px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 8px 12px;
   }
   .prompt-text {
     color: var(--text);
@@ -2197,7 +2197,7 @@
     flex: 0 0 auto;
   }
   .steps {
-    margin: 10px 0 0;
+    margin: 8px 0 0;
   }
   .steps summary {
     cursor: pointer;
@@ -2206,7 +2206,7 @@
     color: var(--muted);
     font-size: var(--size-meta);
     font-family: var(--font-mono);
-    border-radius: 4px;
+    border-radius: var(--radius-md);
   }
   .steps summary:hover {
     color: var(--text);
@@ -2214,7 +2214,7 @@
   .step-list {
     margin: 8px 0 0;
     padding: 0 0 0 12px;
-    border-left: 2px solid var(--line);
+    border-left: 4px solid var(--line);
     list-style: none;
     display: grid;
     gap: 4px;
@@ -2259,7 +2259,7 @@
     flex: 0 0 8px;
     width: 8px;
     height: 8px;
-    border-radius: 50%;
+    border-radius: var(--radius-circle);
     background: currentColor;
   }
   .live-latest {
@@ -2268,13 +2268,13 @@
     white-space: nowrap;
   }
   .result-md {
-    margin-top: 10px;
+    margin-top: 8px;
     color: var(--text-soft);
     line-height: 1.6;
     overflow-wrap: anywhere;
   }
   .result-md :global(p) {
-    margin: 0 0 10px;
+    margin: 0 0 8px;
   }
   .result-md :global(p:last-child) {
     margin-bottom: 0;
@@ -2282,7 +2282,7 @@
   .result-md :global(h2),
   .result-md :global(h3) {
     color: var(--text);
-    margin: 16px 0 6px;
+    margin: 16px 0 8px;
     font-size: var(--size-title);
   }
   .result-md :global(h3) {
@@ -2290,26 +2290,26 @@
   }
   .result-md :global(ul),
   .result-md :global(ol) {
-    margin: 8px 0 10px;
+    margin: 8px 0 8px;
     padding-left: 22px;
   }
   .result-md :global(li) {
-    margin: 3px 0;
+    margin: 4px 0;
   }
   .result-md :global(code) {
     font-family: var(--font-mono);
     font-size: var(--size-body-mono);
     background: var(--code-bg);
-    border-radius: 3px;
-    padding: 1px 4px;
+    border-radius: var(--radius-sm);
+    padding: 4px 4px;
   }
   .result-md :global(pre) {
     background: var(--code-bg);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 10px 12px;
+    border: 4px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 8px 12px;
     overflow-x: auto;
-    margin: 10px 0;
+    margin: 8px 0;
   }
   .result-md :global(pre code) {
     background: none;
@@ -2319,27 +2319,27 @@
     color: var(--info);
   }
   .result-md :global(blockquote) {
-    border-left: 3px solid var(--line-strong);
-    margin: 10px 0;
-    padding: 2px 12px;
+    border-left: 4px solid var(--line-strong);
+    margin: 8px 0;
+    padding: 4px 12px;
     color: var(--muted);
   }
   .result-md :global(table) {
     border-collapse: collapse;
-    margin: 10px 0;
+    margin: 8px 0;
   }
   .result-md :global(th),
   .result-md :global(td) {
-    border: 1px solid var(--line);
-    padding: 5px 9px;
+    border: 4px solid var(--line);
+    padding: 4px 8px;
     text-align: left;
   }
   .turn-error {
-    margin: 10px 0 0;
-    padding: 10px 12px;
+    margin: 8px 0 0;
+    padding: 8px 12px;
     background: var(--err-bg);
-    border: 1px solid var(--err-line);
-    border-radius: 8px;
+    border: 4px solid var(--err-line);
+    border-radius: var(--radius-lg);
     color: var(--err);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -2348,7 +2348,7 @@
   .turn-meta {
     display: flex;
     gap: 12px;
-    margin-top: 10px;
+    margin-top: 8px;
     color: var(--text-soft);
     font-size: var(--size-meta);
   }
@@ -2357,14 +2357,14 @@
     font-weight: 600;
   }
   .composer {
-    border-top: 1px solid var(--line);
+    border-top: 4px solid var(--line);
     padding: 12px 28px 16px;
   }
   .composer-inner {
     max-width: 860px;
     margin: 0 auto;
     display: grid;
-    gap: 10px;
+    gap: 8px;
   }
   .composer textarea {
     resize: vertical;
@@ -2376,14 +2376,14 @@
   .model-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
   }
   .chip {
     font-family: var(--font-mono);
     font-size: var(--size-meta);
-    padding: 5px 10px;
-    border: 1px solid var(--line-strong);
-    border-radius: 999px;
+    padding: 4px 8px;
+    border: 4px solid var(--line-strong);
+    border-radius: var(--radius-pill);
     background: var(--panel-bg);
     color: var(--text);
   }
@@ -2414,9 +2414,9 @@
     height: 100dvh;
     overflow: auto;
     background: var(--panel-bg);
-    border-left: 1px solid var(--line-strong);
+    border-left: 4px solid var(--line-strong);
     padding: 20px;
-    box-shadow: -2px 0 12px rgba(0, 0, 0, 0.07);
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.07);
   }
   .new-panel-scrim,
   .mobile-back,
@@ -2425,13 +2425,13 @@
   }
   .new-panel form {
     display: grid;
-    gap: 14px;
+    gap: 12px;
     margin-top: 16px;
   }
   .new-panel label,
   .new-panel .field {
     display: grid;
-    gap: 6px;
+    gap: 8px;
     color: var(--muted);
     font-size: var(--size-meta);
     text-transform: uppercase;
@@ -2449,7 +2449,7 @@
     margin-top: 4px;
   }
   .empty {
-    padding: 10px 4px;
+    padding: 8px 4px;
     color: var(--muted);
     font-size: var(--size-detail);
   }
@@ -2464,9 +2464,9 @@
     right: 16px;
     bottom: 16px;
     max-width: 420px;
-    padding: 10px 12px;
-    border: 1px solid var(--err-line);
-    border-radius: 6px;
+    padding: 8px 12px;
+    border: 4px solid var(--err-line);
+    border-radius: var(--radius-lg);
     color: var(--err);
     background: var(--err-bg);
     font-size: var(--size-detail);
@@ -2484,10 +2484,10 @@
     grid-template-columns: 44px minmax(0, 1fr);
   }
   .sidebar-collapsed .sidebar {
-    padding: 12px 7px;
+    padding: 12px 8px;
   }
   :global(html[data-agents-rail="collapsed"]) .console .sidebar {
-    padding: 12px 7px;
+    padding: 12px 8px;
   }
   .sidebar-collapsed .side-head {
     justify-content: center;
@@ -2536,21 +2536,21 @@
     display: none;
   }
   .sidebar-collapsed .session-list {
-    gap: 6px;
+    gap: 8px;
   }
   .sidebar-collapsed .session-row {
     justify-content: center;
-    padding: 7px 0;
+    padding: 8px 0;
   }
   :global(html[data-agents-rail="collapsed"]) .console .session-list {
-    gap: 6px;
+    gap: 8px;
   }
   :global(html[data-agents-rail="collapsed"]) .console .session-row {
     justify-content: center;
-    padding: 7px 0;
+    padding: 8px 0;
   }
   .sidebar-collapsed .dot {
-    margin-top: 5px;
+    margin-top: 4px;
   }
   @keyframes pulse {
     50% {
@@ -2606,8 +2606,8 @@
       max-height: 85dvh;
       overflow: auto;
       border-left: 0;
-      border-top: 1px solid var(--line-strong);
-      border-radius: 10px 10px 0 0;
+      border-top: 4px solid var(--line-strong);
+      border-radius: 8px 8px 0 0;
     }
     .model-chips {
       display: none;
@@ -2658,8 +2658,8 @@
   }
   .sr-only {
     position: absolute;
-    width: 1px;
-    height: 1px;
+    width: 4px;
+    height: 4px;
     overflow: hidden;
     clip: rect(0, 0, 0, 0);
   }
