@@ -28,7 +28,6 @@ contents:
 
 archs:
   - x86_64
-  - aarch64
 
 # Run as root: this image is the PID 1 of a raw Firecracker microVM. Boot leaves
 # loopback DOWN and semgrep-guest-init brings `lo` UP via a SIOCSIFFLAGS ioctl
