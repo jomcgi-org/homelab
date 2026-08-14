@@ -8,5 +8,5 @@ exports_files(["ci"])
 sh_test(
     name = "ci_test",
     srcs = ["ci_test.sh"],
-    data = ["ci"],
+    data = ["ci", "//:buildbuddy.yaml"],
 )
