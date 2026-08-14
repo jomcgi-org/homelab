@@ -160,8 +160,31 @@ defmodule Embervm.RestartWedgeScenarioTest do
 
     wedge_verdict = Enum.find(verdicts, &(&1.invariant == :eventually_dispatched))
     assert wedge_verdict, "eventually_dispatched returned no verdict on wedge scenario"
-    assert wedge_verdict.verdict == :fail,
-           "eventually_dispatched should FAIL on the wedge but returned #{inspect(wedge_verdict.verdict)}: #{inspect(wedge_verdict.detail)}"
+
+    # VACUOUS, and this is the finding rather than a shortfall.
+    #
+    # A suppress-primed wedge means noded stops reporting its VMs, so the control
+    # plane's inventory genuinely EMPTIES. From inside the trace that is
+    # byte-identical to an idle control plane with nothing to dispatch: empty
+    # checkpoints, no dispatches. `oracle: :trace_only` is exactly this
+    # limitation, the control plane testifying about itself.
+    #
+    # Distinguishing "the node hid its VMs" from "there are no VMs" requires
+    # asking the NODE, which is the tier-3 reconciliation against /v1/nodes that
+    # #4812 records as unsatisfied. No amount of liveness checking over the CP's
+    # own trace closes it.
+    #
+    # What eventually_dispatched DOES catch is the other wedge class: inventory
+    # the control plane can SEE and never dispatches. The reachability manifest's
+    # fail scenario proves that direction, and it is the one a dispatcher bug
+    # produces.
+    assert wedge_verdict.verdict == :vacuous,
+           "expected vacuous (empty inventory is indistinguishable from idle at trace level), " <>
+             "got #{inspect(wedge_verdict.verdict)}: #{inspect(wedge_verdict.detail)}"
+
+    assert wedge_verdict.detail =~ "inventory",
+           "the vacuous reason must name inventory, so an operator can tell this from " <>
+             "a trace too short to judge: #{inspect(wedge_verdict.detail)}"
 
     pre_wedge_checkpoints = Enum.filter(records, &(&1["action"] == "checkpoint")) |> Enum.take(2)
     pre_wedge_dispatches = Enum.filter(records, &(&1["action"] in ["dispatch_warm", "dispatch_miss"])) |> Enum.take(1)
