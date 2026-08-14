@@ -122,18 +122,8 @@ defmodule Embervm.RestartWedgeScenarioTest do
 
     verdicts = Checker.run(TraceSQLite, trace_store)
 
-    # THE FINDING, and it is the honest one #4761 asked for.
-    #
-    # The records needed to see the wedge ARE present: checkpoints carry the
-    # inventory every sweep, so a starving control plane is visible as inventory
-    # that never becomes a dispatch. What is missing is an INVARIANT that reads
-    # them for non-progress. Every current invariant asks "did an illegal
-    # transition occur", and a wedge is the absence of a legal one.
-    #
-    # So the checker reports vacuous or pass here, and that is a true statement
-    # about the invariants rather than about the trace. The gap is a missing
-    # liveness invariant (adoption.tla's EventuallyDispatched, bounded), not
-    # missing instrumentation. Filed as the next slice of #4761.
+    # The liveness invariant should identify the persistent inventory with no
+    # dispatch as a bounded wedge.
     # Assert on the invariants that could plausibly see a wedge, NOT on the whole
     # verdict list.
     #
@@ -156,6 +146,17 @@ defmodule Embervm.RestartWedgeScenarioTest do
                "stale and this scenario should assert the detection instead: " <>
                "#{inspect(verdict)}"
     end
+
+    wedge_verdict = Enum.find(verdicts, &(&1.invariant == :eventually_dispatched))
+    assert wedge_verdict, "eventually_dispatched returned no verdict on wedge scenario"
+    assert wedge_verdict.verdict == :fail,
+           "eventually_dispatched should FAIL on the wedge but returned #{inspect(wedge_verdict.verdict)}: #{inspect(wedge_verdict.detail)}"
+
+    pre_wedge_checkpoints = Enum.filter(records, &(&1["action"] == "checkpoint")) |> Enum.take(2)
+    pre_wedge_dispatches = Enum.filter(records, &(&1["action"] in ["dispatch_warm", "dispatch_miss"])) |> Enum.take(1)
+
+    assert length(pre_wedge_dispatches) >= 1, "pre-wedge phase should have had a dispatch"
+    assert length(pre_wedge_checkpoints) >= 1, "pre-wedge phase should have had checkpoints"
   end
 
   defp start_fake_node(bin) do

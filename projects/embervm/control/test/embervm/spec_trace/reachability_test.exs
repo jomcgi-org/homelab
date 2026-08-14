@@ -106,6 +106,21 @@ defmodule Embervm.SpecTrace.ReachabilityTest do
       ],
       vacuous: [{"adoption", "prime", %{"vm_id" => "vm-prime"}}]
     },
+    eventually_dispatched: %{
+      pass: [
+        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}}},
+        {"adoption", "dispatch_warm", %{"vm_id" => "vm-pass"}}
+      ],
+      fail: [
+        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}}},
+        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}}},
+        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}}}
+      ],
+      vacuous: [
+        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{}}},
+        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{}}}
+      ]
+    },
     destroy_intent_precedes_record: %{
       pass: [
         {"adoption", "begin_destroy", %{"session_id" => "session-pass"}},
