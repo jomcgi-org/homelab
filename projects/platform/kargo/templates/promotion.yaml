@@ -1,6 +1,13 @@
 {{- if .Values.promotion.enabled }}
 {{- /*
-Kargo owns the monolith's chart version in both environments, and NOTHING else.
+Kargo owns a chart's version across its environments, and NOTHING else.
+
+ONE TEMPLATE, N PIPELINES. This was `monolith-promotion.yaml` and rendered one
+hardcoded pipeline. embervm needed the same shape (#4856), and the alternative
+was a second near-identical 260-line file: two lists that must agree, kept in
+sync by hand, where disagreement is silent. That is the defect class #4802
+records, and these comments are incident history that would drift the moment
+they were duplicated. So the pipeline is data and this is the only copy.
 
 WHY THIS EXISTS. projects/monolith/dev/deploy/application.yaml pinned an OCI
 chart version that nothing moved. bazel/helm/write-back-versions.sh resolves
@@ -8,18 +15,23 @@ exactly one deploy/application.yaml per chart, and that is production's, so dev
 was invisible to it. That stale pin failed twice in one night (#4728): once
 leaving a safety gate inert because the pinned chart had no `if` to read the
 value the overlay set, and once withholding a feature because the template
-lived in a newer chart.
+lived in a newer chart. embervm-dev reached six chart versions behind
+production the same way.
 
-THE PROJECT NAME IS NOT "monolith" OR "monolith-dev" ON PURPOSE. A Kargo
-Project owns a NAMESPACE of the same name, and both of those namespaces already
-exist and hold live workloads. Adopting one would be the same class of
-collision that cost this repo three incidents in one evening: a name that looks
-descriptive and is already someone's identity.
+THE PROJECT NAME IS NEVER THE WORKLOAD'S NAME. A Kargo Project owns a NAMESPACE
+of the same name, and `monolith`, `monolith-dev`, `embervm` and `embervm-dev`
+all already exist holding live workloads. Adopting one would be the same class
+of collision that cost this repo three incidents in one evening: a name that
+looks descriptive and is already someone's identity. Hence `kargo-<workload>`.
 */}}
+{{- range $pipelineIndex, $pipeline := .Values.promotion.pipelines }}
+{{- if $pipelineIndex }}
+---
+{{- end }}
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Project
 metadata:
-  name: {{ .Values.promotion.project }}
+  name: {{ $pipeline.project }}
   annotations:
     # Wave 0: this Project CREATES the namespace the Warehouse and Stages live
     # in, so it must be admitted before they are applied. Without waves ArgoCD
@@ -52,16 +64,16 @@ promotion path if that is wanted later.
 apiVersion: kargo.akuity.io/v1alpha1
 kind: ProjectConfig
 metadata:
-  name: {{ .Values.promotion.project }}
-  namespace: {{ .Values.promotion.project }}
+  name: {{ $pipeline.project }}
+  namespace: {{ $pipeline.project }}
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   promotionPolicies:
-    {{- range .Values.promotion.stages }}
+    {{- range $stage := $pipeline.stages }}
     - stageSelector:
-        name: {{ .name }}
-      autoPromotionEnabled: {{ .autoPromotion }}
+        name: {{ $stage.name }}
+      autoPromotionEnabled: {{ $stage.autoPromotion }}
     {{- end }}
 ---
 {{- /*
@@ -85,8 +97,8 @@ metadata:
     # admitted), so ArgoCD may still need one retry here. The wave removes the
     # guaranteed failure; the retry covers the remaining race.
     argocd.argoproj.io/sync-wave: "1"
-  name: monolith-chart
-  namespace: {{ .Values.promotion.project }}
+  name: {{ $pipeline.warehouse }}
+  namespace: {{ $pipeline.project }}
 spec:
   # These three are CRD server-side defaults, written out because a field the
   # chart omits and the API server sets is a diff ArgoCD can NEVER close. Omit
@@ -96,14 +108,14 @@ spec:
   # full sync. Stage/prod was planned (`nil->obj`) and never applied because a
   # Warehouse-only sync replaced the operation seven seconds later, and the
   # Application reported Succeeded the whole time because that sync did succeed.
-  interval: {{ .Values.promotion.warehouseInterval | quote }}
-  freightCreationPolicy: {{ .Values.promotion.freightCreationPolicy | quote }}
+  interval: {{ $.Values.promotion.warehouseInterval | quote }}
+  freightCreationPolicy: {{ $.Values.promotion.freightCreationPolicy | quote }}
   subscriptions:
     - chart:
-        repoURL: {{ .Values.promotion.chartRepo | quote }}
-        semverConstraint: {{ .Values.promotion.semverConstraint | quote }}
-        discoveryLimit: {{ .Values.promotion.discoveryLimit }}
-{{- range .Values.promotion.stages }}
+        repoURL: {{ $pipeline.chartRepo | quote }}
+        semverConstraint: {{ $pipeline.semverConstraint | quote }}
+        discoveryLimit: {{ $pipeline.discoveryLimit }}
+{{- range $stage := $pipeline.stages }}
 ---
 {{- /*
 PROMOTION PATCHES THE LIVE APPLICATION rather than committing to git, which is
@@ -142,25 +154,25 @@ metadata:
     # admitted), so ArgoCD may still need one retry here. The wave removes the
     # guaranteed failure; the retry covers the remaining race.
     argocd.argoproj.io/sync-wave: "1"
-  name: {{ .name }}
-  namespace: {{ $.Values.promotion.project }}
+  name: {{ $stage.name }}
+  namespace: {{ $pipeline.project }}
 spec:
   requestedFreight:
     - origin:
         kind: Warehouse
-        name: monolith-chart
+        name: {{ $pipeline.warehouse }}
       sources:
-        {{- if .upstream }}
+        {{- if $stage.upstream }}
         # Receives only Freight an upstream Stage has already taken, so a chart
         # cannot reach this environment without having deployed somewhere else
         # first. `direct` is deliberately absent: setting both would let the
         # Warehouse feed this Stage straight past its upstream, which silently
         # removes the ordering this line exists to create.
         stages:
-          {{- range .upstream }}
+          {{- range $stage.upstream }}
           - {{ . }}
           {{- end }}
-        {{- if .requiredSoakTime }}
+        {{- if $stage.requiredSoakTime }}
         # The Freight must occupy the upstream Stage for this long before it is
         # available here. argocd-wait (below) proves the upstream went healthy
         # at one instant; this is what turns that instant into "and it stayed
@@ -172,7 +184,7 @@ spec:
         # the escape hatch for a Stage wedged by a failed argocd-wait, since a
         # Promotion that fails never marks its Freight verified and would
         # otherwise strand the chart upstream forever.
-        requiredSoakTime: {{ .requiredSoakTime | quote }}
+        requiredSoakTime: {{ $stage.requiredSoakTime | quote }}
         {{- end }}
         {{- else }}
         # Nothing upstream: subscribes to the Warehouse itself.
@@ -184,20 +196,20 @@ spec:
         - uses: argocd-update
           config:
             apps:
-              - name: {{ .application }}
+              - name: {{ $stage.application }}
                 namespace: argocd
                 sources:
                   # Must match the Application's source EXACTLY or the step
                   # matches nothing and reports success having changed nothing.
-                  - repoURL: {{ $.Values.promotion.appSourceRepo | quote }}
-                    chart: {{ $.Values.promotion.appSourceChart | quote }}
+                  - repoURL: {{ $pipeline.appSourceRepo | quote }}
+                    chart: {{ $pipeline.appSourceChart | quote }}
                     # Kargo's expression syntax uses dollar-brace-brace, which COLLIDES
                     # with Helm's own delimiters: rendering it inline
                     # makes Helm try to evaluate chartFrom as a Helm function
                     # and fail with `function "chartFrom" not defined`. Held in
                     # values.yaml instead, where Helm treats it as data and
                     # passes it through untouched for Kargo to evaluate.
-                    desiredRevision: {{ $.Values.promotion.desiredRevisionExpr | quote }}
+                    desiredRevision: {{ $pipeline.desiredRevisionExpr | quote }}
                     updateTargetRevision: true
         {{- /*
         WITHOUT THIS STEP THE PIPELINE VERIFIES FREIGHT BEFORE THE WORKLOAD CAN
@@ -247,14 +259,15 @@ spec:
             # hanging it. Generous against a real rollout (dev's took 10s) and
             # mostly redundant with the Degraded fail-fast above, which trips
             # first for the common failure.
-            timeout: {{ $.Values.promotion.waitTimeout | quote }}
+            timeout: {{ $pipeline.waitTimeout | quote }}
           config:
             apps:
-              - name: {{ .application }}
+              - name: {{ $stage.application }}
                 namespace: argocd
                 waitFor:
                   - health
                   - sync
                   - operation
+{{- end }}
 {{- end }}
 {{- end }}

@@ -81,14 +81,6 @@ kargo:
 # that reads narrower than what it controls.
 promotion:
   enabled: true
-  # NOT "monolith" or "monolith-dev": a Kargo Project owns a namespace of that
-  # name and both already exist with live workloads in them.
-  project: kargo-monolith
-  chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith
-  # Floor at the version dev was pinned to when this was built, so the first
-  # promotion is forward-only and cannot walk an environment backwards onto an
-  # older chart.
-  semverConstraint: ">=0.293.0"
   # Written out because the CRD server-side defaults all three, and a field the
   # chart omits but the API server sets is a diff ArgoCD can never close. The
   # Warehouse sat permanently OutOfSync from the first install because of it.
@@ -107,82 +99,150 @@ promotion:
   # server sets; changing them here is fine, omitting them is not.
   warehouseInterval: 5m0s
   freightCreationPolicy: Automatic
-  discoveryLimit: 20
-  # How the Applications spell their source. Helm wants registry + chart name
-  # separately here, unlike the Warehouse above. Both environments run the SAME
-  # chart, which is the whole point of the dev environment, so one pair covers
-  # them.
-  appSourceRepo: ghcr.io/jomcgi/homelab/charts
-  appSourceChart: monolith
-  # KARGO expression, not Helm. Kept here because ${{ }} collides with Helm's
-  # delimiters and would be evaluated by the wrong engine if written inline.
-  # SINGLE quotes inside the expression, not double. Helm's `quote` wraps the
-  # value in double quotes and ESCAPES any inner ones, so a double-quoted
-  # argument renders as chartFrom(\"oci://...\") and Kargo's expression parser
-  # receives literal backslashes. expr accepts either quote style, so using
-  # single quotes here means nothing needs escaping.
-  desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith').Version }}"
-  # How long a Promotion may wait for its Application to go Synced + Healthy
-  # before the Promotion fails. A failed Promotion never marks its Freight
-  # verified, which is exactly what stops a bad chart at dev.
+  # One entry per workload whose chart version Kargo owns. Adding a workload
+  # here is the whole change: the template is generic and this is the only
+  # copy of it, so a second pipeline cannot drift from the first.
   #
-  # 10m is deliberately longer than any healthy rollout here (dev's measured at
-  # 10s) because this bound is not the detector. ArgoCD's own
-  # progressDeadlineSeconds trips the Application to Degraded first, and
-  # argocd-wait fails fast on that transition, so this only catches a workload
-  # that never reaches a terminal state at all.
-  # WRITTEN AS 10m0s, NOT 10m, and that is not a style choice. The API server
-  # normalizes these duration strings to the Go `0s`-suffixed form, so a chart
-  # rendering `10m` against a stored `10m0s` is a diff ArgoCD can never close.
-  # Same reasoning as warehouseInterval below, and the same failure it caused:
-  # selfHeal syncs only the DRIFTED resources, so one unconvergeable resource
-  # emits a continuous stream of targeted single-resource syncs that preempt the
-  # full sync and starve every other resource in the Application, green the
-  # whole time.
-  waitTimeout: 10m0s
-  # Order is the pipeline. `upstream` is what makes it one rather than two
-  # independent subscribers: prod can only receive Freight that dev has already
-  # taken, so a chart reaches production having run somewhere first.
-  #
-  # THE GATE IS argocd-wait PLUS SOAK, not Kargo `verification`. Kargo's
-  # verification block needs Argo Rollouts AnalysisTemplates and Rollouts stays
-  # off (see controller.rollouts above), so the assertions live in the
-  # promotion steps instead. A Stage with no `verification` reports "Freight has
-  # been verified" the moment its Promotion succeeds, so that status is not the
-  # signal; the Promotion succeeding is.
-  #
-  # What that buys, honestly: the promoted chart reached the environment, the
-  # sync finished, the workload came Healthy (readiness probe /healthz), and for
-  # prod it stayed that way for the soak. What it still does not buy: any
-  # functional assertion beyond the readiness probe, and no revision-aware
-  # health sample (see the residual race in monolith-promotion.yaml). #4745
-  # tracks the rest.
-  stages:
-    - name: dev
-      application: monolith-dev
-      # Subscribes to the Warehouse directly: nothing is upstream of dev.
-      upstream: []
-      autoPromotion: true
-    - name: prod
-      application: monolith
-      upstream:
-        - dev
-      # Dev must hold this Freight healthily for 2 minutes before prod may take
-      # it. Deliberately short, and a SETTLING window rather than a soak in the
-      # load-testing sense: it catches the pod that comes up Healthy and then
-      # crashloops, which argocd-wait's point-in-time check cannot see, and it
-      # costs every production deploy two minutes.
+  # waitTimeout is PER PIPELINE, not shared, and that is measured rather than
+  # tidy. It was shared at 10m0s when monolith was the only pipeline, whose dev
+  # rollout takes about 10 seconds. embervm's does not: its bricks rebuild a
+  # guest rootfs on every chart bump, one node at a time, and its 0.12.9 roll
+  # took 12m50s to reach Synced/Healthy with nothing wrong with it. A shared
+  # 10m0s would have failed that promotion on a healthy rollout, which is the
+  # worst failure a gate can have: it teaches the operator that red means
+  # nothing. Any new pipeline needs its own measurement, not this default.
+  pipelines:
+    - name: monolith
+      # The Warehouse's own name, referenced by every Stage's requestedFreight.
+      warehouse: monolith-chart
+      # How long a Promotion may wait for its Application to go Synced +
+      # Healthy before the Promotion fails. A failed Promotion never marks its
+      # Freight verified, which is exactly what stops a bad chart at dev.
       #
-      # Stated honestly so nobody reads more into it: it will NOT catch a
-      # slower-onset regression, and lengthening it trades release latency for
-      # exposure linearly. If a failure class shows up that this misses, raise
-      # it against a measured onset time rather than by feel.
+      # 10m is deliberately longer than any healthy rollout here (dev's
+      # measured at 10s) because this bound is not the detector. ArgoCD's own
+      # progressDeadlineSeconds trips the Application to Degraded first, and
+      # argocd-wait fails fast on that transition, so this only catches a
+      # workload that never reaches a terminal state at all.
+      # WRITTEN AS 10m0s, NOT 10m, and that is not a style choice. The API
+      # server normalizes these duration strings to the Go `0s`-suffixed form,
+      # so a chart rendering `10m` against a stored `10m0s` is a diff ArgoCD can
+      # never close. Same reasoning as warehouseInterval above, and the same
+      # failure it caused: selfHeal syncs only the DRIFTED resources, so one
+      # unconvergeable resource emits a continuous stream of targeted
+      # single-resource syncs that preempt the full sync and starve every other
+      # resource in the Application, green the whole time.
+      waitTimeout: 10m0s
+      # NOT "monolith" or "monolith-dev": a Kargo Project owns a namespace of that
+      # name and both already exist with live workloads in them.
+      project: kargo-monolith
+      chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith
+      # Floor at the version dev was pinned to when this was built, so the first
+      # promotion is forward-only and cannot walk an environment backwards onto an
+      # older chart.
+      semverConstraint: ">=0.293.0"
+      discoveryLimit: 20
+      # How the Applications spell their source. Helm wants registry + chart name
+      # separately here, unlike the Warehouse above. Both environments run the SAME
+      # chart, which is the whole point of the dev environment, so one pair covers
+      # them.
+      appSourceRepo: ghcr.io/jomcgi/homelab/charts
+      appSourceChart: monolith
+      # KARGO expression, not Helm. Kept here because ${{ }} collides with Helm's
+      # delimiters and would be evaluated by the wrong engine if written inline.
+      # SINGLE quotes inside the expression, not double. Helm's `quote` wraps the
+      # value in double quotes and ESCAPES any inner ones, so a double-quoted
+      # argument renders as chartFrom(\"oci://...\") and Kargo's expression parser
+      # receives literal backslashes. expr accepts either quote style, so using
+      # single quotes here means nothing needs escaping.
+      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith').Version }}"
+      # Order is the pipeline. `upstream` is what makes it one rather than two
+      # independent subscribers: prod can only receive Freight that dev has already
+      # taken, so a chart reaches production having run somewhere first.
       #
-      # Dev has no soak: nothing is upstream of it, and a delay there would only
-      # postpone the environment that exists to find problems first.
-      # 2m0s, not 2m: the API server stores the normalized form. See waitTimeout.
-      requiredSoakTime: 2m0s
-      autoPromotion: true
+      # THE GATE IS argocd-wait PLUS SOAK, not Kargo `verification`. Kargo's
+      # verification block needs Argo Rollouts AnalysisTemplates and Rollouts stays
+      # off (see controller.rollouts above), so the assertions live in the
+      # promotion steps instead. A Stage with no `verification` reports "Freight has
+      # been verified" the moment its Promotion succeeds, so that status is not the
+      # signal; the Promotion succeeding is.
+      #
+      # What that buys, honestly: the promoted chart reached the environment, the
+      # sync finished, the workload came Healthy (readiness probe /healthz), and for
+      # prod it stayed that way for the soak. What it still does not buy: any
+      # functional assertion beyond the readiness probe, and no revision-aware
+      # health sample (see the residual race in monolith-promotion.yaml). #4745
+      # tracks the rest.
+      stages:
+        - name: dev
+          application: monolith-dev
+          # Subscribes to the Warehouse directly: nothing is upstream of dev.
+          upstream: []
+          autoPromotion: true
+        - name: prod
+          application: monolith
+          upstream:
+            - dev
+          # Dev must hold this Freight healthily for 2 minutes before prod may take
+          # it. Deliberately short, and a SETTLING window rather than a soak in the
+          # load-testing sense: it catches the pod that comes up Healthy and then
+          # crashloops, which argocd-wait's point-in-time check cannot see, and it
+          # costs every production deploy two minutes.
+          #
+          # Stated honestly so nobody reads more into it: it will NOT catch a
+          # slower-onset regression, and lengthening it trades release latency for
+          # exposure linearly. If a failure class shows up that this misses, raise
+          # it against a measured onset time rather than by feel.
+          #
+          # Dev has no soak: nothing is upstream of it, and a delay there would only
+          # postpone the environment that exists to find problems first.
+          # 2m0s, not 2m: the API server stores the normalized form. See waitTimeout.
+          requiredSoakTime: 2m0s
+          autoPromotion: true
+    - name: embervm
+      warehouse: embervm-chart
+      project: kargo-embervm
+      chartRepo: oci://ghcr.io/jomcgi/homelab/charts/embervm
+      # Floor at the version embervm-dev was pinned to when this was built, so
+      # the first promotion is forward-only. Dev had frozen at 0.12.2 while
+      # production reached 0.12.9, which is the drift this pipeline replaces:
+      # the write-back only ever resolved production's application.yaml, so dev
+      # was invisible to it (#4832 item 2, #4856).
+      semverConstraint: ">=0.12.2"
+      discoveryLimit: 20
+      appSourceRepo: ghcr.io/jomcgi/homelab/charts
+      appSourceChart: embervm
+      # Kargo expression, not Helm. Single quotes inside: Helm's `quote` escapes
+      # inner double quotes and Kargo's parser would receive backslashes.
+      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/embervm').Version }}"
+      # 30m0s, NOT monolith's 10m0s, and this is measured rather than padded.
+      # An embervm chart bump rebuilds each brick's guest rootfs, one node at a
+      # time. The chart 0.12.9 roll on 2026-08-14 took 12m50s to reach
+      # Synced/Healthy (07:38:26 to 07:51:16) with nothing wrong with it.
+      #
+      # So a shared 10m0s would have failed that promotion on a perfectly
+      # healthy rollout, and a gate that reds on healthy rollouts is worse than
+      # no gate: it trains the operator to ignore it. 30m0s is that measurement
+      # with room for a slower node, not a round number.
+      #
+      # This bound is still not the detector: progressDeadlineSeconds trips the
+      # Application to Degraded first and argocd-wait fails fast on that. It
+      # only catches a workload that never reaches a terminal state at all.
+      waitTimeout: 30m0s
+      stages:
+        - name: dev
+          application: embervm-dev
+          upstream: []
+          autoPromotion: true
+        - name: prod
+          application: embervm
+          upstream:
+            - dev
+          # Longer than monolith's 2m0s for the same reason the wait is longer:
+          # the settling window has to outlast the rollout it is settling after,
+          # or it expires while bricks are still coming up and proves nothing.
+          requiredSoakTime: 5m0s
+          autoPromotion: true
 
 # Private-tier ingress: https://private.jomcgi.dev/app/kargo
 #
