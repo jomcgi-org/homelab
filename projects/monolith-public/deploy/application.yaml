@@ -34,6 +34,14 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # The ignoreDifferences above suppresses DIFFING, not APPLYING.
+      # Without this option a sync still writes the chart's version of
+      # those fields, stripping the env Kyverno injects; Kyverno
+      # re-injects, and the Deployment never settles. `canada` already
+      # carries this option one level up so Kargo's targetRevision patch
+      # on Application resources survives; the child apps declared
+      # ignoreDifferences without it.
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:
