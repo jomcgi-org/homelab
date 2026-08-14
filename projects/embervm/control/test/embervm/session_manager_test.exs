@@ -11,7 +11,7 @@ defmodule Embervm.SessionManagerTest do
   projection; unique ETS tables + a per-test DynamicSupervisor/Registry keep tests
   isolated from the application's supervised session subtree.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Embervm.{NodeCapacity, SessionManager, SessionStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
@@ -199,6 +199,22 @@ defmodule Embervm.SessionManagerTest do
   end
 
   defp fake_channel_fun, do: fn _node -> {:ok, :fake_channel} end
+
+  defp start_spec_trace do
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path = Path.join(System.tmp_dir!(), "spec_trace_session_#{System.unique_integer([:positive])}.db")
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      File.rm_rf!(trace_path)
+    end)
+
+    store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer = start_supervised!({Embervm.SpecTrace.Writer, store_mod: Embervm.SpecTrace.Store.SQLite, store: store, batch_size: 1, flush_ms: 5})
+    {store, writer}
+  end
 
   defp fake_claim_fun(vm_id), do: fn _dispatcher, _node, _workload -> {:ok, vm_id} end
 
@@ -1634,6 +1650,53 @@ defmodule Embervm.SessionManagerTest do
 
   # -- node-confirmed destroy (ADR embervm/014 decision 5, gated) -------------
 
+  test "destroy with node_confirmed_destroy gate ON emits begin_destroy then confirm_destroy" do
+    {trace_store, writer} = start_spec_trace()
+    ctx = start_stack(node_confirmed_destroy: true)
+    put_session_workload(ctx, "wl-trace-on")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-trace-on", "p1")
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store)
+    destroy_records = Enum.filter(records, &(&1["action"] in ["begin_destroy", "confirm_destroy"]))
+
+    assert Enum.map(destroy_records, & &1["action"]) == ["begin_destroy", "confirm_destroy"]
+    [begin_destroy, confirm_destroy] = destroy_records
+    assert begin_destroy["vars"]["session_id"] == created.session_id
+    assert begin_destroy["vars"]["gate"] == true
+    assert begin_destroy["vars"]["resumed"] == false
+    assert confirm_destroy["vars"]["session_id"] == created.session_id
+    assert confirm_destroy["vars"]["gate"] == true
+    assert confirm_destroy["vars"]["node_confirmed"] == true
+    assert confirm_destroy["vars"]["confirmed_by"] == "teardown"
+    assert confirm_destroy["mono"] > begin_destroy["mono"]
+  end
+
+  test "destroy with node_confirmed_destroy gate OFF emits begin_destroy then confirm_destroy" do
+    {trace_store, writer} = start_spec_trace()
+    ctx = start_stack(node_confirmed_destroy: false)
+    put_session_workload(ctx, "wl-trace-off")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-trace-off", "p1")
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store)
+    destroy_records = Enum.filter(records, &(&1["action"] in ["begin_destroy", "confirm_destroy"]))
+
+    assert Enum.map(destroy_records, & &1["action"]) == ["begin_destroy", "confirm_destroy"]
+    [begin_destroy, confirm_destroy] = destroy_records
+    assert begin_destroy["vars"]["session_id"] == created.session_id
+    assert begin_destroy["vars"]["gate"] == false
+    assert begin_destroy["vars"]["resumed"] == false
+    assert confirm_destroy["vars"]["session_id"] == created.session_id
+    assert confirm_destroy["vars"]["gate"] == false
+    assert confirm_destroy["vars"]["node_confirmed"] == true
+    assert confirm_destroy["vars"]["confirmed_by"] == "none"
+  end
+
   test "gated: destroy with a confirming node records destroying then destroyed" do
     # A destroy_fun that confirms teardown drives the full destroying -> destroyed
     # sequence; both ops land in order and the session ends destroyed.
@@ -1685,6 +1748,7 @@ defmodule Embervm.SessionManagerTest do
     # confirming node completes it. The node keeps reporting the VM, so the reconcile
     # retries the teardown RPC.
     parent = self()
+    {trace_store, writer} = start_spec_trace()
 
     ctx =
       start_stack(
@@ -1709,6 +1773,14 @@ defmodule Embervm.SessionManagerTest do
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :destroyed
+
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store)
+    destroy_records = Enum.filter(records, &(&1["action"] in ["begin_destroy", "confirm_destroy"]))
+    assert Enum.map(destroy_records, & &1["action"]) == ["begin_destroy", "confirm_destroy"]
+    [begin_destroy, confirm_destroy] = destroy_records
+    assert begin_destroy["vars"]["resumed"] == true
+    assert confirm_destroy["vars"]["confirmed_by"] == "teardown"
   end
 
   test "gated: a session stuck in destroying alarms ONCE across reconciles, not every tick" do

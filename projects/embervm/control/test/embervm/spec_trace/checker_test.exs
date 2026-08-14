@@ -378,6 +378,16 @@ defmodule Embervm.SpecTrace.CheckerTest do
       end)
     end
 
+    # A BUSY trace that happens to contain no destroys. This is the case the
+    # empty-trace test above cannot reach, and a regression lived in exactly that
+    # gap: destroy_intent_precedes_record guarded on `records == []` rather than
+    # on the destroy records, so a run full of primes and checkpoints fell
+    # through to the violation scan, found nothing to violate, and returned PASS.
+    #
+    # PASS there is a claim that the destroy ordering held on a run that never
+    # destroyed anything. An empty-trace test cannot catch it because the buggy
+    # guard is accidentally correct when the whole trace is empty. The busy case
+    # is the discriminating one.
     # An inventory the reader cannot parse must be VACUOUS, never PASS. This is
     # the shape the old reader silently produced on every production trace: a
     # checkpoint declaring inventory, none of it readable, an empty vm_id set,
@@ -406,6 +416,27 @@ defmodule Embervm.SpecTrace.CheckerTest do
 
       refute checkpoint[:verdict] == :pass
       assert checkpoint[:detail] =~ "unreadable"
+    end
+
+    test "destroy invariants are :vacuous on a busy trace with no destroys", %{store: store} do
+      run_id = "test-run-no-destroys"
+
+      records = [
+        %{"run_id" => run_id, "seq" => 1, "mono" => 1, "ts" => 10, "spec" => "adoption", "action" => "prime", "vars" => %{"vm_id" => "vm-1"}},
+        %{"run_id" => run_id, "seq" => 2, "mono" => 2, "ts" => 11, "spec" => "adoption", "action" => "checkpoint", "vars" => %{"inventory" => ["vm-1"]}}
+      ]
+
+      assert :ok = SQLite.write(store, records)
+      verdicts = Checker.run(SQLite, store)
+
+      for invariant <- [:destroy_intent_precedes_record, :no_destroy_before_confirm] do
+        verdict = Enum.find(verdicts, &(&1[:invariant] == invariant))
+
+        assert verdict[:verdict] == :vacuous,
+               "#{invariant} must be :vacuous with no destroys observed, got #{inspect(verdict[:verdict])}"
+
+        refute verdict[:verdict] == :pass
+      end
     end
 
     test "no_double_assign is :vacuous when no dispatches", %{store: store} do
@@ -463,5 +494,155 @@ defmodule Embervm.SpecTrace.CheckerTest do
       # Should have verdicts for both runs, not a cross-run violation
       assert length(verdicts) >= 10  # At least 5 invariants per run
     end
+  end
+
+  describe "destroy invariants" do
+    test "destroy_intent_precedes_record passes when gate on and begin precedes confirm", %{store: store} do
+      :ok = SQLite.write(store, destroy_records(true, true, true, 100, 200))
+      verdict = destroy_verdict(Checker.run(SQLite, store), :destroy_intent_precedes_record)
+
+      assert verdict[:verdict] == :pass
+      assert verdict[:coverage] > 0
+    end
+
+    test "destroy_intent_precedes_record passes when begin_destroy resumed and followed by confirm", %{store: store} do
+      records = [
+        %{
+          "run_id" => "test-run-resumed", "seq" => 1, "mono" => 100, "ts" => 1000,
+          "spec" => "adoption", "action" => "begin_destroy",
+          "vars" => %{"session_id" => "session-resumed", "vm_id" => "vm-resumed", "node_id" => "node-resumed", "resumed" => true}
+        },
+        %{
+          "run_id" => "test-run-resumed", "seq" => 2, "mono" => 200, "ts" => 2000,
+          "spec" => "adoption", "action" => "confirm_destroy",
+          "vars" => %{"session_id" => "session-resumed", "vm_id" => "vm-resumed", "node_id" => "node-resumed", "had_vm" => true, "node_confirmed" => true, "gate" => true}
+        }
+      ]
+
+      :ok = SQLite.write(store, records)
+      verdict = destroy_verdict(Checker.run(SQLite, store), :destroy_intent_precedes_record)
+
+      assert verdict[:verdict] == :pass
+    end
+
+    test "destroy_intent_precedes_record fails when confirm precedes begin", %{store: store} do
+      :ok = SQLite.write(store, destroy_records(true, true, true, 200, 100))
+      verdict = destroy_verdict(Checker.run(SQLite, store), :destroy_intent_precedes_record)
+
+      assert verdict[:verdict] == :fail
+      assert String.contains?(verdict[:detail], "session-destroy")
+    end
+
+    test "destroy_intent_precedes_record passes when gate is off", %{store: store} do
+      :ok = SQLite.write(store, destroy_records(false, false, false, 100, 200))
+      verdict = destroy_verdict(Checker.run(SQLite, store), :destroy_intent_precedes_record)
+
+      assert verdict[:verdict] == :pass
+      assert verdict[:coverage] > 0
+
+      :ok = SQLite.write(store, [destroy_record("confirm_destroy", 300, false, false)])
+      verdict = destroy_verdict(Checker.run(SQLite, store), :destroy_intent_precedes_record)
+      assert verdict[:verdict] == :pass
+    end
+
+    test "destroy_intent_precedes_record excludes banked destroys", %{store: store} do
+      records = [
+        destroy_record("begin_destroy", 100, true, false),
+        put_in(destroy_record("confirm_destroy", 200, true, false), ["vars", "had_vm"], false)
+      ]
+
+      :ok = SQLite.write(store, records)
+      verdict = destroy_verdict(Checker.run(SQLite, store), :destroy_intent_precedes_record)
+
+      assert verdict[:verdict] == :vacuous
+      assert verdict[:coverage] == 0
+      assert String.contains?(verdict[:detail], "1 snapshot-only")
+    end
+
+    test "destroy_intent_precedes_record is vacuous when had_vm is absent", %{store: store} do
+      record = destroy_record("confirm_destroy", 100, true, true)
+      record = update_in(record, ["vars"], &Map.delete(&1, "had_vm"))
+      :ok = SQLite.write(store, [record])
+
+      verdict = destroy_verdict(Checker.run(SQLite, store), :destroy_intent_precedes_record)
+
+      assert verdict[:verdict] == :vacuous
+      assert String.contains?(verdict[:detail], "lack had_vm")
+    end
+
+    test "no_destroy_before_confirm passes with node confirmation and gate on", %{store: store} do
+      :ok = SQLite.write(store, [destroy_record("confirm_destroy", 100, true, true)])
+      verdict = destroy_verdict(Checker.run(SQLite, store), :no_destroy_before_confirm)
+
+      assert verdict[:verdict] == :pass
+    end
+
+    test "no_destroy_before_confirm fails without node confirmation and gate on", %{store: store} do
+      :ok = SQLite.write(store, [destroy_record("confirm_destroy", 100, true, false)])
+      verdict = destroy_verdict(Checker.run(SQLite, store), :no_destroy_before_confirm)
+
+      assert verdict[:verdict] == :fail
+      assert String.contains?(verdict[:detail], "vm-destroy")
+    end
+
+    test "no_destroy_before_confirm is vacuous when gate is off", %{store: store} do
+      :ok = SQLite.write(store, [destroy_record("confirm_destroy", 100, false, false)])
+      verdict = destroy_verdict(Checker.run(SQLite, store), :no_destroy_before_confirm)
+
+      assert verdict[:verdict] == :vacuous
+      assert verdict[:coverage] == 0
+    end
+
+    test "no_destroy_before_confirm excludes banked destroys under gate on", %{store: store} do
+      record = put_in(destroy_record("confirm_destroy", 100, true, false), ["vars", "had_vm"], false)
+      :ok = SQLite.write(store, [record])
+
+      verdict = destroy_verdict(Checker.run(SQLite, store), :no_destroy_before_confirm)
+
+      assert verdict[:verdict] == :vacuous
+      assert verdict[:coverage] == 0
+      assert String.contains?(verdict[:detail], "1 snapshot-only")
+    end
+
+    test "no_destroy_before_confirm is vacuous when had_vm is absent", %{store: store} do
+      record = destroy_record("confirm_destroy", 100, true, true)
+      record = update_in(record, ["vars"], &Map.delete(&1, "had_vm"))
+      :ok = SQLite.write(store, [record])
+
+      verdict = destroy_verdict(Checker.run(SQLite, store), :no_destroy_before_confirm)
+
+      assert verdict[:verdict] == :vacuous
+      assert String.contains?(verdict[:detail], "lack had_vm")
+    end
+  end
+
+  defp destroy_verdict(verdicts, invariant) do
+    Enum.find(verdicts, &(&1[:invariant] == invariant))
+  end
+
+  defp destroy_records(gate, node_confirmed, _begin_gate, begin_mono, confirm_mono) do
+    [
+      destroy_record("begin_destroy", begin_mono, gate, node_confirmed),
+      destroy_record("confirm_destroy", confirm_mono, gate, node_confirmed)
+    ]
+  end
+
+  defp destroy_record(action, mono, gate, node_confirmed) do
+    %{
+      "run_id" => "test-run-destroy",
+      "seq" => mono,
+      "mono" => mono,
+      "ts" => mono * 10,
+      "spec" => "adoption",
+      "action" => action,
+      "vars" => %{
+        "session_id" => "session-destroy",
+        "vm_id" => "vm-destroy",
+        "node_id" => "node-destroy",
+        "gate" => gate,
+        "had_vm" => true,
+        "node_confirmed" => node_confirmed
+      }
+    }
   end
 end

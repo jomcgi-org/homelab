@@ -28,6 +28,57 @@ defmodule Embervm.SpecTraceTest do
     {:ok, writer: writer, store: store}
   end
 
+  # Booleans and nil survive as themselves, enum-like atoms become strings.
+  #
+  # This exists because the opposite shipped and was nearly merged. `jsonable/1`
+  # matched on is_atom/1 first, and in Elixir true/false/nil ARE atoms, so every
+  # boolean reached the store as "true"/"false". The destroy invariants compare
+  # `vars["gate"]` against real booleans, so on live data the vacuous arm never
+  # fired and the violation filter never matched: the checker returned PASS
+  # without evaluating anything.
+  #
+  # Every test still passed. The checker fixtures were hand-built maps that never
+  # went through the Writer, and the integration assertions had been changed to
+  # expect the corrupted strings. Two test suites agreeing with each other and
+  # both disagreeing with production.
+  #
+  # So assert the TYPE, through the real Writer, at the boundary where the
+  # conversion happens. A fixture cannot catch a transport bug.
+  test "preserves booleans and nil through the writer, stringifies other atoms", %{writer: writer, store: store} do
+    SpecTrace.emit(:adoption, :confirm_destroy, %{
+      "gate" => false,
+      "node_confirmed" => true,
+      "had_vm" => true,
+      "vm_id" => nil,
+      "provenance" => :adopted
+    })
+
+    :ok = SpecTrace.drain(writer)
+    assert {:ok, records} = SQLite.read_window(store, action: "confirm_destroy")
+    assert [record] = records
+
+    assert record["vars"]["gate"] === false
+    assert record["vars"]["node_confirmed"] === true
+    assert record["vars"]["had_vm"] === true
+    assert record["vars"]["vm_id"] === nil
+    assert record["vars"]["provenance"] == "adopted"
+
+    refute record["vars"]["gate"] == "false"
+    refute record["vars"]["node_confirmed"] == "true"
+
+    SpecTrace.emit(:adoption, :confirm_destroy, %{
+      "gate" => true,
+      "node_confirmed" => nil,
+      "had_vm" => false
+    })
+
+    :ok = SpecTrace.drain(writer)
+    assert {:ok, records} = SQLite.read_window(store, action: "confirm_destroy")
+    record = List.last(records)
+    assert record["vars"]["had_vm"] === false
+    assert record["vars"]["node_confirmed"] === nil
+  end
+
   test "round trips records and preamble", %{writer: writer, store: store} do
     SpecTrace.emit(:adoption, :prime, %{"vm_id" => "vm-1", lane: :task})
     :ok = SpecTrace.drain(writer)
