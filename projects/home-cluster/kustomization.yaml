@@ -4,6 +4,7 @@ kind: Kustomization
 
 resources:
   - ../../projects/embervm/deploy
+  - ../../projects/embervm/dev/deploy
   - ../../projects/inference/deploy
   - ../../projects/mcp/context-forge-gateway/deploy
   - ../../projects/monolith-public/deploy

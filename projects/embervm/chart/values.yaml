@@ -156,6 +156,18 @@ opLog:
 #
 # Backend selection reuses EMBERVM_OPLOG_DSN: set means the Postgres backend (its own
 # table in the existing `embervm_oplog` database), unset means SQLite. This mirrors the
+# Node-confirmed destroy ordering (ADR embervm/014 decision 5). FALSE keeps the
+# legacy ordering: tear the VM down locally, then record destroyed. TRUE records
+# the durable destroying intent, runs the node-confirmed teardown RPC, and
+# records destroyed ONLY when the node confirms.
+#
+# #4758: the control plane has read this gate since the ADR landed and no
+# template rendered it, so the ordering has never run in any environment and two
+# modeled invariants (NoDestroyBeforeConfirm, DestroyIntentPrecedesRecord)
+# describe behaviour production has never performed. Production stays false
+# until dev has exercised it under the conformance harness.
+nodeConfirmedDestroy: false
+
 # existing op_log_mod/0 selection and avoids inventing a second switch.
 specTrace:
   # Default OFF in production. ON in dev for local spec validation.
