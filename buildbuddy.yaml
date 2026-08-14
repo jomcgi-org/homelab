@@ -35,9 +35,14 @@ actions:
       # pr-checks on every push to every feature branch, on top of the
       # pull_request run, which is the opposite of why the queue is being
       # enabled.
+      #
+      # `main` is here to seed this action's fallback snapshot, NOT to gate or
+      # publish anything: see the main-only stage at the top of the steps below
+      # for why, and for what it deliberately does not run.
       push:
         branches:
           - "gh-readonly-queue/*"
+          - "main"
     steps:
       - run: |
           # errexit is LOAD-BEARING. A BuildBuddy step is one shell script and
@@ -68,6 +73,49 @@ actions:
           # anonymous ~100-pull/6h quota, which 429s and aborts the build.
           if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
             echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${DOCKERHUB_USERNAME:-}" --password-stdin
+          fi
+
+          # ---- 0. main: seed this action's fallback snapshot ---------------
+          # A runner snapshot's key is (repo URL, ACTION NAME, instance suffix,
+          # git_clean_exclude), so pr-checks and deploy occupy DISJOINT snapshot
+          # namespaces even though their container_image and resource_requests
+          # are identical. A run with no snapshot for its own branch falls back
+          # to the PR's base branch and then to the repo's default branch, but
+          # pr-checks had never once run on main, so that fallback found nothing
+          # and every new branch booted a VM from scratch.
+          #
+          # Measured over the 7 days to 2026-08-14: 128 of 647 CI `test //...`
+          # invocations were cold, median 413s against 68s warm, about 736
+          # minutes of wall clock a week. 62 of 94 new branches started cold.
+          #
+          # The save policy compounds it. The default, first-non-default-ref,
+          # saves a snapshot only on the FIRST run of a non-default ref but on
+          # EVERY run of a default one. So a branch's snapshot is frozen at its
+          # first push and never refreshed, which is why 30% of later pushes to
+          # an already-seen branch were cold too. main saving on every push is
+          # what turns the fallback from one-shot into continuously refreshed.
+          #
+          # This stage exists ONLY to leave that warm snapshot behind. It runs
+          # the tests and stops: deploy owns publishing on main, and running the
+          # stages below here would double a chart publish and push a
+          # ci-format-bot commit straight to main. GIT_BRANCH and
+          # GIT_REPO_DEFAULT_BRANCH are set by the workflow service on every
+          # run; compare them rather than hardcoding "main" so this keeps
+          # working if the default branch is ever renamed.
+          #
+          # GIT_PR_NUMBER is in the condition to close a hole, not for tidiness.
+          # On a pull_request event GIT_BRANCH is the PR's HEAD branch, so a PR
+          # opened from a fork's own `main` would match a branch-name-only test
+          # and skip every gate below while still reporting the required check
+          # green. The workflow service formats that variable with %d, so a push
+          # is exactly "0" and any PR is non-zero.
+          if [ -n "${GIT_BRANCH:-}" ] &&
+             [ "${GIT_BRANCH:-}" = "${GIT_REPO_DEFAULT_BRANCH:-}" ] &&
+             [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
+            echo "On ${GIT_BRANCH}: seeding the pr-checks fallback snapshot, tests only."
+            bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+            echo "DISK pr-checks seed end:"; df -h /
+            exit 0
           fi
 
           # ORDER IS LOAD-BEARING: everything that analyses //... runs BEFORE the
