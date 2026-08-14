@@ -619,4 +619,8 @@ export const RUN_FIXTURES = {
     engine_tier: "stale",
     snapshot_age_seconds: 180,
   }),
+  "home-absent-tier": homeEntry("home-absent-tier", [], [], {
+    engine_tier: "absent",
+    snapshot_age_seconds: 0,
+  }),
 };

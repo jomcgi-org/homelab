@@ -36,6 +36,11 @@
   // summary intentionally uses a separate seven-day window.
   const RECENT_HISTORY_MS = 24 * 60 * 60 * 1000;
   const ATTENTION_MS = 60 * 60 * 1000;
+
+  // Retry logic for initial run load before concluding engine is absent.
+  // A transient network failure on first load should not blank the page.
+  const RUNS_LOAD_MAX_ATTEMPTS = 3;
+  const RUNS_LOAD_BACKOFF_MS = 200;
   // hasOwn, not a bare index: ?fixture=constructor would otherwise resolve to
   // Object.prototype.constructor, which is truthy, and the preview branch would
   // then hand RunView an undefined view and throw.
@@ -439,38 +444,49 @@
 
   async function loadRuns() {
     if (fixture) return;
-    try {
-      const responses = await Promise.all([
-        fetch("/agents/runs?active=true"),
-        fetch("/agents/runs?active=false"),
-      ]);
-      if (responses.some((response) => !response.ok)) {
-        throw new Error("swarm runs unavailable");
+    let lastError;
+    for (let attempt = 0; attempt < RUNS_LOAD_MAX_ATTEMPTS; attempt++) {
+      try {
+        const responses = await Promise.all([
+          fetch("/agents/runs?active=true"),
+          fetch("/agents/runs?active=false"),
+        ]);
+        if (responses.some((response) => !response.ok)) {
+          throw new Error("swarm runs unavailable");
+        }
+        const [activeBody, terminalBody] = await Promise.all(
+          responses.map((response) => response.json()),
+        );
+        runMaster = activeBody.master ?? activeBody;
+        const activePartition = partitionRuns(runMaster.runs ?? []);
+        const terminalPartition = partitionRuns(
+          (terminalBody.master ?? terminalBody).runs ?? [],
+        );
+        runs = activePartition.inFlight;
+        terminalRuns = terminalPartition.terminal;
+        masterSnapshotFetchedAt = Date.now();
+        masterHasSnapshot = true;
+        masterView = { engine_tier: "live", snapshot_age_seconds: 0 };
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < RUNS_LOAD_MAX_ATTEMPTS - 1) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, RUNS_LOAD_BACKOFF_MS),
+          );
+        }
       }
-      const [activeBody, terminalBody] = await Promise.all(
-        responses.map((response) => response.json()),
-      );
-      runMaster = activeBody.master ?? activeBody;
-      const activePartition = partitionRuns(runMaster.runs ?? []);
-      const terminalPartition = partitionRuns(
-        (terminalBody.master ?? terminalBody).runs ?? [],
-      );
-      runs = activePartition.inFlight;
-      terminalRuns = terminalPartition.terminal;
-      masterSnapshotFetchedAt = Date.now();
-      masterHasSnapshot = true;
-      masterView = { engine_tier: "live", snapshot_age_seconds: 0 };
-    } catch {
-      masterView = masterHasSnapshot
-        ? {
-            engine_tier: "stale",
-            snapshot_age_seconds: Math.max(
-              1,
-              Math.floor((Date.now() - masterSnapshotFetchedAt) / 1000),
-            ),
-          }
-        : { engine_tier: "absent", snapshot_age_seconds: 0 };
     }
+    // Retries exhausted: degrade gracefully
+    masterView = masterHasSnapshot
+      ? {
+          engine_tier: "stale",
+          snapshot_age_seconds: Math.max(
+            1,
+            Math.floor((Date.now() - masterSnapshotFetchedAt) / 1000),
+          ),
+        }
+      : { engine_tier: "absent", snapshot_age_seconds: 0 };
   }
 
   async function loadRunDetail(id, sequence = runRequestSequence) {
