@@ -91,7 +91,7 @@ defmodule Embervm.RestartWedgeScenarioTest do
     assert control(fake.control_port, :post, "/fault/suppress-primed") == 204
     {:ok, stream} = NodeService.Stub.watch_node(fake.channel, %Embervm.Node.V1.WatchNodeRequest{node_id: "node-4"})
     assert Enum.all?(stream, fn {:ok, status} -> status.workloads == [] end)
-    Process.exit(Process.whereis(dispatcher_name), :normal)
+    crash_dispatcher(dispatcher_name)
     put_capacity(cap_table, [])
     start_dispatcher(dispatcher_name, store, cap_table, catalog_table, depth_table, dispatched)
 
@@ -178,6 +178,28 @@ defmodule Embervm.RestartWedgeScenarioTest do
         })
 
       response.vm_id
+    end
+  end
+
+  # A CRASH, and it must be observed to have happened before restarting.
+  #
+  # `Process.exit(pid, :normal)` from another process is IGNORED unless the
+  # target traps exits, so the dispatcher survived and the restart failed with
+  # {:error, {:already_started, pid}}. It also modelled the wrong thing:
+  # adoption.tla's CrashCP is a crash, not an orderly shutdown, and the whole
+  # point of this scenario is what the control plane does after dying.
+  #
+  # Monitoring and waiting for the :DOWN is what makes the restart deterministic
+  # rather than a race against process teardown.
+  defp crash_dispatcher(name) do
+    pid = Process.whereis(name)
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    after
+      5_000 -> flunk("dispatcher #{name} did not die within 5s")
     end
   end
 
