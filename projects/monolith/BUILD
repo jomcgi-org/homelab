@@ -30,6 +30,15 @@
 # gazelle:exclude grimoire
 # gazelle:exclude grimoire_chat
 # gazelle:exclude faas
+# The frontend is pnpm/rules_js with hand-written BUILD files, so gazelle must
+# not walk it. frontend/BUILD already carries a `# gazelle:ignore`, but that
+# directive applies ONLY to the directory it appears in and does NOT recurse:
+# gazelle still descended into src/routes/ and generated ts_project targets for
+# SvelteKit route directories, which have no tsconfig.json. Those targets fail
+# at load time ("No tsconfig.json file found"), which poisons `//...` evaluation
+# and makes `ci` unable to start any build at all. Excluding from here is what
+# every other subdirectory above does, and unlike `ignore` it covers the subtree.
+# gazelle:exclude frontend
 # Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
