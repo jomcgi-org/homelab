@@ -72,6 +72,7 @@ from grimoire.models import (
     KnowledgeChunk,
     Relationship,
 )
+import shared.inference
 
 logger = logging.getLogger("monolith.grimoire.extract")
 
@@ -1071,13 +1072,12 @@ class OpenRouterClient:
         """Output-format enforcement for the active prompt version (spec #4).
 
         No schema (v1): keep ``response_format: json_object`` (valid JSON, no
-        shape). With a schema (v2): OpenRouter gets a strict ``json_schema`` so
-        the ``rel_type``/``entity_type`` enums are hard decode constraints;
-        direct DeepSeek gets plain ``json_object`` (it does not accept the strict
-        json_schema block or vLLM's guided_json, and the post-parse safety net
-        covers the enum); a vLLM endpoint gets ``guided_json`` (same schema) plus
-        ``json_object``. The self-correction retry stays as a belt for providers
-        that silently downgrade the format.
+        shape). With a schema (v2): OpenRouter and direct DeepSeek keep their
+        hosted provider dialects; an in-cluster endpoint gets both vLLM's
+        ``guided_json`` and llama.cpp's strict JSON Schema ``response_format``.
+        Both carry the same schema, so the active engine enforces the enum
+        constraints and the unsupported field is inert. The self-correction
+        retry stays as a belt for providers that silently downgrade the format.
         """
         schema = self._version.schema
         if schema is None:
@@ -1095,12 +1095,7 @@ class OpenRouterClient:
             }
         if self._is_deepseek():
             return {"response_format": {"type": "json_object"}}
-        # vLLM guided decoding: guided_json constrains the output to the schema;
-        # response_format json_object is a harmless belt for older vLLM builds.
-        return {
-            "response_format": {"type": "json_object"},
-            "guided_json": schema,
-        }
+        return shared.inference.structured_output(schema, name="grimoire_extraction")
 
     @staticmethod
     def _user_message(

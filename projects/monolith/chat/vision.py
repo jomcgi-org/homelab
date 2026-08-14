@@ -7,6 +7,8 @@ import os
 
 import httpx
 
+import shared.inference
+
 logger = logging.getLogger(__name__)
 
 LLAMA_CPP_URL = os.environ.get("LLAMA_CPP_URL", "")
@@ -69,7 +71,7 @@ class VisionClient:
             "max_tokens": VISION_MAX_TOKENS,
             # Disable thinking so tokens are used for the description, not
             # <think> reasoning that fills the entire max_tokens budget.
-            "chat_template_kwargs": {"enable_thinking": False},
+            **shared.inference.thinking_off(),
         }
 
         timeout = httpx.Timeout(VISION_READ_TIMEOUT, connect=VISION_CONNECT_TIMEOUT)

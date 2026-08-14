@@ -20,6 +20,7 @@ from sqlmodel import Session, func, select
 from agent_sessions.models import AgentSession, AgentTurn
 from core.db import get_engine
 from framework import log_task_exception
+import shared.inference
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ async def _call_qwen(prompt: str) -> str:
                 "max_tokens": _LLM_MAX_TOKENS,
                 # A thinking response spends the budget on <think> and
                 # returns content: null behind a 200, so disable it.
-                "chat_template_kwargs": {"enable_thinking": False},
+                **shared.inference.thinking_off(),
             },
         )
         resp.raise_for_status()

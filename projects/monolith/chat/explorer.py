@@ -10,6 +10,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from chat.sse import SSEEmitter
 from knowledge.api import KnowledgeStore
 from shared.embedding import EmbeddingClient
+import shared.inference
 
 SYSTEM_PROMPT = """\
 You are a knowledge graph explorer. The user asks questions and you search \
@@ -52,7 +53,7 @@ def create_explorer_agent() -> Agent[ExplorerDeps]:
                 # qwen3.6 is a hybrid thinking model: without this the whole
                 # generation lands in vLLM's reasoning field, content comes
                 # back null, and the SSE stream emits an empty answer.
-                "chat_template_kwargs": {"enable_thinking": False},
+                **shared.inference.thinking_off(),
             },
         ),
     )

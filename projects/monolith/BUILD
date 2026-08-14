@@ -2354,6 +2354,16 @@ py_test(
 )
 
 py_test(
+    name = "shared_inference_test",
+    srcs = ["shared/inference_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "shared_k8s_auth_test",
     srcs = ["shared/k8s_auth_test.py"],
     imports = ["."],

@@ -26,6 +26,7 @@ from cluster.api import (
     resource_detail,
     resource_row,
 )
+import shared.inference
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def create_cluster_agent() -> Agent[ClusterDeps]:
                 # qwen3.6 is a hybrid thinking model: without this the whole
                 # generation lands in vLLM's reasoning field, content comes
                 # back null, and the SSE stream emits an empty answer.
-                "chat_template_kwargs": {"enable_thinking": False},
+                **shared.inference.thinking_off(),
             },
         ),
     )
