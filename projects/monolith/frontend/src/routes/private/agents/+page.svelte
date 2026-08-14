@@ -940,6 +940,11 @@
         await loadRunDetail(selectedRunId, runRequestSequence);
       if (selectedId != null)
         await loadDetail(selectedId, requestSequence, true);
+      // Self-heal: if the run engine is degraded, poll to recover.
+      // Only poll when not live to avoid extra requests during normal operation.
+      if (masterView.engine_tier !== "live") {
+        await loadRuns();
+      }
     }, pollInterval);
     return () => clearInterval(interval);
   });
