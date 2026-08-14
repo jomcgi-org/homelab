@@ -13,6 +13,78 @@ defmodule Embervm.SpecTrace.CheckerTest do
   end
 
   describe "negative fixtures" do
+    # health_monotonic was the ONE invariant shipped without a fixture, and it was
+    # also the one that could not run: it used Enum.filter_map/3, removed in Elixir
+    # 1.9, on a path no test reached. The untested path and the broken path were the
+    # same path, which is the argument for a fixture per invariant rather than per
+    # feature.
+    test "health_monotonic fails on age_to_down with no preceding age_to_unknown", %{store: store} do
+      run_id = "test-run-health"
+
+      records = [
+        %{
+          "run_id" => run_id,
+          "seq" => 1,
+          "mono" => 100,
+          "ts" => 1000,
+          "spec" => "adoption",
+          "action" => "reconnect",
+          "vars" => %{"node_id" => "node-7", "gen" => 1}
+        },
+        # Straight to down without passing through unknown: the health machine
+        # ages healthy -> unknown -> down, so this ordering cannot occur.
+        %{
+          "run_id" => run_id,
+          "seq" => 2,
+          "mono" => 200,
+          "ts" => 2000,
+          "spec" => "adoption",
+          "action" => "age_to_down",
+          "vars" => %{"node_id" => "node-7", "last_gen" => 1}
+        }
+      ]
+
+      :ok = SQLite.write(store, records)
+      verdicts = Checker.run(SQLite, store)
+      health = Enum.find(verdicts, &(&1[:invariant] == :health_monotonic))
+
+      assert health[:verdict] == :fail
+      assert health[:coverage] == 2
+      assert String.contains?(health[:detail], "node-7")
+    end
+
+    test "health_monotonic passes on a lawful unknown-then-down sequence", %{store: store} do
+      run_id = "test-run-health-ok"
+
+      records = [
+        %{
+          "run_id" => run_id,
+          "seq" => 1,
+          "mono" => 100,
+          "ts" => 1000,
+          "spec" => "adoption",
+          "action" => "age_to_unknown",
+          "vars" => %{"node_id" => "node-8", "last_gen" => 3}
+        },
+        %{
+          "run_id" => run_id,
+          "seq" => 2,
+          "mono" => 200,
+          "ts" => 2000,
+          "spec" => "adoption",
+          "action" => "age_to_down",
+          "vars" => %{"node_id" => "node-8", "last_gen" => 3}
+        }
+      ]
+
+      :ok = SQLite.write(store, records)
+      verdicts = Checker.run(SQLite, store)
+      health = Enum.find(verdicts, &(&1[:invariant] == :health_monotonic))
+
+      assert health[:verdict] == :pass
+      assert health[:coverage] == 2
+    end
+
     test "no_double_assign fails when vm_id appears in two dispatches", %{store: store} do
       run_id = "test-run-1"
 
