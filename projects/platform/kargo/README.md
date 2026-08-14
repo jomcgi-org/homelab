@@ -42,10 +42,19 @@ than for dev because it gets asked during incidents.
 
 ## Required manual step
 
-The `canada` root Application owns both monolith Applications from git with
+The `canada` root Application owns every promoted Application from git with
 `selfHeal`, so it will revert every promotion unless told both to ignore that
 field and to leave it alone when applying. `canada` is a bootstrap resource and
-is **not in this repo**, so this is a manual patch:
+is **not in this repo**, so this is a manual patch.
+
+**This patch is `--type=merge`, and a merge patch REPLACES the whole
+`ignoreDifferences` array.** So it must always carry an entry for EVERY
+Application any pipeline promotes, all at once. Re-applying an older copy of
+this block that lists fewer Applications silently drops the rest, and the
+symptom is the one described below: promotions that hold for hours and then
+revert on an unrelated merge, with nothing reporting an error. When a pipeline
+is added to `promotion.pipelines` in `values.yaml`, its Applications must be
+added here in the same change.
 
 ```sh
 kubectl patch application canada -n argocd --type=merge -p '{
@@ -64,6 +73,18 @@ kubectl patch application canada -n argocd --type=merge -p '{
         "group": "argoproj.io",
         "kind": "Application",
         "name": "monolith",
+        "jsonPointers": ["/spec/sources/0/targetRevision"]
+      },
+      {
+        "group": "argoproj.io",
+        "kind": "Application",
+        "name": "embervm-dev",
+        "jsonPointers": ["/spec/sources/0/targetRevision"]
+      },
+      {
+        "group": "argoproj.io",
+        "kind": "Application",
+        "name": "embervm",
         "jsonPointers": ["/spec/sources/0/targetRevision"]
       }
     ]
