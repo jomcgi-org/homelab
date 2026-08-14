@@ -1241,9 +1241,12 @@
       <div class="turns" bind:this={turnsEl}>
         <div class="turns-inner">
           {#each detail?.turns ?? [] as turn (turn.seq)}
+            <!-- {@const} has to be an immediate child of the block, not of the
+                 element inside it, so this sits above <article> rather than
+                 next to the markup that reads it. -->
+            {@const hasIntent =
+              turn.prompt_intent !== null && turn.prompt_intent !== undefined}
             <article class="turn">
-              {@const hasIntent =
-                turn.prompt_intent !== null && turn.prompt_intent !== undefined}
               <div class="prompt">
                 <span class="role">you</span>
                 {#if hasIntent}
