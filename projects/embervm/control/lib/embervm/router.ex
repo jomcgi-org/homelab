@@ -91,6 +91,10 @@ defmodule Embervm.Router do
     handle_nodes(conn)
   end
 
+  get "/v1/conformance" do
+    handle_conformance(conn)
+  end
+
   # POST /v1/nodes/register (NODE auth ONLY): the dial-home registration a noded
   # instance POSTs on start and on a jittered interval, advertising its identity
   # {node, pod_uid, address, boot_id} so the control plane adopts it without ever
@@ -530,6 +534,109 @@ defmodule Embervm.Router do
   # rather than failing the request.
   defp handle_nodes(conn) do
     send_json(conn, 200, %{nodes: nodes_snapshot(), dispatch: dispatch_snapshot()})
+  end
+
+  defp handle_conformance(conn) do
+    case conformance_view(conn.query_params) do
+      {:ok, view} -> send_json(conn, 200, view)
+      {:error, reason} -> send_json(conn, 500, %{error: "store error: #{inspect(reason)}"})
+    end
+  end
+
+  defp conformance_view(query_params) do
+    if Embervm.SpecTrace.enabled_now?() do
+      # Resolve the store the way the supervision tree does, NOT via
+      # Application env: nothing sets :spec_trace_store_mod, so get_env would
+      # always hand back the SQLite default and this endpoint would query a
+      # store nothing writes to whenever Postgres is configured. A conformance
+      # report that always says "nothing to check" is the vacuous-guard failure
+      # this whole programme exists to prevent, arriving in the reporting layer.
+      store_mod = Embervm.Application.spec_trace_mod()
+      store = store_mod
+      opts = conformance_query_opts(query_params)
+
+      case store_mod.read_window(store, opts) do
+        {:ok, records} ->
+          verdicts =
+            case records do
+              [] -> vacuous_conformance_verdicts("no records in trace")
+              _ -> conformance_verdicts(Embervm.SpecTrace.Checker.run(store_mod, store, opts))
+            end
+
+          {:ok,
+           %{
+             enabled: true,
+             run_ids: records |> Enum.map(& &1["run_id"]) |> Enum.uniq(),
+             verdicts: verdicts
+           }}
+
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok,
+       %{
+         enabled: false,
+         run_ids: [],
+         verdicts: vacuous_conformance_verdicts("trace gate is disabled")
+       }}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp conformance_query_opts(params) do
+    [
+      {:since_seq, parse_conformance_integer(params["since_seq"])},
+      {:since_ts_ms, parse_conformance_integer(params["since_ts_ms"])},
+      {:until_ts_ms, parse_conformance_integer(params["until_ts_ms"])},
+      {:run_id, params["run_id"]},
+      {:action, params["action"]},
+      {:spec, params["spec"] || "adoption"}
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp parse_conformance_integer(nil), do: nil
+
+  defp parse_conformance_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} -> integer
+      _ -> nil
+    end
+  end
+
+  defp parse_conformance_integer(value) when is_integer(value), do: value
+  defp parse_conformance_integer(_value), do: nil
+
+  defp conformance_verdicts(verdicts) do
+    invariants = [:no_double_assign, :dispatch_provenance, :adopt_idempotent, :health_monotonic, :prime_before_checkpoint]
+
+    Enum.map(invariants, fn invariant ->
+      verdicts
+      |> Enum.filter(&(&1[:invariant] == invariant))
+      |> Enum.reduce(vacuous_conformance_verdict(invariant, "no records in trace"), &merge_conformance_verdict/2)
+    end)
+  end
+
+  defp merge_conformance_verdict(verdict, current) do
+    rank = %{vacuous: 0, pass: 1, fail: 2}
+
+    if Map.get(rank, verdict[:verdict], 2) > Map.get(rank, current[:verdict], 0) do
+      Map.put(verdict, :coverage, verdict[:coverage] + current[:coverage])
+    else
+      Map.put(current, :coverage, current[:coverage] + verdict[:coverage])
+    end
+  end
+
+  defp vacuous_conformance_verdicts(detail) do
+    [:no_double_assign, :dispatch_provenance, :adopt_idempotent, :health_monotonic, :prime_before_checkpoint]
+    |> Enum.map(&vacuous_conformance_verdict(&1, detail))
+  end
+
+  defp vacuous_conformance_verdict(invariant, detail) do
+    %{invariant: invariant, verdict: :vacuous, coverage: 0, oracle: :trace_only, detail: detail}
   end
 
   defp nodes_snapshot do
