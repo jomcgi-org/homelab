@@ -49,6 +49,19 @@ defmodule Embervm.SpecTrace.Checker do
 
   alias Embervm.SpecTrace.Store
 
+  @spec invariants() :: list(atom())
+  def invariants do
+    [
+      :no_double_assign,
+      :dispatch_provenance,
+      :adopt_idempotent,
+      :health_monotonic,
+      :prime_before_checkpoint,
+      :destroy_intent_precedes_record,
+      :no_destroy_before_confirm
+    ]
+  end
+
   @spec run(module(), GenServer.server(), keyword()) :: [map()]
   # `spec: "adoption"` is a DEFAULT rather than a hardcode: callers may narrow
   # the window (a time range, a run_id) without accidentally widening the spec.
@@ -67,17 +80,94 @@ defmodule Embervm.SpecTrace.Checker do
 
         Enum.flat_map(run_ids, fn run_id ->
           run_records = records_by_run[run_id] |> Enum.sort_by(& &1["mono"])
-          [
-            check_no_double_assign(run_records),
-            check_dispatch_provenance(run_records),
-            check_adopt_idempotent(run_records),
-            check_health_monotonic(run_records),
-            check_prime_before_checkpoint(run_records)
-          ]
+          Enum.map(invariants(), &check_invariant(&1, run_records))
         end)
 
       {:error, reason} ->
         [error_verdict(:unknown, reason)]
+    end
+  end
+
+  defp check_invariant(:no_double_assign, records), do: check_no_double_assign(records)
+  defp check_invariant(:dispatch_provenance, records), do: check_dispatch_provenance(records)
+  defp check_invariant(:adopt_idempotent, records), do: check_adopt_idempotent(records)
+  defp check_invariant(:health_monotonic, records), do: check_health_monotonic(records)
+  defp check_invariant(:prime_before_checkpoint, records), do: check_prime_before_checkpoint(records)
+
+  defp check_invariant(:destroy_intent_precedes_record, records),
+    do: check_destroy_intent_precedes_record(records)
+
+  defp check_invariant(:no_destroy_before_confirm, records),
+    do: check_no_destroy_before_confirm(records)
+
+  defp check_destroy_intent_precedes_record(records) do
+    destroy_records = Enum.filter(records, &(&1["action"] in ["begin_destroy", "confirm_destroy"]))
+    confirms = Enum.filter(destroy_records, &(&1["action"] == "confirm_destroy"))
+
+    cond do
+      # `confirms`, NOT `records`. Guarding on the run having any records at all
+      # meant a trace full of primes, dispatches and checkpoints but containing
+      # zero destroys fell through to the violation scan, found nothing to
+      # violate, and reported PASS. That is the precise claim this invariant must
+      # never make: it would assert the destroy ordering held on a run that never
+      # destroyed anything.
+      #
+      # A begin_destroy with no matching confirm is also not checkable: it is an
+      # in-flight destroy, not a violation. So the presence of confirmations is
+      # what makes this invariant evaluable, which is why the sibling
+      # check_no_destroy_before_confirm guards on the same thing.
+      confirms == [] ->
+        %{invariant: :destroy_intent_precedes_record, verdict: :vacuous, coverage: length(destroy_records), oracle: :trace_only, detail: "no destroy confirmations in trace"}
+
+      true ->
+        begins = Enum.filter(destroy_records, &(&1["action"] == "begin_destroy"))
+        violations =
+          confirms
+          |> Enum.filter(fn confirm ->
+            session_id = confirm["vars"]["session_id"]
+            not Enum.any?(begins, fn begin ->
+              begin["vars"]["session_id"] == session_id and begin["mono"] < confirm["mono"]
+            end)
+          end)
+
+        if violations == [] do
+          %{invariant: :destroy_intent_precedes_record, verdict: :pass, coverage: length(destroy_records), oracle: :trace_only, detail: "destroy intent precedes every destroy record"}
+        else
+          session_id = hd(violations)["vars"]["session_id"]
+          %{invariant: :destroy_intent_precedes_record, verdict: :fail, coverage: length(destroy_records), oracle: :trace_only, detail: "session_id #{session_id} has destroy confirmation without a preceding intent"}
+        end
+    end
+  end
+
+  defp check_no_destroy_before_confirm(records) do
+    confirms = Enum.filter(records, &(&1["action"] == "confirm_destroy"))
+
+    cond do
+      confirms == [] ->
+        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: 0, oracle: :trace_only, detail: "no destroy confirmations in trace"}
+
+      # A record whose `gate` is absent or nil is NOT evaluable. Without this arm
+      # it satisfies neither the all-false test nor the violation filter, falls
+      # through, matches nothing, and returns pass: a missing field reading as
+      # "condition not met" rather than "cannot be checked". Every emission site
+      # sets `gate` today, so this is unreachable now, and it is exactly the
+      # shape of the two false PASSes already fixed on this branch.
+      Enum.any?(confirms, &is_nil(&1["vars"]["gate"])) ->
+        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: length(confirms), oracle: :trace_only, detail: "some destroy confirmations carry no gate field, so the ordering could not be evaluated"}
+
+      Enum.all?(confirms, &(&1["vars"]["gate"] == false)) ->
+        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: length(confirms), oracle: :trace_only, detail: "all destroy confirmations used the gate-off path"}
+
+      true ->
+        violations = Enum.filter(confirms, fn record -> record["vars"]["gate"] == true and record["vars"]["node_confirmed"] != true end)
+
+        if violations == [] do
+          %{invariant: :no_destroy_before_confirm, verdict: :pass, coverage: length(confirms), oracle: :trace_only, detail: "all gated destroy confirmations have node confirmation"}
+        else
+          record = hd(violations)
+          vars = record["vars"]
+          %{invariant: :no_destroy_before_confirm, verdict: :fail, coverage: length(confirms), oracle: :trace_only, detail: "vm_id #{vars["vm_id"]} has node_confirmed #{inspect(vars["node_confirmed"])} with gate #{inspect(vars["gate"])}"}
+        end
     end
   end
 
