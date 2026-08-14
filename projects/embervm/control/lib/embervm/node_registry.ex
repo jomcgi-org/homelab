@@ -228,6 +228,18 @@ defmodule Embervm.NodeRegistry do
     GenServer.call(server, {:register, reg})
   end
 
+  @doc """
+  Removes one dial-home instance and synchronously tears down its streamer.
+
+  This is primarily useful to callers that own the lifetime of a registration,
+  such as request-level test fixtures. The removal goes through the registry so
+  a pending reconnect cannot outlive the registration owner.
+  """
+  @spec unregister(GenServer.server(), String.t(), String.t()) :: :ok
+  def unregister(server \\ __MODULE__, node, pod_uid) do
+    GenServer.call(server, {:unregister, node, pod_uid})
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -533,6 +545,19 @@ defmodule Embervm.NodeRegistry do
       {:ok, norm} -> {:reply, :ok, apply_registration(state, norm)}
       :error -> {:reply, {:error, :invalid}, state}
     end
+  end
+
+  def handle_call({:unregister, node, pod_uid}, _from, state) do
+    instance_id = instance_id_of(to_trimmed(node), to_trimmed(pod_uid))
+
+    state =
+      if Map.has_key?(state.node_runtime, instance_id) do
+        expire_instance(state, instance_id)
+      else
+        state
+      end
+
+    {:reply, :ok, state}
   end
 
   # Best-effort: stop orphaned streamers from outliving the GenServer holding

@@ -227,7 +227,21 @@ defmodule Embervm.BaseBuilderTest do
       end
     end)
 
-    failed = latest(agent, "w")
+    # The retry is deliberately only 5ms later. It can publish BaseBuilding or
+    # BaseBuilt before this test process gets scheduled again, so latest/2 does
+    # not identify the failure that satisfied the wait above. Read the recorded
+    # failure event itself, preserving the assertion about the daemon error
+    # rather than racing the retry state.
+    failed =
+      recorded(agent)
+      |> Enum.reverse()
+      |> Enum.find_value(fn {_namespace, name, status_map} ->
+        if name == "w" and
+             match?(%{"reason" => "BuildFailed"}, condition(status_map, "BaseBuilt")),
+           do: status_map
+      end)
+
+    refute is_nil(failed), "the failed build status was not recorded"
     assert %{"status" => "False", "message" => "no image source for imgA"} = condition(failed, "BaseBuilt")
     assert %{"status" => "False", "reason" => "BaseNotBuilt"} = condition(failed, "Ready")
 

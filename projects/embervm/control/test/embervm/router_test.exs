@@ -9,7 +9,7 @@ defmodule Embervm.RouterTest do
   """
   use ExUnit.Case, async: false
 
-  alias Embervm.TaskStore
+  alias Embervm.{NodeRegistry, TaskStore}
 
   @allowed "system:serviceaccount:embervm:embervm"
 
@@ -236,6 +236,14 @@ defmodule Embervm.RouterTest do
     Application.put_env(:embervm, :authenticator, FakeAuth)
 
     on_exit(fn ->
+      # Only the two registers that return 200 actually create an instance; the
+      # 401/403 cases are rejected before the registry sees them. Unregister is
+      # synchronous, so the streamer and its pending reconnect are gone before
+      # the next test file opens its trace store. Without this the retry loop
+      # outlives the test (async: false means the same VM) and writes health
+      # records into someone else's trace.
+      NodeRegistry.unregister("node-4", "router-test-sa")
+      NodeRegistry.unregister("node-4", "router-test-node-token")
       Application.delete_env(:embervm, :authenticator)
       Application.delete_env(:embervm, :sync_park_cap)
       Application.delete_env(:embervm, :sync_timeout_ms)
@@ -299,7 +307,20 @@ defmodule Embervm.RouterTest do
 
   defp reg_body(overrides \\ %{}) do
     Map.merge(
-      %{"node" => "node-4", "pod_uid" => unique("uid"), "address" => "10.0.0.9:9090", "boot_id" => "boot-1"},
+      # The address must be a port that is REFUSED identically on every host, not
+      # merely one that happens to be unreachable. This used to advertise
+      # 10.0.0.9:9090, which the registry then dialled for real: on a runner with
+      # a route the dial hung and the node aged unknown -> down, while on one
+      # without a route it failed instantly with :enetunreach and went straight
+      # to down, tripping the health_monotonic spec-trace invariant in whichever
+      # test happened to own the trace store by then (#4828). 127.0.0.1:1 is
+      # refused the same way everywhere.
+      #
+      # pod_uid stays unique per registration. Collapsing it to a constant would
+      # turn the second successful register in this file into a re-registration
+      # of the same (node, pod_uid), which is a distinct code path and the one
+      # #4707 is about. Teardown names the uids explicitly instead.
+      %{"node" => "node-4", "pod_uid" => unique("uid"), "address" => "127.0.0.1:1", "boot_id" => "boot-1"},
       overrides
     )
     |> :json.encode()
@@ -308,7 +329,7 @@ defmodule Embervm.RouterTest do
 
   test "POST /v1/nodes/register with the noded SA token is 200" do
     Application.put_env(:embervm, :noded_service_account, @allowed)
-    resp = req(:post, "/v1/nodes/register", auth("good"), reg_body())
+    resp = req(:post, "/v1/nodes/register", auth("good"), reg_body(%{"pod_uid" => "router-test-sa"}))
     assert resp.status == 200
     assert json(resp.body)["registered"] == true
   end
@@ -337,7 +358,7 @@ defmodule Embervm.RouterTest do
     end
 
     Application.put_env(:embervm, :authenticator, NodeAuth)
-    resp = req(:post, "/v1/nodes/register", auth("node-token"), reg_body())
+    resp = req(:post, "/v1/nodes/register", auth("node-token"), reg_body(%{"pod_uid" => "router-test-node-token"}))
     assert resp.status == 200
   end
 
