@@ -2653,6 +2653,13 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     # A SECOND node exists and advertises NOTHING: no base fact for "w" at all. That
+    # is the #4127 shape. But another node in the fleet (node-1) still reports the
+    # snap1 base as READY, so snapshot_refs_by_vendor can find it and the anchor can
+    # hydrate from that fleet-wide ref even though it has no fact of its own.
+    put_brick(table, "node-1", "a1", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+    put_base_fact(table, "node-1", "a1", "w", "snap1", :BASE_BUILD_STATE_READY, true)
+
+    # The anchor node-9 has no base fact at all (node has not reported yet).
     # is the #4127 shape, and node_reports_base_absent?/3 is false for it (a MISSING
     # fact is deliberately not "absent"), so the periodic reconcile can never hydrate
     # it. A wake failure is stronger evidence: the daemon was asked and said no.
@@ -2707,6 +2714,11 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     put_brick(table, "node-9", "b1", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    # Fleet-wide fact: node-1 still reports the base as READY so snapshot_refs_by_vendor
+    # can find it even though the anchor (node-9) has no base fact.
+    put_brick(table, "node-1", "a1", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+    put_base_fact(table, "node-1", "a1", "w", "snap1", :BASE_BUILD_STATE_READY, true)
+
     # Registered too: eligible_build_instances/2 iterates state.node_ids, so a
     # capacity fact alone is not enough to make it a build candidate.
     :ok = BaseBuilder.add_node(builder, "node-9/b1", "a9")
