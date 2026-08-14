@@ -611,7 +611,7 @@ defmodule Embervm.Router do
   defp parse_conformance_integer(_value), do: nil
 
   defp conformance_verdicts(verdicts) do
-    invariants = [:no_double_assign, :dispatch_provenance, :adopt_idempotent, :health_monotonic, :prime_before_checkpoint]
+    invariants = Embervm.SpecTrace.Checker.invariants()
 
     Enum.map(invariants, fn invariant ->
       verdicts
@@ -631,7 +631,7 @@ defmodule Embervm.Router do
   end
 
   defp vacuous_conformance_verdicts(detail) do
-    [:no_double_assign, :dispatch_provenance, :adopt_idempotent, :health_monotonic, :prime_before_checkpoint]
+    Embervm.SpecTrace.Checker.invariants()
     |> Enum.map(&vacuous_conformance_verdict(&1, detail))
   end
 

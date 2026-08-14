@@ -1388,9 +1388,22 @@ defmodule Embervm.Dispatcher do
     end)
 
     for {node_id, vm_ids} <- adopted do
+      # `vm_ids`, NOT `adopted`. The checker reads `vars["vm_ids"]` in five
+      # places (dispatch_provenance, adopt_idempotent, prime_before_checkpoint)
+      # and the fixtures use that name, so emitting `adopted` meant the adopted
+      # set was empty on every production trace while every test passed. Same
+      # writer-versus-reader shape as the checkpoint inventory bug.
+      #
+      # Two consequences, in opposite directions. `adopt_idempotent` reported
+      # PASS over zero vm_ids with a non-zero coverage count, which reads as
+      # examined. And `prime_before_checkpoint` reported FAIL after a
+      # control-plane restart: run_id is fresh per incarnation, so an adopted
+      # vm's `prime` record sits in the previous run's group, and the adopted
+      # set that was supposed to cover it was empty. That is the exact event
+      # adoption.tla exists to model, failing for a typo.
       Embervm.SpecTrace.emit(:adoption, :adopt_inventory, %{
         "node_id" => node_id,
-        "adopted" => Enum.sort(vm_ids)
+        "vm_ids" => Enum.sort(vm_ids)
       })
     end
 
