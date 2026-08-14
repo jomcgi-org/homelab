@@ -106,11 +106,17 @@ genrule(
         # spec_vocabulary_test.exs finds them; absent env leaves behavior unchanged.
         "//projects/embervm/specs:spec_files",
         "//projects/embervm/proto/embervm/node/v1:node_proto",
+        # The stateful fake noded (#4761). The restart-wedge scenario drives a
+        # real Dispatcher against it and suppresses primed_vm_ids to starve
+        # adoption. Without it staged here the scenario SKIPS, which would make
+        # the harness's own proof inert in the lane that runs it.
+        "//projects/embervm/proto/embervm/node/v1/fakenode",
     ],
     outs = ["mix_test_smoke.txt"],
     cmd = "MIX_REBAR3_SRC=\"$$(pwd)/$(location @rebar3//file)\" " +
           "EMBERVM_SPECS_SRCS=\"$(locations //projects/embervm/specs:spec_files)\" " +
           "EMBERVM_NODE_PROTO_SRC=\"$(location //projects/embervm/proto/embervm/node/v1:node_proto)\" " +
+          "EMBERVM_FAKE_NODE_SRC=\"$(location //projects/embervm/proto/embervm/node/v1/fakenode)\" " +
           "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations :hex_tarballs)",
     tags = ["no-remote-cache"],
     tools = ["mix_test.sh"],

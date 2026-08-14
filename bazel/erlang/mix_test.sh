@@ -116,6 +116,21 @@ if [ -n "${EMBERVM_NODE_PROTO_SRC:-}" ]; then
 	cp "$proto_abs" "$work/proto/node.proto"
 	export EMBERVM_NODE_PROTO="$work/proto/node.proto"
 fi
+
+# The stateful fake noded (#4761). Without it the restart-wedge scenario SKIPS,
+# and a scenario that never runs is the defect class this whole harness exists to
+# catch: it would report green while asserting nothing. Copied rather than
+# referenced so the sandbox owns an executable copy.
+if [ -n "${EMBERVM_FAKE_NODE_SRC:-}" ]; then
+	case "$EMBERVM_FAKE_NODE_SRC" in
+	/*) fake_abs="$EMBERVM_FAKE_NODE_SRC" ;;
+	*) fake_abs="$(pwd)/$EMBERVM_FAKE_NODE_SRC" ;;
+	esac
+	mkdir -p "$work/bin"
+	cp "$fake_abs" "$work/bin/fakenode"
+	chmod +x "$work/bin/fakenode"
+	export EMBERVM_FAKE_NODE_BIN="$work/bin/fakenode"
+fi
 export HOME="$work" # mix/hex write under $HOME (~/.mix); keep it in the sandbox
 export MIX_ENV=test
 # The executor env is stripped, so force UTF-8 filename handling (avoids the
