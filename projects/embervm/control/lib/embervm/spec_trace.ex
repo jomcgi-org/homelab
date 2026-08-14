@@ -100,8 +100,10 @@ defmodule Embervm.SpecTrace do
   def drain(server \\ @writer), do: GenServer.call(server, :drain)
 
   def start_link(opts \\ []) do
-    configure()
-
+    # NO configure/0 here. It re-reads the env and stomps the persistent_term, so
+    # any writer restart would revert whatever set the gate. Harmless while the
+    # env is the only source of truth, and a silent disarm the moment anything
+    # else can set it. Boot calls configure/0 once (application.ex). #4841.
     if :persistent_term.get(@enabled_key, false) do
       @writer.start_link(opts)
     else
@@ -159,7 +161,13 @@ defmodule Embervm.SpecTrace.Writer do
       batch_size: batch_size,
       flush_ms: flush_ms,
       records: [],
-      seq: 0,
+      # RESUME, do not restart at 0. seq is the PRIMARY KEY in both stores, the
+      # writer is supervised, and a crash that reset this to 0 made every
+      # subsequent insert collide with an existing row. flush/1 swallows the
+      # error as a counted drop, so the trace silently recorded NOTHING until seq
+      # climbed past the old maximum, while reading as enabled the whole time.
+      # #4841.
+      seq: safe_max_seq(store_mod, store),
       run_id: Embervm.SpecTrace.run_id()
     }
     {:ok, state, {:continue, :preamble}}
@@ -174,7 +182,10 @@ defmodule Embervm.SpecTrace.Writer do
     # refuses to emit a PASS/FAIL verdict against a trace whose gate it cannot
     # confirm.
     preamble = %{
-      "run_id" => state.run_id, "seq" => 0, "mono" => 1,
+      # A REAL mono. It was hardcoded to 1, and reads are ORDER BY mono ASC, so
+      # two writer starts in one control-plane incarnation produced two records
+      # both claiming to be first and a consumer could not order them.
+      "run_id" => state.run_id, "seq" => state.seq + 1, "mono" => System.monotonic_time(:nanosecond),
       "ts" => System.system_time(:millisecond),
       "spec" => "spec_trace",
       "action" => "preamble",
@@ -185,7 +196,22 @@ defmodule Embervm.SpecTrace.Writer do
         "ttl_ms" => 86_400_000
       }
     }
-    {:noreply, schedule_flush(%{state | records: [preamble]})}
+    # ADVANCE state.seq past the preamble. It consumes a seq like any other
+    # record, and leaving the counter behind would make the first emitted record
+    # collide with it on the primary key.
+    {:noreply, schedule_flush(%{state | seq: state.seq + 1, records: [preamble]})}
+  end
+
+  # A store that cannot answer yields 0, which is the pre-fix behaviour rather
+  # than a crash: worst case the writer collides as it did before, best case it
+  # resumes correctly. A debug facility must not take down its own supervisor
+  # over a bookkeeping query.
+  defp safe_max_seq(store_mod, store) do
+    store_mod.max_seq(store)
+  rescue
+    _ -> 0
+  catch
+    _, _ -> 0
   end
 
   @impl true

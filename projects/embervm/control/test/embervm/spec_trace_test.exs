@@ -79,6 +79,46 @@ defmodule Embervm.SpecTraceTest do
     assert record["vars"]["node_confirmed"] === nil
   end
 
+  # A writer RESTART must not silently stop the trace.
+  #
+  # seq is the PRIMARY KEY in both stores. The writer is supervised, and it used
+  # to initialise seq at 0, so a crash made every subsequent insert collide with
+  # an existing row. flush/1 swallows that as a counted drop, so the facility
+  # read as enabled while recording nothing until seq climbed past the old
+  # maximum. In embervm-dev, where the trace is ON, that would have made the
+  # conformance harness report vacuous forever with nothing indicating why.
+  #
+  # Drives the real Writer twice against ONE store, which is what a restart looks
+  # like. #4841.
+  test "a second writer against the same store resumes seq instead of colliding", %{writer: writer, store: store} do
+    SpecTrace.emit(:adoption, :prime, %{"vm_id" => "vm-before"})
+    :ok = SpecTrace.drain(writer)
+    assert {:ok, before} = SQLite.read_window(store, spec: "adoption")
+    assert before != []
+
+    # Same store, fresh writer: the restart.
+    :ok = Supervisor.stop(writer, :normal)
+
+    restarted =
+      start_supervised!(
+        {SpecTrace.Writer, store_mod: SQLite, store: store, batch_size: 1, flush_ms: 5},
+        id: :restarted_writer
+      )
+
+    SpecTrace.emit(:adoption, :prime, %{"vm_id" => "vm-after"})
+    :ok = SpecTrace.drain(restarted)
+
+    assert {:ok, records} = SQLite.read_window(store, spec: "adoption")
+    vm_ids = Enum.map(records, & &1["vars"]["vm_id"])
+
+    assert "vm-after" in vm_ids,
+           "the post-restart record was dropped, so seq collided on the primary key " <>
+             "and the trace silently stopped recording: #{inspect(vm_ids)}"
+
+    seqs = Enum.map(records, & &1["seq"])
+    assert seqs == Enum.uniq(seqs), "duplicate seq values: #{inspect(seqs)}"
+  end
+
   test "round trips records and preamble", %{writer: writer, store: store} do
     SpecTrace.emit(:adoption, :prime, %{"vm_id" => "vm-1", lane: :task})
     :ok = SpecTrace.drain(writer)

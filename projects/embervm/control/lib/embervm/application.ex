@@ -466,6 +466,25 @@ defmodule Embervm.Application do
 
   @doc false
   def spec_trace_mod do
+    # EMBERVM_SPEC_TRACE_PATH WINS over the op-log DSN.
+    #
+    # This keyed off EMBERVM_OPLOG_DSN alone, so any environment running the
+    # Postgres op-log (production does) would open a Postgrex connection and
+    # write spec_trace rows into the SAME DATABASE as the durable op-log the
+    # moment the trace was enabled.
+    #
+    # #4770 decided the opposite explicitly, and it is the whole argument for a
+    # separate stream: "the op-log answers what happened to this task or session
+    # as a business object; the trace answers did the protocol behave". They have
+    # opposite design pressures, and the op-log is the durable book of record for
+    # audit and billing. A debug facility must not share its database. #4841.
+    case trimmed_env("EMBERVM_SPEC_TRACE_PATH") do
+      "" -> spec_trace_mod_from_oplog_dsn()
+      _path -> Embervm.SpecTrace.Store.SQLite
+    end
+  end
+
+  defp spec_trace_mod_from_oplog_dsn do
     case trimmed_env("EMBERVM_OPLOG_DSN") do
       "" -> Embervm.SpecTrace.Store.SQLite
       _ -> Embervm.SpecTrace.Store.Postgres

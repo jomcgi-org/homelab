@@ -43,8 +43,15 @@ defmodule Embervm.SpecTrace.Store.SQLite do
   def sweep(server \\ __MODULE__, opts \\ []), do: GenServer.call(server, {:sweep, opts})
 
   @impl true
+  def max_seq(server \\ __MODULE__), do: GenServer.call(server, :max_seq)
+
+  @impl true
   def handle_call({:write, records}, _from, state) do
     {:reply, safe(state, fn -> do_write(state.conn, records) end), state}
+  end
+
+  def handle_call(:max_seq, _from, state) do
+    {:reply, do_max_seq(state.conn), state}
   end
 
   def handle_call({:read, opts}, _from, state) do
@@ -87,6 +94,21 @@ defmodule Embervm.SpecTrace.Store.SQLite do
       rows = collect_rows(conn, stmt, [])
       :ok = Sqlite3.release(conn, stmt)
       {:ok, rows}
+    end
+  end
+
+  defp do_max_seq(conn) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, "SELECT COALESCE(MAX(seq), 0) FROM spec_trace") do
+      result =
+        case Sqlite3.step(conn, stmt) do
+          {:row, [max]} when is_integer(max) -> max
+          _ -> 0
+        end
+
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    else
+      _ -> 0
     end
   end
 
