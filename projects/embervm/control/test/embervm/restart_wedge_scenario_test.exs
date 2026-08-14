@@ -41,16 +41,23 @@ defmodule Embervm.RestartWedgeScenarioTest do
     end
   end
 
-  test "dispatch restart wedge is caught by SpecTrace checker", %{skip: skip, fake: fake} do
-    if skip do
-      # The round-trip genrule supplies the fake binary; ordinary Mix runs do not.
-      IO.puts("restart wedge scenario skipped: #{skip}")
-    else
-      run_wedge_scenario(fake)
-    end
+  test "dispatch restart wedge starves adoption and the trace records it", ctx do
+    # NOT a silent skip. mix_test.sh now stages the fake noded (bazel/erlang/BUILD
+    # plus the EMBERVM_FAKE_NODE_SRC block), so an absent binary means that
+    # staging broke, not that the environment is legitimately without it.
+    #
+    # The previous revision printed "skipped" and passed, so this scenario never
+    # ran in CI once, while the suite reported green. A harness proof that can
+    # excuse itself is the exact defect class this harness exists to catch.
+    refute ctx[:skip],
+           "the fake noded is not staged: #{ctx[:skip]}. mix_test.sh is supposed to " <>
+             "export EMBERVM_FAKE_NODE_BIN from EMBERVM_FAKE_NODE_SRC. This scenario " <>
+             "must not silently skip."
+
+    run_wedge_scenario(ctx.fake, ctx.trace_store, ctx.trace_writer)
   end
 
-  defp run_wedge_scenario(fake) do
+  defp run_wedge_scenario(fake, trace_store, trace_writer) do
     vm_ids = prime(fake.channel, 3)
     assert Enum.count(vm_ids) == 3
 
