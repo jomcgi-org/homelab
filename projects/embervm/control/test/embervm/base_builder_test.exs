@@ -1951,6 +1951,161 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(calls, & &1) == 2
   end
 
+  test "a transient hydrate fallback does not latch the recorded ref" do
+    test_pid = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    {:ok, restore_calls} = Agent.start_link(fn -> 0 end)
+
+    restore_fun = fn :fake_channel, _req ->
+      call = Agent.get_and_update(restore_calls, fn n -> {n + 1, n + 1} end)
+      send(test_pid, :transient_restore_called)
+
+      case call do
+        1 -> {:error, %GRPC.RPCError{status: 14, message: "temporarily unavailable"}}
+        2 -> {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+      end
+    end
+
+    build_fun = fn :fake_channel, _req ->
+      call = Agent.get_and_update(calls, fn n -> {n + 1, n + 1} end)
+
+      case call do
+        1 -> {:ok, resp("snap1")}
+        2 ->
+          send(test_pid, {:transient_rebuild_started, self()})
+
+          receive do
+            :release_transient_rebuild -> {:ok, resp("snap2")}
+          end
+      end
+    end
+
+    {builder, _agent, table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive :transient_restore_called, 1_000
+    assert_receive {:transient_rebuild_started, rebuild_worker}, 1_000
+
+    assert get_in(:sys.get_state(builder), [:workloads, "w", :unobtainable_snapshot_ref]) == nil
+
+    send(rebuild_worker, :release_transient_rebuild)
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2" end)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive :transient_restore_called, 1_000
+    put_base_fact(table, "node-4", "big", "w", "snap2", :BASE_BUILD_STATE_READY, true)
+  end
+
+  test "a successful rebuild clears the unobtainable ref latch" do
+    test_pid = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    restore_fun = fn :fake_channel, _req ->
+      send(test_pid, :restore_called_after_rebuild)
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    build_fun = fn :fake_channel, _req ->
+      call = Agent.get_and_update(calls, fn n -> {n + 1, n + 1} end)
+
+      case call do
+        1 -> {:ok, resp("snap1")}
+        2 ->
+          send(test_pid, {:same_ref_rebuild_started, self()})
+
+          receive do
+            :release_same_ref_rebuild -> {:ok, resp("snap1")}
+          end
+      end
+    end
+
+    {builder, _agent, table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        build_fun: build_fun
+      )
+
+    d = desc(%{mem_mib: 4_000})
+    signature_at_start = {d.image_ref, nil, d.vcpus, d.mem_mib, d.guest_port, d.ready_path, d.init_env}
+    GenServer.cast(builder, {:reconcile_force_rebuild, "w", signature_at_start})
+    assert_receive {:same_ref_rebuild_started, rebuild_worker}, 1_000
+    send(rebuild_worker, :release_same_ref_rebuild)
+
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+    assert get_in(:sys.get_state(builder), [:workloads, "w", :unobtainable_snapshot_ref]) == nil
+
+    put_base_fact(table, "node-4", "big", "w", "", :BASE_BUILD_STATE_NONE, false)
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive :restore_called_after_rebuild, 1_000
+  end
+
+  test "an unobtainable recorded ref converges to BuildBase across repeated reconciles" do
+    {:ok, hydrates} = Agent.start_link(fn -> [] end)
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    restore_fun = fn :fake_channel, %Embervm.Node.V1.RestoreArtifactRequest{artifact: ref} ->
+      Agent.update(hydrates, &[ref.ref | &1])
+      {:error, %GRPC.RPCError{status: 9, message: "not present in store"}}
+    end
+
+    {builder, _agent, _table} =
+      build_then_report_base_absent(
+        restore_fun: restore_fun,
+        build_fun: fn :fake_channel, _req ->
+          Agent.update(builds, &(&1 + 1))
+          {:ok, resp("snap1")}
+        end
+      )
+
+    # Keep the node's affirmative NONE fact in place. This is the live outage
+    # shape: every reconcile sees the recorded ref as absent on its anchor.
+    for _ <- 1..3 do
+      :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+      assert_eventually(fn -> Agent.get(builds, & &1) >= 2 end)
+    end
+
+    assert Agent.get(builds, & &1) == 2
+    assert Agent.get(hydrates, & &1) == ["snap1", "snap1"]
+  end
+
+  test "a healthy recorded base survives a spec edit" do
+    agent = start_recorder()
+    test_pid = self()
+    {:ok, build_calls} = Agent.start_link(fn -> 0 end)
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req ->
+          call = Agent.get_and_update(build_calls, fn n -> {n + 1, n + 1} end)
+
+          case call do
+            2 ->
+              send(test_pid, {:spec_edit_rebuild_started, self()})
+
+              receive do
+                :release_spec_edit -> {:ok, resp("snap2")}
+              end
+
+            1 ->
+              {:ok, resp("snap1")}
+          end
+        end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, ready_path: "/new-ready"}))
+    assert_receive {:spec_edit_rebuild_started, rebuild_worker}, 1_000
+    assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1"
+    send(rebuild_worker, :release_spec_edit)
+  end
+
   test "hydrate fallback with a changed signature uses plain reconcile semantics" do
     test_pid = self()
     {:ok, calls} = Agent.start_link(fn -> 0 end)

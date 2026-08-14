@@ -511,6 +511,16 @@ defmodule Embervm.BaseBuilder do
   end
 
   def handle_cast({:reconcile_force_rebuild, workload_name, signature_at_start}, state) do
+    handle_cast(
+      {:reconcile_force_rebuild, workload_name, signature_at_start, :not_present_in_store},
+      state
+    )
+  end
+
+  def handle_cast(
+        {:reconcile_force_rebuild, workload_name, signature_at_start, failure_reason},
+        state
+      ) do
     case Map.get(state.workloads, workload_name) do
       nil ->
         {:noreply, state}
@@ -525,9 +535,18 @@ defmodule Embervm.BaseBuilder do
             "embervm base builder: forcing rebuild for #{workload_name}, cleared snapshot ref #{inspect(cleared_ref)}"
           )
 
-          w = %{w | built_signature: nil, snapshot_ref: nil}
+          # Remember only a ref confirmed absent from the store. A queued
+          # reconcile can otherwise preserve it through merge_desc/3 and select
+          # hydrate again before the rebuild gets a chance to start.
+          w = %{
+            w
+            | built_signature: nil,
+              snapshot_ref: nil,
+              unobtainable_snapshot_ref:
+                if(failure_reason == :not_present_in_store, do: cleared_ref, else: nil)
+          }
           state = put_in(state.workloads[workload_name], w)
-          {:noreply, reconcile_desc(state, hydrate_fallback_desc(w))}
+          {:noreply, reconcile_desc(state, hydrate_fallback_desc(w, clear_snapshot_ref: true))}
         end
     end
   end
@@ -809,6 +828,7 @@ defmodule Embervm.BaseBuilder do
 
   defp should_hydrate?(state, w, node_id) do
     is_binary(w.snapshot_ref) and w.built_signature == signature(w) and
+      Map.get(w, :unobtainable_snapshot_ref) != w.snapshot_ref and
       node_reports_base_absent?(state, node_id, w.name) and
       not already_targeting?(state, node_id, w.name, signature(w)) and
       not MapSet.member?(state.hydrating, w.name)
@@ -886,7 +906,15 @@ defmodule Embervm.BaseBuilder do
               "embervm base builder: hydrate #{name}/#{ref} fell back, forcing a rebuild (#{inspect(reason)})"
             )
 
-            GenServer.cast(owner, {:reconcile_force_rebuild, name, signature_at_start})
+            # In particular, :not_present_in_store is terminal for this recorded
+            # ref on this anchor, so the next reconcile must build.
+
+            GenServer.cast(owner, {
+              :reconcile_force_rebuild,
+              name,
+              signature_at_start,
+              reason
+            })
         end
       after
         send(owner, {:hydrate_done, name})
@@ -1021,7 +1049,7 @@ defmodule Embervm.BaseBuilder do
   # The desc a hydrate fallback re-drives: reconstruct the minimal build descriptor
   # from the workload's own recorded fields, so the reconcile rebuilds the SAME
   # base the hydrate failed to restore. class/zip are optional map keys.
-  defp hydrate_fallback_desc(w) do
+  defp hydrate_fallback_desc(w, opts \\ []) do
     %{
       name: w.name,
       namespace: w.namespace,
@@ -1033,7 +1061,8 @@ defmodule Embervm.BaseBuilder do
       ready_path: w.ready_path,
       vcpus: w.vcpus,
       mem_mib: w.mem_mib,
-      init_env: w.init_env
+      init_env: w.init_env,
+      clear_snapshot_ref: Keyword.get(opts, :clear_snapshot_ref, false)
     }
   end
 
@@ -1364,6 +1393,7 @@ defmodule Embervm.BaseBuilder do
       init_env: desc.init_env || %{},
       built_signature: nil,
       snapshot_ref: nil,
+      unobtainable_snapshot_ref: nil,
       snapshot_digest: nil,
       superseded_refs: [],
       # R2 refcounting: per-superseded-ref refcount tracking, keyed by snapshot
@@ -1385,7 +1415,7 @@ defmodule Embervm.BaseBuilder do
   end
 
   defp merge_desc(prev, desc, node_id) do
-    %{
+    merged = %{
       prev
       | namespace: desc.namespace,
         generation: desc.generation,
@@ -1399,6 +1429,16 @@ defmodule Embervm.BaseBuilder do
         mem_mib: desc.mem_mib,
         init_env: desc.init_env || %{}
     }
+
+    # Normal spec reconciles intentionally preserve the recorded base while a
+    # replacement builds. A hydrate fallback is different: its failed ref is
+    # known to be unobtainable, so the fallback descriptor explicitly clears the
+    # ledger and must not let `%{prev | ...}` reinstate it.
+    if Map.get(desc, :clear_snapshot_ref, false) do
+      %{merged | built_signature: nil, snapshot_ref: nil, snapshot_digest: nil}
+    else
+      merged
+    end
   end
 
   # The base signature: the spec fields that actually shape the base. A rebuild
@@ -1723,6 +1763,7 @@ defmodule Embervm.BaseBuilder do
       w
       | built_signature: built_sig,
         snapshot_ref: resp.snapshot_ref,
+        unobtainable_snapshot_ref: nil,
         snapshot_digest: resp.image_digest,
         superseded_refs: superseded,
         base_refs: base_refs,
