@@ -1,3 +1,4 @@
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -493,3 +494,59 @@ def test_list_runs_clamps_limit_query_parameter(monkeypatch):
     assert client().get("/api/swarm/runs?active=false&limit=100").status_code == 200
     assert client().get("/api/swarm/runs?active=false&limit=0").status_code == 200
     assert captured == [50, 1]
+
+
+def test_update_task_inputs_refuses_a_task_not_awaiting_inputs(monkeypatch):
+    """`task_id` comes from the client, so the row it names has to be checked.
+
+    A resubmission may only fill in a task still waiting for its inputs.
+    Anything already carrying a repo, a workflow or a session is somebody
+    else's started work, and naming its id must fail rather than silently
+    rewrite it.
+    """
+
+    class Row:
+        def __init__(self, **kwargs):
+            self.repo = kwargs.get("repo")
+            self.base_branch = None
+            self.workflow_id = kwargs.get("workflow_id")
+            self.session_id = kwargs.get("session_id")
+
+    class FakeSession:
+        def __init__(self, row):
+            self._row = row
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, _model, _task_id):
+            return self._row
+
+        def add(self, _row):
+            return None
+
+        def commit(self):
+            return None
+
+    def run_with(row):
+        monkeypatch.setattr(
+            "sqlmodel.Session", lambda *args, **kwargs: FakeSession(row)
+        )
+        swarm_router._update_task_inputs_sync("task-1", "jomcgi/homelab", "main")
+
+    for started in (
+        Row(repo="jomcgi/homelab"),
+        Row(workflow_id="wf-1"),
+        Row(session_id=7),
+    ):
+        with pytest.raises(ValueError, match="not awaiting inputs"):
+            run_with(started)
+
+    # The awaiting case still writes.
+    awaiting = Row()
+    run_with(awaiting)
+    assert awaiting.repo == "jomcgi/homelab"
+    assert awaiting.base_branch == "main"
