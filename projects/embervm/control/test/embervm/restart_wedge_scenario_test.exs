@@ -134,14 +134,28 @@ defmodule Embervm.RestartWedgeScenarioTest do
     # about the invariants rather than about the trace. The gap is a missing
     # liveness invariant (adoption.tla's EventuallyDispatched, bounded), not
     # missing instrumentation. Filed as the next slice of #4761.
-    refute Enum.any?(verdicts, &(&1.verdict == :fail)),
-           "a FAIL here would mean an invariant already detects the wedge, which would " <>
-             "make this comment wrong and is worth knowing: #{inspect(verdicts)}"
+    # Assert on the invariants that could plausibly see a wedge, NOT on the whole
+    # verdict list.
+    #
+    # A blanket `refute any fail` caught health_monotonic failing with
+    # "node node-4/uid-210 has age_to_down without preceding age_to_unknown",
+    # for a node this scenario never created. `SpecTrace.Writer` is registered
+    # under a GLOBAL name and `emit/3` resolves it with `Process.whereis/1`, so
+    # this test's writer captures emissions from every other test's NodeRegistry
+    # running in the same BEAM. The trace is shared even though the store is not.
+    #
+    # That ambient churn is a real limitation of the hermetic lane and is filed
+    # separately. It does not affect the finding here: the wedge is about
+    # adoption and dispatch, so those are what this asserts on.
+    for invariant <- [:dispatch_provenance, :prime_before_checkpoint, :adopt_idempotent] do
+      verdict = Enum.find(verdicts, &(&1.invariant == invariant))
 
-    dispatch_verdict = Enum.find(verdicts, &(&1.invariant == :dispatch_provenance))
-
-    assert dispatch_verdict.verdict in [:pass, :vacuous],
-           "unexpected verdict shape: #{inspect(dispatch_verdict)}"
+      assert verdict.verdict in [:pass, :vacuous],
+             "#{invariant} returned #{inspect(verdict.verdict)} on the wedge. If an " <>
+               "invariant has started detecting non-progress, the comment above is " <>
+               "stale and this scenario should assert the detection instead: " <>
+               "#{inspect(verdict)}"
+    end
   end
 
   defp start_fake_node(bin) do
