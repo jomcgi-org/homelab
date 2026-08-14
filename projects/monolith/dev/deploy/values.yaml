@@ -113,6 +113,32 @@ postgres:
 whatsapp:
   enabled: false
 
+# EmberVM: dev talks to the DEV control plane, not production's.
+#
+# These inherited production's URLs, so monolith-dev was calling
+# embervm-embervm.embervm on every agent page load and getting:
+#
+#   403 Forbidden /v1/workloads/claude-runtime/sessions
+#   {"error":"service account not permitted","retryable":false}
+#
+# which surfaced in the console as "unable to load session". The 403 is the
+# ingress allowlist working exactly as intended (#4628: a NEW caller is a
+# silent deny), so the defect was the URL, not the guard. Dev was asking
+# production's fleet for production's sessions and being told no.
+#
+# Same rule as whatsapp above and for the same reason: dev must not claim
+# production's identity or reach into production's state. An agent session is
+# both, since it is a real VM holding a real workload slot against
+# session.maxSessions.
+#
+# embervm-dev has been its own deployment since #4856 with the same service
+# shape, so this is a hostname swap and nothing more.
+semgrep:
+  embervmUrl: "http://embervm-dev-embervm.embervm-dev.svc.cluster.local:8080"
+
+tokenBroker:
+  url: "http://embervm-dev-embervm-tokenbroker.embervm-dev.svc.cluster.local:8080"
+
 # NO Argo CronWorkflows in dev, and this is the third identity collision this
 # overlay has had to close.
 #
