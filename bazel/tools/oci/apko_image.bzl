@@ -23,8 +23,11 @@ def apko_image(
 
     Args:
         name: The name of the image.
-        config: The apko config file (should define both x86_64 and aarch64 in archs
-                list, unless arm64 = False, in which case only x86_64).
+        config: The apko config file. Its archs list must be a superset of what is
+                built, not an exact match: apko fails when asked for an arch the
+                config does not declare, but ignores one it declares and nobody
+                builds. So `arm64 = False` does NOT require editing archs, and
+                most callers here leave aarch64 in place.
         arm64: Whether to build the aarch64 variant. Defaults to True, but every
                caller in this repo now passes False: all four cluster nodes are
                amd64, no chart carries a kubernetes.io/arch selector, and the
@@ -34,8 +37,13 @@ def apko_image(
 
                Also pass False for an image carrying an architecture-specific
                artifact the build cannot produce for arm64 (e.g. a compiled NIF
-               built on the amd64 executor); the apko config's archs list must
-               then be x86_64-only too.
+               built on the amd64 executor).
+
+               Do NOT drop aarch64 from the apko config to match. The archs list
+               and its lock file are checked against each other by
+               :{name}_lock_test, so editing archs means regenerating
+               apko.lock.json, and it buys nothing: the aarch64 base is simply
+               never instantiated when arm64 = False.
 
                When False, :{name} is a single-platform amd64 image, NOT an
                index, so its digest changes and the workload rolls once.
