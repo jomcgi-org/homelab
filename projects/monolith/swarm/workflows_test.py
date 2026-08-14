@@ -11,11 +11,11 @@ class Queue:
         return Handle()
 
 
-def workflow(*args):
+def workflow(*args, **kwargs):
     # DBOS requires an initialized runtime to invoke the decorated entrypoint.
     # The wrapped function is the deterministic control flow under test, while
     # the decorator remains on the production entrypoint.
-    return workflows.implement_then_review.__wrapped__(*args)
+    return workflows.implement_then_review.__wrapped__(*args, **kwargs)
 
 
 def run(monkeypatch, turns, heads=None):
@@ -31,11 +31,11 @@ def run(monkeypatch, turns, heads=None):
     monkeypatch.setattr(
         workflows,
         "pin_plan",
-        lambda budget_usd=None: {
+        lambda budget_usd=None, model=None: {
             "version": 1,
             "max_attempts": max(1, config.max_attempts()),
             "max_review_cycles": max(1, config.max_review_cycles()),
-            "implementer_model": config.implementer_model(),
+            "implementer_model": model or config.implementer_model(),
             "reviewer_model": config.reviewer_model(),
             "turn_timeout_seconds": config.turn_timeout_seconds(),
             "budget_usd": budget_usd,
@@ -88,6 +88,20 @@ def test_commit_on_first_attempt_goes_to_review(monkeypatch):
     assert calls[1][-2:] == ("review", 1)
 
 
+def test_explicit_model_is_used_by_implementer(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+            102: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+        },
+    )
+
+    workflow("task", "jomcgi/homelab", "main", model="terra")
+
+    assert calls[0][2] == "terra"
+
+
 def test_no_commit_retries(monkeypatch):
     calls = run(
         monkeypatch,
@@ -115,7 +129,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
     monkeypatch.setattr(
         workflows,
         "pin_plan",
-        lambda budget_usd=None: {
+        lambda budget_usd=None, model=None: {
             "version": 1,
             "max_attempts": max(1, config.max_attempts()),
             "max_review_cycles": max(1, config.max_review_cycles()),

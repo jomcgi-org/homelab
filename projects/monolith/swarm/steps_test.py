@@ -40,6 +40,16 @@ def test_pin_plan_resolves_config_once(monkeypatch):
     }
 
 
+def test_pin_plan_uses_implementer_override(monkeypatch):
+    monkeypatch.setenv("SWARM_IMPLEMENTER_MODEL", "implementer")
+    monkeypatch.setenv("SWARM_REVIEWER_MODEL", "reviewer")
+
+    plan = steps.pin_plan.__wrapped__(2.0, "terra")
+
+    assert plan["implementer_model"] == "terra"
+    assert plan["reviewer_model"] == "reviewer"
+
+
 @pytest.mark.parametrize(
     ("status", "payload", "expected"),
     [(200, {"object": {"sha": "deadbeef"}}, "deadbeef"), (404, {}, None)],
