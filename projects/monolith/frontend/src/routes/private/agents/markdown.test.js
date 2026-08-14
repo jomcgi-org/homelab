@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderAgentMarkdown, stripRationaleTrailer } from "./markdown.js";
+import { renderAgentMarkdown, resultWithoutTrailer } from "./markdown.js";
 
 describe("renderAgentMarkdown", () => {
   it("renders https links as safe anchors", () => {
@@ -92,17 +92,28 @@ describe("renderAgentMarkdown", () => {
     expect(html).not.toContain("Spoken so far");
   });
 
-  it("removes a parsed rationale trailer only when intent is present", () => {
-    const result = "Answer\n\nRATIONALE\n- path: src/app.js · why: change it";
-    expect(stripRationaleTrailer(result, "Answer")).toBe(
-      "Answer\n\n## Notes\nKeep this",
-    );
-    expect(stripRationaleTrailer(result, null)).toBe(result);
+  it("uses the server-parsed rationale to remove the raw trailer", () => {
+    const raw = "RATIONALE\n- path: src/app.js · why: change it";
+    expect(
+      resultWithoutTrailer({
+        result_text: `Answer\n\n${raw}`,
+        rationale: { parse_status: "parsed", raw },
+      }),
+    ).toBe("Answer");
   });
 
-  it("stops rationale removal at the next section", () => {
-    const result =
-      "Answer\n\nRATIONALE\n- path: src/app.js\n\n## Notes\nKeep this";
-    expect(stripRationaleTrailer(result, "Answer")).toBe("Answer");
+  it("returns the full result when rationale parsing failed", () => {
+    const result = "Answer\n\nRATIONALE\nambiguous text";
+    expect(
+      resultWithoutTrailer({
+        result_text: result,
+        rationale: { parse_status: "unparseable", raw: "RATIONALE" },
+      }),
+    ).toBe(result);
+  });
+
+  it("returns the full result when no rationale is present", () => {
+    const result = "Answer";
+    expect(resultWithoutTrailer({ result_text: result })).toBe(result);
   });
 });

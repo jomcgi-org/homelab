@@ -80,23 +80,16 @@ export function renderAgentMarkdown(text) {
   });
 }
 
-// Swarm rationale is also rendered by SessionWalkthrough as structured
-// testimony. Keep it in the transcript for historical turns, where there is
-// no parsed intent, but avoid showing the same trailer twice for swarm turns.
-export function stripRationaleTrailer(text, promptIntent) {
-  if (promptIntent == null || !text) return text;
-  const lines = String(text).split("\n");
-  const start = lines.findIndex((line) =>
-    /^\s*(?:#{1,6}\s*)?RATIONALE\s*$/i.test(line),
-  );
-  if (start < 0) return text;
-  const nextSection = lines.findIndex(
-    (line, index) => index > start && /^\s*#{1,6}\s+\S/.test(line),
-  );
-  if (nextSection < 0) return lines.slice(0, start).join("\n").trim();
-  return lines
-    .slice(0, start)
-    .concat(lines.slice(nextSection))
-    .join("\n")
-    .trim();
+export function resultWithoutTrailer(turn) {
+  if (!turn?.rationale || turn.rationale.parse_status !== "parsed") {
+    return turn?.result_text || "";
+  }
+  if (!turn.rationale.raw || !turn.result_text) {
+    return turn.result_text || "";
+  }
+  const result = turn.result_text;
+  if (result.includes(turn.rationale.raw)) {
+    return result.replace(turn.rationale.raw, "").trim();
+  }
+  return result;
 }

@@ -104,3 +104,52 @@ def test_start_agent_session_forwards_workflow_id(monkeypatch):
             },
         )
     ]
+
+
+def test_poll_turn_includes_rationale(monkeypatch):
+    import sqlmodel
+
+    class Query:
+        def where(self, *args):
+            return self
+
+        def order_by(self, *args):
+            return self
+
+    class Result:
+        def first(self):
+            return type(
+                "Turn",
+                (),
+                {
+                    "seq": 2,
+                    "prompt_intent": "Implement the fix",
+                    "result_text": "Done\n\nRATIONALE\n- path: app.py · why: fix it",
+                    "terminal_reason": "completed",
+                    "cost_usd": 0.25,
+                },
+            )()
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def exec(self, query):
+            return Result()
+
+    monkeypatch.setattr(sqlmodel, "Session", lambda engine: Session())
+    monkeypatch.setattr(sqlmodel, "select", lambda model: Query())
+    monkeypatch.setattr("core.db.get_engine", lambda: object())
+
+    payload = steps.poll_turn.__wrapped__(101, 1)
+
+    assert payload["rationale"] == {
+        "raw": "RATIONALE\n- path: app.py · why: fix it",
+        "parse_status": "parsed",
+        "paths": [{"path": "app.py", "why": "fix it"}],
+        "deviations": [],
+        "parser_version": 1,
+    }
