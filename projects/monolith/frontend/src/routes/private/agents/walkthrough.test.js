@@ -1,271 +1,268 @@
 import { describe, expect, test } from "vitest";
-import { composeWalkthrough, parsePatch } from "./walkthrough.js";
+import {
+  generatorLabel,
+  parsePatchHunks,
+  walkthroughView,
+} from "./walkthrough.js";
 
-function file(path, classification, extra = {}) {
+const CTX = { sessionId: 301, turnSeq: 2 };
+
+function authored(path, additions, deletions, why = null) {
   return {
-    path,
-    status: "modified",
-    additions: 4,
-    deletions: 1,
-    changes: 5,
-    classification,
-    patch_url:
-      classification === "authored"
-        ? `/api/swarm/compare/1/2/patch?path=${path}`
-        : null,
-    ...extra,
+    type: "authored",
+    register: why ? "testimony" : "fact",
+    file_path: path,
+    file_change: { additions, deletions, status: "modified" },
+    ...(why
+      ? { testimony: { turn: 2, attempt: 1, points: [{ path, why }] } }
+      : {}),
   };
 }
 
-function rationaleOf(paths, deviations = []) {
-  return {
-    raw: "RATIONALE",
-    parse_status: "parsed",
-    paths,
-    deviations,
-    parser_version: 1,
-  };
-}
-
-const fullCompare = {
-  resolution_rung: 1,
-  diff_type: "sha",
-  trailer_parsed: true,
-  files: [
-    file("swarm/rows.py", "authored"),
-    file("swarm/view.py", "authored"),
-    file("swarm/quiet.py", "authored"),
-    file("charts/index.yaml", "mechanical"),
-    file("charts/lock.json", "mechanical"),
+const fullPayload = {
+  rung: 1,
+  ephemeral: false,
+  steps: [
+    authored("swarm/policy.py", 46, 5, "routes on branch movement"),
+    authored("swarm/workflows.py", 42, 8, "keeps the observed head"),
+    authored("swarm/queues.py", 12, 3),
+    {
+      type: "mechanical",
+      register: "fact",
+      count: 143,
+      generator_activity: { type: "run", command: "ci regen" },
+    },
+    {
+      type: "unexplained",
+      register: "fact",
+      file_path: "swarm/queues.py",
+      file_change: { additions: 12, deletions: 3, status: "modified" },
+      label: "Unexplained file",
+    },
+    {
+      type: "contradiction",
+      register: "testimony",
+      label: "Contradicted path",
+      testimony: {
+        turn: 2,
+        attempt: 1,
+        points: [{ path: "swarm/gone.py", why: "deleted the dead rollup" }],
+      },
+    },
+    { type: "truncation", register: "fact", label: "GitHub files truncated" },
   ],
-  stats: { total_files: 5 },
-  authored_file_paths: ["swarm/rows.py", "swarm/view.py", "swarm/quiet.py"],
-  unexplained_files: [
-    "swarm/quiet.py",
-    "charts/index.yaml",
-    "charts/lock.json",
-  ],
-  contradicted_paths: ["swarm/gone.py"],
+  stats: { total_files: 146, truncated_at: 300 },
 };
 
-const fullRationale = rationaleOf(
-  [
-    { path: "swarm/view.py", why: "renders the walkthrough" },
-    { path: "swarm/rows.py", why: "carries the final turn" },
-    { path: "swarm/gone.py", why: "removed the dead column" },
-  ],
-  ["kept routing unchanged"],
-);
+describe("walkthroughView rung 1", () => {
+  const walk = walkthroughView(fullPayload, CTX);
 
-describe("composeWalkthrough rung 1", () => {
-  const walk = composeWalkthrough(fullCompare, fullRationale);
-
-  test("authored files become steps in the agent's order first", () => {
+  test("authored steps become points in the composer's order", () => {
     expect(walk.rung).toBe(1);
-    expect(walk.steps.map((step) => step.path)).toEqual([
-      "swarm/view.py",
-      "swarm/rows.py",
-      "swarm/quiet.py",
+    expect(walk.points.map((point) => [point.kind, point.path])).toEqual([
+      ["authored", "swarm/policy.py"],
+      ["authored", "swarm/workflows.py"],
+      ["unexplained", "swarm/queues.py"],
     ]);
-    expect(walk.steps[0].why).toBe("renders the walkthrough");
-    expect(walk.steps[0].patchUrl).toContain("/patch?path=");
+    expect(walk.points[0].why).toBe("routes on branch movement");
+    expect(walk.points[0].attribution).toEqual({ turn: 2, attempt: 1 });
   });
 
-  test("mechanical files collapse to one step with a count, never flagged", () => {
-    expect(walk.mechanical).toEqual({
-      count: 2,
-      files: ["charts/index.yaml", "charts/lock.json"],
-    });
-    // 5 changed files render as 3 steps plus one mechanical group.
-    expect(walk.steps).toHaveLength(3);
+  test("the authored/unexplained twin pair dedupes to one unexplained point", () => {
+    const queues = walk.points.filter(
+      (point) => point.path === "swarm/queues.py",
+    );
+    expect(queues).toHaveLength(1);
+    expect(queues[0].kind).toBe("unexplained");
+    expect(queues[0].additions).toBe(12);
   });
 
-  test("an authored file no point mentions is flagged unexplained", () => {
-    const quiet = walk.steps.find((step) => step.path === "swarm/quiet.py");
-    expect(quiet.unexplained).toBe(true);
-    expect(walk.steps.filter((step) => step.unexplained)).toHaveLength(1);
-  });
-
-  test("a point naming a file absent from the diff is contradicted, with its claim", () => {
-    expect(walk.contradicted).toEqual([
-      { path: "swarm/gone.py", why: "removed the dead column" },
+  test("an authored point with testimony is never dropped by the dedupe", () => {
+    const explained = walkthroughView(
+      {
+        rung: 1,
+        steps: [
+          authored("a.py", 1, 0, "kept on purpose"),
+          {
+            type: "unexplained",
+            register: "fact",
+            file_path: "a.py",
+            file_change: { additions: 1, deletions: 0, status: "modified" },
+            label: "Unexplained file",
+          },
+        ],
+        stats: { total_files: 1 },
+      },
+      CTX,
+    );
+    expect(explained.points.map((point) => point.kind)).toEqual([
+      "authored",
+      "unexplained",
     ]);
   });
 
-  test("deviations pass through as testimony", () => {
-    expect(walk.deviations).toEqual(["kept routing unchanged"]);
+  test("mechanical stays one collapsed row with a count and generator label", () => {
+    expect(walk.mechanical).toEqual([{ count: 143, generator: "ci regen" }]);
   });
 
-  test("stats sum the whole compare", () => {
-    expect(walk.stats).toEqual({ totalFiles: 5, additions: 20, deletions: 5 });
+  test("a contradiction carries the quoted claim and attribution", () => {
+    expect(walk.contradictions).toEqual([
+      {
+        path: "swarm/gone.py",
+        why: "deleted the dead rollup",
+        attribution: { turn: 2, attempt: 1 },
+      },
+    ]);
+    expect(walk.hasTestimony).toBe(true);
+  });
+
+  test("truncation renders as the server's labels, never silently", () => {
+    expect(walk.truncations).toEqual(["GitHub files truncated"]);
+  });
+
+  test("counts: explained points, server file total, summed additions", () => {
+    expect(walk.counts.points).toBe(2);
+    expect(walk.counts.files).toBe(146);
+    expect(walk.counts.additions).toBe(46 + 42 + 12);
+    expect(walk.counts.deletions).toBe(5 + 8 + 3);
+  });
+
+  test("patches stay lazy: rung 1/2 points link the compare patch route", () => {
+    expect(walk.points[0].patchUrl).toBe(
+      "/api/swarm/compare/301/2/patch?path=swarm%2Fpolicy.py",
+    );
+    const uncontexted = walkthroughView(fullPayload, {});
+    expect(uncontexted.points[0].patchUrl).toBeNull();
   });
 });
 
-describe("composeWalkthrough degradation ladder", () => {
-  test("rung 2 is the same walkthrough labelled ephemeral", () => {
-    const walk = composeWalkthrough(
-      { ...fullCompare, resolution_rung: 2, diff_type: "branch_ephemeral" },
-      fullRationale,
+describe("walkthroughView degradation ladder", () => {
+  test("rung 2 is the same walk with the server's ephemeral message", () => {
+    const walk = walkthroughView(
+      { ...fullPayload, rung: 2, ephemeral: true, message: "shelf life" },
+      CTX,
     );
     expect(walk.rung).toBe(2);
     expect(walk.ephemeral).toBe(true);
-    expect(walk.steps).toHaveLength(3);
+    expect(walk.message).toBe("shelf life");
+    expect(walk.points[0].patchUrl).toContain("/patch?path=");
   });
 
-  test("rung 3: no compare, trailer parsed: testimony steps, no diff panes, no cross-check", () => {
-    const walk = composeWalkthrough(
+  test("rung 3: testimony points with no patch links, touched rows marked", () => {
+    const walk = walkthroughView(
       {
-        resolution_rung: 3,
-        trailer_parsed: true,
-        files: [],
-        stats: { total_files: 0 },
-        authored_file_paths: ["swarm/rows.py"],
-        unexplained_files: [],
-        // Against an empty diff the server set-difference names every
-        // trailer path; that is not a contradiction and must not render.
-        contradicted_paths: ["swarm/view.py", "swarm/rows.py"],
-        error: "no_compare_available",
+        rung: 3,
+        ephemeral: false,
+        steps: [
+          {
+            type: "authored",
+            register: "testimony",
+            file_path: "swarm/rows.py",
+            testimony: {
+              turn: 2,
+              attempt: 1,
+              points: [
+                { path: "swarm/rows.py", why: "404s a missing turn" },
+                { deviation: "left the rollup untouched" },
+              ],
+            },
+          },
+          {
+            type: "authored",
+            register: "fact",
+            file_path: "swarm/view.py",
+            file_change: { additions: 0, deletions: 0, status: "touched" },
+          },
+        ],
+        stats: { authored_files: 2 },
+        message: "Limited walkthrough: testimony and activities only",
       },
-      rationaleOf([{ path: "swarm/rows.py", why: "carries the final turn" }]),
+      CTX,
     );
     expect(walk.rung).toBe(3);
-    expect(walk.steps).toEqual([
-      {
-        path: "swarm/rows.py",
-        status: null,
-        additions: null,
-        deletions: null,
-        why: "carries the final turn",
-        unexplained: false,
-        patchUrl: null,
-      },
-    ]);
-    expect(walk.contradicted).toEqual([]);
-    expect(walk.touched).toEqual(["swarm/rows.py"]);
+    expect(walk.points).toHaveLength(2);
+    expect(walk.points[0].why).toBe("404s a missing turn");
+    expect(walk.points[0].deviations).toEqual(["left the rollup untouched"]);
+    expect(walk.points[0].patchUrl).toBeNull();
+    expect(walk.points[1].touched).toBe(true);
+    expect(walk.message).toContain("Limited walkthrough");
   });
 
-  test("rung 4: no compare, no trailer, files touched: declines to walk", () => {
-    const touched = Array.from({ length: 40 }, (_, i) => `pkg/mod_${i}.py`);
-    const walk = composeWalkthrough({
-      resolution_rung: 3,
-      trailer_parsed: false,
-      files: [],
-      stats: { total_files: 0 },
-      authored_file_paths: touched,
-      unexplained_files: [],
-      contradicted_paths: [],
-      error: "no_compare_available",
-    });
+  test("rung 4: no points, the server's decline message, the touched list", () => {
+    const activities = Array.from({ length: 23 }, (_, i) => `pkg/m${i}.py`);
+    const walk = walkthroughView(
+      {
+        rung: 4,
+        ephemeral: false,
+        steps: [],
+        stats: { total_files: 23, authored_files: 23, activities },
+        message: "decline to offer walkthrough",
+      },
+      CTX,
+    );
     expect(walk.rung).toBe(4);
-    expect(walk.declined).toBe(true);
-    expect(walk.steps).toEqual([]);
-    expect(walk.touched).toHaveLength(40);
+    expect(walk.points).toEqual([]);
+    expect(walk.touched).toHaveLength(23);
+    expect(walk.message).toContain("decline");
   });
 
-  test("rung 5: nothing at all", () => {
-    const walk = composeWalkthrough({
-      resolution_rung: 3,
-      trailer_parsed: false,
-      files: [],
-      stats: { total_files: 0 },
-      authored_file_paths: [],
-      unexplained_files: [],
-      contradicted_paths: [],
-      error: "no_compare_available",
-    });
+  test("rung 5: the message is all there is", () => {
+    const walk = walkthroughView(
+      { rung: 5, ephemeral: false, steps: [], message: "No activity recorded" },
+      CTX,
+    );
     expect(walk.rung).toBe(5);
-    expect(walk.declined).toBe(false);
-    expect(walk.steps).toEqual([]);
+    expect(walk.points).toEqual([]);
+    expect(walk.mechanical).toEqual([]);
+    expect(walk.hasTestimony).toBe(false);
+    expect(walk.message).toBe("No activity recorded");
   });
 });
 
-describe("composeWalkthrough edge facts", () => {
-  test("truncation renders as labelled facts from the server, never silently", () => {
-    const walk = composeWalkthrough(
-      {
-        ...fullCompare,
-        stats: {
-          total_files: 300,
-          truncated_at: 300,
-          truncated_reason: "GitHub files array capped at 300",
-        },
-        activities_truncated: true,
-        activities_truncated_reason: "activities ingest capped at 300",
-      },
-      fullRationale,
+describe("generatorLabel", () => {
+  test("prefers the command, truncated", () => {
+    expect(generatorLabel({ type: "run", command: "ci regen" })).toBe(
+      "ci regen",
     );
-    expect(walk.truncation).toEqual([
-      "GitHub files array capped at 300",
-      "activities ingest capped at 300",
-    ]);
+    const long = "x".repeat(120);
+    expect(generatorLabel({ command: long })).toHaveLength(81);
   });
 
-  test("a large mechanical run stays one step", () => {
-    const mech = Array.from({ length: 143 }, (_, i) =>
-      file(`gen/out_${i}.json`, "mechanical"),
+  test("falls back to input then type, and survives junk", () => {
+    expect(generatorLabel({ type: "run", input: { cmd: "make" } })).toBe(
+      '{"cmd":"make"}',
     );
-    const walk = composeWalkthrough(
-      {
-        ...fullCompare,
-        files: [file("swarm/rows.py", "authored"), ...mech],
-        unexplained_files: [],
-        contradicted_paths: [],
-      },
-      rationaleOf([{ path: "swarm/rows.py", why: "carries the final turn" }]),
-    );
-    expect(walk.steps).toHaveLength(1);
-    expect(walk.mechanical.count).toBe(143);
-  });
-
-  test("compare without served rationale content: server cross-check still applies", () => {
-    // trailer_parsed is a server fact; the content arrives only once the
-    // composer serves it. Flags key off the fact, quotes need the content.
-    const walk = composeWalkthrough(fullCompare, null);
-    expect(walk.rung).toBe(1);
-    expect(walk.trailer).toBe(true);
-    expect(walk.steps.map((step) => step.path)).toEqual([
-      "swarm/rows.py",
-      "swarm/view.py",
-      "swarm/quiet.py",
-    ]);
-    const quiet = walk.steps.find((step) => step.path === "swarm/quiet.py");
-    expect(quiet.unexplained).toBe(true);
-    expect(walk.contradicted).toEqual([{ path: "swarm/gone.py", why: "" }]);
-  });
-
-  test("no trailer at all: absence is one fact, not a flag per row", () => {
-    const walk = composeWalkthrough(
-      {
-        ...fullCompare,
-        trailer_parsed: false,
-        unexplained_files: fullCompare.files.map((f) => f.path),
-        contradicted_paths: [],
-      },
-      null,
-    );
-    expect(walk.trailer).toBe(false);
-    expect(walk.steps.every((step) => step.unexplained === false)).toBe(true);
+    expect(generatorLabel({ type: "run" })).toBe("run");
+    expect(generatorLabel(null)).toBe("");
+    expect(generatorLabel("run")).toBe("");
   });
 });
 
-describe("parsePatch", () => {
-  test("types hunk, add, del, and context lines", () => {
-    const lines = parsePatch(
-      "@@ -1,3 +1,4 @@\n context\n-old line\n+new line\n+another",
+describe("parsePatchHunks", () => {
+  test("splits hunks on @@ and types lines with gutters", () => {
+    const hunks = parsePatchHunks(
+      "@@ -1,3 +1,4 @@\n ctx line\n-old\n+new\n@@ -9,2 +10,2 @@\n+tail",
     );
-    expect(lines.map((line) => line.kind)).toEqual([
-      "hunk",
+    expect(hunks).toHaveLength(2);
+    expect(hunks[0].header).toBe("@@ -1,3 +1,4 @@");
+    expect(hunks[0].lines.map((line) => line.kind)).toEqual([
       "ctx",
       "del",
       "add",
-      "add",
     ]);
-    expect(lines[3].text).toBe("+new line");
+    expect(hunks[0].lines[0]).toEqual({
+      kind: "ctx",
+      gutter: " ",
+      text: "ctx line",
+    });
+    expect(hunks[1].lines).toEqual([
+      { kind: "add", gutter: "+", text: "tail" },
+    ]);
   });
 
   test("empty or missing patches parse to nothing", () => {
-    expect(parsePatch("")).toEqual([]);
-    expect(parsePatch(null)).toEqual([]);
-    expect(parsePatch(undefined)).toEqual([]);
+    expect(parsePatchHunks("")).toEqual([]);
+    expect(parsePatchHunks(null)).toEqual([]);
+    expect(parsePatchHunks(undefined)).toEqual([]);
   });
 });
