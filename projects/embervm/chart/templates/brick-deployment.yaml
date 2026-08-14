@@ -65,6 +65,9 @@ metadata:
   labels:
     {{- include "embervm.brick.labels" (dict "ctx" $ctx "class" $class.name) | nindent 4 }}
 spec:
+  # Explicit, because the inherited 600s default is shorter than a healthy brick
+  # rebuild and would red a good promotion (#4868). See bricks.progressDeadlineSeconds.
+  progressDeadlineSeconds: {{ $ctx.Values.bricks.progressDeadlineSeconds }}
   # A brick's memory is a HARD reservation (request==limit), so two same-class
   # bricks never fit where one does on a capacity-tight node. The default
   # RollingUpdate surges (new pod before old), which needs 2x the class's memory
@@ -146,6 +149,9 @@ metadata:
   labels:
     {{- include "embervm.brickFloor.labels" (dict "ctx" $ctx "class" $class "node" $floor.node) | nindent 4 }}
 spec:
+  # Same reasoning as the class Deployment above: the 600s default is shorter
+  # than a healthy rootfs rebuild (#4868).
+  progressDeadlineSeconds: {{ $ctx.Values.bricks.progressDeadlineSeconds }}
   strategy:
     type: RollingUpdate
     rollingUpdate:

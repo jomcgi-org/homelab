@@ -201,6 +201,27 @@ spec:
     spec:
       steps:
         - uses: argocd-update
+          {{- /*
+          THIS TIMEOUT IS THE ONE THAT ACTUALLY BINDS, and it was missing.
+
+          argocd-update does not merely apply and return. It waits for its own
+          ArgoCD SYNC OPERATION to complete, and for a fleet that rolls through
+          sync waves one Deployment at a time that operation IS the rollout. Its
+          unconfigured default is 5m0s.
+
+          So the first embervm production promotion failed on a completely
+          healthy deploy (#4894): the pin was applied, the fleet rolled normally
+          and went Synced/Healthy in about thirteen minutes, and the Promotion
+          errored at 15:13 with `step "step-1" timed out after 5m0s` while the
+          carefully measured 30m0s sat on argocd-wait below, never reached.
+
+          It never surfaced on monolith because its rollout is about ten
+          seconds, so 5m0s is generous there. A default is still a bound, and it
+          is the SHORTEST bound on the path that decides the outcome, not the
+          one that was tuned.
+          */}}
+          retry:
+            timeout: {{ $pipeline.waitTimeout | quote }}
           config:
             apps:
               - name: {{ $stage.application }}

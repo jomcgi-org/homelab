@@ -1104,6 +1104,25 @@ bricks:
   # the Workload CRs. Raise it only if something new needs to land between the CP
   # and the bricks; the relative order of the bricks themselves is positional.
   syncWaveBase: 2
+  # How long a brick Deployment may take to become available before Kubernetes
+  # marks it Progressing=False, which ArgoCD surfaces as Degraded.
+  #
+  # EXPLICIT BECAUSE THE INHERITED DEFAULT IS THE BINDING CONSTRAINT (#4868).
+  # Unset, this is 600s, and a brick rebuilds its guest rootfs on every image
+  # digest change: measured 160s to 240s per brick on the 2026-08-14 rolls, so a
+  # slower node, a larger base, or scratch pressure making mkfs.ext4 crawl puts
+  # one brick past 600s. That trips the whole Deployment Degraded, and Kargo's
+  # argocd-wait fails fast on a Degraded transition, so a HEALTHY rollout reds
+  # the promotion. A gate that reds on healthy rollouts teaches the operator to
+  # ignore it.
+  #
+  # 1200s is about 5x the measured worst case. It is a DETECTOR, not a budget:
+  # the promotion's own timeout (kargo values.promotion.pipelines[].waitTimeout)
+  # is the budget, and it is deliberately far longer. Sizing this one too high
+  # would leave a genuinely wedged brick undetected until that budget expires;
+  # sizing it too low is the false-red above. Derive it from a measurement, not
+  # from the budget.
+  progressDeadlineSeconds: 1200
   # Per-class DESIRED replica count the Embervm.BrickController reconciles the
   # brick Deployments to (and the value each renders at first create). A MAP keyed
   # by size-class label, not a per-class list field, so a deploy-values overlay can
