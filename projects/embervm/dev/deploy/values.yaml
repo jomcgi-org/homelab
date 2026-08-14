@@ -57,11 +57,30 @@ noded:
   store:
     bucket: embervm-dev
 
-# nvmeRoot split. Dev bricks use /var/lib/embervm/scratch-dev, separate from
+# nvmeRoot lives UNDER node-4's NVMe mount so it inherits that capacity bound,
 # production's shared node-4 NVMe scratch. Scratch is shared metal; the split
 # prevents prod GC and dev artifacts from colliding.
   firecracker:
-    nvmeRoot: /var/lib/embervm/scratch-dev
+    # UNDER node-4's NVMe mount, not a sibling of it.
+    #
+    # scratch-dev was /var/lib/embervm/scratch-dev, a sibling of the NVMe mount
+    # point and therefore a plain directory on the node's ROOT filesystem. That
+    # made it the ONLY scratch path in this system with no capacity bound: node-4's
+    # NVMe is mounted at /var/lib/embervm/scratch and the masters carry a 35 GiB
+    # loop cap on the same path. Six base builders writing multi-GB images to an
+    # uncapped root filesystem, on the node that also runs production's
+    # brick-16gi-node-4 and brick-2gi, is a DiskPressure eviction of production
+    # waiting to happen. ADR 012's uniform cap exists for exactly this.
+    #
+    # A subdirectory gives up "separate metal", which was never the load-bearing
+    # property: the split existed so production GC and dev artifacts do not
+    # collide, and a distinct subdirectory achieves that. It buys the capacity
+    # bound, which is. See #4832.
+    nvmeRoot: /var/lib/embervm/scratch/dev
+    # The leaf needs creating; the MOUNT is still guarded by its parent existing.
+    # Production keeps the default Directory, which fails loudly if the NVMe is
+    # absent instead of filling root.
+    nvmeRootHostPathType: DirectoryOrCreate
 
   # Node capacity. Dev runs one tiny brick, so use the smaller default.
   maxLiveVMs: 8
@@ -183,17 +202,17 @@ nodeConfirmedDestroy: true
 # gated separately from the Workload CRs.
 workloads:
   sandbox:
-    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/sandbox/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox/rootfs.ext4
   semgrep:
-    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/semgrep/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/semgrep/rootfs.ext4
   runtimePython:
-    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/runtime-python/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/runtime-python/rootfs.ext4
   runtimeClaude:
-    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/runtime-claude/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/runtime-claude/rootfs.ext4
   scratchPostgres:
-    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/scratch-postgres/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/scratch-postgres/rootfs.ext4
   bazelQuery:
-    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/bazel-query/rootfs.ext4
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/bazel-query/rootfs.ext4
 
 # The serving lane, off. Dev exercises task-class lifecycle for the conformance
 # harness, not serving or stateful workloads.
