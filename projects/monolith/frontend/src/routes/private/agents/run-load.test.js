@@ -16,10 +16,10 @@ describe("run load retry strategy", () => {
     expect(retryBackoffMs(0)).toBe(0);
   });
 
-  test("computes backoff multiplying attempt number by backoff ms", () => {
-    expect(retryBackoffMs(1)).toBe(200);
-    expect(retryBackoffMs(2)).toBe(400);
-    expect(retryBackoffMs(3)).toBe(600);
+  test("computes backoff with progressive exponential delay", () => {
+    expect(retryBackoffMs(1)).toBe(200); // 200 * 2^0
+    expect(retryBackoffMs(2)).toBe(400); // 200 * 2^1
+    expect(retryBackoffMs(3)).toBe(800); // 200 * 2^2
   });
 
   test("degrades to stale tier when a snapshot already exists", () => {

@@ -106,93 +106,90 @@
             <div class="att-reason">{run.needs.reason}</div>
           </button>{/each}
       </div>{:else}<div class="m-quiet">{P.labels.nothingNeedsYou}</div>{/if}
-
   {/if}
 
   <!-- The launcher is not gated on engine_tier. Starting a session does
        not involve the swarm engine at all, so an unreachable run engine
        must not remove the ability to start work. Only run-specific parts
        below are conditional. -->
-    <section class="launcher" aria-label={P.labels.launcherLabel}>
-      <div class="launcher-head">
-        <span class="col-label">{P.labels.launcherHeading}</span>
-      </div>
-      <form
-        onsubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        <textarea
-          rows="4"
-          value={newSession.prompt}
-          placeholder={P.labels.launcherPromptPlaceholder}
-          aria-label={P.labels.task}
-          oninput={(event) =>
-            onChangeSession("prompt", event.currentTarget.value)}
-          onkeydown={(event) => {
-            if (
-              (event.metaKey || event.ctrlKey) &&
-              event.key === "Enter" &&
-              !event.isComposing
-            ) {
-              event.preventDefault();
-              submit();
-            }
-          }}></textarea>
-        <div class="launcher-fields">
-          <div class="field">
-            <span class="field-label">{P.labels.modelWord}</span
-            >{@render modelPicker(newSession.model, (value) =>
-              onChangeSession("model", value),
-            )}
-          </div>
-          <label
-            >{P.labels.repoWord}<select
-              class="mono"
-              value={newSession.repo}
-              disabled={repoLoading}
-              onchange={(event) => {
-                const value = event.currentTarget.value;
-                onChangeSession("repo", value);
-                onChangeSession("branch", "");
-                onLoadBranches(value);
-              }}
-            >
-              {#if repoLoading}<option value="">{P.labels.loadingRepos}</option
-                >{:else}<option value="">{P.labels.scratchWorkspace}</option
-                >{#each repos as repo}<option value={repo.id}>{repo.id}</option
-                  >{/each}{/if}
-            </select></label
-          >
-          <label
-            >{P.labels.branchWord}<select
-              class="mono"
-              value={newSession.branch}
-              disabled={!newSession.repo || branchLoading}
-              onchange={(event) =>
-                onChangeSession("branch", event.currentTarget.value)}
-            >
-              {#if branchLoading}<option value=""
-                  >{P.labels.loadingBranches}</option
-                >{:else if branches.length === 0}<option value="main"
-                  >main</option
-                >{:else}{#each branches as branch}<option value={branch.name}
-                    >{branch.name}</option
-                  >{/each}{/if}
-            </select></label
-          >
+  <section class="launcher" aria-label={P.labels.launcherLabel}>
+    <div class="launcher-head">
+      <span class="col-label">{P.labels.launcherHeading}</span>
+    </div>
+    <form
+      onsubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <textarea
+        rows="4"
+        value={newSession.prompt}
+        placeholder={P.labels.launcherPromptPlaceholder}
+        aria-label={P.labels.task}
+        oninput={(event) =>
+          onChangeSession("prompt", event.currentTarget.value)}
+        onkeydown={(event) => {
+          if (
+            (event.metaKey || event.ctrlKey) &&
+            event.key === "Enter" &&
+            !event.isComposing
+          ) {
+            event.preventDefault();
+            submit();
+          }
+        }}></textarea>
+      <div class="launcher-fields">
+        <div class="field">
+          <span class="field-label">{P.labels.modelWord}</span
+          >{@render modelPicker(newSession.model, (value) =>
+            onChangeSession("model", value),
+          )}
         </div>
-        <button
-          class="launcher-submit"
-          type="submit"
-          disabled={!newSession.prompt.trim()}>{P.labels.submitTask}</button
+        <label
+          >{P.labels.repoWord}<select
+            class="mono"
+            value={newSession.repo}
+            disabled={repoLoading}
+            onchange={(event) => {
+              const value = event.currentTarget.value;
+              onChangeSession("repo", value);
+              onChangeSession("branch", "");
+              onLoadBranches(value);
+            }}
+          >
+            {#if repoLoading}<option value="">{P.labels.loadingRepos}</option
+              >{:else}<option value="">{P.labels.scratchWorkspace}</option
+              >{#each repos as repo}<option value={repo.id}>{repo.id}</option
+                >{/each}{/if}
+          </select></label
         >
-      </form>
-    </section>
+        <label
+          >{P.labels.branchWord}<select
+            class="mono"
+            value={newSession.branch}
+            disabled={!newSession.repo || branchLoading}
+            onchange={(event) =>
+              onChangeSession("branch", event.currentTarget.value)}
+          >
+            {#if branchLoading}<option value=""
+                >{P.labels.loadingBranches}</option
+              >{:else if branches.length === 0}<option value="main">main</option
+              >{:else}{#each branches as branch}<option value={branch.name}
+                  >{branch.name}</option
+                >{/each}{/if}
+          </select></label
+        >
+      </div>
+      <button
+        class="launcher-submit"
+        type="submit"
+        disabled={!newSession.prompt.trim()}>{P.labels.submitTask}</button
+      >
+    </form>
+  </section>
 
   {#if view.engine_tier !== "absent"}
-
     {#each master.queues as queue}<div class="queue-line">
         {queue.name}
         {P.labels.queueWord}
