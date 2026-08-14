@@ -45,4 +45,33 @@ defmodule Embervm.K8sTest do
   # EndpointSlice discovery (endpoints_from_slices/2) was RETIRED in R0 PR-2:
   # noded instances dial home to /v1/nodes/register instead of being listed. The
   # registration path is exercised in node_registry_test.exs and router_test.exs.
+
+  describe "workloads_path/0" do
+    # The informer read the CLUSTER-WIDE collection while WorkloadWatcher keys
+    # its catalog on name alone, so two control planes collapsed same-named
+    # Workloads into one entry, last write wins, and each patched .status onto
+    # the other's CR. Namespaces already prevent that; the control plane was the
+    # only thing opting out of them.
+    #
+    # This asserts the mechanism rather than the symptom: a path without a
+    # /namespaces/<ns>/ segment is the bug, whatever names happen to be in use.
+    test "reads the collection scoped to a namespace, never cluster-wide" do
+      path = K8s.workloads_path()
+
+      assert path =~ ~r{^/apis/embervm\.dev/v1alpha1/namespaces/[^/]+/workloads$},
+             "expected a namespaced collection path, got #{inspect(path)}. A path " <>
+               "without a /namespaces/<ns>/ segment lists every Workload in the " <>
+               "cluster, which is what let a dev control plane patch status onto " <>
+               "production's CRs."
+
+      refute path == "/apis/embervm.dev/v1alpha1/workloads"
+    end
+
+    test "uses this pod's own namespace" do
+      # Outside a cluster the ServiceAccount namespace file is absent and
+      # namespace/0 falls back to "default", which is the value under test here.
+      # The point is that the path is DERIVED from it rather than hardcoded.
+      assert K8s.workloads_path() == "/apis/embervm.dev/v1alpha1/namespaces/#{K8s.namespace()}/workloads"
+    end
+  end
 end
