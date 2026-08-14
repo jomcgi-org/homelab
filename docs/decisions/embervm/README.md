@@ -103,7 +103,7 @@ current behaviour, not direction.
 | [025](025-local-disk-authoritative-s3-archive-interval.md) | Local disk authoritative; S3 archive; `archiveInterval`; planned drain | Draft |
 | [026](026-template-composition-gitops-registration.md) | Templates not stamps; GitOps without per-workload CRs; desired-set registration | Draft |
 | [027](027-snapshot-modes-workload-property.md) | Snapshot modes as a declared workload property (persistence flags, shared keyspace) | Draft |
-| [028](028-demand-loaded-rootfs-oci-chunk-store.md) | Demand-loaded rootfs: OCI ref as the interface, EROFS + content-defined chunk store, ublk presentation | Draft; supersedes 005 decision 3 (Pattern A) |
+| [028](028-demand-loaded-rootfs-oci-chunk-store.md) | Eager-local rootfs: OCI ref as the interface, EROFS + Account content-defined chunk store, ublk presentation | Accepted; supersedes 005 decision 3 (Pattern A) |
 | [029](029-parked-sessions-disk-bucket-not-cap.md) | Parked sessions bucket as disk, not against `concurrency.cap`; wake deliberately does not re-check the cap | Accepted; amends 016 decision 6 on the capacity-accounting axis only |
 | [030](030-lineage-decoupled-from-session-generation.md) | Lineage decoupled from session generation; `maxLifetimeSeconds` (6h) reaffirmed as a version-convergence bound; continuity via workspace adoption | Accepted; amends 027's quadrant description |
 | [031](031-health-signals-classified-by-time-to-impact.md) | Health signals classified by time-to-impact: immediate latch for platform-impact-now signals, >24h-sustained latch for maintenance-debt signals; both end in the health surface, not alert-only | Accepted; detector implementation tracked in #4338, not yet built |

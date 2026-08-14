@@ -3,6 +3,7 @@
 **Author:** jomcgi
 **Status:** Accepted
 **Created:** 2026-08-11
+**Amended by:** [ADR embervm/028](028-demand-loaded-rootfs-oci-chunk-store.md), which defines Account-scoped convergent encryption and sharing for immutable derived rootfs chunks only. Mutable artifacts covered here remain principal-scoped.
 **Relates to:** [ADR embervm/001](001-embervm-beam-firecracker-workload-orchestrator.md)
 (the no-cross-principal isolation invariant this decision extends to
 confidentiality), [ADR embervm/003](003-control-plane-managed-snapshot-distribution.md)
@@ -87,9 +88,10 @@ writing our own enumeration:
 All mutable principal state in the warmth and artifact store, memory
 snapshots, session bundles, and stateful volume archives, gets a unique
 data key per artifact, wrapped by a principal-scoped key-encrypting key
-(KEK). Shared immutable platform bases (OS, runtimes, the agent harness)
-stay plaintext and dedup-able; they carry no principal-specific state to
-protect and their whole value is being cheaply shared across principals.
+(KEK). Immutable rootfs chunks are a separate derived-data plane under ADR
+028: private chunks use Account-scoped convergent encryption and explicitly
+published platform chunks may deduplicate globally. Neither kind carries
+mutable VM state, and manifest mount authority remains principal-scoped.
 
 Mutable principal state never dedups across principals today, for lineage
 reasons: ARCHITECTURE.md section 5, invariant 3 already forbids it
@@ -151,16 +153,18 @@ elsewhere:
 - Request-scoped GitHub access via tool mediation, instead of host-keyed
   injection: [ADR agents/055](../agents/055-tool-mediated-github-access.md)
   (Draft).
-- The cross-principal dedup prohibition itself: ARCHITECTURE.md invariant
-  3, decided in [ADR embervm/001](001-embervm-beam-firecracker-workload-orchestrator.md).
-  This ADR extends it to confidentiality; it does not reopen it.
+- The cross-principal dedup prohibition for mutable state: ARCHITECTURE.md
+  invariant 3, decided in [ADR embervm/001](001-embervm-beam-firecracker-workload-orchestrator.md).
+  This ADR extends it to confidentiality. ADR 028 later narrows the wording for
+  immutable, reconstructable rootfs chunks without changing this decision's
+  mutable artifact boundary.
 
 ## Architecture
 
 ```mermaid
 graph LR
     subgraph store ["Warmth / artifact store"]
-        BASE[Shared immutable bases<br/>plaintext, dedup-able]
+        BASE[Immutable rootfs chunks<br/>ADR 028: Account-private<br/>or published platform]
         ART["Principal artifact<br/>(memory snapshot, session<br/>bundle, stateful volume)"]
     end
     KEK["Principal-scoped KEK<br/>platform-managed, or<br/>customer-managed in their KMS"]
@@ -181,7 +185,7 @@ graph LR
 | Adopt a generic cloud threat model (NIST, a cloud provider's shared-responsibility matrix) instead | Not shaped for the actor-multiplexing, warm-shared-worker-pod problem EmberVM and agent-substrate both attack; would not map onto threats like snapshot theft across actors or self-written snapshot escalation with anywhere near the same precision |
 | Leave data at rest protected by storage ACLs only (status quo) | Directly matches threats 23, 24, 25, 32, 36, 37, 39, 40 in agent-substrate's own enumeration; a compromised brick or an insider with bucket access reads any principal's full process state today |
 | A single platform-wide KEK rather than one KEK per principal | Makes every principal's data readable by anyone who can reach the one key; defeats the purpose of scoping encryption to the isolation boundary the rest of EmberVM already enforces |
-| Encrypt shared immutable bases too, not just mutable principal state | Bases carry no principal-specific state and their entire value is being cheaply deduped and shared; encrypting them buys no confidentiality and breaks the dedup property for no benefit |
+| Encrypt every immutable base independently per principal | Duplicates the same derived apko content and breaks useful sharing. ADR 028 instead encrypts private chunks deterministically at Account scope and permits a provenance-gated platform universe |
 | Storage-ACL restore authorization (bucket read implies restore allowed) | The exact gap this decision closes: an object-store credential is not a statement about which principal, lineage, brick, workload, generation, or lease is authorized right now, so it authorizes strictly more than intended |
 | RAM scrubbing as the decryption-capability revocation mechanism | Already rejected elsewhere in EmberVM's design for the same reason it would fail here: revocation is enforced at the validator, not by attempting to erase key material from memory after the fact |
 
