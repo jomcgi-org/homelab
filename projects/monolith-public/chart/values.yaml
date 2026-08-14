@@ -98,13 +98,13 @@ chatPublic:
   maxSessionTokens: 32000
   # Session / cookie TTL in seconds (the SSR cookie maxAge mirrors this).
   sessionTtlSeconds: 1800
-  # CLUSTER-WIDE ceiling: max in-flight public inference calls at once across ALL
-  # replicas (ADR 005 layer 2+3). Enforced via Postgres advisory locks, not a
-  # per-pod counter, so it holds as the backend scales out. vLLM max_num_seqs=8,
-  # public is capped here at 2, leaving the rest for trusted callers (grimoire
-  # extraction, Discord, private chat, agents). Mirrored as
-  # CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT on web.env below.
-  globalMaxConcurrent: 2
+  # NOTE: the public concurrency ceiling is NOT set here. It lives solely as
+  # CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT on web.env below, because values.yaml
+  # cannot reference its own keys and web.env is a literal list. A
+  # `globalMaxConcurrent` key used to sit here describing itself as "mirrored"
+  # to that env, but nothing rendered it: it was referenced by no template in
+  # the repo, so editing it changed nothing while reading exactly like the live
+  # knob. Removed rather than wired, so there is one place to change.
   # Turnstile siteverify HTTP timeout (seconds): keep short so a slow/unreachable
   # Cloudflare fails closed quickly. Mirrored as TURNSTILE_TIMEOUT_SECONDS below.
   turnstileTimeoutSeconds: 5
@@ -294,10 +294,20 @@ web:
       value: "1800"
     # CLUSTER-WIDE cap on concurrent public inference calls (not per-pod): the
     # limiter is enforced via Postgres advisory locks, so this is the aggregate
-    # ceiling across ALL replicas. vLLM max_num_seqs=8; public is capped at 2,
-    # leaving the rest for trusted callers (grimoire, Discord, private, agents).
+    # ceiling across ALL replicas (ADR 005 layer 2+3). This is the ONLY place the
+    # ceiling is set.
+    #
+    # Resized 2 -> 1 with the engine change. The old value was sized against
+    # vLLM's 8 decode slots, where 2 was a small slice. The in-cluster engine is
+    # now llama.cpp with 3 slots (Qwen3.8-27B is a dense 27B and each 32k slot
+    # costs a full GiB of VRAM), so 2 would hand untrusted public traffic two
+    # thirds of the GPU and leave one slot for Discord, private chat and agents
+    # combined. This is an abuse boundary rather than a latency knob, so it does
+    # not follow the "sync callers are uncapped" policy that trusted interactive
+    # callers get: the point is that anonymous traffic cannot crowd out the
+    # people the GPU is for. Keep it proportional if slot count changes again.
     - name: CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT
-      value: "2"
+      value: "1"
     # Shared vLLM endpoint for public-chat inference (ADR 005 layer 6 / Phase 3).
     # In-cluster service URL literal (NOT a secret); mirrors chatPublic.inferenceUrl
     # above (Helm values cannot self-reference). The backend refuses to call

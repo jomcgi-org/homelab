@@ -60,10 +60,20 @@ SESSION_TTL_SECONDS = int(os.environ.get("CHAT_PUBLIC_SESSION_TTL_SECONDS", "180
 # the single-process fallback for the SQLite dev/test path.
 #
 # SIZING RULE (reserved-headroom): public aggregate in-flight inference is capped
-# at GLOBAL_MAX_CONCURRENT across ALL pods, and the remaining vLLM decode slots
-# are left for trusted callers (grimoire extraction, Discord, private chat,
-# agents). Today max_num_seqs=8 and public is capped at 2.
-GLOBAL_MAX_CONCURRENT = int(os.environ.get("CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT", "2"))
+# at GLOBAL_MAX_CONCURRENT across ALL pods, and the remaining decode slots are
+# left for trusted callers (Discord, private chat, agents, grimoire extraction).
+# The in-cluster engine is llama.cpp with 3 slots, so public is capped at 1.
+#
+# Keep this proportional if the slot count changes. It is an abuse boundary, not
+# a latency knob, so it deliberately does NOT follow the "synchronous callers are
+# uncapped" policy that trusted interactive traffic gets: public chat is
+# synchronous too, and the point is precisely that anonymous traffic cannot crowd
+# out the people the GPU exists for.
+#
+# Production always sets the env explicitly (monolith-public chart, web.env), so
+# this default governs dev and test only. It is kept in step with the chart so
+# the two cannot tell different stories about what the ceiling is.
+GLOBAL_MAX_CONCURRENT = int(os.environ.get("CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT", "1"))
 
 # Advisory-lock namespace (classid) for the GPU limiter. A stable app-specific
 # magic so these locks never collide with any other advisory lock; the objid is
