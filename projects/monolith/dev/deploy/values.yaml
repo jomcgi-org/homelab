@@ -11,7 +11,17 @@
 # production, at which point dev stops rehearsing what you are about to promote
 # and becomes its own configuration with its own bugs. The leaderSingletons
 # switch below already stops every side effect those features would produce,
-# while leaving their routes, models and migrations identical to prod.
+# while leaving their routes and migrations identical to prod.
+#
+# MODELS ARE THE ONE DELIBERATE EXCEPTION, and this paragraph used to promise
+# the opposite. Dev points every model at the in-cluster Qwen so that
+# exercising it costs nothing: the point of dev is running synthetics and
+# poking at behaviour without spending on a metered or subscription provider.
+# This is a values choice, not a guard. Nothing rejects a paid model here, so
+# a NEW model-consuming feature has to be pointed at the free lane in this
+# file too, or dev will quietly inherit production's provider. See issue #4859
+# for the console's offered list, which is still a bundle literal and so is
+# NOT covered by anything in this file.
 
 backend:
   # THE side-effect mute. One switch covers all five leader singletons (Discord
@@ -125,3 +135,58 @@ whatsapp:
 # own gate while leaving ARGO_JOBS populated, so dev runs them nowhere.
 jobs:
   image: ""
+
+# EVERY MODEL IN DEV POINTS AT THE IN-CLUSTER QWEN.
+#
+# Three separate settings reach a provider from this deployment, and each one
+# is metered or subscription-funded in production. Dev exists to be poked at
+# cheaply, so all three go to inference.inference.svc.cluster.local, which is
+# the homelab's own GPU and costs nothing per token.
+#
+# The list is not self-maintaining. A new model-consuming feature lands with
+# production's provider as its chart default and inherits it here unless
+# someone adds a line. That is the tradeoff of configuring rather than
+# enforcing (issue #4860 closed on exactly that reasoning): there is no
+# rejection, only these values.
+
+# Brief compiler (ADR 036). Production runs Nemotron primary with a DeepSeek
+# hop and only falls back to in-cluster Qwen as its LAST resort. Dev collapses
+# that to the last resort alone: no primary worth failing over FROM, so the
+# fallback list is empty rather than carrying a paid hop that would be reached
+# on the first timeout.
+#
+# apiKeySecretKey stays pointed at a real field on purpose. Blanking it is the
+# inverted-guard trap: a blank key is a fail-closed DENY in the egress catalog
+# while REMOVING an entry is an uncredentialed pass-through, and neither is
+# what "talk to the cluster's own GPU" means. The in-cluster endpoint ignores
+# the key it is handed.
+orchestrator:
+  model: "qwen3.6-27b"
+  baseUrl: "http://inference.inference.svc.cluster.local:8080/v1"
+  fallbacks: []
+
+# Grimoire extraction. Production calls DeepSeek directly (first-party, native
+# precision, prompt cache preserved), which is metered per token.
+#
+# Inert in dev today because jobs.image is blank above, so the extract
+# CronWorkflow never runs. Set anyway: "inert" is a property of a DIFFERENT
+# line in this file, and if that line ever changes this one should already be
+# right rather than discovered wrong by a bill.
+grimoire:
+  extractModel: "qwen3.6-27b"
+  extractBaseUrl: "http://inference.inference.svc.cluster.local:8080/v1/chat/completions"
+
+# Swarm run lane. luna is Codex-billed and opus is subscription-billed.
+#
+# Also inert today, for a different reason again: leaderSingletons above keeps
+# DBOS from launching, so every run endpoint 503s in dev and no implementer is
+# ever dispatched. Enabling dev's run lane is a separate design fork about the
+# nightly refresh importing production's queue tables, tracked separately.
+#
+# reviewerModel moves here too, which production must NEVER do: ADR 038
+# decision 5 floors review at Opus because a review is assessable only by
+# reading. Dev is not gating a real merge, so the floor buys nothing and a
+# subscription-billed reviewer on a throwaway run buys less.
+swarm:
+  implementerModel: "qwen"
+  reviewerModel: "qwen"
