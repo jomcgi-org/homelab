@@ -3,6 +3,17 @@ kind: Application
 metadata:
   name: embervm
   namespace: argocd
+  annotations:
+    # Opts production in to Kargo promotion. See the equivalent comment in
+    # dev/deploy/application.yaml for why this guard exists and what its
+    # absence looks like (an Errored Promotion and nothing else complaining).
+    #
+    # Carrying this is NOT what makes production promote automatically. The
+    # embervm prod Stage sets autoPromotion: false, so promotion here is a
+    # deliberate click: every prod roll rebuilds each brick's guest rootfs and
+    # spends unreclaimed master scratch (#4364). This annotation only says the
+    # click is allowed to take effect.
+    kargo.akuity.io/authorized-stage: kargo-embervm:prod
 spec:
   project: default
   sources:
