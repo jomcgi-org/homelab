@@ -44,9 +44,18 @@ defmodule Embervm.SpecTrace.Checker do
 
   5. **PrimeBeforeCheckpoint** — every vm_id in a `checkpoint` inventory set
      has a preceding `prime` or `adopt_inventory` in the run.
+
+  8. **EventuallyDispatched** (bounded liveness) — a task queued at checkpoint
+     N must be assigned or succeeded by checkpoint N+K if inventory persists
+     across the window.
   """
 
   alias Embervm.SpecTrace.Store
+
+  # Two consecutive sweep intervals are enough to distinguish a dispatch
+  # restart wedge from normal sweep timing, while keeping the trace-only
+  # invariant bounded by the checkpoints it can observe.
+  @eventually_dispatched_k 2
 
   @spec invariants() :: list(atom())
   def invariants do
@@ -57,7 +66,8 @@ defmodule Embervm.SpecTrace.Checker do
       :health_monotonic,
       :prime_before_checkpoint,
       :destroy_intent_precedes_record,
-      :no_destroy_before_confirm
+      :no_destroy_before_confirm,
+      :eventually_dispatched
     ]
   end
 
@@ -92,6 +102,7 @@ defmodule Embervm.SpecTrace.Checker do
   defp check_invariant(:adopt_idempotent, records), do: check_adopt_idempotent(records)
   defp check_invariant(:health_monotonic, records), do: check_health_monotonic(records)
   defp check_invariant(:prime_before_checkpoint, records), do: check_prime_before_checkpoint(records)
+  defp check_invariant(:eventually_dispatched, records), do: check_eventually_dispatched(records)
 
   defp check_invariant(:destroy_intent_precedes_record, records),
     do: check_destroy_intent_precedes_record(records)
@@ -492,6 +503,90 @@ defmodule Embervm.SpecTrace.Checker do
             prime_before_checkpoint_verdict(issues, checkpoints)
         end
     end
+  end
+
+  defp check_eventually_dispatched(records) do
+    checkpoints = Enum.filter(records, &(&1["action"] == "checkpoint"))
+    dispatches = Enum.filter(records, &(&1["action"] in ["dispatch_warm", "dispatch_miss"]))
+
+    cond do
+      checkpoints == [] ->
+        eventually_dispatched_vacuous(0, "no checkpoint records in trace")
+
+      # NO early return on `dispatches == []`. That would short-circuit the
+      # single most important case this invariant exists for: a control plane
+      # that wedges from boot has inventory and ZERO dispatches for its whole
+      # trace, and reporting that vacuous is the safety-property failure all
+      # over again. Zero dispatches with persistent inventory is the wedge, and
+      # the window scan below is what says so. Zero dispatches with NO inventory
+      # is idle, and the empty-window guard reports that vacuous.
+
+      length(checkpoints) < @eventually_dispatched_k + 1 ->
+        # VACUOUS, not pass. A dispatch somewhere in a too-short trace is not
+        # evidence that liveness held: the window this invariant is defined over
+        # cannot be formed, so nothing was checked. Reporting pass here with
+        # `coverage: 0` is precisely the verdict-without-a-denominator overclaim
+        # the moduledoc forbids.
+        eventually_dispatched_vacuous(
+          0,
+          "fewer than #{@eventually_dispatched_k + 1} checkpoints, so no bounded window could be formed"
+        )
+
+      true ->
+        parsed = Enum.map(checkpoints, fn checkpoint ->
+          {checkpoint, elem(checkpoint_vm_ids(checkpoint), 1)}
+        end)
+
+        windows = Enum.chunk_every(parsed, @eventually_dispatched_k + 1, 1, :discard)
+
+        examined = Enum.filter(windows, fn window ->
+          Enum.all?(window, fn {_checkpoint, vm_ids} -> vm_ids != [] end)
+        end)
+
+        violations = Enum.filter(examined, fn window ->
+          [first | _] = window
+          {last, _last_vm_ids} = List.last(window)
+          first_mono = elem(first, 0)["mono"]
+          last_mono = last["mono"]
+
+          not Enum.any?(dispatches, fn dispatch ->
+            dispatch["mono"] >= first_mono and dispatch["mono"] <= last_mono
+          end)
+        end)
+
+        cond do
+          examined == [] ->
+            eventually_dispatched_vacuous(length(windows), "no window had persistent inventory")
+
+          violations != [] ->
+            %{
+              invariant: :eventually_dispatched,
+              verdict: :fail,
+              coverage: length(examined),
+              oracle: :trace_only,
+              detail: "#{length(violations)} of #{length(examined)} persistent-inventory windows had no dispatch"
+            }
+
+          true ->
+            %{
+              invariant: :eventually_dispatched,
+              verdict: :pass,
+              coverage: length(examined),
+              oracle: :trace_only,
+              detail: "every persistent-inventory window contained a dispatch"
+            }
+        end
+    end
+  end
+
+  defp eventually_dispatched_vacuous(coverage, detail) do
+    %{
+      invariant: :eventually_dispatched,
+      verdict: :vacuous,
+      coverage: coverage,
+      oracle: :trace_only,
+      detail: detail
+    }
   end
 
   # Returns {entries_declared, vm_ids}. The declared count is what makes an
