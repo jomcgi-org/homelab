@@ -252,7 +252,15 @@ def _set_task_link_sync(task_id: str, **links) -> None:
 def _update_task_inputs_sync(
     task_id: str, repo: str | None, branch: str | None
 ) -> None:
-    """Fill in the repository inputs on a task being resubmitted."""
+    """Fill in the repository inputs on a task being resubmitted.
+
+    `task_id` arrives from the client, so this narrows what a resubmission
+    may touch rather than trusting the id. Only a task that is still
+    awaiting its inputs qualifies: one with no repo recorded and nothing
+    started against it. That keeps the field editable for exactly the
+    round trip it exists for, and makes a stale or wrong id a 400 instead
+    of a silent write to somebody else's row.
+    """
     from core.db import get_engine
     from sqlmodel import Session
     from swarm.models import SwarmTask
@@ -261,6 +269,8 @@ def _update_task_inputs_sync(
         row = db.get(SwarmTask, task_id)
         if row is None:
             raise ValueError(f"Unknown swarm task {task_id}")
+        if row.repo or row.workflow_id or row.session_id:
+            raise ValueError(f"Swarm task {task_id} is not awaiting inputs")
         row.repo = repo
         row.base_branch = branch
         db.add(row)
