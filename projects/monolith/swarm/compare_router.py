@@ -167,8 +167,17 @@ async def compare_stats(session_id: int, turn_seq: int) -> dict:
             compare = await _compare(repo, "main", branch, f"branch:{branch}")
 
     paths = {item["path"] for item in compare["files"]}
+    # The cross-check is only meaningful against a diff we actually resolved.
+    # At rung 3 there is no compare, so `paths` is empty because nothing was
+    # fetched, not because the agent changed nothing. Differencing against it
+    # would report every path the agent named as contradicted and every
+    # changed file as explained, which states the opposite of the truth in
+    # both directions (issue #4817). Absence of evidence is not a finding:
+    # omit both halves and let `cross_checked` say the check did not run.
+    cross_checked = resolution_rung in (1, 2)
     result = {
         "resolution_rung": resolution_rung,
+        "cross_checked": cross_checked,
         "diff_type": diff_type,
         "base_sha": base_sha,
         "commit_sha": commit_sha,
@@ -187,8 +196,14 @@ async def compare_stats(session_id: int, turn_seq: int) -> dict:
         },
         "trailer_parsed": rationale.get("parse_status") == "parsed",
         "authored_file_paths": sorted(authored),
-        "unexplained_files": sorted(paths - trailer_paths),
-        "contradicted_paths": sorted(trailer_paths - paths),
+        **(
+            {
+                "unexplained_files": sorted(paths - trailer_paths),
+                "contradicted_paths": sorted(trailer_paths - paths),
+            }
+            if cross_checked
+            else {}
+        ),
     }
     if activities_truncated:
         result["activities_truncated"] = True
