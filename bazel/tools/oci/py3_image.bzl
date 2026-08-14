@@ -78,9 +78,17 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
         extra_tars_arm64.append(tar_base + "_arm64")
 
     if multi_platform:
-        # Build AMD64 image
+        # Build AMD64 image.
+        #
+        # tags = ["manual"]: this target and the transitioned filegroup below
+        # are the same work in two configurations, and `bazel test //...`
+        # expands to both, so each base was assembled twice. `manual` removes
+        # it from wildcard expansion only; the filegroup still depends on it.
+        # Same defect as apko_image.bzl, though cheaper here because oci_image
+        # is remotely executable where the apko action is `no-remote-exec`.
         oci_image(
             name = name + "_base_amd64",
+            tags = ["manual"],
             base = base,
             tars = py_image_layer(
                 name = name + "_layers_amd64",
@@ -98,9 +106,10 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
             target_platform = "//bazel/tools/platforms:linux_x86_64",
         )
 
-        # Build ARM64 image
+        # Build ARM64 image. See the amd64 base above for why this is manual.
         oci_image(
             name = name + "_base_arm64",
+            tags = ["manual"],
             base = base,
             tars = py_image_layer(
                 name = name + "_layers_arm64",

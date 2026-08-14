@@ -113,12 +113,31 @@ def apko_image(
     # no-tars case is just the general path with tars = [].
 
     # Create the amd64 base image (always built).
+    #
+    # tags = ["manual"] is load-bearing, not tidiness. This target and the
+    # transitioned filegroup below wrap the SAME apko action in two different
+    # configurations (`k8-fastbuild` here, `linux_amd64` after the transition),
+    # and the action key includes the output root, so they are two distinct
+    # actions doing byte-identical work. Only the transitioned one is reachable
+    # from :{name}, but `bazel test //...` expands to this target too, so every
+    # apko base was being built TWICE per arch on every run: same label, same
+    # layer digest, overlapping wall clock. Observed in invocation
+    # e687c0c6 on 2026-08-14, where semgrep/guest/image_base_amd64 ran at
+    # 04:14:41 and again at 04:14:56, both emitting sha256:19aaf6a6...
+    #
+    # This is expensive rather than merely wasteful: rules_apko sets
+    # `no-remote-exec`, so these run on the workflow runner's 6 vCPUs rather
+    # than on RBE, and they own the critical path of a cold run. `manual` only
+    # removes a target from wildcard EXPANSION, so the transitioned filegroup
+    # still pulls it in as a dependency and :{name} is unaffected.
+    # domain_images.bzl already does this for the same reason.
     _apko_image(
         name = name + "_base_amd64",
         architecture = "x86_64",
         config = config,
         contents = contents,
         tag = "latest",
+        tags = ["manual"],
     )
 
     # Transition the base image to its target platform
@@ -130,12 +149,14 @@ def apko_image(
     )
 
     if arm64:
+        # See the amd64 base above for why this is manual.
         _apko_image(
             name = name + "_base_arm64",
             architecture = "aarch64",
             config = config,
             contents = contents,
             tag = "latest",
+            tags = ["manual"],
         )
 
         platform_transition_filegroup(

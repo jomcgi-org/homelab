@@ -16,7 +16,20 @@ actions:
     container_image: "ubuntu-24.04"
     max_retries: 1
     resource_requests:
-      cpu: "6"
+      # 8, not 6, because the images apko builds are `no-remote-exec`
+      # (rules_apko sets it), so they run HERE rather than on RBE and their
+      # concurrency is capped by this number, not by --jobs=80. They own the
+      # critical path of a cold run: in invocation e687c0c6 only 75 of 21988
+      # actions executed and 68 of those were apko, spanning 04:10:49 to
+      # 04:16:13 of a 04:10:45 to 04:16:15 execution phase.
+      #
+      # Raising this INVALIDATES EVERY EXISTING SNAPSHOT for the action:
+      # resource_requests becomes the EstimatedCPU / EstimatedMemory /
+      # EstimatedFreeDisk / EstimatedComputeUnits platform properties
+      # (workflow service createActionForWorkflow), and the snapshot key hashes
+      # the platform properties. So change it deliberately and rarely, never as
+      # iterative tuning: each edit costs one cold run on every active branch.
+      cpu: "8"
       memory: "10GB"
       disk: "120GB"
     # Full history, and the SAME depth on both actions. 0 means unlimited; the
@@ -266,7 +279,8 @@ actions:
     container_image: "ubuntu-24.04"
     max_retries: 1
     resource_requests:
-      cpu: "6"
+      # See pr-checks for why 8 and for the snapshot-invalidation cost.
+      cpu: "8"
       memory: "10GB"
       disk: "120GB"
     # See pr-checks. Both actions MUST carry the same value.
