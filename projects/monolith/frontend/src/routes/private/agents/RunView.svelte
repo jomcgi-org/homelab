@@ -203,34 +203,14 @@
       {/each}
     </div>
     {#if run.disposition}<div class="disposition" data-register="fact">
-        <div class="disposition-state">{run.disposition.state}</div>
+        <div class="disposition-state">
+          {P.dispositionStates[run.disposition.state] ?? run.disposition.state}
+        </div>
         <div>{run.disposition.reason}</div>
         {#if run.disposition.next}<div class="disposition-next">
             {run.disposition.next}
           </div>{/if}
       </div>{/if}
-    {#if run.events?.length}<section
-        class="narrative-rail"
-        aria-label="Run narrative"
-      >
-        <div class="stage-head">Run narrative</div>
-        {#each run.events as event}
-          <article
-            class={`narrative-event register-${event.register}`}
-            data-register={event.register}
-          >
-            <div class="narrative-meta">
-              <span class="register-tag">{event.register}</span>
-              {event.at ?? "time unavailable"}
-            </div>
-            {#if event.register === "testimony"}
-              <blockquote>{event.text}</blockquote>
-            {:else}
-              <div>{event.text}</div>
-            {/if}
-          </article>
-        {/each}
-      </section>{/if}
     {#if run.deviations?.length}<div class="deviations" data-register="fact">
         <div class="stage-head">{P.labels.deviations}</div>
         {#each run.deviations as deviation}<div class="deviation-text">

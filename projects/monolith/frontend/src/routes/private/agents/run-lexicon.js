@@ -163,7 +163,6 @@ export const RUN_LEXICON = {
     budget_exceeded: "budget exceeded",
     attempts_exhausted: "attempts exhausted",
     model_mismatch: "model mismatch",
-    verdict_not_approve: "verdict",
   },
   eventWords: {
     started: "started",
@@ -180,6 +179,7 @@ export const RUN_LEXICON = {
     escalated: "escalated, awaiting decision",
     cancelled: "cancelled",
     review_cycles_exhausted: "review cycles exhausted, awaiting decision",
+    gated: "waiting at a gate",
   },
   verdictCodes: {
     approve: "approved",

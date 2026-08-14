@@ -219,8 +219,7 @@
   border-top: 1px solid var(--line);
   padding-top: 12px;
 }
-.disposition,
-.narrative-rail {
+.disposition {
   margin-top: 14px;
   border-top: 1px solid var(--line);
   padding-top: 10px;
@@ -238,29 +237,6 @@
 .disposition-next {
   color: var(--muted);
   margin-top: 4px;
-}
-.narrative-event {
-  border-left: 2px solid var(--line-strong);
-  margin: 0 0 8px 4px;
-  padding: 6px 0 6px 10px;
-  color: var(--text-soft);
-  font-size: var(--size-detail);
-}
-.narrative-event.register-testimony {
-  border-left-color: var(--attn);
-}
-.narrative-meta {
-  color: var(--muted);
-  display: flex;
-  gap: 8px;
-  font: var(--size-meta) var(--font-mono);
-  margin-bottom: 3px;
-}
-.narrative-event blockquote {
-  border-left: 0;
-  color: var(--text);
-  margin: 0;
-  white-space: pre-wrap;
 }
 .verdict-text {
   color: var(--text-soft);
