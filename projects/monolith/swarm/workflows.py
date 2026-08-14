@@ -5,10 +5,12 @@ import logging
 from dbos import DBOS
 
 from swarm.policy import (
-    implementer_prompt,
+    implementer_prompt,  # noqa: F401 - retained for policy seam compatibility
+    implementer_prompt_parts,
     next_action,
     parse_review_verdict,
-    reviewer_prompt,
+    reviewer_prompt,  # noqa: F401 - retained for policy seam compatibility
+    reviewer_prompt_parts,
     work_branch,
 )
 from swarm.queues import codex_queue
@@ -112,6 +114,27 @@ def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
     return None
 
 
+def _record_turn_intent(session_id: int, turn: dict | None, intent: str) -> None:
+    if turn is None:
+        return
+    try:
+        from agent_sessions import store as agent_store
+        from core.db import get_engine
+        from sqlmodel import Session
+
+        with Session(get_engine()) as db_session:
+            agent_store.update_turn_prompt_intent(
+                db_session, session_id, turn["seq"], intent
+            )
+    except Exception:  # noqa: BLE001 - recording is best effort
+        logger.warning(
+            "failed to record turn intent for session %s seq %s",
+            session_id,
+            turn["seq"],
+            exc_info=True,
+        )
+
+
 def _escalated(
     attempt: int,
     session_id: int | None,
@@ -178,9 +201,12 @@ def implement_then_review(
     while attempt < max_attempts:
         attempt += 1
         prior_sha = read_branch_head(repo, branch_name)
+        impl_intent, impl_protocol = implementer_prompt_parts(
+            task, branch_name, previous_failure
+        )
         implementer_session_id = _queued_session(
             session_key(f"implement-{attempt}"),
-            implementer_prompt(task, branch_name, previous_failure),
+            f"{impl_intent}\n{impl_protocol}",
             plan["implementer_model"],
             repo,
             branch,
@@ -192,6 +218,7 @@ def implement_then_review(
             implementer_session_id, 0, plan["turn_timeout_seconds"]
         )
         total_cost += _cost(implementer_turn)
+        _record_turn_intent(implementer_session_id, implementer_turn, impl_intent)
         head_sha = read_branch_head(repo, branch_name)
         base_sha = prior_sha
         if implementer_turn is not None:
@@ -263,9 +290,12 @@ def implement_then_review(
         # Every reviewer gets a FRESH session (ADR 038 decision 3), and each
         # review node starts at node_attempt 1. The implementer's workspace is
         # never handed to the reviewer.
+        reviewer_intent, reviewer_protocol = reviewer_prompt_parts(
+            task, branch_name, commit_sha
+        )
         reviewer_session_id = _queued_session(
             session_key(f"review-{review_cycles + 1}"),
-            reviewer_prompt(task, branch_name, commit_sha),
+            f"{reviewer_intent}\n{reviewer_protocol}",
             plan["reviewer_model"],
             repo,
             branch,
@@ -277,6 +307,7 @@ def implement_then_review(
             reviewer_session_id, 0, plan["turn_timeout_seconds"]
         )
         total_cost += _cost(reviewer_turn)
+        _record_turn_intent(reviewer_session_id, reviewer_turn, reviewer_intent)
         verdict = parse_review_verdict(
             reviewer_turn.get("result_text") if reviewer_turn else None
         )
@@ -288,13 +319,14 @@ def implement_then_review(
             )
             prior_sha = read_branch_head(repo, branch_name)
             attempt += 1
+            impl_intent, impl_protocol = implementer_prompt_parts(
+                task,
+                branch_name,
+                review_feedback=review_feedback,
+            )
             implementer_session_id = _queued_session(
                 session_key(f"implement-{attempt}"),
-                implementer_prompt(
-                    task,
-                    branch_name,
-                    review_feedback=review_feedback,
-                ),
+                f"{impl_intent}\n{impl_protocol}",
                 plan["implementer_model"],
                 repo,
                 branch,
@@ -306,6 +338,7 @@ def implement_then_review(
                 implementer_session_id, 0, plan["turn_timeout_seconds"]
             )
             total_cost += _cost(implementer_turn)
+            _record_turn_intent(implementer_session_id, implementer_turn, impl_intent)
             head_sha = read_branch_head(repo, branch_name)
             base_sha = prior_sha
             if implementer_turn is not None:

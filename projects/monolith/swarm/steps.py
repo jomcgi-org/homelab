@@ -85,6 +85,7 @@ def poll_turn(session_id: int, after_seq: int) -> dict | None:
             return None
         return {
             "seq": turn.seq,
+            "prompt_intent": turn.prompt_intent,
             "result_text": turn.result_text,
             "terminal_reason": turn.terminal_reason,
             "cost_usd": turn.cost_usd,
