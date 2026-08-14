@@ -133,6 +133,27 @@ def create_task(
     return row
 
 
+def update_task_links(
+    task_id: str,
+    *,
+    workflow_id: str | None = None,
+    session_id: int | None = None,
+    session: Session | None = None,
+) -> SwarmTask:
+    with _session(session) as db:
+        row = db.get(SwarmTask, task_id)
+        if row is None:
+            raise ValueError(f"Unknown swarm task {task_id}")
+        if workflow_id is not None:
+            row.workflow_id = workflow_id
+        if session_id is not None:
+            row.session_id = session_id
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+
 def append_plan_version(
     task_id: str,
     version: int,

@@ -10,17 +10,14 @@
     master,
     activity = [],
     newSession = { prompt: "", model: "", repo: "", branch: "" },
-    newRun = { budget: "", idempotencyKey: "" },
     repos = [],
     branches = [],
     repoLoading = false,
     branchLoading = false,
     modelPicker,
     onChangeSession = () => {},
-    onChangeRun = () => {},
     onLoadBranches = () => {},
-    onCreateSession = () => {},
-    onCreateRun = () => {},
+    onCreateTask = () => {},
     onSelectRun = () => {},
     onSelectSession = () => {},
     relativeTime = () => "unknown",
@@ -34,7 +31,6 @@
   // This is intentionally seven days. The sidebar's RECENT_HISTORY_MS is a
   // 24-hour navigation convenience, while this is the home activity summary.
   const RECENT_ACTIVITY_MS = 7 * 24 * 60 * 60 * 1000;
-  let mode = $state("session");
   const recentAll = $derived(
     activity
       .map((item) => ({ ...item, at: activityAt(item) }))
@@ -74,12 +70,11 @@
       : item.value?.title ||
           item.value?.prompt ||
           item.value?.local_session_id ||
-          P.labels.sessionWord;
+          P.labels.session;
   }
 
   function submit() {
-    if (mode === "run") onCreateRun();
-    else onCreateSession();
+    onCreateTask();
   }
 </script>
 
@@ -114,20 +109,6 @@
     <section class="launcher" aria-label={P.labels.launcherLabel}>
       <div class="launcher-head">
         <span class="col-label">{P.labels.launcherHeading}</span>
-        <!-- Transitional until issue #4781 stage 1: the conductor model
-             router does not exist yet. The target design is one task box. -->
-        <div class="mode-toggle" role="group" aria-label={P.labels.mode}>
-          <button
-            class:on={mode === "session"}
-            type="button"
-            onclick={() => (mode = "session")}>{P.labels.sessionMode}</button
-          >
-          <button
-            class:on={mode === "run"}
-            type="button"
-            onclick={() => (mode = "run")}>{P.labels.runMode}</button
-          >
-        </div>
       </div>
       <form
         onsubmit={(event) => {
@@ -172,10 +153,7 @@
               }}
             >
               {#if repoLoading}<option value="">{P.labels.loadingRepos}</option
-                >{:else}<option value=""
-                  >{mode === "run"
-                    ? P.labels.selectRepo
-                    : P.labels.scratchWorkspace}</option
+                >{:else}<option value="">{P.labels.scratchWorkspace}</option
                 >{#each repos as repo}<option value={repo.id}>{repo.id}</option
                   >{/each}{/if}
             </select></label
@@ -197,25 +175,11 @@
                   >{/each}{/if}
             </select></label
           >
-          {#if mode === "run"}<label
-              >{P.labels.budgetWord}<input
-                type="number"
-                min="0"
-                step="0.01"
-                value={newRun.budget}
-                oninput={(event) =>
-                  onChangeRun("budget", event.currentTarget.value)}
-              /></label
-            >{/if}
         </div>
         <button
           class="launcher-submit"
           type="submit"
-          disabled={!newSession.prompt.trim() ||
-            (mode === "run" && (!newSession.repo || !newSession.branch))}
-          >{mode === "run"
-            ? P.labels.launcherStartRun
-            : P.labels.launcherStartSession}</button
+          disabled={!newSession.prompt.trim()}>{P.labels.submitTask}</button
         >
       </form>
     </section>
@@ -297,7 +261,6 @@
 <style>
   .m-row,
   .att-row,
-  .mode-toggle button,
   .launcher-submit,
   .activity-row {
     color: inherit;
@@ -352,17 +315,6 @@
     display: grid;
     gap: 4px;
     font-size: var(--size-meta);
-  }
-  .mode-toggle {
-    display: flex;
-    border: 1px solid var(--line-strong);
-  }
-  .mode-toggle button {
-    padding: 4px 8px;
-    font-size: var(--size-meta);
-  }
-  .mode-toggle button.on {
-    background: var(--hover);
   }
   .launcher-submit {
     margin-top: 10px;
