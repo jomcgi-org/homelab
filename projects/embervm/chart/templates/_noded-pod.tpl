@@ -469,7 +469,17 @@ volumes:
   - name: nvme
     hostPath:
       path: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
-      type: Directory
+      # Directory (the default) is a GUARD, not a formality: if the NVMe is not
+      # mounted, the pod fails to start rather than silently creating the path on
+      # the node's ROOT filesystem and filling it with multi-GB base images.
+      # Production must keep it.
+      #
+      # DirectoryOrCreate is for a path UNDER an already-mounted parent, where
+      # the mount is guaranteed by the parent's existence and only the leaf needs
+      # creating. embervm-dev uses that shape: scratch/dev under node-4's NVMe,
+      # so it inherits the NVMe's capacity rather than living uncapped on root
+      # (ADR 012's uniform cap, and #4832).
+      type: {{ $ctx.Values.noded.firecracker.nvmeRootHostPathType | default "Directory" }}
   {{- if $ctx.Values.workloads }}
   - name: rootfs-builder-script
     configMap:
