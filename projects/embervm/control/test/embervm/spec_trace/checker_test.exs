@@ -616,6 +616,61 @@ defmodule Embervm.SpecTrace.CheckerTest do
     end
   end
 
+  describe "the moduledoc and invariants/0 agree" do
+    # #4802 is about lists that must agree and are kept in sync by hand, where
+    # disagreement reports green rather than erroring. Both router sites now read
+    # `invariants/0`, so the code copies are gone, but the prose copy in the
+    # moduledoc survived and immediately drifted: it documented 6 of the 8 and
+    # numbered the last one 8, which is what a reader consults to learn what the
+    # endpoint covers. An operator reading it during an incident would conclude
+    # the destroy ordering is not checked at all.
+    #
+    # Deriving the expected heading from the atom is the point. A hand-written
+    # list of expected headings here would be a FIFTH copy, drifting the same way.
+    test "every invariant in invariants/0 has a moduledoc entry" do
+      {:docs_v1, _, _, _, %{"en" => moduledoc}, _, _} = Code.fetch_docs(Checker)
+
+      undocumented =
+        Enum.reject(Checker.invariants(), fn invariant ->
+          heading =
+            invariant
+            |> Atom.to_string()
+            |> String.split("_")
+            |> Enum.map_join(&String.capitalize/1)
+
+          String.contains?(moduledoc, "**#{heading}**")
+        end)
+
+      assert undocumented == [],
+             "invariants evaluated but not documented: #{inspect(undocumented)}"
+    end
+
+    # The other direction. A heading with no invariant behind it is the same
+    # defect read backwards: the moduledoc promises a check the endpoint never
+    # runs, and nothing fails because prose cannot fail.
+    test "every moduledoc entry is an invariant invariants/0 evaluates" do
+      {:docs_v1, _, _, _, %{"en" => moduledoc}, _, _} = Code.fetch_docs(Checker)
+
+      documented =
+        Regex.scan(~r/^\s*\d+\. \*\*(\w+)\*\*/m, moduledoc, capture: :all_but_first)
+        |> List.flatten()
+
+      evaluated =
+        Enum.map(Checker.invariants(), fn invariant ->
+          invariant
+          |> Atom.to_string()
+          |> String.split("_")
+          |> Enum.map_join(&String.capitalize/1)
+        end)
+
+      # Positive control: a regex that matches nothing would make the assertion
+      # below pass over an empty list, which is the empty-collection false PASS
+      # this whole module exists to refuse.
+      assert length(documented) == length(evaluated)
+      assert documented -- evaluated == []
+    end
+  end
+
   defp destroy_verdict(verdicts, invariant) do
     Enum.find(verdicts, &(&1[:invariant] == invariant))
   end

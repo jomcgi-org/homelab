@@ -45,9 +45,25 @@ defmodule Embervm.SpecTrace.Checker do
   5. **PrimeBeforeCheckpoint** — every vm_id in a `checkpoint` inventory set
      has a preceding `prime` or `adopt_inventory` in the run.
 
+  6. **DestroyIntentPrecedesRecord**: every `confirm_destroy` for a live VM
+     (`had_vm: true`) has a `begin_destroy` for the same session_id earlier in
+     the run. Vacuous when the window holds no live-VM confirmations, because a
+     run that destroyed nothing cannot evidence the destroy ordering.
+
+  7. **NoDestroyBeforeConfirm**: a gated `confirm_destroy` (`gate: true`)
+     always carries `node_confirmed: true`, so the control plane records a
+     destroy only after the node confirmed it by teardown or by absence.
+     Vacuous when every confirmation took the gate-off path.
+
   8. **EventuallyDispatched** (bounded liveness) — a task queued at checkpoint
      N must be assigned or succeeded by checkpoint N+K if inventory persists
      across the window.
+
+  This list is the fourth copy of the invariant set (#4802): `invariants/0` is
+  the source, `check_invariant/2` dispatches on it, and the router reads it. The
+  prose here drifted first, documenting 6 of 8 while numbering the last one 8,
+  so `documents every invariant it evaluates` in the test suite now holds it to
+  `invariants/0` rather than to review.
   """
 
   alias Embervm.SpecTrace.Store
