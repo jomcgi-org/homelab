@@ -14,7 +14,20 @@ _CLASSIFICATION_PATTERN = re.compile(
     r"CLASSIFICATION:\s*(one_shot|planned)", re.IGNORECASE
 )
 _TAIL_LINES = 3
-_TIMEOUT_SECONDS = 5.0
+# The alias resolves to a REASONING model since the llama.cpp switch
+# (9697abc47). Reasoning tokens count against the generation budget even
+# though --reasoning-format deepseek routes them into `reasoning_content`,
+# so a budget sized for a one-line answer is spent thinking and `content`
+# comes back empty. That parses to None, which fails closed to one_shot, so
+# EVERY task became a session and no run could ever start.
+#
+# Two changes rather than one, deliberately. `enable_thinking: false` is the
+# real fix (a binary classification does not need deliberation, and skipping
+# it also makes the call fast), and the wider budget is the belt: if a future
+# model or template ignores the flag, the answer still fits instead of
+# silently reverting the entrypoint to sessions-only.
+_TIMEOUT_SECONDS = 20.0
+_MAX_TOKENS = 512
 _MODEL = "qwen3.6-27b"
 
 
@@ -62,7 +75,12 @@ async def classify_task_with_outcome(text: str) -> tuple[str, int, str, str | No
                         {"role": "user", "content": text},
                     ],
                     "temperature": 0,
-                    "max_tokens": 64,
+                    "max_tokens": _MAX_TOKENS,
+                    # Skip deliberation for a binary label. Qwen reads this
+                    # through the jinja chat template; a server that does not
+                    # understand it ignores it, which is why _MAX_TOKENS still
+                    # has to be large enough to hold reasoning plus answer.
+                    "chat_template_kwargs": {"enable_thinking": False},
                 },
             )
         response.raise_for_status()
