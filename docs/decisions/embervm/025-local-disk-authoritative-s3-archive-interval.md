@@ -3,6 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-07-26
+**Clarified by:** [ADR 028](028-demand-loaded-rootfs-oci-chunk-store.md), which limits this cross-principal dedup prohibition to mutable archives and defines a separate Account-owned plane for immutable derived rootfs chunks
 **Supersedes in part:** [011 - Distribution via Longhorn Volumes](011-distribution-longhorn-fencing-cp-rollouts.md) (the decision to move stateful volumes onto Longhorn RWO node-attach)
 **Builds on:** [001](001-embervm-beam-firecracker-workload-orchestrator.md) (volume owns truth, snapshot owns warmth), [008](008-interruptible-bank-stateful-datastores.md) (the abortable bank), [016](016-kubernetes-scheduling-integration-contract.md) (zstd content-addressed session workspaces, the mechanism this reuses), [021](021-workload-resource-model-memory-pivot.md) (one user-facing knob whose units are what the user cares about)
 
@@ -130,6 +131,10 @@ Baseline: `docs/security.md`.
 
 - **The archive is a copy of tenant data at rest.** It inherits ADR 019's principal-scoped erasure: archived chunks are keyed by principal so deletion reaches them, and a dedup store must not let one principal's chunk be referenced by another's manifest.
 - **Content-addressed dedup across principals is forbidden** for that reason. Dedup is within a principal only, accepting the storage cost, because cross-principal chunk sharing would make one tenant's deletion a reference-counting problem in another's data.
+- **This rule is about mutable archives.** ADR 028's immutable,
+  reconstructable rootfs chunks are Account-owned derived data in a separate
+  keyspace. They may deduplicate within an Account without changing this
+  archive's ownership, encryption, or erasure contract.
 - **`archiveInterval: disabled` is a data-loss posture**, not a performance setting, and should be visible in review rather than buried in values.
 - Deliberate failover means restore is an authenticated operator action, which is a smaller surface than automatic re-placement.
 
