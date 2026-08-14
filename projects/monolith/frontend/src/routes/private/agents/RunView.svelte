@@ -47,6 +47,16 @@
   // Ids are plumbing: needed for copy and correlation, never for scanning.
   const shortId = (id) => String(id || "").slice(-12);
   const path = (i, suffix) => `run.nodes[${i}]${suffix}`;
+  const deviationsForNode = (nodeKey) =>
+    (run?.deviations ?? []).filter(
+      (deviation) => deviation.node_key === nodeKey,
+    );
+  const fallbackDeviations = $derived(
+    (run?.deviations ?? []).filter(
+      (deviation) =>
+        !run?.nodes?.some((node) => node.key === deviation.node_key),
+    ),
+  );
   let copied = $state(false);
 
   function copyWorkflowId() {
@@ -191,6 +201,24 @@
           >{P.labels.openBranch}</a
         >{/if}
     </div>
+    {#if run.disposition}<div
+        class="disposition"
+        class:human-attention={run.nodes.some(
+          (node) => node.blocked_on?.kind === "human",
+        )}
+      >
+        <div class="disposition-state">
+          {P.dispositionStates[run.disposition.state] ?? run.disposition.state}
+        </div>
+        <div class="disposition-reason">
+          <span class="disposition-label">{P.labels.reason}</span>
+          {run.disposition.reason}
+        </div>
+        {#if run.disposition.next}<div class="disposition-next">
+            <span class="disposition-label">{P.labels.next}</span>
+            {run.disposition.next}
+          </div>{/if}
+      </div>{/if}
     <div class="staged">
       {#each computeRanks(run.nodes) as group, rank}
         {#if rank}<div class="connector"></div>{/if}
@@ -202,18 +230,10 @@
           </div>{:else}{@render nodeCard(group[0], false)}{/if}
       {/each}
     </div>
-    {#if run.disposition}<div class="disposition" data-register="fact">
-        <div class="disposition-state">
-          {P.dispositionStates[run.disposition.state] ?? run.disposition.state}
-        </div>
-        <div>{run.disposition.reason}</div>
-        {#if run.disposition.next}<div class="disposition-next">
-            {run.disposition.next}
-          </div>{/if}
-      </div>{/if}
-    {#if run.deviations?.length}<div class="deviations" data-register="fact">
+    {#if fallbackDeviations.length}<div class="deviations" data-register="fact">
         <div class="stage-head">{P.labels.deviations}</div>
-        {#each run.deviations as deviation}<div class="deviation-text">
+        <!-- Keep unmatched deviations visible because system facts must not be dropped silently. -->
+        {#each fallbackDeviations as deviation}<div class="deviation-text">
             <span class="dev-chip"
               >{P.deviationCodes[deviation.code] ?? deviation.code}</span
             >
@@ -246,7 +266,7 @@
   {@const i = run.nodes.indexOf(node)}
   {@const iconClass = nodeStateClass(node)}
   <div
-    class={`${lane ? "lane-card" : "node-card"} ${node.state === "escalated" || node.blocked_on?.kind === "human" ? "trouble" : ""}`}
+    class={`${lane ? "lane-card" : "node-card"} ${node.blocked_on?.kind === "human" ? "trouble" : ""}`}
   >
     <div class={`card-head ${node.state === "running" ? "is-running" : ""}`}>
       <StateIcon icon={nodeIconKey(node)} class={iconClass} />
@@ -409,5 +429,18 @@
         ><button class="btn-quiet" type="button">{P.labels.deny}</button>
       </div>{/if}
     {#if node.note}<div class="node-note">{node.note}</div>{/if}
+    {#if deviationsForNode(node.key).length}<div
+        class="node-deviations"
+        data-register="fact"
+      >
+        {#each deviationsForNode(node.key) as deviation}<div
+            class="fact-deviation"
+          >
+            <span class="dev-chip"
+              >{P.deviationCodes[deviation.code] ?? deviation.code}</span
+            >
+            <span>{deviation.text}</span>
+          </div>{/each}
+      </div>{/if}
   </div>
 {/snippet}

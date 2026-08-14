@@ -146,6 +146,11 @@ const homeAttentionRun = run("home-attention", "escalated", {
 
 const running = run("running", "running", {
   plan: { ...plan, budget_usd: 0.15 },
+  disposition: {
+    state: "running",
+    reason: "the implementer is still working",
+    next: "wait for the current attempt",
+  },
   deviations: [
     {
       code: "retry_taken",
@@ -158,6 +163,12 @@ const running = run("running", "running", {
       node_key: "run",
       evidence: "cost_usd: $0.20; pinned budget_usd: $0.15",
       text: "run spent $0.20 against a pinned $0.15 budget.",
+    },
+    {
+      code: "model_mismatch",
+      node_key: "review",
+      evidence: "expected reviewer model: opus; observed model: luna",
+      text: "review used a different model than the recorded plan.",
     },
   ],
   nodes: [
@@ -571,6 +582,71 @@ const wide = run("wide", "running", {
   ],
 });
 
+const humanBlocked = run("human-blocked", "escalated", {
+  dbos_status: "SUCCESS",
+  disposition: {
+    state: "escalated",
+    reason: "the run is waiting for a human decision",
+    next: "approve or deny the pending gate",
+  },
+  nodes: [
+    node("implement", "implement", "done"),
+    node("push_gate", "push gate", "escalated", {
+      blocked_on: {
+        kind: "human",
+        note: "the branch is ready for your decision",
+      },
+    }),
+    node("review", "review", "future"),
+  ],
+});
+
+const failedNoHuman = run("failed-no-human", "failed", {
+  dbos_status: "ERROR",
+  disposition: {
+    state: "failed",
+    reason: "the implementer failed before producing a reviewable branch",
+    next: "inspect the failed attempt and retry if needed",
+  },
+  nodes: [
+    node("implement", "implement", "failed", {
+      attempts: [attempt(1, "failed")],
+    }),
+    node("push_gate", "push gate", "cancelled"),
+    node("review", "review", "future"),
+  ],
+});
+
+const multiNodeDeviations = run("multi-node-deviations", "approved", {
+  dbos_status: "SUCCESS",
+  disposition: {
+    state: "approved",
+    reason: "the reviewer approved the changes",
+    next: null,
+  },
+  deviations: [
+    {
+      code: "retry_taken",
+      node_key: "implement",
+      evidence: "attempts: 2",
+      text: "implement needed a retry before completing.",
+    },
+    {
+      code: "model_mismatch",
+      node_key: "review",
+      evidence: "expected reviewer model: opus; observed model: luna",
+      text: "review used a different model than the recorded plan.",
+    },
+  ],
+  nodes: [
+    node("implement", "implement", "done", {
+      attempts: [attempt(1, "done")],
+    }),
+    node("push_gate", "push gate", "passed"),
+    node("review", "review", "done"),
+  ],
+});
+
 // --- Session walkthrough fixtures (ADR 056) -------------------------------
 // One fixture per degradation-ladder rung, plus the cross-check and scale
 // cases. Payload shapes mirror GET /api/swarm/walkthrough/{session}/{turn}
@@ -723,6 +799,9 @@ export const RUN_FIXTURES = {
     },
   ]),
   wide: entry(wide),
+  "human-blocked": entry(humanBlocked),
+  "failed-no-human": entry(failedNoHuman),
+  "multi-node-deviations": entry(multiNodeDeviations),
   "home-with-activity": homeEntry(
     "home-with-activity",
     [homeActivityRun],
