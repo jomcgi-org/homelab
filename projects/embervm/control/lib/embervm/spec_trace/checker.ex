@@ -239,14 +239,16 @@ defmodule Embervm.SpecTrace.Checker do
 
       _ ->
         # Group by node_id and track state for each node
+        # Group the HEALTH records, not every record in the run: grouping all of
+        # them buckets dispatches and primes under their node_id too, so a node
+        # with no health transitions at all would be examined for one.
+        #
+        # (Enum.filter_map/3 was removed in Elixir 1.9; this runs 1.18.)
         violations =
-          records
+          health_records
           |> Enum.group_by(& &1["vars"]["node_id"])
-          |> Enum.filter_map(fn {_node_id, node_records} ->
-            has_health_violation?(node_records)
-          end, fn {node_id, _records} ->
-            node_id
-          end)
+          |> Enum.filter(fn {_node_id, node_records} -> has_health_violation?(node_records) end)
+          |> Enum.map(fn {node_id, _records} -> node_id end)
 
         if Enum.empty?(violations) do
           %{
@@ -270,29 +272,37 @@ defmodule Embervm.SpecTrace.Checker do
     end
   end
 
+  # The health machine ages healthy -> unknown -> down, so an age_to_down with no
+  # age_to_unknown since the last reconnect is the violation.
+  #
+  # Two bugs lived here and both made this report violations on LAWFUL traces,
+  # which is the worst failure mode for a gate: a checker that cries wolf gets
+  # overridden by reflex, and the override rate is ADR 034's kill-point metric.
+  #
+  #   1. The accumulator was discarded (`fn record, _seen_unknown ->`), so the
+  #      age_to_down branch could never consult it and EVERY age_to_down halted
+  #      as a violation.
+  #   2. When the reduce never halted it returned the accumulator itself, so a
+  #      node that had merely gone unknown returned `true`, i.e. "violation",
+  #      having done nothing wrong.
+  #
+  # Halting with a distinct marker keeps "have I seen unknown" and "did I find a
+  # violation" from sharing one boolean, which is what allowed both.
   defp has_health_violation?(node_records) do
-    # Track whether we've seen age_to_unknown since the last reconnect
-    # Start with false (haven't seen it yet in this incarnation)
-    Enum.reduce_while(node_records, false, fn record, _seen_unknown ->
+    node_records
+    |> Enum.reduce_while(false, fn record, seen_unknown ->
       case record["action"] do
-        "reconnect" ->
-          # Reset: we're starting fresh after reconnect
-          {:cont, false}
-
-        "age_to_down" ->
-          # If we reach age_to_down without having seen age_to_unknown, it's a violation
-          # (seen_unknown would be false if we haven't seen it since last reconnect)
-          # Return true to signal a violation was found
-          {:halt, true}
-
-        "age_to_unknown" ->
-          # We've seen age_to_unknown, so age_to_down is okay
-          {:cont, true}
-
-        _ ->
-          {:cont, false}
+        # A reconnect starts a fresh incarnation of the health machine.
+        "reconnect" -> {:cont, false}
+        "age_to_unknown" -> {:cont, true}
+        "age_to_down" -> if seen_unknown, do: {:cont, seen_unknown}, else: {:halt, :violation}
+        _ -> {:cont, seen_unknown}
       end
     end)
+    |> case do
+      :violation -> true
+      _ -> false
+    end
   end
 
   defp check_prime_before_checkpoint(records) do
