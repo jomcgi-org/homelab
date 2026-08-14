@@ -18,6 +18,21 @@ if [[ -z "$CI" ]]; then
 	exit 1
 fi
 
+BUILD_BUDDY=""
+for candidate in \
+	"${RUNFILES_DIR:-}/_main/buildbuddy.yaml" \
+	"${TEST_SRCDIR:-}/_main/buildbuddy.yaml" \
+	"${BASH_SOURCE[0]%/*}/../../..//buildbuddy.yaml"; do
+	if [[ -f "$candidate" ]]; then
+		BUILD_BUDDY="$(cd "${candidate%/*}" && pwd)/${candidate##*/}"
+		break
+	fi
+done
+if [[ -z "$BUILD_BUDDY" ]]; then
+	echo "ERROR: cannot locate buildbuddy.yaml" >&2
+	exit 1
+fi
+
 PASS=0
 FAIL=0
 pass() {
@@ -28,6 +43,82 @@ fail() {
 	echo "FAIL [$1]: $2"
 	FAIL=$((FAIL + 1))
 }
+
+resource_requests="$(awk '
+	$0 ~ /^  - name: "pr-checks"$/ { in_pr_checks = 1; next }
+	in_pr_checks && $0 ~ /^  - name: / { exit }
+	in_pr_checks && $0 ~ /^    resource_requests:$/ { in_resources = 1; next }
+	in_resources && $0 ~ /^      [a-z]+:/ { parse_resource = 1 }
+	in_resources && $0 ~ /^[[:space:]]*(#|$)/ { next }
+	in_resources && !parse_resource { exit }
+	in_resources {
+		key = $1
+		sub(/:$/, "", key)
+		value = $2
+		sub(/^"/, "", value)
+		sub(/"$/, "", value)
+		print key "=" value
+		parse_resource = 0
+	}
+' "$BUILD_BUDDY")"
+
+resource_properties=()
+while IFS= read -r property; do
+	[[ -n "$property" ]] && resource_properties+=("$property")
+done < <(grep -oE -- '--runner_exec_properties=[^[:space:]\\]+=[^[:space:]\\]+' "$CI" |
+	sed 's/.*--runner_exec_properties=//')
+
+# Record each drift with its specific cause, and do not stop at the first one.
+# The whole reason this test exists is that the drift is otherwise silent, so a
+# failure that only says "they do not match" leaves the reader doing by hand the
+# comparison the test just did.
+drift=()
+
+while IFS='=' read -r yaml_key _; do
+	case "$yaml_key" in
+	'') ;;
+	cpu | memory | disk) ;;
+	*) drift+=("buildbuddy.yaml pr-checks declares resource_requests key '$yaml_key', which this test has no mapping for: add it here and pass it in cmd_test") ;;
+	esac
+done <<<"$resource_requests"
+
+for yaml_key in cpu memory disk; do
+	case "$yaml_key" in
+	cpu) property="EstimatedCPU" ;;
+	memory) property="EstimatedMemory" ;;
+	disk) property="EstimatedFreeDiskBytes" ;;
+	esac
+	yaml_value="$(printf '%s\n' "$resource_requests" | awk -F= -v key="$yaml_key" '$1 == key { print $2 }')"
+	ci_value=""
+	for candidate in "${resource_properties[@]}"; do
+		if [[ "${candidate%%=*}" == "$property" ]]; then
+			ci_value="${candidate#*=}"
+		fi
+	done
+	if [[ -z "$yaml_value" ]]; then
+		drift+=("buildbuddy.yaml pr-checks declares no '$yaml_key' under resource_requests (parse failure, or the key was removed)")
+	elif [[ -z "$ci_value" ]]; then
+		drift+=("ci cmd_test passes no $property, but buildbuddy.yaml pr-checks declares $yaml_key: $yaml_value")
+	elif [[ "$yaml_value" != "$ci_value" ]]; then
+		drift+=("ci cmd_test passes $property=$ci_value, but buildbuddy.yaml pr-checks declares $yaml_key: $yaml_value")
+	fi
+done
+
+for property in "${resource_properties[@]}"; do
+	property_name="${property%%=*}"
+	case "$property_name" in
+	EstimatedCPU | EstimatedMemory | EstimatedFreeDiskBytes | EstimatedComputeUnits) ;;
+	Estimated*)
+		drift+=("ci cmd_test passes $property_name, which BuildBuddy does not recognise: it will silently fall back to the default rather than fail")
+		;;
+	esac
+done
+
+if [[ ${#drift[@]} -eq 0 ]]; then
+	pass "buildbuddy_resource_parity"
+else
+	fail "buildbuddy_resource_parity" "$(printf '%s | ' "${drift[@]}")"
+fi
 
 if grep -q 'local feedback loop' "$CI" &&
 	grep -q 'SKIP_REMOTE=1' "$CI" &&
