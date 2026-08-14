@@ -33,7 +33,6 @@ contents:
 
 archs:
   - x86_64
-  - aarch64
 
 # k3s (containerd, CNI, iptables, cgroup mounts, kubelet) requires ROOT inside
 # the guest. This deviates from the repo's uid 65532 non-root convention, and it

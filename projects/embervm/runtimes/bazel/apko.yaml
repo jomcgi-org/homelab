@@ -21,7 +21,6 @@ contents:
 
 archs:
   - x86_64
-  - aarch64
 
 # The bazel server + guest-init run as ROOT inside the guest. This deviates from
 # the repo's uid 65532 non-root convention, and it is DELIBERATE: guest-init is
