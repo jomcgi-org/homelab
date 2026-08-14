@@ -19,6 +19,34 @@ actions:
       cpu: "6"
       memory: "10GB"
       disk: "120GB"
+    # Full history, and the SAME depth on both actions. 0 means unlimited; the
+    # runner otherwise fetches --depth=1 (ci_runner.go, `fetchDepth := 1`).
+    #
+    # deploy needs it because the publish derives every chart version from a
+    # walk over the conventional commits since the commit that last set that
+    # version (chart-version.sh). In a shallow clone that walk is not merely
+    # short, it is EMPTY: at the graft boundary every file reads as newly
+    # added, so the `-S"version: X"` search matches the boundary commit itself,
+    # and at depth 1 that is HEAD, whose exclusive HEAD..HEAD range contains
+    # nothing. Every chart then computes "no bump needed" and either silently
+    # skips its deploy or fails the action outright, which took main's deploy
+    # down on 2026-08-10 (60ebba4, and inertly on 2000bae before it). A bounded
+    # depth is not a fix either: at depth 10 this repo computes embervm 0.2.8
+    # where full history gives 0.2.30, trading a stuck version for a wrong one.
+    #
+    # pr-checks carries it so the two agree. It is not decoration: a runner
+    # snapshot persists the clone, so once these two share a snapshot (#4824) a
+    # divergent depth would make PR runs deep when restored from main and
+    # shallow when booted cold, and check-commit-msg-ascii.sh --all branches on
+    # exactly that. Aligning also makes CI's git history match a local clone,
+    # which is the assumption most history logic here is written against.
+    #
+    # Cost is a cold-fetch-only ~152MB (12M -> 164M for this repo's 12k commits
+    # under the default blob:none filter), and the snapshot carries it after.
+    # This replaces a hand-rolled `git fetch --unshallow` that used to live in
+    # deploy's steps: the runner does the same thing, including the
+    # sticky-depth check, and does it fatally rather than with a warning.
+    git_fetch_depth: 0
     triggers:
       pull_request:
         branches:
@@ -241,6 +269,8 @@ actions:
       cpu: "6"
       memory: "10GB"
       disk: "120GB"
+    # See pr-checks. Both actions MUST carry the same value.
+    git_fetch_depth: 0
     triggers:
       push:
         branches:
@@ -271,42 +301,9 @@ actions:
           # ---- 1. tests ---------------------------------------------------
           bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 
-          # ---- 1.5 deepen the clone ---------------------------------------
-          # The publish below derives every chart version from a walk over the
-          # conventional commits since the commit that last set that version
-          # (chart-version.sh). BuildBuddy clones SHALLOW, and in a shallow
-          # clone that walk is not merely short, it is EMPTY: at the graft
-          # boundary every file reads as newly added, so the `-S"version: X"`
-          # search matches the boundary commit itself, and at depth 1 that is
-          # HEAD, whose exclusive HEAD..HEAD range contains nothing.
-          #
-          # The result is that every chart computes "no bump needed" and either
-          # silently skips its deploy or, now that image digests are the
-          # authority on whether to publish, fails the action outright. That is
-          # what took main's deploy down on 2026-08-10 (60ebba4, and inertly on
-          # 2000bae before it): the escalation could not compute a higher
-          # version because the range it walked was empty, not because the
-          # dependency closure was incomplete.
-          #
-          # Deepening restores the assumption the arithmetic is built on, that
-          # the version is a function of the COMMIT. It is not enough to fetch
-          # "some" history: at depth 10 this repo computes embervm 0.2.8 where
-          # the full history gives 0.2.30, so a bounded --deepen would just
-          # trade a stuck version for a wrong one. BuildBuddy reuses the runner
-          # workspace between runs, so the cost is paid per cold runner rather
-          # than per deploy, and the guard is skipped once the repo is complete.
-          # Deliberately NOT fatal, unlike the test step above. `set -e` is
-          # load-bearing there because a failed test must not publish images.
-          # Here the opposite applies: if this fetch cannot run, because the
-          # runner's clone has no remote configured or the network blips,
-          # aborting would skip the image pushes as well and leave main worse
-          # off than the bug being fixed. chart-version.sh refuses to compute a
-          # version in a shallow repo, so a failed deepen surfaces as a precise
-          # per-chart error instead of a raw git failure with nothing attempted.
-          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
-            git fetch --unshallow --quiet ||
-              echo "WARNING: could not deepen the clone; chart versions will fail loudly below." >&2
-          fi
+          # The clone is deep because `git_fetch_depth: 0` asks for it, not
+          # because a step deepens it. See that field on both actions above for
+          # why the publish needs full history.
 
           # PUBLISH BEFORE THE FORMAT CHECK, deliberately. Under `set -e` a
           # formatter hiccup aborts everything after it, and on 2026-08-09 that
