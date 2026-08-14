@@ -611,7 +611,6 @@ func (s *fakeServer) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerS
 			return nil
 		}
 	}
-	return nil
 }
 
 func main() {
