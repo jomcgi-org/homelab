@@ -55,11 +55,18 @@ The selector takes a name directly, so this needs no labels on the Stages.
 
 The schema notes auto-promotion is "commonly set to true for Stages that
 subscribe to Warehouses instead of other, upstream Stages", which is an
-argument for gating prod rather than a prohibition. It is on for prod anyway,
-and that is a deliberate first step: the pipeline is being proven end to end
-before a gate is added, and today it is risk-equivalent to the CI write-back it
-replaces. Flipping this one value to false is the hold, and is also the manual
-promotion path if that is wanted later.
+argument for gating prod rather than a prohibition.
+
+WHETHER PROD AUTO-PROMOTES IS PER-STAGE DATA, not a property of this template,
+and the two pipelines deliberately differ. Each stage's rationale is written
+beside its own `autoPromotion` in values.yaml: monolith's prod is `true` (the
+pipeline was being proven end to end, and it is risk-equivalent to the CI
+write-back it replaced), embervm's prod is `false` (every roll spends
+unreclaimed brick scratch, so promotions are batched by hand until #4364
+re-arms retention). Read the value, not this comment, to know what a given
+environment does.
+
+Flipping the value is both the hold lever and the manual promotion path.
 */}}
 apiVersion: kargo.akuity.io/v1alpha1
 kind: ProjectConfig
@@ -256,9 +263,15 @@ spec:
         - uses: argocd-wait
           retry:
             # Bounded so a wedged environment fails the Promotion rather than
-            # hanging it. Generous against a real rollout (dev's took 10s) and
-            # mostly redundant with the Degraded fail-fast above, which trips
-            # first for the common failure.
+            # hanging it, and mostly redundant with the Degraded fail-fast
+            # above, which trips first for the common failure.
+            #
+            # PER PIPELINE, because rollout durations here differ by two orders
+            # of magnitude (monolith dev ~10s, embervm ~13m). Each pipeline's
+            # value and the measurement behind it are in values.yaml. A new
+            # pipeline needs its own measurement: a timeout sized for another
+            # workload reds a healthy rollout, which teaches the operator that
+            # red means nothing.
             timeout: {{ $pipeline.waitTimeout | quote }}
           config:
             apps:
