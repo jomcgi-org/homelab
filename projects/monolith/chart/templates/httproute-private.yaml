@@ -61,6 +61,34 @@ spec:
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
           port: {{ .Values.service.apiPort | int }}
+    # Swarm API: the agents console calls this DIRECTLY from the browser, not
+    # through a SvelteKit server route, so it needs a rule of its own for the
+    # same reason /api/grimoire above does.
+    #
+    # Without it every /api/swarm/* call falls through to the catch-all, lands
+    # on the SvelteKit port and comes back as the SPA shell. The browser then
+    # fails at JSON.parse with:
+    #
+    #   Unexpected token '<', "<!doctype "... is not valid JSON
+    #
+    # which reads like a frontend bug and is a routing gap. That broke the
+    # single task box (POST /api/swarm/classify-and-start), the session
+    # walkthrough (/api/swarm/walkthrough/...) and the compare proxy
+    # (/api/swarm/compare/...), all of which shipped green because nothing in
+    # CI exercises a browser-originated path against the real ingress.
+    #
+    # The timeout matches the other model-calling rules: classify-and-start
+    # runs the Qwen classifier inline before it returns.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/swarm
+      timeouts:
+        request: 600s
+        backendRequest: 600s
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.service.apiPort | int }}
     # Chat interface — SvelteKit SSR calls LLM backend, needs long timeout
     - matches:
         - path:
