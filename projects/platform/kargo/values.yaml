@@ -242,7 +242,29 @@ promotion:
           # the settling window has to outlast the rollout it is settling after,
           # or it expires while bricks are still coming up and proves nothing.
           requiredSoakTime: 5m0s
-          autoPromotion: true
+          # FALSE, unlike monolith's prod, and unlike dev above. Promotion to
+          # embervm production is a deliberate click in the UI.
+          #
+          # Every embervm prod roll rebuilds each brick's guest rootfs and
+          # spends about 2.8 GiB of each master's 35 GiB scratch cap, which
+          # nothing reclaims while base retention is disarmed (#4364): roughly
+          # five rolls of runway. Batching is the point. A manual promotion
+          # takes the LATEST soaked Freight, so N merged chart versions cost
+          # ONE spend, which is strictly better than the CI write-back this
+          # replaces. `true` would only match it.
+          #
+          # Scratch exhaustion does not present as a disk error. It presents as
+          # `no_capacity` on session create, or bricks wedged in
+          # PodInitializing on build-semgrep-rootfs, or Firecracker reporting a
+          # backing file as missing when mkfs could not write it. embervm is
+          # the isolation plane agent sessions run on, so that failure class
+          # should not be reachable by an unattended merge.
+          #
+          # This does not cost pipeline confidence: dev auto-promotes on every
+          # publish, so the embervm pipeline is exercised end to end
+          # continuously. Flip to true in the same change that re-arms base
+          # retention (#4364).
+          autoPromotion: false
 
 # Private-tier ingress: https://private.jomcgi.dev/app/kargo
 #
