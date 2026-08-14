@@ -156,36 +156,35 @@ export const RUN_LEXICON = {
     sessionsRegion: "Agent sessions",
     transcriptRegion: "Agent transcript",
     backToSessions: "Back to agent sessions",
-    // Session walkthrough (ADR 056). Server-composed sentences (truncation
-    // reasons, rationale quotes) are data, not lexicon; these are the
-    // interface's own words only.
+    // Session walkthrough (ADR 056). Server-composed sentences (the payload
+    // `message`, rationale quotes, truncation labels) are data, not lexicon;
+    // these are the interface's own words only.
     walkSummary: "what changed",
-    walkStepWord: "step",
-    walkStepsWord: "steps",
-    walkFilesWord: "files",
+    walkPointWord: "point",
+    walkPointsWord: "points",
     walkFileWord: "file",
-    walkPrevStep: "previous step",
-    walkNextStep: "next step",
-    walkShowDiff: "show diff",
-    walkHideDiff: "hide diff",
+    walkFilesWord: "files",
+    walkFileChanged: "file changed",
+    walkFilesChanged: "files changed",
+    walkProvenanceLead: "Agent-authored.",
+    walkProvenanceBody:
+      "These points are the implementer's account of its own change. The diff beside them is from git.",
+    walkAccountLabel: "agent's account",
+    walkUnexplainedMark: "!",
+    walkContradictedMark: "×",
+    walkUnexplainedTitle: "Unexplained change.",
+    walkUnexplainedBody:
+      "This file is in the diff, but the walkthrough never mentions it. It is surfaced rather than dropped.",
+    walkContradictedTitle: "Contradicted path.",
+    walkContradictedBody:
+      "The agent named this file; the compare does not contain it.",
+    walkMechanicalStep: "produced by tooling this turn",
+    walkTouchedLabel: "files touched by tools this turn",
     walkDiffLoading: "loading diff…",
     walkDiffUnavailable: "diff unavailable",
     walkDiffsDesktop: "diffs read on a desktop",
-    walkUnexplained: "unexplained",
-    walkUnexplainedNote: "in the diff; no point mentions it",
-    walkContradictedNote: "named by the agent; not in the diff",
-    walkMechanicalStep: "produced by tooling this turn",
-    walkEphemeralNote:
-      "compared by branch name; stops resolving once the branch merges",
-    walkNoCompareNote: "no compare available; showing the agent's account",
-    walkNoTrailerNote: "no rationale recorded for this turn",
-    walkTouchedLabel: "files touched by tools this turn",
-    walkDeclinedNote:
-      "no walk offered: no compare and no recorded rationale to structure one",
-    walkNothingNote: "nothing recorded for this turn",
     walkUnavailable: "walkthrough unavailable",
     walkRetry: "retry",
-    walkTruncatedWord: "truncated",
     walkLoading: "loading…",
   },
   punct: { dot: "·", arrow: "→", colon: ":" },

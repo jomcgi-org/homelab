@@ -36,6 +36,15 @@
   /* State tokens: period-invariant, never overridden. */
   --ok: #0a7c3c;
   --ok-soft: #dcf2e5;
+  /* Diff panes (walkthrough): added/removed lines are fact register, so
+     these sit with the state tokens. Backgrounds are one tier lighter than
+     the ok/err soft fills so a full hunk of additions stays readable text
+     on tint rather than a solid block; the gutter marks reuse the state
+     inks themselves. */
+  --diff-add-bg: #e9f6ee;
+  --diff-del-bg: #fdf1ee;
+  --diff-add-mark: var(--ok);
+  --diff-del-mark: var(--err);
   --attn: #b25e00;
   /* Before 4.09:1 on --attn-soft, after 6.01:1 on --attn-soft and
      6.86:1 on white. */
