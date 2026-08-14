@@ -18,7 +18,7 @@ def workflow(*args, **kwargs):
     return workflows.implement_then_review.__wrapped__(*args, **kwargs)
 
 
-def run(monkeypatch, turns, heads=None):
+def run(monkeypatch, turns, heads=None, intents=None):
     sessions = iter(turns)
     calls = []
     if heads is None:
@@ -43,6 +43,14 @@ def run(monkeypatch, turns, heads=None):
     )
     monkeypatch.setattr(workflows, "start_agent_session", lambda *args: 0)
     monkeypatch.setattr(workflows, "update_turn_shas", lambda *args: True)
+    if intents is not None:
+        monkeypatch.setattr(
+            workflows,
+            "_record_turn_intent",
+            lambda session_id, turn, intent: intents.append(
+                (session_id, turn["seq"], intent)
+            ),
+        )
     # seq is part of poll_turn's real contract (swarm/steps.py), so the stub
     # carries it too. Defaulted rather than added to every literal below, and
     # overridable by any stub that cares which turn it is.
@@ -497,13 +505,13 @@ def test_unparseable_verdict_does_not_trigger_requeue(monkeypatch):
 
 def test_review_feedback_passed_to_implementer_prompt(monkeypatch):
     feedback = []
-    original_prompt = workflows.implementer_prompt
+    original_parts = workflows.implementer_prompt_parts
 
-    def capture_prompt(task, branch, previous_failure=None, review_feedback=None):
+    def capture_prompt_parts(task, branch, previous_failure=None, review_feedback=None):
         feedback.append(review_feedback)
-        return original_prompt(task, branch, previous_failure, review_feedback)
+        return original_parts(task, branch, previous_failure, review_feedback)
 
-    monkeypatch.setattr(workflows, "implementer_prompt", capture_prompt)
+    monkeypatch.setattr(workflows, "implementer_prompt_parts", capture_prompt_parts)
     run(
         monkeypatch,
         {
@@ -520,3 +528,79 @@ def test_review_feedback_passed_to_implementer_prompt(monkeypatch):
     )
     workflow("task", "jomcgi/homelab", "main")
     assert feedback == [None, "Fix X\nVERDICT: REQUEST_CHANGES"]
+
+
+def test_implementer_stores_intent(monkeypatch):
+    intents = []
+    run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: APPROVE",
+                "cost_usd": 1,
+            },
+        },
+        intents=intents,
+    )
+
+    workflow("task", "jomcgi/homelab", "main")
+
+    assert intents[0] == (
+        101,
+        0,
+        workflows.implementer_prompt_parts("task", "claude/swarm-unknown")[0],
+    )
+
+
+def test_reviewer_stores_intent(monkeypatch):
+    intents = []
+    run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {"commit_sha": None, "result_text": "VERDICT: APPROVE", "cost_usd": 1},
+        },
+        intents=intents,
+    )
+
+    workflow("task", "jomcgi/homelab", "main")
+
+    assert intents[1] == (
+        201,
+        0,
+        workflows.reviewer_prompt_parts("task", "claude/swarm-unknown", "abc")[0],
+    )
+
+
+def test_implementer_feedback_loop_stores_intent(monkeypatch):
+    intents = []
+    run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "Fix X\nVERDICT: REQUEST_CHANGES",
+                "cost_usd": 1,
+            },
+            102: {"commit_sha": "def", "result_text": "done", "cost_usd": 1},
+            202: {
+                "commit_sha": None,
+                "result_text": "VERDICT: APPROVE",
+                "cost_usd": 1,
+            },
+        },
+        heads=[None, "abc", "abc", "def"],
+        intents=intents,
+    )
+
+    workflow("task", "jomcgi/homelab", "main")
+
+    expected = workflows.implementer_prompt_parts(
+        "task",
+        "claude/swarm-unknown",
+        review_feedback="Fix X\nVERDICT: REQUEST_CHANGES",
+    )[0]
+    assert intents[2] == (102, 0, expected)

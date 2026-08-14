@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderAgentMarkdown } from "./markdown.js";
+import { renderAgentMarkdown, stripRationaleTrailer } from "./markdown.js";
 
 describe("renderAgentMarkdown", () => {
   it("renders https links as safe anchors", () => {
@@ -90,5 +90,19 @@ describe("renderAgentMarkdown", () => {
     const html = renderAgentMarkdown("The answer.\n\n<voice>Spoken so far");
     expect(html).toContain("The answer.");
     expect(html).not.toContain("Spoken so far");
+  });
+
+  it("removes a parsed rationale trailer only when intent is present", () => {
+    const result = "Answer\n\nRATIONALE\n- path: src/app.js · why: change it";
+    expect(stripRationaleTrailer(result, "Answer")).toBe(
+      "Answer\n\n## Notes\nKeep this",
+    );
+    expect(stripRationaleTrailer(result, null)).toBe(result);
+  });
+
+  it("stops rationale removal at the next section", () => {
+    const result =
+      "Answer\n\nRATIONALE\n- path: src/app.js\n\n## Notes\nKeep this";
+    expect(stripRationaleTrailer(result, "Answer")).toBe("Answer");
   });
 });

@@ -780,6 +780,8 @@ async def monolith_agent_detail(session_id: int, turn: int | None = None) -> dic
     _, turns = await asyncio.to_thread(_load_session, session_id)
     selected = _select_turn(turns, turn)
     return {
+        "prompt": selected.prompt,
+        "prompt_intent": selected.prompt_intent,
         "result_text": selected.result_text,
         "model": selected.model,
         "activities": _activities(selected),

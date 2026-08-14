@@ -45,6 +45,7 @@ def _turn_data(session_id: int, turn_seq: int):
             "branch": session.branch,
             "repo": session.repo or _DEFAULT_REPO,
             "usage_json": turn.usage_json,
+            "prompt_intent": turn.prompt_intent,
             "result_text": turn.result_text,
         }
 

@@ -2,7 +2,7 @@
   import { onMount, tick } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import { renderAgentMarkdown } from "./markdown.js";
+  import { renderAgentMarkdown, stripRationaleTrailer } from "./markdown.js";
   import { RUN_FIXTURES } from "./run-fixtures.js";
   // groupSessions and its helpers grouped run-spawned sessions into the
   // session list. Runs are their own collection now and their sessions live
@@ -310,6 +310,13 @@
       turn?.terminal_reason &&
       !CLEAN_TERMINAL_REASONS.has(turn.terminal_reason),
     );
+  }
+
+  function turnProtocol(turn) {
+    if (turn?.prompt_intent == null) return "";
+    return String(turn.prompt || "")
+      .slice(String(turn.prompt_intent).length)
+      .replace(/^\n/, "");
   }
 
   function activityParts(activity) {
@@ -1235,9 +1242,24 @@
         <div class="turns-inner">
           {#each detail?.turns ?? [] as turn (turn.seq)}
             <article class="turn">
+              {@const hasIntent =
+                turn.prompt_intent !== null && turn.prompt_intent !== undefined}
               <div class="prompt">
                 <span class="role">you</span>
-                <div class="prompt-text">{turn.prompt}</div>
+                {#if hasIntent}
+                  <div class="prompt-text intent-prompt">
+                    <span class="intent-label">{P.labels.promptIntent}</span>
+                    <div>{turn.prompt_intent}</div>
+                  </div>
+                  {#if turnProtocol(turn)}
+                    <details class="prompt-protocol">
+                      <summary>{P.labels.viewProtocol}</summary>
+                      <pre>{turnProtocol(turn)}</pre>
+                    </details>
+                  {/if}
+                {:else}
+                  <div class="prompt-text">{turn.prompt}</div>
+                {/if}
               </div>
               {#if turn.usage?.activities?.length}
                 <details class="steps">
@@ -1262,11 +1284,15 @@
                 </details>
               {/if}
               {#if turnFailed(turn)}
-                <pre class="turn-error">{turn.result_text ||
-                    "The turn failed without output."}</pre>
+                <pre class="turn-error">{stripRationaleTrailer(
+                    turn.result_text,
+                    turn.prompt_intent,
+                  ) || "The turn failed without output."}</pre>
               {:else if turn.result_text}
                 <div class="result-md">
-                  {@html renderAgentMarkdown(turn.result_text)}
+                  {@html renderAgentMarkdown(
+                    stripRationaleTrailer(turn.result_text, turn.prompt_intent),
+                  )}
                 </div>
               {/if}
               {#if selectedSession.repo}

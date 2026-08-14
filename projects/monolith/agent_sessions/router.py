@@ -452,6 +452,7 @@ def get_session_detail(
             {
                 "seq": turn.seq,
                 "prompt": turn.prompt,
+                "prompt_intent": turn.prompt_intent,
                 "model": turn.model,
                 "result_text": turn.result_text,
                 "voice_summary": turn.voice_summary,
