@@ -227,11 +227,11 @@
 }
 .disposition {
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: var(--size-detail);
 }
 .disposition-state {
   color: var(--text);
-  font: 11px var(--font-mono);
+  font: var(--size-meta) var(--font-mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -244,7 +244,7 @@
   margin: 0 0 8px 4px;
   padding: 6px 0 6px 10px;
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: var(--size-detail);
 }
 .narrative-event.register-testimony {
   border-left-color: var(--attn);
@@ -253,7 +253,7 @@
   color: var(--muted);
   display: flex;
   gap: 8px;
-  font: 10.5px var(--font-mono);
+  font: var(--size-meta) var(--font-mono);
   margin-bottom: 3px;
 }
 .narrative-event blockquote {
@@ -264,7 +264,7 @@
 }
 .verdict-text {
   color: var(--text-soft);
-  font: 12px/1.45 var(--font-mono);
+  font: var(--size-meta)/1.45 var(--font-mono);
   margin: 6px 0 0;
   white-space: pre-wrap;
 }
