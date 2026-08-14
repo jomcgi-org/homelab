@@ -229,3 +229,39 @@ workloads:
 # unready until something is actually being served.
 servingEnvoy:
   enabled: false
+
+# Skip the base builders for workloads dev does not run.
+#
+# The Workload CR and its base BUILDER are two separate switches, and turning
+# off the one you can see leaves the expensive one running.
+# `claudeRuntimeWorkload.enabled: false` removes the CR; the builder loop in
+# _noded-pod.tpl gates on `.Values.runtimeClaude.guestImage.repository`, a
+# different key entirely.
+#
+# So dev was building all six bases on every brick start, including
+# runtime-claude, the 4 GiB image #4762 explicitly excluded ("tiny echo guest,
+# not claude-runtime"), for a workload no session can ever use. Measured: the
+# first dev brick spent roughly three of its four minutes on that one builder.
+#
+# Only `sandbox` keeps its builder, because it is the only Workload CR dev
+# enables. Emptying the repository is what the loop's `if` tests, so the init
+# container is not rendered at all.
+semgrep:
+  guestImage:
+    repository: ""
+
+runtimePython:
+  guestImage:
+    repository: ""
+
+runtimeClaude:
+  guestImage:
+    repository: ""
+
+scratchPostgres:
+  guestImage:
+    repository: ""
+
+bazelQuery:
+  guestImage:
+    repository: ""
