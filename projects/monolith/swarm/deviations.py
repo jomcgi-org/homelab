@@ -55,20 +55,6 @@ def compute_deviations(run: dict) -> list[dict]:
             )
         deviations.append(_deviation("retry_taken", node["key"], evidence, text))
 
-    review = by_key.get("review") or {}
-    verdict = review.get("verdict")
-    if isinstance(verdict, dict) and verdict.get("value") is not None:
-        value = verdict["value"]
-        if value != "approve":
-            deviations.append(
-                _deviation(
-                    "verdict_not_approve",
-                    "review",
-                    f"recorded review verdict: {value}",
-                    f"review returned a {value} verdict.",
-                )
-            )
-
     if pinned:
         expected_models = {
             "implement": plan.get("implementer_model"),

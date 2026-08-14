@@ -1,8 +1,8 @@
+import re
 from datetime import datetime, timezone
 
 from swarm.view import (
     _disposition,
-    _event_stream,
     _structured_verdict,
     compose_master,
     compose_run,
@@ -389,31 +389,6 @@ def test_structured_verdict_handles_unparseable():
     assert verdict["summary_plain"] == "verdict could not be parsed"
 
 
-def test_event_stream_orders_chronologically():
-    events = _event_stream(
-        "workflow-123456",
-        "SUCCESS",
-        datetime(2026, 8, 10, 4, 6, 45, tzinfo=timezone.utc),
-        [
-            {
-                "n": 1,
-                "started_at": "2026-08-10T04:08:00Z",
-                "ended_at": "2026-08-10T04:09:00Z",
-                "state": "completed",
-                "model": "luna",
-                "session_id": 1,
-                "rationale": {},
-                "finding": {"observed_head": "12345678"},
-            }
-        ],
-        [],
-        {},
-        "repo",
-        False,
-    )
-    assert [event["at"] for event in events] == sorted(event["at"] for event in events)
-
-
 def test_disposition_shows_changes_requested():
     disposition = _disposition("SUCCESS", "changes_requested", {}, [], {})
     assert disposition["state"] == "changes_requested"
@@ -479,10 +454,6 @@ def test_compose_run_events_full_sequence():
         session(2, status="completed", node="review"),
     ]
     run = compose_run(DBOS(Workflow(status)), status.workflow_id, rows, "unknown")
-    assert run["events"]
-    assert {event["register"] for event in run["events"]} == {"fact", "testimony"}
-    assert any("started" in event["text"] for event in run["events"])
-    assert any("approved" in event["text"] for event in run["events"])
 
 
 def test_attempt_carries_prior_head_alongside_finding():
@@ -600,3 +571,63 @@ def test_master_row_includes_dbos_status():
         ListingDBOS(Workflow(status)), True, {"wf-master-status": []}, "unknown"
     )
     assert result["runs"][0]["dbos_status"] == "CANCELLED"
+
+
+def _composed_prose(run: dict) -> list[tuple[str, str]]:
+    """Every string this payload composes for a human to read.
+
+    Deliberately NOT the whole payload. Identifiers, SHAs, branch names and
+    internal enums are legitimate data; the contract is only that nothing
+    *composed for display* carries machine formatting. Quoted testimony is
+    excluded for the same reason: it is the agent's own words, and ADR 056
+    decision 7's no-filename rule governs system-composed walkthrough text,
+    not what an agent said.
+    """
+    found: list[tuple[str, str]] = []
+    disposition = run.get("disposition") or {}
+    for key in ("reason", "next"):
+        if isinstance(disposition.get(key), str):
+            found.append((f"disposition.{key}", disposition[key]))
+    for node in run.get("nodes") or []:
+        current = node.get("current") or {}
+        if isinstance(current.get("label"), str):
+            found.append((f"nodes[{node.get('key')}].current.label", current["label"]))
+        verdict = node.get("verdict") or {}
+        if isinstance(verdict.get("summary_plain"), str):
+            found.append(
+                (f"nodes[{node.get('key')}].verdict", verdict["summary_plain"])
+            )
+    for deviation in run.get("deviations") or []:
+        if isinstance(deviation.get("text"), str):
+            found.append((f"deviations[{deviation.get('code')}]", deviation["text"]))
+    return found
+
+
+def test_composed_prose_carries_no_machine_formatting():
+    """Pins three presentation defects shut at once.
+
+    A raw ISO timestamp and a raw enum are both internal vocabulary reaching
+    the reader. Fixing the three known instances would not stop a fourth, so
+    the class is asserted rather than the instances.
+    """
+    iso = re.compile(r"\d{4}-\d{2}-\d{2}T")
+    enum = re.compile(r"^[A-Z][A-Z_]+$")
+    for status, output in (
+        (
+            Status("wf-a", "SUCCESS", ["task", "repo", "main"]),
+            {"review_verdict": "approve"},
+        ),
+        (
+            Status("wf-b", "SUCCESS", ["task", "repo", "main"]),
+            {"review_verdict": "request_changes"},
+        ),
+        (Status("wf-c", "CANCELLED", ["task", "repo", "main"]), {}),
+    ):
+        run = compose_run(
+            DBOS(Workflow(status, output)), status.workflow_id, [], "unknown"
+        )
+        if run is None:
+            continue
+        for where, value in _composed_prose(run):
+            assert not iso.search(value), f"{where} carries a raw timestamp: {value}"
+            assert not enum.fullmatch(value.strip()), f"{where} is a raw enum: {value}"

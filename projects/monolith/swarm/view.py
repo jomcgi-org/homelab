@@ -308,127 +308,6 @@ def _structured_verdict(output: dict, repo: str | None) -> dict | None:
     }
 
 
-def _event_stream(
-    workflow_id,
-    dbos_status,
-    created_at,
-    implement_attempts,
-    review_attempts,
-    output,
-    repo,
-    stranded,
-):
-    events = []
-
-    def add(at, register, text, refs):
-        timestamp = _iso(at)
-        if timestamp:
-            events.append(
-                {"at": timestamp, "register": register, "text": text, "refs": refs}
-            )
-
-    add(
-        created_at,
-        "fact",
-        f"started run {_short_sha(workflow_id)}",
-        {"workflow_id": workflow_id},
-    )
-    for attempt in implement_attempts:
-        if attempt.get("started_at"):
-            add(
-                attempt["started_at"],
-                "fact",
-                f"implement attempt {attempt['n']} started with {attempt['model']}",
-                {
-                    "node": "implement",
-                    "attempt": attempt["n"],
-                    "session_id": attempt["session_id"],
-                },
-            )
-        rationale = attempt.get("rationale") or {}
-        if rationale.get("raw"):
-            add(
-                attempt.get("ended_at") or attempt.get("started_at"),
-                "testimony",
-                f"implementer reported (attempt {attempt['n']})",
-                {
-                    "node": "implement",
-                    "attempt": attempt["n"],
-                    "session_id": attempt["session_id"],
-                    "rationale_key": "paths",
-                },
-            )
-        if attempt.get("ended_at"):
-            if attempt.get("state") == "gated":
-                add(
-                    attempt["ended_at"],
-                    "fact",
-                    f"attempt {attempt['n']} head did not move, passed to gate for decision",
-                    {
-                        "node": "implement",
-                        "attempt": attempt["n"],
-                        "prior_head": attempt.get("prior_head"),
-                    },
-                )
-            elif attempt.get("state") in ("completed", "failed"):
-                observed = (attempt.get("finding") or {}).get("observed_head")
-                text = (
-                    f"attempt {attempt['n']} advanced to {observed}"
-                    if observed
-                    else f"attempt {attempt['n']} complete"
-                )
-                add(
-                    attempt["ended_at"],
-                    "fact",
-                    text,
-                    {
-                        "node": "implement",
-                        "attempt": attempt["n"],
-                        "session_id": attempt["session_id"],
-                        "sha": observed,
-                    },
-                )
-    for attempt in review_attempts:
-        if attempt.get("started_at"):
-            add(
-                attempt["started_at"],
-                "fact",
-                f"review attempt {attempt['n']} started with {attempt['model']}",
-                {
-                    "node": "review",
-                    "attempt": attempt["n"],
-                    "session_id": attempt["session_id"],
-                },
-            )
-    verdict = _structured_verdict(output, repo)
-    if verdict and review_attempts:
-        attempt = review_attempts[-1]
-        add(
-            attempt.get("ended_at") or attempt.get("started_at"),
-            "testimony",
-            f"reviewer {verdict['summary_plain']}",
-            {
-                "node": "review",
-                "attempt": attempt["n"],
-                "session_id": attempt["session_id"],
-                "verdict_value": verdict["value"],
-                "commit_sha": verdict["commit_sha"],
-                "commit_url": verdict["commit_url"],
-            },
-        )
-    if dbos_status == "CANCELLED":
-        add(
-            output.get("completed_at") or created_at,
-            "fact",
-            "run cancelled",
-            {"workflow_id": workflow_id},
-        )
-    indexed = enumerate(events)
-    return [
-        event for _, event in sorted(indexed, key=lambda item: (item[1]["at"], item[0]))
-    ]
-
-
 def _disposition(dbos_status, state, output, nodes, plan):
     if dbos_status == "CANCELLED":
         return {"state": "cancelled", "reason": "this run was cancelled", "next": None}
@@ -621,23 +500,12 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
     )
     state = _derived_state(raw, output, nodes, stranded)
     disposition = _disposition(raw, state, output, nodes, plan)
-    events = _event_stream(
-        workflow_id,
-        raw,
-        _value(status, "created_at"),
-        implement_attempts,
-        review_attempts,
-        output,
-        inp.get("repo"),
-        stranded,
-    )
     work_branch = output.get("work_branch") or f"claude/swarm-{workflow_id}"
     return {
         "workflow_id": workflow_id,
         "dbos_status": raw,
         "state": state,
         "disposition": disposition,
-        "events": events,
         "task": {
             "text": inp.get("task", ""),
             "repo": inp.get("repo"),

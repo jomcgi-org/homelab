@@ -54,14 +54,6 @@ def test_retry_taken_includes_recorded_finding_code():
     assert "head_unchanged" in deviation["evidence"]
 
 
-def test_verdict_not_approve_includes_unparseable():
-    run = {
-        "plan": plan(),
-        "nodes": [node("review", verdict={"value": "unparseable"})],
-    }
-    assert compute_deviations(run)[0]["code"] == "verdict_not_approve"
-
-
 def test_model_mismatch():
     run = {
         "plan": plan(),
@@ -99,3 +91,17 @@ def test_pin_dependent_deviations_are_absent_when_plan_is_unpinned():
     assert "model_mismatch" not in codes
     assert "budget_exceeded" not in codes
     assert "retry_taken" in codes
+
+
+def test_non_approve_verdict_is_not_a_deviation():
+    """A deviation is a departure from what the pinned plan promised.
+
+    A reviewer asking for changes departs from nothing the plan promised, so
+    it is the run's outcome, not a deviation. It is already stated by the
+    disposition; a third restatement here was a category error.
+    """
+    run = {
+        "plan": plan(),
+        "nodes": [node("review", verdict={"value": "unparseable"})],
+    }
+    assert [d["code"] for d in compute_deviations(run)] == []
