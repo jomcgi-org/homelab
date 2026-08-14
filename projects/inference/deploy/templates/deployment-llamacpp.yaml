@@ -1,4 +1,9 @@
-{{- if eq .Values.llm.engine "vllm" }}
+{{- if eq .Values.llm.engine "llamacpp" }}
+{{/*
+The generative LLM served by llama.cpp. Carries the same name, component label,
+and port as the vLLM deployment, so the Service, its selector, and every caller
+URL are identical across an engine flip -- only one of the two ever renders.
+*/}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,25 +44,36 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: llama-server
-          image: "{{ .Values.image.vllm.repository }}:{{ .Values.image.vllm.tag }}"
-          imagePullPolicy: {{ .Values.image.vllm.pullPolicy }}
+          image: "{{ .Values.image.llamacpp.repository }}:{{ .Values.image.llamacpp.tag }}"
+          imagePullPolicy: {{ .Values.image.llamacpp.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           command: ["/bin/sh", "-c"]
           args:
             - |
-              # Auto-discover model: HuggingFace format (config.json) or GGUF.
-              MODEL=$(find {{ .Values.modelVolume.mountPath }} -maxdepth 2 -name 'config.json' -type f -exec dirname {} \; | head -1)
+              MODEL=$(find {{ .Values.llamacpp.modelVolume.mountPath }} -maxdepth 2 -name '*.gguf' ! -name 'mmproj*' -type f | sort | head -1)
               if [ -z "$MODEL" ]; then
-                MODEL=$(find {{ .Values.modelVolume.mountPath }} -maxdepth 2 -name '*.gguf' ! -name 'mmproj*' -type f | sort | head -1)
-              fi
-              if [ -z "$MODEL" ]; then
-                echo "ERROR: no model found under {{ .Values.modelVolume.mountPath }}" >&2
+                echo "ERROR: no .gguf file found under {{ .Values.llamacpp.modelVolume.mountPath }}" >&2
                 exit 1
               fi
               echo "Auto-discovered model: $MODEL"
-              exec vllm serve "$MODEL" \
-                {{ include "inference.vllmArgs" . | indent 16 | trim }}
+              set -- --model "$MODEL"
+              {{- if .Values.llamacpp.mmproj }}
+              # Prefer the F16 projector by exact name: a glob like 'mmproj*F16*'
+              # also matches mmproj-BF16.gguf, and sorts it first.
+              MMPROJ=$(find {{ .Values.llamacpp.modelVolume.mountPath }} -maxdepth 2 -name 'mmproj-F16.gguf' -type f | head -1)
+              if [ -z "$MMPROJ" ]; then
+                MMPROJ=$(find {{ .Values.llamacpp.modelVolume.mountPath }} -maxdepth 2 -name 'mmproj*.gguf' -type f | sort | head -1)
+              fi
+              if [ -z "$MMPROJ" ]; then
+                echo "ERROR: mmproj requested but no mmproj*.gguf found under {{ .Values.llamacpp.modelVolume.mountPath }}" >&2
+                exit 1
+              fi
+              echo "Auto-discovered mmproj: $MMPROJ"
+              set -- "$@" --mmproj "$MMPROJ"
+              {{- end }}
+              exec /app/llama-server "$@" \
+                {{ include "inference.llamaCppArgs" . | indent 16 | trim }}
           ports:
             - name: http
               containerPort: {{ .Values.server.port }}
@@ -77,35 +93,20 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            {{- if .Values.modelVolume.enabled }}
+            {{- if .Values.llamacpp.modelVolume.enabled }}
             - name: model
-              mountPath: {{ .Values.modelVolume.mountPath }}
+              mountPath: {{ .Values.llamacpp.modelVolume.mountPath }}
               readOnly: true
             {{- end }}
-            {{- if .Values.server.chatTemplate }}
-            - name: chat-template
-              mountPath: /etc/chat-template
-              readOnly: true
-            {{- end }}
-            - name: vllm-cache
-              mountPath: /root/.cache
             - name: dshm
               mountPath: /dev/shm
       volumes:
-        {{- if .Values.modelVolume.enabled }}
+        {{- if .Values.llamacpp.modelVolume.enabled }}
         - name: model
           image:
-            reference: {{ .Values.modelVolume.reference }}
+            reference: {{ .Values.llamacpp.modelVolume.reference }}
             pullPolicy: IfNotPresent
         {{- end }}
-        {{- if .Values.server.chatTemplate }}
-        - name: chat-template
-          configMap:
-            name: {{ include "inference.fullname" . }}-chat-template
-        {{- end }}
-        - name: vllm-cache
-          persistentVolumeClaim:
-            claimName: {{ include "inference.fullname" . }}-vllm-cache
         - name: dshm
           emptyDir:
             medium: Memory

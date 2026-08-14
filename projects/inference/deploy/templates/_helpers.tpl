@@ -69,6 +69,30 @@ Embedding llama-server CLI arguments.
 {{- end }}
 
 {{/*
+LLM llama-server CLI arguments (llm.engine "llamacpp").
+
+Mirrors inference.embeddingArgs but for the generative path: GPU offload, a
+multi-slot KV pool, and the jinja/reasoning flags that make tool calls and
+reasoning_content come back in the shape the monolith already parses. The model
+and mmproj paths are auto-discovered in the container, so they are not emitted
+here.
+*/}}
+{{- define "inference.llamaCppArgs" -}}
+--n-gpu-layers {{ .Values.llamacpp.nGpuLayers | quote }} \
+--ctx-size {{ .Values.llamacpp.ctxSize | quote }} \
+--parallel {{ .Values.llamacpp.parallel | quote }} \
+{{- if .Values.llamacpp.flashAttn }}
+--flash-attn {{ .Values.llamacpp.flashAttn | quote }} \
+{{- end }}
+--cache-type-k {{ .Values.llamacpp.cacheTypeK | quote }} \
+--cache-type-v {{ .Values.llamacpp.cacheTypeV | quote }} \
+--threads {{ .Values.llamacpp.threads | quote }} \
+--host {{ .Values.server.host | quote }} \
+--port {{ .Values.server.port | quote }}{{ range .Values.llamacpp.extraArgs }} \
+{{ . | quote }}{{ end }}
+{{- end }}
+
+{{/*
 vLLM CLI arguments.
 */}}
 {{- define "inference.vllmArgs" -}}

@@ -1,10 +1,29 @@
 fullnameOverride: "inference"
 
-# LLM is served by vLLM (single backend — no swappable hosting tech).
+# Which engine serves the LLM. Exactly one runs: node-4 has a single RTX 4090
+# and both deployments request it, so the unselected one is not rendered at all
+# (not scaled to zero) to keep the GPU request honest.
+#
+# "llamacpp" is a deliberate, temporary state. Qwen3.8-27B is a dense 27B whose
+# only Ada-executable quantization today is GGUF: the FP8 build is 28.75 GiB and
+# the NVFP4 build quantizes activations to 4 bits, which needs Blackwell tensor
+# cores that sm_89 does not have. Revert to "vllm" (a one-line change, both
+# blocks below are kept intact) once a weight-only int4 with 16-bit activations
+# ships, in the mould of the Intel AutoRound quant this cluster ran before.
+llm:
+  engine: llamacpp
+
 image:
   vllm:
     repository: vllm/vllm-openai
     tag: "v0.19.1"
+    pullPolicy: IfNotPresent
+  # Same repository the embeddings deployment runs, pinned independently: that
+  # one is serving live retrieval traffic on a build known good for it, and
+  # Qwen3.8 support only exists in much newer builds.
+  llamacpp:
+    repository: ghcr.io/ggml-org/llama.cpp
+    tag: "server-cuda-b10423@sha256:a475c08c7c472425e3ebf7f6be9c6cb3a17e82ec28070ddeb22fffe3ca754a94"
     pullPolicy: IfNotPresent
 
 imagePullSecret:
@@ -218,6 +237,64 @@ vllm:
     - "8"
     - "--kv-cache-dtype"
     - "fp8"
+
+# llama.cpp LLM settings. Only read when llm.engine is "llamacpp".
+llamacpp:
+  modelVolume:
+    enabled: true
+    # Qwen3.8-27B, unsloth GGUF Q4_K_M plus both mmproj variants, pushed with
+    # `hf2oci copy unsloth/Qwen3.8-27B-GGUF -r ghcr.io/jomcgi/models
+    #  --file Qwen3.8-27B-Q4_K_M --include-mmproj`. As with the vLLM model this
+    # is the resolved ghcr ref, not the hf.co form, so the oci-model-cache
+    # webhook does not gate the pod: the image must exist in ghcr before ArgoCD
+    # syncs or the pod ImagePullBackOffs. Pushed and verified 2026-08-14 at
+    # sha256:5756850ee602b50c2e697d5dcf44c075b4be08caee3ba526cbf73a11dcd45b3b.
+    reference: "ghcr.io/jomcgi/models/qwen/qwen3.8-27b:unsloth-gguf-q4-k-m-mmproj"
+    mountPath: "/model-image"
+  # 99 = offload every layer. Unlike the embeddings deployment (which is
+  # deliberately n-gpu-layers 0 and holds its weights in host RAM), the whole
+  # model is meant to be resident in VRAM here.
+  nGpuLayers: 99
+  # ctxSize is the TOTAL KV pool, divided across `parallel` slots -- it is NOT
+  # per-sequence like vLLM's --max-model-len. 131072 / 4 = 32768 per slot, which
+  # preserves the 32k window every monolith callsite is written against.
+  #
+  # VRAM budget on the 24564 MiB card: 15.92 GiB weights + 0.86 GiB mmproj +
+  # ~1 GiB compute buffers leaves ~6.2 GiB for KV. Qwen3.8-27B carries KV on
+  # only 16 of its 64 layers (the rest are Gated DeltaNet linear attention), but
+  # head_dim is 256, so a 32k sequence still costs a full 1.00 GiB at q8_0.
+  # 4 slots = ~4 GiB and leaves real margin. Raise toward 6 only after reading
+  # steady-state VRAM: this is a Recreate deployment on a single GPU, so an
+  # over-committed KV pool is a crash loop, not a degraded pod.
+  ctxSize: 131072
+  parallel: 4
+  # Quantized V cache requires flash attention; leaving this off silently forces
+  # the cache back to f16 and doubles the table above.
+  flashAttn: "on"
+  cacheTypeK: "q8_0"
+  cacheTypeV: "q8_0"
+  threads: 4
+  # Vision projector. chat/vision.py is a live callsite that sends image_url and
+  # hard-fails without this. Auto-discovered from the model image (both BF16 and
+  # F16 ship in it); F16 is preferred, hence the ordering in the template.
+  mmproj: true
+  extraArgs:
+    # Keeps the served model name stable so the 10+ callsites that hardcode the
+    # alias, and the model-bench leaderboard, do not have to change.
+    - "--alias"
+    - "qwen3.6-27b"
+    # --jinja uses the chat template embedded in the GGUF (Qwen3.8's own) and is
+    # what makes tool calls parse into OpenAI-shaped tool_calls. Note the
+    # server.chatTemplate configmap is NOT mounted here on purpose: it holds the
+    # Qwen3.6 template, hand-injected because AutoRound stripped it, and feeding
+    # it to Qwen3.8 would silently produce the wrong prompt format.
+    - "--jinja"
+    # Emits reasoning into the `reasoning_content` field, which is what
+    # summarizer.py and the chat agents already read from vLLM's qwen3
+    # reasoning-parser output.
+    - "--reasoning-format"
+    - "deepseek"
+    - "--metrics"
 
 runtimeClassName: nvidia
 
