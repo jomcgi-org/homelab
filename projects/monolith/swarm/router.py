@@ -8,11 +8,14 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from swarm import config, runtime
 from goosecracker.api import REPO_CATALOG
+from swarm import config, runtime
+from swarm.compare_router import router as compare_router
 
 router = APIRouter(prefix="/api/swarm", tags=["swarm"])
 logger = logging.getLogger(__name__)
+
+router.include_router(compare_router)
 
 
 class RunRequest(BaseModel):

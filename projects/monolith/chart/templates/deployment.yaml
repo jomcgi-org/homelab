@@ -274,16 +274,17 @@ spec:
                   key: SEMGREP_WEBHOOK_SECRET
                   optional: true
             {{- if .Values.chat.enabled }}
-            # Real GitHub API token for the webhook's changed-file fetch. The
+            # Real GitHub API token for GitHub-backed changed-file fetches,
+            # including the session compare proxy. The
             # monolith's own GITHUB_TOKEN env is a kloak: placeholder (guest
             # egress swap), useless for a direct API call, so we wire the REAL
             # token (monolith-chat-secrets key GITHUB_TOKEN, the same one
-            # git-mirror uses) under a distinct env name the webhook reads.
+            # git-mirror uses) under a distinct env name the API reads.
             - name: GITHUB_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-chat-secrets
-                  key: GITHUB_TOKEN
+                  key: {{ .Values.chat.githubApiTokenSecretKey }}
             {{- end }}
             {{- end }}
             # cd health component thresholds (issue #4597). Values, not code
