@@ -1332,10 +1332,25 @@ defmodule Embervm.Dispatcher do
       |> Enum.map(&Map.get(&1, :vm_id))
       |> Enum.filter(&is_binary/1)
 
+    node_reported =
+      for facts <- NodeCapacity.all(state.capacity_table), into: %{} do
+        primed_vm_ids =
+          Map.get(facts, :workloads, %{})
+          |> Map.values()
+          |> Enum.flat_map(&(Map.get(&1, :primed_vm_ids, []) || []))
+
+        {instance_id_of(facts), %{
+          "live_vms" => Map.get(facts, :live_vms, 0),
+          "primed_count" => length(primed_vm_ids),
+          "connected" => true
+        }}
+      end
+
     Embervm.SpecTrace.emit(:adoption, :checkpoint, %{
       "node_workload_vm_ids" => node_workload_vm_ids,
       "reserved_vm_ids" => reserved_vm_ids,
-      "node_health" => safe_node_health()
+      "node_health" => safe_node_health(),
+      "node_reported" => node_reported
     })
 
     state
