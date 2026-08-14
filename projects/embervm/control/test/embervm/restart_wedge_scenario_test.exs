@@ -181,10 +181,21 @@ defmodule Embervm.RestartWedgeScenarioTest do
     end
   end
 
+  # :httpc wants a FOUR-tuple for methods that carry a body and a two-tuple for
+  # those that do not. Passing the two-tuple form for :post returns
+  # {:error, :invalid_request} before anything reaches the network, which reads
+  # like the control port rejecting the lever rather than the client refusing to
+  # send it.
   defp control(port, method, path) do
-    {:ok, {{_, status, _}, _headers, _body}} =
-      :httpc.request(method, {~c"http://127.0.0.1:#{port}#{path}", []}, [], [])
+    url = ~c"http://127.0.0.1:#{port}#{path}"
 
+    request =
+      case method do
+        :post -> {url, [], ~c"application/json", ~c""}
+        _ -> {url, []}
+      end
+
+    {:ok, {{_, status, _}, _headers, _body}} = :httpc.request(method, request, [], [])
     status
   end
 
