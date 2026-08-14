@@ -116,10 +116,19 @@ defmodule Embervm.SpecTraceSitesTest do
              "exact failure this test exists to prevent. Parsed: " <>
              "#{inspect(MapSet.to_list(prose_actions))}"
 
+    # Compare as STRINGS. The registries key on atoms and the parser yields
+    # strings, and a MapSet of atoms differenced against a MapSet of strings is
+    # simply the original set, so the assertion would report every action as
+    # unobserved (or, with the operands the other way round, report everything as
+    # fine). That is the same writer-versus-reader type disagreement that put
+    # booleans into this trace as "true", one layer up in the test that checks
+    # for it. Caught because the assertion failed loudly rather than passing.
+    to_strings = fn map -> map |> Map.keys() |> Enum.map(&Atom.to_string/1) |> MapSet.new() end
+
     # A site is either the snake_case of a prose action, or carries a note saying
     # what it is instead (a synthetic observation, or a refinement of an action).
-    observed = MapSet.new(Map.keys(sites)) |> MapSet.difference(MapSet.new(Map.keys(site_notes)))
-    accounted = MapSet.union(observed, MapSet.new(Map.keys(excluded)))
+    observed = MapSet.difference(to_strings.(sites), to_strings.(site_notes))
+    accounted = MapSet.union(observed, to_strings.(excluded))
 
     unobserved = MapSet.difference(prose_actions, accounted)
 
