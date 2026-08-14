@@ -28,6 +28,9 @@ defmodule Embervm.SpecTrace.Store.Postgres do
   def sweep(server \\ __MODULE__, opts \\ []), do: GenServer.call(server, {:sweep, opts})
 
   @impl true
+  def max_seq(server \\ __MODULE__), do: GenServer.call(server, :max_seq)
+
+  @impl true
   def init(opts) do
     dsn = Keyword.get(opts, :dsn, System.get_env("EMBERVM_OPLOG_DSN", ""))
     with {:ok, conn} <- connect(dsn), :ok <- create_schema(conn) do {:ok, %{conn: conn}} else {:error, reason} -> {:stop, {:connect_failed, reason}} end
@@ -36,6 +39,16 @@ defmodule Embervm.SpecTrace.Store.Postgres do
   def terminate(_reason, %{conn: conn}), do: GenServer.stop(conn)
   @impl true
   def handle_call({:write, records}, _from, state), do: {:reply, safe(fn -> do_write(state.conn, records) end), state}
+  def handle_call(:max_seq, _from, state) do
+    max =
+      case safe(fn -> Postgrex.query!(state.conn, "SELECT COALESCE(MAX(seq), 0) FROM public.spec_trace", []) end) do
+        %Postgrex.Result{rows: [[max]]} when is_integer(max) -> max
+        _ -> 0
+      end
+
+    {:reply, max, state}
+  end
+
   def handle_call({:read, opts}, _from, state), do: {:reply, safe(fn -> do_read(state.conn, opts) end), state}
   def handle_call({:sweep, opts}, _from, state), do: {:reply, safe(fn -> do_sweep(state.conn, opts) end), state}
 
