@@ -1,9 +1,88 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"io"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestOriginFormReader(t *testing.T) {
+	absolute := "POST http://inference.inference.svc.cluster.local:8080/v1/chat/completions HTTP/1.1\r\n" +
+		"Host: inference.inference.svc.cluster.local:8080\r\nContent-Length: 0\r\n\r\n"
+	origin := "POST /v1/chat/completions HTTP/1.1\r\nHost: inference.inference.svc.cluster.local:8080\r\nContent-Length: 0\r\n\r\n"
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "absolute form preserves host",
+			in:   absolute,
+			want: origin,
+		},
+		{
+			name: "origin form passes through",
+			in:   origin,
+			want: origin,
+		},
+		{
+			name: "keep alive rewrites every request",
+			in:   absolute + absolute,
+			want: origin + origin,
+		},
+		{
+			name: "non HTTP bytes pass through",
+			in:   "git-upload-pack\x00\x01\xffbinary",
+			want: "git-upload-pack\x00\x01\xffbinary",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got bytes.Buffer
+			if _, err := io.Copy(&got, newOriginFormReader(bufio.NewReader(strings.NewReader(tt.in)))); err != nil {
+				t.Fatal(err)
+			}
+			if got.String() != tt.want {
+				t.Errorf("rewritten stream = %q, want %q", got.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestOriginFormReaderHandlesSplitRequestLine(t *testing.T) {
+	line := "POST http://inference.inference.svc.cluster.local:8080/v1/chat/completions HTTP/1.1\r\n"
+	in := strings.NewReader(line[:17])
+	reader := &chunkedReader{first: in, second: strings.NewReader(line[17:] + "Host: inference.inference.svc.cluster.local:8080\r\n\r\n")}
+	var got bytes.Buffer
+	if _, err := io.Copy(&got, newOriginFormReader(bufio.NewReader(reader))); err != nil {
+		t.Fatal(err)
+	}
+	want := "POST /v1/chat/completions HTTP/1.1\r\nHost: inference.inference.svc.cluster.local:8080\r\n\r\n"
+	if got.String() != want {
+		t.Errorf("rewritten split stream = %q, want %q", got.String(), want)
+	}
+}
+
+type chunkedReader struct {
+	first, second io.Reader
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if r.first != nil {
+		n, err := r.first.Read(p)
+		if err == io.EOF {
+			r.first = nil
+		}
+		if n > 0 {
+			return n, nil
+		}
+	}
+	return r.second.Read(p)
+}
 
 func TestAllowed(t *testing.T) {
 	tests := []struct {

@@ -56,7 +56,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -290,11 +292,161 @@ func (p *proxy) handle(client net.Conn) {
 	defer up.Close()
 
 	// Pump both directions. br carries the peeked-but-unconsumed client bytes, so
-	// the upstream sees the exact original stream. Either close unblocks the other.
+	// the upstream sees the exact original stream, apart from absolute-form HTTP
+	// request lines. The wrapper re-enters request-line detection after each
+	// request body, so keep-alive connections are normalized request by request.
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(up, br); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(up, newOriginFormReader(br)); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(client, up); done <- struct{}{} }()
 	<-done
+}
+
+// originFormReader is deliberately only a request-line filter, not a reverse
+// proxy. It consumes headers solely to find the next request boundary and
+// copies every header and body byte unchanged. If the stream does not begin
+// with an HTTP request line, it fails open and becomes a byte-for-byte reader,
+// which keeps git and other non-HTTP protocols on the blind tunnel.
+type originFormReader struct {
+	src         *bufio.Reader
+	pending     []byte
+	state       originFormReaderState
+	contentLeft int64
+	rewriteHost string
+	headerBuf   []byte
+	hasHost     bool
+}
+
+type originFormReaderState uint8
+
+const (
+	originFormRequestLine originFormReaderState = iota
+	originFormHeaders
+	originFormBody
+	originFormPassthrough
+)
+
+func newOriginFormReader(src *bufio.Reader) io.Reader {
+	return &originFormReader{src: src, state: originFormRequestLine}
+}
+
+func (r *originFormReader) Read(p []byte) (int, error) {
+	for len(r.pending) == 0 {
+		switch r.state {
+		case originFormRequestLine:
+			line, err := r.src.ReadString('\n')
+			if err != nil {
+				r.state = originFormPassthrough
+				r.pending = []byte(line)
+				if len(line) == 0 {
+					return 0, err
+				}
+				break
+			}
+			rewritten, host, absolute, ok := classifyRequestLine(line)
+			if !ok {
+				r.state = originFormPassthrough
+				r.pending = []byte(line)
+				break
+			}
+			r.pending = []byte(line)
+			if absolute {
+				r.pending = []byte(rewritten)
+			}
+			r.rewriteHost = host
+			r.headerBuf = r.headerBuf[:0]
+			r.hasHost = false
+			r.state = originFormHeaders
+		case originFormHeaders:
+			line, err := r.src.ReadString('\n')
+			if len(line) == 0 && err != nil {
+				r.state = originFormPassthrough
+				return 0, err
+			}
+			if strings.EqualFold(strings.TrimSpace(strings.SplitN(line, ":", 2)[0]), "host") {
+				r.hasHost = true
+			}
+			r.headerBuf = append(r.headerBuf, line...)
+			if line == "\r\n" || line == "\n" {
+				if r.rewriteHost != "" && !r.hasHost {
+					r.headerBuf = append([]byte("Host: "+r.rewriteHost+"\r\n"), r.headerBuf...)
+				}
+				r.contentLeft = contentLength(r.headerBuf)
+				r.pending = append(r.pending, r.headerBuf...)
+				r.headerBuf = r.headerBuf[:0]
+				if r.contentLeft > 0 {
+					r.state = originFormBody
+				} else {
+					r.state = originFormRequestLine
+				}
+			}
+			if err != nil {
+				if len(r.headerBuf) > 0 {
+					r.pending = append(r.pending, r.headerBuf...)
+					r.headerBuf = r.headerBuf[:0]
+				}
+				r.state = originFormPassthrough
+			}
+		case originFormBody:
+			if r.contentLeft == 0 {
+				r.state = originFormRequestLine
+				continue
+			}
+			n := len(p)
+			if int64(n) > r.contentLeft {
+				n = int(r.contentLeft)
+			}
+			buf := make([]byte, n)
+			read, err := io.ReadFull(r.src, buf)
+			r.pending = append(r.pending, buf[:read]...)
+			r.contentLeft -= int64(read)
+			if err != nil {
+				r.state = originFormPassthrough
+			}
+		case originFormPassthrough:
+			n, err := r.src.Read(p)
+			return n, err
+		}
+	}
+
+	n := copy(p, r.pending)
+	r.pending = r.pending[n:]
+	return n, nil
+}
+
+func classifyRequestLine(line string) (string, string, bool, bool) {
+	parts := strings.Fields(strings.TrimRight(line, "\r\n"))
+	if len(parts) != 3 || !strings.HasPrefix(parts[2], "HTTP/") {
+		return "", "", false, false
+	}
+	if strings.HasPrefix(parts[1], "/") {
+		return line, "", false, true
+	}
+	u, err := url.ParseRequestURI(parts[1])
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", "", false, false
+	}
+	origin := u.RequestURI()
+	if origin == "" {
+		origin = "/"
+	}
+	ending := "\n"
+	if strings.HasSuffix(line, "\r\n") {
+		ending = "\r\n"
+	}
+	return parts[0] + " " + origin + " " + parts[2] + ending, u.Host, true, true
+}
+
+func contentLength(headers []byte) int64 {
+	for _, line := range strings.Split(string(headers), "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 && strings.EqualFold(strings.TrimSpace(parts[0]), "content-length") {
+			n, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+			if err == nil && n >= 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // allowed reports whether dest is permitted by allowlist (used for the internal
