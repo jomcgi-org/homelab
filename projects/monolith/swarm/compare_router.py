@@ -47,6 +47,7 @@ def _turn_data(session_id: int, turn_seq: int):
             "usage_json": turn.usage_json,
             "prompt_intent": turn.prompt_intent,
             "result_text": turn.result_text,
+            "rationale": parse_rationale(turn.result_text),
         }
 
 

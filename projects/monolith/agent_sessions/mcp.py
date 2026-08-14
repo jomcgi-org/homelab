@@ -29,6 +29,7 @@ from agent_sessions.transport import (
 from core.db import get_engine
 from core.mcp_app import mcp
 from goosecracker.api import REPO_CATALOG
+from swarm.rationale import parse_rationale
 
 # Voice and MCP sessions hydrate this repo unless the caller names another. The
 # /agents console makes the choice explicit in a dropdown; there is no dropdown
@@ -783,6 +784,7 @@ async def monolith_agent_detail(session_id: int, turn: int | None = None) -> dic
         "prompt": selected.prompt,
         "prompt_intent": selected.prompt_intent,
         "result_text": selected.result_text,
+        "rationale": parse_rationale(selected.result_text),
         "model": selected.model,
         "activities": _activities(selected),
     }

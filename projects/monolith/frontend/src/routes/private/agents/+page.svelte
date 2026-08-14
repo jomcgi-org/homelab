@@ -2,7 +2,7 @@
   import { onMount, tick } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import { renderAgentMarkdown, stripRationaleTrailer } from "./markdown.js";
+  import { renderAgentMarkdown, resultWithoutTrailer } from "./markdown.js";
   import { RUN_FIXTURES } from "./run-fixtures.js";
   // groupSessions and its helpers grouped run-spawned sessions into the
   // session list. Runs are their own collection now and their sessions live
@@ -314,9 +314,9 @@
 
   function turnProtocol(turn) {
     if (turn?.prompt_intent == null) return "";
-    return String(turn.prompt || "")
-      .slice(String(turn.prompt_intent).length)
-      .replace(/^\n/, "");
+    const prefix = `${turn.prompt_intent}\n`;
+    if (!turn.prompt?.startsWith(prefix)) return "";
+    return turn.prompt.slice(prefix.length);
   }
 
   function activityParts(activity) {
@@ -1284,15 +1284,11 @@
                 </details>
               {/if}
               {#if turnFailed(turn)}
-                <pre class="turn-error">{stripRationaleTrailer(
-                    turn.result_text,
-                    turn.prompt_intent,
-                  ) || "The turn failed without output."}</pre>
+                <pre class="turn-error">{resultWithoutTrailer(turn) ||
+                    "The turn failed without output."}</pre>
               {:else if turn.result_text}
                 <div class="result-md">
-                  {@html renderAgentMarkdown(
-                    stripRationaleTrailer(turn.result_text, turn.prompt_intent),
-                  )}
+                  {@html renderAgentMarkdown(resultWithoutTrailer(turn))}
                 </div>
               {/if}
               {#if selectedSession.repo}
