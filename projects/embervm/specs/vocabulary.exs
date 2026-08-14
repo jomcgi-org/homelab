@@ -219,6 +219,10 @@
     age_to_unknown: "node_registry.ex",
     age_to_down: "node_registry.ex",
     reconnect: "node_registry.ex",
-    restart_cp: "dispatcher.ex"
+    restart_cp: "dispatcher.ex",
+    succeed: "dispatcher.ex",
+    begin_destroy: "session_manager.ex",
+    confirm_destroy: "session_manager.ex",
+    abandon_claim: "dispatcher.ex"
   }
 }

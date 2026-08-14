@@ -194,6 +194,72 @@ defmodule Embervm.DispatcherTest do
     assert Dispatcher.stats(ctx.name).warm_hits >= 1
   end
 
+  test "dispatcher emits succeed when a warm task completes" do
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path = Path.join(System.tmp_dir!(), "spec_trace_succeed_#{System.unique_integer([:positive])}.db")
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      File.rm_rf!(trace_path)
+    end)
+
+    trace_store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer = start_supervised!({Embervm.SpecTrace.Writer, store_mod: Embervm.SpecTrace.Store.SQLite, store: trace_store, batch_size: 1, flush_ms: 5})
+    ctx = start_stack()
+    put_catalog(ctx, "wl-trace-succeed", cap: 10)
+    put_facts(ctx, "wl-trace-succeed", free: 1)
+    Dispatcher.deposit(ctx.name, "node-4", "wl-trace-succeed", "vm-trace-succeed")
+
+    tid = submit(ctx, "wl-trace-succeed", "p1")
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store, action: "succeed")
+
+    assert [record] = records
+    assert record["vars"]["task_id"] == tid
+    assert record["vars"]["vm_id"] == "vm-trace-succeed"
+    assert Map.has_key?(record["vars"], "session_id")
+  end
+
+  test "dispatcher emits abandon_claim when miss worker dies before assign" do
+    parent = self()
+
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path = Path.join(System.tmp_dir!(), "spec_trace_abandon_#{System.unique_integer([:positive])}.db")
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      File.rm_rf!(trace_path)
+    end)
+
+    trace_store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer = start_supervised!({Embervm.SpecTrace.Writer, store_mod: Embervm.SpecTrace.Store.SQLite, store: trace_store, batch_size: 1, flush_ms: 5})
+    ctx = start_stack(prime_fun: fn _ch, _req ->
+      send(parent, :miss_worker_started)
+      Process.exit(self(), :kill)
+    end)
+    put_catalog(ctx, "wl-trace-abandon", cap: 10)
+    put_facts(ctx, "wl-trace-abandon", free: 0, live: 0, max: 8)
+
+    tid = submit(ctx, "wl-trace-abandon", "p1")
+    assert_receive :miss_worker_started
+
+    assert eventually(fn ->
+      :ok = Embervm.SpecTrace.drain(writer)
+      {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store, action: "abandon_claim")
+      Enum.any?(records, &(&1["vars"]["task_id"] == tid))
+    end)
+
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, [record | _]} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store, action: "abandon_claim")
+    assert record["vars"]["task_id"] == tid
+    assert Map.has_key?(record["vars"], "vm_id")
+  end
+
   test "a warm vm on a co-located, non-newest brick is found (no prefer-newest collapse)" do
     # Two bricks share node-4 (brick-capacity: a node legitimately holds several
     # instances). Brick A is the NEWEST instance (higher updated_at) but holds no
