@@ -341,45 +341,92 @@ defmodule Embervm.SpecTrace.Checker do
         }
 
       _ ->
-        # For each checkpoint, check that all vm_ids in the inventory have been primed or adopted
-        issues =
-          Enum.filter(checkpoints, fn checkpoint ->
-            node_workload_vm_ids = checkpoint["vars"]["node_workload_vm_ids"] || []
+        parsed = Enum.map(checkpoints, &checkpoint_vm_ids/1)
 
-            vm_ids_in_checkpoint =
-              Enum.map(node_workload_vm_ids, fn item ->
-                case item do
-                  [_node, _workload, vm_id] -> vm_id
-                  %{"vm_id" => vm_id} -> vm_id
-                  _ -> nil
-                end
+        # An UNPARSEABLE checkpoint must never reach a verdict of pass.
+        #
+        # This shipped inert. The dispatcher emits node_workload_vm_ids as a MAP
+        # of "node:workload" => [vm_id], but the reader mapped over it expecting
+        # a list of [node, workload, vm_id] triples. Enum.map over a map yields
+        # {key, value} TUPLES, which matched neither clause, so every entry fell
+        # to the nil fallback, was filtered out, and left an empty set. Enum.any?
+        # over an empty set is false, so the invariant reported PASS having
+        # examined zero vm_ids, on every production trace.
+        #
+        # The fixtures used the triple shape and passed, positive and negative
+        # alike. Only production disagreed, and silently. So a checkpoint that
+        # declares inventory we cannot read is now VACUOUS with the reason
+        # stated: we did not check it, which is the one thing the old code could
+        # not say.
+        unreadable = Enum.filter(parsed, fn {declared, vm_ids} -> declared > 0 and vm_ids == [] end)
+
+        cond do
+          unreadable != [] ->
+            %{
+              invariant: :prime_before_checkpoint,
+              verdict: :vacuous,
+              coverage: length(checkpoints),
+              oracle: :trace_only,
+              detail:
+                "#{length(unreadable)} of #{length(checkpoints)} checkpoints declared inventory in an unreadable shape, so nothing was checked"
+            }
+
+          true ->
+            issues =
+              Enum.filter(parsed, fn {_declared, vm_ids} ->
+                Enum.any?(vm_ids, fn vm_id ->
+                  not (MapSet.member?(prime_vm_ids, vm_id) or MapSet.member?(adopted_vm_ids, vm_id))
+                end)
               end)
-              |> Enum.filter(&is_binary/1)
-              |> MapSet.new()
 
-            # Check if any checkpoint VM has NOT been primed or adopted
-            Enum.any?(vm_ids_in_checkpoint, fn vm_id ->
-              not (MapSet.member?(prime_vm_ids, vm_id) or MapSet.member?(adopted_vm_ids, vm_id))
-            end)
-          end)
-
-        if Enum.empty?(issues) do
-          %{
-            invariant: :prime_before_checkpoint,
-            verdict: :pass,
-            coverage: length(checkpoints),
-            oracle: :trace_only,
-            detail: "all checkpoint vm_ids have preceding prime or adopt"
-          }
-        else
-          %{
-            invariant: :prime_before_checkpoint,
-            verdict: :fail,
-            coverage: length(checkpoints),
-            oracle: :trace_only,
-            detail: "some checkpoint vm_ids lack preceding prime or adopt"
-          }
+            prime_before_checkpoint_verdict(issues, checkpoints)
         end
+    end
+  end
+
+  # Returns {entries_declared, vm_ids}. The declared count is what makes an
+  # unreadable shape distinguishable from a genuinely empty inventory: both yield
+  # no vm_ids, and only one of them is a checker bug.
+  defp checkpoint_vm_ids(checkpoint) do
+    raw = checkpoint["vars"]["node_workload_vm_ids"] || []
+
+    vm_ids =
+      raw
+      |> Enum.flat_map(fn entry ->
+        case entry do
+          # Production shape: %{"node:workload" => [vm_id, ...]}, so iterating the
+          # map hands back {key, list} tuples.
+          {_node_workload, vm_ids} when is_list(vm_ids) -> vm_ids
+          # Tolerated shapes, kept so an older segment still reads.
+          [_node, _workload, vm_id] -> [vm_id]
+          %{"vm_id" => vm_id} -> [vm_id]
+          _ -> []
+        end
+      end)
+      |> Enum.filter(&is_binary/1)
+
+    {Enum.count(raw), vm_ids}
+  end
+
+  defp prime_before_checkpoint_verdict(issues, checkpoints) do
+    cond do
+      Enum.empty?(issues) ->
+        %{
+          invariant: :prime_before_checkpoint,
+          verdict: :pass,
+          coverage: length(checkpoints),
+          oracle: :trace_only,
+          detail: "all checkpoint vm_ids have preceding prime or adopt"
+        }
+
+      true ->
+        %{
+          invariant: :prime_before_checkpoint,
+          verdict: :fail,
+          coverage: length(checkpoints),
+          oracle: :trace_only,
+          detail: "some checkpoint vm_ids lack preceding prime or adopt"
+        }
     end
   end
 
