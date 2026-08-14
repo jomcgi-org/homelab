@@ -153,7 +153,7 @@
   // the page. No new backend endpoint, and the browser never calls the backend
   // directly. When stats are unavailable the GPU items just drop out.
   const MODEL_NAME = "QWEN3.6-27B"; // CHAT_PUBLIC_MODEL = qwen3.6-27b
-  const BOT_LABEL = "QWEN3.6 / LOCAL"; // model family + "runs on my cluster"
+  const BOT_LABEL = "QWEN3.8 / LOCAL"; // model family + "runs on my cluster"
   const CONTEXT_WINDOW = 32768; // CHAT_PUBLIC_MODEL_WINDOW_TOKENS
   // Public note count for the KG readout + empty-state copy. The chat view does
   // NOT load the graph payload on initial render (that lazy fetch only happens

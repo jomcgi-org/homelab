@@ -50,8 +50,8 @@ def create_explorer_agent() -> Agent[ExplorerDeps]:
             extra_body={
                 "top_k": 20,
                 "presence_penalty": 1.5,
-                # qwen3.6 is a hybrid thinking model: without this the whole
-                # generation lands in vLLM's reasoning field, content comes
+                # The served Qwen is a hybrid thinking model: without this the
+                # whole generation lands in the reasoning field, content comes
                 # back null, and the SSE stream emits an empty answer.
                 **shared.inference.thinking_off(),
             },

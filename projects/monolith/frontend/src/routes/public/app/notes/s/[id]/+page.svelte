@@ -14,7 +14,7 @@
 
   let { data } = $props();
 
-  const BOT_LABEL = "QWEN3.6 / LOCAL";
+  const BOT_LABEL = "QWEN3.8 / LOCAL";
 
   function renderReply(text) {
     // Empty title map: [[wikilinks]] render as inert text (no graph nav here).

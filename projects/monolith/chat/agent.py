@@ -23,12 +23,12 @@ from chat.web_search import search_web
 LLAMA_CPP_URL = os.environ.get("LLAMA_CPP_URL", "")
 
 # The served inference model's knowledge cutoff. Qwen did not publish a cutoff
-# for Qwen3.6-35B-A3B (released 2026-04-16), so we anchor to the release month
-# as a conservative bound: the true cutoff is at or before it, so telling the
-# model its knowledge ends here never overstates what it knows, and correctly
-# frames anything more recent as beyond its training. Update when the served
-# model changes.
-MODEL_KNOWLEDGE_CUTOFF = "April 2026"
+# for Qwen3.8-27B (released August 2026) either, so we keep anchoring to the
+# release month as a conservative bound: the true cutoff is at or before it, so
+# telling the model its knowledge ends here never overstates what it knows, and
+# correctly frames anything more recent as beyond its training. Update when the
+# served model changes.
+MODEL_KNOWLEDGE_CUTOFF = "August 2026"
 
 logger = logging.getLogger(__name__)
 
