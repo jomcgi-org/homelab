@@ -240,6 +240,8 @@ semgrep_test(
 
 apko_image(
     name = "image",
+    # amd64 only: see the `arm64` arg in apko_image.bzl.
+    arm64 = False,
     config = "//projects/monolith/frontend:apko.yaml",
     contents = "@monolith_frontend_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/frontend",
@@ -251,6 +253,8 @@ apko_image(
 # the image literally does not contain the authenticated page code.
 apko_image(
     name = "image_public",
+    # amd64 only: see the `arm64` arg in apko_image.bzl.
+    arm64 = False,
     config = "//projects/monolith/frontend:apko.yaml",
     contents = "@monolith_frontend_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-frontend",

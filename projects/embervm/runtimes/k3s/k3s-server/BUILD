@@ -12,7 +12,7 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 # the sqlite datastore, flannel host-gw, the group secret as the cluster token,
 # and a static token-auth API entry (standing decision 13). Health surfaces on
 # 6443. In-guest ROOT (k3s needs it; the microVM boundary is the isolation
-# statement, see README.md). Dual-arch, mirroring the postgres/python runtimes.
+# statement, see README.md). amd64 only, mirroring the postgres/python runtimes.
 
 # ember-k3s-init, the PID-1 init: cross-compiled per arch and layered at
 # /usr/local/bin/ember-k3s-init (the noded harnessInit boots it via init=<path>).
@@ -30,30 +30,18 @@ tar(
     ],
 )
 
-platform_transition_filegroup(
-    name = "guest_init_arm64_bin",
-    srcs = ["//projects/embervm/runtimes/k3s/guest-init/cmd"],
-    target_platform = "@rules_go//go/toolchain:linux_arm64",
-)
-
-tar(
-    name = "guest_init_tar_arm64",
-    srcs = [":guest_init_arm64_bin"],
-    mtree = [
-        "./usr/local/bin/ember-k3s-init type=file content=$(execpath :guest_init_arm64_bin) mode=0755 uid=0 gid=0",
-    ],
-)
-
 apko_image(
     name = "image",
+    # amd64 only: see the `arm64` arg in apko_image.bzl.
+    arm64 = False,
     config = "apko.yaml",
     contents = "@embervm_runtime_k3s_server_lock//:contents",
-    multiarch_tars = [
+    repository = "ghcr.io/jomcgi/homelab/projects/embervm/runtimes/k3s/k3s-server",
+    tars = [
         # The vendored k3s binary (/usr/local/bin/k3s) + the airgap tarball
         # (/var/lib/rancher/k3s/agent/images/...), per arch (@k3s_archive//:tar
         # resolves to :tar_amd64 / :tar_arm64).
-        "@k3s_archive//:tar",
-        ":guest_init_tar",
+        "@k3s_archive//:tar_amd64",
+        ":guest_init_tar_amd64",
     ],
-    repository = "ghcr.io/jomcgi/homelab/projects/embervm/runtimes/k3s/k3s-server",
 )

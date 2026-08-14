@@ -6,9 +6,11 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 # the chart template) is the whole program. It provisions a uniform size-capped
 # ext4 loop scratch using THIS image's own fs tooling (so it does not depend on
 # host e2fsprogs/util-linux), and runs only the final `mount` in the host mount
-# namespace via nsenter. DUAL-ARCH, matching every other apko image in the repo.
+# namespace via nsenter. amd64 only, matching every other apko image in the repo.
 apko_image(
     name = "image",
+    # amd64 only: see the `arm64` arg in apko_image.bzl.
+    arm64 = False,
     config = "apko.yaml",
     contents = "@embervm_scratch_prep_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/embervm/scratch-prep",

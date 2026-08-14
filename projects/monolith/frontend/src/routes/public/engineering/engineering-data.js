@@ -425,7 +425,7 @@ export const projects = [
       },
       {
         k: "Multi-platform images",
-        v: "apko Alpine images from YAML with pinned lock files. One target builds arm64 and amd64 and pushes a multi-platform index.",
+        v: "apko Alpine images from YAML with pinned lock files. One target declares the base, the layers and the push, with the architecture as a flag.",
       },
       {
         k: "BuildBuddy RBE",
