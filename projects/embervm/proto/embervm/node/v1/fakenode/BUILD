@@ -21,5 +21,12 @@ go_library(
 go_binary(
     name = "fakenode",
     embed = [":fakenode_lib"],
-    visibility = ["//projects/embervm:__subpackages__"],
+    visibility = [
+        "//projects/embervm:__subpackages__",
+        # The Elixir test lane stages this binary so the restart-wedge scenario
+        # (#4761) can drive a real Dispatcher against a fault-injectable node.
+        # Without it the scenario skips, and a harness proof that never runs is
+        # the defect class the harness exists to catch.
+        "//bazel/erlang:__pkg__",
+    ],
 )
