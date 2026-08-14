@@ -235,11 +235,66 @@
   #
   # Both directions matter. An action in neither is unobserved, and an entry here
   # that gains a code site is a stale exclusion.
+  # PROSE ACTIONS deliberately unobserved. Keys here are snake_case renderings of
+  # entries in adoption.tla's prose map, and they participate in the coverage
+  # identity asserted by spec_trace_sites_test:
+  #
+  #   prose_actions == observed_actions + keys(spec_trace_excluded)
+  #
+  # Both directions matter. An action in neither is unobserved with nobody
+  # noticing, and an entry here that gains a code site is a stale exclusion
+  # claiming the action is simultaneously observed and deliberately unobserved.
   spec_trace_excluded: %{
     reap:
       "no code site: the CP has no reap path, only the sweeper's eviction. " <>
         "Modeled in adoption.tla for completeness of the state space.",
 
+    # The three below are unobservable in principle, not merely unimplemented,
+    # and the distinction matters: no amount of instrumentation fixes them.
+    crash_cp:
+      "a control plane cannot emit a record of its own death. Observed " <>
+        "INDIRECTLY via restart_cp, whose fresh run_id marks the boundary, " <>
+        "which is why the checker partitions by run_id at all.",
+    crash_node:
+      "node-side death. The CP learns of it only as an absence, through " <>
+        "age_to_unknown and age_to_down, which are separately observed. There " <>
+        "is no moment at which the CP could append a crash_node record.",
+    send_status:
+      "the NODE's send half of the status exchange. The CP observes only its " <>
+        "own receive half, recv_status. Modeled as a distinct action because " <>
+        "the gap between send and receive is where the straggler lives.",
+    recycle_id:
+      "explicitly not a code action. The spec's own prose says so: it models " <>
+        "the inexhaustible vm_id supply so a destroyed slot can back a fresh " <>
+        "Prime."
+  },
+
+  # Emission sites that are NOT one-to-one with a prose action. Kept separate
+  # from the exclusions because these are observations we ADD, not spec actions
+  # we skip, and folding them together would make the coverage identity lie in
+  # the opposite direction.
+  spec_trace_site_notes: %{
+    checkpoint:
+      "NOT a spec action: the string Checkpoint does not appear in " <>
+        "adoption.tla at all. It is a periodic state observation invented for " <>
+        "the trace, emitted every sweep even when nothing else fires, because " <>
+        "absence of progress is invisible in an event stream and a wedge is " <>
+        "precisely the CP failing to act.",
+    begin_destroy:
+      "a REFINEMENT of Succeed(t), not an action of its own. adoption.tla has " <>
+        "no BeginDestroy action: Succeed both completes the task and appends " <>
+        "the durable destroying intent in one step. The code splits that into " <>
+        "two observable moments, so one spec action maps to two records. That " <>
+        "is a legitimate many-to-one refinement, and writing it down is what " <>
+        "stops the coverage check reading begin_destroy as an unmodeled " <>
+        "invention."
+  },
+
+  # Runtime scope decisions, distinct from both of the above: not a prose action
+  # and not an emission site, but a class of RECORD the invariants deliberately
+  # skip. Recorded so the filtering is a stated decision rather than a quirk of
+  # checker code.
+  spec_trace_scope_notes: %{
     # #4814. Not a missing emission: an event outside this spec's universe.
     snapshot_only_destroy:
       "session_destroyed on a banked or parked session. adoption.tla's " <>
