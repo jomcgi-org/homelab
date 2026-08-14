@@ -13,6 +13,7 @@ from pydantic_ai import Agent, ModelSettings, RunContext, ToolDefinition
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
+import shared.inference
 from sandbox.client import run_python_in_sandbox
 from shared.embedding import EmbeddingClient
 from chat.models import Attachment, Blob, Message
@@ -517,6 +518,7 @@ def create_agent(
             extra_body={
                 "top_k": 20,
                 "presence_penalty": 1.5,
+                **shared.inference.reasoning_effort("low"),
             },
         ),
         prepare_tools=inject_signposts,
@@ -1072,6 +1074,7 @@ def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
             extra_body={
                 "top_k": 20,
                 "presence_penalty": 1.5,
+                **shared.inference.reasoning_effort("low"),
             },
         ),
     )

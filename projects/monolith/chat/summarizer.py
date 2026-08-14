@@ -10,6 +10,7 @@ import httpx
 from sqlmodel import Session, select
 
 from chat.models import ChannelSummary, Message, UserChannelSummary
+import shared.inference
 
 logger = logging.getLogger(__name__)
 
@@ -500,7 +501,7 @@ def build_llm_caller(base_url: str | None = None) -> Callable[[str], Awaitable[s
                         # not <think> reasoning -- a thinking response puts the
                         # reasoning in reasoning_content and returns content:null
                         # behind a 200, which would slip past raise_for_status.
-                        "chat_template_kwargs": {"enable_thinking": False},
+                        **shared.inference.thinking_off(),
                     },
                 )
                 resp.raise_for_status()

@@ -1365,14 +1365,21 @@ def test_openrouter_hosted_uses_json_schema_response_format():
     assert set(rel_enum) == set(REL_TYPE_SET)
 
 
-def test_vllm_uses_guided_json():
-    """Against a vLLM endpoint, a v2 client sends guided_json (not json_schema)."""
+def test_in_cluster_uses_both_structured_output_dialects():
+    """In-cluster engines receive the same schema in both vendor extensions."""
     client = OpenRouterClient(
         api_key="", base_url="http://inference/v1/chat/completions", prompt_version="v2"
     )
     fmt = client._format_kwargs()
-    assert fmt["response_format"] == {"type": "json_object"}
     assert fmt["guided_json"] == PROMPT_VERSIONS["v2"].schema
+    assert fmt["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "grimoire_extraction",
+            "strict": True,
+            "schema": PROMPT_VERSIONS["v2"].schema,
+        },
+    }
 
 
 def test_v1_client_keeps_json_object():
@@ -1518,7 +1525,15 @@ async def test_openrouter_client_extract_success():
     assert call_args[0][0] == "http://fake/chat"
     payload = call_args[1]["json"]
     assert payload["messages"][1]["content"] == "some chunk text"
-    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["guided_json"] is PROMPT_VERSIONS["v2"].schema
+    assert payload["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "grimoire_extraction",
+            "strict": True,
+            "schema": PROMPT_VERSIONS["v2"].schema,
+        },
+    }
     assert call_args[1]["headers"]["Authorization"] == "Bearer test-key"
 
 
