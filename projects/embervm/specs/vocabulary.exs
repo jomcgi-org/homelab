@@ -224,5 +224,42 @@
     begin_destroy: "session_manager.ex",
     confirm_destroy: "session_manager.ex",
     abandon_claim: "dispatcher.ex"
+  },
+
+  # Deliberate exclusions, as DATA rather than prose, so an exclusion is an act
+  # someone performed rather than an omission nobody noticed. `Reap` was already
+  # excluded in a comment; recording it here makes the set enumerable, which is
+  # what #4800's proposed check needs:
+  #
+  #   keys(spec_trace_sites) + keys(spec_trace_excluded) == actions(spec)
+  #
+  # Both directions matter. An action in neither is unobserved, and an entry here
+  # that gains a code site is a stale exclusion.
+  spec_trace_excluded: %{
+    reap:
+      "no code site: the CP has no reap path, only the sweeper's eviction. " <>
+        "Modeled in adoption.tla for completeness of the state space.",
+
+    # #4814. Not a missing emission: an event outside this spec's universe.
+    snapshot_only_destroy:
+      "session_destroyed on a banked or parked session. adoption.tla's " <>
+        "`destroying` and `cpDestroyed` are sets of VMs, and a banked session " <>
+        "holds none (evict_snapshot reclaims a snapshot bundle), so such a " <>
+        "destroy cannot violate NoDestroyBeforeConfirm or " <>
+        "DestroyIntentPrecedesRecord. Detected at runtime via the derived " <>
+        "`had_vm` var, which both destroy invariants filter on, with the " <>
+        "excluded count surfaced in the verdict detail so the exclusion is " <>
+        "visible rather than silent. Modeling snapshot eviction properly " <>
+        "belongs to bank_relight.tla, not here: an action touching none of " <>
+        "adoption's variables would be noise in it. See #4809, #4810.",
+
+    # #4812. Emitted and registered above, but read by no invariant yet. Recorded
+    # so groundwork is distinguishable from an oversight, which is the
+    # declared-but-unwired class this repo keeps rediscovering.
+    unread_by_any_invariant:
+      "succeed and abandon_claim are emitted and stored but no invariant reads " <>
+        "them today. adoption.tla models Succeed(t) and AbandonClaim(t), so the " <>
+        "records are deliberate groundwork for the task-lifecycle invariants, " <>
+        "not a spec action nobody wired up."
   }
 }
