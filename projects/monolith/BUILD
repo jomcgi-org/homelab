@@ -4435,6 +4435,16 @@ py_test(
 )
 
 py_test(
+    name = "swarm_walkthrough_composer_test",
+    srcs = ["swarm/walkthrough_composer_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_workflows_test",
     srcs = ["swarm/workflows_test.py"],
     imports = ["."],
