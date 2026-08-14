@@ -45,6 +45,12 @@ progress:
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
 
+# Restrict the agents console model picker to the in-cluster model when true.
+# Production keeps the full model list; dev overrides this to avoid offering
+# providers that are not intended for dev use.
+agents:
+  localModelsOnly: false
+
 # Off-pod batch-job execution via Argo CronWorkflows.
 #
 # Each cronWorkflows entry renders (chart/templates/cronworkflows.yaml) as a

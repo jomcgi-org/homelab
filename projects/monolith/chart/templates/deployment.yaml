@@ -577,6 +577,8 @@ spec:
           env:
             - name: API_BASE
               value: "http://localhost:8000"
+            - name: AGENTS_LOCAL_MODELS_ONLY
+              value: {{ .Values.agents.localModelsOnly | quote }}
             - name: OTEL_COLLECTOR_HTTP_URL
               value: {{ .Values.frontend.otelCollectorUrl | quote }}
             {{- if .Values.imgproxySigning.enabled }}
