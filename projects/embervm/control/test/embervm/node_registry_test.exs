@@ -605,6 +605,24 @@ defmodule Embervm.NodeRegistryTest do
     )
   end
 
+  # Wait until the watcher's INITIAL NodeStatus has been absorbed, not merely until
+  # register/2 has created the instance.
+  #
+  # blocking_watch/0 emits that status from the watcher process, so it is concurrent
+  # with the test. Waiting on the instance key only proves register/2 landed: the
+  # emit can still be in flight. If it arrives after a clock advance it restamps
+  # last_status_at at the ADVANCED time and sets health back to :healthy
+  # (handle_status/2), and two-signal expiry needs :down, so the instance survives an
+  # advance that should have aged it out. That is the intermittent
+  # node_registry_test failure in #4078.
+  #
+  # A newly registered instance is :starting with last_status_at nil, and only the
+  # first NodeStatus makes it :healthy, so health is a precise barrier for "the emit
+  # landed" rather than a proxy for it.
+  defp await_initial_status(reg, instance_id) do
+    eventually(fn -> match?(%{health: :healthy}, NodeRegistry.status(reg)[instance_id]) end, 200)
+  end
+
   test "register/2 upserts an instance keyed by (node, pod_uid) and dials it" do
     {reg, table} = start_registry(register_seams([]))
 
@@ -750,7 +768,7 @@ defmodule Embervm.NodeRegistryTest do
       )
 
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
-    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 200)
+    await_initial_status(reg, "node-4/uid-1")
 
     # Drive both expiry signals: registration lapses (advance past expire_after) AND
     # the stream goes dead (advance past down_after with no fresh status).
@@ -816,9 +834,9 @@ defmodule Embervm.NodeRegistryTest do
       )
 
     :ok = NodeRegistry.register(reg, %{"node" => node, "pod_uid" => "uid-A", "address" => a_addr})
-    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), a_id) end, 200)
+    await_initial_status(reg, a_id)
     :ok = NodeRegistry.register(reg, %{"node" => node, "pod_uid" => "uid-B", "address" => b_addr})
-    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), b_id) end, 200)
+    await_initial_status(reg, b_id)
 
     # Sanity: before expiry, both instance_id keys resolve to their own address, and
     # the bare node name resolves to nothing (no alias post-B0c).
@@ -874,7 +892,7 @@ defmodule Embervm.NodeRegistryTest do
       )
 
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
-    eventually(fn -> Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1") end, 200)
+    await_initial_status(reg, "node-4/uid-1")
 
     # Registration lapses but the stream is still HEALTHY (the blocking watch keeps
     # emitting on connect; here no fresh status arrives, but we only advance a bit):
