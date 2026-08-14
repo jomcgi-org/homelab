@@ -89,7 +89,8 @@
   </PaneHeader>
   {#if view.engine_tier === "absent"}
     <div class="m-quiet">{P.labels.absentNotice}</div>
-  {:else}
+  {/if}
+  {#if view.engine_tier !== "absent"}
     {#if master.runs.some((run) => run.needs)}<div class="att-band">
         <div class="col-label">{P.labels.attention}</div>
         {#each master.runs.filter((run) => run.needs) as run}<button
@@ -106,6 +107,12 @@
           </button>{/each}
       </div>{:else}<div class="m-quiet">{P.labels.nothingNeedsYou}</div>{/if}
 
+  {/if}
+
+  <!-- The launcher is not gated on engine_tier. Starting a session does
+       not involve the swarm engine at all, so an unreachable run engine
+       must not remove the ability to start work. Only run-specific parts
+       below are conditional. -->
     <section class="launcher" aria-label={P.labels.launcherLabel}>
       <div class="launcher-head">
         <span class="col-label">{P.labels.launcherHeading}</span>
@@ -183,6 +190,8 @@
         >
       </form>
     </section>
+
+  {#if view.engine_tier !== "absent"}
 
     {#each master.queues as queue}<div class="queue-line">
         {queue.name}
