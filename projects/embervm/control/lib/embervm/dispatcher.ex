@@ -1341,8 +1341,7 @@ defmodule Embervm.Dispatcher do
 
         {instance_id_of(facts), %{
           "live_vms" => Map.get(facts, :live_vms, 0),
-          "primed_count" => length(primed_vm_ids),
-          "connected" => true
+          "primed_count" => length(primed_vm_ids)
         }}
       end
 
