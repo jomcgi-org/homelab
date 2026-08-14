@@ -13,11 +13,14 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 	"google.golang.org/grpc"
@@ -35,8 +38,14 @@ type fakeServer struct {
 	// ExportArtifact records a key, a repeat export short-circuits skipped, and
 	// EvictArtifact removes it, so the round-trip test proves the verbs cross the
 	// wire and observe each other's effect within one test's fresh server.
-	mu    sync.Mutex
-	store map[string]bool
+	mu             sync.Mutex
+	store          map[string]bool
+	vmState        map[string]bool
+	vmWorkload     map[string]string
+	suppressPrimed bool
+	dropStatus     bool
+	closeStream    bool
+	streamActive   bool
 }
 
 // storeKey mirrors the Fork-3 layout <kind>/<workload>/<ref> so the fake's
@@ -57,8 +66,13 @@ func (*fakeServer) BuildBase(_ context.Context, req *nodev1.BuildBaseRequest) (*
 	}, nil
 }
 
-func (*fakeServer) Prime(_ context.Context, req *nodev1.PrimeRequest) (*nodev1.PrimeResponse, error) {
-	return &nodev1.PrimeResponse{VmId: "vm:" + req.GetLineageId() + ":" + req.GetVolumeMount()}, nil
+func (s *fakeServer) Prime(_ context.Context, req *nodev1.PrimeRequest) (*nodev1.PrimeResponse, error) {
+	vmID := "vm:" + req.GetLineageId() + ":" + req.GetVolumeMount()
+	s.mu.Lock()
+	s.vmState[vmID] = true
+	s.vmWorkload[vmID] = req.GetTrace().GetWorkload()
+	s.mu.Unlock()
+	return &nodev1.PrimeResponse{VmId: vmID}, nil
 }
 
 func (*fakeServer) Assign(_ context.Context, req *nodev1.AssignRequest) (*nodev1.AssignResponse, error) {
@@ -74,7 +88,11 @@ func (*fakeServer) Assign(_ context.Context, req *nodev1.AssignRequest) (*nodev1
 	}, nil
 }
 
-func (*fakeServer) Destroy(_ context.Context, _ *nodev1.DestroyRequest) (*nodev1.DestroyResponse, error) {
+func (s *fakeServer) Destroy(_ context.Context, req *nodev1.DestroyRequest) (*nodev1.DestroyResponse, error) {
+	s.mu.Lock()
+	delete(s.vmState, req.GetVmId())
+	delete(s.vmWorkload, req.GetVmId())
+	s.mu.Unlock()
 	return &nodev1.DestroyResponse{}, nil
 }
 
@@ -547,28 +565,106 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 	}, nil
 }
 
-func (*fakeServer) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerStreamingServer[nodev1.NodeStatus]) error {
-	// Stream a fixed number of heartbeats with an incrementing live_vms counter so
-	// the client can assert both the count and the ordering, then complete.
-	for i := uint32(0); i < watchNodeHeartbeats; i++ {
-		if err := stream.Send(&nodev1.NodeStatus{NodeId: req.GetNodeId(), LiveVms: i}); err != nil {
+func (s *fakeServer) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerStreamingServer[nodev1.NodeStatus]) error {
+	s.mu.Lock()
+	s.streamActive = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.streamActive = false
+		s.mu.Unlock()
+	}()
+
+	for i := uint32(0); ; i++ {
+		s.mu.Lock()
+		dropStatus := s.dropStatus
+		closeStream := s.closeStream
+		if closeStream {
+			s.closeStream = false
+		}
+		primed := make(map[string][]string)
+		if !s.suppressPrimed {
+			for vmID := range s.vmState {
+				workload := s.vmWorkload[vmID]
+				primed[workload] = append(primed[workload], vmID)
+			}
+		}
+		s.mu.Unlock()
+
+		if closeStream && dropStatus {
+			return nil
+		}
+		if dropStatus {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		workloads := make([]*nodev1.WorkloadCapacity, 0, len(primed))
+		for workload, vmIDs := range primed {
+			workloads = append(workloads, &nodev1.WorkloadCapacity{
+				Workload: workload, FreePrimedSlots: uint32(len(vmIDs)), PrimedVmIds: vmIDs,
+			})
+		}
+		if err := stream.Send(&nodev1.NodeStatus{NodeId: req.GetNodeId(), LiveVms: i, Workloads: workloads}); err != nil {
 			return err
+		}
+		if closeStream || i+1 == watchNodeHeartbeats {
+			return nil
 		}
 	}
 	return nil
 }
 
 func main() {
+	controlAddr := flag.String("control-addr", "", "HTTP fault-control listener address")
+	flag.Parse()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fakenode: listen: %v\n", err)
 		os.Exit(1)
 	}
 	srv := grpc.NewServer()
-	nodev1.RegisterNodeServiceServer(srv, &fakeServer{store: map[string]bool{}})
+	fake := &fakeServer{store: map[string]bool{}, vmState: map[string]bool{}, vmWorkload: map[string]string{}}
+	nodev1.RegisterNodeServiceServer(srv, fake)
 
 	// Announce the chosen port on stdout (unbuffered) so the harness can connect.
 	fmt.Printf("PORT=%d\n", lis.Addr().(*net.TCPAddr).Port)
+	if *controlAddr != "" {
+		controlLis, err := net.Listen("tcp", *controlAddr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fakenode: control listen: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("CONTROL_PORT=%d\n", controlLis.Addr().(*net.TCPAddr).Port)
+		go http.Serve(controlLis, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			set := r.Method == http.MethodPost
+			unset := r.Method == http.MethodDelete
+			if !set && !unset {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			fake.mu.Lock()
+			switch r.URL.Path {
+			case "/fault/suppress-primed":
+				fake.suppressPrimed = set
+			case "/fault/drop-status":
+				fake.dropStatus = set
+			case "/fault/close-stream":
+				if set {
+					fake.closeStream = true
+				} else {
+					fake.mu.Unlock()
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+			default:
+				fake.mu.Unlock()
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			fake.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}
 
 	if err := srv.Serve(lis); err != nil {
 		fmt.Fprintf(os.Stderr, "fakenode: serve: %v\n", err)
