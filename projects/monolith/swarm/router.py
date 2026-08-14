@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
@@ -19,6 +21,29 @@ class RunRequest(BaseModel):
     branch: str
     idempotency_key: str | None = None
     budget_usd: float | None = None
+
+
+class ClassifyAndStartRequest(BaseModel):
+    task: str
+    repo: str | None = None
+    branch: str | None = None
+    model: str
+    budget_usd: float | None = None
+
+
+class ClassifyAndStartResponse(BaseModel):
+    task_id: str
+    session_id: int | None = None
+    workflow_id: str | None = None
+    kind: str
+
+
+class PromoteSessionRequest(BaseModel):
+    session_id: int
+
+
+class PromoteSessionResponse(BaseModel):
+    workflow_id: str
 
 
 def _dbos():
@@ -107,6 +132,228 @@ def start_run(request: RunRequest) -> dict:
             request.budget_usd,
         )
     return {"workflow_id": handle.workflow_id}
+
+
+def _create_task_sync(
+    task_id: str,
+    task: str,
+    repo: str | None,
+    branch: str | None,
+    budget_usd: float | None,
+) -> None:
+    """Create task record, managing its own session."""
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm import models
+
+    with Session(get_engine()) as db:
+        models.create_task(
+            task_id, task, repo, branch, "qwen3.6-27b", budget_usd, session=db
+        )
+
+
+def _record_classification_sync(
+    task_id: str,
+    task: str,
+    classification: str,
+    latency_ms: int,
+    outcome: str,
+    refusal_code: str | None,
+    budget_usd: float | None,
+) -> None:
+    """Record classification and plan, managing its own session."""
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm import models
+
+    with Session(get_engine()) as db:
+        models.record_conductor_call(
+            task_id,
+            "qwen3.6-27b",
+            "classify_task",
+            json.dumps({"task": task}),
+            outcome,
+            refusal_code=refusal_code,
+            version_before=None,
+            version_after=None,
+            latency_ms=latency_ms,
+            session=db,
+        )
+        models.append_plan_version(
+            task_id,
+            1,
+            "bootstrap",
+            "system",
+            "classifier",
+            json.dumps({"classification": classification}),
+            "classification",
+            session=db,
+        )
+        if classification == "planned":
+            models.upsert_plan_node(
+                task_id,
+                "implement",
+                "research",
+                task,
+                "qwen3.6-27b",
+                "[]",
+                budget_usd if budget_usd is not None else 0,
+                False,
+                None,
+                None,
+                1,
+                session=db,
+            )
+
+
+def _set_task_link_sync(task_id: str, **links) -> None:
+    """Update task links, managing its own session."""
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm.models import update_task_links
+
+    with Session(get_engine()) as db:
+        update_task_links(task_id, session=db, **links)
+
+
+@router.post("/classify-and-start", response_model=ClassifyAndStartResponse)
+async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
+    task = body.task.strip()
+    model = body.model.strip()
+    if not task or not model:
+        raise HTTPException(status_code=400, detail="task and model are required")
+    if body.budget_usd is not None and body.budget_usd <= 0:
+        raise HTTPException(status_code=400, detail="budget_usd must be positive")
+
+    from swarm import classifier, models
+
+    task_id = models.mint_task_id()
+    await asyncio.to_thread(
+        _create_task_sync, task_id, task, body.repo, body.branch, body.budget_usd
+    )
+    (
+        classification,
+        latency_ms,
+        outcome,
+        refusal_code,
+    ) = await classifier.classify_task_with_outcome(task)
+    await asyncio.to_thread(
+        _record_classification_sync,
+        task_id,
+        task,
+        classification,
+        latency_ms,
+        outcome,
+        refusal_code,
+        body.budget_usd,
+    )
+
+    if classification == "planned":
+        if not body.repo or not body.branch:
+            raise HTTPException(
+                status_code=400, detail="planned tasks require repo and branch"
+            )
+        try:
+            result = start_run(
+                RunRequest(
+                    task=task,
+                    repo=body.repo,
+                    branch=body.branch,
+                    budget_usd=body.budget_usd,
+                )
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail="swarm service unavailable"
+            ) from exc
+        await asyncio.to_thread(
+            _set_task_link_sync, task_id, workflow_id=result["workflow_id"]
+        )
+        return ClassifyAndStartResponse(
+            task_id=task_id, workflow_id=result["workflow_id"], kind="run"
+        )
+
+    from agent_sessions.router import StartRequest, start_session
+
+    try:
+        result = await start_session(
+            request,
+            StartRequest(
+                prompt=task,
+                model=model,
+                repo=body.repo,
+                branch=body.branch or "main",
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="session service unavailable"
+        ) from exc
+    if result.get("session_id") is None:
+        raise HTTPException(
+            status_code=503, detail=result.get("error", "session unavailable")
+        )
+    await asyncio.to_thread(
+        _set_task_link_sync, task_id, session_id=result["session_id"]
+    )
+    return ClassifyAndStartResponse(
+        task_id=task_id, session_id=result["session_id"], kind="session"
+    )
+
+
+@router.put("/promote-session", response_model=PromoteSessionResponse)
+def promote_session(request: Request, body: PromoteSessionRequest):
+    from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
+    from core.db import get_engine
+    from sqlmodel import Session, select
+    from swarm import models
+
+    with Session(get_engine()) as db:
+        row = db.get(AgentSession, body.session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Agent session not found")
+        turn = db.exec(
+            select(AgentTurn)
+            .where(AgentTurn.session_id == row.id)
+            .order_by(AgentTurn.seq)
+        ).first()
+        pending = db.exec(
+            select(PendingMessage)
+            .where(PendingMessage.session_id == row.id)
+            .order_by(PendingMessage.seq)
+        ).first()
+        task = (
+            turn.prompt if turn else pending.message_text if pending else ""
+        ).strip()
+        if not task:
+            raise HTTPException(status_code=400, detail="session has no task text")
+        repo, branch, model = row.repo, row.branch, row.model or "luna"
+    if not repo or not branch:
+        raise HTTPException(status_code=400, detail="session has no repo and branch")
+    result = start_run(RunRequest(task=task, repo=repo, branch=branch))
+    task_id = models.mint_task_id()
+    models.create_task(
+        task_id,
+        task,
+        repo,
+        branch,
+        "qwen3.6-27b",
+        None,
+        workflow_id=result["workflow_id"],
+    )
+    models.append_plan_version(
+        task_id,
+        1,
+        "grow_from_session",
+        "user",
+        request.headers.get("Cf-Access-Authenticated-User-Email") or "operator",
+        json.dumps({"from_session_id": body.session_id}),
+        "promotion",
+        stated_reason="user promoted session to run",
+    )
+    return PromoteSessionResponse(workflow_id=result["workflow_id"])
 
 
 @router.get("/runs/{workflow_id}")

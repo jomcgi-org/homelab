@@ -4402,6 +4402,17 @@ py_test(
 )
 
 py_test(
+    name = "swarm_classifier_test",
+    srcs = ["swarm/classifier_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_router_test",
     srcs = ["swarm/router_test.py"],
     imports = ["."],
