@@ -1,4 +1,5 @@
 load("//bazel/helm:defs.bzl", "helm_chart")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # EmberVM control-plane chart. The control-plane image tag is pinned into
 # values.image at build time from the image's .info provider (CI rebuilds the
@@ -67,4 +68,32 @@ filegroup(
         "values.yaml",
     ],
     visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
+)
+
+# py_test is hand-registered: gazelle does not generate py_test rules, so they
+# must be declared explicitly in BUILD.
+py_test(
+    name = "chart_env_identity_test",
+    srcs = ["chart_env_identity_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:application",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:application",
+        "//projects/embervm/dev/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
+        # The Applications, so releaseName is read from where it is DECLARED.
+        "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
+        "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
+    },
+    deps = ["@pip//pytest"],
 )
