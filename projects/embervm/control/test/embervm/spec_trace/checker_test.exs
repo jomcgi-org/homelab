@@ -498,7 +498,7 @@ defmodule Embervm.SpecTrace.CheckerTest do
 
   describe "inventory reconciliation" do
     test "inventory_reconciled fails on a suppress-primed wedge", %{store: store} do
-      :ok = SQLite.write(store, [inventory_checkpoint("wedge", 100, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 1, "primed_count" => 0, "connected" => true}})])
+      :ok = SQLite.write(store, [inventory_checkpoint("wedge", 100, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 1, "primed_count" => 0}})])
 
       verdict = inventory_verdict(Checker.run(SQLite, store))
 
@@ -511,7 +511,7 @@ defmodule Embervm.SpecTrace.CheckerTest do
     end
 
     test "inventory_reconciled does not fail for an idle node", %{store: store} do
-      :ok = SQLite.write(store, [inventory_checkpoint("idle", 200, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 0, "primed_count" => 0, "connected" => true}})])
+      :ok = SQLite.write(store, [inventory_checkpoint("idle", 200, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 0, "primed_count" => 0}})])
 
       assert inventory_verdict(Checker.run(SQLite, store))[:verdict] == :pass
     end
@@ -527,13 +527,24 @@ defmodule Embervm.SpecTrace.CheckerTest do
       assert verdict[:detail] =~ "absent"
     end
 
-    test "inventory_reconciled is vacuous for disconnected-only nodes", %{store: store} do
-      :ok = SQLite.write(store, [inventory_checkpoint("disconnected", 400, %{"node-1:wl" => []}, %{"node-1" => %{"live_vms" => 1, "primed_count" => 0, "connected" => false}})])
+    test "inventory_reconciled is vacuous for an empty node_reported map", %{store: store} do
+      :ok = SQLite.write(store, [inventory_checkpoint("empty", 400, %{"node-1:wl" => []}, %{})])
 
       verdict = inventory_verdict(Checker.run(SQLite, store))
 
       assert verdict[:verdict] == :vacuous
-      assert verdict[:detail] =~ "disconnected"
+      assert verdict[:detail] =~ "no dispatchable node instance in the checkpoint testimony"
+    end
+
+    test "inventory_reconciled is vacuous when checkpoint inventory is unreadable", %{store: store} do
+      record = inventory_checkpoint("missing-inventory", 500, %{}, %{"node-1" => %{"live_vms" => 1, "primed_count" => 0}})
+      record = put_in(record, ["vars", "node_workload_vm_ids"], nil)
+      :ok = SQLite.write(store, [record])
+
+      verdict = inventory_verdict(Checker.run(SQLite, store))
+
+      assert verdict[:verdict] == :vacuous
+      assert verdict[:detail] =~ "no checkpoint carried a readable inventory"
     end
   end
 

@@ -630,46 +630,52 @@ defmodule Embervm.SpecTrace.Checker do
             end
           end)
 
-        missing_live_vms = Enum.filter(observations, fn {_checkpoint, _instance_id, report} ->
-          not is_map(report) or not Map.has_key?(report, "live_vms")
-        end)
-
-        connected = Enum.filter(observations, fn {_checkpoint, _instance_id, report} ->
-          is_map(report) and Map.get(report, "connected", false) == true
+        readable_observations = Enum.filter(observations, fn {checkpoint, _instance_id, _report} ->
+          is_map(get_in(checkpoint, ["vars", "node_workload_vm_ids"]))
         end)
 
         cond do
-          missing_live_vms != [] ->
-            inventory_reconciled_vacuous("node_reconciled oracle input is missing live_vms")
+          observations == [] ->
+            inventory_reconciled_vacuous("no dispatchable node instance in the checkpoint testimony")
 
-          connected == [] ->
-            inventory_reconciled_vacuous("every examined node instance is disconnected")
+          readable_observations == [] ->
+            inventory_reconciled_vacuous("no checkpoint carried a readable inventory")
 
           true ->
-            violations = Enum.filter(connected, fn {checkpoint, instance_id, report} ->
-              live_vms = Map.get(report, "live_vms", 0)
-              live_vms > 0 and checkpoint_inventory_empty?(checkpoint, instance_id)
+            missing_live_vms = Enum.filter(readable_observations, fn {_checkpoint, _instance_id, report} ->
+              not is_map(report) or not Map.has_key?(report, "live_vms")
             end)
 
-            case violations do
-              [{checkpoint, instance_id, report} | _] ->
-                %{
-                  invariant: :inventory_reconciled,
-                  verdict: :fail,
-                  coverage: connected_instance_count(connected),
-                  oracle: :node_reconciled,
-                  detail:
-                    "instance #{instance_id} reports #{report["live_vms"]} live_vms with empty checkpoint inventory at mono #{checkpoint["mono"]}"
-                }
+            cond do
+              missing_live_vms != [] ->
+                inventory_reconciled_vacuous("node_reconciled oracle input is missing live_vms")
 
-              [] ->
-                %{
-                  invariant: :inventory_reconciled,
-                  verdict: :pass,
-                  coverage: connected_instance_count(connected),
-                  oracle: :node_reconciled,
-                  detail: "every connected instance with live_vms had checkpoint inventory"
-                }
+              true ->
+                violations = Enum.filter(readable_observations, fn {checkpoint, instance_id, report} ->
+                  live_vms = Map.get(report, "live_vms", 0)
+                  live_vms > 0 and checkpoint_inventory_empty?(checkpoint, instance_id)
+                end)
+
+                case violations do
+                  [{checkpoint, instance_id, report} | _] ->
+                    %{
+                      invariant: :inventory_reconciled,
+                      verdict: :fail,
+                      coverage: examined_instance_count(readable_observations),
+                      oracle: :node_reconciled,
+                      detail:
+                        "instance #{instance_id} reports #{report["live_vms"]} live_vms with empty checkpoint inventory at mono #{checkpoint["mono"]}"
+                    }
+
+                  [] ->
+                    %{
+                      invariant: :inventory_reconciled,
+                      verdict: :pass,
+                      coverage: examined_instance_count(readable_observations),
+                      oracle: :node_reconciled,
+                      detail: "every examined node instance with live_vms had checkpoint inventory"
+                    }
+                end
             end
         end
     end
@@ -685,11 +691,11 @@ defmodule Embervm.SpecTrace.Checker do
         |> Enum.all?(fn {_key, vm_ids} -> not is_list(vm_ids) or vm_ids == [] end)
 
       _ ->
-        true
+        false
     end
   end
 
-  defp connected_instance_count(observations) do
+  defp examined_instance_count(observations) do
     observations
     |> Enum.map(fn {_checkpoint, instance_id, _report} -> instance_id end)
     |> MapSet.new()
