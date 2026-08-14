@@ -1,4 +1,5 @@
 load("//bazel/helm:defs.bzl", "helm_chart")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # EmberVM control-plane chart. The control-plane image tag is pinned into
@@ -96,4 +97,10 @@ py_test(
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
     },
     deps = ["@pip//pytest"],
+)
+
+semgrep_test(
+    name = "chart_env_identity_test_semgrep_test",
+    srcs = ["chart_env_identity_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
