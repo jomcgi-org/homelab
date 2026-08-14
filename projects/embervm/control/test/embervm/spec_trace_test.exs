@@ -7,6 +7,16 @@ defmodule Embervm.SpecTraceTest do
   setup do
     System.put_env("EMBERVM_SPEC_TRACE", "on")
     SpecTrace.configure()
+
+    # Restore the global `:persistent_term` gate, see the same note in
+    # checker_test. This module leaks in a second way too: "disabled emission is
+    # a no-op" flips the gate off mid-module, so without a restore the value a
+    # later module inherits depends on which test happened to run last.
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      SpecTrace.configure()
+    end)
+
     store = start_supervised!({SQLite, name: nil, path: ":memory:"})
 
     # The writer keeps its REGISTERED name deliberately. `SpecTrace.emit/3`

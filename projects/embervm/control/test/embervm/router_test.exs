@@ -1081,6 +1081,16 @@ defmodule Embervm.RouterTest do
   describe "GET /v1/conformance" do
     setup do
       Application.put_env(:embervm, :authenticator, FakeAuth)
+
+      # Establish the gate state this block asserts on rather than inheriting
+      # it. The gate is a global `:persistent_term`, so before the restores in
+      # checker_test and spec_trace_test these cases passed or failed on ExUnit
+      # seed alone. Those leaks are fixed, but a test whose precondition is set
+      # by whichever module ran first is one edit away from breaking again, and
+      # the failure reads as flakiness rather than as a missing on_exit.
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+
       on_exit(fn -> Application.delete_env(:embervm, :authenticator) end)
       :ok
     end
