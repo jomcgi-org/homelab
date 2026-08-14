@@ -34,8 +34,7 @@ defmodule Embervm.SpecTrace.Checker do
 
   2. **DispatchProvenance** — every `dispatch_warm` / `dispatch_miss` either has
      a preceding `prime` record for that vm_id in the same run, OR carries
-     `provenance: "adopted"`. A dispatch with neither is `:unproven` (boundary
-     case: window starts after prime) or `:fail` (genuine finding).
+     `provenance: "adopted"`.
 
   3. **AdoptIdempotent** — a vm_id never appears in two `adopt_inventory`
      records within one run.
@@ -102,9 +101,16 @@ defmodule Embervm.SpecTrace.Checker do
 
   defp check_destroy_intent_precedes_record(records) do
     destroy_records = Enum.filter(records, &(&1["action"] in ["begin_destroy", "confirm_destroy"]))
-    confirms = Enum.filter(destroy_records, &(&1["action"] == "confirm_destroy"))
+    all_confirms = Enum.filter(destroy_records, &(&1["action"] == "confirm_destroy"))
+    missing_had_vm = Enum.filter(all_confirms, &is_nil(&1["vars"]["had_vm"]))
+    confirms = Enum.filter(all_confirms, &(&1["vars"]["had_vm"] == true))
+    excluded = length(all_confirms) - length(confirms)
+    examined_detail = "#{length(all_confirms)} confirmations, #{excluded} snapshot-only, #{length(confirms)} examined"
 
     cond do
+      missing_had_vm != [] ->
+        %{invariant: :destroy_intent_precedes_record, verdict: :vacuous, coverage: 0, oracle: :trace_only, detail: "#{examined_detail}; some destroy confirmations lack had_vm"}
+
       # `confirms`, NOT `records`. Guarding on the run having any records at all
       # meant a trace full of primes, dispatches and checkpoints but containing
       # zero destroys fell through to the violation scan, found nothing to
@@ -117,7 +123,7 @@ defmodule Embervm.SpecTrace.Checker do
       # what makes this invariant evaluable, which is why the sibling
       # check_no_destroy_before_confirm guards on the same thing.
       confirms == [] ->
-        %{invariant: :destroy_intent_precedes_record, verdict: :vacuous, coverage: length(destroy_records), oracle: :trace_only, detail: "no destroy confirmations in trace"}
+        %{invariant: :destroy_intent_precedes_record, verdict: :vacuous, coverage: 0, oracle: :trace_only, detail: "#{examined_detail}; no live-VM destroy confirmations in trace"}
 
       true ->
         begins = Enum.filter(destroy_records, &(&1["action"] == "begin_destroy"))
@@ -131,20 +137,34 @@ defmodule Embervm.SpecTrace.Checker do
           end)
 
         if violations == [] do
-          %{invariant: :destroy_intent_precedes_record, verdict: :pass, coverage: length(destroy_records), oracle: :trace_only, detail: "destroy intent precedes every destroy record"}
+          %{invariant: :destroy_intent_precedes_record, verdict: :pass, coverage: length(confirms), oracle: :trace_only, detail: "#{examined_detail}; destroy intent precedes every destroy record"}
         else
           session_id = hd(violations)["vars"]["session_id"]
-          %{invariant: :destroy_intent_precedes_record, verdict: :fail, coverage: length(destroy_records), oracle: :trace_only, detail: "session_id #{session_id} has destroy confirmation without a preceding intent"}
+          %{invariant: :destroy_intent_precedes_record, verdict: :fail, coverage: length(confirms), oracle: :trace_only, detail: "#{examined_detail}; session_id #{session_id} has destroy confirmation without a preceding intent"}
         end
     end
   end
 
   defp check_no_destroy_before_confirm(records) do
-    confirms = Enum.filter(records, &(&1["action"] == "confirm_destroy"))
+    all_confirms = Enum.filter(records, &(&1["action"] == "confirm_destroy"))
+    missing_had_vm = Enum.filter(all_confirms, &is_nil(&1["vars"]["had_vm"]))
+    confirms = Enum.filter(all_confirms, &(&1["vars"]["had_vm"] == true))
+    excluded = length(all_confirms) - length(confirms)
+    gate_on = Enum.count(confirms, &(&1["vars"]["gate"] == true))
+    gate_off = Enum.count(confirms, &(&1["vars"]["gate"] == false))
+    examined_detail = "#{length(all_confirms)} confirmations, #{excluded} snapshot-only, #{gate_on} examined, #{gate_off} gate-off"
+    confirmed_by_detail = fn ->
+      teardown = Enum.count(confirms, &(&1["vars"]["confirmed_by"] == "teardown"))
+      absence = Enum.count(confirms, &(&1["vars"]["confirmed_by"] == "absence"))
+      "confirmed_by teardown=#{teardown}, absence=#{absence}"
+    end
 
     cond do
+      missing_had_vm != [] ->
+        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: 0, oracle: :trace_only, detail: "#{examined_detail}; some destroy confirmations lack had_vm"}
+
       confirms == [] ->
-        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: 0, oracle: :trace_only, detail: "no destroy confirmations in trace"}
+        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: 0, oracle: :trace_only, detail: "#{examined_detail}; no live-VM destroy confirmations in trace"}
 
       # A record whose `gate` is absent or nil is NOT evaluable. Without this arm
       # it satisfies neither the all-false test nor the violation filter, falls
@@ -153,20 +173,20 @@ defmodule Embervm.SpecTrace.Checker do
       # sets `gate` today, so this is unreachable now, and it is exactly the
       # shape of the two false PASSes already fixed on this branch.
       Enum.any?(confirms, &is_nil(&1["vars"]["gate"])) ->
-        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: length(confirms), oracle: :trace_only, detail: "some destroy confirmations carry no gate field, so the ordering could not be evaluated"}
+        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: gate_on, oracle: :trace_only, detail: "#{examined_detail}; some destroy confirmations carry no gate field, so the ordering could not be evaluated"}
 
       Enum.all?(confirms, &(&1["vars"]["gate"] == false)) ->
-        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: length(confirms), oracle: :trace_only, detail: "all destroy confirmations used the gate-off path"}
+        %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: 0, oracle: :trace_only, detail: "#{examined_detail}; all destroy confirmations used the gate-off path"}
 
       true ->
         violations = Enum.filter(confirms, fn record -> record["vars"]["gate"] == true and record["vars"]["node_confirmed"] != true end)
 
         if violations == [] do
-          %{invariant: :no_destroy_before_confirm, verdict: :pass, coverage: length(confirms), oracle: :trace_only, detail: "all gated destroy confirmations have node confirmation"}
+          %{invariant: :no_destroy_before_confirm, verdict: :pass, coverage: gate_on, oracle: :trace_only, detail: "#{examined_detail}; #{confirmed_by_detail.()} ; all gated destroy confirmations have node confirmation"}
         else
           record = hd(violations)
           vars = record["vars"]
-          %{invariant: :no_destroy_before_confirm, verdict: :fail, coverage: length(confirms), oracle: :trace_only, detail: "vm_id #{vars["vm_id"]} has node_confirmed #{inspect(vars["node_confirmed"])} with gate #{inspect(vars["gate"])}"}
+          %{invariant: :no_destroy_before_confirm, verdict: :fail, coverage: gate_on, oracle: :trace_only, detail: "#{examined_detail}; vm_id #{vars["vm_id"]} has node_confirmed #{inspect(vars["node_confirmed"])} with gate #{inspect(vars["gate"])}"}
         end
     end
   end
