@@ -156,6 +156,37 @@ export const RUN_LEXICON = {
     sessionsRegion: "Agent sessions",
     transcriptRegion: "Agent transcript",
     backToSessions: "Back to agent sessions",
+    // Session walkthrough (ADR 056). Server-composed sentences (truncation
+    // reasons, rationale quotes) are data, not lexicon; these are the
+    // interface's own words only.
+    walkSummary: "what changed",
+    walkStepWord: "step",
+    walkStepsWord: "steps",
+    walkFilesWord: "files",
+    walkFileWord: "file",
+    walkPrevStep: "previous step",
+    walkNextStep: "next step",
+    walkShowDiff: "show diff",
+    walkHideDiff: "hide diff",
+    walkDiffLoading: "loading diff…",
+    walkDiffUnavailable: "diff unavailable",
+    walkDiffsDesktop: "diffs read on a desktop",
+    walkUnexplained: "unexplained",
+    walkUnexplainedNote: "in the diff; no point mentions it",
+    walkContradictedNote: "named by the agent; not in the diff",
+    walkMechanicalStep: "produced by tooling this turn",
+    walkEphemeralNote:
+      "compared by branch name; stops resolving once the branch merges",
+    walkNoCompareNote: "no compare available; showing the agent's account",
+    walkNoTrailerNote: "no rationale recorded for this turn",
+    walkTouchedLabel: "files touched by tools this turn",
+    walkDeclinedNote:
+      "no walk offered: no compare and no recorded rationale to structure one",
+    walkNothingNote: "nothing recorded for this turn",
+    walkUnavailable: "walkthrough unavailable",
+    walkRetry: "retry",
+    walkTruncatedWord: "truncated",
+    walkLoading: "loading…",
   },
   punct: { dot: "·", arrow: "→", colon: ":" },
   deviationCodes: {
