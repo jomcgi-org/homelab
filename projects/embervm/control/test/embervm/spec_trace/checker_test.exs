@@ -303,7 +303,11 @@ defmodule Embervm.SpecTrace.CheckerTest do
           "ts" => 2000,
           "spec" => "adoption",
           "action" => "checkpoint",
-          "vars" => %{"node_workload_vm_ids" => [["n1", "w1", "vm-a"], ["n1", "w1", "vm-b"]]}
+          # The PRODUCTION shape: dispatcher.ex builds a map of
+          # "node:workload" => [vm_id]. These fixtures used a list of triples,
+          # which the reader parsed happily while production's map parsed to
+          # nothing, so the invariant passed here and checked nothing live.
+          "vars" => %{"node_workload_vm_ids" => %{"n1:w1" => ["vm-a", "vm-b"]}}
         }
       ]
 
@@ -345,7 +349,11 @@ defmodule Embervm.SpecTrace.CheckerTest do
           "ts" => 2000,
           "spec" => "adoption",
           "action" => "checkpoint",
-          "vars" => %{"node_workload_vm_ids" => [["n1", "w1", "vm-a"], ["n1", "w1", "vm-b"]]}
+          # The PRODUCTION shape: dispatcher.ex builds a map of
+          # "node:workload" => [vm_id]. These fixtures used a list of triples,
+          # which the reader parsed happily while production's map parsed to
+          # nothing, so the invariant passed here and checked nothing live.
+          "vars" => %{"node_workload_vm_ids" => %{"n1:w1" => ["vm-a", "vm-b"]}}
         }
       ]
 
@@ -368,6 +376,36 @@ defmodule Embervm.SpecTrace.CheckerTest do
         assert verdict[:verdict] == :vacuous
         assert verdict[:coverage] == 0
       end)
+    end
+
+    # An inventory the reader cannot parse must be VACUOUS, never PASS. This is
+    # the shape the old reader silently produced on every production trace: a
+    # checkpoint declaring inventory, none of it readable, an empty vm_id set,
+    # and Enum.any? over empty returning false, so PASS.
+    test "prime_before_checkpoint is :vacuous when checkpoint inventory is unreadable", %{store: store} do
+      run_id = "test-run-unreadable"
+
+      records = [
+        %{
+          "run_id" => run_id,
+          "seq" => 1,
+          "mono" => 100,
+          "ts" => 1000,
+          "spec" => "adoption",
+          "action" => "checkpoint",
+          "vars" => %{"node_workload_vm_ids" => ["totally-unexpected", 42]}
+        }
+      ]
+
+      assert :ok = SQLite.write(store, records)
+      verdicts = Checker.run(SQLite, store)
+      checkpoint = Enum.find(verdicts, &(&1[:invariant] == :prime_before_checkpoint))
+
+      assert checkpoint[:verdict] == :vacuous,
+             "an unreadable inventory must not report #{inspect(checkpoint[:verdict])}"
+
+      refute checkpoint[:verdict] == :pass
+      assert checkpoint[:detail] =~ "unreadable"
     end
 
     test "no_double_assign is :vacuous when no dispatches", %{store: store} do
