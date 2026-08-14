@@ -49,6 +49,11 @@ bricks:
 # production GC from deleting dev artifacts. The store endpoint and bucket are
 # rendered into noded's config for S3 warmth export/restore.
 noded:
+  # The wildcard DaemonSet, off. See the scratchPrep note below for why this
+  # matters: it selects homelab.io/firecracker=true, which all four nodes carry
+  # including the three etcd masters.
+  enabled: false
+
   store:
     bucket: embervm-dev
 
@@ -64,7 +69,28 @@ noded:
   # Disable warmth restore in dev. The machines are small and sessions are ephemeral.
   warmRestoreWithVolumeClasses: []
 
-# Disable production workloads. Dev runs only sandbox (smallest).
+# Dev keeps ONE workload, the smallest real one, and keeps its production name.
+#
+# No rename is needed and none should be added. Workloads are namespaced
+# resources and `embervm-dev/sandbox` is a different object from
+# `embervm/sandbox`; that is what namespaces are for. The control plane was the
+# only thing opting out, reading the cluster-wide collection and keying its
+# catalog on name alone, and this PR scopes its informer to its own namespace
+# (see `k8s.ex` `workloads_path/0`). With that fixed, a shared name is not a
+# collision, and renaming to `dev-sandbox` would have been a workaround dressed
+# as isolation while still running production's spec.
+#
+# Everything below is disabled for SIZE, not for safety. Dev exercises lifecycle
+# with one small task-class workload rather than the production fleet.
+sandboxSessionWorkload:
+  enabled: false
+
+semgrepWorkload:
+  enabled: false
+
+bazelQueryWorkload:
+  enabled: false
+
 claudeRuntimeWorkload:
   enabled: false
 
@@ -72,6 +98,27 @@ scratchPostgres:
   enabled: false
 
 demoPostgres:
+  enabled: false
+
+# The wildcard noded DaemonSet and scratch-prep, BOTH of which default true in
+# the chart and which production explicitly disables.
+#
+# Dev loads only this values file, so a chart default wins wherever dev is
+# silent, and dev was silent on both. They select `homelab.io/firecracker=true`,
+# which ALL FOUR nodes carry including the three etcd masters, so dev was
+# rendering one noded per master: #4290 at fleet scale rather than one pinned
+# brick. scratch-prep is worse in kind, being privileged with hostPID and
+# `nsenter -t 1`, and its script hardcodes production's /var/lib/embervm/scratch
+# rather than nvmeRoot, plus an /etc/fstab append.
+#
+# It was gated only by accident: the nvme hostPath is type Directory on a path
+# that does not exist, so the pods sat in ContainerCreating. Creating that
+# directory would have armed it.
+#
+# `noded.enabled` is set in the noded block above, NOT here: a second `noded:`
+# key at this level would be a duplicate YAML mapping key and one of the two
+# blocks would be silently dropped.
+scratchPrep:
   enabled: false
 
 # Control-plane resources. Same as production (SigNoz 7-day-peak); scale later.
@@ -119,3 +166,31 @@ usageAdmins:
 # harness, with EMBERVM_SPEC_TRACE on so the destroy invariants have data. Prod
 # stays false until this has soaked.
 nodeConfirmedDestroy: true
+
+# rootfsPath is a SEPARATE key from noded.firecracker.nvmeRoot, and overriding
+# only the latter is not enough.
+#
+# `_noded-pod.tpl` renders BASE_ROOTFS_PATH from these values and mounts only
+# nvmeRoot, so with nvmeRoot moved to scratch-dev and these still pointing at
+# /var/lib/embervm/scratch, the path is UNBACKED inside the container: mkfs
+# writes multi-GB base images to the container's writable layer on node-4's ROOT
+# filesystem. The idempotency marker lands on that same ephemeral layer, so every
+# base rebuilds on every restart.
+#
+# node-4 also runs production's brick-16gi-node-4 and brick-2gi. Filling its root
+# filesystem trips kubelet DiskPressure and evicts them. Every workload's path
+# moves, including the ones whose CRs are disabled, because the base BUILDERS are
+# gated separately from the Workload CRs.
+workloads:
+  sandbox:
+    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/sandbox/rootfs.ext4
+  semgrep:
+    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/semgrep/rootfs.ext4
+  runtimePython:
+    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/runtime-python/rootfs.ext4
+  runtimeClaude:
+    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/runtime-claude/rootfs.ext4
+  scratchPostgres:
+    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/scratch-postgres/rootfs.ext4
+  bazelQuery:
+    rootfsPath: /var/lib/embervm/scratch-dev/embervm-noded/bazel-query/rootfs.ext4

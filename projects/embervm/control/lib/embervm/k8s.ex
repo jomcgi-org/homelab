@@ -36,7 +36,7 @@ defmodule Embervm.K8s do
   @token_file "#{@sa_dir}/token"
   @ca_file "#{@sa_dir}/ca.crt"
   @tokenreview_path "/apis/authentication.k8s.io/v1/tokenreviews"
-  @workloads_path "/apis/embervm.dev/v1alpha1/workloads"
+  @workloads_collection "/apis/embervm.dev/v1alpha1"
   @namespace_file "#{@sa_dir}/namespace"
   @receive_timeout 5_000
 
@@ -103,9 +103,28 @@ defmodule Embervm.K8s do
     end
   end
 
+  @doc false
+  # Workloads are namespaced resources, so the informer reads the collection in
+  # THIS control plane's own namespace.
+  #
+  # It used to read the cluster-wide collection, which is what a second control
+  # plane turns into a defect. `WorkloadWatcher` keys its catalog on name alone,
+  # so a dev Workload sharing a name with a production one collapses into a
+  # single entry, last write wins, and each control plane patches `.status` onto
+  # the other's CR with snapshotRefs computed against its own fleet and bucket.
+  #
+  # Namespaces are the mechanism that already prevents this. The control plane
+  # was opting out of them. `patch_workload_status/3` was always namespace
+  # scoped; only the list and watch legs were not, so scoping them here is what
+  # makes the whole informer respect the boundary.
+  #
+  # Behaviour-preserving for production: its Workload CRs and its control plane
+  # are both in `embervm`.
+  def workloads_path, do: "#{@workloads_collection}/namespaces/#{namespace()}/workloads"
+
   @doc """
-  Lists every `Workload` custom resource cluster-wide (the ClusterRole grants
-  `list` across namespaces, not scoped to one). This is the reconcile leg of
+  Lists every `Workload` custom resource in this control plane's namespace.
+  This is the reconcile leg of
   `Embervm.WorkloadWatcher`'s list-then-watch informer: it runs on boot, and
   again on any watch invalidation (a 410 Expired, a parse/transport error) to
   re-establish current truth before resuming the watch.
@@ -121,7 +140,7 @@ defmodule Embervm.K8s do
   """
   @spec list_workloads() :: {:ok, [map()], String.t() | nil} | {:error, term()}
   def list_workloads do
-    case do_request(:get, @workloads_path <> "?resourceVersion=0", nil, nil) do
+    case do_request(:get, workloads_path() <> "?resourceVersion=0", nil, nil) do
       {:ok, 200, resp_body} ->
         decoded = :json.decode(resp_body)
         items = Map.get(decoded, "items", [])
@@ -172,7 +191,7 @@ defmodule Embervm.K8s do
 
     with {:ok, sa_token} <- read_sa_token() do
       headers = [{"authorization", "Bearer " <> sa_token}, {"accept", "application/json"}]
-      req = Finch.build(:get, api_url(@workloads_path <> "?" <> query), headers, "")
+      req = Finch.build(:get, api_url(workloads_path() <> "?" <> query), headers, "")
       acc0 = %{status: nil, buffer: "", on_event: on_event}
 
       result =
