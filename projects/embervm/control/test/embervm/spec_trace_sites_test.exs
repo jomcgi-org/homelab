@@ -92,4 +92,83 @@ defmodule Embervm.SpecTraceSitesTest do
                "is the thing this registry exists to prevent."
     end
   end
+
+  # #4800. The registry was a LIST OF WHAT WAS BUILT, never a diff against the
+  # spec, so it was satisfied by any subset. Nine of adoption.tla's actions were
+  # registered and four were not, the two destroy invariants had no data source
+  # at all, and every guard passed: the checker over the other nine was green and
+  # the endpoint returned 200. A third of a spec unobserved, end to end silent.
+  #
+  # This closes it by parsing the spec's own prose map and asserting the identity
+  # in BOTH directions.
+  test "every action in adoption.tla's prose map is observed or deliberately excluded" do
+    {vocabulary, _binding} = Code.eval_file(Path.join(@specs_dir, "vocabulary.exs"))
+    sites = Map.fetch!(vocabulary, :spec_trace_sites)
+    excluded = Map.fetch!(vocabulary, :spec_trace_excluded)
+    site_notes = Map.fetch!(vocabulary, :spec_trace_site_notes)
+
+    prose_actions = parse_prose_actions(Path.join(@specs_dir, "adoption.tla"))
+
+    assert MapSet.size(prose_actions) > 10,
+           "parsed only #{MapSet.size(prose_actions)} actions from adoption.tla's prose map. " <>
+             "The parser has almost certainly broken against a reformat, and a parser that " <>
+             "silently matches nothing makes this whole assertion vacuous, which is the " <>
+             "exact failure this test exists to prevent. Parsed: " <>
+             "#{inspect(MapSet.to_list(prose_actions))}"
+
+    # A site is either the snake_case of a prose action, or carries a note saying
+    # what it is instead (a synthetic observation, or a refinement of an action).
+    observed = MapSet.new(Map.keys(sites)) |> MapSet.difference(MapSet.new(Map.keys(site_notes)))
+    accounted = MapSet.union(observed, MapSet.new(Map.keys(excluded)))
+
+    unobserved = MapSet.difference(prose_actions, accounted)
+
+    assert MapSet.size(unobserved) == 0,
+           "adoption.tla models #{inspect(MapSet.to_list(unobserved))} and nothing observes " <>
+             "them. Either add an emission site, or add an entry to spec_trace_excluded " <>
+             "saying why the action cannot or should not be observed. An action modeled by " <>
+             "the spec and reachable by no record is a third of a spec passing silently."
+
+    unmodeled = MapSet.difference(accounted, prose_actions)
+
+    assert MapSet.size(unmodeled) == 0,
+           "#{inspect(MapSet.to_list(unmodeled))} is registered as an emission site or an " <>
+             "exclusion but matches no action in adoption.tla's prose map. Either it is a " <>
+             "synthetic observation, in which case put it in spec_trace_site_notes with an " <>
+             "explanation, or the prose map and the code have drifted apart."
+
+    for {site, note} <- site_notes do
+      assert Map.has_key?(sites, site),
+             "#{inspect(site)} has a site note but is not a declared emission site. A note " <>
+               "explaining a site that does not exist is stale."
+
+      assert is_binary(note) and String.length(note) > 40,
+             "site note for #{inspect(site)} needs to say what it is if not a prose action."
+    end
+  end
+
+  # The prose map's entries look like:
+  #
+  #   (*   AdoptInventory(n)  ~ Dispatcher sweep reconciling node inventory ... *)
+  #
+  # Two names can share one line ("CrashCP / RestartCP ~ ..."), so match every
+  # CamelCase token before the tilde rather than only the first.
+  defp parse_prose_actions(spec_path) do
+    spec_path
+    |> File.read!()
+    |> String.split("\n")
+    |> Enum.filter(&String.match?(&1, ~r/^\(\*\s+[A-Z][A-Za-z]*.*~/))
+    |> Enum.flat_map(fn line ->
+      [names | _] = String.split(line, "~", parts: 2)
+      Regex.scan(~r/\b([A-Z][A-Za-z]+)\b/, names) |> Enum.map(fn [_, name] -> name end)
+    end)
+    |> Enum.map(&snake/1)
+    |> MapSet.new()
+  end
+
+  defp snake(camel) do
+    camel
+    |> String.replace(~r/([a-z0-9])([A-Z])/, "\\1_\\2")
+    |> String.downcase()
+  end
 end
