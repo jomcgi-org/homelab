@@ -242,29 +242,38 @@ promotion:
           # the settling window has to outlast the rollout it is settling after,
           # or it expires while bricks are still coming up and proves nothing.
           requiredSoakTime: 5m0s
-          # FALSE, unlike monolith's prod, and unlike dev above. Promotion to
-          # embervm production is a deliberate click in the UI.
+          # TRUE, matching monolith. This was false for one day and the
+          # reasoning behind that was wrong, so it is written down rather than
+          # quietly flipped.
           #
-          # Every embervm prod roll rebuilds each brick's guest rootfs and
-          # spends about 2.8 GiB of each master's 35 GiB scratch cap, which
-          # nothing reclaims while base retention is disarmed (#4364): roughly
-          # five rolls of runway. Batching is the point. A manual promotion
-          # takes the LATEST soaked Freight, so N merged chart versions cost
-          # ONE spend, which is strictly better than the CI write-back this
-          # replaces. `true` would only match it.
+          # The argument was: an embervm prod roll rebuilds each brick's guest
+          # rootfs and spends ~2.8 GiB of each master's 35 GiB cap, reclaimed by
+          # nothing, so batching N merges into one manual promotion conserves a
+          # scarce resource.
           #
-          # Scratch exhaustion does not present as a disk error. It presents as
-          # `no_capacity` on session create, or bricks wedged in
-          # PodInitializing on build-semgrep-rootfs, or Firecracker reporting a
-          # backing file as missing when mkfs could not write it. embervm is
-          # the isolation plane agent sessions run on, so that failure class
-          # should not be reachable by an unattended merge.
+          # Both halves are wrong. A base is rebuilt when its SIGNATURE changes,
+          # not on every chart version: production went 0.12.9 -> 0.13.7, eight
+          # versions, and the base refs on every node were unchanged apart from
+          # the demo-postgres rebuild that the #4865 incident forced. node-2's
+          # scratch went DOWN across that roll. A publish that does not move a
+          # guest image digest costs approximately nothing.
           #
-          # This does not cost pipeline confidence: dev auto-promotes on every
-          # publish, so the embervm pipeline is exercised end to end
-          # continuously. Flip to true in the same change that re-arms base
-          # retention (#4364).
-          autoPromotion: false
+          # And batching does not avoid the cost of a digest change, it only
+          # defers it: that change deploys eventually and costs the same then.
+          # Batching only wins when several digest-changing rolls collapse into
+          # one, which the history says is rare.
+          #
+          # What is actually accumulating is orphaned bases the retention sweep
+          # cannot see (#4364): node-3 held demo-postgres__8dde24352f92 and
+          # demo-postgres__ba4ef0bad08b at once, the stale one belonging to
+          # neither vendor list, while the sweep reported `0 candidates`. Rate
+          # limiting deploys to compensate for a collector that does not collect
+          # costs release velocity and leaves the leak growing at the same rate.
+          #
+          # So: fix the collector, do not throttle the pipeline. If scratch ever
+          # becomes the binding constraint again, the lever is #4364, not this
+          # flag.
+          autoPromotion: true
 
 # Private-tier ingress: https://private.jomcgi.dev/app/kargo
 #

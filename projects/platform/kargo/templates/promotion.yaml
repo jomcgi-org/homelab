@@ -57,14 +57,12 @@ The schema notes auto-promotion is "commonly set to true for Stages that
 subscribe to Warehouses instead of other, upstream Stages", which is an
 argument for gating prod rather than a prohibition.
 
-WHETHER PROD AUTO-PROMOTES IS PER-STAGE DATA, not a property of this template,
-and the two pipelines deliberately differ. Each stage's rationale is written
-beside its own `autoPromotion` in values.yaml: monolith's prod is `true` (the
-pipeline was being proven end to end, and it is risk-equivalent to the CI
-write-back it replaced), embervm's prod is `false` (every roll spends
-unreclaimed brick scratch, so promotions are batched by hand until #4364
-re-arms retention). Read the value, not this comment, to know what a given
-environment does.
+WHETHER PROD AUTO-PROMOTES IS PER-STAGE DATA, not a property of this template.
+Both pipelines are `true` today, and embervm's was briefly `false` on a scratch
+argument that turned out to be wrong (a base rebuilds on a SIGNATURE change, not
+on every chart version, and batching only defers a digest change rather than
+avoiding it). The rationale lives beside each `autoPromotion` in values.yaml.
+Read the value, not this comment, to know what a given environment does.
 
 Flipping the value is both the hold lever and the manual promotion path.
 */}}
