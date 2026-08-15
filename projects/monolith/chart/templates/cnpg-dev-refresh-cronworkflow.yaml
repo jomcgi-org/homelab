@@ -22,6 +22,22 @@ spec:
     # nightly refresh and dev quietly goes stale. An hour is far above the
     # observed shape of the work (the database is under 2 GB).
     activeDeadlineSeconds: 3600
+    # Without these this workflow reaped NOTHING, ever. Unlike the CronWorkflows
+    # in cronworkflows.yaml it declared neither, so every failed run left its
+    # Workflow and its pod behind permanently: a run from 2026-08-12 was still
+    # sitting in the namespace on 2026-08-15, alongside one per night since.
+    # failedJobsHistoryLimit above does not cover this; it caps the CronWorkflow's
+    # own child history, not the pods, and it is not what was leaking.
+    #
+    # Same values as cronworkflows.yaml so the two agree: a failure stays
+    # readable for a day, which is what made the recovery-conflict cause above
+    # recoverable at all, and a success is cleaned up promptly.
+    ttlStrategy:
+      secondsAfterCompletion: 3600
+      secondsAfterSuccess: 3600
+      secondsAfterFailure: 86400
+    podGC:
+      strategy: OnWorkflowSuccess
     templates:
       - name: refresh
         container:
@@ -75,8 +91,30 @@ spec:
               memory: 512Mi
               ephemeral-storage: 4Gi
           env:
+            # The PRIMARY, not monolith-pg-ro, and the -ro replica is what this
+            # used to read. A standby cancels a query whose snapshot blocks WAL
+            # replay, and pg_dump's COPY of knowledge.chunks is long enough to
+            # hit that every single night:
+            #
+            #   pg_dump: error: Dumping the contents of table "chunks" failed
+            #   ERROR: canceling statement due to conflict with recovery
+            #   DETAIL: User query might have needed to see row versions that
+            #           must be removed.
+            #
+            # It failed on the same table every run from at least 2026-08-12,
+            # so it is deterministic rather than flaky, and it is silent: a
+            # failed CronWorkflow pages nobody, so dev just served stale data.
+            #
+            # Dumping from the primary removes the failure mode outright rather
+            # than tuning around it, because recovery conflicts only exist on a
+            # standby. hot_standby_feedback and max_standby_streaming_delay
+            # would each keep the read on the replica at the cost of bloat or
+            # lag on the primary, and the delay knob is a guess that the
+            # growing chunks table would eventually outrun again. The dump is
+            # one short nightly read of a sub-2 GB database, so the read load
+            # the replica was there to deflect does not justify either.
             - name: PROD_PGHOST
-              value: monolith-pg-ro.monolith.svc.cluster.local
+              value: monolith-pg-rw.monolith.svc.cluster.local
             # monolith-dev-pg-rw: the dev Application runs this chart under
             # releaseName `monolith-dev`, which it must, because the chart also
             # renders cluster-scoped RBAC that two Applications cannot both own.
