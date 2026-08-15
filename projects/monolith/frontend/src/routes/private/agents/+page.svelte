@@ -27,6 +27,10 @@
   import { setupVisualViewport } from "./visual-viewport.js";
   import { formatAge, nextStatus } from "./vm-stream-status.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
+  import {
+    workspaceRecoveryMessage,
+    workspaceRecoveryTitle,
+  } from "./workspace-recovery.js";
   import PaneHeader from "./PaneHeader.svelte";
   import SessionWalkthrough from "./SessionWalkthrough.svelte";
   import { periodForHour } from "$lib/private/period.js";
@@ -1490,6 +1494,15 @@
                   >{/if}
               </div>
             </article>
+            {@const degradedCause = workspaceRecoveryMessage(turn)}
+            {#if degradedCause}
+              <div
+                class="turn-degraded"
+                title={P.workspaceRecoveryCauses[degradedCause]}
+              >
+                {P.labels.workspaceRecovery}
+              </div>
+            {/if}
           {/each}
 
           {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
@@ -2529,6 +2542,21 @@
     color: var(--err);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+    line-height: 1.5;
+  }
+  /* --attn-text, not --attn: --attn on --attn-soft is 4.09:1 in the day
+     palette and 3.91:1 at night, both under the 4.5:1 AA floor for body
+     text. --attn-text is the role token for text on this fill, at 6.01:1
+     and 7.34:1. The border keeps --attn, where the 3:1 UI-boundary floor
+     applies. Same pairing as .session-state.warn. */
+  .turn-degraded {
+    margin: 8px 0 0;
+    padding: 8px 12px;
+    background: var(--attn-soft);
+    border: 4px solid var(--attn);
+    border-radius: var(--radius-lg);
+    color: var(--attn-text);
+    font-size: var(--size-meta);
     line-height: 1.5;
   }
   .turn-meta {

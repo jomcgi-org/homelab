@@ -127,6 +127,11 @@ export const RUN_LEXICON = {
     loadingSession: "Loading session…",
     loadingRun: "Loading run…",
     turnFailed: "failed",
+    // One visible sentence for every degrade: the user consequence is the same
+    // in all three cases. The differing cause is carried in the title instead
+    // (see workspaceRecoveryCauses), so the transcript stays plain.
+    workspaceRecovery:
+      "The agent started with an empty workspace and cannot see files or changes from earlier turns.",
     promptIntent: "intent",
     viewProtocol: "view protocol",
     hideProtocol: "hide protocol",
@@ -195,6 +200,20 @@ export const RUN_LEXICON = {
     walkLoading: "loading…",
   },
   punct: { dot: "·", arrow: "→", colon: ":" },
+  // Operator-register detail for a degraded workspace restore, surfaced as the
+  // banner's title. Keyed by the message key workspace-recovery.js returns.
+  // This console is repo-facing, so naming the backend cause is the right
+  // register here (docs/writing.md) while the visible sentence stays plain.
+  // These must stay distinct: identical strings would make the three keys
+  // pointless and leave the cause unrecoverable from the UI.
+  workspaceRecoveryCauses: {
+    workspaceRecoveryRestoreDenied:
+      "restore_denied: the restore request was denied or timed out, so this turn fell back to a blank session",
+    workspaceRecoveryRestoreFallback:
+      "restore_fallback: the session was created but the control plane reported the workspace was not restored",
+    workspaceRecoveryUnknown:
+      "the control plane reported a workspace degrade this console does not recognise",
+  },
   deviationCodes: {
     retry_taken: "retry taken",
     budget_exceeded: "budget exceeded",
