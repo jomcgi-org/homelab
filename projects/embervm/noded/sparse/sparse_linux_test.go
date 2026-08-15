@@ -1,6 +1,6 @@
 //go:build linux
 
-package driver
+package sparse
 
 import (
 	"bytes"
@@ -25,12 +25,12 @@ func TestDigHolesPreservesMixedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeSize := fileSize(t, path)
-	freed, err := digHoles(path)
+	freed, err := DigHoles(path)
 	if err != nil {
-		t.Fatalf("digHoles: %v", err)
+		t.Fatalf("DigHoles: %v", err)
 	}
 	if freed == 0 {
-		t.Fatal("digHoles freed zero bytes")
+		t.Fatal("DigHoles freed zero bytes")
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
@@ -53,7 +53,7 @@ func TestDigHolesDropsBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := fileBlocks(t, path)
-	if _, err := digHoles(path); err != nil {
+	if _, err := DigHoles(path); err != nil {
 		t.Fatal(err)
 	}
 	if after := fileBlocks(t, path); after >= before {
@@ -81,7 +81,7 @@ func TestDigHolesEdgeCases(t *testing.T) {
 				t.Fatal(err)
 			}
 			beforeSize := fileSize(t, path)
-			freed, err := digHoles(path)
+			freed, err := DigHoles(path)
 			if err != nil {
 				t.Fatal(err)
 			}

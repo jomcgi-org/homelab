@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/sparse"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -459,6 +460,7 @@ func (s *Store) restoreFile(ctx context.Context, key, dst string, want FileMeta)
 		_ = os.Remove(tmp)
 		return 0, fmt.Errorf("store: object %q sha256 %s != meta %s", key, got, want.Sha256)
 	}
+	sparse.BestEffort(tmp, "restore")
 	if err := os.Rename(tmp, dst); err != nil {
 		_ = os.Remove(tmp)
 		return 0, fmt.Errorf("store: publish restored file %q: %w", dst, err)
