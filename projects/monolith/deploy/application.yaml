@@ -29,7 +29,7 @@ spec:
       # with nothing to reconstruct. Retiring the write-back is the LAST step
       # of the cutover, not part of it. It is also why this line keeps moving
       # and conflicting on rebase, which is expected rather than a bug.
-      targetRevision: 0.317.8
+      targetRevision: 0.318.0
       helm:
         releaseName: monolith
         valueFiles:
