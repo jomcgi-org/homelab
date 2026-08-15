@@ -1,0 +1,19 @@
+{{- if .Values.postgres.devRefresh.enabled }}
+# The dev refresh script, shipped as a file rather than inline in the
+# CronWorkflow's container args. kubelet expands $(VAR) over command, args and
+# env values at container start, treating $$ as an escape for a literal $, which
+# silently mangled an inline PL/pgSQL block into invalid SQL. Mounted file
+# contents are never expanded, so the bytes in git are the bytes the shell runs.
+# Same .Files.Get idiom as migrations-configmap.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cnpg-dev-refresh-script
+  namespace: {{ .Values.jobs.workflowNamespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cron-job
+data:
+  dev-refresh.sh: |
+    {{- .Files.Get "scripts/dev-refresh.sh" | nindent 4 }}
+{{- end }}
