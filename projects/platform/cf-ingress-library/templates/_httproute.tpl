@@ -26,8 +26,19 @@ metadata:
   labels:
     ingress-tier: {{ .tier }}
 spec:
+  # group/kind here, and group/kind/weight on backendRefs below, are the Gateway
+  # API schema defaults. They are spelled out rather than left implicit because
+  # the consuming Applications set ServerSideApply=true, and SSA diffs on field
+  # OWNERSHIP: a field the chart never declares is absent from ArgoCD's
+  # predicted state but present in live once the apiserver defaults it, so the
+  # app reports OutOfSync forever and selfHeal re-syncs without ever converging.
+  # Client-side apply hides this (its 3-way merge treats undeclared fields as
+  # someone else's), which is why the non-SSA consumers of this library stayed
+  # Synced against the identical live objects.
   parentRefs:
-    - name: {{ .gateway.name }}
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .gateway.name }}
       namespace: {{ .gateway.namespace }}
   hostnames:
     - {{ .hostname | quote }}
@@ -45,6 +56,9 @@ spec:
               replacePrefixMatch: {{ .rewritePrefix }}
       {{- end }}
       backendRefs:
-        - name: {{ .serviceName }}
+        - group: ""
+          kind: Service
+          name: {{ .serviceName }}
           port: {{ .servicePort }}
+          weight: 1
 {{- end }}

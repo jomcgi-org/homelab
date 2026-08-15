@@ -196,6 +196,9 @@ spec:
       - name: authentik
         issuer: {{ .Values.previewAuth.issuer | quote }}
         remoteJWKS:
+          # Envoy Gateway's default, declared so ArgoCD's ServerSideApply diff
+          # owns it. See cf-ingress-library/templates/_security-policy.tpl.
+          cacheDuration: 300s
           uri: {{ .Values.previewAuth.jwksUri | quote }}
         # The ID token cookie the oidc block above set, NOT the access token.
         # This is deliberate: OIDC requires the ID token to carry `email` when

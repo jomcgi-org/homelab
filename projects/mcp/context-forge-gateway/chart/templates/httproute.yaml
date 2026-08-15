@@ -118,8 +118,15 @@ spec:
                 value: >-
                   Bearer resource_metadata="https://{{ .Values.httpRoute.hostname }}/.well-known/oauth-protected-resource/mcp"
       backendRefs:
-        - name: context-forge-gateway-mcp-stack-mcpgateway
+        # Gateway API schema defaults, declared explicitly because this app
+        # syncs with ServerSideApply=true and SSA diffs on field ownership;
+        # an undeclared default is permanent phantom drift. See
+        # cf-ingress-library/templates/_httproute.tpl for the full rationale.
+        - group: ""
+          kind: Service
+          name: context-forge-gateway-mcp-stack-mcpgateway
           port: 80
+          weight: 1
     {{- end }}
 
     # Everything else: admin UI, REST API, static assets. Stays behind the
@@ -135,6 +142,13 @@ spec:
               - name: X-Forwarded-Proto
                 value: https
       backendRefs:
-        - name: context-forge-gateway-mcp-stack-mcpgateway
+        # Gateway API schema defaults, declared explicitly because this app
+        # syncs with ServerSideApply=true and SSA diffs on field ownership;
+        # an undeclared default is permanent phantom drift. See
+        # cf-ingress-library/templates/_httproute.tpl for the full rationale.
+        - group: ""
+          kind: Service
+          name: context-forge-gateway-mcp-stack-mcpgateway
           port: 80
+          weight: 1
 {{- end }}

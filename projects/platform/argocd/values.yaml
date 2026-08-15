@@ -60,6 +60,21 @@ argo-cd:
           #
           # Fleet-wide was never safe, only quiet. Keep replica ignores scoped
           # to the specific Application whose controller owns the field.
+    # The same {} != absent asymmetry as the Deployment annotations above, but
+    # arriving from the opposite direction. The upstream Kyverno chart renders
+    # `annotations: {}` and `labels: {}` on its CRDs; the apiserver drops an
+    # empty map on write, so live has no key at all while the predicted state
+    # keeps {}. Eleven policies.kyverno.io CRDs sat OutOfSync on nothing else.
+    #
+    # Unlike a field-level ignore this cannot mask real drift: the map is
+    # deleted only when it is already empty, so any actual label or annotation
+    # keeps it and the normal diff applies. Nothing upstream to fix here, which
+    # is why this is a normalizer rather than a chart change like the rest of
+    # this PR. Kyverno already syncs with RespectIgnoreDifferences=true.
+    resource.customizations.ignoreDifferences.apiextensions.k8s.io_CustomResourceDefinition: |
+      jqPathExpressions:
+        - '.metadata.annotations | select(. != null and length == 0)'
+        - '.metadata.labels | select(. != null and length == 0)'
     rbac:
       policy.csv: |
         p, mcp-agent, applications, *, */*, allow

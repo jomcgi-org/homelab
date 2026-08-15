@@ -75,7 +75,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-kubectl --context "$KUBE_CONTEXT" -n argocd port-forward svc/argocd-server "${local_port}:443" \
+# argocd-server here runs behind Envoy at a subpath, and the API moves with it:
+# with server.rootpath=/app/argocd the router serves /app/argocd/api/v1/... and
+# a request to /api/v1/... is a plain 404. It also runs server.insecure=true, so
+# the container speaks HTTP on 8080 and an https:// request to the forwarded
+# port never completes a handshake. Both were wrong here, and the combination
+# failed as an EMPTY response rather than an error, so this script reported
+# nothing at all and read like "the app has no diff" (which is how five
+# genuinely-OutOfSync apps looked clean). Read both from the cluster rather than
+# hardcoding, so a change to either keeps working.
+server_params="$(kubectl --context "$KUBE_CONTEXT" -n argocd get cm argocd-cmd-params-cm -o json 2>/dev/null)"
+api_base="$(printf '%s' "$server_params" | jq -r '.data["server.rootpath"] // ""')"
+if [ "$(printf '%s' "$server_params" | jq -r '.data["server.insecure"] // "false"')" = "true" ]; then
+	scheme="http"
+	svc_port=80
+else
+	scheme="https"
+	svc_port=443
+fi
+
+kubectl --context "$KUBE_CONTEXT" -n argocd port-forward svc/argocd-server "${local_port}:${svc_port}" \
 	>"$pf_log" 2>&1 &
 pf_pid=$!
 
@@ -116,7 +135,7 @@ session_body="$(jq -n --arg u admin --arg p "$admin_password" '{username: $u, pa
 
 session_response="$(curl -sk -H 'Content-Type: application/json' -X POST \
 	-d "$session_body" \
-	"https://127.0.0.1:${local_port}/api/v1/session")"
+	"${scheme}://127.0.0.1:${local_port}${api_base}/api/v1/session")"
 
 token="$(printf '%s' "$session_response" | jq -r '.token // empty')"
 
@@ -127,4 +146,4 @@ if [ -z "$token" ]; then
 	exit 1
 fi
 
-curl -sk -H "Authorization: Bearer ${token}" "https://127.0.0.1:${local_port}${api_path}" "$@"
+curl -sk -H "Authorization: Bearer ${token}" "${scheme}://127.0.0.1:${local_port}${api_base}${api_path}" "$@"

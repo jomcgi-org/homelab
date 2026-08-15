@@ -24,6 +24,12 @@ spec:
       - name: cloudflare-access
         issuer: https://{{ .team | default "jomcgi" }}.cloudflareaccess.com
         remoteJWKS:
+          # Envoy Gateway's own default, declared explicitly for the same
+          # ServerSideApply field-ownership reason as the HTTPRoute defaults.
+          # targetRefs above already spelled its group/kind out and showed no
+          # drift while this key did, on the same object, which is what
+          # identified the mechanism.
+          cacheDuration: 300s
           uri: https://{{ .team | default "jomcgi" }}.cloudflareaccess.com/cdn-cgi/access/certs
         extractFrom:
           headers:
