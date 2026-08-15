@@ -1421,7 +1421,7 @@
       </header>
       <div class="turns" bind:this={turnsEl}>
         <div class="turns-inner">
-          {#each detail?.turns ?? [] as turn (turn.seq)}
+          {#each detail?.turns ?? [] as turn, turnIndex (turn.seq)}
             <!-- {@const} has to be an immediate child of the block, not of the
                  element inside it, so this sits above <article> rather than
                  next to the markup that reads it. -->
@@ -1480,6 +1480,8 @@
                   sessionId={selectedSession.id}
                   turnSeq={turn.seq}
                   model={turn.model || selectedSession.model || "luna"}
+                  prominent={vmState(selectedSession, vms) !== "awake" &&
+                    turnIndex === (detail?.turns ?? []).length - 1}
                 />
               {/if}
               <div class="turn-meta mono">
