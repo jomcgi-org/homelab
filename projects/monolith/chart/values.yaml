@@ -38,9 +38,30 @@ backend:
 # track the mcp-friends slug in projects/platform/authentik/blueprints/mcp-auth.yaml.
 # Renaming the application silently breaks verification. The issuer's trailing
 # slash is significant.
+#
+# jwksUrl and issuer point at the SAME authentik by two different routes, and
+# that asymmetry is deliberate rather than a copy-paste error:
+#
+#   issuer  is a STRING COMPARED against the token's `iss` claim. It must be
+#           what authentik mints (issuer_mode `per_provider`, the public URL),
+#           so it can never become the in-cluster address.
+#   jwksUrl is a URL FETCHED. Nothing requires it to match `iss`, so it takes
+#           the shortest path to the same keys.
+#
+# Fetching over the public hostname made verification depend on egress to
+# Cloudflare and back through the tunnel: a WAN blip would 503 the whole /mcp
+# surface, held for the full jwksCacheTtlSeconds by the negative cache. The
+# ClusterIP has no such dependency.
+#
+# The port is plaintext because authentik serves its ClusterIP with a
+# self-signed certificate, so https here would mean disabling verification,
+# which is worse. JWKS is public key material, so confidentiality is not the
+# concern; integrity is, and it now rests on the cluster network rather than
+# on TLS. Anything able to MITM pod-to-pod traffic could serve substituted
+# keys, which is a strictly smaller set of attackers than before.
 auth:
   authentik:
-    jwksUrl: "https://auth.jomcgi.dev/application/o/mcp-friends/jwks/"
+    jwksUrl: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-friends/jwks/"
     issuer: "https://auth.jomcgi.dev/application/o/mcp-friends/"
     audience: "https://private.jomcgi.dev"
   jwksCacheTtlSeconds: 300

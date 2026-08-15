@@ -20,9 +20,11 @@ backend:
 
 # State the production verifier identity explicitly. The application slug owns
 # the Authentik issuer path, and the trailing slash is significant.
+# jwksUrl is fetched in-cluster while issuer stays the public string authentik
+# mints into `iss`; see the chart values for why those two must differ.
 auth:
   authentik:
-    jwksUrl: "https://auth.jomcgi.dev/application/o/mcp-friends/jwks/"
+    jwksUrl: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-friends/jwks/"
     issuer: "https://auth.jomcgi.dev/application/o/mcp-friends/"
     audience: "https://private.jomcgi.dev"
   jwksCacheTtlSeconds: 300

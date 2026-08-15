@@ -18,6 +18,12 @@ dependencies = [
     "pydantic-settings~=2.1",
     "pydantic-extra-types~=2.0",
     "pydantic-sqlite~=0.3.0",
+    # projects/monolith/auth verifies authentik RS256 tokens with this. It was
+    # previously present only because mcp and semgrep happened to pull it in, so
+    # an upstream dropping it would have broken token verification through a
+    # dependency this repo never named. The [crypto] extra is required: without
+    # it PyJWT has no RSA backend and RS256 verification raises at runtime.
+    "pyjwt[crypto]>=2.13.0",
     "httpx~=0.28.1",
     # curl_cffi impersonates a browser TLS/JA3 fingerprint. The BC Parks
     # (camping.bcparks.ca) reservation API sits behind an Azure WAF that 403s

@@ -349,6 +349,107 @@ async def test_ordered_chain_stops_when_first_verifier_raises():
     assert second.calls == []
 
 
+def _delegation_principal() -> Principal:
+    """Stand in for what #4944's verifier will return."""
+
+    return Principal(
+        subject="delegate",
+        actor=("broker",),
+        scope=("tools:read",),
+        groups=(),
+        email=None,
+        kind=PrincipalKind.WORKLOAD,
+        authority=Authority.DELEGATED,
+    )
+
+
+def _foreign_token(
+    algorithm: str = "HS256", *, iss: str = "https://delegation-issuer/"
+) -> str:
+    """A token a LATER verifier owns, deliberately not RS256-with-kid."""
+
+    return jwt.encode(
+        {"sub": "delegate", "iss": iss}, "shared-secret", algorithm=algorithm
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_jwt_credential_declines_to_the_next_verifier():
+    """Undecodable is not the same as invalid, and only one of them is ours to say.
+
+    This verifier used to raise MALFORMED for anything it could not decode,
+    which made slot 1's opinion final for the whole chain: a later verifier
+    owning an opaque credential would never be consulted.
+    """
+    fetch, calls = _fetcher({"keys": []})
+    standing = AuthentikStandingVerifier(_settings(), fetch=fetch)
+    delegated = _delegation_principal()
+    stub = StubVerifier(result=delegated)
+
+    principal = await TokenResolver([standing, stub]).resolve("opaque-not-a-jwt")
+
+    assert principal is delegated
+    assert stub.calls == ["opaque-not-a-jwt"]
+    # Ownership was settled without an outbound fetch.
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_foreign_issuer_token_of_another_algorithm_declines():
+    """The algorithm pin must not gate ownership, only validity.
+
+    #4944's delegation tokens need not be RS256-with-kid. With the pin ahead of
+    the ownership gate they would 401 at slot 1, and no later slot could revisit
+    that, so the chain would be unreachable for exactly the tokens it exists for.
+    """
+    fetch, calls = _fetcher({"keys": []})
+    standing = AuthentikStandingVerifier(_settings(), fetch=fetch)
+    delegated = _delegation_principal()
+    stub = StubVerifier(result=delegated)
+    foreign = _foreign_token()
+
+    principal = await TokenResolver([standing, stub]).resolve(foreign)
+
+    assert principal is delegated
+    assert stub.calls == [foreign]
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_token_claiming_our_issuer_is_judged_here_not_passed_on():
+    """The gate decides ownership only. A token claiming our issuer is ours to reject."""
+    fetch, _ = _fetcher({"keys": []})
+    standing = AuthentikStandingVerifier(_settings(), fetch=fetch)
+    stub = StubVerifier(result=_delegation_principal())
+    owned_but_wrong_algorithm = _foreign_token(iss=ISSUER)
+
+    with pytest.raises(AuthError) as raised:
+        await TokenResolver([standing, stub]).resolve(owned_but_wrong_algorithm)
+
+    assert raised.value.reason is AuthErrorReason.MALFORMED
+    assert stub.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_verifier_raises_even_for_a_token_it_does_not_own():
+    """The one deliberate exception to gate-before-raise.
+
+    An unconfigured verifier cannot know what it owns, so declining would let a
+    deployment mistake read as "nobody recognized this token" (401) instead of
+    the infrastructure fault it is (503).
+    """
+    fetch, _ = _fetcher({"keys": []})
+    standing = AuthentikStandingVerifier(_settings(authentik_issuer=""), fetch=fetch)
+    stub = StubVerifier(result=_delegation_principal())
+
+    with pytest.raises(AuthError) as raised:
+        await TokenResolver([standing, stub]).resolve(_foreign_token())
+
+    assert raised.value.reason is AuthErrorReason.UNCONFIGURED
+    assert raised.value.status_code == 503
+    assert stub.calls == []
+
+
 @pytest.mark.asyncio
 async def test_rs256_algorithm_pin_rejects_other_algorithms(caplog):
     """Verify that the RS256 pin is enforced before JWKS lookup."""
