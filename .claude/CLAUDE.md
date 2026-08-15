@@ -119,7 +119,7 @@ Context is the other half of the same budget:
 ```bash
 ci              # lint changed files + selective regen + bb remote Linux test
 ci lint         # format only files changed vs origin/main
-ci regen        # generators and gazelle, only when inputs changed
+ci regen        # generators only, and only when inputs changed
 ci test         # 1:1 with the buildbuddy.yaml Test action
 
 helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml  # NEVER helm install
@@ -130,6 +130,13 @@ the action cache is shared with PR CI and a green `ci test` makes the PR Test
 check mostly cache-hit. Bare `bazel` / `bazelisk` on the Mac is wrong (no darwin
 workflow executors, wrong platforms); `bb remote` is allowed, `ci` is better.
 Image push stays CI-only on merge to main.
+
+**BUILD generation is CI-only too.** No gazelle runs locally: the only one that
+could go on a Mac's PATH is aspect-gazelle, a different program that rewrites
+BUILD files by its own defaults. CI's Format stage runs `//:gazelle` and
+auto-commits, so a BUILD change arrives as a `style: auto-format` commit rather
+than in yours, and your next push is non-fast-forward until you fetch and
+rebase.
 
 Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 `crane`, `kind`, `go`, `python`, `pnpm`, `node`, `bb`, and the formatters on PATH.
