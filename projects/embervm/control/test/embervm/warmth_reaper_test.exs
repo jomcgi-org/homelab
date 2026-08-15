@@ -1,5 +1,5 @@
 defmodule Embervm.WarmthReaperTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Embervm.{NodeCapacity, WarmthReaper}
 
@@ -15,6 +15,13 @@ defmodule Embervm.WarmthReaperTest do
     def init(instances), do: {:ok, instances}
     @impl true
     def handle_call(:all, _from, instances), do: {:reply, instances, instances}
+  end
+
+  defmodule S3ListPlug do
+    import Plug.Conn
+
+    def init(body), do: body
+    def call(conn, body), do: send_resp(conn, 200, body)
   end
 
   defp start_store(instances) do
@@ -301,6 +308,151 @@ defmodule Embervm.WarmthReaperTest do
     end
   end
 
+  describe "empty-binding group orphan lookup" do
+    defp empty_binding_group_reaper(table, artifact_fun, snapshot_fun, index_fun) do
+      start_reaper(
+        capacity_table: table,
+        stateful_store: start_store([]),
+        group_store: start_store([group_instance(:destroyed, "orphan-nobind-set")]),
+        evict_artifact_fun: artifact_fun,
+        evict_snapshot_fun: snapshot_fun,
+        channel_fun: fake_channel_fun(),
+        remote_group_index_fun: index_fun,
+        sweep_enabled: true
+      )
+    end
+
+    test "remote hit recovers vendor and group instance id, then evicts local members before remote" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+
+      put_warmth_fact(table, "node-4", [], [
+        group_set("orphan-nobind-set", "", [member("a", "m-nb-a", 1_000), member("b", "m-nb-b", 2_000)])
+      ])
+
+      reaper =
+        empty_binding_group_reaper(table, artifact_fun, snapshot_fun, fn ->
+          {:ok, %{"orphan-nobind-set" => %{vendor: "amd", group_instance_id: "grp-recovered"}}}
+        end)
+
+      WarmthReaper.sweep_now(reaper)
+
+      assert_receive {:evict_snapshot, "m-nb-a"}, 1_000
+      assert_receive {:evict_snapshot, "m-nb-b"}, 1_000
+
+      assert_receive {:evict_artifact_req,
+                      %{
+                        remote: true,
+                        vendor: "amd",
+                        artifact: %{
+                          kind: :ARTIFACT_KIND_GROUP_SET,
+                          workload: "grp-recovered",
+                          ref: "orphan-nobind-set"
+                        }
+                      }},
+                     1_000
+    end
+
+    test "remote miss evicts local members only" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+
+      put_warmth_fact(table, "node-4", [], [
+        group_set("orphan-nobind-set", nil, [member("a", "m-nb-a", 1_000), member("b", "m-nb-b", 2_000)])
+      ])
+
+      reaper = empty_binding_group_reaper(table, artifact_fun, snapshot_fun, fn -> {:ok, %{}} end)
+      WarmthReaper.sweep_now(reaper)
+
+      assert_receive {:evict_snapshot, "m-nb-a"}, 1_000
+      assert_receive {:evict_snapshot, "m-nb-b"}, 1_000
+      refute_receive {:evict_artifact, :ARTIFACT_KIND_GROUP_SET, "orphan-nobind-set", true}, 300
+    end
+
+    test "remote index failure preserves local members and the remote set" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+
+      put_warmth_fact(table, "node-4", [], [
+        group_set("orphan-nobind-set", "", [member("a", "m-nb-a", 1_000), member("b", "m-nb-b", 2_000)])
+      ])
+
+      reaper = empty_binding_group_reaper(table, artifact_fun, snapshot_fun, fn -> {:error, :timeout} end)
+      WarmthReaper.sweep_now(reaper)
+
+      refute_receive {:evict_snapshot, "m-nb-a"}, 300
+      refute_receive {:evict_snapshot, "m-nb-b"}, 200
+      refute_receive {:evict_artifact, :ARTIFACT_KIND_GROUP_SET, "orphan-nobind-set", true}, 200
+    end
+
+    test "non-empty group instance id keeps the existing local then remote behavior" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+
+      put_warmth_fact(table, "node-4", [], [
+        group_set("orphan-nobind-set", "grp-on-disk", [member("a", "m-nb-a", 1_000), member("b", "m-nb-b", 2_000)])
+      ])
+
+      reaper =
+        empty_binding_group_reaper(table, artifact_fun, snapshot_fun, fn ->
+          send(test_pid, :remote_group_index_lookup)
+          {:error, :unexpected_lookup}
+        end)
+
+      WarmthReaper.sweep_now(reaper)
+
+      assert_receive {:evict_snapshot, "m-nb-a"}, 1_000
+      assert_receive {:evict_snapshot, "m-nb-b"}, 1_000
+
+      assert_receive {:evict_artifact_req,
+                      %{
+                        remote: true,
+                        vendor: "",
+                        artifact: %{
+                          kind: :ARTIFACT_KIND_GROUP_SET,
+                          workload: "grp-on-disk",
+                          ref: "orphan-nobind-set"
+                        }
+                      }},
+                     1_000
+
+      refute_receive :remote_group_index_lookup, 300
+    end
+
+    test "the default remote index rejects conflicting bindings for one set id" do
+      body = """
+      <ListBucketResult>
+        <IsTruncated>false</IsTruncated>
+        <Contents><Key>group_set/amd/grp-one/shared-set/a/memfile</Key><Size>1</Size></Contents>
+        <Contents><Key>group_set/nvidia/grp-two/shared-set/b/memfile</Key><Size>1</Size></Contents>
+      </ListBucketResult>
+      """
+
+      port = 18_091
+      start_supervised!({Bandit, plug: {S3ListPlug, body}, scheme: :http, port: port})
+
+      previous_endpoint = System.get_env("EMBERVM_STORE_ENDPOINT")
+      previous_bucket = System.get_env("EMBERVM_STORE_BUCKET")
+
+      on_exit(fn ->
+        restore_system_env("EMBERVM_STORE_ENDPOINT", previous_endpoint)
+        restore_system_env("EMBERVM_STORE_BUCKET", previous_bucket)
+      end)
+
+      System.put_env("EMBERVM_STORE_ENDPOINT", "http://127.0.0.1:#{port}")
+      System.put_env("EMBERVM_STORE_BUCKET", "embervm-test")
+
+      reaper = start_reaper([])
+      index_fun = :sys.get_state(reaper).remote_group_index_fun
+
+      assert {:error, {:conflicting_bindings, "shared-set"}} = index_fun.()
+    end
+  end
+
   describe "group warmth retention" do
     test "evicts an orphaned group set: per-member local + one remote set evict (gate ON)" do
       test_pid = self()
@@ -521,10 +673,8 @@ defmodule Embervm.WarmthReaperTest do
     end
   end
 
-  # #38 fix C remains fail-safe when the remote index is unavailable. The group
-  # layout is not searchable by set id in the same way, so its empty binding still
-  # skips both copies.
-  describe "empty-binding lookup failures and groups remain fail-safe (#38 fix C)" do
+  # #38 fix C remains fail-safe when the remote stateful index is unavailable.
+  describe "empty-binding stateful lookup failures remain fail-safe (#38 fix C)" do
     test "a stateful orphan with no workload binding and no remote store runs no evict" do
       test_pid = self()
       table = new_cap_table()
@@ -554,37 +704,8 @@ defmodule Embervm.WarmthReaperTest do
       refute_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "orphan-nobind", _}, 300
     end
 
-    test "a group orphan with no group_instance_id binding runs no member local and no remote evict" do
-      test_pid = self()
-      table = new_cap_table()
-      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
-
-      # set with group_instance_id "" (pre-sidecar). group_set/3 takes the gid as
-      # arg 2; pass "".
-      put_warmth_fact(table, "node-4", [], [
-        group_set("orphan-nobind-set", "", [member("a", "m-nb-a", 1_000), member("b", "m-nb-b", 2_000)])
-      ])
-
-      stateful = start_store([])
-      group = start_store([group_instance(:destroyed, "orphan-nobind-set")])
-
-      reaper =
-        start_reaper(
-          capacity_table: table,
-          stateful_store: stateful,
-          group_store: group,
-          evict_artifact_fun: artifact_fun,
-          evict_snapshot_fun: snapshot_fun,
-          channel_fun: fake_channel_fun(),
-          sweep_enabled: true
-        )
-
-      plan = WarmthReaper.sweep_now(reaper)
-      assert Enum.any?(plan, &(&1.id == "orphan-nobind-set"))
-      # No per-member local evict, no whole-set remote evict.
-      refute_receive {:evict_snapshot, "m-nb-a"}, 300
-      refute_receive {:evict_snapshot, "m-nb-b"}, 200
-      refute_receive {:evict_artifact, :ARTIFACT_KIND_GROUP_SET, "orphan-nobind-set", true}, 200
-    end
   end
+
+  defp restore_system_env(key, nil), do: System.delete_env(key)
+  defp restore_system_env(key, value), do: System.put_env(key, value)
 end
