@@ -85,24 +85,58 @@ spec:
               }
               trap barrier EXIT
 
-              # pg_restore --clean emits DROP/COMMENT for every object in the
-              # archive, extensions included, and `app` does not own `vector` or
-              # `uuid-ossp` so those four statements always fail. They are
-              # harmless (the extensions already exist in dev and are not being
-              # replaced) but pg_restore still exits 1 on "errors ignored on
-              # restore", which under `set -e` aborted the whole job.
+              # WIPE FIRST, then restore into an empty database. --clean is not
+              # used at all, and that is the point: every failure this job has
+              # had after the dump was fixed came from --clean emitting a DROP
+              # that Postgres refuses, and each fix only revealed the next one.
               #
-              # Drop the EXTENSION entries from the restore list rather than
-              # tolerating the exit code: filtering is deterministic, whereas
-              # matching on the error text would silently start passing real
-              # failures if a message ever changed. A genuine restore error
-              # still fails the job.
+              #   must be owner of extension vector       (DROP EXTENSION)
+              #   cannot drop inherited constraint        (ships.positions_*)
               #
-              # Safe to skip CREATE EXTENSION as well as DROP because the
-              # extensions are not the restore's to provide: cnpg-cluster.yaml
-              # installs them as postgres in the cluster's post-init SQL, so a
-              # rebuilt dev cluster already has vector and uuid-ossp before any
-              # refresh runs. That is the dependency this filter relies on.
+              # Both are harmless, and both make pg_restore exit 1 on "errors
+              # ignored on restore", which under `set -e` fails the job. Two
+              # instances of one class is enough: remove the class. With
+              # nothing to drop, no DROP is generated and no benign error can
+              # be mistaken for a real one.
+              #
+              # `app` owns all 27 schemas and all 140 tables (the restore runs
+              # --no-owner, so it owns whatever it creates), which is what makes
+              # a wholesale wipe possible.
+              #
+              # public is EXCLUDED and its tables dropped individually instead.
+              # It is owned by app too, so a plain `DROP OWNED BY app CASCADE`
+              # would take the schema with it and cascade into vector and
+              # uuid-ossp, which live there and are owned by postgres. app
+              # cannot recreate either (vector is not a trusted extension), so
+              # that would break the refresh permanently on the first run and
+              # need a cluster rebuild to recover.
+              psql \
+                --host "$DEV_PGHOST" --port 5432 \
+                --username app --dbname monolith <<'SQL'
+              DO $$
+              DECLARE obj text;
+              BEGIN
+                FOR obj IN
+                  SELECT nspname FROM pg_namespace
+                  WHERE nspname NOT LIKE 'pg\_%'
+                    AND nspname NOT IN ('information_schema', 'public')
+                LOOP
+                  EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', obj);
+                END LOOP;
+                FOR obj IN SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+                LOOP
+                  EXECUTE format('DROP TABLE IF EXISTS public.%I CASCADE', obj);
+                END LOOP;
+              END $$;
+              SQL
+
+              # The archive still carries COMMENT ON EXTENSION entries, which
+              # fail the same ownership check even with no --clean, so keep
+              # filtering EXTENSION out. Skipping CREATE EXTENSION too is safe
+              # because the extensions are not the restore's to provide:
+              # cnpg-cluster.yaml installs them as postgres in the cluster's
+              # post-init SQL, so a rebuilt dev cluster has vector and uuid-ossp
+              # before any refresh runs. That is the dependency this relies on.
               pg_restore --list "$dump_file" | grep -v ' EXTENSION ' > /tmp/restore.list
               # An empty list is the dangerous outcome, not an error one: there
               # is no pipefail here, so a failed --list leaves grep succeeding
@@ -117,7 +151,7 @@ spec:
                 --host "$DEV_PGHOST" --port 5432 \
                 --username app --dbname monolith \
                 --use-list /tmp/restore.list \
-                --clean --if-exists --no-owner --no-acl "$dump_file"
+                --no-owner --no-acl "$dump_file"
           # Declared rather than omitted, because a container with no requests
           # is BestEffort and is the first thing evicted under pressure. This
           # cluster is not roomy: node-1 sits at 91% of requestable memory, so
