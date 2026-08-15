@@ -3,9 +3,9 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "store",
     srcs = ["store.go"],
-    deps = ["@com_github_klauspost_compress//zstd"],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/store",
     visibility = ["//projects/embervm/noded:__subpackages__"],
+    deps = ["@com_github_klauspost_compress//zstd"],
 )
 
 go_test(
