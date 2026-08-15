@@ -28,7 +28,7 @@ so every worktree carries its own copy; relative paths have failed with exit
 
 ```
 Bash tool:
-  command: "$WORKDIR"/bazel/tools/codex/dispatch.sh luna "$WORKDIR" - <<'SPEC'
+  command: "$WORKDIR"/bazel/tools/codex/dispatch.sh frontier "$WORKDIR" - <<'SPEC'
   <the full task spec>
   SPEC
   run_in_background: true
@@ -43,8 +43,8 @@ notification. To check progress while it runs:
 tail -5 "$(cat "$WORKDIR"/.codex-dispatch/lock/log)"
 ```
 
-`luna` is the tier unless your dispatcher named another one. Do not step up to
-`terra` on your own judgement, and never to `frontier`.
+`frontier` (Sol) is the tier unless your dispatcher named another one. Do not
+change tier on your own judgement, up or down.
 
 The wrapper sandboxes writes to the worktree (network stays on, so "no
 commit, no push" is a spec guardrail, not a sandbox one), appends the repo

@@ -17,7 +17,7 @@ have to.
 
 | Work | Agent | Runs on |
 |------|-------|---------|
-| Implementation of a specified task | `implementer` | Codex Luna, via dispatch |
+| Implementation of a specified task | `implementer` | Codex Sol, via dispatch |
 | Review of the finished diff | `reviewer` | Opus |
 | Writing the ADR | `adr-author` | Sonnet |
 | Safety model refresh | `stpa-analyst` | Sonnet |
