@@ -4036,6 +4036,16 @@ py_test(
 )
 
 py_test(
+    name = "swarm_unified_diff_test",
+    srcs = ["swarm/unified_diff_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_walkthrough_composer_test",
     srcs = ["swarm/walkthrough_composer_test.py"],
     imports = ["."],

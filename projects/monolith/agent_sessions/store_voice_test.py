@@ -50,12 +50,39 @@ def test_session_and_turn_round_trip(session):
         "abc123",
         {"input_tokens": 3, "activities": [{"tool": "Bash", "command": "git status"}]},
         0.25,
+        diff_blob=b"compressed",
+        diff_truncated=False,
+        diff_base_sha="def456",
     )
     assert json.loads(turn.permission_denials) == [{"tool": "Bash"}]
     assert json.loads(turn.usage_json)["input_tokens"] == 3
     assert isinstance(turn.created_at, datetime)
     assert store.get_turn(session, row.id, 1).commit_sha == "abc123"
+    assert turn.diff_blob == b"compressed"
+    assert turn.diff_truncated is False
+    assert turn.diff_base_sha == "def456"
     assert len(store.get_turns(session, row.id)) == 1
+
+    truncated = store.create_turn(
+        session,
+        row.id,
+        2,
+        "large change",
+        "Done",
+        "Done",
+        "completed",
+        "end_turn",
+        [],
+        None,
+        {},
+        0.0,
+        diff_blob=None,
+        diff_truncated=True,
+        diff_base_sha="fedcba",
+    )
+    assert truncated.diff_blob is None
+    assert truncated.diff_truncated is True
+    assert truncated.diff_base_sha == "fedcba"
 
 
 @pytest.mark.parametrize(

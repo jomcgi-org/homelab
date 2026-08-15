@@ -1,9 +1,10 @@
 """Unit tests for the Claude guest shim using a fake stream-json CLI."""
 
-import json
 import ast
+import base64
 import datetime
 import io
+import json
 import os
 import signal
 import socket
@@ -1298,6 +1299,114 @@ def test_process_manager_turn_always_ensures_workspace_volume(monkeypatch):
 
     assert manager.turn("hello") == {"ok": True}
     assert calls == [True]
+
+
+@pytest.mark.parametrize("checkout_state", ["missing", "git_failure"])
+def test_process_manager_diff_capture_failure_does_not_fail_turn(
+    tmp_path, monkeypatch, checkout_state
+):
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path / "workspace")
+    manager._hydration_error = None
+    manager._hydration_status = None
+
+    class Adapter:
+        workspace = None
+
+        def turn(self, *_args, **_kwargs):
+            return {"ok": True}
+
+    manager.claude = Adapter()
+    manager.codex = Adapter()
+    manager.codex.turn_lock = threading.Lock()
+    manager.pi = Adapter()
+    manager.pi.turn_lock = threading.Lock()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+    if checkout_state == "git_failure":
+        checkout = tmp_path / "workspace" / "src"
+        (checkout / ".git").mkdir(parents=True)
+        monkeypatch.setattr(
+            shim.subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, b""),
+        )
+
+    assert manager.turn("hello") == {"ok": True}
+
+
+def test_turn_diff_uncompressed_cap_sets_truncated(monkeypatch, tmp_path):
+    checkout = tmp_path / "src"
+    (checkout / ".git").mkdir(parents=True)
+    raw = b"x" * (shim.MAX_TURN_DIFF_BYTES + 1)
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, raw),
+    )
+
+    assert shim._capture_turn_diff(str(checkout), "a" * 40) == {
+        "base_sha": "a" * 40,
+        "zlib_b64": None,
+        "truncated": True,
+    }
+
+
+def test_process_manager_captures_diff_against_head_at_turn_start(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    checkout = workspace / "src"
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"], cwd=checkout, check=True
+    )
+    tracked = checkout / "tracked.txt"
+    tracked.write_text("before\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=checkout, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+
+    manager = _new_process_manager()
+    manager.workspace = str(workspace)
+    manager._hydration_error = None
+    manager._hydration_status = None
+
+    class Adapter:
+        workspace = None
+
+        def turn(self, *_args, **_kwargs):
+            tracked.write_text("after\n")
+            return {"ok": True}
+
+    manager.claude = Adapter()
+    manager.codex = Adapter()
+    manager.codex.turn_lock = threading.Lock()
+    manager.pi = Adapter()
+    manager.pi.turn_lock = threading.Lock()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+
+    record = manager.turn("change it")
+
+    assert record["diff"]["base_sha"] == base_sha
+    assert record["diff"]["truncated"] is False
+    compressed = base64.b64decode(record["diff"]["zlib_b64"])
+    assert b"-before\n+after\n" in shim.zlib.decompress(compressed)
 
 
 def test_process_manager_without_prewarm_preserves_ready_semantics():

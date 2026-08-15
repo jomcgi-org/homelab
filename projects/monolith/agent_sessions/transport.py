@@ -10,9 +10,13 @@ EMBERVM_URL, auth headers, error types, timeout shape).
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
+import re
+import zlib
 from typing import Awaitable, Callable, NamedTuple, Protocol
 
 import httpx
@@ -117,6 +121,43 @@ class Turn(NamedTuple):
     duration_ms: int | None
     activities: list[dict]
     workspace_recovery: dict | None = None
+    diff: dict | None = None
+
+
+def _guest_diff(value) -> dict | None:
+    """Validate optional guest diff metadata without making it turn-critical."""
+    if not isinstance(value, dict):
+        return None
+    if not {"base_sha", "zlib_b64", "truncated"}.issubset(value):
+        return None
+    base_sha = value.get("base_sha")
+    truncated = value.get("truncated")
+    encoded = value.get("zlib_b64")
+    if not isinstance(base_sha, str) or not re.fullmatch(
+        r"[0-9a-fA-F]{40,64}", base_sha
+    ):
+        return None
+    if not isinstance(truncated, bool):
+        return None
+    if truncated:
+        return value if encoded is None else None
+    if not isinstance(encoded, str):
+        return None
+    try:
+        compressed = base64.b64decode(encoded, validate=True)
+        if len(compressed) > 1024 * 1024:
+            return None
+        decompressor = zlib.decompressobj()
+        raw = decompressor.decompress(compressed, 5 * 1024 * 1024 + 1)
+        if (
+            len(raw) > 5 * 1024 * 1024
+            or not decompressor.eof
+            or decompressor.unused_data
+        ):
+            return None
+    except (binascii.Error, zlib.error):
+        return None
+    return value
 
 
 class EmberSession(NamedTuple):
@@ -510,6 +551,7 @@ class EmberVmShimTransport:
                         total_cost_usd=guest_data.get("total_cost_usd"),
                         duration_ms=guest_data.get("duration_ms"),
                         activities=guest_data.get("activities", []),
+                        diff=_guest_diff(guest_data.get("diff")),
                     )
             except httpx.TimeoutException as exc:
                 logger.warning(

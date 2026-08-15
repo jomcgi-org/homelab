@@ -4,12 +4,14 @@ import asyncio
 import json
 import os
 import time
+import zlib
 from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 from agent_sessions.rationale import parse_rationale
+from swarm.unified_diff import parse_unified_diff
 
 router = APIRouter(prefix="/compare", tags=["swarm"])
 
@@ -43,6 +45,9 @@ def _turn_data(session_id: int, turn_seq: int):
         return {
             "base_sha": turn.base_sha,
             "commit_sha": turn.commit_sha,
+            "diff_blob": turn.diff_blob,
+            "diff_truncated": turn.diff_truncated,
+            "diff_base_sha": turn.diff_base_sha,
             "branch": session.branch,
             "repo": session.repo or _DEFAULT_REPO,
             "usage_json": turn.usage_json,
@@ -50,6 +55,29 @@ def _turn_data(session_id: int, turn_seq: int):
             "result_text": turn.result_text,
             "rationale": parse_rationale(turn.result_text),
         }
+
+
+def _stored_compare(data: dict) -> dict | None:
+    blob = data.get("diff_blob")
+    if blob is None:
+        return None
+    try:
+        decompressor = zlib.decompressobj()
+        raw_bytes = decompressor.decompress(bytes(blob), 5 * 1024 * 1024 + 1)
+        if (
+            len(raw_bytes) > 5 * 1024 * 1024
+            or not decompressor.eof
+            or decompressor.unused_data
+        ):
+            return None
+        raw = raw_bytes.decode("utf-8", "replace")
+    except (TypeError, ValueError, zlib.error):
+        return None
+    return {
+        "files": parse_unified_diff(raw),
+        "truncated": False,
+        "source": "stored",
+    }
 
 
 def _activities(data: dict) -> tuple[set[str], bool]:
@@ -156,7 +184,12 @@ async def compare_stats(session_id: int, turn_seq: int) -> dict:
     resolution_rung = 3
     diff_type = None
     compare = {"files": [], "truncated": False}
-    if base_sha and commit_sha:
+    stored = _stored_compare(data)
+    if stored is not None:
+        resolution_rung, diff_type = 1, "stored"
+        compare = stored
+        base_sha = data.get("diff_base_sha") or base_sha
+    elif base_sha and commit_sha:
         resolution_rung, diff_type = 1, "sha"
         compare = await _compare(
             repo, base_sha, commit_sha, f"{base_sha}...{commit_sha}"
@@ -226,7 +259,10 @@ async def compare_patch(session_id: int, turn_seq: int, path: str = Query(...)) 
     data = await asyncio.to_thread(_turn_data, session_id, turn_seq)
     if data is None:
         raise HTTPException(status_code=404, detail="Agent turn not found")
-    if data["base_sha"] and data["commit_sha"]:
+    stored = _stored_compare(data)
+    if stored is not None:
+        compare = stored
+    elif data["base_sha"] and data["commit_sha"]:
         compare = await _compare(
             data["repo"],
             data["base_sha"],

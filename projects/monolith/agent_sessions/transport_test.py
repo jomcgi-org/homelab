@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import zlib
 
 import httpx
 import pytest
@@ -208,7 +210,53 @@ def test_deliver_uses_ember_identity_and_cli_id_in_body(monkeypatch):
     assert request.headers["X-Ember-Guest-Path"] == "/shim/turn"
     assert json.loads(request.content) == {"message": "hello", "session_id": "cli-1"}
     assert turn.result == "ok"
+    assert turn.diff is None
     assert used == ember
+
+
+def test_deliver_maps_valid_guest_diff(monkeypatch):
+    captured = {
+        "base_sha": "a" * 40,
+        "zlib_b64": base64.b64encode(zlib.compress(b"diff")).decode("ascii"),
+        "truncated": False,
+    }
+
+    async def handler(request):
+        response = _turn_response(request)
+        payload = response.json()
+        payload["diff"] = captured
+        return httpx.Response(200, json=payload, request=request)
+
+    _client(monkeypatch, handler)
+    turn, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+        )
+    )
+
+    assert turn.diff == captured
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "bad", {}, {"base_sha": "x", "zlib_b64": "bad", "truncated": False}],
+)
+def test_deliver_ignores_absent_or_malformed_guest_diff(monkeypatch, value):
+    async def handler(request):
+        response = _turn_response(request)
+        payload = response.json()
+        if value is not None:
+            payload["diff"] = value
+        return httpx.Response(200, json=payload, request=request)
+
+    _client(monkeypatch, handler)
+    turn, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+        )
+    )
+
+    assert turn.diff is None
 
 
 def test_deliver_includes_model_when_present(monkeypatch):

@@ -1,4 +1,5 @@
 import json
+import zlib
 
 import pytest
 
@@ -9,6 +10,9 @@ def _data(**overrides):
     value = {
         "base_sha": "base",
         "commit_sha": "head",
+        "diff_blob": None,
+        "diff_truncated": False,
+        "diff_base_sha": None,
         "branch": "claude/swarm-1",
         "repo": "jomcgi/homelab",
         "usage_json": json.dumps(
@@ -73,6 +77,66 @@ async def test_sha_resolution_is_stats_first(monkeypatch):
     assert result["files"][1]["patch_url"] is None
     assert "patch" not in result["files"][0]
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_stored_diff_is_rung_one_without_github(monkeypatch):
+    raw = (
+        "diff --git a/a.py b/a.py\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1 +1,2 @@\n"
+        "-old\n"
+        "+new\n"
+        "+line\n"
+    ).encode()
+    monkeypatch.setattr(
+        mod,
+        "_turn_data",
+        lambda *_: _data(
+            diff_blob=zlib.compress(raw),
+            diff_base_sha="captured-base",
+        ),
+    )
+
+    async def fail_github(_url):
+        raise AssertionError("GitHub must not be called for a stored diff")
+
+    async def fail_compare(*_args, **_kwargs):
+        raise AssertionError("GitHub compare must not be called for a stored diff")
+
+    monkeypatch.setattr(mod, "_github_get", fail_github)
+    monkeypatch.setattr(mod, "_compare", fail_compare)
+    result = await mod.compare_stats(1, 1)
+
+    assert result["resolution_rung"] == 1
+    assert result["diff_type"] == "stored"
+    assert result["base_sha"] == "captured-base"
+    assert result["files"][0]["changes"] == 3
+
+
+@pytest.mark.asyncio
+async def test_stored_diff_patch_does_not_call_github(monkeypatch):
+    raw = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    ).encode()
+    monkeypatch.setattr(
+        mod,
+        "_turn_data",
+        lambda *_: _data(diff_blob=zlib.compress(raw), diff_base_sha="base"),
+    )
+
+    async def fail_github(_url):
+        raise AssertionError("GitHub must not be called for a stored diff")
+
+    async def fail_compare(*_args, **_kwargs):
+        raise AssertionError("GitHub compare must not be called for a stored diff")
+
+    monkeypatch.setattr(mod, "_github_get", fail_github)
+    monkeypatch.setattr(mod, "_compare", fail_compare)
+    result = await mod.compare_patch(1, 1, "a.py")
+
+    assert result == {"path": "a.py", "patch": "@@ -1 +1 @@\n-old\n+new\n"}
 
 
 @pytest.mark.asyncio
