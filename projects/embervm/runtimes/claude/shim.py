@@ -63,21 +63,56 @@ def _emit_turn_diff_outcome(checkout_dir, phase, outcome):
         pass
 
 
+def _git_read_argv(checkout_dir, *args):
+    """git argv for reading a checkout the shim does not own.
+
+    The shim runs as root while hydration clones under _cli_privilege_kwargs, so
+    the checkout belongs to the CLI uid. git refuses to operate on a repository
+    owned by another user ("detected dubious ownership") and exits non-zero,
+    which is why capture reported rev_parse_failed on every turn while the agent
+    used the same repo without trouble.
+
+    safe.directory is scoped to this one path and passed per invocation, so
+    nothing is written to any git config. Dropping to the CLI uid instead would
+    only move the mismatch: the checkout is not always owned by that user
+    either, and a read as root is the one thing that works in both directions.
+    """
+    return [
+        "git",
+        "-c",
+        "safe.directory=%s" % checkout_dir,
+        "-C",
+        checkout_dir,
+        *args,
+    ]
+
+
 def _capture_turn_base(checkout_dir):
     """Best-effort checkout HEAD capture. A failure must not affect the turn."""
     try:
         if not os.path.exists(os.path.join(checkout_dir, ".git")):
             _emit_turn_diff_outcome(checkout_dir, "base", "no_git_dir")
             return None
+        # Run git as the CLI user, exactly as hydration does. The shim is root
+        # and hydration clones under these kwargs, so the checkout is owned by
+        # the CLI uid. Calling git as root against it trips git's dubious
+        # ownership check, which exits non-zero with the reason on stderr. That
+        # is why capture reported rev_parse_failed on every turn while the agent
+        # cloned, committed and pushed the same repo without trouble.
         result = subprocess.run(
-            ["git", "-C", checkout_dir, "rev-parse", "HEAD"],
+            _git_read_argv(checkout_dir, "rev-parse", "HEAD"),
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             check=False,
             timeout=10,
         )
         if result.returncode != 0:
-            _emit_turn_diff_outcome(checkout_dir, "base", "rev_parse_failed")
+            _emit_turn_diff_outcome(
+                checkout_dir,
+                "base",
+                "rev_parse_failed:%s"
+                % (result.stderr or b"").decode("utf-8", "replace").strip()[:200],
+            )
             return None
         base_sha = result.stdout.decode("ascii", "strict").strip()
         if not re.fullmatch(r"[0-9a-fA-F]{40,64}", base_sha):
@@ -96,15 +131,22 @@ def _capture_turn_diff(checkout_dir, base_sha):
         _emit_turn_diff_outcome(checkout_dir, "diff", "no_base_sha")
         return None
     try:
+        # Same privileges as the rev-parse above and as hydration's clone: the
+        # checkout belongs to the CLI user, not to root.
         result = subprocess.run(
-            ["git", "-C", checkout_dir, "diff", base_sha],
+            _git_read_argv(checkout_dir, "diff", base_sha),
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             check=False,
             timeout=30,
         )
         if result.returncode != 0:
-            _emit_turn_diff_outcome(checkout_dir, "diff", "diff_failed")
+            _emit_turn_diff_outcome(
+                checkout_dir,
+                "diff",
+                "diff_failed:%s"
+                % (result.stderr or b"").decode("utf-8", "replace").strip()[:200],
+            )
             return None
         raw = result.stdout
         if len(raw) > MAX_TURN_DIFF_BYTES:
