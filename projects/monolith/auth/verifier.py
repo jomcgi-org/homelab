@@ -41,9 +41,44 @@ class AuthentikStandingVerifier:
         )
 
     async def verify(self, token: str) -> Principal | None:
+        # Deliberately ahead of the ownership gate, and the only check that is.
+        # An unconfigured verifier cannot know what it owns, so declining would
+        # turn a deployment mistake into "no verifier recognized this token",
+        # which renders 401 and hides an operator fault behind a caller one.
         if not self._settings.identity_is_configured:
             raise AuthError(AuthErrorReason.UNCONFIGURED)
 
+        # ── Ownership gate ───────────────────────────────────────────────────
+        # This runs BEFORE any check that raises, which is the load-bearing
+        # ordering. A verifier that raises on a token it does not own makes its
+        # own opinion final for the whole chain, so the next verifier is never
+        # consulted. #4944 registers the delegation verifier after this one, and
+        # its tokens need not be RS256-with-kid, so an algorithm or header check
+        # ahead of this gate would reject them at slot 1 with a 401 that no
+        # later slot could revisit. Only `iss` decides ownership; everything
+        # that judges a token's validity belongs below.
+        try:
+            unverified_claims = jwt.decode(token, options={"verify_signature": False})
+        except jwt.InvalidTokenError:
+            # Not a decodable JWT, so not ours: a later verifier may own an
+            # opaque or non-JWT credential. If none does, TokenResolver raises
+            # UNRECOGNIZED, so a present token still never becomes anonymous.
+            logger.debug("declining token: not a decodable JWT")
+            return None
+
+        iss = unverified_claims.get("iss")
+        if iss != self._settings.authentik_issuer:
+            logger.debug(
+                "declining token: issuer mismatch (expected %s, got %s)",
+                self._settings.authentik_issuer,
+                iss,
+            )
+            return None
+
+        # ── The token claims to be ours, so from here every failure raises ───
+        # Reading `iss` above came from an unverified decode, which is safe
+        # because it only routes. Nothing is trusted until the signature is
+        # checked against the JWKS below.
         try:
             header = jwt.get_unverified_header(token)
         except jwt.InvalidTokenError as exc:
@@ -54,27 +89,6 @@ class AuthentikStandingVerifier:
         kid = header.get("kid")
         if not isinstance(kid, str) or not kid:
             raise AuthError(AuthErrorReason.MALFORMED)
-
-        # Ownership check: is this token ours? Decode without verification to check iss.
-        # If the issuer does not match, decline so the next verifier can be tried.
-        try:
-            unverified_claims = jwt.decode(
-                token,
-                options={"verify_signature": False},
-                algorithms=["RS256"],
-            )
-        except jwt.InvalidTokenError:
-            # A token nobody can parse is nobody's; raise for consistency with header failures.
-            raise AuthError(AuthErrorReason.MALFORMED) from None
-
-        iss = unverified_claims.get("iss")
-        if iss != self._settings.authentik_issuer:
-            logger.debug(
-                "declining token: issuer mismatch (expected %s, got %s)",
-                self._settings.authentik_issuer,
-                iss,
-            )
-            return None
 
         jwk = await self._jwks.get_key(kid)
         if jwk is None:
