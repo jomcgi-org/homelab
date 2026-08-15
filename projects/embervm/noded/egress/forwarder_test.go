@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,17 @@ func TestEgressListenPath(t *testing.T) {
 	want := "/run/vsock.sock_" + itoa(int(vsockproto.EgressPort))
 	if got != want {
 		t.Fatalf("egressListenPath = %q, want %q", got, want)
+	}
+}
+
+func TestServeEgressReturnsListenFailure(t *testing.T) {
+	udsPath := filepath.Join(t.TempDir(), "missing", "vsock.sock")
+	err := ServeEgress(context.Background(), slog.Default(), udsPath, "127.0.0.1:1")
+	if err == nil {
+		t.Fatal("ServeEgress should fail when the socket parent does not exist")
+	}
+	if !strings.Contains(err.Error(), "listen") {
+		t.Fatalf("ServeEgress error = %v, want listen context", err)
 	}
 }
 

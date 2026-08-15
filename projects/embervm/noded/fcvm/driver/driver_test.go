@@ -21,9 +21,11 @@ import (
 // the snapfile + memfile to disk so the bundle layout and Restore's existence
 // checks are exercised end to end.
 type fakeLauncher struct {
-	mu       sync.Mutex
-	launched int
-	requests []string
+	mu        sync.Mutex
+	launched  int
+	requests  []string
+	failPath  string
+	processes []*fakeProcess
 }
 
 type fakeProcess struct {
@@ -46,13 +48,17 @@ func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (P
 		return nil, err
 	}
 	mux := http.NewServeMux()
-	record := func(r *http.Request) {
+	record := func(r *http.Request) bool {
 		l.mu.Lock()
+		defer l.mu.Unlock()
 		l.requests = append(l.requests, r.Method+" "+r.URL.Path)
-		l.mu.Unlock()
+		return l.failPath != "" && r.URL.Path == l.failPath
 	}
 	mux.HandleFunc("/snapshot/create", func(w http.ResponseWriter, r *http.Request) {
-		record(r)
+		if record(r) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		var body map[string]any
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &body)
@@ -66,18 +72,39 @@ func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (P
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		record(r)
+		if record(r) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
-	return &fakeProcess{srv: srv}, nil
+	proc := &fakeProcess{srv: srv}
+	l.mu.Lock()
+	l.processes = append(l.processes, proc)
+	l.mu.Unlock()
+	return proc, nil
 }
 
 func (l *fakeLauncher) requestPaths() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]string(nil), l.requests...)
+}
+
+func (l *fakeLauncher) allProcessesKilled() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.processes) == 0 {
+		return false
+	}
+	for _, proc := range l.processes {
+		if !proc.killed {
+			return false
+		}
+	}
+	return true
 }
 
 // shortTempDir returns a temp dir under /tmp with a short path. The fake
@@ -146,6 +173,67 @@ func TestDriverClaimBootsMicroVM(t *testing.T) {
 	}
 	if d.LiveCount() != 1 {
 		t.Fatalf("LiveCount = %d, want 1", d.LiveCount())
+	}
+}
+
+func TestDriverColdBootAPIFailureKillsPartialVM(t *testing.T) {
+	for _, failPath := range []string{"/machine-config", "/boot-source", "/drives/rootfs", "/vsock", "/actions"} {
+		t.Run(failPath, func(t *testing.T) {
+			launcher := &fakeLauncher{failPath: failPath}
+			d := New(Config{
+				KernelImagePath: "/opt/kata/vmlinux",
+				RootfsPath:      "/dev/mapper/thread",
+				SnapshotRoot:    shortTempDir(t),
+				Node:            "node-4",
+				Arch:            "amd64",
+			}, launcher, nil)
+			if _, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "partial"}); err == nil {
+				t.Fatal("Claim should fail when Firecracker rejects a boot API request")
+			}
+			if d.LiveCount() != 0 {
+				t.Fatalf("failed Claim left %d live VMs, want 0", d.LiveCount())
+			}
+			if !launcher.allProcessesKilled() {
+				t.Fatal("failed Claim did not kill the launched Firecracker process")
+			}
+		})
+	}
+}
+
+func TestDriverWarmRestoreAPIFailureKillsPartialVM(t *testing.T) {
+	for _, failPath := range []string{"/snapshot/load", "/drives/volume", "/vm"} {
+		t.Run(failPath, func(t *testing.T) {
+			launcher := &fakeLauncher{failPath: failPath}
+			root := shortTempDir(t)
+			d := New(Config{
+				KernelImagePath:       "/opt/kata/vmlinux",
+				RootfsPath:            "/dev/mapper/thread",
+				SnapshotRoot:          root,
+				Node:                  "node-4",
+				Arch:                  "amd64",
+				WarmRestoreWithVolume: true,
+			}, launcher, nil)
+			if err := os.MkdirAll(d.baseDir("base"), 0o750); err != nil {
+				t.Fatalf("mkdir base: %v", err)
+			}
+			if err := os.WriteFile(d.baseSnapfile("base"), []byte("snap"), 0o600); err != nil {
+				t.Fatalf("write snapfile: %v", err)
+			}
+			_, err := d.Claim(context.Background(), substrate.ClaimSpec{
+				ThreadID:        "partial-restore",
+				BaseSnapshotRef: substrate.SnapshotRef{ID: "base", Arch: "amd64"},
+				VolumeDiskPath:  "/sessions/s1/workspace.img",
+			})
+			if err == nil {
+				t.Fatal("Claim should fail when Firecracker rejects a restore API request")
+			}
+			if d.LiveCount() != 0 {
+				t.Fatalf("failed restore left %d live VMs, want 0", d.LiveCount())
+			}
+			if !launcher.allProcessesKilled() {
+				t.Fatal("failed restore did not kill the launched Firecracker process")
+			}
+		})
 	}
 }
 

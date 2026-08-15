@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeObjectStore is an in-memory S3-API stand-in: a map from object path
@@ -185,6 +186,32 @@ func TestRawRoundTrip(t *testing.T) {
 	// Get of an absent key is ErrNotPresent.
 	if _, _, err := s.Get(ctx, key); err != ErrNotPresent {
 		t.Fatalf("Get absent = %v, want ErrNotPresent", err)
+	}
+}
+
+func TestGetHonorsContextWhenStoreNeverAnswers(t *testing.T) {
+	requestStarted := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	s := New(srv.URL, "embervm", false)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, _, err := s.Get(ctx, "stateful/wl/ref/snapfile")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Get error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Get returned after %v, want prompt context cancellation", elapsed)
+	}
+	select {
+	case <-requestStarted:
+	default:
+		t.Fatal("timeout test never reached the object store")
 	}
 }
 

@@ -442,10 +442,18 @@ func TestExportArtifactStateful(t *testing.T) {
 		t.Fatalf("store missing %q after export", prefix)
 	}
 	// NodeStatus reports the bundle exported.
+	var reported *nodev1.StatefulBundle
 	for _, b := range s.nodeStatus().GetStatefulBundles() {
-		if b.GetSnapshotRef() == ref && !b.GetExported() {
-			t.Fatal("stateful bundle should report exported=true")
+		if b.GetSnapshotRef() == ref {
+			reported = b
+			break
 		}
+	}
+	if reported == nil {
+		t.Fatal("exported stateful bundle is absent from NodeStatus")
+	}
+	if !reported.GetExported() {
+		t.Fatal("stateful bundle should report exported=true")
 	}
 }
 
@@ -473,7 +481,7 @@ func TestExportArtifactBaseReportsExported(t *testing.T) {
 	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "mem", "snapfile": "snap"})
 
 	// Before export, the base is present but NOT exported.
-	if exported := baseExportedInStatus(s, workload, ref); exported {
+	if exported := baseExportedInStatus(t, s, workload, ref); exported {
 		t.Fatal("base should report exported=false before export")
 	}
 
@@ -492,7 +500,7 @@ func TestExportArtifactBaseReportsExported(t *testing.T) {
 	}
 
 	// After export, the workload capacity reports exported=true.
-	if exported := baseExportedInStatus(s, workload, ref); !exported {
+	if exported := baseExportedInStatus(t, s, workload, ref); !exported {
 		t.Fatal("base should report exported=true after export")
 	}
 
@@ -618,10 +626,10 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 
 	// The queue worker settles into "already durable" and flips the exported flag.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !baseExportedInStatus(s, workload, ref) {
+	for time.Now().Before(deadline) && !baseExportedInStatus(t, s, workload, ref) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if !baseExportedInStatus(s, workload, ref) {
+	if !baseExportedInStatus(t, s, workload, ref) {
 		t.Fatal("base should report exported=true once a same-vendor sibling copy is durable")
 	}
 
@@ -757,10 +765,11 @@ func TestListArtifactsOmitsAnArtifactWithNoMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListArtifacts: %v", err)
 	}
-	for _, e := range resp.GetEntries() {
-		if e.GetRef() == "bazel-query__partial" {
-			t.Fatal("an artifact with no readable meta.json must be omitted, not reported")
-		}
+	if len(resp.GetEntries()) != 1 {
+		t.Fatalf("entries = %+v, want only the complete artifact", resp.GetEntries())
+	}
+	if got := resp.GetEntries()[0].GetRef(); got != "bazel-query__good" {
+		t.Fatalf("listed ref = %q, want bazel-query__good", got)
 	}
 }
 
@@ -1098,13 +1107,16 @@ func TestLocalBasesStatusReportsIncompleteRegisteredBaseAsAbsent(t *testing.T) {
 }
 
 // baseExportedInStatus finds the workload's capacity entry in NodeStatus whose
-// snapshot_ref matches and returns its exported flag; false if not reported.
-func baseExportedInStatus(s *Server, workload, ref string) bool {
+// snapshot_ref matches and returns its exported flag. A missing entry fails the
+// caller so a false assertion cannot pass on an absent capacity.
+func baseExportedInStatus(t *testing.T, s *Server, workload, ref string) bool {
+	t.Helper()
 	for _, wc := range s.nodeStatus().GetWorkloads() {
 		if wc.GetWorkload() == workload && wc.GetSnapshotRef() == ref {
 			return wc.GetExported()
 		}
 	}
+	t.Fatalf("workload capacity %q with snapshot_ref %q was not reported", workload, ref)
 	return false
 }
 

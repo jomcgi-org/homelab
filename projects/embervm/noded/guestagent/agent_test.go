@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 )
 
 // fakeClock is a table-testable Clock: SetRealtime records the last value (and
@@ -171,6 +172,51 @@ func TestServeReturnsOnClose(t *testing.T) {
 	_ = ln.Close()
 	if err := <-done; err == nil {
 		t.Fatal("expected Serve to return an error after listener close")
+	}
+}
+
+func TestServeStalledPeerDoesNotBlockAnotherConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	clock := &fakeClock{readBack: 99}
+	agent := New(clock, nil)
+	go func() { _ = agent.Serve(ln) }()
+
+	stalled, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial stalled peer: %v", err)
+	}
+	defer stalled.Close()
+
+	active, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial active peer: %v", err)
+	}
+	defer active.Close()
+	if err := active.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set active deadline: %v", err)
+	}
+	body, err := json.Marshal(request{Cmd: syncClockCmd, EpochNs: 42})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if err := writeFrame(active, body); err != nil {
+		t.Fatalf("write active frame: %v", err)
+	}
+	respBody, err := readFrame(active)
+	if err != nil {
+		t.Fatalf("read active response while another peer is stalled: %v", err)
+	}
+	var resp response
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Err != "" || resp.ClockRealtimeNs != 99 {
+		t.Fatalf("response = %+v, want clock 99 with no error", resp)
 	}
 }
 

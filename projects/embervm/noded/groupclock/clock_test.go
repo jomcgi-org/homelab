@@ -38,7 +38,7 @@ func (c *fakeConn) SetWriteDeadline(time.Time) error { return nil }
 
 // fakeDialer returns a scripted fakeConn (or a dial error).
 type fakeDialer struct {
-	conn    *fakeConn
+	conn    net.Conn
 	dialErr error
 }
 
@@ -149,6 +149,34 @@ func TestResyncReadError(t *testing.T) {
 	err := Resync(context.Background(), dialer, "/uds", time.Now)
 	if err == nil {
 		t.Fatal("a read error (no response frame) must fail Resync")
+	}
+}
+
+func TestResyncSilentGuestHonorsDeadline(t *testing.T) {
+	host, guest := net.Pipe()
+	defer guest.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	requestRead := make(chan struct{})
+	go func() {
+		var req syncClockRequest
+		_ = readFrame(guest, &req)
+		close(requestRead)
+		<-ctx.Done()
+	}()
+
+	start := time.Now()
+	err := Resync(ctx, &fakeDialer{conn: host}, "/uds", time.Now)
+	if err == nil {
+		t.Fatal("a guest that never answers must fail Resync")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Resync returned after %v, want the context deadline to bound it", elapsed)
+	}
+	select {
+	case <-requestRead:
+	default:
+		t.Fatal("silent-guest test never delivered the sync request")
 	}
 }
 

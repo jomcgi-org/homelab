@@ -31,6 +31,13 @@ func TestSessionVolumePathsArePerLineageAndProvisioned(t *testing.T) {
 	if err := m.CreateSession("claude-runtime", "session-abc123", 2<<20); err != nil {
 		t.Fatalf("idempotent CreateSession: %v", err)
 	}
+	info, err = os.Stat(a)
+	if err != nil {
+		t.Fatalf("stat session image after repeat create: %v", err)
+	}
+	if info.Size() != 1<<20 {
+		t.Fatalf("repeat CreateSession resized workspace to %d, want original size %d", info.Size(), 1<<20)
+	}
 }
 
 func TestRetirementIntentIsDurableAndSeparateFromWorkspace(t *testing.T) {
@@ -49,6 +56,9 @@ func TestRetirementIntentIsDurableAndSeparateFromWorkspace(t *testing.T) {
 	}
 	if m.HasRetirementIntent("wl", "lineage") {
 		t.Fatal("retirement intent should be removable")
+	}
+	if _, err := os.Stat(m.SessionVolumePath("wl", "lineage")); err != nil {
+		t.Fatalf("clearing retirement intent changed the workspace: %v", err)
 	}
 }
 

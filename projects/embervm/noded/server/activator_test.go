@@ -17,6 +17,19 @@ import (
 
 type activatorRoundTripper func(*http.Request) (*http.Response, error)
 
+var activatorHopByHopHeaders = []string{
+	"Content-Length",
+	"Transfer-Encoding",
+	"Connection",
+	"Keep-Alive",
+	"Upgrade",
+	"Host",
+	"Te",
+	"Trailer",
+	"Proxy-Authorization",
+	"Proxy-Authenticate",
+}
+
 func (f activatorRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
@@ -126,7 +139,7 @@ func TestActivatorColdBootAndProxyFiltersHeaders(t *testing.T) {
 	})}
 	req := httptest.NewRequest(http.MethodPost, "/invoke", bytes.NewBufferString("request body"))
 	req.Header.Set("x-ember-workload", "wl-serve")
-	for denied := range activatorDeniedHeaders {
+	for _, denied := range activatorHopByHopHeaders {
 		req.Header.Set(denied, "removed")
 	}
 	rec := httptest.NewRecorder()
@@ -141,7 +154,7 @@ func TestActivatorColdBootAndProxyFiltersHeaders(t *testing.T) {
 	if gotBody != "request body" {
 		t.Errorf("guest body = %q, want request body", gotBody)
 	}
-	for denied := range activatorDeniedHeaders {
+	for _, denied := range activatorHopByHopHeaders {
 		if forwarded.Get(denied) != "" {
 			t.Errorf("forwarded deny-listed header %q = %q", denied, forwarded.Get(denied))
 		}
@@ -155,12 +168,12 @@ func TestActivatorColdBootAndProxyFiltersHeaders(t *testing.T) {
 }
 
 func TestActivatorDenyListFiltersBothDirections(t *testing.T) {
-	headers := make(http.Header, len(activatorDeniedHeaders)+1)
-	for denied := range activatorDeniedHeaders {
+	headers := make(http.Header, len(activatorHopByHopHeaders)+1)
+	for _, denied := range activatorHopByHopHeaders {
 		headers.Set(denied, "removed")
 	}
 	headers.Set("X-Allowed", "kept")
-	for key := range activatorDeniedHeaders {
+	for _, key := range activatorHopByHopHeaders {
 		if got := allowedHeaders(headers).Get(key); got != "" {
 			t.Errorf("allowedHeaders retained %q = %q", key, got)
 		}
@@ -296,9 +309,17 @@ func TestActivatorAndControlPlaneOrigins(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StartServing: %v", err)
 	}
+	var controlPlaneVM *nodev1.ServingVm
 	for _, vm := range s.servingVMsStatus() {
-		if vm.GetWorkload() == "cp-workload" && vm.GetOrigin() != nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
-			t.Errorf("control-plane origin = %v, want CONTROL_PLANE", vm.GetOrigin())
+		if vm.GetWorkload() == "cp-workload" {
+			controlPlaneVM = vm
+			break
 		}
+	}
+	if controlPlaneVM == nil {
+		t.Fatal("control-plane StartServing did not publish a serving VM")
+	}
+	if controlPlaneVM.GetOrigin() != nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
+		t.Errorf("control-plane origin = %v, want CONTROL_PLANE", controlPlaneVM.GetOrigin())
 	}
 }

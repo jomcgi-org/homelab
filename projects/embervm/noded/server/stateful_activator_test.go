@@ -283,10 +283,18 @@ func TestStatefulActivatorAndControlPlaneOrigins(t *testing.T) {
 		t.Fatalf("StopStateful(destroy): %v", err)
 	}
 	startFreshStateful(t, s, port, "cp-workload")
+	var controlPlaneVM *nodev1.StatefulVm
 	for _, vm := range s.statefulVMsStatus() {
-		if vm.GetWorkload() == "cp-workload" && vm.GetOrigin() != nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
-			t.Errorf("control-plane origin = %v, want CONTROL_PLANE", vm.GetOrigin())
+		if vm.GetWorkload() == "cp-workload" {
+			controlPlaneVM = vm
+			break
 		}
+	}
+	if controlPlaneVM == nil {
+		t.Fatal("control-plane StartStateful did not publish a stateful VM")
+	}
+	if controlPlaneVM.GetOrigin() != nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE {
+		t.Errorf("control-plane origin = %v, want CONTROL_PLANE", controlPlaneVM.GetOrigin())
 	}
 }
 

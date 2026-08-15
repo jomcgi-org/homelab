@@ -3,6 +3,7 @@ package fcclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -10,16 +11,18 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeFC is an in-process Firecracker API stub listening on a unix socket. It
 // records every request so tests can assert the controller drives the API in
 // the right order with the right bodies.
 type fakeFC struct {
-	mu       sync.Mutex
-	requests []recordedReq
-	srv      *http.Server
-	failPath string // if set, return 400 for this path
+	mu        sync.Mutex
+	requests  []recordedReq
+	srv       *http.Server
+	failPath  string // if set, return 400 for this path
+	blockPath string // if set, wait for request cancellation on this path
 }
 
 type recordedReq struct {
@@ -46,7 +49,12 @@ func startFakeFC(t *testing.T) (*fakeFC, string) {
 		f.mu.Lock()
 		f.requests = append(f.requests, recordedReq{Method: r.Method, Path: r.URL.Path, Body: body})
 		fail := f.failPath != "" && r.URL.Path == f.failPath
+		block := f.blockPath != "" && r.URL.Path == f.blockPath
 		f.mu.Unlock()
+		if block {
+			<-r.Context().Done()
+			return
+		}
 		if fail {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"fault_message":"boom"}`))
@@ -196,6 +204,23 @@ func TestClientPropagatesAPIError(t *testing.T) {
 	}
 	if !contains(err.Error(), "status 400") || !contains(err.Error(), "boom") {
 		t.Fatalf("error = %v, want status 400 + fault message", err)
+	}
+}
+
+func TestClientHonorsRequestContextWhenAPINeverAnswers(t *testing.T) {
+	fake, sock := startFakeFC(t)
+	fake.blockPath = "/actions"
+	c := New(sock)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := c.Start(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Start error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Start returned after %v, want prompt context cancellation", elapsed)
 	}
 }
 

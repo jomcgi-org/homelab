@@ -1,7 +1,10 @@
 package serving
 
 import (
+	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -100,5 +103,26 @@ func TestProbeHandleStartsHealthy(t *testing.T) {
 	}
 	if h.Result().LastProbeUnixMs == 0 {
 		t.Error("a freshly started probe handle should carry a last-probe timestamp")
+	}
+}
+
+func TestProbeOnceReportsHTTPAndTransportFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ready" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	prober := NewProber(0, 0)
+	if !prober.probeOnce(context.Background(), server.URL+"/ready") {
+		t.Error("2xx health response should be healthy")
+	}
+	if prober.probeOnce(context.Background(), server.URL+"/unready") {
+		t.Error("non-2xx health response should be unhealthy")
+	}
+	server.Close()
+	if prober.probeOnce(context.Background(), server.URL+"/ready") {
+		t.Error("connection failure should be unhealthy")
 	}
 }
