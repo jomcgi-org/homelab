@@ -66,13 +66,17 @@ preference, it is how the budget lasts. Three lanes:
   slow CI round-trip would catch: deep Helm, Bazel/apko, RBAC verbs, migration
   ordering, cross-service wiring. Opus reviews every PR, and the reviewer never
   gets downgraded to save quota.
-- **Luna implements, and that should be around 99% of implementation.** Dispatch
-  through the `codex-implement` skill (`bazel/tools/codex/dispatch.sh`), which
-  bills OpenAI instead of the Claude weekly limit. Terra only after Luna has
-  actually failed on that task. Sonnet only when Codex is unavailable or the work
-  genuinely needs Claude-side skills, MCP, or session context. On exit 42 (quota
-  exhausted), send one `warn` notify and fall back to Sonnet: no retry loop, no
-  second notify.
+- **Sol implements, and that should be around 99% of implementation.** Dispatch
+  through the `codex-implement` skill (`bazel/tools/codex/dispatch.sh`, tier
+  `frontier`), which bills OpenAI instead of the Claude weekly limit. This is a
+  trial (review by 2026-08-28, judged on correction rounds per PR, OpenAI quota
+  burn, and exit-42 events): the bet is that Sol one-shots more specs, and every
+  correction round Luna needed was spending Opus review and respec tokens on the
+  Claude side. Luna stays the rung for trivially mechanical bulk or if quota
+  tightens; Terra stays the middle rung. Sonnet only when Codex is unavailable
+  or the work genuinely needs Claude-side skills, MCP, or session context. On
+  exit 42 (quota exhausted), send one `warn` notify and fall back to Sonnet: no
+  retry loop, no second notify.
 - **Fable is a last-resort escalation for context window, not for quality.**
   Open it when Opus has stalled and the blocker is running out of context, not
   when the problem is merely hard.
@@ -221,7 +225,7 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 **Skills** (`.claude/skills/`, auto-matched): `ship`, `adr`, `stpa`,
 `codex-implement`, `pr-workflow`, `ci-triage`, `improve-buildbuddy-usage`.
 
-**Agents** (`.claude/agents/`): `implementer` (Luna), `reviewer` (Opus),
+**Agents** (`.claude/agents/`): `implementer` (Sol), `reviewer` (Opus),
 `adr-author` and `stpa-analyst` (Sonnet), `escalation` (Fable). Dispatch work to
 these rather than doing it in the main loop: each gets its own context, and the
 three that must not write code have no `Write` or `Edit` tool.

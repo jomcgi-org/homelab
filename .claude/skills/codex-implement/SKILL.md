@@ -3,7 +3,7 @@ name: codex-implement
 description: >
   Dispatch implementation work to the Codex CLI (OpenAI subscription) via
   bazel/tools/codex/dispatch.sh so bulk work bills OpenAI instead of the Claude
-  weekly limit. Prefer Luna (most value per dollar). Use when executing
+  weekly limit. Default to Sol (`frontier` tier, on trial). Use when executing
   locally-verifiable tasks, when implementers would otherwise be Sonnet, or when
   the user says "use codex", "dispatch to codex", or "/codex-implement".
 ---
@@ -11,9 +11,10 @@ description: >
 # Codex Implement
 
 Dispatch well-specified implementation tasks to Codex CLI workers. House style:
-**Luna first**, Terra only when needed, Sol (`frontier`) almost never. Opus 5
-reviews diffs. Verification is **`ci`** (bb remote Test 1:1 with Workflows), not
-bare Mac `bazel`.
+**Sol (`frontier`) first**, on trial until 2026-08-28; Luna for trivially
+mechanical bulk or quota pressure, Terra as the middle rung. Opus 5 reviews
+diffs. Verification is **`ci`** (bb remote Test 1:1 with Workflows), not bare
+Mac `bazel`.
 
 ## When to Use
 
@@ -39,7 +40,7 @@ own copy (relative paths have exit-127'd when cwd drifted):
 
 ```
 Bash tool:
-  command: "$WORKDIR"/bazel/tools/codex/dispatch.sh luna "$WORKDIR" - <<'SPEC'
+  command: "$WORKDIR"/bazel/tools/codex/dispatch.sh frontier "$WORKDIR" - <<'SPEC'
   ...full spec...
   SPEC
   run_in_background: true
@@ -51,15 +52,17 @@ and leaves a partial diff that reads as a wrong implementation at review. The
 full transcript lands in `<worktree>/.codex-dispatch/<stamp>.log`; stdout is
 just the worker's final message.
 
-| Tier       | Model         | Effort | Use for |
-| ---------- | ------------- | ------ | ------- |
-| **`luna`** | gpt-5.6-luna  | medium | **Default.** Mechanical + standard bulk; most of the value at far lower cost |
-| `terra`    | gpt-5.6-terra | high   | Only when Luna failed or the spec is clearly above Luna |
-| `frontier` | gpt-5.6-sol   | high   | **Rare.** Hardest cross-vendor second opinion only; never default |
+| Tier           | Model         | Effort | Use for |
+| -------------- | ------------- | ------ | ------- |
+| **`frontier`** | gpt-5.6-sol   | high   | **Default, on trial until 2026-08-28.** Judged on correction rounds per PR, OpenAI quota burn, and exit-42 events |
+| `luna`         | gpt-5.6-luna  | medium | Trivially mechanical bulk, or the fallback default if the trial ends badly |
+| `terra`        | gpt-5.6-terra | high   | Middle rung; largely idle during the trial |
 
 Rules:
 
-1. **Prefer Luna.** Do not default to Terra or Sol to "be safe."
+1. **Default to Sol (`frontier`).** Do not drop to Luna or Terra to save quota
+   without cause: the trial is measuring Sol's one-shot rate, and mixed tiers
+   muddy the numbers.
 2. **One worktree per worker, one worker per worktree.** The wrapper enforces
    the second half (exit 65) because concurrent workers interleave edits.
 3. **Full spec up front** (see the template below).

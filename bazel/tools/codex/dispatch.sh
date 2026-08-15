@@ -6,7 +6,8 @@
 #   echo "<task spec>" | "$WORKDIR"/bazel/tools/codex/dispatch.sh <tier> "$WORKDIR" -
 #
 #   tier:    luna | terra | frontier
-#            luna = default (most value / $); terra = step-up; frontier/Sol = rare
+#            frontier/Sol = default (trial, review 2026-08-28); luna =
+#            mechanical bulk; terra = middle rung
 #   workdir: directory the worker may write to (a /tmp/claude-worktrees/* worktree)
 #   spec:    full task spec as one argument, or "-" to read from stdin
 #
