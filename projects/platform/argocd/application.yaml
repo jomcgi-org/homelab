@@ -20,21 +20,17 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
-  # ServerSideApply=true (below) makes ArgoCD diff against a server-side-apply
-  # dry-run, which includes the Gateway-API-populated defaults on HTTPRoutes
-  # (parentRefs.group/kind, backendRefs.group/kind/weight). git omits those, so
-  # they read as permanent drift, leaving this app OutOfSync-but-Healthy. The
-  # cluster owns those fields, so tell ArgoCD to ignore them. (Non-SSA apps use
-  # ArgoCD's normalizer, which already drops these, so they never drift.)
-  ignoreDifferences:
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      jqPathExpressions:
-        - '.spec.parentRefs[].group'
-        - '.spec.parentRefs[].kind'
-        - '.spec.rules[].backendRefs[].group'
-        - '.spec.rules[].backendRefs[].kind'
-        - '.spec.rules[].backendRefs[].weight'
+  # The ignoreDifferences block that used to sit here suppressed the
+  # Gateway-API defaults (parentRefs.group/kind, backendRefs.group/kind/weight)
+  # that ServerSideApply surfaces as permanent drift. cf-ingress-library now
+  # DECLARES those fields instead, so the diff converges on its own and there
+  # is nothing left to suppress.
+  #
+  # Declaring beats ignoring here for the same reason /spec/replicas stopped
+  # being ignored fleet-wide (see argocd values.yaml): the old list included
+  # `.spec.rules[].backendRefs[].weight`, a live traffic-shaping field. Any
+  # deliberate weight change in a chart would have been silently dropped, with
+  # the Application still reporting Synced. Suppression is quiet, not safe.
   syncPolicy:
     automated:
       prune: true

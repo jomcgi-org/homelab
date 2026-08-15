@@ -50,11 +50,33 @@ This has recurred at least three times: whenever git values and the OCI chart di
 
 **Fix:** remove the duplicate in the chart. A CI check in `ci-diff-manifests.sh` now catches this at PR time, so it should not reach prod again, but old duplicates already deployed still need a manual chart fix.
 
-## ignoreDifferences at the Application level does nothing (v3.1.6)
+## Phantom OutOfSync from ServerSideApply and an undeclared schema default
 
-**Important:** on ArgoCD v3.1.6, `spec.ignoreDifferences` on the Application resource itself is inert. It has no effect on the computed diff.
+**Symptom:** an app is `OutOfSync` but `Healthy`, nothing in the cluster is wrong, and selfHeal re-syncs forever without converging. The offending resource differs only by a field nobody wrote, typically one a CRD schema defaults.
 
-**Fix:** put ignore rules in the GLOBAL `argocd-cm` instead: `projects/platform/argocd/values.yaml`, under `resource.customizations.ignoreDifferences`. This was proven by checking `/api/v1/applications/<app>/managed-resources` and confirming `normalizedLiveState` was unaffected by an app-level ignore but respected a global one. See [ArgoCD API access without the UI](#argocd-api-access-without-the-ui) below for how to query that endpoint.
+**Cause:** `ServerSideApply=true` changes what the diff means. Client-side apply does a 3-way merge against `last-applied-configuration` and treats a field that is in live but absent from both desired and last-applied as somebody else's, so server defaults are invisible. SSA diffs on field OWNERSHIP instead: a field the chart never declared is missing from the predicted state while the apiserver has defaulted it into live, and that gap can never close.
+
+Seen on all five SSA apps at once (2026-08-14): Gateway API defaulting `parentRefs.group/kind` and `backendRefs.group/kind/weight` on HTTPRoutes, and Envoy Gateway defaulting `remoteJWKS.cacheDuration: 300s` on SecurityPolicies. The tell is that the identical live objects under non-SSA apps (longhorn, signoz, monolith) stayed Synced.
+
+**Diagnose:** the sync status alone will not say which field. Pull ArgoCD's own view and diff the two states it computed:
+
+```bash
+bazel/tools/cluster/scripts/argocd-api.sh /api/v1/applications/<app>/managed-resources
+```
+
+Each item carries `normalizedLiveState` and `predictedLiveState`. Diff those two per item. There is no `.diff` field on the item, so a filter like `select(.diff != "")` matches nothing and reports every app clean.
+
+**Fix:** DECLARE the defaulted field in the chart, so ArgoCD owns it and the prediction matches live. Prefer that to ignoring the field. An ignore also hides real changes to it, and the list for this class naturally includes `backendRefs[].weight`, which is live traffic shaping: a deliberate weight change would be silently dropped while the app still reported Synced. Same lesson as `/spec/replicas` in `projects/platform/argocd/values.yaml`.
+
+Ignore only when the manifest comes from an upstream chart you cannot edit. Kyverno's CRDs are the standing example: the chart emits `annotations: {}` and `labels: {}`, the apiserver drops empty maps on write, and `{} != absent`, so a normalizer deletes the map only when it is already empty.
+
+## ignoreDifferences at the Application level
+
+An earlier note here said `spec.ignoreDifferences` on the Application is inert, observed on v3.1.6. That is NOT true on v3.1.8: an app-level block on the `argocd` Application demonstrably suppressed the HTTPRoute default drift while `kargo`, which lacked one, drifted on the identical fields. Verify against the running version before relying on either behaviour.
+
+Note that suppressing the diff is not the same as not applying the value; that still needs `RespectIgnoreDifferences=true`.
+
+**Historic note (v3.1.6).** The global normalizer is still the right home for anything that should apply fleet-wide, and is the only option for a resource no single Application owns: `projects/platform/argocd/values.yaml`, under `resource.customizations.ignoreDifferences`. This was proven by checking `/api/v1/applications/<app>/managed-resources` and confirming `normalizedLiveState` was unaffected by an app-level ignore but respected a global one. See [ArgoCD API access without the UI](#argocd-api-access-without-the-ui) below for how to query that endpoint.
 
 ## Stuck sync operation
 
@@ -115,6 +137,7 @@ bazel/tools/cluster/scripts/argocd-api.sh /api/v1/applications/monolith/managed-
 
 It handles the port-forward, reads the admin password from `argocd-initial-admin-secret`, exchanges it for a session JWT, and calls the path with that token. Two things that bite if you hand-roll this instead:
 
+- The API is served at a SUBPATH and over plain HTTP. `server.rootpath=/app/argocd` and `server.insecure=true` (both in `argocd-cmd-params-cm`) mean `/api/v1/...` is a 404 and an `https://` request to the forwarded port never handshakes. The script reads both from the cluster rather than hardcoding them. Getting either wrong fails as an EMPTY response, not an error, which reads as "this app has no diff".
 - The session POST needs `-H 'Content-Type: application/json'`, otherwise the API returns 415.
 - Admin credentials come from the `argocd-initial-admin-secret` secret in the `argocd` namespace, base64-decoded.
 

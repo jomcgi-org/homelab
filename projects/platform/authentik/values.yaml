@@ -81,8 +81,14 @@ authentik:
                   value: https
         hostnames:
           - auth.jomcgi.dev
+        # group/kind are the Gateway API schema defaults. The upstream chart
+        # renders this list verbatim, so leaving them implicit left ArgoCD's
+        # ServerSideApply diff without ownership of two fields the apiserver
+        # then defaulted into live: permanent OutOfSync that no sync clears.
         parentRefs:
-          - name: cloudflare-ingress
+          - group: gateway.networking.k8s.io
+            kind: Gateway
+            name: cloudflare-ingress
             namespace: envoy-gateway-system
   worker:
     replicas: 1
