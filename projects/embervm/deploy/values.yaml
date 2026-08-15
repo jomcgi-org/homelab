@@ -562,7 +562,20 @@ claudeRuntimeWorkload:
   # nothing the guest can read. Use it as a rebuild epoch, never as a knob.
   # Making it mean what it says is tracked in #4429.
   initEnv:
-    EMBER_BASE_EPOCH: "warm-restore-3"
+    # diff-capture-1: PR #4936 put turn diff capture in shim.py, and the image
+    # built with it (verified: the pinned runtime digest contains
+    # _capture_turn_diff). The base rebuild that would carry it into guests
+    # failed at 17:29Z with {:connect, :timeout}, two minutes after the 16gi
+    # bricks started rolling for chart 0.14.1. Ready stayed True on the older
+    # restorable base, so nothing alerted and every session kept running the
+    # previous shim, capturing nothing.
+    #
+    # A failed build is not retried, and creating a session does not trigger
+    # one: a qwen probe (session 193) created and served a guest with the
+    # condition unchanged across six minutes. Re-keying is the only route, and
+    # this epoch is the documented mechanism for it. That the fix for a
+    # transient timeout is a hand-edited string is the problem tracked in #4937.
+    EMBER_BASE_EPOCH: "diff-capture-1"
     # INERT, kept only as documented intent: the shim reads EMBER_PREWARM_CLIS
     # from its own environment, which never receives this, so _read_prewarm_clis
     # returns () and prewarm silently no-ops. Live turn-timing confirms it: first
