@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, UniqueConstraint
+from sqlalchemy import BigInteger, LargeBinary, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -90,6 +90,9 @@ class AgentTurn(SQLModel, table=True):
     permission_denials: str | None = Field(default=None)
     commit_sha: str | None = Field(default=None, index=True)
     base_sha: str | None = Field(default=None, index=True)
+    diff_blob: bytes | None = Field(default=None, sa_type=LargeBinary)
+    diff_truncated: bool = Field(default=False)
+    diff_base_sha: str | None = Field(default=None)
     usage_json: str | None = Field(default=None)
     cost_usd: float | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

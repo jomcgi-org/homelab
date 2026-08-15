@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import secrets
@@ -206,6 +208,9 @@ def create_turn(
     cli_session_id: str | None = None,
     model: str | None = None,
     prompt_intent: str | None = None,
+    diff_blob: bytes | None = None,
+    diff_truncated: bool = False,
+    diff_base_sha: str | None = None,
 ) -> AgentTurn:
     row = AgentTurn(
         session_id=session_id,
@@ -219,6 +224,9 @@ def create_turn(
         stop_reason=stop_reason,
         permission_denials=json.dumps(permission_denials or []),
         commit_sha=commit_sha,
+        diff_blob=diff_blob,
+        diff_truncated=diff_truncated,
+        diff_base_sha=diff_base_sha,
         usage_json=json.dumps(usage or {}),
         cost_usd=cost_usd,
     )
@@ -546,6 +554,19 @@ def persist_turn_from_pending_sync(
         usage = {**turn.usage, "activities": turn.activities}
         if turn.workspace_recovery is not None:
             usage["workspace_recovery"] = turn.workspace_recovery
+        diff_blob = None
+        diff_truncated = False
+        diff_base_sha = None
+        if turn.diff is not None:
+            try:
+                diff_base_sha = turn.diff["base_sha"]
+                diff_truncated = turn.diff["truncated"]
+                if not diff_truncated:
+                    diff_blob = base64.b64decode(turn.diff["zlib_b64"], validate=True)
+            except (KeyError, TypeError, ValueError, binascii.Error):
+                diff_blob = None
+                diff_truncated = False
+                diff_base_sha = None
         row = create_turn(
             session,
             session_id,
@@ -561,6 +582,9 @@ def persist_turn_from_pending_sync(
             turn.total_cost_usd,
             cli_session_id,
             model,
+            diff_blob=diff_blob,
+            diff_truncated=diff_truncated,
+            diff_base_sha=diff_base_sha,
         )
         # The guest-reported CLI session_id is authoritative for this VM.
         if cli_session_id:

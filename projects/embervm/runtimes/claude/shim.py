@@ -1,9 +1,9 @@
 #!/usr/bin/python3
 """HTTP over vsock shim for a long-lived Claude Code CLI session."""
 
-import http.server
 import base64
 import collections
+import http.server
 import json
 import math
 import os
@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import urllib.request
+import zlib
 
 
 GUEST_HTTP_PORT = 1027
@@ -42,6 +43,61 @@ CLOCK_PATH = "/shim/clock"
 DEFAULT_WORKSPACE = "/workspace"
 VOLUME_DEVICE_ENV = "EMBER_VOLUME_DEV"
 DEFAULT_VOLUME_DEVICE = "/dev/vdb"
+MAX_TURN_DIFF_BYTES = 5 * 1024 * 1024
+MAX_TURN_DIFF_COMPRESSED_BYTES = 1024 * 1024
+
+
+def _capture_turn_base(checkout_dir):
+    """Best-effort checkout HEAD capture. A failure must not affect the turn."""
+    try:
+        if not os.path.exists(os.path.join(checkout_dir, ".git")):
+            return None
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=checkout_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        base_sha = result.stdout.decode("ascii", "strict").strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", base_sha):
+            return None
+        return base_sha
+    except Exception:
+        return None
+
+
+def _capture_turn_diff(checkout_dir, base_sha):
+    """Return a compressed git diff record without ever failing the turn."""
+    if not base_sha:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "diff", base_sha],
+            cwd=checkout_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return None
+        raw = result.stdout
+        if len(raw) > MAX_TURN_DIFF_BYTES:
+            return {"base_sha": base_sha, "zlib_b64": None, "truncated": True}
+        compressed = zlib.compress(raw)
+        if len(compressed) > MAX_TURN_DIFF_COMPRESSED_BYTES:
+            return {"base_sha": base_sha, "zlib_b64": None, "truncated": True}
+        return {
+            "base_sha": base_sha,
+            "zlib_b64": base64.b64encode(compressed).decode("ascii"),
+            "truncated": False,
+        }
+    except Exception:
+        return None
 
 
 def _turn_timing_now():
@@ -3394,6 +3450,10 @@ class ProcessManager:
                 )
             self._hydrate_workspace(repo, branch)
         adapter = self._adapter(model)
+        checkout_dir = os.path.join(
+            getattr(self, "workspace", DEFAULT_WORKSPACE), "src"
+        )
+        turn_base = _capture_turn_base(checkout_dir)
         try:
             extra = {"progress_token": progress_token} if progress_token else {}
             prompt = {"system_prompt": system_prompt} if system_prompt else {}
@@ -3419,6 +3479,10 @@ class ProcessManager:
                     record["workspace_hydration"] = {"failed": self._hydration_error}
                 elif self._hydration_status:
                     record["workspace_hydration"] = self._hydration_status
+            if isinstance(record, dict):
+                diff = _capture_turn_diff(checkout_dir, turn_base)
+                if diff is not None:
+                    record["diff"] = diff
             return record
         finally:
             # End-of-turn quiescence point: park only happens after a completed
