@@ -136,7 +136,7 @@ func run(logger *slog.Logger) error {
 	// returns nil for an empty endpoint (the store is disabled), so the Options
 	// field is left unset in that case to keep the server's typed-nil guards clean
 	// (a nil interface, not an interface holding a nil pointer).
-	artStore := store.New(cfg.StoreEndpoint, cfg.StoreBucket)
+	artStore := store.New(cfg.StoreEndpoint, cfg.StoreBucket, cfg.StoreCompress)
 	if cfg.StoreEndpoint == "" {
 		logger.Warn("object store DISABLED: EMBERVM_NODED_STORE_ENDPOINT unset; banked state stays local-only (no off-node durability, no restore-on-miss)")
 	} else {
