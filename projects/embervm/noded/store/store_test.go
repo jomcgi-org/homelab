@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,7 +27,8 @@ type fakeObjectStore struct {
 	objects map[string][]byte
 	// putOrder records the path of every PUT in order, so a test can assert
 	// meta.json is written LAST.
-	putOrder []string
+	putOrder     []string
+	failFilePuts bool
 }
 
 func newFakeObjectStore() *fakeObjectStore {
@@ -38,6 +40,10 @@ func (f *fakeObjectStore) handler() http.Handler {
 		key := r.URL.Path
 		switch r.Method {
 		case http.MethodPut:
+			if f.failFilePuts && !strings.HasSuffix(key, "/"+metaObject) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			body, _ := io.ReadAll(r.Body)
 			f.mu.Lock()
 			f.objects[key] = body
@@ -330,11 +336,11 @@ func TestCompressedExportRoundTrip(t *testing.T) {
 }
 
 func TestCompressedIncompressibleRoundTrip(t *testing.T) {
-	s, _ := newTestStoreWithCompression(t, true)
+	s, fake := newTestStoreWithCompression(t, true)
 	ctx := context.Background()
 	plaintext := make([]byte, 256<<10)
-	for i := range plaintext {
-		plaintext[i] = byte(i*31 + 7)
+	if _, err := rand.Read(plaintext); err != nil {
+		t.Fatal(err)
 	}
 	srcDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(srcDir, "random"), plaintext, 0o600); err != nil {
@@ -342,6 +348,9 @@ func TestCompressedIncompressibleRoundTrip(t *testing.T) {
 	}
 	if _, _, err := s.Export(ctx, "base/random", srcDir, []string{"random"}, 1, 1, "", ""); err != nil {
 		t.Fatalf("Export: %v", err)
+	}
+	if stored := fake.object("/embervm/base/random/random"); len(stored) <= len(plaintext) {
+		t.Fatalf("incompressible stored object size = %d, want greater than plaintext %d", len(stored), len(plaintext))
 	}
 	dstDir := t.TempDir()
 	if _, _, err := s.Restore(ctx, "base/random", dstDir); err != nil {
@@ -354,6 +363,81 @@ func TestCompressedIncompressibleRoundTrip(t *testing.T) {
 	if !bytes.Equal(got, plaintext) {
 		t.Fatal("incompressible compressed restore changed the plaintext")
 	}
+}
+
+func dirEntryNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestCompressedExportLeavesArtifactDirUntouched(t *testing.T) {
+	s, _ := newTestStoreWithCompression(t, true)
+	ctx := context.Background()
+	srcDir, names := writeLocalArtifact(t, map[string]string{
+		"memfile":  "mem-content",
+		"snapfile": "snap-content",
+	})
+	if err := os.WriteFile(filepath.Join(srcDir, ".artifact-marker"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantEntries := dirEntryNames(t, srcDir)
+
+	if _, _, err := s.Export(ctx, "base/clean", srcDir, names, 1, 1, "", ""); err != nil {
+		t.Fatalf("first Export: %v", err)
+	}
+	if got := dirEntryNames(t, srcDir); !slicesEqual(got, wantEntries) {
+		t.Fatalf("artifact directory after first Export = %v, want %v", got, wantEntries)
+	}
+	if _, skipped, err := s.Export(ctx, "base/clean", srcDir, names, 1, 2, "", ""); err != nil || !skipped {
+		t.Fatalf("second Export = (skipped=%v, %v), want (true, nil)", skipped, err)
+	}
+	if got := dirEntryNames(t, srcDir); !slicesEqual(got, wantEntries) {
+		t.Fatalf("artifact directory after second Export = %v, want %v", got, wantEntries)
+	}
+}
+
+func TestCompressedExportPutFailureLeavesDirClean(t *testing.T) {
+	s, fake := newTestStoreWithCompression(t, true)
+	fake.failFilePuts = true
+	ctx := context.Background()
+	srcDir, names := writeLocalArtifact(t, map[string]string{
+		"memfile":  "mem-content",
+		"snapfile": "snap-content",
+	})
+	if err := os.WriteFile(filepath.Join(srcDir, ".artifact-marker"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantEntries := dirEntryNames(t, srcDir)
+	if _, _, err := s.Export(ctx, "base/failure", srcDir, names, 1, 1, "", ""); err == nil {
+		t.Fatal("Export succeeded, want file PUT failure")
+	}
+	if fake.has("/embervm/base/failure/meta.json") {
+		t.Fatal("meta.json was PUT after file PUT failure")
+	}
+	if got := dirEntryNames(t, srcDir); !slicesEqual(got, wantEntries) {
+		t.Fatalf("artifact directory after failed Export = %v, want %v", got, wantEntries)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestLegacyObjectRestoresWithCompressionEnabled(t *testing.T) {
