@@ -47,10 +47,27 @@ MAX_TURN_DIFF_BYTES = 5 * 1024 * 1024
 MAX_TURN_DIFF_COMPRESSED_BYTES = 1024 * 1024
 
 
+def _emit_turn_diff_outcome(checkout_dir, phase, outcome):
+    """Emit one best-effort diagnostic for a turn diff capture outcome."""
+    try:
+        resolved_checkout_dir = os.path.abspath(checkout_dir)
+        fields = [
+            "ember-claude-shim: turn-diff",
+            "phase=%s" % phase,
+            "outcome=%s" % outcome,
+            "checkout_dir=%s" % resolved_checkout_dir,
+        ]
+        sys.stderr.write("%s\n" % " ".join(fields))
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
 def _capture_turn_base(checkout_dir):
     """Best-effort checkout HEAD capture. A failure must not affect the turn."""
     try:
         if not os.path.exists(os.path.join(checkout_dir, ".git")):
+            _emit_turn_diff_outcome(checkout_dir, "base", "no_git_dir")
             return None
         result = subprocess.run(
             ["git", "-C", checkout_dir, "rev-parse", "HEAD"],
@@ -60,18 +77,23 @@ def _capture_turn_base(checkout_dir):
             timeout=10,
         )
         if result.returncode != 0:
+            _emit_turn_diff_outcome(checkout_dir, "base", "rev_parse_failed")
             return None
         base_sha = result.stdout.decode("ascii", "strict").strip()
         if not re.fullmatch(r"[0-9a-fA-F]{40,64}", base_sha):
+            _emit_turn_diff_outcome(checkout_dir, "base", "sha_malformed")
             return None
+        _emit_turn_diff_outcome(checkout_dir, "base", "success")
         return base_sha
     except Exception:
+        _emit_turn_diff_outcome(checkout_dir, "base", "base_exception")
         return None
 
 
 def _capture_turn_diff(checkout_dir, base_sha):
     """Return a compressed git diff record without ever failing the turn."""
     if not base_sha:
+        _emit_turn_diff_outcome(checkout_dir, "diff", "no_base_sha")
         return None
     try:
         result = subprocess.run(
@@ -82,19 +104,24 @@ def _capture_turn_diff(checkout_dir, base_sha):
             timeout=30,
         )
         if result.returncode != 0:
+            _emit_turn_diff_outcome(checkout_dir, "diff", "diff_failed")
             return None
         raw = result.stdout
         if len(raw) > MAX_TURN_DIFF_BYTES:
+            _emit_turn_diff_outcome(checkout_dir, "diff", "truncated_raw")
             return {"base_sha": base_sha, "zlib_b64": None, "truncated": True}
         compressed = zlib.compress(raw)
         if len(compressed) > MAX_TURN_DIFF_COMPRESSED_BYTES:
+            _emit_turn_diff_outcome(checkout_dir, "diff", "truncated_compressed")
             return {"base_sha": base_sha, "zlib_b64": None, "truncated": True}
+        _emit_turn_diff_outcome(checkout_dir, "diff", "success")
         return {
             "base_sha": base_sha,
             "zlib_b64": base64.b64encode(compressed).decode("ascii"),
             "truncated": False,
         }
     except Exception:
+        _emit_turn_diff_outcome(checkout_dir, "diff", "diff_exception")
         return None
 
 
