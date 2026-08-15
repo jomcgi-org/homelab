@@ -18,6 +18,28 @@
         // localStorage blocked or quota exceeded; continue with expanded
       }
     </script>
+    <script>
+      /* Set the initial period attribute before first paint.
+         This runs inline and blocking to avoid a white flash when switching
+         to night mode. The period module (src/lib/private/period.js) is the
+         source of truth; this duplication must remain inline because app.html
+         has no module graph. The agents console updates this attribute after
+         hydration in response to clock ticks every 60s. */
+      try {
+        const hour = new Date().getHours();
+        const period =
+          hour >= 5 && hour < 11
+            ? "dawn"
+            : hour >= 11 && hour < 17
+              ? "day"
+              : hour >= 17 && hour < 22
+                ? "dusk"
+                : "night";
+        document.documentElement.setAttribute("data-agents-period", period);
+      } catch (e) {
+        // Gracefully degrade if Date is not available
+      }
+    </script>
     <!-- Declared in the static shell (not just the layout) so it is present at
          initial parse: the /app/* pages are ssr=false, so a layout-injected
          icon arrives after hydration and the browser has already 404'd on the

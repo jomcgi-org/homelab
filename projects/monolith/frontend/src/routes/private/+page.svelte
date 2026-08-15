@@ -3,6 +3,7 @@
   import { launcher } from "$lib/private/launcher.js";
   import ClusterChatPanel from "$lib/private/components/ClusterChatPanel.svelte";
   import "$lib/private/dashboard-theme.css";
+  import { periodForHour } from "$lib/private/period.js";
 
   let { data } = $props();
 
@@ -151,15 +152,7 @@
   // The palette drifts with the clock: soft gold at dawn, airy by day,
   // rose at dusk, calm ink after dark. Same data, different light.
   let hour = $derived(now.getHours());
-  let period = $derived(
-    hour >= 5 && hour < 11
-      ? "dawn"
-      : hour >= 11 && hour < 17
-        ? "day"
-        : hour >= 17 && hour < 22
-          ? "dusk"
-          : "night",
-  );
+  let period = $derived(periodForHour(hour));
   let greeting = $derived(
     hour >= 5 && hour < 12
       ? "Good morning"
