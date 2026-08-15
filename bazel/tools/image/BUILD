@@ -12,13 +12,22 @@ load(":multitool_tar.bzl", "multitool_tar")
 load(":node_tar.bzl", "node_tar")
 load(":python_tar.bzl", "python_tar")
 
+# No `gazelle` here on purpose. The multitool lockfile's gazelle is
+# aspect-build/aspect-gazelle, a different program from this repo's
+# //:gazelle_binary, which is bazel-gazelle plus the helm, semgrep, bzl, go,
+# proto and python extensions. Running the multitool one regenerates BUILD
+# files by its own defaults: it rewrites external Go deps to
+# :go_default_library targets that do not exist, and the tree then fails
+# analysis. //bazel/tools/BUILD has excluded it from bazel_env for the same
+# reason since before this image existed. BUILD generation belongs to CI's
+# Format stage, which runs //:gazelle through
+# //bazel/tools/format:format.
 multitool_tar(
     name = "tools_tar",
     tools = [
         "argocd",
         "buildozer",
         "crane",
-        "gazelle",
         "gh",
         "gofumpt",
         "helm",

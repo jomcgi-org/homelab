@@ -57,7 +57,6 @@ if $STAGED; then
 	GO_FILES=()
 	STARLARK_FILES=()
 	PRETTIER_FILES=()
-	BUILD_FILES=()
 	for f in "${STAGED_FILES[@]}"; do
 		case "$f" in
 		*.py) PY_FILES+=("$f") ;;
@@ -65,11 +64,9 @@ if $STAGED; then
 		*.go) GO_FILES+=("$f") ;;
 		BUILD | BUILD.bazel | *.bzl | WORKSPACE | WORKSPACE.bazel)
 			STARLARK_FILES+=("$f")
-			BUILD_FILES+=("$f")
 			;;
 		*/BUILD | */BUILD.bazel)
 			STARLARK_FILES+=("$f")
-			BUILD_FILES+=("$f")
 			;;
 		*.js | *.jsx | *.ts | *.tsx | *.json | *.yaml | *.yml | *.md | *.css | *.html | *.svelte)
 			PRETTIER_FILES+=("$f")
@@ -131,13 +128,7 @@ if $STAGED; then
 
 	for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
 
-	# Gazelle only if Go or Python files changed
-	if [ "${SKIP_GAZELLE:-0}" != "1" ]; then
-		if [ ${#GO_FILES[@]} -gt 0 ] || [ ${#PY_FILES[@]} -gt 0 ] || [ ${#BUILD_FILES[@]} -gt 0 ]; then
-			log "Running gazelle..."
-			gazelle 2>/dev/null || true
-		fi
-	fi
+	# No gazelle here. See the note in full-repo mode below.
 
 	# Re-stage any files that were modified by formatting
 	git add "${STAGED_FILES[@]}" 2>/dev/null || true
@@ -200,12 +191,18 @@ fi
 # Wait for all parallel tasks
 for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
 
-# Gazelle (generates BUILD files for Go/Python)
-# Run after formatters complete since it needs formatted files
-# SKIP_GAZELLE=1 allows CI to use bazel run //:gazelle instead
-if [ "${SKIP_GAZELLE:-0}" != "1" ]; then
-	log "Running gazelle..."
-	gazelle 2>/dev/null || true
-fi
+# Gazelle deliberately does NOT run here, and SKIP_GAZELLE is gone with it (it
+# gated a bare `gazelle` call that nothing ever set the variable to disable).
+# The only gazelle available on PATH was the multitool lockfile's
+# aspect-gazelle, a different program from //:gazelle_binary: without this
+# repo's helm, semgrep, bzl, go, proto and python extensions it regenerated
+# BUILD files by its own defaults, rewriting external Go deps to
+# :go_default_library targets that do not exist. Because the call was wrapped in
+# `2>/dev/null || true`, that damage was silent, and it landed in whichever
+# directory you were already editing.
+#
+# BUILD generation belongs to CI's Format stage, which runs the correct binary
+# via `bazel run //bazel/tools/format:format` (its multirun includes
+# //:gazelle) and auto-commits on PR branches.
 
 log "Done!"

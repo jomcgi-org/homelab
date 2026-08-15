@@ -3,13 +3,13 @@
 #
 # Steps:
 #   1. lint   format only files changed vs origin/main
-#   2. regen  generators/gazelle only when their inputs changed
+#   2. regen  generators only when their inputs changed (BUILD generation is CI-only)
 #   3. test   bb remote (Linux) bazel test with the same flags as buildbuddy.yaml "Test"
 #
 # Usage:
 #   ci              # lint + regen + remote test
 #   ci lint         # format changed files only
-#   ci regen        # selective generators (+ gazelle when go/py/BUILD changed)
+#   ci regen        # selective generators (gazelle itself runs only in CI)
 #   ci test         # bb remote test only (optional: ci test -- //path:target ...)
 #   ci --help
 #
@@ -149,7 +149,7 @@ cmd_lint() {
 	log "lint: done"
 }
 
-# ---------- regen (file-selective generators + gazelle) ----------
+# ---------- regen (file-selective generators) ----------
 need_generators() {
 	local f
 	while IFS= read -r f; do
@@ -203,15 +203,19 @@ cmd_regen() {
 		log "regen: generators skipped (no matching inputs)"
 	fi
 
+	# BUILD generation is CI-only, and running a PATH `gazelle` here is a bug
+	# rather than a fallback. The only gazelle this repo can put on a Mac's
+	# PATH is the multitool one (aspect-gazelle), which is a different program
+	# from //:gazelle_binary and silently rewrites BUILD files by its own
+	# defaults. The correct generator carries this repo's helm, semgrep, bzl,
+	# go, proto and python extensions, links a cgo tree-sitter, and so can only
+	# be built natively: BuildBuddy's linux/amd64 executors cannot cross-compile
+	# it for darwin. CI's Format stage runs it via
+	# `bazel run //bazel/tools/format:format` and auto-commits the result on PR
+	# branches, so a BUILD change lands as a `style: auto-format` commit rather
+	# than in yours.
 	if need_gazelle; then
-		if command -v gazelle >/dev/null 2>&1; then
-			log "regen: gazelle"
-			gazelle
-		else
-			dim "regen: gazelle not on PATH; skipped"
-		fi
-	else
-		log "regen: gazelle skipped"
+		dim "regen: BUILD inputs changed; CI's Format stage runs //:gazelle"
 	fi
 
 	if need_migration_check; then
