@@ -1350,8 +1350,7 @@ defmodule Embervm.BaseBuilder do
   # scratch and survives a noded pod restart, but the build-time placement instance_id
   # churns with the pod. Without this remap `find_capacity_fact`/`node_addr` miss after
   # any pod restart (the churned pod_uid no longer matches w.node_id), which silently
-  # parks the durability export AND the local retention drain: the current base is
-  # never seen as exportable, so the sweep skips every workload as unexported.
+  # parks the durability export and local retention drain until the node reports again.
   defp current_instance_on_node(state, stale_id, workload) do
     target = node_name(stale_id)
 
@@ -2101,13 +2100,13 @@ defmodule Embervm.BaseBuilder do
   # gated action. The plan is returned for tests/visibility; the action is the
   # spawned evictions (gate on) or the dry-run log (gate off).
   #
-  # For each node with a current, exported local base, candidates are local bases
+  # For each node with a reported current local base, candidates are local bases
   # minus the node's current ref and still-refcounted superseded refs. Base ownership
   # is a NODE property because bases live on shared hostPath scratch, so each node is
   # considered once even when several bricks report the same local inventory. BUILDING
-  # local bases are never candidates, and an unexported current base only blocks
-  # eviction on that same node. noded's in-use/current/BUILDING guard is the final
-  # backstop beneath this.
+  # local bases are never candidates. The per-base desired, refcount, BUILDING,
+  # and age filters make each candidate non-current and unreferenced by
+  # construction. This avoids the old durability guard deadlocking against #4893.
   defp retention_sweep_plan(state) do
     state = %{state | retention_sweep_evictions: 0}
     {plan, state} = Enum.reduce(state.workloads, {[], state}, fn {name, w}, {plan, acc} ->
@@ -2121,11 +2120,6 @@ defmodule Embervm.BaseBuilder do
           {:skip, node_id, accounting} ->
             entry = %{workload: name, evict_refs: [], evict_bytes: 0, candidates: [],
               skipped_unexported: false, node_id: node_id, retention_accounting: accounting}
-            {[entry | p], a}
-
-          {:skip_unexported, node_id, accounting} ->
-            entry = %{workload: name, evict_refs: [], evict_bytes: 0, skipped_unexported: true,
-              node_id: node_id, retention_accounting: accounting}
             {[entry | p], a}
 
           {:evict, node_id, refs, bytes, manifest, accounting} ->
@@ -2154,7 +2148,6 @@ defmodule Embervm.BaseBuilder do
 
   # Decide one retention outcome per node from the representative reported facts:
   #   :skip                          - no local base or nothing to evict
-  #   {:skip_unexported, node_id}    - this node's current base is not exported
   #   {:evict, node_id, refs, bytes} - this node's local bases to evict + bytes
   defp workload_retention(state, w) do
     for fact <- representative_facts_by_node(state, w.name),
@@ -2171,11 +2164,6 @@ defmodule Embervm.BaseBuilder do
         not is_binary(node_ref) or node_ref == "" ->
           local_bases = Enum.filter(Map.get(fact, :local_bases, []), &(&1.workload == w.name))
           {:skip, fact[:instance_id], retention_accounting(local_bases, [], w.base_refs, [])}
-
-        get_in(fact, [:workloads, w.name, :exported]) != true ->
-          {:skip_unexported, fact[:instance_id], retention_accounting(
-            Enum.filter(Map.get(fact, :local_bases, []), &(&1.workload == w.name)),
-            desired_refs_for_node(node_ref, w), w.base_refs, [])}
 
         true ->
           desired = desired_refs_for_node(node_ref, w)
