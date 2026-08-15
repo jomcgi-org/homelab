@@ -13,6 +13,7 @@ import threading
 import time
 import subprocess
 import runpy
+import zlib
 
 try:
     import tomllib
@@ -1336,7 +1337,164 @@ def test_process_manager_diff_capture_failure_does_not_fail_turn(
     assert manager.turn("hello") == {"ok": True}
 
 
-def test_turn_diff_uncompressed_cap_sets_truncated(monkeypatch, tmp_path):
+def test_turn_base_no_git_dir_logs_reason_and_returns_none(tmp_path, capsys):
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+
+    assert shim._capture_turn_base(str(checkout)) is None
+    captured = capsys.readouterr().err
+    assert "outcome=no_git_dir" in captured
+    assert "checkout_dir=%s" % checkout.resolve() in captured
+
+
+def test_turn_base_rev_parse_failure_logs_reason_and_returns_none(
+    monkeypatch, tmp_path, capsys
+):
+    checkout = tmp_path / "src"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, b""),
+    )
+
+    assert shim._capture_turn_base(str(checkout)) is None
+    captured = capsys.readouterr().err
+    assert "outcome=rev_parse_failed" in captured
+    assert "checkout_dir=%s" % checkout.resolve() in captured
+
+
+def test_turn_base_malformed_sha_logs_reason_and_returns_none(
+    monkeypatch, tmp_path, capsys
+):
+    checkout = tmp_path / "src"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, b"not-a-sha\n"),
+    )
+
+    assert shim._capture_turn_base(str(checkout)) is None
+    captured = capsys.readouterr().err
+    assert "outcome=sha_malformed" in captured
+    assert "checkout_dir=%s" % checkout.resolve() in captured
+
+
+def test_turn_base_success_logs_reason_and_returns_sha(monkeypatch, tmp_path, capsys):
+    checkout = tmp_path / "src"
+    (checkout / ".git").mkdir(parents=True)
+    base_sha = "a" * 40
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, (base_sha + "\n").encode("ascii")
+        ),
+    )
+
+    assert shim._capture_turn_base(str(checkout)) == base_sha
+    captured = capsys.readouterr().err
+    assert "phase=base outcome=success" in captured
+    assert "checkout_dir=%s" % checkout.resolve() in captured
+
+
+def test_turn_diff_no_base_sha_logs_reason_and_returns_none(tmp_path, capsys):
+    checkout = tmp_path / "src"
+
+    assert shim._capture_turn_diff(str(checkout), None) is None
+    captured = capsys.readouterr().err
+    assert "outcome=no_base_sha" in captured
+    assert "checkout_dir=%s" % checkout.resolve() in captured
+
+
+def test_turn_diff_failure_logs_reason_and_returns_none(monkeypatch, tmp_path, capsys):
+    checkout = tmp_path / "src"
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, b""),
+    )
+
+    assert shim._capture_turn_diff(str(checkout), "a" * 40) is None
+    captured = capsys.readouterr().err
+    assert "outcome=diff_failed" in captured
+    assert "checkout_dir=%s" % checkout.resolve() in captured
+
+
+def test_turn_diff_success_logs_and_round_trips(monkeypatch, tmp_path, capsys):
+    checkout = tmp_path / "src"
+    base_sha = "a" * 40
+    raw = b"diff --git a/file b/file\n+changed\n"
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, raw),
+    )
+
+    result = shim._capture_turn_diff(str(checkout), base_sha)
+
+    assert result == {
+        "base_sha": base_sha,
+        "zlib_b64": result["zlib_b64"],
+        "truncated": False,
+    }
+    assert zlib.decompress(base64.b64decode(result["zlib_b64"])) == raw
+    captured = capsys.readouterr().err
+    assert "phase=diff outcome=success" in captured
+    assert "checkout_dir=%s" % checkout.resolve() in captured
+
+
+def test_turn_diff_logging_failure_does_not_change_capture(monkeypatch, tmp_path):
+    checkout = tmp_path / "src"
+    base_sha = "a" * 40
+    raw = b"diff bytes"
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, raw),
+    )
+
+    def raise_logging_error(*_args, **_kwargs):
+        raise OSError("stderr unavailable")
+
+    monkeypatch.setattr(shim.sys.stderr, "write", raise_logging_error)
+
+    result = shim._capture_turn_diff(str(checkout), base_sha)
+
+    assert result["base_sha"] == base_sha
+    assert result["truncated"] is False
+    assert zlib.decompress(base64.b64decode(result["zlib_b64"])) == raw
+
+
+@pytest.mark.parametrize(
+    ("capture", "expected_reason"),
+    [
+        (lambda checkout: shim._capture_turn_base(checkout), "base_exception"),
+        (
+            lambda checkout: shim._capture_turn_diff(checkout, "a" * 40),
+            "diff_exception",
+        ),
+    ],
+)
+def test_turn_diff_subprocess_exception_logs_and_does_not_propagate(
+    capture, expected_reason, monkeypatch, tmp_path, capsys
+):
+    checkout = tmp_path / "src"
+    (checkout / ".git").mkdir(parents=True)
+
+    def raise_subprocess(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(shim.subprocess, "run", raise_subprocess)
+
+    assert capture(str(checkout)) is None
+    captured = capsys.readouterr().err
+    assert "outcome=%s" % expected_reason in captured
+    assert "checkout_dir=%s" % checkout.resolve() in captured
+
+
+def test_turn_diff_uncompressed_cap_sets_truncated(monkeypatch, tmp_path, capsys):
     checkout = tmp_path / "src"
     (checkout / ".git").mkdir(parents=True)
     raw = b"x" * (shim.MAX_TURN_DIFF_BYTES + 1)
@@ -1351,6 +1509,25 @@ def test_turn_diff_uncompressed_cap_sets_truncated(monkeypatch, tmp_path):
         "zlib_b64": None,
         "truncated": True,
     }
+    assert "outcome=truncated_raw" in capsys.readouterr().err
+
+
+def test_turn_diff_compressed_cap_sets_truncated(monkeypatch, tmp_path, capsys):
+    checkout = tmp_path / "src"
+    raw = b"diff bytes"
+    monkeypatch.setattr(shim, "MAX_TURN_DIFF_COMPRESSED_BYTES", 1)
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, raw),
+    )
+
+    assert shim._capture_turn_diff(str(checkout), "a" * 40) == {
+        "base_sha": "a" * 40,
+        "zlib_b64": None,
+        "truncated": True,
+    }
+    assert "outcome=truncated_compressed" in capsys.readouterr().err
 
 
 def test_process_manager_captures_diff_against_head_at_turn_start(
