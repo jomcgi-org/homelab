@@ -15,8 +15,9 @@
  */
 .console {
   /* Neutral surface, line, and text tokens for day period (default).
-     Dawn and dusk override only --page-bg for a subtle warm shift.
+     color-scheme: light allows native controls to render appropriately.
      Night period overrides these with dark-mode equivalents below. */
+  color-scheme: light;
   --page-bg: #eef0f2;
   --panel-bg: #ffffff;
   --text: #14171a;
@@ -73,6 +74,7 @@
 
 /* Night period: dark mode palette. */
 html[data-agents-period="night"] .console {
+  color-scheme: dark;
   /* Neutral tokens anchored to dashboard-theme.css night values. */
   --page-bg: #14151b;
   --panel-bg: #1c1e26;
@@ -80,7 +82,8 @@ html[data-agents-period="night"] .console {
   /* Adjusted from dashboard --ink-3 (#6f6d65, ~3.4:1) to clear 4.5:1
      against --panel-bg for body text. */
   --text-soft: #a5a297;
-  --muted: #7e7c74;
+  /* 5.75:1 against --panel-bg, 6.30:1 against --page-bg. */
+  --muted: #9a9890;
   /* Derived from dashboard --line at rgba(232, 227, 210, 0.12). */
   --line: rgba(232, 227, 210, 0.15);
   /* 3.76:1 against --panel-bg for input and control borders. */
@@ -95,21 +98,21 @@ html[data-agents-period="night"] .console {
 
   /* State tokens: hue from dashboard night palette, adjusted for
      panel-bg contrast. */
-  /* 4.52:1 against --panel-bg. */
+  /* 7.53:1 against --panel-bg. */
   --ok: #6fbf8d;
   /* color-mix tints: 30% lightens the base to stay readable on dark panel. */
   --ok-soft: color-mix(in srgb, var(--ok) 30%, var(--panel-bg));
   --diff-add-bg: color-mix(in srgb, var(--ok) 20%, var(--panel-bg));
   --diff-add-mark: var(--ok);
-  /* 4.51:1 against --panel-bg. */
+  /* 6.99:1 against --panel-bg. */
   --attn: #d0a050;
-  /* 4.56:1 on --attn-soft. */
+  /* 7.34:1 on --attn-soft. */
   --attn-text: #f0e4c0;
   --attn-soft: color-mix(in srgb, var(--attn) 30%, var(--panel-bg));
-  /* 4.53:1 against --panel-bg. */
+  /* 7.60:1 against --panel-bg. */
   --info: #7eb3f0;
   --info-soft: color-mix(in srgb, var(--info) 30%, var(--panel-bg));
-  /* 4.52:1 against --panel-bg. */
+  /* 5.38:1 against --panel-bg. */
   --err: #d9776a;
   --err-bg: color-mix(in srgb, var(--err) 20%, var(--panel-bg));
   --err-line: color-mix(in srgb, var(--err) 30%, var(--panel-bg));
@@ -119,11 +122,12 @@ html[data-agents-period="night"] .console {
   --scrim-bg: rgba(20, 23, 26, 0.65);
 }
 
-/* Dawn and dusk: warm shift on --page-bg only. */
-.shell.dawn .console {
+/* Dawn period: warm shift on --page-bg only. */
+html[data-agents-period="dawn"] .console {
   --page-bg: #f9f6f3;
 }
 
-.shell.dusk .console {
+/* Dusk period: warm shift on --page-bg only. */
+html[data-agents-period="dusk"] .console {
   --page-bg: #f8f3f0;
 }
