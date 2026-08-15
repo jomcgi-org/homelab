@@ -575,7 +575,28 @@ claudeRuntimeWorkload:
     # condition unchanged across six minutes. Re-keying is the only route, and
     # this epoch is the documented mechanism for it. That the fix for a
     # transient timeout is a hand-edited string is the problem tracked in #4937.
-    EMBER_BASE_EPOCH: "diff-capture-1"
+    #
+    # diff-capture-2: diff-capture-1 DID deploy and DID re-key. The values source
+    # is the git ref at HEAD, not the OCI chart, so ArgoCD applied it 37 seconds
+    # after the merge with no chart bump, and a base rebuilt at 18:38:33Z. But it
+    # rebuilt for ONE vendor. The fleet is vendor-split, and after that rebuild:
+    #
+    #   snapshotRefs.amd   claude-runtime__7adf2327a376  built, punched, in S3
+    #   snapshotRefs.intel claude-runtime__a1cc8b4bb845  in NO store, on NO brick
+    #
+    # The intel bricks still hold claude-runtime__1bd56a68d7af from Aug 8 and
+    # Aug 10, so three of the four firecracker nodes boot a week-old guest image.
+    # No intel brick logged a BuildBase at any point. BaseBuilt and Ready are
+    # computed from the headline snapshotRef, which is amd's, so the workload
+    # reported healthy while the intel half was never built. Sessions 194, 195
+    # and 196 recorded the NEW image digest and still captured nothing, because
+    # the session record carries the desired digest rather than the base the
+    # guest actually restored (#4893).
+    #
+    # This re-key is paired with destroying the parked sessions that were
+    # refcount-pinning the stale intel base against retention. Vendor-blind
+    # conditions and the dangling intel ref are tracked in #4937.
+    EMBER_BASE_EPOCH: "diff-capture-2"
     # INERT, kept only as documented intent: the shim reads EMBER_PREWARM_CLIS
     # from its own environment, which never receives this, so _read_prewarm_clis
     # returns () and prewarm silently no-ops. Live turn-timing confirms it: first
