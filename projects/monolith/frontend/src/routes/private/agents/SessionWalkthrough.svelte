@@ -9,6 +9,7 @@
   // Collapsed by default; the composed payload is fetched once on first
   // open (the console polls, this never does), and per-point patches are
   // fetched lazily, on selection, desktop only.
+  import { onMount, untrack } from "svelte";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import { joinMeta } from "./run-format.js";
   import { walkthroughView, parsePatchHunks } from "./walkthrough.js";
@@ -17,15 +18,16 @@
     sessionId = null,
     turnSeq = null,
     model = "",
+    prominent = false,
     // Fixture preview (?fixture=walk-*): payload/patches supplied inline,
     // so the preview never fetches.
     fixture = null,
   } = $props();
 
-  let payload = $state(fixture?.payload ?? null);
+  let payload = $state(untrack(() => fixture?.payload ?? null));
   let loading = $state(false);
   let failed = $state(false);
-  let opened = $state(Boolean(fixture));
+  let opened = $state(untrack(() => Boolean(fixture || prominent)));
   let selected = $state(0);
   // Mobile pane swap: the points list and the detail pane are one column
   // under the console's 760px breakpoint, and selecting a point drills in.
@@ -126,6 +128,13 @@
     if (opened) load();
   }
 
+  // A declaratively open details element does not reliably emit a toggle
+  // event after Svelte attaches the listener. Start its one-shot load here;
+  // onToggle shares the same guards if the browser emits both paths.
+  onMount(() => {
+    if (opened) load();
+  });
+
   function selectItem(index) {
     selected = Math.max(0, Math.min(index, items.length - 1));
     drilled = true;
@@ -180,7 +189,12 @@
   );
 </script>
 
-<details class="walk" open={Boolean(fixture)} ontoggle={onToggle}>
+<details
+  class="walk"
+  class:prominent
+  open={Boolean(fixture || prominent)}
+  ontoggle={onToggle}
+>
   <summary class="walk-summary">
     <span>{P.labels.walkSummary}</span>
     {#if walk}
@@ -399,6 +413,36 @@
   }
   .walk-count {
     color: var(--text-soft);
+  }
+  /* A finished session promotes only its final walkthrough. The heavy ink
+     frame gives the explanation more weight than the turn separators while
+     keeping it in the transcript column and in the normal scroll flow. */
+  .walk.prominent {
+    margin-top: 16px;
+    padding-top: 0;
+    border: 4px solid var(--ink);
+    border-radius: var(--radius-lg);
+    background: var(--panel-bg);
+  }
+  .walk.prominent .walk-summary {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 12px 16px;
+    color: var(--text);
+    font-size: var(--size-body);
+    font-weight: 700;
+  }
+  .walk.prominent[open] .walk-summary {
+    border-bottom: 1px solid var(--line);
+  }
+  .walk.prominent .walk-count {
+    margin-left: auto;
+  }
+  .walk.prominent > .walk-fact {
+    margin-inline: 16px;
+  }
+  .walk.prominent > .walk-frame {
+    margin: 12px;
   }
   .walk-fact {
     margin-top: 8px;
