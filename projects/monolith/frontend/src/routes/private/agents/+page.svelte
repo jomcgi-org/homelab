@@ -25,6 +25,7 @@
   import { partitionRuns, recentRuns, runActivityAt } from "./run-history.js";
   import { crumbTrail, sessionLineage } from "./lineage.js";
   import { setupVisualViewport } from "./visual-viewport.js";
+  import { formatAge, nextStatus } from "./vm-stream-status.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import PaneHeader from "./PaneHeader.svelte";
   import SessionWalkthrough from "./SessionWalkthrough.svelte";
@@ -140,6 +141,13 @@
   let requestSequence = 0;
   let renderedPending = $state({});
   let vms = $state({});
+  let vmStreamStatus = $state({
+    mode: "stalled",
+    lastUpdateAt: null,
+    error: null,
+  });
+  let vmStreamNow = $state(Date.now());
+  let vmFallbackArmed = false;
   let turnsEl = $state(null);
   let consoleEl = $state(null);
 
@@ -625,6 +633,11 @@
     });
   }
 
+  function updateVmStreamStatus(event) {
+    vmStreamStatus = nextStatus($state.snapshot(vmStreamStatus), event);
+    return vmStreamStatus;
+  }
+
   function selectRun(runOrId) {
     const id = typeof runOrId === "object" ? runOrId?.workflow_id : runOrId;
     if (id == null) return;
@@ -638,11 +651,30 @@
   async function loadVms() {
     try {
       const response = await fetch("/agents/vms");
-      if (!response.ok) return;
-      const body = await response.json();
-      vms = body.vms ?? {};
-    } catch {
+      const body = await response.json().catch(() => null);
+      if (!vmFallbackArmed) return;
+      if (!response.ok) {
+        updateVmStreamStatus({
+          type: "poll-fail",
+          error: body?.error ?? "Unable to load VM state",
+        });
+        return;
+      }
+      if (body == null) throw new Error("Invalid VM state response");
+      const status = updateVmStreamStatus({
+        type: "poll-ok",
+        at: Date.now(),
+        error: body?.error ?? null,
+      });
+      if (status.mode === "polling") vms = body?.vms ?? {};
+    } catch (error) {
       // VM state is advisory; keep the last known map on transient failures.
+      if (!vmFallbackArmed) return;
+      updateVmStreamStatus({
+        type: "poll-fail",
+        error:
+          error instanceof Error ? error.message : "Unable to load VM state",
+      });
     }
   }
 
@@ -1035,6 +1067,17 @@
     }
   });
 
+  // The clock only refreshes the displayed age. It never changes connection
+  // mode, which is driven exclusively by stream and fallback events.
+  $effect(() => {
+    if (vmStreamStatus.mode === "streaming") return;
+    vmStreamNow = Date.now();
+    const interval = setInterval(() => {
+      vmStreamNow = Date.now();
+    }, 30_000);
+    return () => clearInterval(interval);
+  });
+
   // Subscribe to the shared VM state stream. A slow poll is only a fallback
   // after the stream has failed repeatedly.
   $effect(() => {
@@ -1051,22 +1094,52 @@
 
     const startFallback = () => {
       if (fallbackInterval) return;
+      vmFallbackArmed = true;
       fallbackInterval = setInterval(loadVms, 2000);
+      updateVmStreamStatus({ type: "fallback-armed" });
       loadVms();
+    };
+
+    const stopFallback = () => {
+      vmFallbackArmed = false;
+      clearInterval(fallbackInterval);
+      fallbackInterval = undefined;
+    };
+
+    source.onopen = () => {
+      failures = 0;
+      stopFallback();
+      updateVmStreamStatus({ type: "open" });
     };
 
     source.onmessage = (event) => {
       failures = 0;
-      clearInterval(fallbackInterval);
-      fallbackInterval = undefined;
+      stopFallback();
       try {
-        vms = JSON.parse(event.data).vms ?? {};
-      } catch {
-        // Ignore malformed advisory state and retain the last snapshot.
+        const body = JSON.parse(event.data);
+        const status = updateVmStreamStatus({
+          type: "frame",
+          at: Date.now(),
+          error: body?.error ?? null,
+        });
+        if (status.mode === "streaming") vms = body?.vms ?? {};
+      } catch (error) {
+        // Retain the last snapshot and expose that the advisory frame failed.
+        updateVmStreamStatus({
+          type: "frame",
+          at: Date.now(),
+          error:
+            error instanceof Error
+              ? `Invalid VM stream payload: ${error.message}`
+              : "Invalid VM stream payload",
+        });
       }
     };
     source.onerror = () => {
       failures += 1;
+      if (source.readyState !== EventSource.OPEN) {
+        updateVmStreamStatus({ type: "closed" });
+      }
       // A fatal error (non-200, or a content type that is not
       // text/event-stream, which is what an expired Cloudflare Access
       // session returns) closes the source permanently and fires exactly
@@ -1078,6 +1151,7 @@
     };
 
     return () => {
+      vmFallbackArmed = false;
       source.close();
       clearInterval(fallbackInterval);
     };
@@ -1265,6 +1339,22 @@
                 : "no live microVM; the next prompt boots fresh"}
               >vm {vmState(selectedSession, vms)}</span
             >
+            <span
+              class={`vm-stream-state ${vmStreamStatus.mode}`}
+              title={vmStreamStatus.error
+                ? `VM state updates stalled: ${vmStreamStatus.error}`
+                : `VM state updates: ${vmStreamStatus.mode}`}
+            >
+              <span class="vm-stream-dot" aria-hidden="true"></span>
+              <span>{vmStreamStatus.mode}</span>
+              {#if vmStreamStatus.mode !== "streaming" && vmStreamStatus.lastUpdateAt != null}
+                <span class="vm-stream-age"
+                  >updated {formatAge(
+                    vmStreamNow - vmStreamStatus.lastUpdateAt,
+                  )}</span
+                >
+              {/if}
+            </span>
             {#if statusClass(selectedSession) !== "completed"}
               <span class={`session-state ${statusClass(selectedSession)}`}
                 >{statusLabel(selectedSession)}</span
@@ -2186,6 +2276,36 @@
   .vm-chip.vm-asleep {
     color: var(--info);
     background: var(--info-soft);
+  }
+  .vm-stream-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--size-meta);
+    white-space: nowrap;
+  }
+  .vm-stream-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-circle);
+    background: var(--dot-idle);
+  }
+  .vm-stream-state.polling {
+    color: var(--text-soft);
+  }
+  .vm-stream-state.polling .vm-stream-dot {
+    background: var(--attn);
+  }
+  .vm-stream-state.stalled {
+    color: var(--err);
+  }
+  .vm-stream-state.stalled .vm-stream-dot {
+    background: var(--err);
+  }
+  .vm-stream-age {
+    color: inherit;
   }
   .session-state.warn {
     color: var(--attn-text);
