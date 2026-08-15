@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import zlib
 
 import httpx
@@ -1058,3 +1059,52 @@ def test_destroy_session_keeps_403_and_500_as_plain_failures(monkeypatch):
         with pytest.raises(EmberVMTransportError) as caught:
             asyncio.run(transport.EmberVmShimTransport().destroy_session("s-404xyz"))
         assert not isinstance(caught.value, EmberSessionGone), status
+
+
+def test_guest_diff_logs_a_distinct_reason_per_rejection(caplog):
+    # A present-but-invalid payload and an absent one both yield None, so the
+    # database cannot tell them apart. The reason is the only thing that can.
+    good = base64.b64encode(zlib.compress(b"diff --git a/a b/a\n")).decode()
+    sha = "a" * 40
+    cases = [
+        (
+            {"base_sha": sha, "zlib_b64": good, "truncated": "no"},
+            "truncated is not a bool",
+        ),
+        ({"base_sha": "nothex", "zlib_b64": good, "truncated": False}, "base_sha"),
+        ({"base_sha": sha, "truncated": False}, "missing keys"),
+        (
+            {"base_sha": sha, "zlib_b64": "!!!not base64!!!", "truncated": False},
+            "undecodable",
+        ),
+        (
+            {"base_sha": sha, "zlib_b64": good, "truncated": True},
+            "truncated payload carried a blob",
+        ),
+        ("not a mapping", "not a mapping"),
+    ]
+    for payload, expected in cases:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+            assert transport._guest_diff(payload, 42) is None
+        assert expected in caplog.text, f"{payload!r} did not log {expected!r}"
+        assert "42" in caplog.text
+
+
+def test_guest_diff_is_silent_when_absent(caplog):
+    # Guests predating diff capture send nothing. That is not a fault and must
+    # not produce a warning on every single turn they take.
+    with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+        assert transport._guest_diff(None, 42) is None
+    assert caplog.text == ""
+
+
+def test_guest_diff_accepts_a_valid_payload(caplog):
+    payload = {
+        "base_sha": "b" * 40,
+        "zlib_b64": base64.b64encode(zlib.compress(b"diff --git a/a b/a\n")).decode(),
+        "truncated": False,
+    }
+    with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+        assert transport._guest_diff(payload, 42) == payload
+    assert caplog.text == ""
