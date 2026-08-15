@@ -85,6 +85,7 @@ defmodule Embervm.WarmthReaperTest do
   defp recording_evict_funs(test_pid) do
     artifact_fun = fn _channel, req ->
       send(test_pid, {:evict_artifact, req.artifact.kind, req.artifact.ref, req.remote})
+      send(test_pid, {:evict_artifact_req, req})
       {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
     end
 
@@ -198,6 +199,105 @@ defmodule Embervm.WarmthReaperTest do
       assert [%{kind: :stateful, id: "ghost", evict_bytes: 1_024}] = plan
       assert_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "ghost", false}, 1_000
       assert_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "ghost", true}, 1_000
+    end
+  end
+
+  describe "empty-binding stateful orphan lookup" do
+    defp empty_binding_reaper(table, artifact_fun, snapshot_fun, index_fun, enabled \\ true) do
+      stateful = start_store([stateful_instance(:destroyed, "orphan-nobind")])
+      group = start_store([])
+
+      start_reaper(
+        capacity_table: table,
+        stateful_store: stateful,
+        group_store: group,
+        evict_artifact_fun: artifact_fun,
+        evict_snapshot_fun: snapshot_fun,
+        channel_fun: fake_channel_fun(),
+        remote_stateful_index_fun: index_fun,
+        sweep_enabled: enabled
+      )
+    end
+
+    test "remote hit recovers vendor and workload, then evicts local before remote" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+      put_warmth_fact(table, "node-4", [stateful_bundle("orphan-nobind", "", 4_096)], [])
+
+      reaper =
+        empty_binding_reaper(table, artifact_fun, snapshot_fun, fn ->
+          {:ok, %{"orphan-nobind" => %{vendor: "amd", workload: "demo-postgres"}}}
+        end)
+
+      WarmthReaper.sweep_now(reaper)
+      assert_receive {:evict_artifact_req, %{remote: false}}, 1_000
+      assert_receive {:evict_artifact_req, %{remote: true, vendor: "amd", artifact: %{workload: "demo-postgres"}}}, 1_000
+    end
+
+    test "remote miss evicts local only" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+      put_warmth_fact(table, "node-4", [stateful_bundle("orphan-nobind", nil, 4_096)], [])
+
+      reaper = empty_binding_reaper(table, artifact_fun, snapshot_fun, fn -> {:ok, %{}} end)
+      WarmthReaper.sweep_now(reaper)
+
+      assert_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "orphan-nobind", false}, 1_000
+      refute_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "orphan-nobind", true}, 300
+    end
+
+    test "remote index failure preserves both copies" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+      put_warmth_fact(table, "node-4", [stateful_bundle("orphan-nobind", "", 4_096)], [])
+
+      reaper = empty_binding_reaper(table, artifact_fun, snapshot_fun, fn -> {:error, :timeout} end)
+      WarmthReaper.sweep_now(reaper)
+
+      refute_receive {:evict_artifact, :ARTIFACT_KIND_STATEFUL, "orphan-nobind", _}, 300
+    end
+
+    test "gate off evicts nothing after a remote hit" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+      put_warmth_fact(table, "node-4", [stateful_bundle("orphan-nobind", "", 4_096)], [])
+
+      reaper =
+        empty_binding_reaper(table, artifact_fun, snapshot_fun, fn ->
+          {:ok, %{"orphan-nobind" => %{vendor: "amd", workload: "demo-postgres"}}}
+        end, false)
+
+      WarmthReaper.sweep_now(reaper)
+      refute_receive {:evict_artifact, _, _, _}, 300
+      refute_receive {:evict_snapshot, _}, 100
+    end
+
+    test "fetches the remote index once for several empty-binding bundles" do
+      test_pid = self()
+      table = new_cap_table()
+      {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)
+      put_warmth_fact(table, "node-4", [stateful_bundle("orphan-a", "", 1), stateful_bundle("orphan-b", "", 2)], [])
+      stateful = start_store([stateful_instance(:destroyed, "orphan-a"), stateful_instance(:destroyed, "orphan-b")])
+
+      reaper =
+        start_reaper(
+          capacity_table: table,
+          stateful_store: stateful,
+          group_store: start_store([]),
+          evict_artifact_fun: artifact_fun,
+          evict_snapshot_fun: snapshot_fun,
+          channel_fun: fake_channel_fun(),
+          remote_stateful_index_fun: fn -> send(test_pid, :remote_index_lookup); {:ok, %{}} end,
+          sweep_enabled: true
+        )
+
+      WarmthReaper.sweep_now(reaper)
+      assert_receive :remote_index_lookup, 1_000
+      refute_receive :remote_index_lookup, 300
     end
   end
 
@@ -421,12 +521,11 @@ defmodule Embervm.WarmthReaperTest do
     end
   end
 
-  # #38 fix C: an orphan boot-scanned before the binding sidecar shipped has an
-  # empty workload/group_instance_id. Its local evict would drain the disk copy
-  # while its remote evict fails InvalidArgument, stranding the S3 copy forever. So
-  # such an entry is SKIPPED entirely: NEITHER local nor remote runs.
-  describe "empty-binding orphans are skipped entirely (#38 fix C)" do
-    test "a stateful orphan with no workload binding runs no local and no remote evict" do
+  # #38 fix C remains fail-safe when the remote index is unavailable. The group
+  # layout is not searchable by set id in the same way, so its empty binding still
+  # skips both copies.
+  describe "empty-binding lookup failures and groups remain fail-safe (#38 fix C)" do
+    test "a stateful orphan with no workload binding and no remote store runs no evict" do
       test_pid = self()
       table = new_cap_table()
       {artifact_fun, snapshot_fun} = recording_evict_funs(test_pid)

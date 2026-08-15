@@ -72,7 +72,7 @@ defmodule Embervm.WarmthReaper do
   use GenServer
   require Logger
 
-  alias Embervm.{GroupState, GroupStore, NodeCapacity, StatefulState, StatefulStore, WakeInstance}
+  alias Embervm.{GroupState, GroupStore, NodeCapacity, S3Client, StatefulState, StatefulStore, WakeInstance}
 
   alias Embervm.Node.V1.{
     ArtifactRef,
@@ -122,6 +122,8 @@ defmodule Embervm.WarmthReaper do
     channel_fun = Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1)
     evict_snapshot_fun = Keyword.get(opts, :evict_snapshot_fun, &default_evict_snapshot/2)
     evict_artifact_fun = Keyword.get(opts, :evict_artifact_fun, &default_evict_artifact/2)
+    remote_stateful_index_fun =
+      Keyword.get(opts, :remote_stateful_index_fun, &default_remote_stateful_index/0)
 
     # 0 disables the timer entirely (the unit-test default, so a test drives
     # :sweep_now explicitly and asserts deterministically); production uses the
@@ -141,6 +143,7 @@ defmodule Embervm.WarmthReaper do
       channel_fun: channel_fun,
       evict_snapshot_fun: evict_snapshot_fun,
       evict_artifact_fun: evict_artifact_fun,
+      remote_stateful_index_fun: remote_stateful_index_fun,
       sweep_interval_ms: sweep_interval_ms,
       sweep_enabled: sweep_enabled
     }
@@ -254,15 +257,16 @@ defmodule Embervm.WarmthReaper do
 
   defp apply_plan(state, plan) do
     {stateful, group} = Enum.split_with(plan, &(&1.kind == :stateful))
+    stateful_index = remote_stateful_index(state, stateful)
 
-    log_and_evict(state, :stateful, stateful)
-    log_and_evict(state, :group, group)
+    log_and_evict(state, :stateful, stateful, stateful_index)
+    log_and_evict(state, :group, group, nil)
     :ok
   end
 
-  defp log_and_evict(_state, _kind, []), do: :ok
+  defp log_and_evict(_state, _kind, [], _index), do: :ok
 
-  defp log_and_evict(state, kind, entries) do
+  defp log_and_evict(state, kind, entries, index) do
     count = length(entries)
     bytes = entries |> Enum.map(& &1.evict_bytes) |> Enum.sum()
 
@@ -271,11 +275,13 @@ defmodule Embervm.WarmthReaper do
         "embervm warmth reaper: warmth-retention sweep evicting #{count} orphaned #{kind} warmth artifact(s) (~#{bytes} bytes)"
       )
 
-      Enum.each(entries, &evict_entry(state, &1))
+      Enum.each(entries, &evict_entry(state, &1, index))
     else
       Logger.info(
         "embervm warmth reaper: warmth-retention sweep (DRY RUN, gate off) WOULD evict #{count} orphaned #{kind} warmth artifact(s) (~#{bytes} bytes)"
       )
+
+      Enum.each(entries, &log_dry_run_entry(&1, index))
     end
 
     :ok
@@ -303,24 +309,38 @@ defmodule Embervm.WarmthReaper do
   # uses); the single remote EvictArtifact{remote: true, kind: GROUP_SET, workload:
   # group_instance_id, ref: set_id} that drops the whole set prefix at once fires
   # ONLY when EVERY member's local eviction succeeded.
-  # Empty-binding SKIP (#38 fix C): a bundle boot-scanned from disk before the
-  # binding sidecar shipped (or after a crash between snapfile-publish and
-  # sidecar-write) seeds with workload/group_instance_id = "" or nil. Its LOCAL
-  # evict would succeed and DRAIN the on-disk copy, but the REMOTE (S3) evict needs
-  # the workload to compose the prefix and fails InvalidArgument, so the set/bundle
-  # would be locally gone yet its S3 copy stranded FOREVER with no handle to find it
-  # again (Fable F2, worse than nothing). So we run NEITHER copy's evict and log ONE
-  # info line. Reclaiming these pre-sidecar orphans is a separate decision (task
-  # #39); until then they are safely left whole.
-  defp evict_entry(_state, %{kind: :stateful, id: ref, workload: workload}) when workload in [nil, ""] do
+  # GROUP_SET is not searchable by the same ref in this reaper. Its remote layout
+  # is keyed by group_instance_id, so the conservative empty-binding skip remains.
+
+  defp evict_entry(state, %{kind: :stateful, id: ref, workload: workload} = entry, {:ok, index})
+       when workload in [nil, ""] do
+    case Map.get(index, ref) do
+      %{vendor: vendor, workload: recovered_workload} ->
+        Logger.info(
+          "embervm warmth reaper: recovered binding for orphaned stateful bundle #{inspect(ref)} from remote index (vendor #{inspect(vendor)}, workload #{inspect(recovered_workload)})"
+        )
+
+        evict_stateful(state, %{entry | workload: recovered_workload}, vendor)
+
+      nil ->
+        Logger.info(
+          "embervm warmth reaper: evicting local-only orphaned stateful bundle #{inspect(ref)} (not found in remote index; no remote copy can be stranded)"
+        )
+
+        evict_stateful(state, entry, nil, false)
+    end
+  end
+
+  defp evict_entry(_state, %{kind: :stateful, id: ref, workload: workload}, {:error, reason})
+       when workload in [nil, ""] do
     Logger.info(
-      "embervm warmth reaper: SKIP orphaned stateful bundle #{inspect(ref)} (no workload binding on disk; cannot evict remote copy safely, leaving whole)"
+      "embervm warmth reaper: SKIP orphaned stateful bundle #{inspect(ref)} (remote index lookup failed: #{inspect(reason)}; leaving whole)"
     )
 
     :ok
   end
 
-  defp evict_entry(_state, %{kind: :group, id: set_id, workload: gid}) when gid in [nil, ""] do
+  defp evict_entry(_state, %{kind: :group, id: set_id, workload: gid}, _index) when gid in [nil, ""] do
     Logger.info(
       "embervm warmth reaper: SKIP orphaned group set #{inspect(set_id)} (no group_instance_id binding on disk; cannot evict remote copy safely, leaving whole)"
     )
@@ -328,18 +348,20 @@ defmodule Embervm.WarmthReaper do
     :ok
   end
 
-  defp evict_entry(state, %{kind: :stateful, id: ref, workload: workload, node_id: node_id}) do
+  defp evict_entry(state, %{kind: :stateful} = entry, _index), do: evict_stateful(state, entry)
+
+  defp evict_stateful(state, %{id: ref, workload: workload, node_id: node_id}, vendor \\ nil, remote \\ true) do
     dial_key = WakeInstance.dial_for_bundle(state.capacity_table, node_id, ref)
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: workload, ref: ref}
 
     local = {:artifact, %EvictArtifactRequest{artifact: artifact, remote: false, trace: %Trace{workload: workload}}}
-    remote = {:artifact, %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}}
+    remote_request = %EvictArtifactRequest{artifact: artifact, remote: true, vendor: vendor || "", trace: %Trace{workload: workload}}
 
     spawn(fn ->
       with {:ok, channel} <- safe_channel(state, dial_key) do
         # Remote (S3) evict fires ONLY if the local disk evict succeeded: never
         # delete the recovery copy of a bundle the node refused/failed to remove.
-        run_evict(state, channel, [local], remote)
+        run_evict(state, channel, [local], if(remote, do: {:artifact, remote_request}, else: nil))
         release_channel(state, channel)
       end
     end)
@@ -347,7 +369,7 @@ defmodule Embervm.WarmthReaper do
     :ok
   end
 
-  defp evict_entry(state, %{kind: :group, id: set_id, workload: group_instance_id, node_id: node_id, member_refs: member_refs}) do
+  defp evict_entry(state, %{kind: :group, id: set_id, workload: group_instance_id, node_id: node_id, member_refs: member_refs}, _index) do
     dial_key = WakeInstance.dial_for_group(state.capacity_table, node_id, group_instance_id)
 
     remote =
@@ -373,6 +395,60 @@ defmodule Embervm.WarmthReaper do
     :ok
   end
 
+  defp remote_stateful_index(_state, []), do: {:ok, %{}}
+
+  defp remote_stateful_index(state, entries) do
+    if Enum.any?(entries, &(&1.workload in [nil, ""])) do
+      state.remote_stateful_index_fun.()
+    else
+      {:ok, %{}}
+    end
+  rescue
+    e -> {:error, {:lookup_raised, e}}
+  catch
+    kind, reason -> {:error, {:lookup_thrown, {kind, reason}}}
+  end
+
+  defp log_dry_run_entry(%{kind: :stateful, id: ref, workload: workload}, {:ok, index})
+       when workload in [nil, ""] do
+    action = if Map.has_key?(index, ref), do: "local and remote", else: "local-only"
+    Logger.info("embervm warmth reaper: DRY RUN WOULD evict #{action} for empty-binding stateful bundle #{inspect(ref)}")
+  end
+
+  defp log_dry_run_entry(%{kind: :stateful, id: ref, workload: workload}, {:error, reason})
+       when workload in [nil, ""] do
+    Logger.info("embervm warmth reaper: DRY RUN WOULD skip empty-binding stateful bundle #{inspect(ref)} because remote index lookup failed: #{inspect(reason)}")
+  end
+
+  defp log_dry_run_entry(_entry, _index), do: :ok
+
+  defp default_remote_stateful_index do
+    endpoint = System.get_env("EMBERVM_STORE_ENDPOINT", "") |> String.trim()
+    bucket = System.get_env("EMBERVM_STORE_BUCKET", "embervm")
+
+    case S3Client.new(endpoint, bucket) do
+      nil -> {:error, :store_disabled}
+      client ->
+        with {:ok, entries} <- S3Client.list_all(client, "stateful/") do
+          Enum.reduce_while(entries, {:ok, %{}}, fn %{key: key}, {:ok, index} ->
+            case String.split(key, "/") do
+              ["stateful", vendor, workload, ref, file]
+              when vendor != "" and workload != "" and ref != "" and file != "" ->
+                binding = %{vendor: vendor, workload: workload}
+
+                case Map.get(index, ref) do
+                  nil -> {:cont, {:ok, Map.put(index, ref, binding)}}
+                  ^binding -> {:cont, {:ok, index}}
+                  _ -> {:halt, {:error, {:conflicting_bindings, ref}}}
+                end
+
+              _ -> {:cont, {:ok, index}}
+            end
+          end)
+        end
+    end
+  end
+
   # Fire an entry's LOCAL evictions then, ONLY if every local succeeded, the single
   # REMOTE (S3) evict, on an already-dialled channel (#38). Locals are best-effort
   # among themselves (each is independent and idempotent, so one failure is logged
@@ -394,12 +470,14 @@ defmodule Embervm.WarmthReaper do
         end
       end)
 
-    if all_local_ok do
+    if all_local_ok and not is_nil(remote) do
       run_one(state, channel, remote)
     else
-      Logger.info(
-        "embervm warmth reaper: skipping remote evict #{inspect(remote_req(remote))} (a local eviction was refused or failed; recovery copy kept)"
-      )
+      if not is_nil(remote) do
+        Logger.info(
+          "embervm warmth reaper: skipping remote evict #{inspect(remote_req(remote))} (a local eviction was refused or failed; recovery copy kept)"
+        )
+      end
     end
 
     :ok
