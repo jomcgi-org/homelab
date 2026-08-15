@@ -30,9 +30,9 @@ Give each agent the full brief in one shot. An agent that has to come back for
 clarification costs more than the spec would have. Fan out independent tasks in
 the same turn rather than serializing them.
 
-Codex `frontier` (Sol) stays available as a rare cross-vendor second opinion on
-the hardest Phase 4 diffs, added alongside the `reviewer` pass and never
-substituted for it.
+Sol is the implementing tier during the trial (#4913), so it no longer serves
+as a cross-vendor second opinion on Phase 4 diffs: it would be grading its own
+work. Review is the Opus `reviewer` pass, and nothing substitutes for it.
 
 Do **not** open bare `bazel` on the Mac, and do not treat PR CI as the first test
 run: `ci` before push so Workflows mostly cache-hit. Routing detail lives in
