@@ -61,8 +61,11 @@ just the worker's final message.
 Rules:
 
 1. **Default to Sol (`frontier`).** Do not drop to Luna or Terra to save quota
-   without cause: the trial is measuring Sol's one-shot rate, and mixed tiers
-   muddy the numbers.
+   without cause: the trial (#4913) is measuring Sol's one-shot rate, and mixed
+   tiers muddy the numbers. There is no rung above `frontier`: if Sol fails the
+   same spec after one batched respec, the task is under-specified or
+   CI-only-verifiable, so fix the spec or keep that task on Opus as the
+   exception.
 2. **One worktree per worker, one worker per worktree.** The wrapper enforces
    the second half (exit 65) because concurrent workers interleave edits.
 3. **Full spec up front** (see the template below).

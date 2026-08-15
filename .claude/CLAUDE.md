@@ -69,14 +69,19 @@ preference, it is how the budget lasts. Three lanes:
 - **Sol implements, and that should be around 99% of implementation.** Dispatch
   through the `codex-implement` skill (`bazel/tools/codex/dispatch.sh`, tier
   `frontier`), which bills OpenAI instead of the Claude weekly limit. This is a
-  trial (review by 2026-08-28, judged on correction rounds per PR, OpenAI quota
-  burn, and exit-42 events): the bet is that Sol one-shots more specs, and every
-  correction round Luna needed was spending Opus review and respec tokens on the
-  Claude side. Luna stays the rung for trivially mechanical bulk or if quota
-  tightens; Terra stays the middle rung. Sonnet only when Codex is unavailable
-  or the work genuinely needs Claude-side skills, MCP, or session context. On
-  exit 42 (quota exhausted), send one `warn` notify and fall back to Sonnet: no
-  retry loop, no second notify.
+  trial (#4913, review by 2026-08-28, judged on correction rounds per PR,
+  OpenAI quota burn, and exit-42 events): the bet is that Sol one-shots more
+  specs, and every correction round Luna needed was spending Opus review and
+  respec tokens on the Claude side. Luna stays the rung for trivially
+  mechanical bulk or if quota tightens; Terra stays the middle rung; there is
+  no rung above Sol, so a spec Sol fails twice gets fixed or stays on Opus as
+  the exception. The autonomous work queue (`implementerModel` in
+  `projects/monolith/chart/values.yaml`) deliberately stays on `luna` until
+  `budget_usd` enforcement lands (#4784): do not flip it to chase this bullet.
+  Sonnet only when Codex is unavailable or the work genuinely needs
+  Claude-side skills, MCP, or session context. On exit 42 (quota exhausted),
+  send one `warn` notify and fall back to Sonnet: no retry loop, no second
+  notify.
 - **Fable is a last-resort escalation for context window, not for quality.**
   Open it when Opus has stalled and the blocker is running out of context, not
   when the problem is merely hard.
