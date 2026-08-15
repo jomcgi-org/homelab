@@ -55,6 +55,28 @@
   );
   const point = $derived(items[selected] ?? null);
 
+  function countLine(currentWalk) {
+    const parts = [
+      `${currentWalk.counts.accounted} ${P.labels.walkAccountedCount}`,
+      `${currentWalk.counts.unexplained} ${P.labels.walkUnexplainedCount}`,
+      `${currentWalk.counts.contradicted} ${P.labels.walkContradictedCount}`,
+    ];
+    if (currentWalk.counts.touched > 0) {
+      parts.push(`${currentWalk.counts.touched} ${P.labels.walkTouchedCount}`);
+    }
+    return joinMeta(...parts);
+  }
+
+  function headerCountLine(currentWalk) {
+    const parts = [countLine(currentWalk)];
+    if (currentWalk.rung <= 2) {
+      parts.push(
+        `${currentWalk.counts.files} ${currentWalk.counts.files === 1 ? P.labels.walkFileChanged : P.labels.walkFilesChanged}`,
+      );
+    }
+    return joinMeta(...parts);
+  }
+
   function basename(path) {
     return String(path || "")
       .split("/")
@@ -162,12 +184,7 @@
   <summary class="walk-summary">
     <span>{P.labels.walkSummary}</span>
     {#if walk}
-      <span class="walk-count"
-        >{joinMeta(
-          `${walk.counts.points} ${walk.counts.points === 1 ? P.labels.walkPointWord : P.labels.walkPointsWord}`,
-          `${walk.counts.files} ${walk.counts.files === 1 ? P.labels.walkFileChanged : P.labels.walkFilesChanged}`,
-        )}</span
-      >
+      <span class="walk-count">{headerCountLine(walk)}</span>
     {/if}
   </summary>
 
@@ -181,6 +198,28 @@
       >
     </div>
   {:else if walk}
+    {#if walk.summary?.status === "available"}
+      <div class="walk-fact">
+        {P.labels.walkSummaryDiffLead}{P.punct.colon}
+        {walk.summary.files}
+        {walk.summary.files === 1
+          ? P.labels.walkFileChanged
+          : P.labels.walkFilesChanged}, +{walk.summary.insertions}/&minus;{walk
+          .summary.deletions}{P.punct.dot}
+        {P.labels.walkSummaryAccountedLead}{P.punct.colon}
+        {walk.summary.accounted}
+        {walk.summary.accounted === 1
+          ? P.labels.walkFileWord
+          : P.labels.walkFilesWord}{P.punct.dot}
+        {P.labels.walkSummaryUnexplainedLead}{P.punct.colon}
+        {walk.summary.unexplained}
+        {walk.summary.unexplained === 1
+          ? P.labels.walkFileWord
+          : P.labels.walkFilesWord}{P.punct.dot}
+      </div>
+    {:else if walk.summary?.status === "diff_unavailable"}
+      <div class="walk-fact">{P.labels.walkSummaryDiffUnavailable}</div>
+    {/if}
     {#if walk.message}
       <div class="walk-fact">{walk.message}</div>
     {/if}
@@ -205,10 +244,7 @@
         <div class="wbody" class:drilled>
           <div class="points">
             <div class="pbband">
-              {joinMeta(
-                `${walk.counts.points} ${walk.counts.points === 1 ? P.labels.walkPointWord : P.labels.walkPointsWord}`,
-                `${walk.counts.files} ${walk.counts.files === 1 ? P.labels.walkFileChanged : P.labels.walkFilesChanged}`,
-              )}
+              {headerCountLine(walk)}
             </div>
             {#each items as item, index (`${item.kind}:${item.path}`)}
               <button

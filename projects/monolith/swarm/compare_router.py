@@ -11,10 +11,11 @@ from fastapi import APIRouter, HTTPException, Query
 
 from agent_sessions.rationale import parse_rationale
 
-router = APIRouter(prefix="/api/swarm/compare", tags=["swarm"])
+router = APIRouter(prefix="/compare", tags=["swarm"])
 
 _GITHUB_API = "https://api.github.com"
 _DEFAULT_REPO = "jomcgi/homelab"
+_COMPARE_BASE = "main"
 _CACHE_TTL_S = 90.0
 _cache: dict[str, tuple[float, dict]] = {}
 
@@ -160,13 +161,18 @@ async def compare_stats(session_id: int, turn_seq: int) -> dict:
         compare = await _compare(
             repo, base_sha, commit_sha, f"{base_sha}...{commit_sha}"
         )
+    elif branch == _COMPARE_BASE:
+        # A base branch compared with itself is not evidence of an empty
+        # change. Leave the diff unresolved so testimony is not contradicted
+        # by an artifact that was never available.
+        resolution_rung, diff_type = 3, None
     elif branch:
         branch_response = await _github_get(
             f"{_GITHUB_API}/repos/{repo}/branches/{quote(branch, safe='')}"
         )
         if branch_response.status_code == 200:
             resolution_rung, diff_type = 2, "branch_ephemeral"
-            compare = await _compare(repo, "main", branch, f"branch:{branch}")
+            compare = await _compare(repo, _COMPARE_BASE, branch, f"branch:{branch}")
 
     paths = {item["path"] for item in compare["files"]}
     # The cross-check is only meaningful against a diff we actually resolved.
@@ -228,6 +234,8 @@ async def compare_patch(session_id: int, turn_seq: int, path: str = Query(...)) 
             f"{data['base_sha']}...{data['commit_sha']}",
             include_patches=True,
         )
+    elif data["branch"] == _COMPARE_BASE:
+        raise HTTPException(status_code=404, detail="no_compare_available")
     elif data["branch"]:
         branch_response = await _github_get(
             f"{_GITHUB_API}/repos/{data['repo']}/branches/{quote(data['branch'], safe='')}"
@@ -236,7 +244,7 @@ async def compare_patch(session_id: int, turn_seq: int, path: str = Query(...)) 
             raise HTTPException(status_code=404, detail="no_compare_available")
         compare = await _compare(
             data["repo"],
-            "main",
+            _COMPARE_BASE,
             data["branch"],
             f"branch:{data['branch']}",
             include_patches=True,

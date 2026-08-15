@@ -22,6 +22,14 @@ function authored(path, additions, deletions, why = null) {
 const fullPayload = {
   rung: 1,
   ephemeral: false,
+  summary: {
+    status: "available",
+    files_changed: 146,
+    insertions: 100,
+    deletions: 16,
+    accounted_files: 2,
+    unexplained_files: 1,
+  },
   steps: [
     authored("swarm/policy.py", 46, 5, "routes on branch movement"),
     authored("swarm/workflows.py", 42, 8, "keeps the observed head"),
@@ -116,12 +124,37 @@ describe("walkthroughView rung 1", () => {
     expect(walk.hasTestimony).toBe(true);
   });
 
+  test("contradictions are counted even when there are no accounted files", () => {
+    const contradictions = Array.from({ length: 5 }, (_, index) => ({
+      type: "contradiction",
+      register: "testimony",
+      label: "Contradicted path",
+      testimony: {
+        turn: 1,
+        attempt: 1,
+        points: [{ path: `missing-${index}.py`, why: "named by the agent" }],
+      },
+    }));
+    const contradictedOnly = walkthroughView({
+      rung: 1,
+      steps: contradictions,
+    });
+
+    expect(contradictedOnly.counts.accounted).toBe(0);
+    expect(contradictedOnly.counts.unexplained).toBe(0);
+    expect(contradictedOnly.counts.contradicted).toBe(5);
+  });
+
   test("truncation renders as the server's labels, never silently", () => {
     expect(walk.truncations).toEqual(["GitHub files truncated"]);
   });
 
   test("counts: explained points, server file total, summed additions", () => {
     expect(walk.counts.points).toBe(2);
+    expect(walk.counts.accounted).toBe(2);
+    expect(walk.counts.unexplained).toBe(1);
+    expect(walk.counts.contradicted).toBe(1);
+    expect(walk.counts.touched).toBe(0);
     expect(walk.counts.files).toBe(146);
     expect(walk.counts.additions).toBe(46 + 42 + 12);
     expect(walk.counts.deletions).toBe(5 + 8 + 3);
@@ -133,6 +166,17 @@ describe("walkthroughView rung 1", () => {
     );
     const uncontexted = walkthroughView(fullPayload, {});
     expect(uncontexted.points[0].patchUrl).toBeNull();
+  });
+
+  test("passes through the server-composed factual summary", () => {
+    expect(walk.summary).toEqual({
+      status: "available",
+      files: 146,
+      insertions: 100,
+      deletions: 16,
+      accounted: 2,
+      unexplained: 1,
+    });
   });
 });
 
@@ -153,6 +197,7 @@ describe("walkthroughView degradation ladder", () => {
       {
         rung: 3,
         ephemeral: false,
+        summary: { status: "diff_unavailable" },
         steps: [
           {
             type: "authored",
@@ -185,6 +230,9 @@ describe("walkthroughView degradation ladder", () => {
     expect(walk.points[0].deviations).toEqual(["left the rollup untouched"]);
     expect(walk.points[0].patchUrl).toBeNull();
     expect(walk.points[1].touched).toBe(true);
+    expect(walk.counts.accounted).toBe(1);
+    expect(walk.counts.touched).toBe(1);
+    expect(walk.summary.status).toBe("diff_unavailable");
     expect(walk.message).toContain("Limited walkthrough");
   });
 
