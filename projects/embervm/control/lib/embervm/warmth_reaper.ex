@@ -125,6 +125,9 @@ defmodule Embervm.WarmthReaper do
     remote_stateful_index_fun =
       Keyword.get(opts, :remote_stateful_index_fun, &default_remote_stateful_index/0)
 
+    remote_group_index_fun =
+      Keyword.get(opts, :remote_group_index_fun, &default_remote_group_index/0)
+
     # 0 disables the timer entirely (the unit-test default, so a test drives
     # :sweep_now explicitly and asserts deterministically); production uses the
     # module default.
@@ -144,6 +147,7 @@ defmodule Embervm.WarmthReaper do
       evict_snapshot_fun: evict_snapshot_fun,
       evict_artifact_fun: evict_artifact_fun,
       remote_stateful_index_fun: remote_stateful_index_fun,
+      remote_group_index_fun: remote_group_index_fun,
       sweep_interval_ms: sweep_interval_ms,
       sweep_enabled: sweep_enabled
     }
@@ -258,9 +262,10 @@ defmodule Embervm.WarmthReaper do
   defp apply_plan(state, plan) do
     {stateful, group} = Enum.split_with(plan, &(&1.kind == :stateful))
     stateful_index = remote_stateful_index(state, stateful)
+    group_index = remote_group_index(state, group)
 
     log_and_evict(state, :stateful, stateful, stateful_index)
-    log_and_evict(state, :group, group, nil)
+    log_and_evict(state, :group, group, group_index)
     :ok
   end
 
@@ -309,8 +314,9 @@ defmodule Embervm.WarmthReaper do
   # uses); the single remote EvictArtifact{remote: true, kind: GROUP_SET, workload:
   # group_instance_id, ref: set_id} that drops the whole set prefix at once fires
   # ONLY when EVERY member's local eviction succeeded.
-  # GROUP_SET is not searchable by the same ref in this reaper. Its remote layout
-  # is keyed by group_instance_id, so the conservative empty-binding skip remains.
+  # Empty on-disk group_instance_id bindings are recovered from a remote GROUP_SET
+  # index keyed by set_id. The indexed value supplies the vendor and
+  # group_instance_id needed to address the remote prefix safely.
 
   defp evict_entry(state, %{kind: :stateful, id: ref, workload: workload} = entry, {:ok, index})
        when workload in [nil, ""] do
@@ -340,9 +346,29 @@ defmodule Embervm.WarmthReaper do
     :ok
   end
 
-  defp evict_entry(_state, %{kind: :group, id: set_id, workload: gid}, _index) when gid in [nil, ""] do
+  defp evict_entry(state, %{kind: :group, id: set_id, workload: gid} = entry, {:ok, index})
+       when gid in [nil, ""] do
+    case Map.get(index, set_id) do
+      %{vendor: vendor, group_instance_id: recovered_gid} ->
+        Logger.info(
+          "embervm warmth reaper: recovered binding for orphaned group set #{inspect(set_id)} from remote index (vendor #{inspect(vendor)}, group_instance_id #{inspect(recovered_gid)})"
+        )
+
+        evict_group(state, %{entry | workload: recovered_gid}, vendor)
+
+      nil ->
+        Logger.info(
+          "embervm warmth reaper: evicting local-only orphaned group set #{inspect(set_id)} (not found in remote index; no remote copy can be stranded)"
+        )
+
+        evict_group(state, entry, nil, false)
+    end
+  end
+
+  defp evict_entry(_state, %{kind: :group, id: set_id, workload: gid}, {:error, reason})
+       when gid in [nil, ""] do
     Logger.info(
-      "embervm warmth reaper: SKIP orphaned group set #{inspect(set_id)} (no group_instance_id binding on disk; cannot evict remote copy safely, leaving whole)"
+      "embervm warmth reaper: SKIP orphaned group set #{inspect(set_id)} (remote index lookup failed: #{inspect(reason)}; leaving whole)"
     )
 
     :ok
@@ -369,16 +395,22 @@ defmodule Embervm.WarmthReaper do
     :ok
   end
 
-  defp evict_entry(state, %{kind: :group, id: set_id, workload: group_instance_id, node_id: node_id, member_refs: member_refs}, _index) do
+  defp evict_entry(state, %{kind: :group} = entry, _index), do: evict_group(state, entry)
+
+  defp evict_group(
+         state,
+         %{id: set_id, workload: group_instance_id, node_id: node_id, member_refs: member_refs},
+         vendor \\ nil,
+         remote \\ true
+       ) do
     dial_key = WakeInstance.dial_for_group(state.capacity_table, node_id, group_instance_id)
 
-    remote =
-      {:artifact,
-       %EvictArtifactRequest{
-         artifact: %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: group_instance_id, ref: set_id},
-         remote: true,
-         trace: %Trace{workload: group_instance_id}
-       }}
+    remote_request = %EvictArtifactRequest{
+      artifact: %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: group_instance_id, ref: set_id},
+      remote: true,
+      vendor: vendor || "",
+      trace: %Trace{workload: group_instance_id}
+    }
 
     per_member = for ref <- member_refs, do: {:snapshot, %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: ref}}
 
@@ -387,7 +419,7 @@ defmodule Embervm.WarmthReaper do
         # The single remote GROUP_SET evict (drops the whole S3 set prefix at once)
         # fires ONLY if EVERY member's local evict succeeded: one refused/failed
         # member (e.g. a live relit member) leaves the set's recovery copy intact.
-        run_evict(state, channel, per_member, remote)
+        run_evict(state, channel, per_member, if(remote, do: {:artifact, remote_request}, else: nil))
         release_channel(state, channel)
       end
     end)
@@ -409,6 +441,20 @@ defmodule Embervm.WarmthReaper do
     kind, reason -> {:error, {:lookup_thrown, {kind, reason}}}
   end
 
+  defp remote_group_index(_state, []), do: {:ok, %{}}
+
+  defp remote_group_index(state, entries) do
+    if Enum.any?(entries, &(&1.workload in [nil, ""])) do
+      state.remote_group_index_fun.()
+    else
+      {:ok, %{}}
+    end
+  rescue
+    e -> {:error, {:lookup_raised, e}}
+  catch
+    kind, reason -> {:error, {:lookup_thrown, {kind, reason}}}
+  end
+
   defp log_dry_run_entry(%{kind: :stateful, id: ref, workload: workload}, {:ok, index})
        when workload in [nil, ""] do
     action = if Map.has_key?(index, ref), do: "local and remote", else: "local-only"
@@ -418,6 +464,17 @@ defmodule Embervm.WarmthReaper do
   defp log_dry_run_entry(%{kind: :stateful, id: ref, workload: workload}, {:error, reason})
        when workload in [nil, ""] do
     Logger.info("embervm warmth reaper: DRY RUN WOULD skip empty-binding stateful bundle #{inspect(ref)} because remote index lookup failed: #{inspect(reason)}")
+  end
+
+  defp log_dry_run_entry(%{kind: :group, id: set_id, workload: gid}, {:ok, index})
+       when gid in [nil, ""] do
+    action = if Map.has_key?(index, set_id), do: "local and remote", else: "local-only"
+    Logger.info("embervm warmth reaper: DRY RUN WOULD evict #{action} for empty-binding group set #{inspect(set_id)}")
+  end
+
+  defp log_dry_run_entry(%{kind: :group, id: set_id, workload: gid}, {:error, reason})
+       when gid in [nil, ""] do
+    Logger.info("embervm warmth reaper: DRY RUN WOULD skip empty-binding group set #{inspect(set_id)} because remote index lookup failed: #{inspect(reason)}")
   end
 
   defp log_dry_run_entry(_entry, _index), do: :ok
@@ -440,6 +497,33 @@ defmodule Embervm.WarmthReaper do
                   nil -> {:cont, {:ok, Map.put(index, ref, binding)}}
                   ^binding -> {:cont, {:ok, index}}
                   _ -> {:halt, {:error, {:conflicting_bindings, ref}}}
+                end
+
+              _ -> {:cont, {:ok, index}}
+            end
+          end)
+        end
+    end
+  end
+
+  defp default_remote_group_index do
+    endpoint = System.get_env("EMBERVM_STORE_ENDPOINT", "") |> String.trim()
+    bucket = System.get_env("EMBERVM_STORE_BUCKET", "embervm")
+
+    case S3Client.new(endpoint, bucket) do
+      nil -> {:error, :store_disabled}
+      client ->
+        with {:ok, entries} <- S3Client.list_all(client, "group_set/") do
+          Enum.reduce_while(entries, {:ok, %{}}, fn %{key: key}, {:ok, index} ->
+            case String.split(key, "/") do
+              ["group_set", vendor, gid, set_id, member, file]
+              when vendor != "" and gid != "" and set_id != "" and member != "" and file != "" ->
+                binding = %{vendor: vendor, group_instance_id: gid}
+
+                case Map.get(index, set_id) do
+                  nil -> {:cont, {:ok, Map.put(index, set_id, binding)}}
+                  ^binding -> {:cont, {:ok, index}}
+                  _ -> {:halt, {:error, {:conflicting_bindings, set_id}}}
                 end
 
               _ -> {:cont, {:ok, index}}
