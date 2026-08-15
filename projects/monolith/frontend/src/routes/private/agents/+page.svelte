@@ -111,7 +111,7 @@
     }
   });
 
-  $effect.pre(() => {
+  onMount(() => {
     // Update the clock every 60 seconds to match the landing page's refresh rate.
     const id = setInterval(() => (now = new Date()), 60_000);
     return () => clearInterval(id);
@@ -1769,7 +1769,6 @@
   }
 
   .console {
-    color-scheme: light;
     height: var(--console-h, 100dvh);
     display: grid;
     grid-template-columns: 300px minmax(0, 1fr);
@@ -1780,9 +1779,6 @@
     line-height: 1.45;
   }
 
-  html[data-agents-period="night"] .console {
-    color-scheme: dark;
-  }
   .console * {
     font-family: var(--font-ui);
   }
