@@ -120,19 +120,46 @@ type Store struct {
 // empty, which every caller reads as "the store is disabled" (export is skipped,
 // restore-on-miss is impossible, and the continuity verbs refuse). The endpoint
 // is normalised to have no trailing slash so key joins are unambiguous. The
-// optional compress argument enables zstd for newly exported objects; omitting
-// it preserves the legacy writer behavior.
-func New(endpoint, bucket string, compress ...bool) *Store {
+// compress enables zstd for newly exported objects.
+func New(endpoint, bucket string, compress bool) *Store {
 	if endpoint == "" {
 		return nil
 	}
-	compressEnabled := len(compress) > 0 && compress[0]
 	return &Store{
 		endpoint: strings.TrimRight(endpoint, "/"),
 		bucket:   bucket,
 		client:   &http.Client{},
-		compress: compressEnabled,
+		compress: compress,
 	}
+}
+
+// countingReader counts the bytes actually read out of a request body, so an
+// export can report compressed bytes moved without knowing the encoded size in
+// advance.
+//
+// Close is NOT optional and must not be dropped. net/http wraps a plain
+// io.Reader body in io.NopCloser, so a counting reader that only implements
+// Read would swallow the underlying Close. On the compressed path the body is
+// an *io.PipeReader, and the transport closing it is the ONLY thing that
+// unblocks the encoder goroutine when a request is aborted mid-body (a failed
+// PUT, a cancelled context). Without this method that goroutine blocks forever
+// on pw.Write, leaking itself and its encoder buffers on every failed export.
+type countingReader struct {
+	io.Reader
+	n int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.n += int64(n)
+	return n, err
+}
+
+func (r *countingReader) Close() error {
+	if c, ok := r.Reader.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }
 
 // url composes the object URL for a key under the bucket. The key is used
@@ -309,7 +336,7 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 		if oerr != nil {
 			return bytesMoved, false, fmt.Errorf("store: open artifact file %q: %w", name, oerr)
 		}
-		putPath := path
+		var body io.Reader = f
 		putSize := fm.Size
 		if s.compress {
 			// This is a two-phase rollout. A daemon that does not understand the
@@ -320,21 +347,27 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 			// rollout, causing a self-inflicted outage. This follows the existing
 			// ship-inert, arm-later pattern used by WarmthReaper's
 			// EMBERVM_WARMTH_RETENTION_SWEEP gate.
-			f, putPath, putSize, oerr = compressFile(localDir, name, f)
-			if oerr != nil {
-				return bytesMoved, false, oerr
+			pr, pw := io.Pipe()
+			enc, eerr := zstd.NewWriter(pw, zstd.WithEncoderConcurrency(1), zstd.WithEncoderLevel(zstd.SpeedFastest))
+			if eerr != nil {
+				_ = f.Close()
+				return bytesMoved, false, fmt.Errorf("store: create zstd writer for %q: %w", name, eerr)
 			}
+			go func() {
+				_, cerr := io.Copy(enc, f)
+				pw.CloseWithError(errors.Join(cerr, enc.Close()))
+			}()
+			body = pr
+			putSize = -1
 			meta.Files[name] = FileMeta{Size: fm.Size, Sha256: fm.Sha256, Compression: "zstd"}
 		}
-		perr := s.Put(ctx, prefix+"/"+name, f, putSize)
+		cr := &countingReader{Reader: body}
+		perr := s.Put(ctx, prefix+"/"+name, cr, putSize)
 		_ = f.Close()
-		if s.compress {
-			_ = os.Remove(putPath)
-		}
 		if perr != nil {
 			return bytesMoved, false, perr
 		}
-		bytesMoved += putSize
+		bytesMoved += cr.n
 	}
 
 	// meta.json LAST: only now is the artifact visible as complete.
@@ -398,7 +431,7 @@ func (s *Store) restoreFile(ctx context.Context, key, dst string, want FileMeta)
 	var decoded io.Reader = body
 	var decoder *zstd.Decoder
 	if want.Compression == "zstd" {
-		decoder, err = zstd.NewReader(body)
+		decoder, err = zstd.NewReader(body, zstd.WithDecoderConcurrency(1))
 		if err != nil {
 			_ = f.Close()
 			_ = os.Remove(tmp)
@@ -431,54 +464,6 @@ func (s *Store) restoreFile(ctx context.Context, key, dst string, want FileMeta)
 		return 0, fmt.Errorf("store: publish restored file %q: %w", dst, err)
 	}
 	return n, nil
-}
-
-func compressFile(localDir, name string, src *os.File) (*os.File, string, int64, error) {
-	tmp, err := os.CreateTemp(localDir, "."+filepath.Base(name)+".zstd-*")
-	if err != nil {
-		_ = src.Close()
-		return nil, "", 0, fmt.Errorf("store: create compression temp for %q: %w", name, err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = src.Close()
-		_ = os.Remove(tmpPath)
-	}
-	zw, err := zstd.NewWriter(tmp)
-	if err != nil {
-		cleanup()
-		return nil, "", 0, fmt.Errorf("store: create zstd writer for %q: %w", name, err)
-	}
-	if _, err := io.Copy(zw, src); err != nil {
-		_ = zw.Close()
-		cleanup()
-		return nil, "", 0, fmt.Errorf("store: compress artifact file %q: %w", name, err)
-	}
-	if err := zw.Close(); err != nil {
-		cleanup()
-		return nil, "", 0, fmt.Errorf("store: finish compression for %q: %w", name, err)
-	}
-	if err := src.Close(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return nil, "", 0, fmt.Errorf("store: close artifact file %q: %w", name, err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, "", 0, fmt.Errorf("store: close compression temp for %q: %w", name, err)
-	}
-	info, err := os.Stat(tmpPath)
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, "", 0, fmt.Errorf("store: stat compression temp for %q: %w", name, err)
-	}
-	f, err := os.Open(tmpPath)
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, "", 0, fmt.Errorf("store: open compression temp for %q: %w", name, err)
-	}
-	return f, tmpPath, info.Size(), nil
 }
 
 // DeleteArtifact removes an artifact from the store. It deletes meta.json FIRST
