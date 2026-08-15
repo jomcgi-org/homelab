@@ -1,9 +1,45 @@
 import { describe, expect, test, vi } from "vitest";
 import { formatAge, nextStatus } from "./vm-stream-status.js";
 
-const initial = () => ({ mode: "stalled", lastUpdateAt: null, error: null });
+const initial = () => ({ mode: "connecting", lastUpdateAt: null, error: null });
 
 describe("VM stream status", () => {
+  test("stays connecting when the initial event is unknown", () => {
+    expect(nextStatus(undefined, { type: "unknown" })).toEqual(initial());
+  });
+
+  test("moves from initial connecting to streaming when the stream opens", () => {
+    expect(nextStatus(undefined, { type: "open" }).mode).toBe("streaming");
+  });
+
+  test("moves from initial connecting to streaming on a successful frame", () => {
+    expect(nextStatus(undefined, { type: "frame", at: 1_000 })).toEqual({
+      mode: "streaming",
+      lastUpdateAt: 1_000,
+      error: null,
+    });
+  });
+
+  test("moves from initial connecting to stalled on an error frame", () => {
+    expect(
+      nextStatus(undefined, {
+        type: "frame",
+        at: 1_000,
+        error: "control plane unreachable",
+      }),
+    ).toEqual({
+      mode: "stalled",
+      lastUpdateAt: null,
+      error: "control plane unreachable",
+    });
+  });
+
+  test("moves from initial connecting to polling when fallback is armed", () => {
+    expect(nextStatus(undefined, { type: "fallback-armed" }).mode).toBe(
+      "polling",
+    );
+  });
+
   test("moves from open to a successful streaming frame", () => {
     const opened = nextStatus(initial(), { type: "open" });
     const framed = nextStatus(opened, { type: "frame", at: 1_000 });

@@ -2,10 +2,25 @@ const hasError = (event) => event.error != null && event.error !== "";
 
 export function nextStatus(prev, event) {
   const current = {
-    mode: prev?.mode ?? "stalled",
+    mode: prev?.mode ?? "connecting",
     lastUpdateAt: prev?.lastUpdateAt ?? null,
     error: prev?.error ?? null,
   };
+
+  if (current.mode === "connecting") {
+    switch (event?.type) {
+      case "fallback-armed":
+        return { ...current, mode: "polling" };
+      case "open":
+      case "frame":
+      case "poll-ok":
+      case "poll-fail":
+      case "closed":
+        break;
+      default:
+        return current;
+    }
+  }
 
   switch (event?.type) {
     case "open":

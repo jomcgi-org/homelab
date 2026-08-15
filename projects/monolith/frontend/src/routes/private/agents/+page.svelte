@@ -142,7 +142,7 @@
   let renderedPending = $state({});
   let vms = $state({});
   let vmStreamStatus = $state({
-    mode: "stalled",
+    mode: "connecting",
     lastUpdateAt: null,
     error: null,
   });
@@ -661,12 +661,13 @@
         return;
       }
       if (body == null) throw new Error("Invalid VM state response");
-      const status = updateVmStreamStatus({
+      updateVmStreamStatus({
         type: "poll-ok",
         at: Date.now(),
         error: body?.error ?? null,
       });
-      if (status.mode === "polling") vms = body?.vms ?? {};
+      // Apply every backend map regardless of indicator mode; see router.py:246-254.
+      vms = body?.vms ?? {};
     } catch (error) {
       // VM state is advisory; keep the last known map on transient failures.
       if (!vmFallbackArmed) return;
@@ -1070,7 +1071,8 @@
   // The clock only refreshes the displayed age. It never changes connection
   // mode, which is driven exclusively by stream and fallback events.
   $effect(() => {
-    if (vmStreamStatus.mode === "streaming") return;
+    if (vmStreamStatus.mode !== "polling" && vmStreamStatus.mode !== "stalled")
+      return;
     vmStreamNow = Date.now();
     const interval = setInterval(() => {
       vmStreamNow = Date.now();
@@ -1117,12 +1119,13 @@
       stopFallback();
       try {
         const body = JSON.parse(event.data);
-        const status = updateVmStreamStatus({
+        updateVmStreamStatus({
           type: "frame",
           at: Date.now(),
           error: body?.error ?? null,
         });
-        if (status.mode === "streaming") vms = body?.vms ?? {};
+        // Apply every backend map regardless of indicator mode; see router.py:246-254.
+        vms = body?.vms ?? {};
       } catch (error) {
         // Retain the last snapshot and expose that the advisory frame failed.
         updateVmStreamStatus({
@@ -1341,19 +1344,39 @@
             >
             <span
               class={`vm-stream-state ${vmStreamStatus.mode}`}
-              title={vmStreamStatus.error
-                ? `VM state updates stalled: ${vmStreamStatus.error}`
-                : `VM state updates: ${vmStreamStatus.mode}`}
+              title={vmStreamStatus.mode === "connecting"
+                ? "VM state stream connecting"
+                : vmStreamStatus.mode === "streaming"
+                  ? "VM state stream connected"
+                  : vmStreamStatus.mode === "polling"
+                    ? `VM state fallback polling${vmStreamStatus.lastUpdateAt != null ? `, updated ${formatAge(vmStreamNow - vmStreamStatus.lastUpdateAt)}` : ""}`
+                    : `VM state updates stalled${vmStreamStatus.error ? `: ${vmStreamStatus.error}` : ""}`}
             >
               <span class="vm-stream-dot" aria-hidden="true"></span>
-              <span>{vmStreamStatus.mode}</span>
-              {#if vmStreamStatus.mode !== "streaming" && vmStreamStatus.lastUpdateAt != null}
-                <span class="vm-stream-age"
+              {#if vmStreamStatus.mode === "polling" || vmStreamStatus.mode === "stalled"}
+                <span aria-hidden="true">{vmStreamStatus.mode}</span>
+              {/if}
+              {#if (vmStreamStatus.mode === "polling" || vmStreamStatus.mode === "stalled") && vmStreamStatus.lastUpdateAt != null}
+                <span class="vm-stream-age" aria-hidden="true"
                   >updated {formatAge(
                     vmStreamNow - vmStreamStatus.lastUpdateAt,
                   )}</span
                 >
               {/if}
+              <span class="sr-only">
+                {#if vmStreamStatus.mode === "connecting"}
+                  VM state connecting...
+                {:else if vmStreamStatus.mode === "streaming"}
+                  VM state stream connected
+                {:else if vmStreamStatus.mode === "polling"}
+                  VM state fallback polling{#if vmStreamStatus.lastUpdateAt != null},
+                    updated {formatAge(
+                      vmStreamNow - vmStreamStatus.lastUpdateAt,
+                    )}{/if}
+                {:else}
+                  VM state updates stalled{#if vmStreamStatus.error}: {vmStreamStatus.error}{/if}
+                {/if}
+              </span>
             </span>
             {#if statusClass(selectedSession) !== "completed"}
               <span class={`session-state ${statusClass(selectedSession)}`}
