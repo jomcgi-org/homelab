@@ -2830,8 +2830,12 @@ defmodule Embervm.BaseBuilder do
   # would stay listed until the next event.
   #
   # Patching only on a CHANGE keeps a converged fleet from generating a status
-  # write per workload per tick. An empty map never patches, for the same
-  # anti-clobber reason put_snapshot_refs/3 skips it.
+  # write per workload per tick. JSON merge-patch retains keys absent from the
+  # patch, which left claude-runtime's long-gone intel ref in status while only
+  # amd nodes still reported a base. On a non-empty fleet read, vendors missing
+  # from the new map therefore need an explicit nil so merge-patch deletes them.
+  # The map_size(refs) == 0 guard remains the transient-wipe boundary: a total
+  # capacity-fact gap or brick roll is not evidence that every live base vanished.
   defp refresh_snapshot_refs(state) do
     Enum.reduce(state.workloads, state, fn {name, w}, acc ->
       refs = snapshot_refs_by_vendor(acc, w)
@@ -2844,7 +2848,11 @@ defmodule Embervm.BaseBuilder do
           acc
 
         true ->
-          case acc.status_writer.(w.namespace, w.name, %{"snapshotRefs" => refs}) do
+          stale_vendors = Map.keys(w.last_snapshot_refs || %{}) -- Map.keys(refs)
+          stale_clears = Map.new(stale_vendors, &{&1, nil})
+          patch_refs = Map.merge(refs, stale_clears)
+
+          case acc.status_writer.(w.namespace, w.name, %{"snapshotRefs" => patch_refs}) do
             :ok ->
               put_in(acc.workloads[name].last_snapshot_refs, refs)
 

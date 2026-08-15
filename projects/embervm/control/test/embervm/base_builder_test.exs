@@ -2553,6 +2553,105 @@ defmodule Embervm.BaseBuilderTest do
     end)
   end
 
+  test "the periodic reconcile explicitly clears a missing vendor once and preserves survivors" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
+    put_vendor_fact(table, "node-1", "ds", "w", "w__intel", "intel")
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_reconcile_interval_ms: 0
+      )
+
+    build_current(builder, agent, "w__amd")
+
+    # Establish the last successfully written effective map, then discard setup
+    # calls so the assertions below inspect only the stale-clear patch.
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    Agent.update(agent, fn _calls -> [] end)
+
+    NodeCapacity.drop(table, {"node-1", "ds"})
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+
+    assert recorded(agent) == [
+             {"embervm", "w",
+              %{"snapshotRefs" => %{"amd" => ["w__amd"], "intel" => nil}}}
+           ]
+
+    # last_snapshot_refs tracks the effective desired map, not the patch body,
+    # so the explicit clear is not emitted again on the next identical tick.
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+
+    assert recorded(agent) == [
+             {"embervm", "w",
+              %{"snapshotRefs" => %{"amd" => ["w__amd"], "intel" => nil}}}
+           ]
+  end
+
+  test "the periodic reconcile writes nothing during a total capacity-fact gap" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
+    put_vendor_fact(table, "node-1", "ds", "w", "w__intel", "intel")
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_reconcile_interval_ms: 0
+      )
+
+    build_current(builder, agent, "w__amd")
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    Agent.update(agent, fn _calls -> [] end)
+
+    NodeCapacity.drop(table, {"node-4", "ds"})
+    NodeCapacity.drop(table, {"node-1", "ds"})
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+
+    assert recorded(agent) == []
+  end
+
+  test "the periodic reconcile writes nothing when the effective map is unchanged" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__amd", "amd")
+
+    build_fun = fn :fake_channel, _req -> {:ok, resp("w__amd")} end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        export_reconcile_interval_ms: 0
+      )
+
+    build_current(builder, agent, "w__amd")
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    Agent.update(agent, fn _calls -> [] end)
+
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+
+    assert recorded(agent) == []
+  end
+
   test "the periodic reconcile does not re-patch status when the fleet view is unchanged" do
     agent = start_recorder()
     table = new_cap_table()
