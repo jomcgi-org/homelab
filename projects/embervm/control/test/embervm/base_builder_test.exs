@@ -1050,7 +1050,7 @@ defmodule Embervm.BaseBuilderTest do
     refute log =~ "DELETING"
   end
 
-  test "retention sweep skips a workload whose current base is not yet exported (durability floor)" do
+  test "retention sweep reclaims an orphan when the current base is not exported" do
     agent = start_recorder()
     test_pid = self()
     table = new_cap_table()
@@ -1074,8 +1074,8 @@ defmodule Embervm.BaseBuilderTest do
 
     build_current(builder, agent, "w__current")
 
-    # Current base is present but NOT yet exported: the whole workload is skipped,
-    # so the local cache is never emptied before the S3 durability floor lands.
+    # The current base is present but NOT yet exported. That must not prevent
+    # reclaiming an aged, superseded base that nothing references.
     put_local_bases_fact(table, "w", "w__current", false, [
       ready_base("w__current", "w", 512),
       ready_base("w__orphan1", "w", 2_048)
@@ -1084,9 +1084,45 @@ defmodule Embervm.BaseBuilderTest do
     plan = BaseBuilder.retention_sweep_now(builder)
 
     entry = Enum.find(plan, &(&1.workload == "w"))
-    assert entry.skipped_unexported == true
-    assert entry.evict_refs == []
-    refute_receive {:evicted, "w", "w__orphan1"}, 200
+    assert entry.skipped_unexported == false
+    assert entry.evict_refs == ["w__orphan1"]
+    assert_receive {:evicted, "w", "w__orphan1"}, 1_000
+  end
+
+  test "retention filters protect every non-current base safety rail when current is unexported" do
+    agent = start_recorder()
+    table = new_cap_table()
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
+      )
+
+    build_current(builder, agent, "w__current")
+
+    :sys.replace_state(builder, fn state ->
+      w = state.workloads["w"]
+      w = %{w | base_refs: %{"w__refcounted" => %{primed: 1, sessions: 0, evicted: true}}}
+      %{state | workloads: %{"w" => w}}
+    end)
+
+    young = Map.put(ready_base("w__young", "w", 4), :created_at_unix_ms, System.system_time(:millisecond) - 100_000)
+    building = Map.put(ready_base("w__building", "w", 8), :base_state, :BASE_BUILD_STATE_BUILDING)
+
+    put_local_bases_fact(table, "w", "w__current", false, [
+      ready_base("w__current", "w", 512),
+      ready_base("w__refcounted", "w", 1),
+      building,
+      young,
+      ready_base("w__orphan", "w", 2_048)
+    ])
+
+    [entry] = Enum.filter(BaseBuilder.retention_sweep_now(builder), &(&1.workload == "w"))
+    assert entry.evict_refs == ["w__orphan"]
   end
 
   test "retention sweep and export per node when fleet has mixed vendors" do
@@ -1149,9 +1185,9 @@ defmodule Embervm.BaseBuilderTest do
     assert intel.evict_bytes == 2_048
 
     amd = Enum.find(plan, &(&1.node_id == "node-4/amd"))
-    assert amd.skipped_unexported == true
-    assert amd.evict_refs == []
-    refute_receive {:evicted, "w", "w__old_amd"}, 200
+    assert amd.skipped_unexported == false
+    assert amd.evict_refs == ["w__old_amd"]
+    assert amd.evict_bytes == 4_096
   end
 
   test "retention and export run once for two bricks sharing a node's base inventory" do
@@ -1201,9 +1237,8 @@ defmodule Embervm.BaseBuilderTest do
     assert_receive {:exported, "w__current"}, 1_000
     refute_receive {:exported, "w__current"}, 100
 
-    # Export coalescing needs the unexported facts above. Retention, however, is
-    # gated on durability, so update both node-mate facts before asserting that the
-    # shared inventory is planned and evicted once.
+    # Export coalescing needs the unexported facts above. Retention should plan the
+    # shared inventory once per node regardless of export state.
     put_node_local_bases_fact(table, "node-4", "large", "w", "w__current", true, local_bases)
     put_node_local_bases_fact(table, "node-4", "small", "w", "w__current", true, local_bases)
 
