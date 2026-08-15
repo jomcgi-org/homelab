@@ -113,8 +113,17 @@ bazelQueryWorkload:
 claudeRuntimeWorkload:
   enabled: false
 
+# scratchPostgres carries BOTH of its dev settings here, deliberately. It also
+# needs an empty guest image (the base-builder block below empties one repository
+# per unused workload), but a second `scratchPostgres:` key at that level is a
+# duplicate YAML mapping key: the later block wins and this `enabled: false` is
+# dropped silently, exactly the hazard the `noded.enabled` note below describes.
+# That is what happened until now, and it was masked only because the chart
+# default for `enabled` is also false.
 scratchPostgres:
   enabled: false
+  guestImage:
+    repository: ""
 
 demoPostgres:
   enabled: false
@@ -148,16 +157,32 @@ resources:
   limits:
     memory: 512Mi
 
-# Base retention and GC: keep disabled in dev. The 1gi class is small and
-# the build cost is negligible.
+# Base retention: ARMED, matching production, so dev exercises the paths
+# production actually runs. The previous reasoning (the 1gi class is small and
+# the rebuild cost is negligible) argued that dev did not NEED retention, which
+# is true and beside the point: production arms all three of these gates, so
+# leaving them empty here meant every change to eviction logic reached
+# production having never run anywhere. #4907 changed which bases the sweep
+# collects and dev could not have caught a regression in it.
+#
+# All three are set because they are not redundant. sweepEnabled alone leaves
+# the sweep logging "DRY RUN, deletion disabled", since candidates come from the
+# disk-driven plan gated by diskDrivenEnabled; remoteSweepEnabled is the store
+# side. Dev writes to its own embervm-dev bucket and its own scratch root, and a
+# base is a reconstructible artifact, so a wrong delete here costs a rebuild.
+# Rollback for any of them is setting it back to "".
 baseRetention:
-  sweepEnabled: ""
-  diskDrivenEnabled: ""
-  remoteSweepEnabled: ""
+  sweepEnabled: "1"
+  diskDrivenEnabled: "1"
+  remoteSweepEnabled: "1"
 
 warmthRetention:
-  sweepEnabled: ""
+  sweepEnabled: "1"
 
+# S3-direct warmth GC stays disabled here, and not for symmetry: arming it also
+# needs warmthS3Gc.expectedNodes naming dev's fleet, because an empty fleet
+# contract makes every sweep abort on the freshness check, dry run included.
+# Arming the flag alone would render config that silently never acts.
 warmthS3Gc:
   enabled: ""
 
@@ -258,9 +283,9 @@ runtimeClaude:
   guestImage:
     repository: ""
 
-scratchPostgres:
-  guestImage:
-    repository: ""
+# scratchPostgres belongs in this list too, but its entry lives with its
+# `enabled: false` in the workload block above: one key, both settings. Do not
+# re-add a `scratchPostgres:` block here.
 
 bazelQuery:
   guestImage:
