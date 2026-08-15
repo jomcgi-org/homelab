@@ -178,6 +178,15 @@ export const RUN_LEXICON = {
     walkFilesWord: "files",
     walkFileChanged: "file changed",
     walkFilesChanged: "files changed",
+    walkAccountedCount: "accounted for",
+    walkUnexplainedCount: "unexplained",
+    walkContradictedCount: "contradicted",
+    walkTouchedCount: "touched",
+    walkSummaryDiffLead: "Git diff",
+    walkSummaryAccountedLead: "Agent accounted for",
+    walkSummaryUnexplainedLead: "Unexplained",
+    walkSummaryDiffUnavailable:
+      "The diff is unavailable for this turn, so this is the agent's account only.",
     walkProvenanceLead: "Agent-authored.",
     walkProvenanceBody:
       "These points are the implementer's account of its own change. The diff beside them is from git.",

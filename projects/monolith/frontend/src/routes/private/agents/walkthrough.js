@@ -12,7 +12,7 @@
 //   unexplained   {type, register:"fact", file_path, file_change, label}
 //   contradiction {type, register:"testimony", label, testimony}
 //   truncation    {type, register:"fact", label}
-// plus payload-level {rung, ephemeral, stats, message?}.
+// plus payload-level {rung, ephemeral, summary, stats, message?}.
 
 function testimonyPoints(step) {
   const points = step?.testimony?.points;
@@ -70,6 +70,17 @@ export function walkthroughView(payload, context = {}) {
   const steps = Array.isArray(payload?.steps) ? payload.steps : [];
   const stats = payload?.stats ?? {};
   const message = typeof payload?.message === "string" ? payload.message : "";
+  const summary =
+    payload?.summary != null && typeof payload.summary === "object"
+      ? {
+          status: payload.summary.status ?? null,
+          files: Number(payload.summary.files_changed || 0),
+          insertions: Number(payload.summary.insertions || 0),
+          deletions: Number(payload.summary.deletions || 0),
+          accounted: Number(payload.summary.accounted_files || 0),
+          unexplained: Number(payload.summary.unexplained_files || 0),
+        }
+      : null;
 
   const authored = steps.filter((step) => step.type === "authored");
   const unexplained = steps.filter((step) => step.type === "unexplained");
@@ -124,6 +135,12 @@ export function walkthroughView(payload, context = {}) {
   const explained = points.filter(
     (point) => point.kind === "authored" && point.why !== "",
   ).length;
+  const unexplainedCount = points.filter(
+    (point) => point.kind === "unexplained",
+  ).length;
+  const touchedCount = points.filter(
+    (point) => point.kind === "authored" && point.touched && point.why === "",
+  ).length;
   let additions = 0;
   let deletions = 0;
   for (const point of points) {
@@ -135,6 +152,7 @@ export function walkthroughView(payload, context = {}) {
     rung,
     ephemeral: payload?.ephemeral === true,
     message,
+    summary,
     points,
     mechanical: steps
       .filter((step) => step.type === "mechanical")
@@ -160,6 +178,11 @@ export function walkthroughView(payload, context = {}) {
     touched: Array.isArray(stats.activities) ? stats.activities : [],
     counts: {
       points: explained,
+      accounted: explained,
+      unexplained: unexplainedCount,
+      contradicted: steps.filter((step) => step.type === "contradiction")
+        .length,
+      touched: touchedCount,
       files: Number(stats.total_files ?? stats.authored_files ?? points.length),
       additions,
       deletions,

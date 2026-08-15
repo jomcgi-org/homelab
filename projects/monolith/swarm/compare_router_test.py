@@ -110,6 +110,31 @@ async def test_branch_and_absence_resolution(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_base_branch_is_not_treated_as_an_ephemeral_compare(monkeypatch):
+    mod._cache.clear()
+    calls = []
+
+    async def get(url):
+        calls.append(url)
+        return Response(200, _compare_payload())
+
+    monkeypatch.setattr(
+        mod,
+        "_turn_data",
+        lambda *_: _data(base_sha=None, commit_sha=None, branch="main"),
+    )
+    monkeypatch.setattr(mod, "_github_get", get)
+
+    result = await mod.compare_stats(1, 1)
+
+    assert result["resolution_rung"] == 3
+    assert result["cross_checked"] is False
+    assert result.get("contradicted_paths", []) == []
+    assert "contradicted_paths" not in result
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_truncation_activities_and_cross_checks(monkeypatch):
     mod._cache.clear()
     activities = [{"type": "edit", "file_path": "a.py"}] + [

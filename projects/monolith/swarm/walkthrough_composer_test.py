@@ -39,6 +39,15 @@ def test_rungs_one_and_two_are_full_and_two_is_ephemeral():
     one = compose_walkthrough(1, 2, _compare(files), _rationale(["a.py"]), {})
     assert one["rung"] == 1
     assert one["ephemeral"] is False
+    assert one["summary"] == {
+        "status": "available",
+        "provenance": "git_compare_and_agent_account",
+        "files_changed": 1,
+        "insertions": 2,
+        "deletions": 1,
+        "accounted_files": 1,
+        "unexplained_files": 0,
+    }
     two = compose_walkthrough(1, 2, _compare(files, rung=2), _rationale(["a.py"]), {})
     assert two["rung"] == 2
     assert two["ephemeral"] is True
@@ -59,6 +68,8 @@ def test_rung_three_has_testimony_and_activities_without_diff_stats():
         },
     )
     assert result["rung"] == 3
+    assert result["summary"]["status"] == "diff_unavailable"
+    assert result["summary"]["provenance"] == "agent_account_only"
     assert result["message"].startswith("Limited walkthrough")
     assert {step.get("file_path") for step in result["steps"]} == {"a.py", "b.py"}
     assert {
@@ -79,10 +90,12 @@ def test_rungs_four_and_five_decline_or_stop():
     }
     four = compose_walkthrough(1, 1, None, {"parse_status": "none"}, activities)
     assert four["rung"] == 4
+    assert four["summary"]["status"] == "not_available"
     assert four["steps"] == []
     assert "decline" in four["message"]
     five = compose_walkthrough(1, 1, None, {"parse_status": "none"}, {})
     assert five["rung"] == 5
+    assert five["summary"]["status"] == "not_available"
     assert five["message"] == "No activity recorded"
 
 

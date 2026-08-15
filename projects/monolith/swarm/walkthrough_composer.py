@@ -36,6 +36,43 @@ def _file_change(item: dict) -> dict:
     }
 
 
+def _agent_account_summary() -> dict:
+    return {
+        "status": "diff_unavailable",
+        "provenance": "agent_account_only",
+    }
+
+
+def _empty_summary() -> dict:
+    return {
+        "status": "not_available",
+        "provenance": "none",
+    }
+
+
+def _compare_summary(compare: dict, rationale: dict, files: list[dict]) -> dict:
+    changed_paths = {item["path"] for item in files}
+    account_paths = {
+        item.get("path")
+        for item in rationale.get("paths", [])
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    unexplained_paths = {
+        path
+        for path in compare.get("unexplained_files", [])
+        if isinstance(path, str) and path in changed_paths
+    }
+    return {
+        "status": "available",
+        "provenance": "git_compare_and_agent_account",
+        "files_changed": int(compare.get("stats", {}).get("total_files", len(files))),
+        "insertions": sum(int(item.get("additions", 0) or 0) for item in files),
+        "deletions": sum(int(item.get("deletions", 0) or 0) for item in files),
+        "accounted_files": len(changed_paths & account_paths),
+        "unexplained_files": len(unexplained_paths),
+    }
+
+
 def _path_order(activities: list[dict]) -> list[str]:
     result = []
     for activity in activities:
@@ -99,6 +136,7 @@ def _rung4(activities: list[dict]) -> dict:
     return {
         "rung": 4,
         "ephemeral": False,
+        "summary": _empty_summary(),
         "steps": [],
         "stats": {
             "total_files": len(paths),
@@ -139,6 +177,7 @@ def compose_walkthrough(
         return {
             "rung": 5,
             "ephemeral": False,
+            "summary": _empty_summary(),
             "steps": [],
             "message": "No activity recorded",
         }
@@ -187,6 +226,7 @@ def compose_walkthrough(
         return {
             "rung": 3,
             "ephemeral": False,
+            "summary": _agent_account_summary(),
             "steps": steps,
             "stats": {"authored_files": len(_path_order(activities))},
             "message": "Limited walkthrough: testimony and activities only",
@@ -267,6 +307,7 @@ def compose_walkthrough(
     return {
         "rung": compare_rung,
         "ephemeral": compare_rung == 2,
+        "summary": _compare_summary(compare, rationale, files),
         "steps": steps,
         "stats": compare.get("stats", {}),
         **(
