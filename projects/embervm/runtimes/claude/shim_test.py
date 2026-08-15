@@ -4465,3 +4465,66 @@ def test_apply_egress_ca_trust_sets_nothing_without_a_ca(monkeypatch):
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     assert shim.apply_egress_ca_trust() is None
     assert "SSL_CERT_FILE" not in os.environ
+
+
+def test_turn_base_scopes_safe_directory_to_the_checkout(monkeypatch, tmp_path):
+    # The shim is root and hydration clones as the CLI uid, so git sees a
+    # repository owned by someone else and refuses. safe.directory is passed per
+    # invocation and scoped to this checkout, never written to a git config.
+    checkout = tmp_path / "src"
+    (checkout / ".git").mkdir(parents=True)
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 0, b"a" * 40 + b"\n", b"")
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+    assert shim._capture_turn_base(str(checkout)) == "a" * 40
+    assert seen["args"][:3] == [
+        "git",
+        "-c",
+        "safe.directory=%s" % checkout,
+    ]
+    assert "rev-parse" in seen["args"]
+
+
+def test_turn_diff_scopes_safe_directory_to_the_checkout(monkeypatch, tmp_path):
+    checkout = tmp_path / "src"
+    (checkout / ".git").mkdir(parents=True)
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 0, b"diff --git a/a b/a\n", b"")
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+    assert shim._capture_turn_diff(str(checkout), "b" * 40) is not None
+    assert seen["args"][:3] == [
+        "git",
+        "-c",
+        "safe.directory=%s" % checkout,
+    ]
+    assert "diff" in seen["args"]
+
+
+def test_turn_base_failure_reason_includes_git_stderr(monkeypatch, tmp_path, capsys):
+    # git already writes the reason. Discarding it via DEVNULL is what made
+    # rev_parse_failed unactionable for hours: the outcome named which guard
+    # fired, never why.
+    checkout = tmp_path / "src"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            [], 128, b"", b"fatal: detected dubious ownership in repository"
+        ),
+    )
+
+    assert shim._capture_turn_base(str(checkout)) is None
+    captured = capsys.readouterr().err
+    assert "outcome=rev_parse_failed" in captured
+    assert "dubious ownership" in captured

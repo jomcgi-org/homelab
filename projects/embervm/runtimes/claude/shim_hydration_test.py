@@ -459,9 +459,13 @@ def test_poisoned_directory_is_cleaned_and_recloned(manager, monkeypatch):
         if command[1] == "clone":
             os.makedirs(os.path.join(checkout_dir, ".git"), exist_ok=True)
             return _GitProcess()
-        if command[1:3] == ["-C", checkout_dir]:
+        # Recognise the checkout by "-C <dir>" wherever it appears rather than
+        # by fixed positions. Diff capture prefixes "-c safe.directory=<dir>"
+        # because it reads a checkout the shim does not own, and pinning the
+        # position made this stub reject a legitimate command shape.
+        if ["-C", checkout_dir] in [list(pair) for pair in zip(command, command[1:])]:
             return _GitProcess(returncode=1 if len(calls) == 1 else 0)
-        pytest.fail("unexpected git command")
+        pytest.fail("unexpected git command: %r" % (command,))
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
     manager.turn("first", repo="owner/repo", branch="main")
