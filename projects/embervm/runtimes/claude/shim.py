@@ -53,8 +53,7 @@ def _capture_turn_base(checkout_dir):
         if not os.path.exists(os.path.join(checkout_dir, ".git")):
             return None
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=checkout_dir,
+            ["git", "-C", checkout_dir, "rev-parse", "HEAD"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -76,8 +75,7 @@ def _capture_turn_diff(checkout_dir, base_sha):
         return None
     try:
         result = subprocess.run(
-            ["git", "diff", base_sha],
-            cwd=checkout_dir,
+            ["git", "-C", checkout_dir, "diff", base_sha],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
