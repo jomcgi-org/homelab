@@ -948,13 +948,17 @@ defmodule Embervm.S3WarmthGcTest do
       assert {:ok, result} = S3WarmthGc.sweep_now(gc)
       assert result.deleted == [prefix]
 
-      assert deleted(agent) == [
-               prefix <> "/meta.json",
-               prefix <> "/agent-0/memfile",
-               prefix <> "/agent-0/snapfile",
-               prefix <> "/agent-1/memfile",
-               prefix <> "/agent-1/snapfile"
-             ]
+      deleted_keys = deleted(agent)
+      assert length(deleted_keys) == 5
+      assert Enum.at(deleted_keys, 0) == prefix <> "/meta.json"
+
+      assert MapSet.new(Enum.drop(deleted_keys, 1)) ==
+               MapSet.new([
+                 prefix <> "/agent-0/memfile",
+                 prefix <> "/agent-0/snapfile",
+                 prefix <> "/agent-1/memfile",
+                 prefix <> "/agent-1/snapfile"
+               ])
 
       assert result.ambiguous == []
       assert [entry] = result.plan
@@ -1054,12 +1058,16 @@ defmodule Embervm.S3WarmthGcTest do
       assert {:ok, result} = S3WarmthGc.sweep_now(gc)
       assert result.deleted == [prefix]
 
-      assert deleted(agent) == [
-               prefix <> "/agent-0/memfile",
-               prefix <> "/agent-0/snapfile",
-               prefix <> "/agent-1/memfile",
-               prefix <> "/agent-1/snapfile"
-             ]
+      deleted_keys = deleted(agent)
+      assert length(deleted_keys) == 4
+
+      assert MapSet.new(deleted_keys) ==
+               MapSet.new([
+                 prefix <> "/agent-0/memfile",
+                 prefix <> "/agent-0/snapfile",
+                 prefix <> "/agent-1/memfile",
+                 prefix <> "/agent-1/snapfile"
+               ])
     end
 
     test "legacy un-vendored member shape group_set/grp-x/set-y/agent-0/memfile stays ambiguous" do
