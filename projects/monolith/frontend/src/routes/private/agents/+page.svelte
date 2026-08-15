@@ -24,6 +24,7 @@
   import { firstLine, fmtCost, joinMeta } from "./run-format.js";
   import { partitionRuns, recentRuns, runActivityAt } from "./run-history.js";
   import { crumbTrail, sessionLineage } from "./lineage.js";
+  import { setupVisualViewport } from "./visual-viewport.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import PaneHeader from "./PaneHeader.svelte";
   import SessionWalkthrough from "./SessionWalkthrough.svelte";
@@ -120,6 +121,7 @@
   let renderedPending = $state({});
   let vms = $state({});
   let turnsEl = $state(null);
+  let consoleEl = $state(null);
 
   const selectedSession = $derived(
     sessions.find((session) => String(session.id) === String(selectedId)) ??
@@ -366,11 +368,16 @@
     return index === 0 ? "starting" : "waiting";
   }
 
+  function nearBottom() {
+    if (!turnsEl) return false;
+    return (
+      turnsEl.scrollHeight - turnsEl.scrollTop - turnsEl.clientHeight < 200
+    );
+  }
+
   function autoScroll(force = false) {
     if (!turnsEl) return;
-    const nearBottom =
-      turnsEl.scrollHeight - turnsEl.scrollTop - turnsEl.clientHeight < 200;
-    if (force || nearBottom) turnsEl.scrollTop = turnsEl.scrollHeight;
+    if (force || nearBottom()) turnsEl.scrollTop = turnsEl.scrollHeight;
   }
 
   function syncPendingPartials(entries) {
@@ -877,6 +884,17 @@
 
   onMount(() => {
     loadRuns();
+    const teardownViewport = setupVisualViewport(
+      window,
+      consoleEl,
+      {
+        measure: nearBottom,
+        apply: (wasNearBottom) => {
+          if (wasNearBottom) autoScroll(true);
+        },
+      },
+      MOBILE_MEDIA_QUERY,
+    );
     const handleKeydown = (event) => {
       if (event.key === "Escape" && !event.isComposing && showNewPanel) {
         event.preventDefault();
@@ -885,6 +903,7 @@
     };
     window.addEventListener("keydown", handleKeydown);
     return () => {
+      teardownViewport();
       window.removeEventListener("keydown", handleKeydown);
     };
   });
@@ -1053,6 +1072,7 @@
 <svelte:head><title>{P.labels.pageTitle}</title></svelte:head>
 
 <main
+  bind:this={consoleEl}
   class:sidebar-collapsed={sidebarCollapsed}
   class:mobile-transcript={mobileTranscript}
   class="console"
@@ -1730,7 +1750,7 @@
 
   .console {
     color-scheme: light;
-    height: 100dvh;
+    height: var(--console-h, 100dvh);
     display: grid;
     grid-template-columns: 300px minmax(0, 1fr);
     background: var(--page-bg);
