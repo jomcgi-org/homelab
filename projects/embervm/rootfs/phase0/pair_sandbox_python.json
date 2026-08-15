@@ -1,0 +1,71 @@
+{
+  "algorithm": {
+    "average_bytes": 524288,
+    "id": "gear-v1",
+    "maximum_bytes": 2097152,
+    "minimum_bytes": 262144
+  },
+  "images": [
+    {
+      "account": "homelab",
+      "chunks": 446,
+      "logical_bytes": 433328128,
+      "name": "sandbox",
+      "new_bytes": {
+        "account": 433328128,
+        "global": 433328128,
+        "principal": 433328128
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/sandbox.erofs",
+      "principal": "sandbox",
+      "unique_chunks": 446
+    },
+    {
+      "account": "homelab",
+      "chunks": 440,
+      "logical_bytes": 429387776,
+      "name": "runtime-python",
+      "new_bytes": {
+        "account": 206614122,
+        "global": 206614122,
+        "principal": 429387776
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/runtime-python.erofs",
+      "principal": "faas",
+      "unique_chunks": 440
+    }
+  ],
+  "logical_bytes": 862715904,
+  "notes": [
+    "Manifest, encryption metadata, and filesystem allocation overhead are excluded.",
+    "Per-image new_bytes attribution follows input order; aggregate scope totals do not.",
+    "The measurement chunker does not freeze the production manifest format."
+  ],
+  "report_version": 1,
+  "scopes": {
+    "account": {
+      "chunks": 641,
+      "dedup_ratio": 1.348115,
+      "saved_bytes": 222773654,
+      "stored_bytes": 639942250
+    },
+    "global": {
+      "chunks": 641,
+      "dedup_ratio": 1.348115,
+      "saved_bytes": 222773654,
+      "stored_bytes": 639942250
+    },
+    "per_image": {
+      "chunks": 886,
+      "dedup_ratio": 1.0,
+      "saved_bytes": 0,
+      "stored_bytes": 862715904
+    },
+    "principal": {
+      "chunks": 886,
+      "dedup_ratio": 1.0,
+      "saved_bytes": 0,
+      "stored_bytes": 862715904
+    }
+  }
+}

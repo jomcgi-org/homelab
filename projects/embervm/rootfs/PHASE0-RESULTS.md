@@ -117,8 +117,12 @@ flag, so the format decision should follow the converter decision.
 ### Gate 1: determinism
 
 Every candidate was built twice from the same tar with the flags above and
-compared by sha256. All seven images, plus both variants built with
-`-Enoinline_data`, were byte-identical across passes.
+compared by sha256. All seven images below were byte-identical across passes.
+One `-Enoinline_data` image, `sandbox`, was additionally built twice as a spot
+check and was also byte-identical
+(`e16a730fa2302315d47e083c7552e707460e9bba527b403f34aabd711dc561cc`). The
+remaining `-Enoinline_data` images were built once each, so determinism under
+that flag is spot-checked rather than exhaustively proven.
 
 | Image | EROFS bytes | sha256 (both passes) |
 | --- | ---: | --- |
@@ -169,10 +173,12 @@ construction, the scope totals are not):
 | runtime-python | 429,387,776 | 440 | 440 | 975,881 | 206,614,122 |
 | scratch-postgres | 310,312,960 | 388 | 388 | 799,776 | 286,036,075 |
 
-`runtime-python` adds only 206,614,122 bytes of the 429,387,776 it contains,
-because `sandbox` was stored first and the two share 51.9% of their chunks. That
-is the sandbox and runtime-python package overlap the ADR predicted, now
-measured at the filesystem level rather than inferred from apko locks.
+`runtime-python` adds only 206,614,122 bytes of the 429,387,776 it contains.
+Measuring that pair on its own (`phase0/pair_sandbox_python.json`) attributes all
+of it to one image: `runtime-python` shares **222,773,654 bytes, 51.88% of
+itself, with `sandbox` alone**. That is the sandbox and runtime-python package
+overlap the ADR predicted, now measured at the filesystem level rather than
+inferred from apko locks.
 
 `semgrep` reports 1,239 chunks but only 962 unique, so 277 chunks repeat inside
 that single image. Intra-image repetition is real and the store gets it for free.
@@ -235,14 +241,36 @@ inlining tails, removes the effect:
 | `-Enoinline_data` | **0.47%** | +2.57% across the six-image set |
 
 That is a hundredfold reduction in what a package bump costs, for 2.57% larger
-images. Determinism still holds: `-Enoinline_data` images were also built twice
-and were byte-identical.
+images. Determinism survives the flag on the one image spot-checked for it, as
+[Gate 1](#gate-1-determinism) records.
 
 **This is the single most important Phase 0 result.** A real package upgrade
 almost always changes file sizes. Without `-Enoinline_data`, the store would
 re-fetch roughly half of every image on every bump, which is the cost ADR 028
 exists to remove. The converter must set it, and the decision belongs in the ADR
 before the format freezes.
+
+#### What block alignment costs in steady state
+
+The whole six-image set was rebuilt with `-Enoinline_data` and re-measured, so
+the trade is quantified rather than assumed. Alignment makes the images 2.571%
+larger (3,917,045,760 to 4,017,766,400 logical bytes) but improves the dedup
+ratio, because file data now starts on block boundaries in every image:
+
+| Layout | Average | Logical | Account stored | Saved |
+| --- | ---: | ---: | ---: | ---: |
+| default | 256 KiB | 3,917,045,760 | 3,163,875,389 | 19.228% |
+| `-Enoinline_data` | 256 KiB | 4,017,766,400 | 3,199,529,586 | **20.365%** |
+| default | 512 KiB | 3,917,045,760 | 3,260,105,750 | 16.771% |
+| `-Enoinline_data` | 512 KiB | 4,017,766,400 | 3,313,293,738 | 17.534% |
+
+The better ratio does not fully repay the padding. In absolute stored bytes
+alignment costs **35,654,197 more bytes (1.13%) at 256 KiB** and 53,187,988 more
+(1.63%) at 512 KiB.
+
+That is the whole trade, and it is not close: **about 34 MiB of permanent extra
+storage buys back roughly 193 MiB on every single-image rebuild**, forever, for
+every image in the catalogue. Take it.
 
 ### Gate 5: active manifest inventory
 
@@ -308,10 +336,11 @@ is not strictly in that family.
 | 128 KiB | 32 KiB | 512 KiB | 18,034 | 3,091,821,661 | 825,224,099 | 21.068% |
 | 256 KiB | 64 KiB | 1 MiB | 9,076 | 3,163,875,389 | 753,170,371 | 19.228% |
 | 512 KiB | 256 KiB | 2 MiB | 4,151 | 3,260,105,750 | 656,940,010 | 16.771% |
+| 1 MiB | 256 KiB | 4 MiB | 2,245 | 3,349,566,671 | 567,479,089 | 14.487% |
 
-Savings rise monotonically as chunks shrink, and the returns diminish: 512K to
-256K buys 2.46 points for 2.2x the chunks, 256K to 128K buys a further 1.84
-points for another 2x.
+Savings rise monotonically as chunks shrink, and the returns diminish: 1M to
+512K buys 2.28 points, 512K to 256K buys 2.46 points for 2.2x the chunks, and
+256K to 128K buys a further 1.84 points for another 2x.
 
 **Recommendation: minimum 64 KiB, average 256 KiB, maximum 1 MiB.**
 
@@ -322,9 +351,9 @@ buys 1.84 more points and doubles the per-hydration request count again, which
 matters more for a store round trip than the bytes do. 256 KiB is the point
 where the curve has flattened but the request count is still modest.
 
-This recommendation is for the measurement parameters. It should be revisited
-once the converter sets `-Enoinline_data`, because the block alignment changes
-the byte stream the chunker sees.
+The recommendation survives block alignment. Re-measured on the
+`-Enoinline_data` set, 256 KiB saves 20.365% against 17.534% at 512 KiB, so the
+ordering and the shape of the curve are unchanged and 256 KiB remains the pick.
 
 ### Gate 7: published platform universe
 
@@ -415,6 +444,10 @@ emitted it:
 | `full_fixed_512k.json` | six images, `fixed-v1`, 512K |
 | `sweep_gear_128k.json` | six images, `gear-v1`, 32K/128K/512K |
 | `sweep_gear_256k.json` | six images, `gear-v1`, 64K/256K/1M |
+| `sweep_gear_1m.json` | six images, `gear-v1`, 256K/1M/4M |
+| `pair_sandbox_python.json` | sandbox and runtime-python only, `gear-v1`, 512K |
+| `noinline_gear_256k.json` | six images built `-Enoinline_data`, `gear-v1`, 64K/256K/1M |
+| `noinline_gear_512k.json` | six images built `-Enoinline_data`, `gear-v1`, 256K/512K/2M |
 | `rebuild_gear_512k.json` | one-package rebuild, `gear-v1` |
 | `rebuild_fixed_512k.json` | one-package rebuild, `fixed-v1` |
 | `erofs_build.log` | every build, both passes, with versions and flags |
@@ -435,9 +468,10 @@ Read these before quoting any number above.
 4. **Ratios exclude overhead.** Manifests, encryption metadata, per-chunk
    framing, and filesystem allocation are all outside these numbers, as the
    harness itself states. Real stored bytes will be higher.
-5. **The Gate 6 parameters were swept on the default layout**, not on
-   `-Enoinline_data` images. Block alignment changes the byte stream, so the
-   recommendation should be re-run once the converter flag is settled.
+5. **The Gate 6 sweep ran on the default layout.** Only the 256 KiB and 512 KiB
+   points were re-measured on `-Enoinline_data` images. They preserve the
+   ordering, but the 128 KiB and 1 MiB ends of the curve were not re-run on the
+   aligned set.
 6. **`new_bytes` per image is input-order dependent.** Only the scope totals are
    order-independent. The per-image column shows who paid for shared content
    first, not who owns it.
@@ -447,10 +481,10 @@ Read these before quoting any number above.
 
 Not the converter, hydrator, and ublk stack together. In order:
 
-1. **Settle the converter layout.** Adopt `-Enoinline_data`, then re-run the
-   Gate 2 and Gate 6 measurements on the aligned images and confirm the chunk
-   parameters. This is a small change to a tool that does not exist in
-   production yet, and it is the one decision the format depends on.
+1. **Settle the converter layout on `-Enoinline_data`.** The measurement is
+   already done: it costs 35,654,197 stored bytes once and saves roughly 193 MiB
+   on every single-image rebuild. This is a flag on a tool that does not exist
+   in production yet, and it is the one decision the format depends on.
 2. **Reclaim superseded rootfs files.** Independent of the chunk store, cheap,
    and worth 2.791 GiB per long-lived brick today. Four of the ten rootfs files
    on a long-lived brick are for digests that no longer exist in the registry.
