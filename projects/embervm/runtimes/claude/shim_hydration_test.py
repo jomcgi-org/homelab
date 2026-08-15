@@ -465,7 +465,12 @@ def test_poisoned_directory_is_cleaned_and_recloned(manager, monkeypatch):
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
     manager.turn("first", repo="owner/repo", branch="main")
-    assert [command[1] for command in calls] == ["-C", "clone", "-C"]
+    # Only the hydration prefix is pinned. A turn legitimately runs further git
+    # commands after the checkout is valid (diff capture reads HEAD and diffs
+    # against it), and asserting the whole sequence made this test fail for any
+    # unrelated command the shim gained. The stub above still fails on a command
+    # shape it does not recognise, so new calls cannot slip through unnoticed.
+    assert [command[1] for command in calls][:3] == ["-C", "clone", "-C"]
 
 
 def test_cloning_progress_is_pushed_before_the_clone(manager, monkeypatch):
