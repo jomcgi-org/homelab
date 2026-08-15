@@ -38,6 +38,8 @@ defmodule Embervm.S3WarmthGc do
       uptime is additionally required before any sweep.
     * Ambiguous key parses (a workload literally named like a vendor) are
       skipped, never guessed.
+    * A candidate prefix with any unparsed sibling key below it is held whole,
+      so a parsed subset is never deleted.
     * Deletes: hard allowlist {stateful/, session/, serving/,
       session-workspace/, group_set/}; every DELETE targets one
       fully-qualified LISTED key (never a prefix, never bucket-wide); meta.json
@@ -236,8 +238,9 @@ defmodule Embervm.S3WarmthGc do
          {:ok, group_keys} <- list_or_abort(state, "group_set/"),
          {:ok, snapshot} <- cp_snapshot(state),
          :ok <- check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys, state.allow_empty_kinds) do
-      {candidates, ambiguous} = parse_candidates(state, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys)
+      {candidates, shadowed, ambiguous} = parse_candidates(state, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys)
       {eligible, held} = build_plan(state, snapshot, candidates)
+      held = shadowed ++ held
       plan = apply_caps(state, eligible)
       log_plan(state, plan, eligible, held, ambiguous)
 
@@ -462,7 +465,7 @@ defmodule Embervm.S3WarmthGc do
   # segment-2 membership in the known vendor set. Anything else (a workload
   # named like a vendor, an unexpected depth) is AMBIGUOUS: the whole key is
   # held aside and never composed into a deletable prefix (fail-closed).
-  # Returns {candidates_by_prefix, ambiguous_keys}.
+  # Returns {candidates_by_prefix, shadowed_prefixes, ambiguous_keys}.
   defp parse_candidates(state, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys) do
     {s_parsed, s_ambiguous} = split_parsed(state, stateful_keys, "stateful")
     {se_parsed, se_ambiguous} = split_parsed(state, session_keys, "session")
@@ -485,7 +488,19 @@ defmodule Embervm.S3WarmthGc do
         })
       end)
 
-    {candidates, s_ambiguous ++ se_ambiguous ++ sv_ambiguous ++ w_ambiguous ++ g_ambiguous}
+    ambiguous = s_ambiguous ++ se_ambiguous ++ sv_ambiguous ++ w_ambiguous ++ g_ambiguous
+
+    {shadowed_candidates, candidates} =
+      Enum.split_with(candidates, fn candidate ->
+        Enum.any?(ambiguous, &String.starts_with?(&1, candidate.prefix <> "/"))
+      end)
+
+    shadowed =
+      Enum.map(shadowed_candidates, fn candidate ->
+        %{prefix: candidate.prefix, kind: candidate.kind, bytes: candidate.bytes, reason: "sibling_key_ambiguous"}
+      end)
+
+    {candidates, shadowed, ambiguous}
   end
 
   defp split_parsed(state, entries, kind) do
@@ -514,8 +529,19 @@ defmodule Embervm.S3WarmthGc do
           :ambiguous
         end
 
+      ["group_set", vendor, group_instance_id, set_id, _member, file]
+      when kind == "group_set" and file != "" ->
+        if vendor in state.vendors and group_instance_id not in state.vendors do
+          {:ok, prefix_meta(kind, vendor, group_instance_id, set_id)}
+        else
+          :ambiguous
+        end
+
       # Legacy pre-R7: <kind>/<owner>/<ref>/<file>. An owner named like a vendor
       # would collide with a vendored key missing its file segment: ambiguous.
+      # There is deliberately no legacy unvendored group member shape here.
+      # Its five segments are indistinguishable from a vendored flat key with
+      # an unknown vendor, and guessing could delete every set in that group.
       [^kind, owner, ref, file] when file != "" ->
         if owner in state.vendors, do: :ambiguous, else: {:ok, prefix_meta(kind, "", owner, ref)}
 
