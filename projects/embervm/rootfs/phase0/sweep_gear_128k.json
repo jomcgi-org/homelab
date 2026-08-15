@@ -1,0 +1,127 @@
+{
+  "algorithm": {
+    "average_bytes": 131072,
+    "id": "gear-v1",
+    "maximum_bytes": 524288,
+    "minimum_bytes": 32768
+  },
+  "images": [
+    {
+      "account": "homelab",
+      "chunks": 5318,
+      "logical_bytes": 1280397312,
+      "name": "semgrep",
+      "new_bytes": {
+        "account": 949241627,
+        "global": 949241627,
+        "principal": 949241627
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/semgrep.erofs",
+      "principal": "semgrep",
+      "unique_chunks": 4085
+    },
+    {
+      "account": "homelab",
+      "chunks": 4033,
+      "logical_bytes": 847413248,
+      "name": "runtime-claude",
+      "new_bytes": {
+        "account": 800207680,
+        "global": 800207680,
+        "principal": 842807162
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/runtime-claude.erofs",
+      "principal": "agents",
+      "unique_chunks": 4013
+    },
+    {
+      "account": "homelab",
+      "chunks": 3024,
+      "logical_bytes": 616206336,
+      "name": "bazel-query",
+      "new_bytes": {
+        "account": 547181756,
+        "global": 547181756,
+        "principal": 566338846
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/bazel-query.erofs",
+      "principal": "bazel-query",
+      "unique_chunks": 2759
+    },
+    {
+      "account": "homelab",
+      "chunks": 1997,
+      "logical_bytes": 433328128,
+      "name": "sandbox",
+      "new_bytes": {
+        "account": 384192801,
+        "global": 384192801,
+        "principal": 433328128
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/sandbox.erofs",
+      "principal": "sandbox",
+      "unique_chunks": 1997
+    },
+    {
+      "account": "homelab",
+      "chunks": 1977,
+      "logical_bytes": 429387776,
+      "name": "runtime-python",
+      "new_bytes": {
+        "account": 135178709,
+        "global": 135178709,
+        "principal": 429387776
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/runtime-python.erofs",
+      "principal": "faas",
+      "unique_chunks": 1977
+    },
+    {
+      "account": "homelab",
+      "chunks": 1685,
+      "logical_bytes": 310312960,
+      "name": "scratch-postgres",
+      "new_bytes": {
+        "account": 275819088,
+        "global": 275819088,
+        "principal": 310312960
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/scratch-postgres.erofs",
+      "principal": "postgres",
+      "unique_chunks": 1685
+    }
+  ],
+  "logical_bytes": 3917045760,
+  "notes": [
+    "Manifest, encryption metadata, and filesystem allocation overhead are excluded.",
+    "Per-image new_bytes attribution follows input order; aggregate scope totals do not.",
+    "The measurement chunker does not freeze the production manifest format."
+  ],
+  "report_version": 1,
+  "scopes": {
+    "account": {
+      "chunks": 14081,
+      "dedup_ratio": 1.266905,
+      "saved_bytes": 825224099,
+      "stored_bytes": 3091821661
+    },
+    "global": {
+      "chunks": 14081,
+      "dedup_ratio": 1.266905,
+      "saved_bytes": 825224099,
+      "stored_bytes": 3091821661
+    },
+    "per_image": {
+      "chunks": 18034,
+      "dedup_ratio": 1.0,
+      "saved_bytes": 0,
+      "stored_bytes": 3917045760
+    },
+    "principal": {
+      "chunks": 16516,
+      "dedup_ratio": 1.1092,
+      "saved_bytes": 385629261,
+      "stored_bytes": 3531416499
+    }
+  }
+}

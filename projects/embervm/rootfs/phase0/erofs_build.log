@@ -1,0 +1,20 @@
+=== TOOL VERSIONS ===
+mkfs.erofs (erofs-utils) 1.8.2
+available compressors: lz4, lz4hc, deflate
+erofs-utils: userspace utilities for erofs filesystem
+erofs-utils: https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
+erofs-utils: 520 KiB
+
+=== FLAGS ===
+mkfs.erofs --tar=f -b 4096 -U 00000000-0000-0000-0000-000000000000 -T 0 --mkfs-time --sort=path <out> <in.tar>
+
+bazel-query size=616206336 pass1=5b963d45521814bf344aec1783349cf82e18694d08c13948fbc616ba9f13c5a8 pass2=5b963d45521814bf344aec1783349cf82e18694d08c13948fbc616ba9f13c5a8 BYTE-IDENTICAL
+runtime-claude size=847413248 pass1=3297a560905116c42d74905154ab55a50c4a384da4e00509e9404aa90affa291 pass2=3297a560905116c42d74905154ab55a50c4a384da4e00509e9404aa90affa291 BYTE-IDENTICAL
+runtime-python size=429387776 pass1=1dfbbcf9caa0d2df89b0064b2f8848cdcf85aa78dcd400ebe769b717be556c94 pass2=1dfbbcf9caa0d2df89b0064b2f8848cdcf85aa78dcd400ebe769b717be556c94 BYTE-IDENTICAL
+sandbox size=433328128 pass1=ae791112a7a88d094db9ea5d3a1c7836b9486d57d1133f2f549433ed20690f03 pass2=ae791112a7a88d094db9ea5d3a1c7836b9486d57d1133f2f549433ed20690f03 BYTE-IDENTICAL
+scratch-postgres size=310312960 pass1=7e90949d1f1b5fae9f0ca3c959bf004df253cbdc34abbed619cd976e0d50d3da pass2=7e90949d1f1b5fae9f0ca3c959bf004df253cbdc34abbed619cd976e0d50d3da BYTE-IDENTICAL
+semgrep size=1280397312 pass1=f5d17a310f6d13047018c8fcfd731a83ee413b63df4489f7cc5c0770bf6ba35c pass2=f5d17a310f6d13047018c8fcfd731a83ee413b63df4489f7cc5c0770bf6ba35c BYTE-IDENTICAL
+runtime-python-rebuild size=429391872 pass1=5c4c300b0c69588c5e4be24e8db4faa43e3e1c3121bf4f7229f33c00492c26ce pass2=5c4c300b0c69588c5e4be24e8db4faa43e3e1c3121bf4f7229f33c00492c26ce
+BYTE-IDENTICAL
+=== exact erofs-utils package version ===
+erofs-utils-1.8.2-r0 aarch64 {erofs-utils} (GPL-2.0-or-later) [installed]

@@ -1,0 +1,71 @@
+{
+  "algorithm": {
+    "average_bytes": 524288,
+    "id": "gear-v1",
+    "maximum_bytes": 2097152,
+    "minimum_bytes": 262144
+  },
+  "images": [
+    {
+      "account": "homelab",
+      "chunks": 440,
+      "logical_bytes": 429387776,
+      "name": "runtime-python",
+      "new_bytes": {
+        "account": 429387776,
+        "global": 429387776,
+        "principal": 429387776
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/runtime-python.erofs",
+      "principal": "faas",
+      "unique_chunks": 440
+    },
+    {
+      "account": "homelab",
+      "chunks": 440,
+      "logical_bytes": 429391872,
+      "name": "runtime-python-rebuild",
+      "new_bytes": {
+        "account": 204461727,
+        "global": 204461727,
+        "principal": 204461727
+      },
+      "path": "/private/tmp/claude-501/-Users-jomcgi-repos-homelab/2c44e486-4d4d-46b9-a695-587ea6bd990b/scratchpad/phase0/erofs/runtime-python-rebuild.erofs",
+      "principal": "faas",
+      "unique_chunks": 440
+    }
+  ],
+  "logical_bytes": 858779648,
+  "notes": [
+    "Manifest, encryption metadata, and filesystem allocation overhead are excluded.",
+    "Per-image new_bytes attribution follows input order; aggregate scope totals do not.",
+    "The measurement chunker does not freeze the production manifest format."
+  ],
+  "report_version": 1,
+  "scopes": {
+    "account": {
+      "chunks": 631,
+      "dedup_ratio": 1.354864,
+      "saved_bytes": 224930145,
+      "stored_bytes": 633849503
+    },
+    "global": {
+      "chunks": 631,
+      "dedup_ratio": 1.354864,
+      "saved_bytes": 224930145,
+      "stored_bytes": 633849503
+    },
+    "per_image": {
+      "chunks": 880,
+      "dedup_ratio": 1.0,
+      "saved_bytes": 0,
+      "stored_bytes": 858779648
+    },
+    "principal": {
+      "chunks": 631,
+      "dedup_ratio": 1.354864,
+      "saved_bytes": 224930145,
+      "stored_bytes": 633849503
+    }
+  }
+}
