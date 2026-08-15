@@ -15,6 +15,7 @@ import pathlib
 import pytest
 
 DOMAINS = {
+    "auth",
     "ships",
     "stars",
     "chat",

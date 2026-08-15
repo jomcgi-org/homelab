@@ -371,6 +371,22 @@ def test_mcp_only_module_is_valid_and_mounts_mcp():
     assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
 
 
+def test_private_app_registers_the_auth_error_handler():
+    """The handler being importable is not the same as it being installed.
+
+    Without this registration FastAPI's built-in HTTPException handler serves
+    AuthError (which subclasses it) and emits only {"detail": ...}, so HTTP
+    routes silently drop the `reason` that the /mcp mount emits. That is a
+    divergence no test of the handler in isolation can catch, because such a
+    test registers the handler itself.
+    """
+    from auth.api import AuthError
+
+    app = build_app(_PLAIN_PRIVATE, [_routed_module("m", "m")])
+
+    assert AuthError in app.exception_handlers
+
+
 def test_mcp_disabled_profile_skips_registration_and_mount():
     calls: list[str] = []
 

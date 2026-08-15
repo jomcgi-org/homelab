@@ -34,6 +34,17 @@ backend:
     enabled: true
     maxUnavailable: 1
 
+# Authentik derives the OIDC issuer from the APPLICATION SLUG, so these values
+# track the mcp-friends slug in projects/platform/authentik/blueprints/mcp-auth.yaml.
+# Renaming the application silently breaks verification. The issuer's trailing
+# slash is significant.
+auth:
+  authentik:
+    jwksUrl: "https://auth.jomcgi.dev/application/o/mcp-friends/jwks/"
+    issuer: "https://auth.jomcgi.dev/application/o/mcp-friends/"
+    audience: "https://private.jomcgi.dev"
+  jwksCacheTtlSeconds: 300
+
 # Progress-ingest listener (ADR agents/051): its own container and port so the
 # EmberVM egress allowlist entry exposes exactly one write-only route.
 # progress.image is injected (digest-pinned) at build time by

@@ -18,6 +18,15 @@ backend:
     limits:
       memory: "1Gi"
 
+# State the production verifier identity explicitly. The application slug owns
+# the Authentik issuer path, and the trailing slash is significant.
+auth:
+  authentik:
+    jwksUrl: "https://auth.jomcgi.dev/application/o/mcp-friends/jwks/"
+    issuer: "https://auth.jomcgi.dev/application/o/mcp-friends/"
+    audience: "https://private.jomcgi.dev"
+  jwksCacheTtlSeconds: 300
+
 frontend:
   otelCollectorUrl: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
 

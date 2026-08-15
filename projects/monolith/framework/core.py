@@ -526,6 +526,7 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
     lifespan = build_private_lifespan(profile, modules)
 
     mcp_http_app = None
+    mcp_lifespan = None
     if profile.mcp_enabled:
         # The shared FastMCP instance lives in app/mcp_app.py (excluded from
         # the public file set); domain tool modules attach to it on import.
@@ -538,20 +539,46 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
         for m in modules:
             if m.register_mcp is not None:
                 m.register_mcp()
-        mcp_http_app = monolith_mcp.http_app(transport="sse", path="/")
+        raw_mcp_http_app = monolith_mcp.http_app(transport="sse", path="/")
+        mcp_lifespan = raw_mcp_http_app.lifespan
+
+        # Context Forge reaches this mount over ClusterIP, without the private
+        # ingress gate. Verify bearer material here instead of trusting proxy
+        # identity headers that this path never receives. On the SSE transport,
+        # the Principal is pinned to the stream-opener for the entire session:
+        # per-message POST resolution is discarded, so tools reading
+        # current_principal() do not see per-message identity updates.
+        from auth.api import PrincipalMiddleware, get_default_resolver
+
+        mcp_http_app = PrincipalMiddleware(
+            raw_mcp_http_app,
+            get_default_resolver(),
+        )
 
     if mcp_http_app is not None:
         app_lifespan = lifespan
+        assert mcp_lifespan is not None
 
         @asynccontextmanager
         async def combined_lifespan(app: FastAPI):
             async with app_lifespan(app):
-                async with mcp_http_app.lifespan(app):
+                async with mcp_lifespan(app):
                     yield
 
         lifespan = combined_lifespan
 
     app = FastAPI(title=profile.title, lifespan=lifespan)
+
+    # Without this, FastAPI's built-in HTTPException handler serves AuthError
+    # (which subclasses it) and emits only {"detail": ...}, while the /mcp mount
+    # emits {"detail": ..., "reason": ...} from its own middleware. Registering
+    # here is what makes the two surfaces agree, and `reason` is the operator
+    # signal that distinguishes a bad token from an unreachable JWKS. Imported
+    # function-locally: the PUBLIC tier does not ship auth/, so a module-scope
+    # import would break main_public_imports_test.
+    from auth.api import AuthError, auth_error_handler
+
+    app.add_exception_handler(AuthError, auth_error_handler)
 
     for m in modules:
         if m.register is not None:
