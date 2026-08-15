@@ -8,6 +8,9 @@ go_library(
         "launcher.go",
         "mountns_linux.go",
         "mountns_other.go",
+        "punchholes.go",
+        "punchholes_linux.go",
+        "punchholes_other.go",
         "provisioner.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver",
@@ -16,6 +19,7 @@ go_library(
         "//projects/embervm/noded/fcvm/fcclient",
         "//projects/embervm/noded/substrate",
         "@io_opentelemetry_go_otel//:otel",
+        "@org_golang_x_sys//unix",
     ],
 )
 
@@ -25,8 +29,12 @@ go_test(
         "driver_test.go",
         "group_test.go",
         "gueststats_test.go",
+        "punchholes_linux_test.go",
         "provisioner_test.go",
     ],
     embed = [":driver"],
-    deps = ["//projects/embervm/noded/substrate"],
+    deps = [
+        "//projects/embervm/noded/substrate",
+        "@org_golang_x_sys//unix",
+    ],
 )
