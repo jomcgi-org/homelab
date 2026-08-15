@@ -1,5 +1,6 @@
 # gazelle:exclude agent
 # gazelle:exclude agent_sessions
+# gazelle:exclude auth
 # gazelle:exclude artifact
 # gazelle:exclude chat
 # gazelle:exclude chat_public
@@ -88,6 +89,7 @@ _BACKEND_SRCS = glob(
         "agent/**/*.py",
         "agent_sessions/**/*.py",
         "app/**/*.py",
+        "auth/**/*.py",
         "core/**/*.py",
         "framework/**/*.py",
         "artifact/**/*.py",
@@ -284,6 +286,29 @@ py_venv_binary(
 # The packages in the agent/chat/home import cycle share one
 # target because Bazel deps must be acyclic; everything else is a DAG.
 py_library(
+    name = "pkg_auth",
+    srcs = glob(
+        [
+            "auth/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@pip//fastapi",
+        "@pip//httpx",
+        # PyJWT is currently locked transitively through mcp and semgrep.
+        "@pip//pyjwt",
+        "@pip//starlette",
+    ],
+)
+
+py_library(
     name = "pkg_core",
     srcs = glob(
         [
@@ -370,6 +395,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_auth",
         ":pkg_core",
         "@pip//certifi",
         "@pip//fastapi",
@@ -1307,6 +1333,7 @@ py_library(
             "agent/**/*.py",
             "agent_sessions/**/*.py",
             "app/**/*.py",
+            "auth/**/*.py",
             "core/**/*.py",
             "framework/**/*.py",
             "artifact/**/*.py",
@@ -1382,6 +1409,8 @@ py_library(
         "@pip//pydantic_ai_slim",
         "@pip//python_multipart",  # trips/ingest_router.py (UploadFile / form parsing)
         "@pip//pyyaml",
+        # PyJWT is currently locked transitively through mcp and semgrep.
+        "@pip//pyjwt",
         # NOTE: semgrep_scan/report.py uploads to the Semgrep App via plain
         # authenticated HTTP (explicit Authorization: Bearer) using httpx (already
         # a dep above), not ScanHandler.
@@ -1393,6 +1422,7 @@ py_library(
         "@pip//semgrep",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+        "@pip//starlette",
         "@pip//timelength",
         "@pip//trafilatura",
         "@pip//tzdata",
@@ -1753,6 +1783,33 @@ monolith_domain_images(
 )
 
 py_test(
+    name = "auth_verifier_test",
+    srcs = ["auth/verifier_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        "@pip//cryptography",
+        # PyJWT is currently locked transitively through mcp and semgrep.
+        "@pip//pyjwt",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "auth_plumbing_test",
+    srcs = ["auth/plumbing_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "markers_test",
     srcs = ["shared/testing/markers_test.py"],
     imports = ["."],
@@ -1784,6 +1841,7 @@ py_test(
             "scheduler/**/*.py",
             "agent/**/*.py",
             "agent_sessions/**/*.py",
+            "auth/**/*.py",
             "goosecracker/**/*.py",
             "worldcup/**/*.py",
             "campsites/**/*.py",

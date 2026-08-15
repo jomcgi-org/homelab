@@ -503,6 +503,14 @@ spec:
             - name: ORCHESTRATOR_REPLAN_TIMEOUT_S
               value: {{ .Values.orchestrator.replanTimeoutSeconds | quote }}
             {{- end }}
+            - name: AUTH_AUTHENTIK_JWKS_URL
+              value: {{ .Values.auth.authentik.jwksUrl | quote }}
+            - name: AUTH_AUTHENTIK_ISSUER
+              value: {{ .Values.auth.authentik.issuer | quote }}
+            - name: AUTH_AUTHENTIK_AUDIENCE
+              value: {{ .Values.auth.authentik.audience | quote }}
+            - name: AUTH_JWKS_CACHE_TTL_S
+              value: {{ .Values.auth.jwksCacheTtlSeconds | quote }}
           livenessProbe:
             httpGet:
               path: /healthz
