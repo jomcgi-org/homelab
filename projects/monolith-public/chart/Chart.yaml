@@ -2,7 +2,7 @@ apiVersion: v2
 name: monolith-public
 description: Read-only public tier of the monolith (ADR 004 Phase 5) and pruned
 type: application
-version: 0.317.4
+version: 0.318.2
 appVersion: "0.1.0"
 maintainers:
   - name: homelab
