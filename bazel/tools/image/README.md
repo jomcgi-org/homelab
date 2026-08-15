@@ -13,7 +13,7 @@ Python services, nginx frontends), those live in [`//bazel/tools/oci`](../oci/RE
 
 | Tool / group                           | Source                                                     |
 | -------------------------------------- | ---------------------------------------------------------- |
-| `argocd`, `buildozer`, `crane`, `gazelle`, `gh`, `gofumpt`, `helm`, `kind`, `op`, `ruff`, `shfmt` | multitool lockfile (per-platform binary repos) |
+| `argocd`, `buildozer`, `crane`, `gh`, `gofumpt`, `helm`, `kind`, `op`, `ruff`, `shfmt` | multitool lockfile (per-platform binary repos) |
 | `node`                                 | `@nodejs_{platform}//:node_bin` from rules_nodejs          |
 | Python runtime + stdlib + pip packages | `py_image_layer` from `@aspect_rules_py`, with platform transitions |
 | `pnpm`                                 | `@pnpm//:pkg` (aspect_rules_js)                            |
@@ -26,6 +26,27 @@ installed under `/usr/local/lib/node_modules/`; `/usr/bin/prettier` is a
 wrapper that sets `NODE_PATH` so `require("prettier-plugin-svelte")` from
 `bazel/tools/format/prettier.config.cjs` resolves without a workspace
 `node_modules` tree.
+
+### What it deliberately does not contain
+
+No `gazelle`. The multitool lockfile's gazelle is
+[aspect-gazelle](https://github.com/aspect-build/aspect-gazelle), a different
+program from this repo's `//:gazelle_binary` (bazel-gazelle plus the helm,
+semgrep, bzl, go, proto and python extensions). Put it on `$PATH` and anything
+calling bare `gazelle` regenerates BUILD files by aspect-gazelle's defaults,
+which rewrites external Go deps to `:go_default_library` targets that do not
+exist and fails analysis. `//bazel/tools/BUILD` already excluded it from
+`bazel_env` for this reason; the exclusion was lost when ADR tooling/001 moved
+tool distribution to this image, and shipping it here reintroduced the silent
+corruption.
+
+Building the correct binary here is not an option either. It links a cgo
+tree-sitter through `@rules_python_gazelle_plugin//python`, and MODULE.bazel
+registers no cross C toolchain, so the linux/amd64 executors that build this
+image cannot produce a darwin/arm64 or linux/arm64 copy. Every other
+non-Linux entry in this image is a downloaded prebuilt, never a built one.
+BUILD generation therefore runs in CI's Format stage, via
+`bazel run //bazel/tools/format:format`.
 
 ## Build targets
 

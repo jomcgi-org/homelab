@@ -52,14 +52,21 @@ Ad-hoc `bazel query` (deps, rdeps, target patterns) isn't run locally — there'
 
 ### Gazelle (BUILD File Generation)
 
-Gazelle auto-generates BUILD files for Go, Python, and Helm. Run via:
+Gazelle auto-generates BUILD files for Go, Python, and Helm. It runs **only in
+CI**, in the Format check, which auto-commits the result on PR branches as
+`style: auto-format`. There is no local gazelle and there deliberately is no
+`gazelle` on `$PATH`: the only one this repo could distribute is
+aspect-gazelle, a different program that corrupts BUILD files (see
+[`bazel/tools/image/README.md`](../../bazel/tools/image/README.md)).
 
 ```bash
-ci regen    # gazelle when go/py/BUILD changed; generators when inputs changed
+ci regen    # generators when inputs changed; reports when BUILD files need CI
 ci lint     # format changed files (includes buildifier when BUILD staged)
 ```
 
-After adding new Go imports or Python dependencies, run `ci regen` (or full `ci`).
+So after adding new Go imports or Python dependencies, expect the BUILD update
+to arrive as a bot commit on your PR rather than in your own. Fetch and rebase
+before your next push.
 
 ## Container Images with apko
 
