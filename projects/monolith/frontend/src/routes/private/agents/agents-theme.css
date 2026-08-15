@@ -83,15 +83,15 @@ html[data-agents-period="night"] .console {
   --muted: #7e7c74;
   /* Derived from dashboard --line at rgba(232, 227, 210, 0.12). */
   --line: rgba(232, 227, 210, 0.15);
-  /* Lightened to clear 3:1 against --panel-bg for input and control borders. */
-  --line-strong: #5a5854;
+  /* 3.76:1 against --panel-bg for input and control borders. */
+  --line-strong: #7a7870;
   --hover: #242629;
   /* Inverted pair: light surface with dark text for primary affordances. */
   --ink: #e8e5dc;
   --ink-text: #1c1e26;
   --code-bg: #242629;
-  /* Raised from day value to register clearly on dark page. */
-  --dot-idle: #5a5854;
+  /* 4.12:1 against --page-bg, 3.76:1 against --panel-bg. */
+  --dot-idle: #7a7870;
 
   /* State tokens: hue from dashboard night palette, adjusted for
      panel-bg contrast. */
