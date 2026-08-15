@@ -124,39 +124,66 @@ class Turn(NamedTuple):
     diff: dict | None = None
 
 
-def _guest_diff(value) -> dict | None:
-    """Validate optional guest diff metadata without making it turn-critical."""
+def _reject_guest_diff(session_id, reason: str) -> None:
+    """Log why a present diff payload was discarded, then discard it.
+
+    Every rejection below returns None, which is also what an absent payload
+    returns, so without this the two are indistinguishable: a null diff_blob
+    means either the guest sent nothing or the guest sent something this
+    rejected, and the database cannot tell you which. A guest that captures
+    correctly and fails validation here would look identical to one that never
+    captured at all.
+    """
+    logger.warning("discarding guest diff for session %s: %s", session_id, reason)
+    return None
+
+
+def _guest_diff(value, session_id=None) -> dict | None:
+    """Validate optional guest diff metadata without making it turn-critical.
+
+    An absent payload is silent: guests predating diff capture send nothing and
+    that is not a fault. A payload that is present but invalid is logged.
+    """
+    if value is None:
+        return None
     if not isinstance(value, dict):
-        return None
+        return _reject_guest_diff(session_id, "payload is not a mapping")
     if not {"base_sha", "zlib_b64", "truncated"}.issubset(value):
-        return None
+        missing = sorted({"base_sha", "zlib_b64", "truncated"} - set(value))
+        return _reject_guest_diff(session_id, f"missing keys {missing}")
     base_sha = value.get("base_sha")
     truncated = value.get("truncated")
     encoded = value.get("zlib_b64")
     if not isinstance(base_sha, str) or not re.fullmatch(
         r"[0-9a-fA-F]{40,64}", base_sha
     ):
-        return None
+        return _reject_guest_diff(session_id, "base_sha is not a 40 to 64 char hex sha")
     if not isinstance(truncated, bool):
-        return None
+        return _reject_guest_diff(session_id, "truncated is not a bool")
     if truncated:
-        return value if encoded is None else None
+        if encoded is None:
+            return value
+        return _reject_guest_diff(session_id, "truncated payload carried a blob")
     if not isinstance(encoded, str):
-        return None
+        return _reject_guest_diff(session_id, "zlib_b64 is not a string")
     try:
         compressed = base64.b64decode(encoded, validate=True)
         if len(compressed) > 1024 * 1024:
-            return None
+            return _reject_guest_diff(
+                session_id, f"compressed diff is {len(compressed)} bytes, over 1 MiB"
+            )
         decompressor = zlib.decompressobj()
         raw = decompressor.decompress(compressed, 5 * 1024 * 1024 + 1)
-        if (
-            len(raw) > 5 * 1024 * 1024
-            or not decompressor.eof
-            or decompressor.unused_data
-        ):
-            return None
-    except (binascii.Error, zlib.error):
-        return None
+        if len(raw) > 5 * 1024 * 1024:
+            return _reject_guest_diff(
+                session_id, f"uncompressed diff exceeds 5 MiB at {len(raw)} bytes"
+            )
+        if not decompressor.eof:
+            return _reject_guest_diff(session_id, "zlib stream is incomplete")
+        if decompressor.unused_data:
+            return _reject_guest_diff(session_id, "zlib stream has trailing data")
+    except (binascii.Error, zlib.error) as exc:
+        return _reject_guest_diff(session_id, f"undecodable payload: {exc}")
     return value
 
 
@@ -551,7 +578,7 @@ class EmberVmShimTransport:
                         total_cost_usd=guest_data.get("total_cost_usd"),
                         duration_ms=guest_data.get("duration_ms"),
                         activities=guest_data.get("activities", []),
-                        diff=_guest_diff(guest_data.get("diff")),
+                        diff=_guest_diff(guest_data.get("diff"), current.session_id),
                     )
             except httpx.TimeoutException as exc:
                 logger.warning(
