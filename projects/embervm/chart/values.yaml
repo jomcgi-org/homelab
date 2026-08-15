@@ -1033,6 +1033,10 @@ noded:
   store:
     endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
     bucket: embervm
+    # Reader support is always present, but writer compression is armed only
+    # after the fleet has rolled out that reader. Keep the rollout gate off by
+    # default until then.
+    compress: false
 
   # R7 (ADR embervm/011, standing decision 4): the control plane becomes the
   # sole issuer of volume generations. true rejects a writable attach carrying

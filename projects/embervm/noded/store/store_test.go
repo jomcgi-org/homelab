@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -103,11 +105,15 @@ func (f *fakeObjectStore) putOrderCopy() []string {
 
 // newTestStore stands up a fake object store and returns a Store pointed at it.
 func newTestStore(t *testing.T) (*Store, *fakeObjectStore) {
+	return newTestStoreWithCompression(t, false)
+}
+
+func newTestStoreWithCompression(t *testing.T, compress bool) (*Store, *fakeObjectStore) {
 	t.Helper()
 	fake := newFakeObjectStore()
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
-	return New(srv.URL, "embervm"), fake
+	return New(srv.URL, "embervm", compress), fake
 }
 
 // writeLocalArtifact writes a set of named files with the given contents into a
@@ -127,7 +133,7 @@ func writeLocalArtifact(t *testing.T, files map[string]string) (string, []string
 }
 
 func TestNewDisabledOnEmptyEndpoint(t *testing.T) {
-	if New("", "embervm") != nil {
+	if New("", "embervm", false) != nil {
 		t.Fatal("New(\"\", ...) should return nil (store disabled)")
 	}
 }
@@ -215,6 +221,9 @@ func TestExportWritesMetaLast(t *testing.T) {
 			t.Fatalf("file object %q missing after Export", name)
 		}
 	}
+	if got := string(fake.object("/embervm/" + prefix + "/snapfile")); got != "snap-content" {
+		t.Fatalf("compression-off object = %q, want plaintext bytes", got)
+	}
 	if !fake.has("/embervm/" + prefix + "/" + metaObject) {
 		t.Fatal("meta.json missing after Export")
 	}
@@ -283,6 +292,114 @@ func TestRestoreRoundTrip(t *testing.T) {
 		if string(got) != want {
 			t.Fatalf("restored %s = %q, want %q", name, got, want)
 		}
+	}
+}
+
+func TestCompressedExportRoundTrip(t *testing.T) {
+	s, fake := newTestStoreWithCompression(t, true)
+	ctx := context.Background()
+	plaintext := bytes.Repeat([]byte{0}, 1<<20)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "memfile"), plaintext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Export(ctx, "base/zeros", srcDir, []string{"memfile"}, 1, 1, "", ""); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if stored := fake.object("/embervm/base/zeros/memfile"); len(stored) >= len(plaintext) {
+		t.Fatalf("compressed object size = %d, want less than plaintext %d", len(stored), len(plaintext))
+	}
+	var meta Meta
+	if err := json.Unmarshal(fake.object("/embervm/base/zeros/meta.json"), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if got := meta.Files["memfile"].Compression; got != "zstd" {
+		t.Fatalf("compression marker = %q, want zstd", got)
+	}
+	dstDir := t.TempDir()
+	if _, _, err := s.Restore(ctx, "base/zeros", dstDir); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dstDir, "memfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Fatal("compressed restore changed the plaintext")
+	}
+}
+
+func TestCompressedIncompressibleRoundTrip(t *testing.T) {
+	s, _ := newTestStoreWithCompression(t, true)
+	ctx := context.Background()
+	plaintext := make([]byte, 256<<10)
+	for i := range plaintext {
+		plaintext[i] = byte(i*31 + 7)
+	}
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "random"), plaintext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Export(ctx, "base/random", srcDir, []string{"random"}, 1, 1, "", ""); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	dstDir := t.TempDir()
+	if _, _, err := s.Restore(ctx, "base/random", dstDir); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dstDir, "random"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Fatal("incompressible compressed restore changed the plaintext")
+	}
+}
+
+func TestLegacyObjectRestoresWithCompressionEnabled(t *testing.T) {
+	legacy, fake := newTestStoreWithCompression(t, false)
+	ctx := context.Background()
+	srcDir, names := writeLocalArtifact(t, map[string]string{"memfile": "legacy-bytes"})
+	if _, _, err := legacy.Export(ctx, "base/legacy", srcDir, names, 1, 1, "", ""); err != nil {
+		t.Fatalf("legacy Export: %v", err)
+	}
+	reader := New(legacy.endpoint, legacy.bucket, true)
+	dstDir := t.TempDir()
+	if _, _, err := reader.Restore(ctx, "base/legacy", dstDir); err != nil {
+		t.Fatalf("legacy Restore: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dstDir, "memfile")); string(got) != "legacy-bytes" {
+		t.Fatalf("legacy restore = %q", got)
+	}
+	if got := fake.object("/embervm/base/legacy/memfile"); string(got) != "legacy-bytes" {
+		t.Fatalf("legacy object was rewritten: %q", got)
+	}
+}
+
+func TestTruncatedCompressedObjectLeavesNoPartialFile(t *testing.T) {
+	s, fake := newTestStoreWithCompression(t, true)
+	ctx := context.Background()
+	plaintext := bytes.Repeat([]byte("memfile"), 1<<16)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "memfile"), plaintext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Export(ctx, "base/truncated", srcDir, []string{"memfile"}, 1, 1, "", ""); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	compressed := fake.object("/embervm/base/truncated/memfile")
+	fake.mu.Lock()
+	fake.objects["/embervm/base/truncated/memfile"] = compressed[:len(compressed)/2]
+	fake.mu.Unlock()
+	dstDir := t.TempDir()
+	if _, _, err := s.Restore(ctx, "base/truncated", dstDir); err == nil {
+		t.Fatal("truncated compressed restore succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "memfile")); !os.IsNotExist(err) {
+		t.Fatalf("truncated restore left destination file, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "memfile.restore.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("truncated restore left temp file, stat err = %v", err)
 	}
 }
 
@@ -402,7 +519,7 @@ func TestReachable(t *testing.T) {
 	if !s.Reachable(context.Background()) {
 		t.Fatal("Reachable should be true against a live fake store")
 	}
-	dead := New("http://127.0.0.1:1", "embervm") // nothing listens on port 1
+	dead := New("http://127.0.0.1:1", "embervm", false) // nothing listens on port 1
 	if dead.Reachable(context.Background()) {
 		t.Fatal("Reachable should be false against a dead endpoint")
 	}

@@ -370,6 +370,11 @@ type Config struct {
 	// StoreBucket is the single bucket every artifact key lives under (Fork 3).
 	// Default "embervm". Env EMBERVM_NODED_STORE_BUCKET.
 	StoreBucket string
+	// StoreCompress enables zstd encoding of newly exported store objects. The
+	// reader always honors each file's marker, so this stays false until every
+	// daemon in the fleet can read compressed objects. Env
+	// EMBERVM_NODED_STORE_COMPRESS. Default false.
+	StoreCompress bool
 
 	// RequireBlessing rejects any writable stateful attach (FRESH/RELIGHT/COLD)
 	// carrying blessed_generation == 0 with FAILED_PRECONDITION, once the
@@ -442,6 +447,7 @@ func Load() (Config, error) {
 
 		StoreEndpoint: os.Getenv("EMBERVM_NODED_STORE_ENDPOINT"),
 		StoreBucket:   getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
+		StoreCompress: boolDefault("EMBERVM_NODED_STORE_COMPRESS", false),
 
 		RequireBlessing: boolDefault("EMBERVM_NODED_REQUIRE_BLESSING", false),
 	}

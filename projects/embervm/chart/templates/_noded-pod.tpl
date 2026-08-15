@@ -287,6 +287,8 @@ containers:
         value: {{ $ctx.Values.noded.store.endpoint | quote }}
       - name: EMBERVM_NODED_STORE_BUCKET
         value: {{ $ctx.Values.noded.store.bucket | quote }}
+      - name: EMBERVM_NODED_STORE_COMPRESS
+        value: {{ $ctx.Values.noded.store.compress | quote }}
       # R7 (ADR embervm/011, standing decision 4): the control plane becomes
       # the sole issuer of volume generations. false accepts a legacy
       # blessed_generation == 0 self-bump (the default, so this PR can land
