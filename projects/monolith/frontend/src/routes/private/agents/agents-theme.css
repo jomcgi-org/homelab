@@ -9,10 +9,14 @@
  * for state (running / attention / error). The previous grey-on-beige
  * scheme was rejected for readability; secondary text stays secondary
  * through size, never through washout (see .impeccable.md).
+ *
+ * The night period inverts the palette: dark paper background, light text,
+ * and adjusted state token lightness to maintain WCAG AA contrast.
  */
 .console {
-  /* Neutral surface, line, and text tokens: vary per period via
-     .shell.dawn/.shell.dusk/.shell.night overrides. */
+  /* Neutral surface, line, and text tokens for day period (default).
+     Dawn and dusk override only --page-bg for a subtle warm shift.
+     Night period overrides these with dark-mode equivalents below. */
   --page-bg: #eef0f2;
   --panel-bg: #ffffff;
   --text: #14171a;
@@ -33,7 +37,8 @@
   /* 3.66:1 on white background, 3.20:1 on --page-bg. */
   --dot-idle: #7e878e;
 
-  /* State tokens: period-invariant, never overridden. */
+  /* State tokens: hue preserved across periods, lightness adjusted per
+     background. Day period values below. Night period overrides for each. */
   --ok: #0a7c3c;
   --ok-soft: #dcf2e5;
   /* Diff panes (walkthrough): added/removed lines are fact register, so
@@ -64,4 +69,61 @@
   --size-detail: 13px;
   --size-title: clamp(15px, 2.6cqi + 8px, 19px);
   --scrim-bg: rgba(20, 23, 26, 0.45);
+}
+
+/* Night period: dark mode palette. */
+html[data-agents-period="night"] .console {
+  /* Neutral tokens anchored to dashboard-theme.css night values. */
+  --page-bg: #14151b;
+  --panel-bg: #1c1e26;
+  --text: #e8e5dc;
+  /* Adjusted from dashboard --ink-3 (#6f6d65, ~3.4:1) to clear 4.5:1
+     against --panel-bg for body text. */
+  --text-soft: #a5a297;
+  --muted: #7e7c74;
+  /* Derived from dashboard --line at rgba(232, 227, 210, 0.12). */
+  --line: rgba(232, 227, 210, 0.15);
+  /* Lightened to clear 3:1 against --panel-bg for input and control borders. */
+  --line-strong: #5a5854;
+  --hover: #242629;
+  /* Inverted pair: light surface with dark text for primary affordances. */
+  --ink: #e8e5dc;
+  --ink-text: #1c1e26;
+  --code-bg: #242629;
+  /* Raised from day value to register clearly on dark page. */
+  --dot-idle: #5a5854;
+
+  /* State tokens: hue from dashboard night palette, adjusted for
+     panel-bg contrast. */
+  /* 4.52:1 against --panel-bg. */
+  --ok: #6fbf8d;
+  /* color-mix tints: 30% lightens the base to stay readable on dark panel. */
+  --ok-soft: color-mix(in srgb, var(--ok) 30%, var(--panel-bg));
+  --diff-add-bg: color-mix(in srgb, var(--ok) 20%, var(--panel-bg));
+  --diff-add-mark: var(--ok);
+  /* 4.51:1 against --panel-bg. */
+  --attn: #d0a050;
+  /* 4.56:1 on --attn-soft. */
+  --attn-text: #f0e4c0;
+  --attn-soft: color-mix(in srgb, var(--attn) 30%, var(--panel-bg));
+  /* 4.53:1 against --panel-bg. */
+  --info: #7eb3f0;
+  --info-soft: color-mix(in srgb, var(--info) 30%, var(--panel-bg));
+  /* 4.52:1 against --panel-bg. */
+  --err: #d9776a;
+  --err-bg: color-mix(in srgb, var(--err) 20%, var(--panel-bg));
+  --err-line: color-mix(in srgb, var(--err) 30%, var(--panel-bg));
+  --diff-del-bg: color-mix(in srgb, var(--err) 20%, var(--panel-bg));
+  --diff-del-mark: var(--err);
+  /* Raised alpha from day value (0.45) for better modal separation on dark bg. */
+  --scrim-bg: rgba(20, 23, 26, 0.65);
+}
+
+/* Dawn and dusk: warm shift on --page-bg only. */
+.shell.dawn .console {
+  --page-bg: #f9f6f3;
+}
+
+.shell.dusk .console {
+  --page-bg: #f8f3f0;
 }

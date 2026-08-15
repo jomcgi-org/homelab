@@ -28,6 +28,7 @@
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import PaneHeader from "./PaneHeader.svelte";
   import SessionWalkthrough from "./SessionWalkthrough.svelte";
+  import { periodForHour } from "$lib/private/period.js";
 
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
 
@@ -97,6 +98,25 @@
   let newPromptEl = $state(null);
   let repoControlEl = $state(null);
   let titleEl = $state(null);
+  // ── Period (time-of-day palette) ────────────
+  let now = $state(new Date());
+  let period = $derived(periodForHour(now.getHours()));
+
+  $effect(() => {
+    // Update the period attribute on document.documentElement to enable CSS
+    // selectors that key off data-agents-period. This matches the initial
+    // value set by the blocking inline script in app.html.
+    if (typeof document !== "undefined") {
+      document.documentElement.setAttribute("data-agents-period", period);
+    }
+  });
+
+  $effect.pre(() => {
+    // Update the clock every 60 seconds to match the landing page's refresh rate.
+    const id = setInterval(() => (now = new Date()), 60_000);
+    return () => clearInterval(id);
+  });
+
   let focusSessionId = null;
   let previousSessionId = null;
   let showAllHistory = $state(false);
@@ -1758,6 +1778,10 @@
     font-family: var(--font-ui);
     font-size: var(--size-body);
     line-height: 1.45;
+  }
+
+  html[data-agents-period="night"] .console {
+    color-scheme: dark;
   }
   .console * {
     font-family: var(--font-ui);
