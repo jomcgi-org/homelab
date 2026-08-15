@@ -312,6 +312,18 @@ figure. The steady-state figure on a brick that has been up across one rebuild
 is 6.934 GiB, and four of its ten rootfs files are for image digests that no
 longer exist in the registry at all.
 
+This is a **different leak from the snapshot reclamation already in flight**, and
+the distinction is worth drawing because the names are so similar. #4459 and
+#4460 reclaim abandoned rootfs *build temporaries*, not published roots. #4903
+punches holes in guest memfiles and #4905 reclaims orphaned stateful bank
+bundles, both under `snapshots/`. None of them look at
+`<workload>/rootfs-sha256-<digest>.ext4`, which is the file measured here.
+
+Scale it honestly: those snapshot leaks are far larger, 143.6 GiB of memfiles and
+69.9 GiB of orphaned bundles on one brick, against 2.791 GiB of superseded roots.
+Published-rootfs retention is the smallest of the three, and currently the only
+one nobody is fixing.
+
 Against that steady state:
 
 | Quantity | Bytes | GiB |
@@ -488,6 +500,9 @@ Not the converter, hydrator, and ublk stack together. In order:
 2. **Reclaim superseded rootfs files.** Independent of the chunk store, cheap,
    and worth 2.791 GiB per long-lived brick today. Four of the ten rootfs files
    on a long-lived brick are for digests that no longer exist in the registry.
+   Not covered by the reclamation already in flight: #4903 and #4905 both work
+   on `snapshots/`, and #4459 and #4460 reclaimed build temporaries rather than
+   published roots. Smaller than either of those, and the only one unowned.
 3. **Decide what `runtime-python` is for.** It costs 508.4 MiB on every brick
    and has never been activated on any of them. Either the zip lane gets a
    consumer or the image stops being baked everywhere. This is a values.yaml
