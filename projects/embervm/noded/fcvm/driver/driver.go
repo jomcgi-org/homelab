@@ -1150,6 +1150,10 @@ func (d *Driver) Snapshot(ctx context.Context, h substrate.Handle) (substrate.Sn
 		_ = d.Release(ctx, h)
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: resume after snapshot: %w", err)
 	}
+	// Punch after resume so the guest is paused for less time. The running guest
+	// does not read the finalized memfile, and this best-effort cleanup must not
+	// turn a successful snapshot into a failed operation.
+	bestEffortDigHoles(memPath, "snapshot")
 
 	ref := substrate.SnapshotRef{
 		ID:        newID("snap"),
@@ -1225,6 +1229,9 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		_ = d.Release(ctx, h)
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: resume after base snapshot: %w", err)
 	}
+	// Punch after resume so the guest is paused for less time. The base memfile
+	// is finalized here and is not read by the running guest afterward.
+	bestEffortDigHoles(memTmp, "base")
 	// Publish memfile before snapfile: a restore reads the snapfile to locate the
 	// memfile, so the memfile must already be in place when the snapfile appears.
 	if err := os.Rename(memTmp, memPath); err != nil {
@@ -1310,6 +1317,7 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: create session snapshot: %w", err)
 	}
+	bestEffortDigHoles(memTmp, "session-bank")
 	// Publish memfile before snapfile: a restore reads the snapfile to locate the
 	// memfile, so the memfile must already be in place when the snapfile appears.
 	if err := os.Rename(memTmp, memPath); err != nil {
@@ -1409,6 +1417,7 @@ func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapsh
 	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: create serving snapshot: %w", err)
 	}
+	bestEffortDigHoles(memTmp, "serving-bank")
 	// Publish memfile before snapfile (a restore reads the snapfile to locate the
 	// memfile), then the IP sidecar. A rescan treats a bundle without a snapfile as
 	// half-written and skips it, so the snapfile is published LAST.
@@ -1590,6 +1599,7 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: create stateful snapshot: %w", err)
 	}
+	bestEffortDigHoles(memTmp, "stateful-bank")
 	// Publish memfile before snapfile (a restore reads the snapfile to locate the
 	// memfile), then the generation sidecar, then the snapfile LAST so a rescan
 	// that finds a snapfile always finds a complete bundle (mirrors serving's
@@ -1671,6 +1681,7 @@ func (d *Driver) CheckpointStateful(ctx context.Context, h substrate.Handle, sna
 		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("driver: create checkpoint snapshot: %w", err)
 	}
+	bestEffortDigHoles(memPath, "stateful-checkpoint")
 	d.mu.Lock()
 	d.checkpoints[token] = &statefulCheckpoint{handle: h, snapshotRef: snapshotRef, generation: generation, tmpDir: tmpDir, pinnedIP: pinnedIP}
 	d.mu.Unlock()
@@ -2082,6 +2093,7 @@ func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, se
 	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: create group member snapshot: %w", err)
 	}
+	bestEffortDigHoles(memTmp, "group-member-bank")
 	// Publish memfile before snapfile (a restore reads the snapfile to locate the
 	// memfile), then the snapfile LAST so a rescan that finds a snapfile always
 	// finds a complete bundle (the same publish-last discipline every other class
