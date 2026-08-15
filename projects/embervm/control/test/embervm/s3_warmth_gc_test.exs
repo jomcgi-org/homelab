@@ -852,6 +852,29 @@ defmodule Embervm.S3WarmthGcTest do
 
   # -- groups ------------------------------------------------------------------
 
+  # The real group-set layout: noded walks the set dir recursively, so every
+  # member's files key under their own subdirectory. meta.json stays at the SET
+  # level, which is the 5-segment key the parser already handled.
+  defp group_set_artifact(prefix, created_at_ms, members \\ ["agent-0", "agent-1"], payload_bytes \\ 1_000) do
+    meta = :json.encode(%{"createdAtUnixMs" => created_at_ms}) |> IO.iodata_to_binary()
+
+    Enum.reduce(
+      members,
+      %{
+        (prefix <> "/meta.json") => {byte_size(meta), created_at_ms, meta}
+      },
+      fn member, acc ->
+        Map.merge(
+          acc,
+          %{
+            (prefix <> "/" <> member <> "/memfile") => {payload_bytes, created_at_ms, "payload"},
+            (prefix <> "/" <> member <> "/snapfile") => {payload_bytes, created_at_ms, "snapshot"}
+          }
+        )
+      end
+    )
+  end
+
   describe "group sets" do
     test "a terminal group's old legacy-layout set deletes; a live group's set is held" do
       objects =
@@ -902,6 +925,195 @@ defmodule Embervm.S3WarmthGcTest do
         )
 
       assert {:ok, %{deleted: [], held: [%{reason: "desired_set"}]}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
+    test "a terminal group's member-suffixed set deletes whole, meta.json first" do
+      prefix = "group_set/amd/grp-X/set-X"
+      objects = group_set_artifact(prefix, @wall - 30 * @day)
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      group = start_store([group_row(:destroyed, "grp-X", nil)])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([]),
+          group_store: group,
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert result.deleted == [prefix]
+
+      assert deleted(agent) == [
+               prefix <> "/meta.json",
+               prefix <> "/agent-0/memfile",
+               prefix <> "/agent-0/snapfile",
+               prefix <> "/agent-1/memfile",
+               prefix <> "/agent-1/snapfile"
+             ]
+
+      assert result.ambiguous == []
+      assert [entry] = result.plan
+      assert entry.prefix == prefix
+      assert entry.bytes == objects |> Map.values() |> Enum.map(&elem(&1, 0)) |> Enum.sum()
+    end
+
+    test "member-suffixed set bytes sum all member files and meta.json" do
+      prefix = "group_set/amd/grp-bytes/set-bytes"
+      objects = group_set_artifact(prefix, @wall - 30 * @day, ["agent-0", "agent-1"], 1_000)
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      group = start_store([group_row(:destroyed, "grp-bytes", nil)])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([]),
+          group_store: group,
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, %{plan: [entry]}} = S3WarmthGc.sweep_now(gc)
+      {meta_bytes, _, _} = Map.fetch!(objects, prefix <> "/meta.json")
+      assert entry.bytes == meta_bytes + 2 * 2 * 1_000
+      assert deleted(agent) != []
+    end
+
+    test "well-formed member-suffixed set has no ambiguous keys" do
+      prefix = "group_set/amd/grp-clear/set-clear"
+      objects = group_set_artifact(prefix, @wall - 30 * @day)
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      group = start_store([group_row(:destroyed, "grp-clear", nil)])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([]),
+          group_store: group,
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert result.ambiguous == []
+      assert deleted(agent) != []
+    end
+
+    test "a live group instance's member-suffixed set is held" do
+      prefix = "group_set/amd/grp-Y/set-Y"
+      objects = group_set_artifact(prefix, @wall - 30 * @day)
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      group = start_store([group_row(:running, "grp-Y", nil)])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([]),
+          group_store: group,
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, %{held: [held]}} = S3WarmthGc.sweep_now(gc)
+      assert held.prefix == prefix
+      assert held.reason == "group_instance_live"
+      assert deleted(agent) == []
+    end
+
+    test "member-suffixed set without meta.json still parses and deletes" do
+      prefix = "group_set/amd/grp-no-meta/set-no-meta"
+
+      objects =
+        group_set_artifact(prefix, @wall - 30 * @day)
+        |> Map.delete(prefix <> "/meta.json")
+
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      group = start_store([group_row(:destroyed, "grp-no-meta", nil)])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([]),
+          group_store: group,
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert result.deleted == [prefix]
+
+      assert deleted(agent) == [
+               prefix <> "/agent-0/memfile",
+               prefix <> "/agent-0/snapfile",
+               prefix <> "/agent-1/memfile",
+               prefix <> "/agent-1/snapfile"
+             ]
+    end
+
+    test "legacy un-vendored member shape group_set/grp-x/set-y/agent-0/memfile stays ambiguous" do
+      prefix = "group_set/grp-dead/set-1/agent-0"
+      key = prefix <> "/memfile"
+      objects = artifact(prefix, @wall - 30 * @day) |> Map.take([key])
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      group = start_store([group_row(:destroyed, "grp-dead", nil)])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([]),
+          group_store: group,
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert result.ambiguous == [key]
+      assert result.plan == []
+      assert deleted(agent) == []
+    end
+
+    test "prefix with ambiguous sibling key is held with reason sibling_key_ambiguous" do
+      prefix = "group_set/amd/grp-Z/set-7"
+      member_key = prefix <> "/agent-0/memfile"
+      ambiguous_key = prefix <> "/not-a-member/x/y/z"
+
+      objects = %{
+        member_key => {1_000, @wall - 30 * @day, "payload"},
+        ambiguous_key => {1_000, @wall - 30 * @day, "payload"}
+      }
+
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      group = start_store([group_row(:destroyed, "grp-Z", nil)])
+
+      gc =
+        start_gc(s3,
+          enabled: true,
+          capacity_table: table,
+          stateful_store: start_store([]),
+          group_store: group,
+          volume_fun: fn _ -> nil end
+        )
+
+      assert {:ok, result} = S3WarmthGc.sweep_now(gc)
+      assert [%{prefix: ^prefix, reason: "sibling_key_ambiguous"}] = result.held
+      assert result.ambiguous == [ambiguous_key]
+      assert result.plan == []
       assert deleted(agent) == []
     end
   end
