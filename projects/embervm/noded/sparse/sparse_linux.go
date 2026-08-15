@@ -1,6 +1,6 @@
 //go:build linux
 
-package driver
+package sparse
 
 import (
 	"fmt"
@@ -15,10 +15,10 @@ const (
 	holeChunkSize = int64(1 << 20)
 )
 
-// digHoles deallocates all-zero regions of the file at path, leaving its
+// DigHoles deallocates all-zero regions of the file at path, leaving its
 // logical size and its contents-as-read unchanged. It returns the number of
 // bytes requested for deallocation.
-func digHoles(path string) (freed int64, err error) {
+func DigHoles(path string) (freed int64, err error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return 0, err

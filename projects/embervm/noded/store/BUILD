@@ -5,11 +5,17 @@ go_library(
     srcs = ["store.go"],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/store",
     visibility = ["//projects/embervm/noded:__subpackages__"],
-    deps = ["@com_github_klauspost_compress//zstd"],
+    deps = [
+        "//projects/embervm/noded/sparse",
+        "@com_github_klauspost_compress//zstd",
+    ],
 )
 
 go_test(
     name = "store_test",
-    srcs = ["store_test.go"],
+    srcs = [
+        "restore_sparse_linux_test.go",
+        "store_test.go",
+    ],
     embed = [":store"],
 )
