@@ -28,8 +28,9 @@ The chosen shape has to survive two facts about this environment specifically.
 First, "a session" here is not one long-lived process: the merger has to work
 whether the PR was opened by an interactive session, a scheduled routine, or a
 Codex dispatch that has since exited, so the mechanism cannot be "whoever
-opened the PR watches it." Second, the monolith already deploys on every merge
-to `main` and already runs DBOS for other scheduled and queued work, so
+opened the PR watches it." Second, the monolith already redeploys shortly after
+merges to `main` (via the post-merge chart write-back, ADR 009) and already
+runs DBOS for other scheduled and queued work, so
 whatever owns serialization should live there rather than as new
 infrastructure.
 
@@ -62,16 +63,25 @@ write is a label neither can trust:
   session, or Joe) after review has actually happened. Applying it is an
   assertion that review occurred, not a request to merge. The reconciler may
   remove it, never add it: it has no way to know a PR is reviewed, only that
-  someone claimed it is.
+  someone claimed it is. The label binds to the head SHA it was applied to:
+  **the reconciler never merges a head the review did not cover.** Before
+  merging, it verifies the current head is the reviewed one, allowing only
+  its own `update-branch` rebases in between; if any other actor moved the
+  branch after review, it removes the label and comments instead of merging.
 - **`merging`**, written only by the reconciler, applied *before* the side
   effect (a merge or an agent spawn) as a write-ahead claim. It is
   deliberately a claim, not a lock. An orphaned `merging` label, left behind
   by a crash mid-tick, never blocks convergence: the next tick re-derives
   whatever action current GitHub state implies, exactly as it would have with
   no label at all. Humans should read `merging` as "do not push to this
-  branch right now," not as a guarantee anything is in flight.
-- **`escalated`**, meaning a Sol rebase agent owns this PR. It is out of the
-  queue until a human re-review re-applies `ready-to-merge`.
+  branch right now," not as a guarantee anything is in flight. A successful
+  merge closes the PR, which retires the claim; a successful spawn swaps the
+  claim for `escalated`.
+- **`escalated`**, written and removed only by the reconciler: applied when
+  it hands the PR to a Sol rebase agent, removed the next time it processes
+  the PR after the judgment tier re-applies `ready-to-merge`. While
+  `escalated` is present without `ready-to-merge`, the PR is out of the
+  queue.
 
 ### One action per tick
 
@@ -84,8 +94,9 @@ labeled PR and does exactly one of:
 
 - **Clean and green:** apply `merging`, merge with rebase.
 - **Behind:** `update-branch --rebase`.
-- **Dirty (rebase conflict):** remove `ready-to-merge`, add `escalated`, spawn
-  the Sol rebase agent.
+- **Dirty (rebase conflict):** apply `merging`, spawn the Sol rebase agent,
+  then swap labels: remove `ready-to-merge` and `merging`, add `escalated`.
+  The claim covers the crash window between the spawn and the label swap.
 - **Checks red:** remove `ready-to-merge`, comment why. Re-labeling after a
   fix re-enters the queue at the PR's original age, not at the back.
 
@@ -117,7 +128,7 @@ the agent is still working the same SHA, is a natural no-op with no separate
 in-flight bookkeeping. The agent's resolution commit is unreviewed code: it
 goes back through the same re-review gate as any other change. The agent
 never merges and never touches a label itself; it only produces a commit for
-a human to re-review.
+the judgment tier (the Opus reviewer session, or Joe) to re-review.
 
 A hard cap on escalations per day bounds this until `budget_usd` enforcement
 lands (#4784, deliberately deferred, see CLAUDE.md's model-routing section).
@@ -139,12 +150,12 @@ graph TD
     N --> S{State}
     S -->|clean+green| M[claim merging, merge rebase]
     S -->|behind| U[update-branch --rebase]
-    S -->|dirty| E[remove ready-to-merge, add escalated,<br/>upsert-spawn Sol agent keyed PR+SHA]
+    S -->|dirty| E[claim merging, upsert-spawn Sol agent<br/>keyed PR+SHA, swap to escalated]
     S -->|red checks| X[remove ready-to-merge, comment]
     M --> W[wait for chart-version-bot write-back<br/>before next tick's merge]
     E --> AG[Ember agent: Sol rebases onto main]
     AG --> RC[resolution commit, unreviewed]
-    RC --> RV[human re-review]
+    RC --> RV[judgment-tier re-review]
     RV -->|approved| L
 ```
 
@@ -172,6 +183,12 @@ graph TD
   problem this repo does not need to take on. A workflow that runs for 30
   seconds and exits has no recovery surface: the next tick starts clean on
   whatever code is live.
+- **Speculative batching**, testing PR N+1 against PR N before N lands,
+  which is the throughput feature a real merge queue would add on top of
+  serialization. Declined: strict required checks already give the
+  tested-against-current-main guarantee, and with `ci test` warming the
+  shared action cache the post-landing re-run is mostly cache-hit, so the
+  throughput win does not justify the complexity.
 - **A DAG or requeue engine for ordering and retries.** Rejected as
   unnecessary complexity: the reconciler observes GitHub, which the escalated
   agent mutates directly, so GitHub is already the coordination blackboard.
@@ -189,8 +206,9 @@ Follows the baseline in `docs/security.md`.
   reach than anything the monolith holds today and is tracked as its own
   piece of implementation work (#4921), not settled by this ADR.
 - **`ready-to-merge` is the review gate.** Its single-writer rule (judgment
-  tier only, reconciler may only remove) is what keeps the reconciler from
-  ever being the thing that decides a PR is safe to land. If that invariant
+  tier only, reconciler may only remove), together with the head-SHA binding
+  (never merge a head the review did not cover), is what keeps the
+  reconciler from ever being the thing that decides a PR is safe to land. If that invariant
   is ever violated, unreviewed code merges automatically.
 - **The Sol agent's output is never trusted code.** A rebase resolution commit
   re-enters the same review gate as anything else; the escalation path adds
@@ -206,8 +224,19 @@ Follows the baseline in `docs/security.md`.
 | Orphaned `merging` label after a crash mid-merge misleads a human into thinking a merge is stuck | Medium | Low | Every tick re-derives the true state from GitHub regardless of the label; the label is documentation for humans, not an input to the reconciler's own logic |
 | A bad commit on `main` conflicts with many open PRs at once, fanning out Sol dispatches | Medium | High | Hard cap on escalations per day (until #4784 lands) |
 | Reconciler credential is a new high-privilege surface (merge, label, force-push) | Medium | High | Scoped credential work tracked separately (#4921); treat as production-critical, reviewed like any other secret-bearing code |
-| A stalled reconciler (DBOS queue wedged, workflow silently not ticking) looks identical to an empty, healthy queue from the outside | Medium | Medium | `cd_health` carries an advisory signal for queue staleness (#4922); advisory, not paging, matching this repo's existing `cd_health` posture |
+| A stalled reconciler (DBOS queue wedged, workflow silently not ticking) looks identical to an empty, healthy queue from the outside | Medium | Medium | `cd_health` will carry an advisory staleness signal (#4922); advisory, not paging, matching this repo's existing `cd_health` posture |
 | Escalating every dirty rebase to Sol, even trivial ones, spends OpenAI quota on conflicts a human would resolve in seconds | Low | Low | Accepted cost of keeping the routing deterministic rather than model-judged; revisit if escalation volume is high enough to matter against the trial's OpenAI-quota-burn criterion (#4913) |
+
+---
+
+## Open Questions
+
+- The mechanism for verifying that the current head is the one the review
+  covered (the approving review's `commit_id`, label-event timestamps, or
+  timeline events), and how the reconciler distinguishes its own
+  `update-branch` rebases from third-party pushes, is left to #4918. The
+  invariant itself (never merge a head the review did not cover) is decided,
+  not open.
 
 ---
 
@@ -234,7 +263,8 @@ Follows the baseline in `docs/security.md`.
 | Resource | Relevance |
 | -------- | --------- |
 | [#4915](https://github.com/jomcgi/homelab/issues/4915) | The settled design this ADR records, and the parent tracking issue for implementation |
-| [#4916-#4922](https://github.com/jomcgi/homelab/issues/4915) | Sub-issues carrying the implementation plan: directives/docs, idempotent spawn, credentials/egress, the reconciler, the Sol agent plumbing, observability |
+| [#4916](https://github.com/jomcgi/homelab/issues/4916) | The ADR sub-issue this document closes |
+| [#4917-#4922](https://github.com/jomcgi/homelab/issues/4915) | Implementation sub-issues under #4915: directives and docs (#4917), the reconciler tick (#4918), idempotent session creation (#4919), Sol agent plumbing and egress (#4920), the reconciler's GitHub credential (#4921), the cd_health staleness signal (#4922) |
 | [#4784](https://github.com/jomcgi/homelab/issues/4784) | `budget_usd` enforcement, which the daily escalation cap stands in for |
 | [#4913](https://github.com/jomcgi/homelab/issues/4913) | The Sol implementation-tier trial this reconciler's escalation path feeds into |
 | [009 - Post-Merge Chart Versioning and Kargo Promotion](009-post-merge-chart-versioning-kargo-promotion.md) | Source of the two-commits-per-merge write-back the reconciler schedules its next action around |
