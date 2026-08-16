@@ -207,6 +207,23 @@ fires after a healthy tick from the health-check loop, and that loop speaks
 streamable HTTP while the monolith gateway serves SSE. So the monolith's
 `last_seen` never advances and its auto-refresh never runs.
 
+Two things about that request are load-bearing:
+
+**The refresh sends `X-Upstream-Authorization`, and its scheme is not `Bearer`.**
+Context Forge forwards the caller's `Authorization` to the upstream MCP server,
+so the admin JWT the CronJob mints for Context Forge's own API also arrives at
+the monolith, which rejects any bearer it cannot verify. The monolith ignores a
+non-bearer scheme entirely and serves discovery anonymously, which it already
+permits, so the override makes the forwarded credential a non-event. Replacing
+it with a real workload token is #4943.
+
+**Success is reported in the body, not the status.** A failed refresh answers
+HTTP 200 with `success: false`, and a tool whose description trips Context
+Forge's XSS validator is dropped from the catalogue while the refresh still
+reports success overall, naming the casualty only in `validationErrors`. The
+CronJob checks both, so a silently stale or incomplete catalogue fails the Job
+instead of reading green. It read green for a week before that check existed.
+
 ## State
 
 Postgres via CloudNativePG (`templates/postgres-cnpg.yaml`). Context Forge holds
