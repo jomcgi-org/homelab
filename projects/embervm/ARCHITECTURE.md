@@ -71,6 +71,7 @@ compare against.
 | Encryption at rest | **Planned** | Per-principal mutable artifacts (#4691); Account-scoped immutable rootfs chunks (ADR 028, #4182) |
 | Cells / multi-cell | **Built** seams, single cell | Second-cell fleet layer is future work |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
+| Website snapshotter (task guest) | **Decided direction** | Headless Chromium screenshot over MCP, #4994 |
 
 ---
 
