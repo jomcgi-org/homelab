@@ -1,6 +1,6 @@
 """Tests for the firecracker demos router.
 
-The router wraps the existing firecracker-backed handlers (sandbox run_python,
+The router wraps the existing firecracker-backed handlers (sandbox Python,
 semgrep scan) and the SigNoz trace reader, and shapes their output for the
 authenticated demos page. These tests mount ONLY the router on a bare FastAPI app
 and stub every underlying handler, so nothing here reaches fc-invoke or
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -34,8 +33,9 @@ def _client() -> TestClient:
 
 
 def test_python_returns_run_shape_with_trace_id(monkeypatch):
-    async def fake_run(code, files=None):
+    async def fake_run(code, language="python", files=None):
         assert code == "print(1)"
+        assert language == "python"
         return {
             "stdout": "1\n",
             "stderr": "",
@@ -45,7 +45,7 @@ def test_python_returns_run_shape_with_trace_id(monkeypatch):
             "truncated": False,
         }
 
-    monkeypatch.setattr(fc, "run_python_in_sandbox", fake_run)
+    monkeypatch.setattr(fc, "run_code_in_sandbox", fake_run)
 
     resp = _client().post("/api/demos/firecracker/python", json={"code": "print(1)"})
     assert resp.status_code == 200
