@@ -755,9 +755,14 @@ defmodule Embervm.BaseBuilder do
         # under N=1 S3 retention (Joe, 2026-07-21) no predecessor ref persists in
         # the store to hydrate from, so a signature->ref history would be dead
         # weight. See docs/plans/2026-07-21-embervm-base-durability-and-cross-vendor.md.
+        #
+        # Hydrate the VENDOR-CORRECT ref (pinned_vendor_ref/3), not the scalar
+        # w.snapshot_ref: should_hydrate?/3's guard 0 already proved this instance's
+        # own vendor has a trustworthy record, so restore that ref rather than
+        # whichever vendor built last.
         state
         |> mark_hydrating(name)
-        |> spawn_hydrate(w)
+        |> spawn_hydrate(%{w | snapshot_ref: pinned_vendor_ref(state, w, node_id)})
 
       w.built_signature == signature(w) and w.snapshot_ref != nil ->
         # The SCALAR base is built, but "some vendor, somewhere" is not the same
@@ -789,11 +794,21 @@ defmodule Embervm.BaseBuilder do
   # rebuilt? True only when ALL five guards hold (fail-safe: any unmet guard falls
   # through to the ordinary build/no-op branches):
   #
-  #   0. the PINNED instance's own reported CPU vendor matches `scalar_vendor`
-  #      (the vendor apply_result/4 last stamped the scalar snapshot_ref with).
-  #      Per-vendor enqueue makes cross-vendor builds routine, so the scalar ref
-  #      can now belong to a vendor other than the one this instance runs; a
-  #      blank/unknown vendor also fails this guard (fail closed);
+  #   0. the PINNED instance resolves to a ref this control plane can vouch for,
+  #      via `pinned_vendor_ref/3`. This anchors on the DURABLE per-vendor CP
+  #      record (`w.vendor_built`), not on comparing the pinned instance's vendor
+  #      against `scalar_vendor` (the vendor `apply_result/4` last stamped the
+  #      SCALAR snapshot_ref with). Per-vendor enqueue makes cross-vendor builds
+  #      the STEADY STATE, not an edge case: `placement/3` pins a workload to ONE
+  #      instance, a repair build by definition runs on a DIFFERENT vendor from
+  #      most workloads' pin, and `apply_result/4` stamps the scalar
+  #      unconditionally while never touching `w.node_id`. A scalar comparison is
+  #      therefore false for nearly every workload in steady state, which would
+  #      disable restore-first fleet-wide rather than guard one cross-vendor
+  #      case. The per-vendor record survives exactly the failure this guard
+  #      exists to recover from (the node losing its local base): it is keyed by
+  #      vendor and does not move just because some OTHER vendor built more
+  #      recently;
   #   1. a base is recorded (snapshot_ref set) AND the spec is unchanged
   #      (built_signature == signature): we are restoring the SAME ref we would
   #      otherwise rebuild, never papering over a spec change (whose target ref is
@@ -891,24 +906,65 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
+  # Defensive clause (this file's idiom): a nil or non-binary node_id would
+  # otherwise reach node_name/1 -> NodeCapacity.vendor_for/2 inside
+  # pinned_vendor_ref/3, which has no nil clause and raises FunctionClauseError,
+  # taking the GenServer down and wiping every workload's snapshot_ref with it.
+  # reconcile_desc/2's own `node_id == nil` branch is the only live caller today
+  # and already guards this, but issue #4105 was exactly this shape (a nil
+  # node_id killing the builder) via a different unguarded lookup, so this stays
+  # total rather than relying on the caller forever.
+  defp should_hydrate?(_state, _w, node_id) when not is_binary(node_id), do: false
+
   defp should_hydrate?(state, w, node_id) do
     # Regression guard: apply_result/4 sets the SCALAR snapshot_ref/scalar_vendor
     # from whichever vendor built LAST, and per-vendor enqueue (vendors_needing_build/2)
-    # makes cross-vendor builds routine rather than rare. `node_id` here is the
-    # PINNED instance (w.node_id), whose vendor can now differ from scalar_vendor.
-    # Hydrating an intel-built ref onto an amd instance would be wrong, so require
-    # the pinned instance's own vendor to match the vendor the scalar ref actually
-    # belongs to, mirroring the discipline hydrate_for_anchor/3 already applies via
-    # snapshot_refs_by_vendor. A blank/unknown vendor (no capacity fact yet) fails
-    # closed to "do not hydrate": it falls through to the ordinary build/no-op
-    # branches, which are safe.
-    pinned_vendor = Embervm.NodeCapacity.vendor_for(state.capacity_table, node_name(node_id))
-
-    pinned_vendor != "" and pinned_vendor == w.scalar_vendor and
+    # makes cross-vendor builds the steady state rather than an edge case. Anchor
+    # on the durable per-vendor record (pinned_vendor_ref/3), not the scalar: see
+    # guard 0 in the doc comment above for why the scalar comparison this guard
+    # used to make would disable restore-first fleet-wide.
+    pinned_vendor_ref(state, w, node_id) != nil and
       is_binary(w.snapshot_ref) and w.built_signature == signature(w) and
       node_reports_base_absent?(state, node_id, w.name) and
       not already_targeting?(state, node_id, w.name, signature(w)) and
       not MapSet.member?(state.hydrating, w.name)
+  end
+
+  # The ref to hydrate FOR `node_id` (a placement instance), or nil when none can
+  # be trusted. Resolves the vendor `node_id` itself runs, then looks up THAT
+  # vendor's own durable record (w.vendor_built[vendor]) rather than the scalar
+  # snapshot_ref/scalar_vendor pair, which apply_result/4 stamps from whichever
+  # vendor built LAST and so no longer identifies "the ref this instance's
+  # vendor owns" now that cross-vendor repair builds are routine. Mirrors what
+  # hydrate_for_anchor/3 already does by resolving the anchor vendor's own ref
+  # out of snapshot_refs_by_vendor/2.
+  defp pinned_vendor_ref(state, w, node_id) do
+    vendor =
+      state.capacity_table
+      |> Embervm.NodeCapacity.vendor_for(node_name(node_id))
+      |> to_string()
+      |> String.trim()
+
+    cond do
+      vendor == "" ->
+        nil
+
+      true ->
+        case Map.get(w.vendor_built, vendor) do
+          %{signature: sig, ref: ref} when is_binary(ref) and ref != "" ->
+            if sig == signature(w), do: ref, else: nil
+
+          _ ->
+            # No per-vendor record (e.g. a CP restart wiped vendor_built, or this
+            # vendor has never had a recorded build). Adopt the scalar ONLY when
+            # it demonstrably belongs to this vendor, so a restart-wiped record
+            # can still restore-first rather than falling all the way to a
+            # rebuild.
+            if w.scalar_vendor == vendor and is_binary(w.snapshot_ref),
+              do: w.snapshot_ref,
+              else: nil
+        end
+    end
   end
 
   # The node AFFIRMATIVELY reports the workload's base absent: a fact exists for
@@ -1432,16 +1488,50 @@ defmodule Embervm.BaseBuilder do
   #
   # Deriving from eligible_build_instances/2 is also what keeps this in step
   # with fleet_vendors/2, which counts vendors from that SAME source: a vendor
-  # that vendors_needing_build/2 returns therefore always resolves here. Ranking
-  # mirrors placement/3 and build_instance_on_node/3 so a repair build never
-  # targets an instance placement itself would reject.
+  # that vendors_needing_build/2 returns therefore always resolves here.
+  #
+  # Among that vendor's eligible instances, PREFER one whose node already
+  # reports a base for this workload (base_presence_rank/3), and fall back to
+  # build_rank/1 only to break the remaining tie. noded's AlreadyBuilt
+  # short-circuit is keyed on the RECEIVING node's own local inventory
+  # (s.bases.get(baseKey)); it only fires when the enqueue happens to land on a
+  # node that already holds a current base. Ranking on build_rank/1 alone left
+  # that to chance: on a fleet with several same-vendor bricks (three intel
+  # nodes in prod) they tie on build_rank, and Enum.max_by/2 returns the first
+  # maximal element in list order, which is state.node_ids order (dial-home
+  # registration order) and reshuffles on every noded pod roll. The live
+  # fleet's three intel bricks hold very different base inventories (11, 3, and
+  # 5 bases respectively), so an untargeted repair enqueue could land many real
+  # cold-boot bakes on whichever brick happened to register last, serialized
+  # behind that single 2Gi brick's one `building` slot. Preferring the instance
+  # that already reports the base is what keeps a repair enqueue an RPC rather
+  # than a bake, matching the PR's central claim.
   defp build_instance_of_vendor(state, w, vendor) do
     state
     |> eligible_build_instances(Map.get(w, :mem_mib) || 0)
     |> Enum.filter(fn i -> Map.get(i, :cpu_vendor) == vendor end)
     |> case do
-      [] -> nil
-      instances -> instances |> Enum.max_by(&build_rank/1) |> Map.get(:instance_id)
+      [] ->
+        nil
+
+      instances ->
+        instances
+        |> Enum.max_by(fn i -> {base_presence_rank(state, i, w.name), build_rank(i)} end)
+        |> Map.get(:instance_id)
+    end
+  end
+
+  # How strongly `instance`'s own node vouches for already holding a base for
+  # `workload`: 2 when it reports one READY, 1 when it reports one in some
+  # other state (BUILDING/FAILED; still evidence of local inventory noded may
+  # short-circuit on), 0 when it reports nothing at all. Higher is better; only
+  # a tiebreaker within one vendor's eligible instances (see
+  # build_instance_of_vendor/3).
+  defp base_presence_rank(state, instance, workload) do
+    case node_base_fact(state, instance.instance_id, workload) do
+      {:ok, %{base_state: :BASE_BUILD_STATE_READY}} -> 2
+      {:ok, _} -> 1
+      :error -> 0
     end
   end
 
@@ -1449,24 +1539,39 @@ defmodule Embervm.BaseBuilder do
   # Shared by reconcile_desc/2 and retry_workload/2 so the two scalar-guard
   # branches cannot drift. Never writes status: the workload is already servable
   # on the vendor that has a base (see the call sites).
+  #
+  # Bails when a hydrate is already in flight for this workload
+  # (state.hydrating). should_hydrate?/3's own guards 3 and 4 keep a build and a
+  # hydrate apart for the reconcile that FIRST triggers one, but the 60s
+  # WorkloadWatcher resync calls reconcile_desc/2 again while the async
+  # RestoreArtifact download is still running; by then should_hydrate?/3 is
+  # false (guard 4: already hydrating) and reconcile_desc falls through into
+  # this scalar-guard branch, which would otherwise issue a repair BuildBase for
+  # the same base key on the same node the in-flight restore is downloading
+  # onto. Deferring here is safe: the hydrate worker's completion (success or
+  # fallback-to-rebuild) re-reconciles on its own.
   defp enqueue_vendor_repairs(state, w, name) do
-    state
-    |> vendors_needing_build(w)
-    |> Enum.reduce(state, fn vendor, acc ->
-      case build_instance_of_vendor(acc, w, vendor) do
-        nil ->
-          acc
+    if MapSet.member?(state.hydrating, name) do
+      state
+    else
+      state
+      |> vendors_needing_build(w)
+      |> Enum.reduce(state, fn vendor, acc ->
+        case build_instance_of_vendor(acc, w, vendor) do
+          nil ->
+            acc
 
-        instance_id ->
-          if already_targeting?(acc, instance_id, name, signature(w)) do
-            acc
-          else
-            acc
-            |> enqueue(instance_id, name)
-            |> maybe_start_build(instance_id)
-          end
-      end
-    end)
+          instance_id ->
+            if already_targeting?(acc, instance_id, name, signature(w)) do
+              acc
+            else
+              acc
+              |> enqueue(instance_id, name)
+              |> maybe_start_build(instance_id)
+            end
+        end
+      end)
+    end
   end
 
   # Look up the capacity fact whose derived instance_id matches (the registry stamps
@@ -1930,7 +2035,7 @@ defmodule Embervm.BaseBuilder do
   defp apply_result(
          state,
          w,
-         %{signature: built_sig, cpu_vendor: vendor},
+         %{signature: built_sig, cpu_vendor: vendor, node_id: build_node_id},
          {:ok, %BuildBaseResponse{} = resp}
        ) do
     previous_ref =
@@ -1955,10 +2060,21 @@ defmodule Embervm.BaseBuilder do
     # unknown (nil); eviction is withheld until the PoolManager and SessionStore
     # report both as zero (report_base_refs/3). A ref already tracked keeps its
     # reported counts.
+    #
+    # node_id here is the INSTANCE THAT ACTUALLY BUILT this turnover
+    # (worker_meta's node_id), not w.node_id (the pinned instance). Per-vendor
+    # repair enqueue means those routinely differ: build_instance_of_vendor/3
+    # can and does target an instance other than the pin. maybe_evict_base/3
+    # later dials entry.node_id to evict the superseded base; dialing the pin
+    # instead would reach the wrong node. EvictArtifact{remote: false} is
+    # idempotent, so that call would still return success, the ref would be
+    # marked evicted and dropped from superseded_refs, and the node that
+    # actually holds the superseded base would keep it forever with no retry
+    # ever issued again for it.
     base_refs =
       if turned_over? and not Map.has_key?(w.base_refs, previous_ref) do
         Map.put(w.base_refs, previous_ref, %{
-          node_id: w.node_id,
+          node_id: build_node_id,
           primed: nil,
           sessions: nil,
           evicted: false
@@ -2012,6 +2128,15 @@ defmodule Embervm.BaseBuilder do
           # A base can finish before its node advertises the workload. Keep the
           # anchor-node export during that dial-home window; later facts replace it
           # with the per-node fan-out.
+          #
+          # w.node_id (the pin) and w.snapshot_ref (the scalar) can now disagree
+          # by vendor: a repair build's worker_meta node_id is not threaded down
+          # to this branch, and the scalar was just stamped from whichever vendor
+          # built LAST. Dialing the pin with a ref built on a different vendor
+          # produces a logged export failure, not data loss (export_reconcile's
+          # 60s sweep and the per-node fan-out above are the real durability
+          # path once any node reports); left as a dial-home-window fallback
+          # rather than reworked here.
           spawn_export(state, w.node_id, w.name, w.snapshot_ref)
 
         _ ->
@@ -2058,6 +2183,15 @@ defmodule Embervm.BaseBuilder do
   # against exporting a BUILDING/FAILED entry; requiring the node fact at all
   # means a base whose node has not yet reported is left for the next sweep
   # (never blindly re-exported without evidence it is present).
+  # Note: `w.node_id` here is the PINNED instance, and this requires the
+  # PIN's own reported ref to equal `w.snapshot_ref` (the scalar). Once a
+  # repair build lands the scalar on a vendor other than the pin's, that
+  # equality goes permanently false for this workload and the 60s export
+  # backstop goes dead on the pin's own path. This is largely compensated: the
+  # per-node fan-out in apply_result/4's export_targets branch re-exports each
+  # node's own unexported ref on every subsequent build, and per-vendor repair
+  # builds are now frequent, so a node's ref does not stay unexported for long
+  # in practice. Left as observed behaviour rather than reworked here.
   defp current_base_present_but_unexported?(state, node_ref, w) do
     is_binary(w.node_id) and is_binary(w.snapshot_ref) and
       case node_base_fact(state, node_ref, w.name) do
@@ -2947,7 +3081,24 @@ defmodule Embervm.BaseBuilder do
 
     w = %{w | backoff_ms: next_backoff, retry_timer: timer}
     state = put_in(state.workloads[w.name], w)
-    write_base_status(state, w, {:failed, message})
+
+    if w.built_signature == signature(w) and w.snapshot_ref != nil do
+      # A REPAIR build failed (e.g. the observed "guest readiness: vsockhttp:
+      # timed out waiting for guest ready at /shim/ready" on an intel brick)
+      # while the workload still genuinely serves at the current signature on
+      # the vendor that already has a base. enqueue_vendor_repairs/3 never wrote
+      # write_base_status(:building) for this build (the caller cannot observe
+      # a repair build), so it must not write the failure either: doing so
+      # would flip BaseBuilt/Ready to False for a build nobody asked for and
+      # park a servable workload there indefinitely, which is a larger version
+      # of the exact regression this PR exists to avoid. Still arm the backoff
+      # retry as normal; BaseVendorCoverage already reports the gap.
+      state
+    else
+      # No current base at all: a real build failure the caller does need to
+      # see (first build, or a rebuild with nothing old left to serve).
+      write_base_status(state, w, {:failed, message})
+    end
   end
 
   # Backoff doubles from the base on each consecutive failure. The first failure
