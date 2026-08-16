@@ -1,0 +1,1887 @@
+<title>agents voice companion · mockup</title>
+<!--
+  Reference mockup, rev 2 (2026-08-15), for the voice companion screen.
+  Ported verbatim from the design artifact that issue #4977 links, which is
+  account-private, so this repo copy is what makes the design reviewable in a
+  PR. The claude.ai frame runtime the artifact host injects has been stripped;
+  nothing else is changed.
+
+  This is a reference, not a component. It is not imported, not built, and not
+  served. The shipped screen lives beside it under companion/ and is expected
+  to diverge; when it does, the ADR and the issue are the contract, not this
+  file.
+
+  Design system: the agents console (agents-theme.css tokens, pinned light
+  inside .mock). The staged DAG, the vm chip semantics, and the walkthrough
+  anatomy are lifted from RunView and WalkthroughNarrative as they shipped on
+  2026-08-15.
+
+  Decided since this rev, in ADR 058 (docs/decisions/agents/058): the wire
+  ledger is a durable table and polling it is the transport, attach mints a
+  session when none is named, latest explicit attach wins, and the principal
+  is recorded but gates on nothing. The mockup's "open questions" section is
+  therefore closed, and is kept only as the record of what was asked.
+-->
+<style>
+  /* ---------- annotation shell (theme-aware) ---------- */
+  :root {
+    --sh-bg: #f2f4f6;
+    --sh-fg: #171b1f;
+    --sh-muted: #5b6570;
+    --sh-line: #dee3e8;
+    --sh-card: #ffffff;
+    --sh-accent: #1e5fc4;
+    --sh-code: #e9edf1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --sh-bg: #101418;
+      --sh-fg: #e8ebee;
+      --sh-muted: #97a1ab;
+      --sh-line: #232b32;
+      --sh-card: #161c22;
+      --sh-accent: #7aa5e8;
+      --sh-code: #1c242c;
+    }
+  }
+  :root[data-theme="light"] {
+    --sh-bg: #f2f4f6;
+    --sh-fg: #171b1f;
+    --sh-muted: #5b6570;
+    --sh-line: #dee3e8;
+    --sh-card: #ffffff;
+    --sh-accent: #1e5fc4;
+    --sh-code: #e9edf1;
+  }
+  :root[data-theme="dark"] {
+    --sh-bg: #101418;
+    --sh-fg: #e8ebee;
+    --sh-muted: #97a1ab;
+    --sh-line: #232b32;
+    --sh-card: #161c22;
+    --sh-accent: #7aa5e8;
+    --sh-code: #1c242c;
+  }
+
+  html {
+    background: var(--sh-bg);
+  }
+  body {
+    margin: 0;
+    background: var(--sh-bg);
+    color: var(--sh-fg);
+    font:
+      14px/1.5 system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+  }
+  .wrap {
+    max-width: 1060px;
+    margin: 0 auto;
+    padding: 40px 20px 80px;
+  }
+  .eyebrow-sh {
+    font:
+      11.5px ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--sh-muted);
+  }
+  h1 {
+    font-size: clamp(22px, 3vw, 30px);
+    font-weight: 650;
+    margin: 6px 0 8px;
+    text-wrap: balance;
+  }
+  .dek {
+    color: var(--sh-muted);
+    max-width: 62ch;
+    margin: 0 0 28px;
+  }
+  .note-col {
+    max-width: 72ch;
+  }
+  h2 {
+    font:
+      11.5px ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--sh-muted);
+    font-weight: 500;
+    margin: 44px 0 12px;
+    padding-top: 18px;
+    border-top: 1px solid var(--sh-line);
+  }
+  p {
+    margin: 0 0 12px;
+  }
+  code,
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+  }
+  code {
+    background: var(--sh-code);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .tbl-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--sh-line);
+    border-radius: 6px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 640px;
+    font-size: 13px;
+  }
+  th,
+  td {
+    text-align: left;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--sh-line);
+    vertical-align: top;
+  }
+  tr:last-child td {
+    border-bottom: none;
+  }
+  th {
+    font:
+      11.5px ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--sh-muted);
+    font-weight: 500;
+    background: var(--sh-card);
+  }
+  td {
+    background: var(--sh-card);
+  }
+  td code {
+    white-space: nowrap;
+  }
+  ul {
+    margin: 0 0 12px;
+    padding-left: 20px;
+  }
+  li {
+    margin-bottom: 7px;
+  }
+  li::marker {
+    color: var(--sh-muted);
+  }
+  .tag-real,
+  .tag-new {
+    font:
+      10.5px ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border-radius: 3px;
+    padding: 1px 6px;
+    margin-right: 6px;
+  }
+  .tag-real {
+    background: #dcf2e5;
+    color: #0a7c3c;
+  }
+  .tag-new {
+    background: #e3edfc;
+    color: #1e5fc4;
+  }
+  @media (prefers-color-scheme: dark) {
+    .tag-real {
+      background: #12351f;
+      color: #6fce97;
+    }
+    .tag-new {
+      background: #16283f;
+      color: #7aa5e8;
+    }
+  }
+  :root[data-theme="light"] .tag-real {
+    background: #dcf2e5;
+    color: #0a7c3c;
+  }
+  :root[data-theme="light"] .tag-new {
+    background: #e3edfc;
+    color: #1e5fc4;
+  }
+  :root[data-theme="dark"] .tag-real {
+    background: #12351f;
+    color: #6fce97;
+  }
+  :root[data-theme="dark"] .tag-new {
+    background: #16283f;
+    color: #7aa5e8;
+  }
+
+  a {
+    color: var(--sh-accent);
+  }
+  button:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid var(--sh-accent);
+    outline-offset: 2px;
+  }
+
+  /* ---------- demo controls (shell) ---------- */
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 14px 0 6px;
+  }
+  .controls button {
+    font:
+      12.5px ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    background: var(--sh-card);
+    color: var(--sh-fg);
+    border: 1px solid var(--sh-line);
+    border-radius: 4px;
+    padding: 7px 14px;
+    cursor: pointer;
+  }
+  .controls button:hover {
+    border-color: var(--sh-accent);
+  }
+  .controls .play {
+    background: var(--sh-fg);
+    color: var(--sh-bg);
+    border-color: var(--sh-fg);
+  }
+  .dots {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .dots button {
+    width: 10px;
+    height: 10px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--sh-muted);
+    background: transparent;
+  }
+  .dots button[aria-current="true"] {
+    background: var(--sh-accent);
+    border-color: var(--sh-accent);
+  }
+  .caption {
+    font:
+      12.5px ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    color: var(--sh-muted);
+    min-height: 1.6em;
+    margin: 0 0 26px;
+  }
+  .caption b {
+    color: var(--sh-fg);
+    font-weight: 600;
+  }
+
+  /* ---------- the mock (pinned light, agents-theme tokens) ---------- */
+  .mock {
+    color-scheme: light;
+    --page-bg: #eef0f2;
+    --panel-bg: #ffffff;
+    --text: #14171a;
+    --text-soft: #3d434a;
+    --muted: #5f6971;
+    --line: #dfe3e6;
+    --line-strong: #8a949c;
+    --hover: #e6e9eb;
+    --ink: #1c2024;
+    --ink-text: #ffffff;
+    --code-bg: #eef0f2;
+    --dot-idle: #7e878e;
+    --ok: #0a7c3c;
+    --ok-soft: #dcf2e5;
+    --attn: #b25e00;
+    --attn-text: #8a4a00;
+    --attn-soft: #fdeed8;
+    --info: #1e5fc4;
+    --info-soft: #e3edfc;
+    --err: #c62f22;
+    --err-bg: #fdeae7;
+    --diff-add-bg: #e9f6ee;
+    --diff-del-bg: #fdf1ee;
+    --font-ui:
+      system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    background: var(--page-bg);
+    color: var(--text);
+    font: 14px/1.45 var(--font-ui);
+    border: 1px solid var(--sh-line);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(10, 14, 18, 0.14);
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: auto auto 1fr auto;
+    height: clamp(560px, 74vh, 720px);
+  }
+  .mock .eyebrow {
+    font: 11.5px var(--font-mono);
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .mock button {
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+  .mock button:focus-visible {
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+  }
+
+  /* attach bar */
+  .attach {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--line);
+    padding: 12px 18px;
+    min-height: 32px;
+  }
+  .vbars {
+    display: inline-flex;
+    gap: 2.5px;
+    align-items: flex-end;
+    height: 14px;
+    width: 18px;
+  }
+  .vbars i {
+    width: 2.5px;
+    background: var(--dot-idle);
+    border-radius: 1px;
+    height: 4px;
+    transition: background-color 0.3s;
+  }
+  .attach.speaking .vbars i {
+    background: var(--info);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .attach.speaking .vbars i {
+      animation: vb 0.9s ease-in-out infinite;
+    }
+    .attach.speaking .vbars i:nth-child(1) {
+      animation-delay: 0s;
+    }
+    .attach.speaking .vbars i:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+    .attach.speaking .vbars i:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+    .attach.speaking .vbars i:nth-child(4) {
+      animation-delay: 0.45s;
+    }
+  }
+  @keyframes vb {
+    0%,
+    100% {
+      height: 4px;
+    }
+    50% {
+      height: 13px;
+    }
+  }
+
+  .attach .chips {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .chip {
+    font: 11.5px var(--font-mono);
+    color: var(--text-soft);
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  .chip.vm {
+    color: var(--ok);
+    border-color: var(--ok-soft);
+    background: var(--ok-soft);
+  }
+  .attach .state {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font: 11.5px var(--font-mono);
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .attach .state .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dot-idle);
+  }
+  .attach.on .state .dot {
+    background: var(--ok);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .attach.on .state .dot {
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  /* spoken line strip */
+  .spoken {
+    padding: 12px 18px 13px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-bg);
+    min-height: 44px;
+  }
+  .spoken .you {
+    font: 11.5px var(--font-mono);
+    color: var(--muted);
+    margin: 0 0 3px;
+    min-height: 1.2em;
+  }
+  .spoken .you b {
+    color: var(--text-soft);
+    font-weight: 500;
+  }
+  .spoken .line {
+    margin: 0;
+    max-width: 65ch;
+    font-size: 14px;
+    color: var(--text);
+    transition: opacity 0.45s;
+  }
+  .spoken .line.dim {
+    color: var(--muted);
+  }
+
+  /* stage */
+  .stage {
+    padding: 18px;
+    overflow-y: auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-content: flex-start;
+  }
+  .empty {
+    margin: auto;
+    text-align: center;
+    color: var(--muted);
+    animation: conjfade 0.6s ease-out;
+  }
+  .empty .glyph {
+    font-size: 26px;
+    opacity: 0.5;
+    margin-bottom: 10px;
+  }
+  .empty p {
+    margin: 0 0 6px;
+  }
+  .empty .mono {
+    font-size: 11.5px;
+  }
+  @keyframes conjfade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .card {
+    background: var(--panel-bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    width: min(430px, 100%);
+    align-self: flex-start;
+    transition:
+      opacity 0.5s,
+      transform 0.5s,
+      box-shadow 0.6s,
+      border-color 0.4s;
+  }
+  .card.receded {
+    opacity: 0.5;
+    transform: scale(0.985);
+  }
+  .card.attn-card {
+    border-color: var(--attn);
+    box-shadow: 0 0 0 1px var(--attn-soft);
+  }
+  .card.pinned {
+    border-color: var(--info);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .card.enter {
+      animation: conjure 0.55s ease-out;
+    }
+  }
+  @keyframes conjure {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+      box-shadow: 0 0 0 4px rgba(30, 95, 196, 0.3);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+      box-shadow: 0 0 0 0 rgba(30, 95, 196, 0);
+    }
+  }
+  .card.exit {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  .card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 10px 14px 9px;
+    border-bottom: 1px solid var(--line);
+  }
+  .card-head .summon {
+    font: 11px var(--font-mono);
+    color: var(--info);
+    margin-left: auto;
+    white-space: nowrap;
+  }
+  .card-acts {
+    display: inline-flex;
+    gap: 2px;
+  }
+  .card-acts button {
+    font: 11.5px var(--font-mono);
+    color: var(--muted);
+    background: none;
+    border: none;
+    border-radius: 3px;
+    padding: 1px 6px;
+  }
+  .card-acts button:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .card.pinned .card-acts .b-pin {
+    color: var(--info);
+    font-weight: 600;
+  }
+  .card-body {
+    padding: 13px 14px 14px;
+  }
+  .card-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 3px;
+  }
+  .card-meta {
+    font: 12.5px var(--font-mono);
+    color: var(--muted);
+    margin: 0 0 12px;
+  }
+  .card-meta .num {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* dag (vertical staged, mirrors RunView) */
+  .dag {
+    display: flex;
+    flex-direction: column;
+  }
+  .node {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 9px 12px;
+    background: var(--panel-bg);
+  }
+  .node.hot {
+    border-color: var(--line-strong);
+  }
+  .node .nname {
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .node .nstate {
+    margin-left: auto;
+    font: 11.5px var(--font-mono);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .node .nstate.ok {
+    color: var(--ok);
+  }
+  .node .nstate.run {
+    color: var(--info);
+  }
+  .node .nstate.attn {
+    color: var(--attn-text);
+  }
+  .nicon {
+    width: 16px;
+    height: 16px;
+    flex: none;
+  }
+  .nicon.ok {
+    color: var(--ok);
+  }
+  .nicon.run {
+    color: var(--info);
+  }
+  .nicon.attn {
+    color: var(--attn);
+  }
+  .nicon.wait {
+    color: var(--dot-idle);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .nicon.run {
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+  }
+  .connector {
+    width: 1px;
+    height: 12px;
+    background: var(--line-strong);
+    margin-left: 19px;
+  }
+  .pips {
+    display: inline-flex;
+    gap: 3px;
+    margin-left: 8px;
+  }
+  .pips i {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--dot-idle);
+  }
+  .pips i.done {
+    background: var(--ok);
+  }
+  .pips i.live {
+    background: var(--info);
+  }
+
+  /* walkthrough card: mirrors the full-page WalkthroughNarrative anatomy */
+  .account {
+    margin: 0 0 14px;
+    color: var(--text);
+    font-size: 13.5px;
+    line-height: 1.6;
+    max-width: 60ch;
+    text-wrap: pretty;
+  }
+  .fheading {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font: 12.5px var(--font-mono);
+    margin: 0 0 8px;
+  }
+  .fheading .fname {
+    font-weight: 600;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .fheading .fstat {
+    display: flex;
+    flex: none;
+    gap: 8px;
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+  .fheading .adds {
+    color: var(--ok);
+  }
+  .fheading .dels {
+    color: var(--err);
+  }
+  .hunk-scroll {
+    overflow-x: auto;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  .hunk {
+    font: 12px/1.6 var(--font-mono);
+    min-width: 360px;
+  }
+  .hunk span {
+    display: block;
+    padding: 0 10px;
+    white-space: pre;
+  }
+  .hunk .hd {
+    color: var(--muted);
+  }
+  .hunk .add {
+    background: var(--diff-add-bg);
+  }
+  .hunk .del {
+    background: var(--diff-del-bg);
+  }
+  .register {
+    margin: 12px 0 0;
+    font-size: 12.5px;
+    color: var(--text-soft);
+  }
+  .register strong {
+    color: var(--err);
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  .walklink {
+    margin: 10px 0 0;
+    font: 11.5px var(--font-mono);
+    color: var(--muted);
+  }
+
+  /* tool run card */
+  .toolline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font: 12.5px var(--font-mono);
+  }
+  .toolline.running {
+    color: var(--info);
+  }
+  .toolline.ok {
+    color: var(--ok);
+  }
+  .toolline .when {
+    color: var(--muted);
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ask card */
+  .verdict {
+    border-left: 2px solid var(--attn);
+    padding: 2px 0 2px 10px;
+    color: var(--text-soft);
+    font-size: 13px;
+    margin: 0 0 14px;
+  }
+  .ask-acts {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .btn-ink {
+    background: var(--ink);
+    color: var(--ink-text);
+    border: 1px solid var(--ink);
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .btn-quiet {
+    background: var(--panel-bg);
+    color: var(--text);
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-size: 13px;
+  }
+  .resolved {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 12.5px var(--font-mono);
+    color: var(--ok);
+  }
+  .resolved .when {
+    color: var(--muted);
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* session card */
+  .sess-quote {
+    color: var(--text-soft);
+    font-size: 13px;
+    border-left: 2px solid var(--line-strong);
+    padding: 2px 0 2px 10px;
+    margin: 0 0 12px;
+  }
+  .statchips {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* the wire */
+  .wire {
+    border-top: 1px solid var(--line);
+    background: var(--panel-bg);
+    padding: 9px 18px 12px;
+  }
+  .wire .eyebrow {
+    display: block;
+    margin-bottom: 6px;
+  }
+  .wire-lines {
+    max-height: 92px;
+    overflow-y: auto;
+  }
+  .wire-lines div {
+    font: 11.5px/1.7 var(--font-mono);
+    color: var(--text-soft);
+    white-space: nowrap;
+    overflow-x: auto;
+  }
+  .wire-lines .t {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    margin-right: 10px;
+  }
+  .wire-lines .tool {
+    color: var(--info);
+  }
+  .wire-lines .args {
+    color: var(--muted);
+  }
+  .wire-lines .none {
+    color: var(--muted);
+    font-style: italic;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .wire-lines div.enter {
+      animation: wline 0.4s ease-out;
+    }
+  }
+  @keyframes wline {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  /* lifecycle table cells */
+  .lc {
+    font:
+      11px ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 720px) {
+    .mock {
+      height: auto;
+      min-height: 640px;
+    }
+    .attach .state {
+      margin-left: 0;
+      width: 100%;
+    }
+    .card {
+      width: 100%;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .mock *,
+    .mock,
+    .empty {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+</style>
+
+<div class="wrap">
+  <span class="eyebrow-sh"
+    >agents · mockup for review · rev 2 · 2026-08-15</span
+  >
+  <h1>The voice companion</h1>
+  <p class="dek">
+    A parallel surface that a voice session grabs over MCP. The voice model
+    holds the remote: it conjures the run DAG, the walkthrough, or a decision
+    onto the stage, runs the session tools out loud, and the stage holds only
+    what the conversation is about right now. Same material as
+    <span class="mono">/private/agents</span>, one new idea: the screen follows
+    the talk.
+  </p>
+
+  <div class="controls">
+    <button class="play" id="playBtn" type="button">
+      play the conversation
+    </button>
+    <button id="prevBtn" type="button" aria-label="previous beat">
+      &#9664;
+    </button>
+    <button id="nextBtn" type="button" aria-label="next beat">&#9654;</button>
+    <div class="dots" id="dots" role="tablist" aria-label="demo beats"></div>
+  </div>
+  <p class="caption" id="caption"></p>
+
+  <!-- ============ the mock ============ -->
+  <div class="mock" role="img" aria-label="voice companion mockup">
+    <div class="attach" id="attach">
+      <span class="vbars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <span class="eyebrow">voice companion</span>
+      <span class="chips" id="attachChips"></span>
+      <span class="state"
+        ><span class="dot"></span><span id="attachState">unattached</span></span
+      >
+    </div>
+
+    <div class="spoken" id="spoken">
+      <p class="you" id="youLine"></p>
+      <p class="line dim" id="voiceLine" aria-live="polite">
+        Nothing attached. The stage is dark.
+      </p>
+    </div>
+
+    <div class="stage" id="stage"></div>
+
+    <div class="wire">
+      <span class="eyebrow">the wire · mcp calls driving this view</span>
+      <div class="wire-lines" id="wireLines"></div>
+    </div>
+  </div>
+  <!-- ============ /the mock ============ -->
+
+  <div class="note-col">
+    <h2>What changed in rev 2</h2>
+    <ul>
+      <li>
+        The walkthrough card now mirrors the console's new full-page
+        walkthrough: the agent's account reads first as prose, then the file and
+        its counts, then the diff, and files changed without explanation are
+        named in a register rather than dropped. The provenance banner and point
+        counts rev 1 carried are gone because the console stripped them as
+        bookkeeping.
+      </li>
+      <li>
+        Decay is engine behavior now, not staged frames: every beat only
+        declares what the conversation references, and the stage works out what
+        recedes, what leaves, and what gets re-summoned. The pin control on
+        every card is live; try pinning the walkthrough at beat 3 and watching
+        it survive the rest of the conversation.
+      </li>
+      <li>
+        Tooling by voice: beat 4 runs semgrep from a spoken sentence. The call
+        goes down the session lane, surfaces itself as an ephemeral tool card
+        with no <code>voice_ui_show</code> involved, and resolves live on the
+        stage.
+      </li>
+    </ul>
+
+    <h2>How to read this</h2>
+    <p>
+      Press play, or step with the arrows. Each beat is one exchange in a voice
+      conversation: what you said, what the model spoke back (the
+      <code>&lt;voice&gt;</code> line it already emits per turn), and the calls
+      it made to move the stage. The wire at the bottom is deliberate: every
+      surface names the call that summoned it, so the fluid behavior never
+      becomes unaccountable. At beat 6 the decision gate is answered by voice,
+      but the buttons on the card resolve the same gate; both channels are
+      peers.
+    </p>
+
+    <h2>Surface lifecycle</h2>
+    <p>
+      Relevance is the only layout rule. A surface is <b>front</b> while the
+      conversation references it, recedes when it goes one exchange without a
+      mention, and leaves after two. Tool runs are more ephemeral than views:
+      they skip the receded stop and leave after one. Anything can be
+      re-summoned, and it arrives fresh.
+    </p>
+    <div class="tbl-scroll">
+      <table>
+        <tr>
+          <th>state</th>
+          <th>enters when</th>
+          <th>leaves how</th>
+        </tr>
+        <tr>
+          <td><span class="lc">front</span></td>
+          <td>conjured, or re-referenced by the current exchange</td>
+          <td>goes unreferenced for an exchange</td>
+        </tr>
+        <tr>
+          <td><span class="lc">receded · 50%</span></td>
+          <td>one exchange since last reference</td>
+          <td>
+            re-reference restores front; a second quiet exchange removes it
+          </td>
+        </tr>
+        <tr>
+          <td><span class="lc">gone</span></td>
+          <td>two quiet exchanges; one for tool runs</td>
+          <td>only a fresh summon brings it back</td>
+        </tr>
+        <tr>
+          <td><span class="lc">pinned</span></td>
+          <td>you press pin</td>
+          <td>
+            you unpin or dismiss; the model's <code>show</code> and
+            <code>dismiss</code> cannot touch it
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <h2>Proposed tool surface</h2>
+    <p>
+      Four tools alongside the existing
+      <code>monolith_agent_session_*</code> family. All return on accept, in the
+      session-lane style. If no companion is open, every call is accepted and
+      does nothing: voice must work with the screen off.
+    </p>
+    <div class="tbl-scroll">
+      <table>
+        <tr>
+          <th>tool</th>
+          <th>shape</th>
+          <th>behavior</th>
+        </tr>
+        <tr>
+          <td><code>voice_ui_attach</code></td>
+          <td><code>{session_id}</code></td>
+          <td>
+            Binds any open companion to the session. Populates identity: model,
+            vm state (from the CP listing, not session columns), repo, branch.
+            The caller passes the session id explicitly; MCP calls carry no real
+            actor identity today, so the companion cannot infer "my session".
+          </td>
+        </tr>
+        <tr>
+          <td><code>voice_ui_show</code></td>
+          <td><code>{surface, ref, focus?}</code></td>
+          <td>
+            Conjures a surface: <code>run</code>, <code>walkthrough</code>,
+            <code>transcript</code>, <code>vm</code>. Whatever it displaces
+            starts decaying rather than being cleared.
+            <code>focus</code> targets a node, a turn, or a file in the
+            walkthrough.
+          </td>
+        </tr>
+        <tr>
+          <td><code>voice_ui_ask</code></td>
+          <td><code>{question, options, ref}</code></td>
+          <td>
+            Raises a decision card. Returns accepted immediately; the answer
+            (spoken or clicked) is delivered back through the existing
+            <code>agent_session_send</code> path as the next message, so the
+            voice turn never blocks on the screen.
+          </td>
+        </tr>
+        <tr>
+          <td><code>voice_ui_dismiss</code></td>
+          <td><code>{surface?}</code></td>
+          <td>
+            Clears one surface or the stage. The user's own pin and dismiss
+            controls always outrank the model's.
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <h2>Tooling by voice</h2>
+    <p>
+      The remote is not read-only. The voice lane already reaches the session
+      tools over MCP; the change is that a companion, when open, renders each
+      call as an ephemeral surface instead of leaving it buried in a transcript.
+      Nothing new is minted for this: the wire is the source of truth and the
+      card is just its view, which is why beat 4 shows no
+      <code>voice_ui_show</code> before the semgrep card appears.
+    </p>
+    <div class="tbl-scroll">
+      <table>
+        <tr>
+          <th>call</th>
+          <th>status</th>
+          <th>what the companion shows</th>
+        </tr>
+        <tr>
+          <td><code>agent_session_send</code></td>
+          <td><span class="tag-real">real</span></td>
+          <td>the resolution path for asks and send-backs (beat 6)</td>
+        </tr>
+        <tr>
+          <td><code>semgrep_scan</code></td>
+          <td><span class="tag-real">real</span></td>
+          <td>
+            a tool run card: args while running, findings when done (beat 4)
+          </td>
+        </tr>
+        <tr>
+          <td><code>agent_trigger_job</code>, k8s reads</td>
+          <td><span class="tag-real">real</span></td>
+          <td>the same tool card shape</td>
+        </tr>
+        <tr>
+          <td>auto-surfacing of wire calls</td>
+          <td><span class="tag-new">proposed</span></td>
+          <td>the behavior itself: calls become cards, cards decay fastest</td>
+        </tr>
+      </table>
+    </div>
+    <p>
+      Authorization stance for review: reads and session-lane sends run on voice
+      alone. Anything that mutates outside the attached session raises
+      <code>voice_ui_ask</code>
+      first and waits for the word or the click.
+    </p>
+
+    <h2>Principles</h2>
+    <ul>
+      <li>
+        <b>Visible strings.</b> Every surface carries its summoning call, and
+        the wire logs the full sequence, including calls that are not
+        <code>voice_ui_*</code> at all. Fluid, never inexplicable.
+      </li>
+      <li>
+        <b>The user outranks the model.</b> Pin freezes a surface against
+        <code>show</code> and <code>dismiss</code>; the close control always
+        works. Both are live in this mockup.
+      </li>
+      <li>
+        <b>Surfaces decay.</b> One quiet exchange recedes a surface, two remove
+        it, and tool runs get one. The stage holds at most what the conversation
+        is about, not a dashboard's worth of state.
+      </li>
+      <li>
+        <b>The wire is two-way.</b> The companion is a remote that reads and
+        acts: session tools run on a spoken sentence, and the ask gate is the
+        boundary before anything heavier.
+      </li>
+      <li>
+        <b>Mirrors, not forks.</b> Cards are read-only remounts of console
+        pieces (staged DAG, walkthrough, transcript) and deep-link into
+        <span class="mono">/private/agents</span> for anything heavier than a
+        glance.
+      </li>
+      <li>
+        <b>Degrade to voice.</b> Companion closed means the tools no-op. Nothing
+        in the voice flow may depend on the screen being up.
+      </li>
+    </ul>
+
+    <h2>Real vs proposed</h2>
+    <ul>
+      <li>
+        <span class="tag-real">real</span> The spoken line:
+        <code>voice.py</code> already stores a
+        <code>&lt;voice&gt;</code> summary per turn and
+        <code>agent_session_status</code> returns it.
+      </li>
+      <li>
+        <span class="tag-real">real</span> The staged DAG, vm chip semantics,
+        and the theme tokens are lifted from <code>RunView</code> and
+        <code>agents-theme.css</code> as they ship today.
+      </li>
+      <li>
+        <span class="tag-real">real</span> The walkthrough anatomy matches
+        <code>WalkthroughNarrative</code> as of 2026-08-15: a finished session
+        opens on the full-page walkthrough, the account reads before the diff,
+        and "Changed without explanation:" names the files the agent never
+        mentioned, which is the case the feature exists to surface.
+      </li>
+      <li>
+        <span class="tag-real">real</span> <code>semgrep_scan</code>,
+        <code>agent_session_send</code>, and
+        <code>agent_trigger_job</code> exist on the MCP path today; beat 4
+        invents nothing about the call, only about its rendering.
+      </li>
+      <li>
+        <span class="tag-new">proposed</span> The four
+        <code>voice_ui_*</code> tools, the lifecycle and pin behavior,
+        auto-surfacing of wire calls, and ask resolving through the session-send
+        path.
+      </li>
+      <li>
+        <span class="tag-new">proposed</span> Beat 6 shows send-back queuing a
+        third implement attempt. That is the direction for the reviewer loop
+        (the plan gains an attempt), not current behavior: today a
+        request-changes verdict ends the run.
+      </li>
+    </ul>
+
+    <h2>Open questions</h2>
+    <ul>
+      <li>
+        Attach identity: is speaking the session id acceptable, or does this
+        wait for caller identity on the MCP path? Nothing on that path carries a
+        real actor today.
+      </li>
+      <li>
+        Transport: the console is poll-shaped by decision; the companion wants
+        push. Reuse the <code>vms/stream</code> SSE pattern, or accept a short
+        poll?
+      </li>
+      <li>
+        One companion per session, or a grabbable wall surface where the latest
+        <code>attach</code> wins? Needs a contention rule either way.
+      </li>
+      <li>
+        Does the wire ledger persist with the session (auditable) or live only
+        in the companion (ephemeral)?
+      </li>
+      <li>
+        Voice-invoked tooling: is call-on-voice right for reads and session
+        sends, with <code>voice_ui_ask</code> gating anything heavier, and which
+        named tools sit on each side of that line? Feels like the ADR's job to
+        enumerate.
+      </li>
+    </ul>
+  </div>
+</div>
+
+<script>
+  (function () {
+    "use strict";
+
+    /* ---------- inline 16px icons (StateIcon-style) ---------- */
+    var IC = {
+      check:
+        '<svg class="nicon ok" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.5"/><path d="M5 8.2l2 2 4-4.4"/></svg>',
+      gate: '<svg class="nicon ok" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.4" y="3.4" width="9.2" height="9.2" transform="rotate(45 8 8)"/><path d="M5.8 8.1l1.6 1.6 3-3.2"/></svg>',
+      run: '<svg class="nicon run" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="6"/></svg>',
+      attn: '<svg class="nicon attn" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.6v4"/><circle cx="8" cy="11.2" r="0.4" fill="currentColor"/></svg>',
+      wait: '<svg class="nicon wait" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4.5 3h7M4.5 13h7M5.5 3c0 5 5 5 5 10M10.5 3c0 5-5 5-5 10"/></svg>',
+    };
+
+    function head(eyebrow, summon) {
+      return (
+        '<header class="card-head"><span class="eyebrow">' +
+        eyebrow +
+        "</span>" +
+        '<span class="summon">via ' +
+        summon +
+        "</span>" +
+        '<span class="card-acts"><button type="button" class="b-pin" title="pin: exempt from decay">pin</button>' +
+        '<button type="button" class="b-dis" title="dismiss">&times;</button></span></header>'
+      );
+    }
+
+    function pips(n, total, liveIdx) {
+      var s = '<span class="pips">';
+      for (var i = 0; i < total; i++) {
+        s +=
+          '<i class="' +
+          (i < n ? "done" : i === liveIdx ? "live" : "") +
+          '"></i>';
+      }
+      return s + "</span>";
+    }
+
+    /* ---------- card builders ---------- */
+    function sessionCard() {
+      return (
+        head("session 512 · turn 7", "voice_ui_attach") +
+        '<div class="card-body">' +
+        '<p class="card-title">harden auth retries</p>' +
+        '<p class="card-meta">jomcgi/homelab · qwen · <span class="num">$0.92</span></p>' +
+        '<p class="sess-quote">"Turn seven pushed the retry change and the suite is green locally. Waiting on the run\'s review pass."</p>' +
+        '<div class="statchips"><span class="chip">files touched 6</span>' +
+        '<span class="chip">commands 14</span><span class="chip">needs_answer no</span></div>' +
+        "</div>"
+      );
+    }
+
+    function runCard(v) {
+      var review;
+      if (v === "running") {
+        review =
+          '<div class="node hot">' +
+          IC.run +
+          '<span class="nname">review</span>' +
+          pips(1, 3, 1) +
+          '<span class="nstate run">running · attempt 2</span></div>';
+      } else if (v === "needs") {
+        review =
+          '<div class="node hot">' +
+          IC.attn +
+          '<span class="nname">review</span>' +
+          pips(2, 3) +
+          '<span class="nstate attn">needs you</span></div>';
+      } else {
+        review =
+          '<div class="node">' +
+          IC.wait +
+          '<span class="nname">review</span>' +
+          pips(2, 3, 2) +
+          '<span class="nstate">queued · attempt 3</span></div>';
+      }
+      var spend = v === "queued" ? "2.31" : "1.84";
+      return (
+        head("run · wf-9f2c41", "voice_ui_show") +
+        '<div class="card-body">' +
+        '<p class="card-title">harden auth retries</p>' +
+        '<p class="card-meta">feat/auth-retry-cap · started 14:01 · <span class="num">$' +
+        spend +
+        "</span> of $5.00 label</p>" +
+        '<div class="dag">' +
+        '<div class="node">' +
+        IC.check +
+        '<span class="nname">implement</span>' +
+        pips(2, 2) +
+        '<span class="nstate ok">done · 2 attempts</span></div>' +
+        '<div class="connector"></div>' +
+        '<div class="node">' +
+        IC.gate +
+        '<span class="nname">push gate</span>' +
+        '<span class="nstate ok">passed</span></div>' +
+        '<div class="connector"></div>' +
+        review +
+        "</div></div>"
+      );
+    }
+
+    function walkCard() {
+      return (
+        head("walkthrough · turn 7", "voice_ui_show") +
+        '<div class="card-body">' +
+        '<p class="account">The cap was the flake source: three tries lost races under CI load. Five with jitter clears the soak runs.</p>' +
+        '<div class="fheading"><span class="fname">internal/auth/retry.go</span>' +
+        '<span class="fstat"><span class="adds">+18</span><span class="dels">&minus;4</span></span></div>' +
+        '<div class="hunk-scroll"><div class="hunk">' +
+        '<span class="hd">@@ -14,8 +14,11 @@</span>' +
+        '<span class="del">-const maxRetries = 3</span>' +
+        '<span class="add">+const maxRetries = 5</span>' +
+        "<span> </span>" +
+        "<span> func backoff(attempt int) time.Duration {</span>" +
+        '<span class="del">-\treturn base * time.Duration(attempt)</span>' +
+        '<span class="add">+\td := base * time.Duration(attempt)</span>' +
+        '<span class="add">+\treturn d + jitter(d/4)</span>' +
+        "<span> }</span>" +
+        "</div></div>" +
+        '<p class="register"><strong>Changed without explanation:</strong> docs/auth-retry.md (+1)</p>' +
+        '<p class="walklink">continues in the full walkthrough view · /private/agents</p>' +
+        "</div>"
+      );
+    }
+
+    function toolCard(v) {
+      var line =
+        v === "done"
+          ? '<p class="toolline ok">&#10003; 0 findings · 14 rules<span class="when">1.9s</span></p>'
+          : '<p class="toolline running">' + IC.run + " running&hellip;</p>";
+      return (
+        head("tool run · semgrep_scan", "surfaced from the wire") +
+        '<div class="card-body">' +
+        '<p class="card-title">semgrep over internal/auth/retry.go</p>' +
+        '<p class="card-meta">rules: auth · session lane · no voice_ui_show involved</p>' +
+        line +
+        "</div>"
+      );
+    }
+
+    function askCard(v) {
+      var body;
+      if (v !== "resolved") {
+        body =
+          '<p class="card-title">review wants a decision</p>' +
+          '<p class="verdict">request_changes: "retry cap moved from 3 to 5 with no covering test. plausible, unproven."</p>' +
+          '<div class="ask-acts">' +
+          '<button type="button" class="btn-ink ask-back">send it back</button>' +
+          '<button type="button" class="btn-quiet ask-ok">approve merge</button>' +
+          "</div>";
+      } else {
+        body =
+          '<p class="card-title">review wants a decision</p>' +
+          '<div class="resolved"><span>&#10003; sent back by voice · attempt 3 queued</span>' +
+          '<span class="when">14:04:41</span></div>';
+      }
+      return (
+        head("decision · wf-9f2c41 · review", "voice_ui_ask") +
+        '<div class="card-body">' +
+        body +
+        "</div>"
+      );
+    }
+
+    var SURF = {
+      session: { build: sessionCard, eph: false },
+      run: { build: runCard, eph: false },
+      walk: { build: walkCard, eph: false },
+      tool: { build: toolCard, eph: true },
+      ask: { build: askCard, eph: false },
+    };
+
+    /* ---------- the wire ---------- */
+    var WIRE = [
+      { t: "14:02:11", tool: "voice_ui_attach", args: "{session: 512}" },
+      {
+        t: "14:02:37",
+        tool: "voice_ui_show",
+        args: '{surface: "run", run: "wf-9f2c41"}',
+      },
+      {
+        t: "14:03:12",
+        tool: "voice_ui_show",
+        args: '{surface: "walkthrough", session: 512, turn: 7, focus: {file: "internal/auth/retry.go"}}',
+      },
+      {
+        t: "14:03:41",
+        tool: "semgrep_scan",
+        args: '{path: "internal/auth/retry.go", rules: "auth"}',
+      },
+      {
+        t: "14:03:57",
+        tool: "voice_ui_show",
+        args: '{surface: "run", run: "wf-9f2c41"}',
+      },
+      {
+        t: "14:03:58",
+        tool: "voice_ui_ask",
+        args: '{ref: "wf-9f2c41/review", options: ["approve", "send back"]}',
+      },
+      {
+        t: "14:04:41",
+        tool: "agent_session_send",
+        args: '{session_id: 512, message: "add a test covering the new retry cap"}',
+      },
+    ];
+
+    /* ---------- beats: each declares only what the exchange references ---------- */
+    var BEATS = [
+      {
+        caption:
+          "<b>beat 0</b> · cold: the companion is open, nothing attached",
+        attached: false,
+        you: "",
+        wire: 0,
+        emptyKind: "cold",
+        voice: "Nothing attached. The stage is dark.",
+        dim: true,
+        refs: [],
+      },
+      {
+        caption:
+          "<b>beat 1</b> · a voice session identifies itself over mcp; the companion binds",
+        attached: true,
+        you: "",
+        wire: 1,
+        voice:
+          "Attached. Session 512 is mid-run: implement is done, review is on its second pass.",
+        refs: [{ key: "session" }],
+      },
+      {
+        caption:
+          "<b>beat 2</b> · you ask about the run; the model conjures the dag, the session card recedes",
+        attached: true,
+        you: "how&rsquo;s the auth run going?",
+        wire: 2,
+        voice:
+          "Implement landed on attempt two and the push gate passed. Review has been going about a minute; spend is $1.84 against the $5 label.",
+        refs: [{ key: "run", v: "running" }],
+      },
+      {
+        caption:
+          "<b>beat 3</b> · the walkthrough surfaces in its new shape; the session card, two exchanges quiet, fades out",
+        attached: true,
+        you: "what did it actually change?",
+        wire: 3,
+        voice:
+          "Turn seven’s account: the retry cap moved from three to five, and backoff is jittered. One file changed without explanation, docs/auth-retry.md; it’s named in the register.",
+        refs: [{ key: "walk" }],
+      },
+      {
+        caption:
+          "<b>beat 4</b> · tooling by voice: semgrep runs on the session lane and surfaces itself; the run card has decayed away",
+        attached: true,
+        you: "run semgrep over that file before I decide anything",
+        wire: 4,
+        voice: "On it. Semgrep, auth rules, over retry.go.",
+        refs: [{ key: "tool", v: "running" }],
+        timers: [{ at: 1500, kind: "toolDone" }],
+      },
+      {
+        caption:
+          "<b>beat 5</b> · the review gate re-summons the run; the stage becomes a question",
+        attached: true,
+        you: "",
+        wire: 6,
+        voice:
+          "Review came back: request changes. The cap moved without a covering test. Merge anyway, or send it back?",
+        refs: [
+          { key: "ask", v: "open", attn: true },
+          { key: "run", v: "needs" },
+        ],
+      },
+      {
+        caption:
+          "<b>beat 6</b> · you answer by voice; the buttons would resolve the same gate",
+        attached: true,
+        you: "send it back, and have it add a test for the cap",
+        wire: 7,
+        voice: "Sent back. Implement is picking it up as attempt three.",
+        refs: [
+          { key: "ask", v: "resolved" },
+          { key: "run", v: "queued" },
+        ],
+      },
+      {
+        caption:
+          "<b>beat 7</b> · nothing is relevant, so nothing persists; the wire remembers",
+        attached: true,
+        you: "",
+        wire: 7,
+        emptyKind: "quiet",
+        voice:
+          "Quiet, watching wf-9f2c41. The stage clears itself; I will speak up when attempt three lands.",
+        dim: true,
+        refs: [],
+        timers: [{ at: 2400, kind: "quietClear" }],
+      },
+    ];
+
+    /* ---------- state ---------- */
+    var stage = document.getElementById("stage");
+    var attach = document.getElementById("attach");
+    var attachChips = document.getElementById("attachChips");
+    var attachState = document.getElementById("attachState");
+    var youLine = document.getElementById("youLine");
+    var voiceLine = document.getElementById("voiceLine");
+    var wireLines = document.getElementById("wireLines");
+    var caption = document.getElementById("caption");
+    var dots = document.getElementById("dots");
+    var playBtn = document.getElementById("playBtn");
+    var beat = 0,
+      timer = null,
+      speakTimer = null;
+    var lastVariant = {};
+    var pinned = {}; /* key -> true, user state, survives navigation */
+    var dismissed = {}; /* key -> beat index at dismissal */
+    var toolFlip = false; /* semgrep finished (beat 4 timer) */
+    var quietCleared = false;
+    var beatTimers = [];
+
+    BEATS.forEach(function (_, i) {
+      var d = document.createElement("button");
+      d.type = "button";
+      d.setAttribute("aria-label", "beat " + i);
+      d.addEventListener("click", function () {
+        stopPlay();
+        go(i);
+      });
+      dots.appendChild(d);
+    });
+
+    /* Replay the reference bookkeeping from beat 0: age everything, refresh what
+     this exchange references, purge what aged out. Ephemeral surfaces (tool
+     runs) get one quiet exchange; views get two. Pinned keys never purge. */
+    function computeState(target) {
+      var st = {};
+      for (var bi = 0; bi <= target; bi++) {
+        Object.keys(st).forEach(function (k) {
+          st[k].age++;
+          st[k].attn = false;
+        });
+        (BEATS[bi].refs || []).forEach(function (r) {
+          st[r.key] = { v: r.v || "", attn: !!r.attn, age: 0, lastRef: bi };
+        });
+        Object.keys(st).forEach(function (k) {
+          if (pinned[k]) return;
+          if (st[k].age >= (SURF[k].eph ? 1 : 2)) delete st[k];
+        });
+      }
+      Object.keys(st).forEach(function (k) {
+        if (dismissed[k] !== undefined && dismissed[k] >= st[k].lastRef)
+          delete st[k];
+      });
+      return st;
+    }
+
+    function emptyHtml(kind) {
+      if (kind === "quiet") {
+        return (
+          '<div class="empty"><div class="glyph">&#9678;</div>' +
+          "<p>attached · quiet</p>" +
+          '<p class="mono">surfaces decayed · the wire remembers</p></div>'
+        );
+      }
+      return (
+        '<div class="empty"><div class="glyph">&#9678;</div>' +
+        "<p>no voice session attached</p>" +
+        '<p class="mono">waiting on voice_ui_attach</p></div>'
+      );
+    }
+
+    function effectiveVariant(k, v) {
+      if (k === "tool" && toolFlip) return "done";
+      return v;
+    }
+
+    function reconcile(st, animate) {
+      var b = BEATS[beat];
+      var emp = stage.querySelector(".empty");
+      if (emp) emp.remove();
+
+      Array.prototype.slice
+        .call(stage.querySelectorAll(".card"))
+        .forEach(function (el) {
+          var k = el.getAttribute("data-key");
+          if (!st[k] || (quietCleared && beat === BEATS.length - 1)) {
+            el.classList.add("exit");
+            setTimeout(function () {
+              el.remove();
+              maybeEmpty();
+            }, 480);
+            delete lastVariant[k];
+          }
+        });
+
+      var visible =
+        quietCleared && beat === BEATS.length - 1 ? [] : Object.keys(st);
+      visible.sort(function (a, b2) {
+        return st[a].age - st[b2].age;
+      });
+      visible.forEach(function (k, i) {
+        var v = effectiveVariant(k, st[k].v);
+        var el = stage.querySelector('.card[data-key="' + k + '"]');
+        if (!el) {
+          el = document.createElement("article");
+          el.className = animate ? "card enter" : "card";
+          el.setAttribute("data-key", k);
+          el.innerHTML = SURF[k].build(v);
+          stage.appendChild(el);
+          if (animate)
+            setTimeout(function () {
+              el.classList.remove("enter");
+            }, 600);
+          lastVariant[k] = v;
+        } else if (lastVariant[k] !== v) {
+          el.innerHTML = SURF[k].build(v);
+          lastVariant[k] = v;
+        }
+        el.classList.remove("exit");
+        el.classList.toggle("receded", st[k].age === 1 && !pinned[k]);
+        el.classList.toggle("attn-card", !!st[k].attn);
+        el.classList.toggle("pinned", !!pinned[k]);
+        var pb = el.querySelector(".b-pin");
+        if (pb) pb.textContent = pinned[k] ? "pinned" : "pin";
+        el.style.order = i;
+      });
+
+      maybeEmpty();
+
+      function maybeEmpty() {
+        if (stage.querySelector(".card") || stage.querySelector(".empty"))
+          return;
+        var kind = BEATS[beat].emptyKind;
+        if (kind) stage.innerHTML = emptyHtml(kind);
+      }
+    }
+
+    function render(prev, animate) {
+      var b = BEATS[beat];
+
+      /* attach bar */
+      attach.classList.toggle("on", b.attached);
+      attachState.textContent = b.attached ? "attached" : "unattached";
+      attachChips.innerHTML = b.attached
+        ? '<span class="chip">session 512</span><span class="chip">qwen</span>' +
+          '<span class="chip vm">vm awake</span><span class="chip">jomcgi/homelab · feat/auth-retry-cap</span>'
+        : "";
+
+      /* spoken strip */
+      youLine.innerHTML = b.you
+        ? "you · <b>&ldquo;" + b.you + "&rdquo;</b>"
+        : "&nbsp;";
+      voiceLine.textContent = b.voice;
+      voiceLine.classList.toggle("dim", !!b.dim);
+      attach.classList.remove("speaking");
+      if (speakTimer) clearTimeout(speakTimer);
+      if (b.attached && !b.dim) {
+        attach.classList.add("speaking");
+        speakTimer = setTimeout(function () {
+          attach.classList.remove("speaking");
+        }, 2600);
+      }
+
+      /* stage */
+      reconcile(computeState(beat), animate);
+
+      /* wire */
+      var n = b.wire;
+      if (prev !== undefined && beat === prev + 1) {
+        for (var i = BEATS[prev].wire; i < n; i++) addWireLine(WIRE[i], true);
+      } else {
+        wireLines.innerHTML = "";
+        if (n === 0) {
+          wireLines.innerHTML = '<div class="none">no calls yet</div>';
+        } else {
+          for (var j = 0; j < n; j++) addWireLine(WIRE[j], false);
+        }
+      }
+      wireLines.scrollTop = wireLines.scrollHeight;
+
+      /* controls */
+      caption.innerHTML = b.caption;
+      Array.prototype.slice.call(dots.children).forEach(function (d, i) {
+        d.setAttribute("aria-current", i === beat ? "true" : "false");
+      });
+    }
+
+    function addWireLine(w, animate) {
+      var none = wireLines.querySelector(".none");
+      if (none) none.remove();
+      var div = document.createElement("div");
+      if (animate) div.className = "enter";
+      div.innerHTML =
+        '<span class="t">' +
+        w.t +
+        "</span>qwen &#9656; " +
+        '<span class="tool">' +
+        w.tool +
+        '</span> <span class="args">' +
+        w.args.replace(/</g, "&lt;") +
+        "</span>";
+      wireLines.appendChild(div);
+    }
+
+    function clearBeatTimers() {
+      beatTimers.forEach(clearTimeout);
+      beatTimers = [];
+    }
+
+    function runBeatTimers() {
+      (BEATS[beat].timers || []).forEach(function (t) {
+        beatTimers.push(
+          setTimeout(function () {
+            if (t.kind === "toolDone") {
+              toolFlip = true;
+              voiceLine.textContent =
+                "Clean: no findings across 14 rules. Nothing new to worry about in that file.";
+              reconcile(computeState(beat), false);
+            } else if (t.kind === "quietClear") {
+              quietCleared = true;
+              reconcile(computeState(beat), false);
+            }
+          }, t.at),
+        );
+      });
+    }
+
+    function go(i) {
+      if (i < 0 || i >= BEATS.length) return;
+      var prev = beat;
+      beat = i;
+      clearBeatTimers();
+      if (beat !== 4) toolFlip = false;
+      if (beat !== BEATS.length - 1) quietCleared = false;
+      render(prev, beat === prev + 1);
+      runBeatTimers();
+    }
+
+    /* pin, dismiss, and ask buttons: one delegated handler */
+    stage.addEventListener("click", function (e) {
+      var btn = e.target.closest ? e.target.closest("button") : null;
+      if (!btn) return;
+      var card = btn.closest(".card");
+      if (!card) return;
+      var k = card.getAttribute("data-key");
+      if (btn.classList.contains("b-pin")) {
+        pinned[k] = !pinned[k];
+        if (pinned[k]) delete dismissed[k];
+        reconcile(computeState(beat), false);
+      } else if (btn.classList.contains("b-dis")) {
+        dismissed[k] = beat;
+        delete pinned[k];
+        reconcile(computeState(beat), false);
+      } else if (
+        btn.classList.contains("ask-back") ||
+        btn.classList.contains("ask-ok")
+      ) {
+        stopPlay();
+        go(6);
+      }
+    });
+
+    function stopPlay() {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      playBtn.textContent = "play the conversation";
+    }
+
+    playBtn.addEventListener("click", function () {
+      if (timer) {
+        stopPlay();
+        return;
+      }
+      if (beat >= BEATS.length - 1) go(0);
+      playBtn.textContent = "pause";
+      timer = setInterval(function () {
+        if (beat >= BEATS.length - 1) {
+          stopPlay();
+          return;
+        }
+        go(beat + 1);
+      }, 3800);
+    });
+    document.getElementById("prevBtn").addEventListener("click", function () {
+      stopPlay();
+      go(beat - 1);
+    });
+    document.getElementById("nextBtn").addEventListener("click", function () {
+      stopPlay();
+      go(beat + 1);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowRight") {
+        stopPlay();
+        go(beat + 1);
+      }
+      if (e.key === "ArrowLeft") {
+        stopPlay();
+        go(beat - 1);
+      }
+    });
+
+    render(undefined, false);
+  })();
+</script>
