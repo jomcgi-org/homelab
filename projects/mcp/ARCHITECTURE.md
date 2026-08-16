@@ -135,11 +135,36 @@ Forwarding works because the monolith gateway has no gateway-level auth
 `passthrough_headers.py`. `DEFAULT_PASSTHROUGH_HEADERS` stays empty, so
 `Authorization` is the only thing forwarded.
 
-**This is inert until the monolith validates the token.** Per-caller data
-scoping therefore does not work today. The token's `aud` is the MCP client id
-rather than the monolith, so the monolith must validate `iss` strictly and
-knowingly accept that audience. RFC 8693 token exchange is the correct fix and
-Context Forge implements it, but authentik does not advertise the endpoint.
+**The monolith validates the forwarded token as of #4955.** `projects/monolith/auth`
+verifies RS256 against authentik's JWKS on the `/mcp` mount and hands handlers a
+`Principal`. Absent bearer material yields an anonymous least-privilege
+principal rather than a 401, because the tool-refresh CronJob and gateway
+federation call with no user context; material that is present and invalid
+always raises.
+
+The token names the monolith as a **second audience**, so what arrives is
+validated rather than believed. `blueprints/mcp-auth.yaml` binds a scope mapping
+returning `{"aud": [provider.client_id, "https://private.jomcgi.dev"]}`, and the
+monolith checks membership in that list alongside a strict `iss`. This is weaker
+than RFC 8693 token exchange, which would mint a separate token per audience so
+a backend could not replay it elsewhere. Context Forge implements exchange but
+authentik does not advertise the grant, so the replay path is closed on the
+network instead, by the CiliumNetworkPolicy in the monolith chart.
+
+**Per-caller result scoping still does not work** (#4569), and validation being
+live is not what stands in the way. Two things do:
+
+- Verification runs, but on the claude.ai path no token has been observed
+  reaching it: calls arrive with no `Authorization` header, so the principal is
+  anonymous and there is no identity to scope by. A first verification forces a
+  JWKS fetch, so on a freshly rolled pod
+  `hubble observe --from-pod monolith/<pod> --to-namespace authentik` returning
+  nothing means nothing has been verified. Beyond the first fetch the cache
+  holds for `AUTH_JWKS_CACHE_TTL_S`, so silence stops being evidence once the
+  pod has been up a while.
+- On the SSE transport the principal belongs to the stream rather than the
+  message, so a tool reading `current_principal()` sees whoever opened the
+  stream. Recorded on #4569 with the mechanism.
 
 ## Deployment
 
