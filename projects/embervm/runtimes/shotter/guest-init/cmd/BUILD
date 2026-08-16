@@ -22,8 +22,15 @@ go_library(
     deps = [
         "//projects/firecracker/substrate/vsockproto",
         "@io_nhooyr_websocket//:websocket",
-        "@org_golang_x_sys//unix",
-    ],
+    ] + select({
+        "@rules_go//go/platform:android": [
+            "@org_golang_x_sys//unix",
+        ],
+        "@rules_go//go/platform:linux": [
+            "@org_golang_x_sys//unix",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 go_binary(
