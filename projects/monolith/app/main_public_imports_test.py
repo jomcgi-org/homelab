@@ -39,6 +39,7 @@ FORBIDDEN_MODULES = [
     "agent",
     "goosecracker",
     "scheduler",
+    "moving",
     # Firecracker demos: an authenticated-only router that wraps the private
     # sandbox/semgrep/goosecracker handlers; it must never enter the public
     # closure (it is not globbed into the public binary either).

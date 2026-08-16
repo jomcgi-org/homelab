@@ -69,6 +69,21 @@ def test_task_due_inside_span_collides():
     ]
 
 
+def test_zero_length_span_collides_on_its_single_day():
+    day = date(2026, 9, 4)
+    span = _span("move", "move", day, day)
+    task = Task(id="task", track="admin", title="Forms", due_on=day)
+    assert find_collisions([span], [task]) == [
+        Collision(
+            type="task_span",
+            item1_id="task",
+            item2_id="move",
+            overlaps_from=day,
+            overlaps_to=day,
+        )
+    ]
+
+
 def test_task_span_boundaries_are_inclusive_and_missing_due_date_is_skipped():
     span = _span("visitor", "visitor", date(2026, 9, 4), date(2026, 9, 8))
     tasks = [

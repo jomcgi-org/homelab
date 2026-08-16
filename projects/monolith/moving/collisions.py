@@ -18,7 +18,7 @@ class Collision:
 
 
 def find_collisions(spans: list[Span], tasks: list[Task]) -> list[Collision]:
-    """Find cross-kind span overlaps and tasks due inside another kind of span."""
+    """Find cross-kind span overlaps and tasks due inside any span."""
     collisions: list[Collision] = []
 
     for index, first in enumerate(spans):
@@ -42,8 +42,6 @@ def find_collisions(spans: list[Span], tasks: list[Task]) -> list[Collision]:
         if task.due_on is None:
             continue
         for span in spans:
-            if task.track == span.kind:
-                continue
             if span.starts_on <= task.due_on <= span.ends_on:
                 collisions.append(
                     Collision(

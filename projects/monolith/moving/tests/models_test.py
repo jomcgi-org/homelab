@@ -1,79 +1,182 @@
 """Schema-shape and SQLite constraint tests for moving models."""
 
-from datetime import datetime, timezone
+from __future__ import annotations
+
+import re
+from datetime import date, timezone
+from pathlib import Path
 
 import pytest
-from sqlalchemy import Numeric, Text, text
+from sqlalchemy import Numeric, Text, UniqueConstraint, text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from moving.models import Milestone, Role, Span, Task, Viewer
 
+_MIGRATION = (
+    Path(__file__).resolve().parents[2]
+    / "chart/migrations/20260816000000_moving_schema.sql"
+)
+_CREATE_TABLE = re.compile(
+    r"CREATE TABLE moving\.(?P<name>[a-z_][a-z0-9_]*)\s*"
+    r"\((?P<body>.*?)\n\);",
+    re.DOTALL,
+)
+_MODELS = {
+    "tasks": Task,
+    "milestones": Milestone,
+    "spans": Span,
+    "roles": Role,
+    "viewers": Viewer,
+}
 
-def _checks(model: type) -> set[str]:
+
+def _definitions(body: str) -> list[str]:
+    """Split a CREATE TABLE body on its top-level commas."""
+    definitions: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(body):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif character == "," and depth == 0:
+            definitions.append(body[start:index].strip())
+            start = index + 1
+    definitions.append(body[start:].strip())
+    return definitions
+
+
+def _migration_tables() -> dict[str, list[str]]:
+    sql = _MIGRATION.read_text()
+    return {
+        match.group("name"): _definitions(match.group("body"))
+        for match in _CREATE_TABLE.finditer(sql)
+    }
+
+
+def _sql_columns(definitions: list[str]) -> dict[str, str]:
+    columns: dict[str, str] = {}
+    for definition in definitions:
+        match = re.match(r"(?P<name>[a-z_][a-z0-9_]*)\s+", definition)
+        if match and match.group("name").upper() not in {
+            "CHECK",
+            "CONSTRAINT",
+            "FOREIGN",
+            "PRIMARY",
+            "UNIQUE",
+        }:
+            columns[match.group("name")] = definition
+    return columns
+
+
+def _check_expressions(definition: str) -> list[str]:
+    checks: list[str] = []
+    for match in re.finditer(r"\bCHECK\s*\(", definition, re.IGNORECASE):
+        start = match.end()
+        depth = 1
+        for index in range(start, len(definition)):
+            if definition[index] == "(":
+                depth += 1
+            elif definition[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    checks.append(" ".join(definition[start:index].split()))
+                    break
+    return checks
+
+
+def _sql_checks(definitions: list[str]) -> set[str]:
+    return {
+        expression
+        for definition in definitions
+        for expression in _check_expressions(definition)
+    }
+
+
+def _model_checks(model: type) -> set[str]:
     checks = {
-        str(constraint.sqltext)
+        " ".join(str(constraint.sqltext).split())
         for constraint in model.__table__.constraints
         if hasattr(constraint, "sqltext")
     }
     for column in model.__table__.columns:
-        checks.update(str(constraint.sqltext) for constraint in column.constraints)
+        checks.update(
+            " ".join(str(constraint.sqltext).split())
+            for constraint in column.constraints
+        )
     return checks
 
 
-def test_table_names_and_schemas_match_migration():
-    expected = {
-        Task: "tasks",
-        Milestone: "milestones",
-        Span: "spans",
-        Role: "roles",
-        Viewer: "viewers",
+def _sql_unique_columns(definitions: list[str]) -> set[str]:
+    columns = _sql_columns(definitions)
+    unique = {
+        name
+        for name, definition in columns.items()
+        if re.search(r"\bUNIQUE\b", definition, re.IGNORECASE)
     }
-    for model, table_name in expected.items():
+    for definition in definitions:
+        match = re.match(r"UNIQUE\s*\((?P<columns>[^)]+)\)", definition)
+        if match:
+            unique.update(name.strip() for name in match.group("columns").split(","))
+    return unique
+
+
+def _model_unique_columns(model: type) -> set[str]:
+    return {
+        column.name
+        for constraint in model.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+        for column in constraint.columns
+    }
+
+
+def _sql_default(definition: str) -> str | None:
+    match = re.search(
+        r"\bDEFAULT\s+(?P<value>'(?:''|[^'])*'|[a-z_][a-z0-9_]*\(\))",
+        definition,
+        re.IGNORECASE,
+    )
+    return match.group("value") if match else None
+
+
+def test_migration_and_models_have_same_tables_and_columns():
+    migration = _migration_tables()
+    assert set(migration) == set(_MODELS)
+    for table_name, model in _MODELS.items():
         assert model.__tablename__ == table_name
         assert model.__table_args__ == {
             "schema": "moving",
             "extend_existing": True,
         }
+        assert list(_sql_columns(migration[table_name])) == [
+            column.name for column in model.__table__.columns
+        ]
 
 
-def test_columns_and_nullability_match_migration():
-    assert {column.name: column.nullable for column in Task.__table__.columns} == {
-        "id": False,
-        "track": True,
-        "title": False,
-        "note": True,
-        "owner": True,
-        "due_on": True,
-        "done_at": True,
-        "value_cad": True,
-        "created_at": False,
-    }
-    assert [column.name for column in Milestone.__table__.columns] == [
-        "id",
-        "title",
-        "occurs_on",
-        "owner",
-        "gcal_event_id",
-        "gcal_synced_at",
-        "gcal_state",
-    ]
-    assert [column.name for column in Span.__table__.columns] == [
-        "id",
-        "kind",
-        "label",
-        "starts_on",
-        "ends_on",
-    ]
-    assert [column.name for column in Role.__table__.columns] == [
-        "id",
-        "company",
-        "title",
-        "stage",
-        "next_on",
-        "span_id",
-    ]
-    assert [column.name for column in Viewer.__table__.columns] == ["email", "name"]
+def test_migration_and_models_have_same_nullability_for_every_table():
+    migration = _migration_tables()
+    for table_name, model in _MODELS.items():
+        expected = {
+            name: "NOT NULL" not in definition.upper()
+            and "PRIMARY KEY" not in definition.upper()
+            for name, definition in _sql_columns(migration[table_name]).items()
+        }
+        actual = {column.name: column.nullable for column in model.__table__.columns}
+        assert actual == expected, table_name
+
+
+def test_migration_and_models_have_same_checks_and_unique_columns():
+    migration = _migration_tables()
+    for table_name, model in _MODELS.items():
+        assert _model_checks(model) == _sql_checks(migration[table_name]), table_name
+        assert _model_unique_columns(model) == _sql_unique_columns(
+            migration[table_name]
+        ), table_name
+
+
+def test_sql_types_and_foreign_key_match_migration():
     assert isinstance(Task.__table__.c.value_cad.type, Numeric)
     assert isinstance(Task.__table__.c.track.type, Text)
     assert isinstance(Milestone.__table__.c.gcal_state.type, Text)
@@ -81,29 +184,39 @@ def test_columns_and_nullability_match_migration():
     assert isinstance(Role.__table__.c.stage.type, Text)
     assert isinstance(Viewer.__table__.c.name.type, Text)
 
-
-def test_defaults_and_foreign_key_match_migration():
-    task = Task(title="Pack records")
-    assert task.id
-    assert task.created_at.tzinfo is timezone.utc
-    milestone = Milestone(title="Leave", occurs_on=datetime.now().date())
-    assert milestone.gcal_state == "queued"
-
     foreign_key = next(iter(Role.__table__.c.span_id.foreign_keys))
     assert foreign_key.target_fullname == "moving.spans.id"
     assert foreign_key.ondelete == "SET NULL"
 
 
-def test_model_metadata_contains_all_checks():
-    assert "track IN ('sell', 'admin', 'ship', 'people')" in _checks(Task)
-    assert "owner IN ('joe', 'anna', 'both')" in _checks(Task)
-    assert "gcal_state IN ('queued', 'synced', 'held')" in _checks(Milestone)
-    assert "kind IN ('visitor', 'work', 'move', 'trip')" in _checks(Span)
-    assert "ends_on >= starts_on" in _checks(Span)
-    assert "stage IN ('applied', 'screen', 'onsite', 'offer', 'closed')" in _checks(
-        Role
-    )
-    assert "name IN ('joe', 'anna')" in _checks(Viewer)
+def test_server_defaults_match_except_sqlite_safe_client_factories():
+    migration = _migration_tables()
+    differences: dict[tuple[str, str], tuple[str | None, str | None]] = {}
+    for table_name, model in _MODELS.items():
+        definitions = _sql_columns(migration[table_name])
+        for column in model.__table__.columns:
+            sql_default = _sql_default(definitions[column.name])
+            model_default = (
+                str(column.server_default.arg) if column.server_default else None
+            )
+            if sql_default != model_default:
+                differences[(table_name, column.name)] = (sql_default, model_default)
+
+    assert differences == {
+        ("tasks", "id"): ("gen_random_uuid()", None),
+        ("tasks", "created_at"): ("now()", None),
+        ("milestones", "id"): ("gen_random_uuid()", None),
+        ("spans", "id"): ("gen_random_uuid()", None),
+        ("roles", "id"): ("gen_random_uuid()", None),
+    }
+
+    task = Task(title="Pack records")
+    assert task.id
+    assert task.created_at.tzinfo is timezone.utc
+    milestone = Milestone(title="Leave", occurs_on=date(2026, 8, 16))
+    assert milestone.id
+    assert milestone.owner == "both"
+    assert milestone.gcal_state == "queued"
 
 
 @pytest.mark.parametrize(
@@ -113,19 +226,41 @@ def test_model_metadata_contains_all_checks():
         "VALUES ('1', 'money', 'Bad track', CURRENT_TIMESTAMP)",
         "INSERT INTO tasks (id, title, owner, created_at) "
         "VALUES ('2', 'Bad owner', 'nobody', CURRENT_TIMESTAMP)",
+        "INSERT INTO tasks (id, title, owner, created_at) "
+        "VALUES ('3', 'Null owner', NULL, CURRENT_TIMESTAMP)",
         "INSERT INTO milestones (id, title, occurs_on, gcal_state) "
-        "VALUES ('3', 'Bad state', '2026-08-16', 'lost')",
+        "VALUES ('4', 'Bad state', '2026-08-16', 'lost')",
         "INSERT INTO spans (id, kind, label, starts_on, ends_on) "
-        "VALUES ('4', 'pause', 'Bad kind', '2026-08-16', '2026-08-17')",
+        "VALUES ('5', 'pause', 'Bad kind', '2026-08-16', '2026-08-17')",
         "INSERT INTO spans (id, kind, label, starts_on, ends_on) "
-        "VALUES ('5', 'move', 'Backwards', '2026-08-17', '2026-08-16')",
+        "VALUES ('6', 'move', 'Backwards', '2026-08-17', '2026-08-16')",
+        "INSERT INTO spans (id, kind, label, starts_on, ends_on) "
+        "VALUES ('7', NULL, 'Null kind', '2026-08-16', '2026-08-17')",
+        "INSERT INTO roles (id, company, title, owner) "
+        "VALUES ('8', 'Acme', 'Builder', 'nobody')",
         "INSERT INTO roles (id, company, title, stage) "
-        "VALUES ('6', 'Acme', 'Builder', 'maybe')",
+        "VALUES ('9', 'Acme', 'Builder', 'maybe')",
         "INSERT INTO viewers (email, name) VALUES ('a@example.test', 'nobody')",
     ],
 )
 def test_sqlite_rejects_invalid_constrained_values(session: Session, statement: str):
     with pytest.raises(IntegrityError):
         session.exec(text(statement))
+        session.commit()
+    session.rollback()
+
+
+def test_sqlite_rejects_duplicate_calendar_event_id(session: Session):
+    session.add_all(
+        [
+            Milestone(
+                title="First", occurs_on=date(2026, 8, 16), gcal_event_id="event-1"
+            ),
+            Milestone(
+                title="Second", occurs_on=date(2026, 8, 17), gcal_event_id="event-1"
+            ),
+        ]
+    )
+    with pytest.raises(IntegrityError):
         session.commit()
     session.rollback()
