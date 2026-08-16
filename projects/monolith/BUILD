@@ -1243,6 +1243,8 @@ py_library(
     visibility = ["//:__subpackages__"],
     deps = [
         ":agent_sessions_rationale",
+        # mcp.py and router.py read the request principal via auth.api.
+        ":pkg_auth",
         ":pkg_core",
         ":pkg_cyclegroup",
         ":pkg_faas",
@@ -6910,6 +6912,23 @@ py_test(
         ":pkg_agent_sessions",
         "@pip//httpx",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_voice_ui_test",
+    srcs = ["agent_sessions/voice_ui_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        # The companion routes and the voice_ui_* tools read the request
+        # principal, so the test drives auth.dependencies directly.
+        ":pkg_auth",
+        ":pkg_core",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
     ],
 )
 
