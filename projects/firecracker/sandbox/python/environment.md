@@ -39,7 +39,7 @@ table when the output is tabular.
 | libpng | 1.6.58-r1 |
 | libssl3 | 3.6.3-r4 |
 | libstdc++ | 16.1.0-r4 |
-| libuuid | 2.42.2-r2 |
+| libuuid | 2.42.2-r3 |
 | libwebp | 1.6.0-r5 |
 | libxau | 1.0.12-r7 |
 | libxcb | 1.17.0-r15 |
@@ -47,8 +47,8 @@ table when the output is tabular.
 | libxdmcp | 1.1.5-r9 |
 | libzstd1 | 1.5.7-r8 |
 | mpdecimal | 4.0.1-r3 |
-| ncurses | 6.6.20260808-r0 |
-| ncurses-terminfo-base | 6.6.20260808-r0 |
+| ncurses | 6.6.20260815-r0 |
+| ncurses-terminfo-base | 6.6.20260815-r0 |
 | openjpeg | 2.5.4-r2 |
 | py3-pip-wheel | 26.2.1-r0 |
 | py3.12-contourpy | 1.3.3-r5 |
@@ -69,8 +69,8 @@ table when the output is tabular.
 | py3.12-six | 1.17.0-r7 |
 | py3.12-typing-extensions | 4.16.0-r0 |
 | py3.12-tzdata | 2026.3-r0 |
-| python-3.12 | 3.12.13-r10 |
-| python-3.12-base | 3.12.13-r10 |
+| python-3.12 | 3.12.14-r1 |
+| python-3.12-base | 3.12.14-r1 |
 | readline | 8.3-r2 |
 | sqlite-libs | 3.53.4-r0 |
 | tiff | 4.7.2-r1 |

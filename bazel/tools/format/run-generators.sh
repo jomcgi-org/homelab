@@ -39,7 +39,13 @@ run() {
 # Guest env-readmes run BEFORE the parallel batch: the doc-manifest
 # generators below index repo markdown (including environment.md), so
 # writing it concurrently would make the manifests flip-flop across runs.
-python3 ./projects/firecracker/tools/env_readme/gen_env_readme.py --lock projects/firecracker/sandbox/guest/apko.lock.json --title "python sandbox guest environment" --notes projects/firecracker/sandbox/guest/env-notes.md --out projects/firecracker/sandbox/guest/environment.md || exit 1
+for sandbox_lang in python go rust elixir ocaml javascript; do
+	python3 ./projects/firecracker/tools/env_readme/gen_env_readme.py \
+		--lock "projects/firecracker/sandbox/${sandbox_lang}/apko.lock.json" \
+		--title "${sandbox_lang} sandbox guest environment" \
+		--notes "projects/firecracker/sandbox/${sandbox_lang}/env-notes.md" \
+		--out "projects/firecracker/sandbox/${sandbox_lang}/environment.md" || exit 1
+done
 
 run ./bazel/images/generate-home-cluster.sh
 run ./bazel/images/generate-push-all.sh
