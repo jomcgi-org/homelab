@@ -23,6 +23,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import Field, SQLModel
@@ -72,12 +73,13 @@ class Task(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     )
     title: str = Field(sa_column=Column(Text, nullable=False))
     note: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
-    owner: Owner | None = Field(
-        default=None,
+    owner: Owner = Field(
+        default="both",
         sa_column=Column(
             Text,
             CheckConstraint("owner IN ('joe', 'anna', 'both')", name="tasks_owner_chk"),
-            nullable=True,
+            nullable=False,
+            server_default=text("'both'"),
         ),
     )
     due_on: date | None = Field(default=None)
@@ -103,18 +105,19 @@ class Milestone(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-f
     )
     title: str = Field(sa_column=Column(Text, nullable=False))
     occurs_on: date
-    owner: Owner | None = Field(
-        default=None,
+    owner: Owner = Field(
+        default="both",
         sa_column=Column(
             Text,
             CheckConstraint(
                 "owner IN ('joe', 'anna', 'both')", name="milestones_owner_chk"
             ),
-            nullable=True,
+            nullable=False,
+            server_default=text("'both'"),
         ),
     )
     gcal_event_id: str | None = Field(
-        default=None, sa_column=Column(Text, nullable=True)
+        default=None, sa_column=Column(Text, nullable=True, unique=True)
     )
     gcal_synced_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
@@ -128,7 +131,7 @@ class Milestone(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-f
                 name="milestones_gcal_state_chk",
             ),
             nullable=False,
-            default="queued",
+            server_default=text("'queued'"),
         ),
     )
 
@@ -141,15 +144,14 @@ class Span(SQLModel, table=True):
         default_factory=_uuid,
         sa_column=_uuid_column(primary_key=True, nullable=False),
     )
-    kind: SpanKind | None = Field(
-        default=None,
+    kind: SpanKind = Field(
         sa_column=Column(
             Text,
             CheckConstraint(
                 "kind IN ('visitor', 'work', 'move', 'trip')",
                 name="spans_kind_chk",
             ),
-            nullable=True,
+            nullable=False,
         ),
     )
     label: str = Field(sa_column=Column(Text, nullable=False))
@@ -160,6 +162,15 @@ class Span(SQLModel, table=True):
             CheckConstraint("ends_on >= starts_on", name="spans_date_order_chk"),
             nullable=False,
         )
+    )
+    owner: Owner = Field(
+        default="both",
+        sa_column=Column(
+            Text,
+            CheckConstraint("owner IN ('joe', 'anna', 'both')", name="spans_owner_chk"),
+            nullable=False,
+            server_default=text("'both'"),
+        ),
     )
 
 
@@ -173,6 +184,15 @@ class Role(SQLModel, table=True):
     )
     company: str = Field(sa_column=Column(Text, nullable=False))
     title: str = Field(sa_column=Column(Text, nullable=False))
+    owner: Owner = Field(
+        default="both",
+        sa_column=Column(
+            Text,
+            CheckConstraint("owner IN ('joe', 'anna', 'both')", name="roles_owner_chk"),
+            nullable=False,
+            server_default=text("'both'"),
+        ),
+    )
     stage: RoleStage | None = Field(
         default=None,
         sa_column=Column(

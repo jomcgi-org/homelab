@@ -30,6 +30,7 @@ DOMAINS = {
     "goosecracker",
     "worldcup",
     "agent_sessions",
+    "moving",
 }
 
 # Documented exceptions only, as (importing_domain, imported_module). Keep this

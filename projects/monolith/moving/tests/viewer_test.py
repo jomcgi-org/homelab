@@ -37,6 +37,18 @@ def test_unknown_email_is_forbidden(client: TestClient):
     assert response.json() == {"detail": "Unknown viewer"}
 
 
+def test_duplicate_identity_headers_are_forbidden(client: TestClient):
+    response = client.get(
+        "/viewer",
+        headers=[
+            ("X-Auth-Email", _EMAIL),
+            ("X-Auth-Email", _EMAIL),
+        ],
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Ambiguous X-Auth-Email header"}
+
+
 @pytest.mark.parametrize("name", ["joe", "anna"])
 def test_resolves_each_valid_viewer(client: TestClient, session: Session, name: str):
     row = session.get(Viewer, _EMAIL)

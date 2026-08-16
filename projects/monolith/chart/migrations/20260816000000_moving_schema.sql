@@ -11,7 +11,8 @@ CREATE TABLE moving.tasks (
     track       TEXT CHECK (track IN ('sell', 'admin', 'ship', 'people')),
     title       TEXT NOT NULL,
     note        TEXT,
-    owner       TEXT CHECK (owner IN ('joe', 'anna', 'both')),
+    owner       TEXT NOT NULL DEFAULT 'both'
+                CHECK (owner IN ('joe', 'anna', 'both')),
     due_on      DATE,
     done_at     TIMESTAMPTZ,
     value_cad   NUMERIC,
@@ -25,8 +26,9 @@ CREATE TABLE moving.milestones (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title            TEXT NOT NULL,
     occurs_on        DATE NOT NULL,
-    owner            TEXT CHECK (owner IN ('joe', 'anna', 'both')),
-    gcal_event_id    TEXT,
+    owner            TEXT NOT NULL DEFAULT 'both'
+                     CHECK (owner IN ('joe', 'anna', 'both')),
+    gcal_event_id    TEXT UNIQUE,
     gcal_synced_at   TIMESTAMPTZ,
     gcal_state       TEXT NOT NULL DEFAULT 'queued'
                      CHECK (gcal_state IN ('queued', 'synced', 'held'))
@@ -34,10 +36,12 @@ CREATE TABLE moving.milestones (
 
 CREATE TABLE moving.spans (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    kind        TEXT CHECK (kind IN ('visitor', 'work', 'move', 'trip')),
+    kind        TEXT NOT NULL CHECK (kind IN ('visitor', 'work', 'move', 'trip')),
     label       TEXT NOT NULL,
     starts_on   DATE NOT NULL,
     ends_on     DATE NOT NULL,
+    owner       TEXT NOT NULL DEFAULT 'both'
+                CHECK (owner IN ('joe', 'anna', 'both')),
     CHECK (ends_on >= starts_on)
 );
 
@@ -45,6 +49,8 @@ CREATE TABLE moving.roles (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     company     TEXT NOT NULL,
     title       TEXT NOT NULL,
+    owner       TEXT NOT NULL DEFAULT 'both'
+                CHECK (owner IN ('joe', 'anna', 'both')),
     stage       TEXT CHECK (stage IN ('applied', 'screen', 'onsite', 'offer', 'closed')),
     next_on     DATE,
     span_id     UUID REFERENCES moving.spans(id) ON DELETE SET NULL
@@ -56,4 +62,4 @@ CREATE TABLE moving.viewers (
 );
 
 COMMENT ON TABLE moving.viewers IS
-    'Email lookup only. Rows are seeded out of band so addresses are never committed to Git.';
+    'Email lookup only. Rows are seeded out of band following projects/monolith/hikes/seed/ precedent so addresses are never committed to Git.';
