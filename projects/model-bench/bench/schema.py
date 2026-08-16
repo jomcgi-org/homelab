@@ -56,6 +56,12 @@ class ModelSpec(BaseModel):
     # provider prefix) when unset, so the plot labels stay controllable from here
     # rather than being string-munged in the frontend.
     display_name: str | None = None
+    # Request `model` field, if different from the registry id. Used when the
+    # served alias (llama.cpp `--alias`) is not the leaderboard slug.
+    api_model: str | None = None
+    # Extra JSON keys merged into every /chat/completions payload (for example
+    # chat_template_kwargs). Required fields always win over keys here.
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskSpec(BaseModel):

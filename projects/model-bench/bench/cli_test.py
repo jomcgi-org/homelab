@@ -44,6 +44,24 @@ def test_parser_has_subcommands():
         assert sub in choices
 
 
+def test_run_parser_accepts_base_url_and_timeout():
+    p = build_parser()
+    args = p.parse_args(
+        [
+            "run",
+            "--base-url",
+            "http://127.0.0.1:18080/v1",
+            "--timeout",
+            "900",
+            "--model",
+            "qwen3.8-27b",
+        ]
+    )
+    assert args.base_url == "http://127.0.0.1:18080/v1"
+    assert args.timeout == 900.0
+    assert args.model_filter == "qwen3.8-27b"
+
+
 def test_prune_stale_removes_only_other_versions(tmp_path, capsys):
     root = tmp_path / "results" / "m" / "t1"
     root.mkdir(parents=True)

@@ -133,6 +133,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Only run models whose id contains this substring (default: all)",
     )
+    p_run.add_argument(
+        "--base-url",
+        default=None,
+        help=(
+            "OpenAI-compatible /v1 base URL (e.g. a kubectl port-forward to "
+            "in-cluster llama.cpp). Skips OpenRouter pricing and the API key."
+        ),
+    )
+    p_run.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="HTTP timeout in seconds for each completion (default: 120)",
+    )
 
     # report
     p_report = sub.add_parser("report", help="Generate leaderboard report")
@@ -204,10 +218,18 @@ def build_parser() -> argparse.ArgumentParser:
 async def _run(args) -> None:
     """Run benchmark cells for every active (task, model) pair."""
     api_key = os.environ.get("OPENROUTER_API_KEY")
+    base_url = getattr(args, "base_url", None)
+    timeout = getattr(args, "timeout", 120.0)
 
     tasks = load_tasks(Path(args.tasks))
     reg = load_registry(Path(args.models))
-    models = active_models(reg, include_experimental=args.include_experimental)
+    # An explicit --model substring can name an experimental entry (the in-cluster
+    # Qwen3.8 row) without also passing --include-experimental. A bare run still
+    # skips experimental models so they are not accidentally sent to OpenRouter.
+    if getattr(args, "model_filter", None):
+        models = [m for m in reg if m.status != "retired"]
+    else:
+        models = active_models(reg, include_experimental=args.include_experimental)
 
     # Optional filters for cheap, targeted calibration runs.
     if getattr(args, "task", None):
@@ -222,15 +244,23 @@ async def _run(args) -> None:
     # OpenRouter is only needed for openrouter-backed candidates. An anchors-only run
     # (provider=claude-code) uses the local `claude` CLI and needs no key, so we only
     # demand the key and open a client when a candidate actually requires it.
+    # --base-url is a local OpenAI-compat endpoint (llama.cpp): no key, no prices.
     needs_openrouter = any(m.provider == "openrouter" for m in models)
-    if needs_openrouter and not api_key:
+    if needs_openrouter and not base_url and not api_key:
         print("Error: OPENROUTER_API_KEY environment variable is not set")
         return
 
     client = None
     if needs_openrouter:
-        client = OpenRouterClient(api_key=api_key)
-        await client.load_prices()
+        client_kwargs = {
+            "api_key": api_key or "local",
+            "timeout": timeout,
+        }
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenRouterClient(**client_kwargs)
+        if not base_url:
+            await client.load_prices()
 
     sem = asyncio.Semaphore(args.concurrency)
 
@@ -254,6 +284,9 @@ async def _run(args) -> None:
             else:
 
                 async def complete(**kw):
+                    kw["model"] = model.api_model or model.id
+                    if model.extra_body:
+                        kw["extra_body"] = model.extra_body
                     return await client.complete(**kw)
 
                 def cost_fn(p, c):
@@ -331,6 +364,9 @@ async def _run(args) -> None:
             )
 
         async def chat(**kw):
+            kw["model"] = model.api_model or model.id
+            if model.extra_body:
+                kw["extra_body"] = model.extra_body
             return await client.chat(**kw)
 
         return await run_agent_cell(
@@ -365,9 +401,10 @@ async def _run(args) -> None:
             candidate_cost = 0.0
         else:
             c1 = await client.complete(
-                model=model.id,
+                model=model.api_model or model.id,
                 messages=[{"role": "user", "content": task.prompt}],
                 temperature=0.0,
+                extra_body=model.extra_body or None,
             )
             candidate_cost = client.cost_usd(
                 model.id, c1.prompt_tokens, c1.completion_tokens
@@ -432,7 +469,11 @@ async def _run(args) -> None:
         # (an anchor moving to the free Claude Code harness) produces a materially
         # different cell (different harness, cost=0), so its stale openrouter result must
         # not be reused.
-        params_repr = f"{params_repr}:provider={model.provider}"
+        params_repr = (
+            f"{params_repr}:provider={model.provider}"
+            f":api_model={model.api_model or model.id}"
+            f":extra={json.dumps(model.extra_body, sort_keys=True)}"
+        )
         src_hash = (
             verifier_source_hash(task.verifier.kind)
             if task.verifier.kind != "judge"
