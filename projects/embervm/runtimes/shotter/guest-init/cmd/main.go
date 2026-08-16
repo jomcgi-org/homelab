@@ -4,17 +4,22 @@
 //
 //  1. Mount /proc and a deliberately sized tmpfs over /tmp.
 //  2. Start the vsock HTTP server with readiness still false.
-//  3. Launch long-lived Chromium with console fds, then poll /json/version.
-//  4. Settle briefly after CDP genuinely answers.
-//  5. Flip readiness so the snapshot captures the live browser.
+//  3. Load the egress destination policy; a failure here fails closed too.
+//  4. Launch long-lived Chromium with console fds, then poll /json/version.
+//  5. Run one real trial capture over CDP (navigate, screenshot, close), the
+//     same T3 code path an invocation uses, so a browser that answers CDP
+//     but cannot actually render is caught here, loudly, once.
+//  6. Flip readiness so the snapshot captures the live, render-tested browser.
 //
 // A warm failure never flips readiness. BuildBase then fails on its outer boot
-// timeout instead of silently snapshotting a cold or half-started browser.
+// timeout instead of silently snapshotting a cold, half-started, or
+// non-rendering browser.
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -38,8 +43,15 @@ const (
 	cdpPollInterval = 100 * time.Millisecond
 	cdpProbeTimeout = 500 * time.Millisecond
 	cdpWarmTimeout  = 60 * time.Second
-	settleDelay     = 2 * time.Second
 	screenshotPath  = "/shim/screenshot"
+
+	// trialRenderTimeout bounds the one real capture run during warm-up.
+	// /json/version answering only proves the CDP protocol is alive, not
+	// that Chromium can navigate and rasterize: a browser broken by a
+	// missing font or a broken software-GL path answers /json/version fine
+	// and would otherwise get baked into the base snapshot, failing every
+	// real invocation forever instead of once, loudly, here.
+	trialRenderTimeout = 15 * time.Second
 )
 
 func main() {
@@ -62,9 +74,9 @@ func run(logger *slog.Logger) error {
 	setDefaultEnv(logger)
 	bringUpLoopback(logger)
 	setHostname(logger)
-	proxyConfig, err := LoadProxyConfig()
-	if err != nil {
-		logger.Warn("ember-shotter-init: proxy configuration invalid; all destinations refused", "err", err)
+	proxyConfig, proxyConfigErr := LoadProxyConfig()
+	if proxyConfigErr != nil {
+		logger.Warn("ember-shotter-init: proxy configuration invalid; all destinations refused", "err", proxyConfigErr)
 	}
 	proxyErr, err := startProxyServer(ctx, proxyConfig, logger)
 	if err != nil {
@@ -73,6 +85,18 @@ func run(logger *slog.Logger) error {
 
 	var ready atomic.Bool
 	serveErr := startVsockServer(ctx, logger, ready.Load)
+
+	if proxyConfigErr != nil {
+		// A warm failure never flips readiness (see the package doc above).
+		// An invalid or absent egress policy means every screenshot this
+		// base ever serves would fail with its destination refused, so
+		// there is nothing warming Chromium would buy: fail readiness now,
+		// the same way a Chromium launch or CDP probe failure already does,
+		// instead of letting BuildBase snapshot a browser that answers CDP
+		// on about:blank (no network needed) but can reach nothing.
+		logger.Error("ember-shotter-init: proxy configuration invalid; readiness remains false", "err", proxyConfigErr)
+		return waitForShutdown(ctx, serveErr, proxyErr, nil, logger)
+	}
 
 	chromiumExit, err := launchChromium(ctx, logger)
 	if err != nil {
@@ -88,22 +112,19 @@ func run(logger *slog.Logger) error {
 	}
 
 	logger.Info("ember-shotter-init: warm ordering checkpoint 2, CDP /json/version answered")
-	logger.Info("ember-shotter-init: settling before readiness", "settle", settleDelay.String())
-	select {
-	case <-time.After(settleDelay):
-	case err := <-chromiumExit:
-		logger.Error("ember-shotter-init: Chromium exited during settle; readiness remains false", "err", err)
-		return waitForShutdown(ctx, serveErr, proxyErr, nil, logger)
-	case <-ctx.Done():
+	logger.Info("ember-shotter-init: running a trial capture before readiness", "timeout", trialRenderTimeout.String())
+	if err := trialRender(ctx, logger); err != nil {
+		logger.Error("ember-shotter-init: trial render failed; readiness remains false", "err", err)
 		return waitForShutdown(ctx, serveErr, proxyErr, chromiumExit, logger)
 	}
 
 	// This log is the ordering assertion used with the preceding checkpoint:
 	// ready cannot flip on any path that has not first observed a valid CDP
-	// version response and completed the settle window.
-	logger.Info("ember-shotter-init: snapshot ordering assertion, CDP confirmed before readiness flip")
+	// version response AND produced a real, non-empty screenshot over the
+	// exact code path an invocation uses.
+	logger.Info("ember-shotter-init: snapshot ordering assertion, trial render confirmed before readiness flip")
 	ready.Store(true)
-	logger.Info("ember-shotter-init: readiness flipped, warm Chromium base ready")
+	logger.Info("ember-shotter-init: readiness flipped, warm and render-tested Chromium base ready")
 
 	return waitForShutdown(ctx, serveErr, proxyErr, chromiumExit, logger)
 }
@@ -127,14 +148,51 @@ func chromiumArgv() []string {
 		// explicit so it can never bind to 0.0.0.0.
 		"--remote-debugging-address=" + cdpAddress,
 		fmt.Sprintf("--remote-debugging-port=%d", cdpPort),
-		// T2 will provide the only browser egress path here. Until then requests
-		// fail closed, with no direct-network fallback.
-		"--proxy-server=http://127.0.0.1:1024",
+		// The in-guest egress proxy (proxy.go) is the only browser egress path;
+		// its hard allowlist is the primary control (ADR embervm/035 section 4).
+		// Reuse proxyListenAddress rather than a second copy of the literal, so
+		// the two can never drift apart.
+		"--proxy-server=http://" + proxyListenAddress,
+		// Chromium bypasses a configured proxy for loopback by default in most
+		// builds, but this makes it explicit rather than relying on that
+		// default: a rendered page must never be able to reach the CDP control
+		// port at 127.0.0.1:9222 by routing around the proxy's allowlist. This
+		// costs nothing because the Go CDP client (cdp.go) dials CDP directly,
+		// not through this proxy.
+		"--proxy-bypass-list=<-loopback>",
 		// All mutable profile data must live in snapshot-backed tmpfs because the
 		// rootfs is read-only and shared by clones.
 		"--user-data-dir=" + chromiumProfile,
 		"about:blank",
 	}
+}
+
+// trialRender drives one real screenshot of about:blank over CDP, the exact
+// T3 capture path (captureScreenshotViaCDP in cdp.go) a real invocation
+// uses, so warm-up exercises the same code and catches the same failures a
+// caller would hit later. Readiness only flips once this produces
+// non-empty PNG bytes: answering /json/version proves the CDP protocol is
+// alive, not that Chromium can actually navigate and rasterize.
+func trialRender(ctx context.Context, logger *slog.Logger) error {
+	cdpHTTPBase := fmt.Sprintf("http://%s:%d", cdpAddress, cdpPort)
+	req := validatedScreenshot{
+		navigateURL:     "about:blank",
+		width:           defaultWidth,
+		height:          defaultHeight,
+		fullPage:        false,
+		waitUntilEvent:  waitUntilEvents[defaultWaitUntil],
+		navigateTimeout: trialRenderTimeout,
+	}
+	trialCtx, cancel := context.WithTimeout(ctx, trialRenderTimeout)
+	defer cancel()
+	resp, err := captureScreenshotViaCDP(trialCtx, logger, cdpHTTPBase, req)
+	if err != nil {
+		return fmt.Errorf("trial capture failed: %w", err)
+	}
+	if len(resp.PNGBase64) == 0 {
+		return errors.New("trial capture produced no PNG bytes")
+	}
+	return nil
 }
 
 func launchChromium(ctx context.Context, logger *slog.Logger) (<-chan error, error) {

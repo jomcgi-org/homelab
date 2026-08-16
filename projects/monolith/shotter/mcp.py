@@ -9,6 +9,7 @@ block plus a stored SeaweedFS URL (ADR embervm/035 section 5).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from urllib.parse import urlsplit
@@ -30,6 +31,15 @@ _DEFAULT_WIDTH = 1024
 _DEFAULT_HEIGHT = 768
 _DEFAULT_TIMEOUT_MS = 30_000
 
+# Mirrors the guest handler's own bounds (screenshot.go's
+# minNavigateTimeoutMs / maxNavigateTimeoutMs): rejecting an out-of-range
+# timeout_ms here, the same way width and height are already rejected,
+# surfaces the caller's mistake as a real validation error instead of a
+# guest-side 400 that raise_for_status() turns into a bare
+# httpx.HTTPStatusError several hops later.
+_MIN_TIMEOUT_MS = 1_000
+_MAX_TIMEOUT_MS = 45_000
+
 
 class InvalidShotterURL(ValueError):
     """The requested URL fails shotter's scheme, host, or shape validation."""
@@ -37,6 +47,10 @@ class InvalidShotterURL(ValueError):
 
 class InvalidViewportDimension(ValueError):
     """The requested viewport width or height is out of bounds."""
+
+
+class InvalidTimeoutMs(ValueError):
+    """The requested render timeout is out of bounds."""
 
 
 def validate_screenshot_url(url: str, width: int, height: int) -> None:
@@ -91,6 +105,21 @@ def _validate_dimension(name: str, value: int) -> None:
         )
 
 
+def validate_timeout_ms(timeout_ms: int) -> None:
+    """Reject an out-of-bounds render timeout instead of forwarding it.
+
+    Width and height get this treatment already; timeout_ms did not, so a
+    range mistake here used to reach the guest, which 400s, and
+    raise_for_status() turned that into a bare httpx.HTTPStatusError with no
+    indication the problem was the timeout value.
+    """
+    if timeout_ms < _MIN_TIMEOUT_MS or timeout_ms > _MAX_TIMEOUT_MS:
+        raise InvalidTimeoutMs(
+            f"timeout_ms {timeout_ms} is out of bounds "
+            f"[{_MIN_TIMEOUT_MS}, {_MAX_TIMEOUT_MS}]"
+        )
+
+
 async def screenshot_url(
     url: str,
     width: int = _DEFAULT_WIDTH,
@@ -111,9 +140,11 @@ async def screenshot_url(
             dispatch.
         width: Viewport width in pixels, 1 to 4096. Defaults to 1024.
         height: Viewport height in pixels, 1 to 4096. Defaults to 768.
-        timeout_ms: Overall render budget in milliseconds. Defaults to
-            30000. A page that does not finish loading in time surfaces as a
-            timeout error rather than a partial or corrupt image.
+        timeout_ms: Overall render budget in milliseconds, 1000 to 45000.
+            Defaults to 30000. A page that does not finish loading in time
+            surfaces as a timeout error rather than a partial or corrupt
+            image. An out-of-bounds value is rejected outright, the same as
+            an out-of-bounds width or height.
 
     Returns:
         An image content block: the rendered PNG, embedded directly, plus
@@ -122,6 +153,7 @@ async def screenshot_url(
         URL where the same PNG is archived for later reference.
     """
     validate_screenshot_url(url, width, height)
+    validate_timeout_ms(timeout_ms)
 
     result = await client.capture(
         url=url, width=width, height=height, timeout_ms=timeout_ms
@@ -129,7 +161,11 @@ async def screenshot_url(
 
     png_b64 = result["png_b64"]
     png_bytes = base64.b64decode(png_b64)
-    stored_url, stored = s3.put_screenshot(png_bytes)
+    # put_screenshot is a synchronous, multi-megabyte S3 PUT (boto3). Off the
+    # event loop: if SeaweedFS drops SYNs instead of refusing, botocore's own
+    # retries would otherwise stall the loop for minutes, taking health
+    # probes and every other in-flight request down with it.
+    stored_url, stored = await asyncio.to_thread(s3.put_screenshot, png_bytes)
 
     return ImageContent(
         type="image",

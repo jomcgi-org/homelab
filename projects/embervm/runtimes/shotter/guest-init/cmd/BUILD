@@ -46,5 +46,8 @@ go_test(
         "screenshot_test.go",
     ],
     embed = [":cmd_lib"],
-    deps = ["//projects/firecracker/substrate/vsockproto"],
+    deps = [
+        "//projects/embervm/runtimes/shotter:egress_config",
+        "//projects/firecracker/substrate/vsockproto",
+    ],
 )

@@ -59,6 +59,20 @@ var errProxyConfigDisabled = errors.New("proxy configuration is unavailable")
 
 var errProxyDestinationRefused = errors.New("proxy destination is not allowlisted")
 
+// errProxyConnectMappedHost is distinct from errProxyDestinationRefused: a
+// CONNECT to a mapped host is not refused for being unlisted, it is refused
+// because tunnelling it would always fail anyway. Every mapped host resolves
+// to a plaintext internal destination (screenshot.go downgrades https to
+// http up front for exactly this reason), and CONNECT is Chromium asking to
+// speak TLS end to end with whatever is on the other end of the tunnel. A
+// scheme downgrade on the top-level URL cannot reach a CONNECT a page issues
+// on its own, for an absolute https:// subresource (a preloaded font, a
+// script tag, an absolute image URL), so without this check that CONNECT
+// gets admitted and tunnelled, and Chromium's ClientHello then meets a
+// plaintext HTTP server: an opaque ERR_SSL_PROTOCOL_ERROR inside the
+// capture, and with wait_until: load, a stall to the full timeout.
+var errProxyConnectMappedHost = errors.New("CONNECT is refused for a mapped host: it always resolves to a plaintext internal destination and cannot be tunnelled as TLS")
+
 // ProxyConfig is the complete destination policy for the in-guest proxy.
 // Nil maps or slices disable all forwarding, which makes the zero value safe.
 type ProxyConfig struct {
@@ -177,6 +191,23 @@ func destinationsEqual(left, right proxyDestination) bool {
 	return strings.EqualFold(left.host, right.host) && left.port == right.port
 }
 
+// isMappedHost reports whether destination's host (ignoring port) is a key
+// in c.HostMapping, case-insensitively. An unparseable destination is
+// reported as not mapped; parseDestination validated the CONNECT target
+// before this is ever called, so that only happens defensively.
+func (c ProxyConfig) isMappedHost(destination string) bool {
+	parsed, err := parseDestination(destination, false)
+	if err != nil {
+		return false
+	}
+	for publicHost := range c.HostMapping {
+		if strings.EqualFold(parsed.host, publicHost) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c ProxyConfig) resolve(requested string) (string, bool) {
 	if err := c.validate(); err != nil {
 		return "", false
@@ -268,6 +299,10 @@ func (s *ProxyServer) handleConnection(conn net.Conn) {
 		return
 	}
 	if err := s.forward(conn, destination, pending, isConnect); err != nil {
+		if errors.Is(err, errProxyConnectMappedHost) {
+			s.logger.Warn("ember-shotter-init: refusing CONNECT for a mapped host", "destination", destination)
+			return
+		}
 		if errors.Is(err, errProxyDestinationRefused) {
 			s.logger.Warn("ember-shotter-init: refusing proxy destination", "destination", destination)
 			return
@@ -354,6 +389,10 @@ func parseProxyHead(rawHead, leftover []byte) (string, []byte, bool, error) {
 }
 
 func (s *ProxyServer) forward(client net.Conn, destination string, pending []byte, isConnect bool) error {
+	if isConnect && s.config.isMappedHost(destination) {
+		return fmt.Errorf("%w: %s", errProxyConnectMappedHost, destination)
+	}
+
 	resolved, allowed := s.config.resolve(destination)
 	if !allowed {
 		return fmt.Errorf("%w: %s", errProxyDestinationRefused, destination)

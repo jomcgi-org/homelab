@@ -20,19 +20,27 @@ const (
 	defaultWidth  = 1920
 	defaultHeight = 1080
 
-	// maxPNGBytes is the encoded PNG ceiling. An oversized capture is
-	// refused, never truncated, matching what the Phase 3 monolith specs
-	// assert.
+	// maxEncodedPNGBytes is the ceiling on the BASE64-ENCODED PNG, checked
+	// against the encoded byte count, not the decoded one. An oversized
+	// capture is refused, never truncated, matching what the Phase 3
+	// monolith specs assert.
 	//
-	// Sizes nest the same way the timeouts do, and this is the innermost one.
-	// The workload's invocation.resultMaxBytes is 8 MiB (see
+	// Sizes nest the same way the timeouts do, and this is the innermost
+	// one. The workload's invocation.resultMaxBytes is 8 MiB (see
 	// chart/templates/workload-shotter.yaml), which itself sits under the
-	// 32 MiB noded reads back from a guest. Staying under that ceiling is what
-	// makes an oversized capture a legible error from this handler rather than
-	// a truncation or a rejection further out, where the caller cannot tell
-	// what went wrong. Raising this without raising resultMaxBytes first just
-	// moves the failure somewhere less informative.
-	maxPNGBytes = 6 << 20
+	// 32 MiB noded reads back from a guest. What crosses that transport is
+	// this handler's JSON envelope with the PNG base64-encoded inside it,
+	// never the raw decoded PNG, so the cap here has to leave real headroom
+	// under resultMaxBytes for the envelope (the other scalar fields, field
+	// names, quoting) on top of the encoded payload itself. 7 MiB leaves
+	// 1 MiB of that headroom. Staying under it is what makes an oversized
+	// capture a legible error from this handler rather than a silent
+	// dispatcher-side truncation or a JSON decode error several hops away,
+	// where the caller cannot tell what went wrong. Raising this without
+	// raising resultMaxBytes first, or without reasoning about the encoded
+	// size, just moves the failure somewhere less informative: 6 MiB decoded
+	// is exactly 8 MiB base64-encoded, with zero room for the envelope.
+	maxEncodedPNGBytes = 7 << 20
 
 	defaultWaitUntil = "load"
 
@@ -44,14 +52,17 @@ const (
 	// (target create, websocket dial, screenshot encode, target close)
 	// outside of the CDP navigate wait it wraps. ADR embervm/035 section 5
 	// nests timeouts strictly: Context Forge 60s, then the monolith client's
-	// read timeout, then the workload timeoutSeconds, then this handler,
-	// then the CDP navigate timeout innermost. Deriving the handler cap from
-	// the request's own navigate timeout, and then clamping it to an
-	// absolute ceiling independent of what the caller asked for, keeps this
-	// layer inside whatever budget the layer above it granted even if a
-	// caller requests the maximum navigate timeout.
+	// 55s read timeout, then the workload's 50s timeoutSeconds, then this
+	// handler, then the CDP navigate timeout innermost. Deriving the handler
+	// cap from the request's own navigate timeout, and then clamping it to
+	// an absolute ceiling independent of what the caller asked for, keeps
+	// this layer inside whatever budget the layer above it granted even if a
+	// caller requests the maximum navigate timeout: maxHandlerCap must stay
+	// strictly under the workload's 50s, not merely under the monolith
+	// client's 55s, or a slow-but-within-budget handler would blow the
+	// workload's own deadline before ever getting a chance to answer.
 	handlerOverhead = 10 * time.Second
-	maxHandlerCap   = 55 * time.Second
+	maxHandlerCap   = 48 * time.Second
 
 	// maxRequestBodyBytes is generous for a handful of scalar fields; it
 	// exists to refuse a malformed or hostile body before it reaches the

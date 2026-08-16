@@ -440,10 +440,20 @@ egress:
     # Accepted cost, recorded in ADR embervm/035 section 4 and carried there as an
     # open question: this list is global to the sidecar, not per workload, so
     # these two entries widen reachable destinations for every other
-    # egress-enabled workload (today the claude runtime) too. Accepted because
-    # both are read-only frontend HTTP endpoints already reachable by anything
-    # in-cluster holding a network interface, so this grants no reach a
-    # compromised guest could not obtain another way. It is still a precedent for
+    # egress-enabled workload (today the claude runtime) too.
+    #
+    # Do NOT justify that by saying these endpoints are already reachable
+    # in-cluster. They are not. Both frontends are Cilium ingress default-deny,
+    # and reaching them at all required adding explicit
+    # namespace-embervm-to-3000 rules to monolith-public's cilium-policy and
+    # monolith's cilium-ingress-policy in the same change. ADR 035 section 4
+    # makes that claim and it is wrong; the conclusion survives because the
+    # widening is SMALLER than stated, not because it is nil.
+    #
+    # What actually bounds the widening is that this entry only makes a
+    # destination permissible, and permission is not reach: no other egress
+    # enabled guest runs a browser, and the shotter guest's own baked allowlist
+    # is the control that decides where it may dial. Still a precedent for
     # whatever needs an entry next, which is why it is written down rather than
     # treated as settled.
     allowlist:

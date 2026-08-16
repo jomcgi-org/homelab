@@ -1,7 +1,9 @@
 # gazelle:ignore
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
+load("@rules_go//go:def.bzl", "go_library")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # Shotter task-class guest image (ADR embervm/035). Its PID 1 starts the vsock
 # HTTP server, launches Chromium, polls the local CDP endpoint, settles, and
@@ -45,4 +47,36 @@ apko_image(
     contents = "@shotter_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/embervm/runtimes/shotter",
     tars = [":guest_init_tar_amd64"],
+)
+
+# Embeds etc/shotter-egress.json so the guest-init Go test package can assert
+# the checked-in baked policy itself parses and validates (issue #4994
+# review round), not just a synthetic fixture with the same shape.
+go_library(
+    name = "egress_config",
+    srcs = ["egress_config.go"],
+    embedsrcs = ["etc/shotter-egress.json"],
+    importpath = "github.com/jomcgi/homelab/projects/embervm/runtimes/shotter",
+    visibility = ["//projects/embervm/runtimes/shotter/guest-init/cmd:__pkg__"],
+)
+
+# Cross-checks the baked egress policy (etc/shotter-egress.json) against the
+# chart's global egress.internal.allowlist (issue #4994 review round, STPA
+# pass): the two are independently hand-maintained with no other build-time
+# link, so a future image rebuild could widen what the guest may dial with
+# no chart-side signal at all. Mirrors
+# projects/embervm/runtimes/claude/cleartext_lane_guard_test.py's pattern:
+# read both files at test time rather than duplicating either.
+# Hand-registered: gazelle does not generate py_test here.
+py_test(
+    name = "egress_policy_subset_test",
+    srcs = ["egress_policy_subset_test.py"],
+    data = [
+        "etc/shotter-egress.json",
+        "//projects/embervm/deploy:deploy_values",
+    ],
+    imports = ["."],
+    deps = [
+        "@pip//pyyaml",
+    ],
 )

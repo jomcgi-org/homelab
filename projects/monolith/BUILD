@@ -6346,6 +6346,17 @@ semgrep_target_test(
         # prefix. semgrep-core does not honour inline # nosemgrep, so excluded
         # here until all callers are updated.
         "logger-name-missing-monolith-prefix",  # keep
+        # shotter/hosts.py's HOST_SERVICE_MAP is the baked mapping design ADR
+        # embervm/035 section 3 and 4 call for on purpose: a Cloudflare-routed
+        # lookup would faithfully screenshot private.jomcgi.dev's login wall
+        # instead of the page behind it, so the map has to name the exact
+        # in-cluster Service DNS the guest's own proxy tunnels to, not a
+        # release-name-relative default read from an env var. The two entries
+        # are also asserted exact (size and values) by the domain's own tests,
+        # so a release rename would fail loudly here rather than silently
+        # resolving wrong. semgrep-core does not honour inline # nosemgrep, so
+        # excluded here.
+        "no-hardcoded-k8s-service-url",  # keep
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":main",
