@@ -223,9 +223,9 @@ vitest_bin.vitest_test(
     args = ["run"],
     chdir = package_name(),
     data = [
+        "BUILD",
         ":src",
         ":test_lib",
-        "BUILD",
     ],
 )
 
