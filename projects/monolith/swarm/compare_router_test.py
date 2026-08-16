@@ -242,3 +242,45 @@ async def test_lazy_patch_and_cache(monkeypatch):
 
 async def _async_response(response):
     return response
+
+
+@pytest.mark.asyncio
+async def test_trailer_named_file_is_authored_without_activities(monkeypatch):
+    # Several adapters record no edit/write activities, so the observed set is
+    # empty for their turns. Before this, every changed file fell through as
+    # mechanical, _mechanical_steps needed run activities it did not have
+    # either, and the walkthrough rendered zero steps beside a correct count.
+    raw = (
+        "diff --git a/swarm/policy.py b/swarm/policy.py\n"
+        "--- a/swarm/policy.py\n"
+        "+++ b/swarm/policy.py\n"
+        "@@ -1 +1,2 @@\n"
+        " keep\n"
+        "+added\n"
+    ).encode()
+    monkeypatch.setattr(
+        mod,
+        "_turn_data",
+        lambda *_: _data(
+            diff_blob=zlib.compress(raw),
+            diff_base_sha="c" * 40,
+            result_text=(
+                "done\n\nRATIONALE\n- path: swarm/policy.py · why: adds the guard\n"
+            ),
+            usage_json="{}",
+        ),
+    )
+
+    async def fail_github(*_a, **_k):
+        raise AssertionError("GitHub must not be called for a stored diff")
+
+    monkeypatch.setattr(mod, "_github_get", fail_github)
+    monkeypatch.setattr(mod, "_compare", fail_github)
+    result = await mod.compare_stats(1, 1)
+
+    assert result["resolution_rung"] == 1
+    assert result["files"][0]["classification"] == "authored"
+    # The observed set stays reportable and separate from the claim.
+    assert result["authored_file_paths"] == []
+    assert result["unexplained_files"] == []
+    assert result["contradicted_paths"] == []
