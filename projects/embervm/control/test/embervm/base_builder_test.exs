@@ -2097,6 +2097,66 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(calls, & &1) == 3
   end
 
+  test "force rebuild drops only the anchor vendor's completed entry" do
+    test_pid = self()
+    agent = start_recorder()
+    table = new_cap_table()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+
+    build_fun = fn :fake_channel, _req ->
+      case Agent.get_and_update(calls, fn count -> {count + 1, count + 1} end) do
+        1 ->
+          {:ok, resp("amd-a")}
+
+        2 ->
+          {:ok, resp("intel-i")}
+
+        3 ->
+          send(test_pid, {:forced_rebuild_started, self()})
+
+          receive do
+            :finish_forced_rebuild -> {:ok, resp("intel-i2")}
+          end
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a" end)
+
+    :ok = BaseBuilder.remove_node(builder, "node-4/amd")
+    NodeCapacity.drop(table, {"node-4", "amd"})
+    put_brick(table, "node-1", "intel", cpu_vendor: "intel")
+    :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgI"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i" end)
+
+    before_force = :sys.get_state(builder).workloads["w"]
+    assert Map.keys(before_force.vendor_built) |> Enum.sort() == ["amd", "intel"]
+
+    GenServer.cast(
+      builder,
+      {:reconcile_force_rebuild, "w", before_force.built_signature, "node-1"}
+    )
+
+    assert_receive {:forced_rebuild_started, worker}, 1_000
+    during_force = :sys.get_state(builder).workloads["w"]
+    assert Map.keys(during_force.vendor_built) == ["amd"]
+    assert during_force.vendor_built["amd"].ref == "amd-a"
+    assert during_force.snapshot_ref == nil
+
+    send(worker, :finish_forced_rebuild)
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i2" end)
+  end
+
   test "hydrate fallback clears ledger fields before the building status write" do
     test_pid = self()
     {:ok, calls} = Agent.start_link(fn -> 0 end)
@@ -2341,6 +2401,73 @@ defmodule Embervm.BaseBuilderTest do
     assert workload.built_signature != nil
   end
 
+  test "a blank-vendor scalar base is superseded when that node later reports amd" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "brick", cpu_vendor: "   ")
+
+    build_fun = fn :fake_channel, req ->
+      case req.image_ref do
+        "imgA" -> {:ok, resp("blank-a")}
+        "imgB" -> {:ok, resp("amd-b")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/brick", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "blank-a" end)
+    assert :sys.get_state(builder).workloads["w"].scalar_vendor == ""
+
+    put_brick(table, "node-4", "brick", cpu_vendor: "amd")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgB"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-b" end)
+
+    workload = :sys.get_state(builder).workloads["w"]
+    assert workload.scalar_vendor == "amd"
+    assert workload.superseded_refs == ["blank-a"]
+    assert Map.has_key?(workload.base_refs, "blank-a")
+  end
+
+  test "an intel build does not supersede the current amd scalar base" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "brick", cpu_vendor: "amd")
+
+    build_fun = fn :fake_channel, req ->
+      case req.image_ref do
+        "imgA" -> {:ok, resp("amd-a")}
+        "imgI" -> {:ok, resp("intel-i")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/brick", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a" end)
+
+    put_brick(table, "node-4", "brick", cpu_vendor: "intel")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgI"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i" end)
+
+    workload = :sys.get_state(builder).workloads["w"]
+    assert workload.scalar_vendor == "intel"
+    assert workload.superseded_refs == []
+    assert workload.base_refs == %{}
+  end
+
   test "turnover supersedes only the previous ref for the build vendor" do
     agent = start_recorder()
     table = new_cap_table()
@@ -2526,6 +2653,75 @@ defmodule Embervm.BaseBuilderTest do
 
     send(worker, :finish)
     assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-v2" end)
+  end
+
+  test "coverage calls an observed base without vendor history unverified, not missing" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "amd-base", "amd")
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("amd-base")} end,
+        export_reconcile_interval_ms: 0
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    :sys.replace_state(builder, fn state ->
+      put_in(state.workloads["w"].vendor_built, %{})
+    end)
+
+    send(builder, :export_reconcile)
+
+    assert_eventually(fn ->
+      coverage = condition(latest(agent, "w"), "BaseVendorCoverage")
+
+      coverage["status"] == "False" and coverage["message"] =~ "missing vendors: none" and
+        coverage["message"] =~ "unverified vendors" and
+        coverage["message"] =~ "cannot vouch for signature" and coverage["message"] =~ "amd"
+    end)
+  end
+
+  test "export reconcile republishes full conditions once when a vendor fact appears" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("amd-base")} end,
+        export_reconcile_interval_ms: 0
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
+    Agent.update(agent, fn _calls -> [] end)
+
+    put_brick(table, "node-1", "intel", cpu_vendor: "intel")
+    :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+
+    assert [{"embervm", "w", status}] = recorded(agent)
+    assert length(status["conditions"]) == 3
+    assert %{"status" => "True", "reason" => "BaseReady"} = condition(status, "Ready")
+    assert %{"status" => "True", "reason" => "BaseBuilt"} = condition(status, "BaseBuilt")
+
+    coverage = condition(status, "BaseVendorCoverage")
+    assert %{"status" => "False"} = coverage
+    assert coverage["message"] =~ "missing vendors: intel"
+
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert [{"embervm", "w", ^status}] = recorded(agent)
   end
 
   test "single-vendor convergence remains one build and reports full coverage" do

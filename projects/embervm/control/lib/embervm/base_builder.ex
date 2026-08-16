@@ -531,11 +531,39 @@ defmodule Embervm.BaseBuilder do
         else
           cleared_ref = w.snapshot_ref
 
+          anchor = anchor_node || node_name(w.node_id)
+
+          anchor_vendor =
+            if is_binary(anchor) do
+              state.capacity_table
+              |> Embervm.NodeCapacity.vendor_for(anchor)
+              |> to_string()
+              |> String.trim()
+            else
+              ""
+            end
+
+          vendor_built =
+            if anchor_vendor == "" do
+              # Without a capacity fact we cannot identify which vendor is being
+              # rebuilt. Keep every vendor entry rather than invalidating an
+              # unrelated vendor's completed build.
+              w.vendor_built
+            else
+              Map.delete(w.vendor_built, anchor_vendor)
+            end
+
           Logger.warning(
             "embervm base builder: forcing rebuild for #{workload_name}, cleared snapshot ref #{inspect(cleared_ref)}"
           )
 
-          w = %{w | built_signature: nil, snapshot_ref: nil}
+          w = %{
+            w
+            | built_signature: nil,
+              snapshot_ref: nil,
+              scalar_vendor: "",
+              vendor_built: vendor_built
+          }
           state = put_in(state.workloads[workload_name], w)
 
           case anchor_node && build_instance_on_node(state, w, anchor_node) do
@@ -1441,6 +1469,9 @@ defmodule Embervm.BaseBuilder do
       built_signature: nil,
       snapshot_ref: nil,
       snapshot_digest: nil,
+      # Vendor attributed to the current scalar snapshot_ref. Blank means the
+      # build completed before its capacity fact reported a vendor.
+      scalar_vendor: "",
       # A base is keyed per CPU vendor, while the scalar fields beside this map
       # mean only "some vendor, somewhere" built successfully. Keep the precise
       # history so pi-runtime's observed amd-only base cannot masquerade as Intel
@@ -1460,6 +1491,11 @@ defmodule Embervm.BaseBuilder do
       # refresh can patch only on a change rather than every tick. nil means "never
       # written", which forces one write as soon as any node reports a base.
       last_snapshot_refs: nil,
+      # Preserve the phase and coverage last written to the CR so the periodic
+      # fleet refresh can rewrite the full owned condition array without changing
+      # Ready or BaseBuilt semantics.
+      last_status_phase: nil,
+      last_vendor_coverage: nil,
       backoff_ms: nil,
       retry_timer: nil
     }
@@ -1792,7 +1828,15 @@ defmodule Embervm.BaseBuilder do
          %{signature: built_sig, cpu_vendor: vendor},
          {:ok, %BuildBaseResponse{} = resp}
        ) do
-    previous_ref = if vendor == "", do: w.snapshot_ref, else: get_in(w.vendor_built, [vendor, :ref])
+    previous_ref =
+      if vendor == "" do
+        w.snapshot_ref
+      else
+        case Map.get(w.vendor_built, vendor) do
+          %{ref: ref} -> ref
+          nil -> if w.scalar_vendor in ["", vendor], do: w.snapshot_ref, else: nil
+        end
+      end
 
     # Strict boolean (not `&&`): a first build has previous_ref == nil, and
     # `nil && _` returns nil, which the strict `and` on the base_refs guard below
@@ -1834,6 +1878,7 @@ defmodule Embervm.BaseBuilder do
       | built_signature: built_sig,
         snapshot_ref: resp.snapshot_ref,
         snapshot_digest: resp.image_digest,
+        scalar_vendor: vendor,
         vendor_built: vendor_built,
         superseded_refs: superseded,
         base_refs: base_refs,
@@ -2844,18 +2889,44 @@ defmodule Embervm.BaseBuilder do
   # pi-runtime's observed amd-only Ready=True state, but does not change Ready or
   # enqueue work. Only a :built result writes snapshotRef/Digest, so a build in
   # progress or failure never clears an existing (still restorable) ref.
+  # The periodic fleet refresh uses the same status owner. A coverage change
+  # republishes the full condition array using the last written phase. A pure
+  # snapshotRefs change remains an additive map patch and does not replace the
+  # unchanged condition array.
+  defp write_base_status(state, w, {:fleet_refresh, phase, coverage_changed?}) do
+    write_base_status(state, w, phase, coverage_changed?, false)
+  end
+
   defp write_base_status(state, w, phase) do
+    write_base_status(state, w, phase, true, true)
+  end
+
+  defp write_base_status(state, w, phase, include_conditions?, include_snapshot?) do
     ready = ready_condition(state, w)
     base_built = base_built_condition(state, phase)
     vendor_coverage = base_vendor_coverage_condition(state, w)
+    refs = snapshot_refs_by_vendor(state, w)
 
     status_map =
-      %{"conditions" => [ready, base_built, vendor_coverage]}
-      |> maybe_put_snapshot(state, w, phase)
+      if(include_conditions?,
+        do: %{"conditions" => [ready, base_built, vendor_coverage]},
+        else: %{}
+      )
+      |> maybe_put_snapshot(w, phase, include_snapshot?)
+      |> put_snapshot_refs(refs, w.last_snapshot_refs)
 
     case state.status_writer.(w.namespace, w.name, status_map) do
       :ok ->
-        :ok
+        update_in(state.workloads[w.name], fn current ->
+          %{
+            current
+            | last_status_phase: phase,
+              last_vendor_coverage:
+                if(include_conditions?, do: vendor_coverage, else: current.last_vendor_coverage),
+              last_snapshot_refs:
+                if(map_size(refs) == 0, do: current.last_snapshot_refs, else: refs)
+          }
+        end)
 
       {:error, reason} ->
         # Visibility-only: a status-write failure must not crash the loop or lose
@@ -2863,19 +2934,18 @@ defmodule Embervm.BaseBuilder do
         Logger.warning(
           "embervm base builder: status patch failed for #{w.namespace}/#{w.name}: #{inspect(reason)}"
         )
-    end
 
-    state
+        state
+    end
   end
 
-  defp maybe_put_snapshot(status_map, state, w, :built) do
+  defp maybe_put_snapshot(status_map, w, :built, true) do
     status_map
     |> Map.put("snapshotRef", w.snapshot_ref || "")
     |> Map.put("snapshotDigest", w.snapshot_digest || "")
-    |> put_snapshot_refs(state, w)
   end
 
-  defp maybe_put_snapshot(status_map, state, w, _phase), do: put_snapshot_refs(status_map, state, w)
+  defp maybe_put_snapshot(status_map, _w, _phase, _include_snapshot?), do: status_map
 
   # Additive per-vendor fleet view (#4061). Written on EVERY phase, not just
   # :built, because it is derived from live capacity facts rather than from build
@@ -2883,10 +2953,14 @@ defmodule Embervm.BaseBuilder do
   # rebuilt its own base or after retention evicted one. An EMPTY map is never
   # written, so a CP that has not yet heard from any node cannot clobber a good
   # value with {} (the same fail-open posture as find_capacity_fact/2).
-  defp put_snapshot_refs(status_map, state, w) do
-    case snapshot_refs_by_vendor(state, w) do
+  defp put_snapshot_refs(status_map, refs, previous_refs) do
+    case refs do
       empty when map_size(empty) == 0 -> status_map
-      refs -> Map.put(status_map, "snapshotRefs", refs)
+
+      refs ->
+        stale_vendors = Map.keys(previous_refs || %{}) -- Map.keys(refs)
+        stale_clears = Map.new(stale_vendors, &{&1, nil})
+        Map.put(status_map, "snapshotRefs", Map.merge(refs, stale_clears))
     end
   end
 
@@ -2910,32 +2984,33 @@ defmodule Embervm.BaseBuilder do
   # The map_size(refs) == 0 guard remains the transient-wipe boundary: a total
   # capacity-fact gap or brick roll is not evidence that every live base vanished.
   defp refresh_snapshot_refs(state) do
-    Enum.reduce(state.workloads, state, fn {name, w}, acc ->
+    Enum.reduce(state.workloads, state, fn {_name, w}, acc ->
       refs = snapshot_refs_by_vendor(acc, w)
+      coverage = base_vendor_coverage_condition(acc, w)
+
+      refs_changed? = map_size(refs) > 0 and refs != w.last_snapshot_refs
+
+      coverage_changed? =
+        condition_identity(coverage) != condition_identity(w.last_vendor_coverage)
 
       cond do
-        map_size(refs) == 0 ->
+        w.last_status_phase == nil ->
           acc
 
-        refs == w.last_snapshot_refs ->
+        # A total capacity-fact gap is not evidence that every known vendor or
+        # base vanished. Preserve the last published view until facts return.
+        map_size(refs) == 0 and MapSet.size(fleet_vendors(acc, w)) == 0 ->
           acc
+
+        refs_changed? or coverage_changed? ->
+          write_base_status(
+            acc,
+            w,
+            {:fleet_refresh, w.last_status_phase, coverage_changed?}
+          )
 
         true ->
-          stale_vendors = Map.keys(w.last_snapshot_refs || %{}) -- Map.keys(refs)
-          stale_clears = Map.new(stale_vendors, &{&1, nil})
-          patch_refs = Map.merge(refs, stale_clears)
-
-          case acc.status_writer.(w.namespace, w.name, %{"snapshotRefs" => patch_refs}) do
-            :ok ->
-              put_in(acc.workloads[name].last_snapshot_refs, refs)
-
-            {:error, reason} ->
-              Logger.warning(
-                "embervm base builder: snapshotRefs refresh failed for #{w.namespace}/#{w.name}: #{inspect(reason)}"
-              )
-
-              acc
-          end
+          acc
       end
     end)
   end
@@ -2998,10 +3073,21 @@ defmodule Embervm.BaseBuilder do
 
   defp base_vendor_coverage_condition(state, w) do
     vendors = fleet_vendors(state, w) |> Enum.sort()
-    missing = Enum.filter(vendors, &(not Map.has_key?(w.vendor_built, &1)))
+    observed_refs = snapshot_refs_by_vendor(state, w)
+
+    missing =
+      Enum.filter(vendors, fn vendor ->
+        not Map.has_key?(w.vendor_built, vendor) and not Map.has_key?(observed_refs, vendor)
+      end)
+
+    unverified =
+      Enum.filter(vendors, fn vendor ->
+        not Map.has_key?(w.vendor_built, vendor) and Map.has_key?(observed_refs, vendor)
+      end)
+
     stale = Enum.filter(vendors, &(Map.has_key?(w.vendor_built, &1) and vendor_needs_build?(w, &1)))
 
-    if missing == [] and stale == [] do
+    if missing == [] and stale == [] and unverified == [] do
       condition(
         state,
         "BaseVendorCoverage",
@@ -3011,7 +3097,8 @@ defmodule Embervm.BaseBuilder do
       )
     else
       message =
-        "missing vendors: #{vendor_names(missing)}; stale vendors: #{vendor_names(stale)}"
+        "missing vendors: #{vendor_names(missing)}; stale vendors: #{vendor_names(stale)}; " <>
+          "unverified vendors (control plane cannot vouch for signature): #{vendor_names(unverified)}"
 
       condition(
         state,
@@ -3025,6 +3112,9 @@ defmodule Embervm.BaseBuilder do
 
   defp vendor_names([]), do: "none"
   defp vendor_names(vendors), do: Enum.join(vendors, ", ")
+
+  defp condition_identity(nil), do: nil
+  defp condition_identity(condition), do: Map.delete(condition, "lastTransitionTime")
 
   defp condition(state, type, status, reason, message) do
     %{
