@@ -244,6 +244,18 @@
   color: #1a1a1a;
 }
 
+.moving .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .moving .c-agenda {
   display: none;
 }
@@ -509,7 +521,9 @@
   --pad-top: 62px;
   --pad-btm: 46px;
   position: relative;
-  height: 430px;
+  /* Height is set inline: it grows with the leg tag stagger and with the
+     number of sub-rows each bar lane needs, so nothing clips or crowds. */
+  min-height: 430px;
 }
 
 .moving .plot-scale {
@@ -527,16 +541,13 @@
 
 .moving .legtag {
   position: absolute;
-  top: 12px;
+  /* Tags that would otherwise overlap are staggered onto their own row by
+     packLegTags(); --stagger is the row index it assigned. */
+  top: calc(12px + var(--stagger, 0) * 38px);
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding-left: 12px;
   white-space: nowrap;
-}
-
-.moving .legtag:first-of-type {
-  padding-left: 0;
 }
 
 .moving .legtag b {
@@ -566,7 +577,7 @@
 .moving .today {
   position: absolute;
   z-index: 4;
-  top: 58px;
+  top: var(--pad-top);
   bottom: 40px;
   width: 2px;
   background: var(--blue);
@@ -626,21 +637,24 @@
 
 .moving .row .track {
   position: relative;
-  height: 26px;
+  /* One sub-row looks the same as the old fixed 26px track, just with room
+     for the label underneath; packLaneBars() sets --sub-rows when a lane
+     needs more than one to keep its bars from overlapping. */
+  height: calc(var(--sub-rows, 1) * 34px);
   margin-right: var(--pad-r);
 }
 
 .moving .row.slim .track {
-  height: 20px;
+  height: 34px;
 }
 
 .moving .bar {
   position: absolute;
-  top: 50%;
+  /* --sub-row is the packing slot packLaneBars() assigned this bar. */
+  top: calc(var(--sub-row, 0) * 34px + 3px);
   min-width: 13px;
   height: 13px;
   padding: 0;
-  transform: translateY(-50%);
   border: 0;
   background: var(--ink);
   box-shadow: 0 0 0 2px var(--paper);
@@ -657,9 +671,9 @@
 
 .moving .blbl {
   position: absolute;
-  top: 50%;
-  left: calc(100% + 9px);
-  transform: translateY(-50%);
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
   color: var(--ink-2);
   font-size: 11px;
   font-weight: 600;
@@ -667,13 +681,28 @@
   pointer-events: none;
 }
 
-.moving .dia {
+.moving .dia-wrap {
   position: absolute;
   top: 50%;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  transform: translate(-50%, -50%);
+}
+
+.moving .dia-marker {
+  position: relative;
+  display: inline-flex;
+}
+
+.moving .dia {
+  position: static;
   width: 10px;
   height: 10px;
   padding: 0;
-  transform: translate(-50%, -50%) rotate(45deg);
+  transform: rotate(45deg);
   border: 2px solid var(--ink);
   background: var(--paper);
   cursor: pointer;
@@ -691,7 +720,31 @@
 .moving .dia:hover,
 .moving .dia:focus-visible {
   z-index: 5;
-  transform: translate(-50%, -50%) rotate(45deg) scale(1.4);
+  transform: rotate(45deg) scale(1.4);
+}
+
+.moving .dia-count {
+  position: absolute;
+  top: -5px;
+  left: 100%;
+  margin-left: 3px;
+  padding: 0 3px;
+  border: 1.5px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.3;
+  pointer-events: none;
+}
+
+.moving .dia-date {
+  color: var(--ink-3);
+  font-family: var(--font-code);
+  font-size: 9.5px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .moving .axis {
@@ -754,6 +807,7 @@
   color: var(--ink-2);
   font-size: 11.5px;
   font-style: normal;
+  white-space: pre-line;
 }
 
 .moving .c-prog {

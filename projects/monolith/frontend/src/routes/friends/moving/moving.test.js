@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   collisionWording,
   ganttDatePosition,
+  groupMilestonesByDate,
   mergeAgendaItems,
   moveCountdown,
+  packLaneBars,
+  packLegTags,
   progressSummary,
   sumSellValues,
 } from "./moving.js";
@@ -49,27 +52,230 @@ describe("collision wording", () => {
 });
 
 describe("move countdown", () => {
-  it("targets the earliest move span", () => {
+  it("targets the earliest move span, counting to its end date", () => {
     const result = moveCountdown(
       [
-        { kind: "move", starts_on: "2026-05-16" },
-        { kind: "move", starts_on: "2026-05-11" },
-        { kind: "trip", starts_on: "2026-05-02" },
+        { kind: "move", starts_on: "2026-05-16", ends_on: "2026-05-25" },
+        { kind: "move", starts_on: "2026-05-11", ends_on: "2026-05-21" },
+        { kind: "trip", starts_on: "2026-05-02", ends_on: "2026-05-05" },
       ],
       new Date(2026, 4, 1, 12),
     );
 
-    expect(result.headline).toBe("10 days to go");
-    expect(result.detail).toBe("Monday, 11 May 2026");
-    expect(result.days).toBe(10);
+    expect(result.headline).toBe("20 days to go");
+    expect(result.detail).toBe("Thursday, 21 May 2026");
+    expect(result.description).toBe(
+      "Until you leave Canada, Thursday, 21 May 2026",
+    );
+    expect(result.days).toBe(20);
+  });
+
+  it("falls back when the earliest move span has no usable end date", () => {
+    const result = moveCountdown(
+      [{ kind: "move", starts_on: "2026-05-11", ends_on: null }],
+      new Date(2026, 4, 1, 12),
+    );
+
+    expect(result).toEqual({
+      headline: "No move date set",
+      detail: "Add a move span when the date is known.",
+      description: null,
+      days: null,
+    });
   });
 
   it("states plainly when no move span exists", () => {
     expect(moveCountdown([], new Date(2026, 4, 1, 12))).toEqual({
       headline: "No move date set",
       detail: "Add a move span when the date is known.",
+      description: null,
       days: null,
     });
+  });
+});
+
+describe("lane bar packing", () => {
+  it("packs the real three-visitor collision into two sub-rows", () => {
+    // Mirrors the real data: "Pat & Veronica" (18-31 Aug) and "Catherine &
+    // Ross" (28 Aug-13 Sep) overlap and must split into sub-rows; a third,
+    // later visitor has room to reuse the first sub-row.
+    const bars = [
+      {
+        id: "span-pat-veronica",
+        label: "Pat & Veronica",
+        position: 14.05,
+        width: 10.74,
+      },
+      {
+        id: "span-catherine-ross",
+        label: "Catherine & Ross",
+        position: 22.31,
+        width: 13.23,
+      },
+      {
+        id: "span-later-visitor",
+        label: "The Chungs",
+        position: 66.12,
+        width: 5.78,
+      },
+    ];
+
+    const result = packLaneBars(bars);
+
+    expect(result.subRowCount).toBe(2);
+    const subRowById = Object.fromEntries(
+      result.bars.map((bar) => [bar.id, bar.subRow]),
+    );
+    expect(subRowById["span-pat-veronica"]).toBe(0);
+    expect(subRowById["span-catherine-ross"]).toBe(1);
+    expect(subRowById["span-later-visitor"]).toBe(0);
+  });
+
+  it("never places two overlapping bars in the same sub-row", () => {
+    const { bars, subRowCount } = packLaneBars([
+      { id: "a", position: 0, width: 20 },
+      { id: "b", position: 10, width: 20 },
+      { id: "c", position: 15, width: 5 },
+    ]);
+
+    for (let row = 0; row < subRowCount; row += 1) {
+      const inRow = bars.filter((bar) => bar.subRow === row);
+      for (let i = 0; i < inRow.length; i += 1) {
+        for (let j = i + 1; j < inRow.length; j += 1) {
+          const left = inRow[i];
+          const right = inRow[j];
+          const overlaps =
+            left.position < right.position + right.width &&
+            right.position < left.position + left.width;
+          expect(overlaps).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("breaks position ties deterministically", () => {
+    const bars = [
+      { id: "a", position: 0, width: 10 },
+      { id: "b", position: 0, width: 10 },
+    ];
+
+    expect(packLaneBars(bars)).toEqual(packLaneBars(bars));
+    const { bars: packed } = packLaneBars(bars);
+    expect(packed.find((bar) => bar.id === "a").subRow).toBe(0);
+    expect(packed.find((bar) => bar.id === "b").subRow).toBe(1);
+  });
+
+  it("gives a single bar its own sub-row", () => {
+    const { bars, subRowCount } = packLaneBars([
+      { id: "only", position: 40, width: 10 },
+    ]);
+
+    expect(subRowCount).toBe(1);
+    expect(bars).toEqual([{ id: "only", position: 40, width: 10, subRow: 0 }]);
+  });
+
+  it("handles an empty lane", () => {
+    expect(packLaneBars([])).toEqual({ bars: [], subRowCount: 0 });
+  });
+});
+
+describe("leg tag staggering", () => {
+  it("staggers the real move and trip tags, which start close together", () => {
+    // "Pack out and leave Vancouver" (1 Oct) and "Japan" (11 Oct) sit
+    // roughly 8% apart on the real four-month axis.
+    const { tags, staggerCount } = packLegTags([
+      { id: "span-move", label: "Pack out and leave Vancouver", position: 50 },
+      { id: "span-japan", label: "Japan", position: 58 },
+    ]);
+
+    expect(staggerCount).toBe(2);
+    expect(tags.find((tag) => tag.id === "span-move").stagger).toBe(0);
+    expect(tags.find((tag) => tag.id === "span-japan").stagger).toBe(1);
+  });
+
+  it("does not stagger a single tag", () => {
+    const { tags, staggerCount } = packLegTags([
+      { id: "only", label: "Only leg", position: 30 },
+    ]);
+
+    expect(staggerCount).toBe(1);
+    expect(tags[0].stagger).toBe(0);
+  });
+
+  it("handles no tags", () => {
+    expect(packLegTags([])).toEqual({ tags: [], staggerCount: 0 });
+  });
+});
+
+describe("milestone grouping by date", () => {
+  it("groups the real triple-milestone date into one marker", () => {
+    const milestones = [
+      {
+        id: "ms-lease",
+        title: "Lease ends",
+        occurs_on: "2026-10-07",
+        owner: "both",
+        gcal_state: "synced",
+      },
+      {
+        id: "ms-joe",
+        title: "Joe last day of work",
+        occurs_on: "2026-10-07",
+        owner: "joe",
+        gcal_state: "held",
+      },
+      {
+        id: "ms-anna",
+        title: "Anna last day of work",
+        occurs_on: "2026-10-07",
+        owner: "anna",
+        gcal_state: "synced",
+      },
+    ];
+
+    const groups = groupMilestonesByDate(milestones);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      occursOn: "2026-10-07",
+      count: 3,
+      state: "held",
+    });
+    expect(groups[0].milestones).toHaveLength(3);
+  });
+
+  it("marks a group synced only when every milestone on the date is synced", () => {
+    const groups = groupMilestonesByDate([
+      { id: "a", occurs_on: "2026-09-01", gcal_state: "synced" },
+      { id: "b", occurs_on: "2026-09-01", gcal_state: "synced" },
+    ]);
+
+    expect(groups[0].state).toBe("synced");
+  });
+
+  it("marks a group queued when nothing is held but not everything is synced", () => {
+    const groups = groupMilestonesByDate([
+      { id: "a", occurs_on: "2026-09-01", gcal_state: "synced" },
+      { id: "b", occurs_on: "2026-09-01", gcal_state: "queued" },
+    ]);
+
+    expect(groups[0].state).toBe("queued");
+  });
+
+  it("keeps distinct dates as separate groups, sorted", () => {
+    const groups = groupMilestonesByDate([
+      { id: "a", occurs_on: "2026-09-05", gcal_state: "synced" },
+      { id: "b", occurs_on: "2026-09-01", gcal_state: "synced" },
+    ]);
+
+    expect(groups.map((group) => group.occursOn)).toEqual([
+      "2026-09-01",
+      "2026-09-05",
+    ]);
+  });
+
+  it("handles no milestones", () => {
+    expect(groupMilestonesByDate([])).toEqual([]);
   });
 });
 
