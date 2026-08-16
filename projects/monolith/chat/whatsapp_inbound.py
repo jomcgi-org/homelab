@@ -44,13 +44,13 @@ from chat.whatsapp_outbox import enqueue_media, enqueue_message, enqueue_reactio
 
 logger = logging.getLogger(__name__)
 
-# Cap how many run_python-generated images ride one reply, and the per-image byte
+# Cap how many run_code-generated images ride one reply, and the per-image byte
 # size (chart PNGs are tens of KB; this guards a runaway sandbox output from
 # bloating an outbox row). WhatsApp itself accepts far larger, but the household
 # reply never needs it.
 _MEDIA_MAX_FILES = 4
 _MEDIA_MAX_BYTES = 8 * 1024 * 1024
-# Filename-extension -> mime for the image types run_python emits.
+# Filename-extension -> mime for the image types run_code emits.
 _MEDIA_MIME_BY_EXT = {
     "png": "image/png",
     "jpg": "image/jpeg",
@@ -198,7 +198,7 @@ async def _generate_reply(
     # in-cluster Qwen the Discord concierge uses (ADR 039, amended).
     agent = create_household_agent()
     result = await agent.run(prompt, deps=deps)
-    # Deliver any images run_python generated (charts, etc.) as inline media, the
+    # Deliver any images run_code generated (charts, etc.) as inline media, the
     # same files the Discord path attaches. Best-effort: a media failure must not
     # drop the text reply.
     await _enqueue_generated_media(group_jid, getattr(deps, "generated_files", []))
@@ -207,7 +207,7 @@ async def _generate_reply(
 
 
 def _enqueue_media_sync(group_jid: str, files: list) -> int:
-    """Enqueue up to _MEDIA_MAX_FILES run_python images as media outbox rows.
+    """Enqueue up to _MEDIA_MAX_FILES run_code images as media outbox rows.
 
     ``files`` are (filename, bytes) tuples (chat.agent.ChatDeps.generated_files).
     Returns the count enqueued. Sync (opens its own Session); call via to_thread.
@@ -230,7 +230,7 @@ def _enqueue_media_sync(group_jid: str, files: list) -> int:
 
 
 async def _enqueue_generated_media(group_jid: str, files: list) -> None:
-    """Enqueue run_python-generated images to the group. Best-effort."""
+    """Enqueue run_code-generated images to the group. Best-effort."""
     if not files:
         return
     try:

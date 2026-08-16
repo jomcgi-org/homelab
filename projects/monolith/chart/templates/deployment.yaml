@@ -131,12 +131,12 @@ spec:
               value: {{ .Values.faas.s3Bucket | quote }}
             {{- end }}
             {{- end }}
-            {{- if .Values.sandbox.sessionWorkload }}
-            # The EmberVM session-class workload backing sessioned run_python
-            # (R2, ADR embervm/001). Sessions are created under this workload;
-            # the one-shot task class stays on `sandbox`. Reuses EMBERVM_URL.
-            - name: SANDBOX_SESSION_WORKLOAD
-              value: {{ .Values.sandbox.sessionWorkload | quote }}
+            {{- if .Values.sandbox.workloadPrefix }}
+            # run_code builds its target workload as prefix + language
+            # (sandbox-python, sandbox-go, ...), so this must stay in step with
+            # the embervm chart's sandboxWorkloads names. Reuses EMBERVM_URL.
+            - name: SANDBOX_WORKLOAD_PREFIX
+              value: {{ .Values.sandbox.workloadPrefix | quote }}
             {{- end }}
             {{- if .Values.swarm.enabled }}
             # DBOS swarm layer (ADR agents/038, agents/053). SWARM_ENABLED is
@@ -173,7 +173,7 @@ spec:
                   name: {{ include "monolith.fullname" . }}-scratch-postgres
                   key: POSTGRES_PASSWORD
             {{- if .Values.scratchPostgres.enabled }}
-            # EmberVM R4 scratch-postgres DSN (D-R4.PR-11.1). Agent run_python
+            # EmberVM R4 scratch-postgres DSN (D-R4.PR-11.1). Agent run_code python
             # sessions psycopg-connect to the scale-to-zero scratch Postgres via
             # this DSN; the host is the embervm serving Service, which routes the
             # listenPort to the workload's VM (waking it on the first connection).
