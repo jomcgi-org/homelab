@@ -2755,6 +2755,274 @@ defmodule Embervm.BaseBuilderTest do
     assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
   end
 
+  # -- per-vendor repair enqueue (arms coverage bookkeeping into build decisions) --
+  #
+  # PR #4993 added vendor_built/fleet_vendors/vendor_needs_build? and the
+  # BaseVendorCoverage condition, but reconcile_desc/2 and retry_workload/2 still
+  # asked only the SCALAR built_signature/snapshot_ref "is this built?", which
+  # means "some vendor, somewhere" once and for all short-circuits every later
+  # reconcile even when a second fleet vendor has nothing. These tests exercise
+  # the repair-enqueue that closes that gap.
+
+  test "reconcile repair-enqueues a vendor missing a base without flipping status to building" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+    test_pid = self()
+
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      case Agent.get_and_update(calls, fn c -> {c, c + 1} end) do
+        0 ->
+          {:ok, resp("amd-base")}
+
+        1 ->
+          send(test_pid, {:building_intel, self()})
+
+          receive do
+            :finish -> {:ok, resp("intel-base")}
+          end
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    before_repair = latest(agent, "w")
+    assert %{"status" => "True", "reason" => "BaseBuilt"} = condition(before_repair, "BaseBuilt")
+    assert %{"status" => "True"} = condition(before_repair, "Ready")
+
+    # A second fleet vendor appears. Same spec (only generation moved), so the
+    # scalar guard (built_signature == signature and snapshot_ref != nil) holds;
+    # that used to be a blanket no-op.
+    put_brick(table, "node-1", "intel", cpu_vendor: "intel")
+    :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+
+    assert_receive {:building_intel, worker}, 1_000
+
+    # While intel's repair build is in flight, the workload already serves on
+    # amd: no status write flips BaseBuilt to building, and the scalar fields
+    # are untouched (only the completed repair build's apply_result may move
+    # them, which is a separate, already-documented concern -- see the
+    # should_hydrate?/3 regression-guard tests below).
+    assert latest(agent, "w") == before_repair
+
+    # Stated separately because it is the invariant that matters operationally:
+    # partial vendor coverage must NOT fail Ready. The workload genuinely serves
+    # on amd, so failing Ready fleet-wide would turn a degraded state into an
+    # outage. BaseVendorCoverage is the condition that carries the gap.
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "Ready")
+
+    mid_repair = :sys.get_state(builder).workloads["w"]
+    assert mid_repair.scalar_vendor == "amd"
+    assert mid_repair.snapshot_ref == "amd-base"
+
+    send(worker, :finish)
+
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].vendor_built["intel"] end)
+    intel_built = BaseBuilder.status(builder).workloads["w"].vendor_built["intel"]
+    assert intel_built.ref == "intel-base"
+  end
+
+  test "reconcile is a no-op once every fleet vendor has a current base" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+    put_brick(table, "node-1", "intel", cpu_vendor: "intel")
+
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      Agent.update(builds, &(&1 + 1))
+      {:ok, resp("amd-base")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].vendor_built["intel"] end)
+    assert Agent.get(builds, & &1) == 2
+
+    # Both vendors now have a current record: a further reconcile enqueues
+    # nothing, exactly the pre-existing single-vendor no-op property extended
+    # to a fully-covered fleet.
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 3}))
+    Process.sleep(50)
+
+    assert Agent.get(builds, & &1) == 2
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
+  end
+
+  test "an unverified vendor (observed ref, no CP record) is repair-enqueued and converges on an already-built result" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      case Agent.get_and_update(calls, fn c -> {c, c + 1} end) do
+        0 -> {:ok, resp("amd-base")}
+        _ -> {:ok, resp("intel-observed")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    # intel already has a base ON DISK (the node observed and reported it), but
+    # the CP holds no vendor_built record for it: unverified, not missing.
+    # vendor_needs_build?/2 treats the two identically (see the comment on
+    # vendors_needing_build/2 for why: vendor_built is in-memory-only and never
+    # rehydrated, so skipping unverified would leave coverage broken forever
+    # after every CP restart).
+    put_vendor_fact(table, "node-1", "intel", "w", "intel-observed", "intel")
+    :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+
+    # noded's AlreadyBuilt short-circuit still returns {:ok, %BuildBaseResponse{}}
+    # carrying the pre-existing ref (server.go answers off s.bases.get(baseKey)
+    # before beginBuild/driveBuild), which is what build_fun models by returning
+    # the SAME "intel-observed" ref. apply_result/4 writes vendor_built["intel"]
+    # from that response exactly as it would from a fresh build.
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].vendor_built["intel"] end)
+    intel_built = BaseBuilder.status(builder).workloads["w"].vendor_built["intel"]
+    assert intel_built.ref == "intel-observed"
+    assert Agent.get(calls, & &1) == 2
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
+
+    # Convergence: the CP now vouches for intel too, so a further reconcile
+    # enqueues nothing more.
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 3}))
+    Process.sleep(50)
+    assert Agent.get(calls, & &1) == 2
+  end
+
+  test "retry_workload enqueues a missing vendor instead of treating the scalar guard as nothing to do" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      case Agent.get_and_update(calls, fn c -> {c, c + 1} end) do
+        0 -> {:ok, resp("amd-base")}
+        _ -> {:ok, resp("intel-base")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    put_brick(table, "node-1", "intel", cpu_vendor: "intel")
+    :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
+
+    # Directly drive the backoff-retry path (handle_info({:retry, name}, ...)).
+    # The scalar guard holds (amd's build is current and recorded), which is
+    # exactly the condition retry_workload/2 used to treat as "the desired base
+    # got built by some other path meanwhile; nothing to do". It must now
+    # repair-enqueue intel instead of no-op'ing.
+    send(builder, {:retry, "w"})
+
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].vendor_built["intel"] end)
+    assert Agent.get(calls, & &1) == 2
+  end
+
+  test "should_hydrate? regression guard: a pinned instance whose vendor differs from scalar_vendor never hydrates the wrong ref" do
+    test_pid = self()
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+
+    restore_fun = fn :fake_channel, %Embervm.Node.V1.RestoreArtifactRequest{artifact: ref} ->
+      send(test_pid, {:restore_called, ref.ref})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      case Agent.get_and_update(calls, fn c -> {c, c + 1} end) do
+        0 -> {:ok, resp("amd-snap")}
+        _ -> {:ok, resp("intel-snap")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-snap" end)
+    assert :sys.get_state(builder).workloads["w"].scalar_vendor == "amd"
+
+    # The amd instance vanishes; an intel instance takes over the pin, and it
+    # AFFIRMATIVELY reports no base for "w" -- should_hydrate?/3's ordinary
+    # trigger. But apply_result/4 stamps scalar fields from whichever vendor
+    # built LAST, so the recorded scalar ref ("amd-snap") belongs to amd, not to
+    # this intel instance: hydrating it here would restore the wrong content
+    # onto the wrong vendor.
+    :ok = BaseBuilder.remove_node(builder, "node-4/amd")
+    NodeCapacity.drop(table, {"node-4", "amd"})
+    put_brick(table, "node-1", "intel", cpu_vendor: "intel")
+    put_base_fact(table, "node-1", "intel", "w", "", :BASE_BUILD_STATE_NONE, false)
+    :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+
+    refute_receive {:restore_called, _}, 200
+
+    # Falls through to the scalar-guard repair path instead: intel genuinely has
+    # no base of its own, so it gets a real BuildBase, never a wrong-vendor
+    # RestoreArtifact.
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].vendor_built["intel"] end)
+    assert Agent.get(calls, & &1) == 2
+  end
+
   test "status carries one entry per CPU vendor the fleet reports a base on" do
     agent = start_recorder()
     table = new_cap_table()
