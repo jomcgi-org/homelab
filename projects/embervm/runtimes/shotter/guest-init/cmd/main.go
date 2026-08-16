@@ -35,7 +35,20 @@ import (
 )
 
 const (
-	chromiumBinary  = "/usr/bin/chromium"
+	// The real browser ELF, deliberately NOT /usr/bin/chromium. Wolfi ships
+	// that path as a 619-byte "#!/bin/sh" wrapper which sources
+	// /etc/chromium/*.conf and calls id and stat before exec'ing this same
+	// binary. This image has no shell and no coreutils (the apko package list
+	// is chromium plus three font packages), so the kernel cannot find the
+	// shebang interpreter and exec fails with ENOENT, which Go reports as
+	// "fork/exec /usr/bin/chromium: no such file or directory": an error that
+	// reads like a missing browser when the file is present and 300 MB of
+	// Chromium sits one symlink-free directory away. Nothing is lost by
+	// skipping the wrapper. /etc/chromium is an empty directory, so it sources
+	// no flags, and chromiumArgv below passes every flag this guest needs
+	// explicitly. Adding busybox to get a shell would put one inside the
+	// browser guest to no benefit.
+	chromiumBinary  = "/usr/lib/chromium/chrome"
 	chromiumHome    = "/tmp/shotter-home"
 	chromiumProfile = "/tmp/shotter-profile"
 	cdpAddress      = "127.0.0.1"
