@@ -1,0 +1,55 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - ca-certificates-bundle
+    # Go compute runtime (issue #4981). The toolchain is the whole runtime:
+    # `go run .` compiles the snippet on every invoke, so guest-init warms a
+    # tmpfs GOCACHE at boot with the common stdlib packages and the warm-base
+    # snapshot captures it. Unversioned `go` does not exist in Wolfi; the
+    # major-minor package is the stable name.
+    - go-1.26
+
+archs:
+  - x86_64
+
+accounts:
+  groups:
+    - groupname: sandbox
+      gid: 65532
+  users:
+    - username: sandbox
+      uid: 65532
+      gid: 65532
+  run-as: 65532
+
+environment:
+  HOME: /home/sandbox
+  # A raw Firecracker boot never consumes this block (the kernel ignores OCI
+  # image config entirely), so sandbox-guest-init sets every one of these
+  # explicitly at runtime on the exec'd subprocess; kept here for
+  # self-documentation only.
+  #
+  # GOTOOLCHAIN and GOPROXY are the load-bearing pair: the guest has NO network,
+  # so a go command left free to fetch a toolchain or a module blocks until the
+  # wall clock expires and reports a network error rather than the user's actual
+  # compile error. Both must stay off.
+  GOTOOLCHAIN: local
+  GOPROXY: "off"
+  GOFLAGS: -mod=mod
+  CGO_ENABLED: "0"
+  GOCACHE: /tmp/gocache
+  GOPATH: /tmp/gopath
+
+paths:
+  - path: /home/sandbox
+    type: directory
+    uid: 65532
+    gid: 65532
+    permissions: 0o755
+
+entrypoint:
+  command: /usr/local/bin/sandbox-guest-init

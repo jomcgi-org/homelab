@@ -24,7 +24,7 @@ helm_chart(
         # keys sharing a top-level prefix (e.g. noded.image + noded.sandbox.*)
         # collapse to the last on parse (duplicate-key), dropping the others. Flat
         # top-level keys mirror fc-invoke's proven layout.
-        "sandbox.guestImage": "//projects/firecracker/sandbox/guest:image.info",
+        "sandbox.guestImage": "//projects/firecracker/sandbox/python:image.info",
         "rootfsBuilder.image": "//projects/firecracker/substrate/rootfs-builder:image.info",
         # Semgrep guest image. Distinct top-level key.
         "semgrep.guestImage": "//projects/firecracker/semgrep/guest:image.info",

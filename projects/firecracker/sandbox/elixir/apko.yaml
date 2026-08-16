@@ -1,0 +1,54 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - ca-certificates-bundle
+    # Elixir compute runtime (issue #4981). Wolfi ships elixir only as
+    # erl<OTP>-elixir-<version>: there is no unversioned `elixir` package, and
+    # the OTP major is baked into the package name because the Elixir build is
+    # compiled against exactly that OTP. erlang-28 is listed explicitly even
+    # though erl28-elixir-1.19 depends on it, so the pair is visible in one
+    # place and cannot drift silently.
+    #
+    # Unlike projects/embervm/image/apko.yaml, these are NOT pinned to an exact
+    # version: nothing here is precompiled against this OTP (the control plane
+    # image pins because its release must match the build OTP), so the lock file
+    # is free to carry whatever Wolfi currently ships.
+    - erlang-28
+    - erl28-elixir-1.19
+
+archs:
+  - x86_64
+
+accounts:
+  groups:
+    - groupname: sandbox
+      gid: 65532
+  users:
+    - username: sandbox
+      uid: 65532
+      gid: 65532
+  run-as: 65532
+
+environment:
+  HOME: /home/sandbox
+  # Never consumed by a raw Firecracker boot (the kernel ignores OCI image
+  # config); sandbox-guest-init sets the runtime env explicitly. Documentation
+  # only. A crash dump would be written into the collected working directory and
+  # returned to the caller as a multi-megabyte attachment, so it goes to
+  # /dev/null.
+  ERL_CRASH_DUMP: /dev/null
+  ELIXIR_ERL_OPTIONS: -noinput
+
+paths:
+  - path: /home/sandbox
+    type: directory
+    uid: 65532
+    gid: 65532
+    permissions: 0o755
+
+entrypoint:
+  command: /usr/local/bin/sandbox-guest-init
