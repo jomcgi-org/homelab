@@ -177,9 +177,24 @@ async def compare_stats(session_id: int, turn_seq: int) -> dict:
         raise HTTPException(status_code=404, detail="Agent turn not found")
     base_sha, commit_sha, branch = data["base_sha"], data["commit_sha"], data["branch"]
     repo = data["repo"]
-    authored, activities_truncated = _activities(data)
+    observed, activities_truncated = _activities(data)
     rationale = parse_rationale(data["result_text"])
     trailer_paths = {item["path"] for item in rationale.get("paths", [])}
+    # A file is accounted for if the activity stream shows it being edited OR
+    # the agent's trailer names it. Observation alone is not enough: several
+    # adapters record no edit/write activities at all, so `observed` is empty
+    # for their turns and every changed file fell through as mechanical. With
+    # no `run` activities either, _mechanical_steps also returns nothing, so a
+    # turn with a real diff and a parsed trailer produced zero steps and the
+    # console rendered an empty panel beside correct counts.
+    #
+    # This does not merge the two channels. The diff still comes from git and
+    # the testimony still from the agent; the composer attaches testimony only
+    # where the trailer actually has a point. What changes is that the claim no
+    # longer needs a third signal to corroborate it before it can be shown.
+    # `authored_file_paths` below stays the OBSERVED set, so the distinction
+    # between seen and claimed is still reportable.
+    authored = observed | trailer_paths
 
     resolution_rung = 3
     diff_type = None
@@ -236,7 +251,7 @@ async def compare_stats(session_id: int, turn_seq: int) -> dict:
             ),
         },
         "trailer_parsed": rationale.get("parse_status") == "parsed",
-        "authored_file_paths": sorted(authored),
+        "authored_file_paths": sorted(observed),
         **(
             {
                 "unexplained_files": sorted(paths - trailer_paths),
