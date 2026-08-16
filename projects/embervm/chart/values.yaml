@@ -588,10 +588,11 @@ shotterWorkload:
   floor: 0
   cap: 2
   # Timeouts nest strictly inside one another (ADR embervm/035 section 5):
-  # Context Forge TOOL_TIMEOUT 60s > the monolith client read > this 50s >
-  # the guest handler cap (45s max) > the CDP navigate timeout. Each layer must
-  # stay inside the one above so a slow page surfaces as a legible tool error
-  # rather than a connection Context Forge severs from the outside.
+  # Context Forge TOOL_TIMEOUT 60s > the monolith client's 55s read > this
+  # 50s > the guest handler cap (48s max, screenshot.go's maxHandlerCap) >
+  # the CDP navigate timeout (45s max). Each layer must stay strictly inside
+  # the one above so a slow page surfaces as a legible tool error rather than
+  # a connection Context Forge severs from the outside.
   timeoutSeconds: 50
 
 # Guest-image rootfs provisioning (Task 14), laid out FLAT at top level (NOT

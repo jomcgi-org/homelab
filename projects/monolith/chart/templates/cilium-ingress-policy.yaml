@@ -136,6 +136,25 @@ spec:
         - ports:
             - port: "8091"
               protocol: TCP
+    # The EmberVM shotter workload renders the private tier to a screenshot so
+    # agents can see what is deployed (ADR embervm/035). Separate rule from the
+    # 8091 progress-ingest grant above because a Cilium toPorts entry is per
+    # port, so that rule does NOT admit 3000, and a caller omitted here fails as
+    # a SILENT DIAL TIMEOUT rather than a readable deny (PR #4294). The SSR port
+    # only; the main API on 8000 stays closed to embervm.
+    #
+    # This grants the embervm namespace read access to private-tier pages. What
+    # bounds it is not this rule but the allowlist baked into the shotter guest
+    # image, which is the primary control (ADR embervm/035 section 4); no other
+    # embervm guest has a reason to dial 3000, and none has a proxy that would
+    # let a rendered page do so.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: embervm
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
     - fromEntities:
         - host
         - health

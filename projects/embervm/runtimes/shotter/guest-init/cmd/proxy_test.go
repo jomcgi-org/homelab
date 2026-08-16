@@ -12,18 +12,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/embervm/runtimes/shotter"
 	"github.com/jomcgi/homelab/projects/firecracker/substrate/vsockproto"
 )
 
 const (
 	publicHost      = "jomcgi.dev"
 	internalService = "monolith-public-frontend.monolith-public.svc.cluster.local:3000"
+
+	// privateHost is the second entry the real baked shotter-egress.json
+	// carries (ADR embervm/035 section 3): it is the one that reaches the
+	// private tier, so it needs its own dial-through coverage, not just the
+	// public jomcgi.dev mapping that allowedProxyConfig exercises everywhere
+	// else in this file.
+	privateHost            = "private.jomcgi.dev"
+	privateInternalService = "monolith.monolith.svc.cluster.local:3000"
 )
 
 func allowedProxyConfig() ProxyConfig {
 	return ProxyConfig{
 		HostMapping: map[string]string{publicHost: internalService},
 		Allowlist:   []string{internalService},
+	}
+}
+
+// bothMappingsProxyConfig carries both entries the real baked
+// shotter-egress.json does, for tests that specifically need the second
+// (private.jomcgi.dev) mapping alongside the first.
+func bothMappingsProxyConfig() ProxyConfig {
+	return ProxyConfig{
+		HostMapping: map[string]string{
+			publicHost:  internalService,
+			privateHost: privateInternalService,
+		},
+		Allowlist: []string{internalService, privateInternalService},
 	}
 }
 
@@ -213,6 +235,61 @@ func TestProxyRefusesUnmappedConnectWithoutDial(t *testing.T) {
 	assertRefused(t, allowedProxyConfig(), "CONNECT evil-api.example.com:443 HTTP/1.1\r\nHost: evil-api.example.com:443\r\n\r\n")
 }
 
+// TestProxyRefusesCONNECTForMappedHostWithoutDial guards the fix for a
+// mapped host reached via CONNECT rather than a plain absolute-form GET.
+// Every mapped host resolves to a plaintext internal destination, so
+// tunnelling a CONNECT for one (the shape a page's own absolute https://
+// subresource produces) can only ever end in an opaque TLS failure inside
+// the capture. This must be refused up front, the same way an unmapped
+// CONNECT already is, not admitted and left to fail deep in a handshake.
+func TestProxyRefusesCONNECTForMappedHostWithoutDial(t *testing.T) {
+	assertRefused(t, allowedProxyConfig(), fmt.Sprintf("CONNECT %s:443 HTTP/1.1\r\nHost: %s:443\r\n\r\n", publicHost, publicHost))
+}
+
+// TestProxyMappedHostDialsInternalServiceAndPreservesRequestForPrivateHost
+// covers the second baked mapping. jomcgi.dev's dial-through is asserted in
+// TestProxyMappedHostDialsInternalServiceAndPreservesRequest above;
+// private.jomcgi.dev is the one that actually reaches the private tier
+// behind Cloudflare Access, and previously had no dedicated coverage.
+func TestProxyMappedHostDialsInternalServiceAndPreservesRequestForPrivateHost(t *testing.T) {
+	request := []byte(fmt.Sprintf("GET http://%s/agents HTTP/1.1\r\nHost: %s\r\nUser-Agent: shotter-test\r\n\r\n", privateHost, privateHost))
+	upstreamBytes := make(chan []byte, 1)
+	dialer := &recordingDialer{
+		upstream: func(conn net.Conn) {
+			defer conn.Close()
+			reader := bufio.NewReader(conn)
+			preamble, err := reader.ReadString('\n')
+			if err != nil {
+				t.Errorf("read preamble: %v", err)
+				return
+			}
+			replayed := make([]byte, len(request))
+			if _, err := io.ReadFull(reader, replayed); err != nil {
+				t.Errorf("read replayed request: %v", err)
+				return
+			}
+			upstreamBytes <- append([]byte(preamble), replayed...)
+		},
+	}
+
+	server := newProxyServer(bothMappingsProxyConfig(), nil, dialer.dial)
+	runProxyRequest(t, server, request)
+
+	calls := dialer.recordedCalls()
+	if len(calls) != 1 {
+		t.Fatalf("vsock dial count = %d, want 1", len(calls))
+	}
+	wantUpstream := append([]byte(privateInternalService+"\n"), request...)
+	select {
+	case got := <-upstreamBytes:
+		if string(got) != string(wantUpstream) {
+			t.Fatalf("upstream bytes = %q, want %q", got, wantUpstream)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream did not receive preamble and request")
+	}
+}
+
 // TestLoadProxyConfigFromPathParsesBakedFileShape guards the on-disk schema
 // that BUILD bakes into /etc/shotter-egress.json: a "mapping" object plus an
 // "allowlist" array, the same shape as the checked-in
@@ -287,4 +364,30 @@ func TestProxyConfigurationFailuresRefuseAllWithoutDial(t *testing.T) {
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+// TestBakedShotterEgressConfigParsesAndValidates gives the real, checked-in
+// etc/shotter-egress.json (embedded via the sibling shotter package, not a
+// synthetic fixture this file writes itself) a data dependency on this test.
+// Every other case in this file exercises loadProxyConfigFromPath against
+// JSON this file constructs, which proves the parser and validator work, not
+// that the file BUILD actually bakes into the guest image is one of the
+// things they accept. A malformed real file would otherwise be green in CI
+// forever.
+func TestBakedShotterEgressConfigParsesAndValidates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shotter-egress.json")
+	if err := os.WriteFile(path, shotter.BakedEgressConfigJSON, 0o644); err != nil {
+		t.Fatalf("write baked config: %v", err)
+	}
+
+	config, err := loadProxyConfigFromPath(path)
+	if err != nil {
+		t.Fatalf("loadProxyConfigFromPath(baked shotter-egress.json) = %v, want it to parse and validate", err)
+	}
+	if len(config.HostMapping) == 0 {
+		t.Fatal("baked config HostMapping is empty")
+	}
+	if len(config.Allowlist) == 0 {
+		t.Fatal("baked config Allowlist is empty")
+	}
 }

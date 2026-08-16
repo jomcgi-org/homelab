@@ -10,9 +10,9 @@ shotter/tests/bdd_mcp_tool_test.py's TestMCPReturnShape docstring).
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
+import uuid
 
 import httpx
 
@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 SHOTTER_WORKLOAD = os.environ.get("SHOTTER_WORKLOAD", "shotter")
 
 # Timeout nesting (ADR embervm/035 section 5): Context Forge TOOL_TIMEOUT is
-# 60s, the workload's timeoutSeconds is 50s, the guest handler caps a PNG at
-# 6 MiB inside the workload's 8 MiB resultMaxBytes. This client's read
-# timeout has to sit strictly between Context Forge and the workload: long
-# enough to wait out a full 50s workload budget, short enough that a hung
-# request reports a real ToolTimeout before Context Forge's own 60s cutoff
-# turns it into a generic severed connection.
+# 60s, the workload's timeoutSeconds is 50s, the guest handler caps the
+# base64-encoded PNG at 7 MiB inside the workload's 8 MiB resultMaxBytes.
+# This client's read timeout has to sit strictly between Context Forge and
+# the workload: long enough to wait out a full 50s workload budget, short
+# enough that a hung request reports a real ToolTimeout before Context
+# Forge's own 60s cutoff turns it into a generic severed connection.
 _CONNECT_TIMEOUT_SECONDS = 5.0
 _READ_TIMEOUT_SECONDS = 55.0
 
@@ -71,10 +71,19 @@ async def capture(
         "wait_until": wait_until,
         "timeout_ms": timeout_ms,
     }
-    key_material = f"{url}\0{width}\0{height}\0{full_page}\0{wait_until}".encode()
+    # A random nonce, not a hash of the render parameters. This was copied
+    # from sandbox/client.py, where a pure function of the parameters is the
+    # right key: code to output is deterministic there, so two calls with
+    # the same input are supposed to collapse onto one cached result. A URL
+    # is not pure. TaskStore.dedupe_or_resubmit serves a cached result for
+    # any repeat key while it is live (resultTtlSeconds is 600), so a params
+    # derived key would hand a caller who just deployed a fix and re-shot the
+    # same page its own pre-fix screenshot back, silently, for up to 10
+    # minutes. The header itself stays: it still buys transport-retry safety
+    # within this one call, it just must not collide across calls.
     headers = {
         **auth_headers(),
-        "Idempotency-Key": hashlib.sha256(key_material).hexdigest(),
+        "Idempotency-Key": uuid.uuid4().hex,
     }
 
     async with httpx.AsyncClient() as client:

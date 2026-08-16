@@ -1,8 +1,8 @@
 {{- if .Values.shotterWorkload.enabled }}
 # The shotter workload (ADR embervm/035: the website snapshotter). Its guest image
 # ref is the SAME Bazel-pinned value the noded rootfs-builder bakes and
-# EMBERVM_NODED_IMAGES keys on, so BaseBuilder's BuildBase(ref) resolves on the
-# node. The base is a warm headless Chromium: on admission the control plane
+# EMBERVM_NODE_IMAGE_IDENTITY keys on, so BaseBuilder's BuildBase(ref) resolves on
+# the node. The base is a warm headless Chromium: on admission the control plane
 # cold-boots one VM, guest-init launches Chromium and waits for its CDP endpoint
 # to answer before flipping /shim/ready, noded snapshots that as the base
 # (status.snapshotRef), and a submit drives an Assign that renders one page in a
@@ -21,7 +21,8 @@ spec:
   source:
     image:
       # Must match the top-level shotter.guestImage exactly (the derived
-      # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
+      # EMBERVM_NODE_IMAGE_IDENTITY + rootfs-builder GUEST_IMAGE use the same
+      # value).
       ref: "{{ .Values.shotter.guestImage.repository }}@{{ .Values.shotter.guestImage.digest }}"
       port: {{ .Values.shotterWorkload.port }}
       readyPath: {{ .Values.shotterWorkload.readyPath | quote }}

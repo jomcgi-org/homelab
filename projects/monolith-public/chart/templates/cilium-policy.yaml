@@ -53,6 +53,21 @@ spec:
         - ports:
             - port: {{ .Values.frontend.containerPort | quote }}
               protocol: TCP
+    # The EmberVM shotter workload renders this page to a screenshot so agents
+    # can see what is deployed (ADR embervm/035). Its egress sidecar dials from
+    # a brick pod in the embervm namespace, and without this rule the connect is
+    # dropped: once any ingress rule selects this endpoint Cilium default-denies
+    # everything else, and a caller omitted here fails as a SILENT DIAL TIMEOUT
+    # rather than a readable deny (PR #4294). Read-only HTTP on the SSR port
+    # only; the backend "web" service is a separate endpoint and stays closed to
+    # embervm.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: embervm
+      toPorts:
+        - ports:
+            - port: {{ .Values.frontend.containerPort | quote }}
+              protocol: TCP
     # kubelet liveness/readiness probes originate from the node host. Linkerd
     # auto-authorized these; once an ingress rule makes the endpoint
     # default-deny, Cilium needs them allowed explicitly or the pod never goes

@@ -19,9 +19,12 @@ const (
 	// cdpTargetCreateTimeout and cdpTargetCloseTimeout bound the CDP HTTP
 	// endpoint calls that open and close a fresh target. cdpCommandTimeout
 	// bounds every other single CDP command (domain enable, device metrics,
-	// screenshot capture, reading the final URL); the navigate wait itself
-	// uses the caller's own navigateTimeout instead, since that is the one
-	// the request controls.
+	// screenshot capture, reading the final URL); Page.navigate and the
+	// lifecycle wait that follows it use the caller's own navigateTimeout
+	// instead, since that is the one the request controls, and Page.navigate
+	// does not return until the navigation commits (response headers
+	// arrive), so it needs that same caller-controlled budget too, not a
+	// fixed internal one.
 	cdpTargetCreateTimeout = 5 * time.Second
 	cdpTargetCloseTimeout  = 5 * time.Second
 	cdpCommandTimeout      = 10 * time.Second
@@ -115,38 +118,57 @@ func (e *cdpError) Error() string {
 
 // cdpSession is a single target's websocket connection. A background reader
 // dispatches every inbound frame: replies keyed by ID go to whichever call
-// is waiting on that ID, everything else (events) goes to a shared events
-// channel for waitForNavigation to consume.
+// is waiting on that ID, everything else (events) goes to an unbounded
+// queue for waitForNavigation to drain.
+//
+// The queue is unbounded, not a fixed-size buffered channel with a
+// non-blocking, drop-on-full send: Network.enable is on for the whole
+// capture, so a hydrating page pushes a request/response/data-chunk event
+// for every subresource through this one reader, and dropping
+// Network.responseReceived for the main frame or Page.loadEventFired is
+// never safe. The former silently reports status: 0 for a page that
+// rendered fine; the latter hangs the caller to the full timeout. Neither
+// is distinguishable from a real failure. One capture produces a bounded
+// number of events (there is no long-lived multiplexing here, a fresh
+// target lives for exactly one invocation), so an unbounded queue cannot
+// run away, and it keeps the reader itself non-blocking: readLoop must
+// never stall on a full channel, or it backs up the websocket's own read
+// buffer and can wedge in-flight command responses too.
 type cdpSession struct {
 	conn    *websocket.Conn
 	nextID  atomic.Int64
 	mu      sync.Mutex
 	pending map[int64]chan cdpMessage
-	events  chan cdpMessage
+
+	eventsMu     sync.Mutex
+	eventsQueue  []cdpMessage
+	eventsSignal chan struct{}
+	eventsClosed bool
 }
 
-// dialCDPSession opens the per-target websocket. maxPNGBytes rides this
-// connection base64-encoded inside a JSON envelope, so the read limit needs
-// enough headroom over the raw PNG cap for both the base64 expansion and the
-// envelope itself.
+// dialCDPSession opens the per-target websocket. The capture rides this
+// connection base64-encoded inside a JSON envelope (CDP's own "data" field,
+// plus id/result wrapping), so the read limit is maxEncodedPNGBytes, the
+// ceiling this handler actually enforces on that same encoded payload, plus
+// slack for CDP's own JSON wrapper around it.
 func dialCDPSession(ctx context.Context, wsURL string) (*cdpSession, error) {
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("dial CDP websocket: %w", err)
 	}
-	conn.SetReadLimit(int64(float64(maxPNGBytes)*1.5) + (4 << 20))
+	conn.SetReadLimit(int64(maxEncodedPNGBytes) + (4 << 20))
 
 	session := &cdpSession{
-		conn:    conn,
-		pending: make(map[int64]chan cdpMessage),
-		events:  make(chan cdpMessage, 64),
+		conn:         conn,
+		pending:      make(map[int64]chan cdpMessage),
+		eventsSignal: make(chan struct{}, 1),
 	}
 	go session.readLoop()
 	return session, nil
 }
 
 func (s *cdpSession) readLoop() {
-	defer close(s.events)
+	defer s.closeEvents()
 	for {
 		_, data, err := s.conn.Read(context.Background())
 		if err != nil {
@@ -175,14 +197,71 @@ func (s *cdpSession) readLoop() {
 			}
 			continue
 		}
+		s.pushEvent(msg)
+	}
+}
+
+// pushEvent appends to the unbounded queue and wakes at most one waiter.
+// It never blocks, so a slow or absent consumer can never stall readLoop.
+func (s *cdpSession) pushEvent(msg cdpMessage) {
+	s.eventsMu.Lock()
+	s.eventsQueue = append(s.eventsQueue, msg)
+	s.eventsMu.Unlock()
+	s.signalEvents()
+}
+
+func (s *cdpSession) signalEvents() {
+	select {
+	case s.eventsSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (s *cdpSession) closeEvents() {
+	s.eventsMu.Lock()
+	s.eventsClosed = true
+	s.eventsMu.Unlock()
+	s.signalEvents()
+}
+
+// drainEvents discards every event queued so far without blocking. Used
+// between Page.enable and Page.navigate: a stray lifecycle event left over
+// from the fresh about:blank target the CDP target was created with must
+// not be able to satisfy waitForNavigation immediately and yield a
+// blank-white screenshot with status: 0.
+func (s *cdpSession) drainEvents() {
+	s.eventsMu.Lock()
+	s.eventsQueue = nil
+	s.eventsMu.Unlock()
+	select {
+	case <-s.eventsSignal:
+	default:
+	}
+}
+
+// nextEvent blocks until an event is queued, the session closes, or ctx is
+// done. ok is false only when the queue is drained and the session has
+// closed; a ctx timeout returns a non-nil err instead.
+func (s *cdpSession) nextEvent(ctx context.Context) (msg cdpMessage, ok bool, err error) {
+	for {
+		s.eventsMu.Lock()
+		if len(s.eventsQueue) > 0 {
+			msg = s.eventsQueue[0]
+			s.eventsQueue = s.eventsQueue[1:]
+			s.eventsMu.Unlock()
+			return msg, true, nil
+		}
+		closed := s.eventsClosed
+		s.eventsMu.Unlock()
+		if closed {
+			return cdpMessage{}, false, nil
+		}
+
 		select {
-		case s.events <- msg:
-		default:
-			// A full events buffer only happens if nothing is currently
-			// waiting on it, which means whatever this event reports no
-			// longer matters to any in-flight call. Dropping it here, not
-			// blocking the reader, keeps a slow consumer from wedging every
-			// other pending command response.
+		case <-s.eventsSignal:
+			continue
+		case <-ctx.Done():
+			return cdpMessage{}, false, ctx.Err()
 		}
 	}
 }
@@ -262,29 +341,28 @@ func (s *cdpSession) navigate(ctx context.Context, url string) (frameID string, 
 // the final response, matching finalURL semantics).
 func (s *cdpSession) waitForNavigation(ctx context.Context, lifecycleEvent, mainFrameID string) (documentStatus int, err error) {
 	for {
-		select {
-		case msg, ok := <-s.events:
-			if !ok {
-				return documentStatus, errors.New("CDP connection closed while waiting for navigation")
+		msg, ok, err := s.nextEvent(ctx)
+		if err != nil {
+			return documentStatus, fmt.Errorf("%w: %v", errNavigationTimeout, err)
+		}
+		if !ok {
+			return documentStatus, errors.New("CDP connection closed while waiting for navigation")
+		}
+		switch msg.Method {
+		case "Network.responseReceived":
+			var event struct {
+				FrameID  string `json:"frameId"`
+				Type     string `json:"type"`
+				Response struct {
+					Status int `json:"status"`
+				} `json:"response"`
 			}
-			switch msg.Method {
-			case "Network.responseReceived":
-				var event struct {
-					FrameID  string `json:"frameId"`
-					Type     string `json:"type"`
-					Response struct {
-						Status int `json:"status"`
-					} `json:"response"`
-				}
-				if err := json.Unmarshal(msg.Params, &event); err == nil &&
-					event.Type == "Document" && event.FrameID == mainFrameID {
-					documentStatus = event.Response.Status
-				}
-			case lifecycleEvent:
-				return documentStatus, nil
+			if err := json.Unmarshal(msg.Params, &event); err == nil &&
+				event.Type == "Document" && event.FrameID == mainFrameID {
+				documentStatus = event.Response.Status
 			}
-		case <-ctx.Done():
-			return documentStatus, fmt.Errorf("%w: %v", errNavigationTimeout, ctx.Err())
+		case lifecycleEvent:
+			return documentStatus, nil
 		}
 	}
 }
@@ -352,8 +430,13 @@ func (s *cdpSession) captureScreenshot(ctx context.Context, fullPage bool, viewp
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("decode capture base64: %w", err)
 	}
-	if len(decoded) > maxPNGBytes {
-		return nil, 0, 0, fmt.Errorf("%w: encoded PNG is %d bytes, exceeds the %d byte cap", errCaptureTooLarge, len(decoded), maxPNGBytes)
+	// Checked against the ENCODED length this handler will actually produce
+	// when it re-encodes decoded for its own response (screenshotResponse.
+	// PNGBase64), not the decoded length: what crosses the transport is the
+	// encoded bytes inside a JSON envelope, and that is what has to stay
+	// under the workload's resultMaxBytes with real headroom to spare.
+	if encodedLen := base64.StdEncoding.EncodedLen(len(decoded)); encodedLen > maxEncodedPNGBytes {
+		return nil, 0, 0, fmt.Errorf("%w: base64-encoded PNG is %d bytes, exceeds the %d byte cap", errCaptureTooLarge, encodedLen, maxEncodedPNGBytes)
 	}
 	return decoded, width, height, nil
 }
@@ -421,14 +504,28 @@ func captureScreenshotViaCDP(ctx context.Context, logger *slog.Logger, cdpHTTPBa
 		return screenshotResponse{}, fmt.Errorf("set device metrics: %w", err)
 	}
 
-	mainFrameID, err := session.navigate(setupCtx, req.navigateURL)
+	// Drop anything queued between target creation and here, most notably a
+	// stray lifecycle event from the fresh about:blank target Chromium opens
+	// on every new target. Without this, that leftover event can satisfy
+	// waitForNavigation the instant it starts listening, before Page.navigate
+	// has even sent, yielding a blank-white screenshot with status: 0.
+	session.drainEvents()
+
+	// navCtx bounds both Page.navigate and the lifecycle wait that follows it
+	// with the same budget: the caller's own navigateTimeout, not a fixed
+	// internal constant. Page.navigate does not return until the navigation
+	// commits (response headers arrive), so a slow server's time to first
+	// byte has to fit inside the budget the caller actually asked for, not a
+	// fixed cdpCommandTimeout that has no relationship to it.
+	navCtx, cancelNav := context.WithTimeout(ctx, req.navigateTimeout)
+	defer cancelNav()
+
+	mainFrameID, err := session.navigate(navCtx, req.navigateURL)
 	if err != nil {
 		return screenshotResponse{}, err
 	}
 
-	navCtx, cancelNav := context.WithTimeout(ctx, req.navigateTimeout)
 	status, err := session.waitForNavigation(navCtx, req.waitUntilEvent, mainFrameID)
-	cancelNav()
 	if err != nil {
 		return screenshotResponse{}, err
 	}
