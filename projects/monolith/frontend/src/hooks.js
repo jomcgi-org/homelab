@@ -10,6 +10,7 @@
 const DOMAIN_PREFIX_MAP = {
   "public.": "/public",
   "private.": "/private",
+  "friends.": "/friends",
 };
 
 // The bare apex (jomcgi.dev, no subdomain) serves the public tier: it is the

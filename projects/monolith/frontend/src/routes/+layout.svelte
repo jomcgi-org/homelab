@@ -7,6 +7,7 @@
   let { children } = $props();
 
   let isPrivate = $derived($page.url.hostname.startsWith("private."));
+  let isFriends = $derived($page.url.hostname.startsWith("friends."));
 
   // The private tier drops the shared Nav entirely: the dashboard at the
   // private root IS the nav (launcher grid, queue links, back affordances),
@@ -42,6 +43,7 @@
   // to /ember.
   let hideNav = $derived(
     isPrivate ||
+      isFriends ||
       /^\/private(?:\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
