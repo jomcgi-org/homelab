@@ -11,13 +11,128 @@ from sqlalchemy import func, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
+from agent_sessions.models import (
+    AgentSession,
+    AgentTurn,
+    PendingMessage,
+    VoiceUICompanion,
+    VoiceUILedger,
+)
 from agent_sessions.transport import Turn
 from core.db import get_engine
 
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
+
+
+def create_voice_ui_companion(
+    session: Session,
+    companion_id: str,
+    principal_subject: str,
+    principal_authority: str,
+    now: datetime,
+) -> VoiceUICompanion:
+    row = VoiceUICompanion(
+        id=companion_id,
+        principal_subject=principal_subject,
+        principal_authority=principal_authority,
+        created_at=now,
+        last_seen_at=now,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def get_voice_ui_companion(
+    session: Session, companion_id: str
+) -> VoiceUICompanion | None:
+    return session.get(VoiceUICompanion, companion_id)
+
+
+def heartbeat_voice_ui_companion(
+    session: Session,
+    companion: VoiceUICompanion,
+    now: datetime,
+    principal_subject: str,
+    principal_authority: str,
+) -> VoiceUICompanion:
+    companion.last_seen_at = now
+    companion.principal_subject = principal_subject
+    companion.principal_authority = principal_authority
+    session.add(companion)
+    session.commit()
+    session.refresh(companion)
+    return companion
+
+
+def get_open_voice_ui_companion(
+    session: Session, now: datetime, *, for_update: bool = False
+) -> VoiceUICompanion | None:
+    statement = (
+        select(VoiceUICompanion)
+        .where(
+            VoiceUICompanion.closed_at.is_(None),
+            VoiceUICompanion.last_seen_at >= now - timedelta(seconds=90),
+        )
+        .order_by(
+            VoiceUICompanion.last_seen_at.desc(), VoiceUICompanion.created_at.desc()
+        )
+        .limit(1)
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return session.exec(statement).first()
+
+
+def record_voice_ui_call(
+    session: Session,
+    companion: VoiceUICompanion,
+    call: str,
+    payload: dict,
+    principal_subject: str,
+    principal_authority: str,
+    *,
+    bound_session_id: int | None | object = _UNSET,
+) -> VoiceUILedger:
+    if bound_session_id is not _UNSET:
+        companion.session_id = bound_session_id
+    row = VoiceUILedger(
+        companion_id=companion.id,
+        session_id=companion.session_id,
+        call=call,
+        payload=payload,
+        principal_subject=principal_subject,
+        principal_authority=principal_authority,
+    )
+    session.add_all([companion, row])
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def poll_voice_ui_ledger(
+    session: Session, companion_id: str, since: int, now: datetime
+) -> list[VoiceUILedger] | None:
+    companion = get_voice_ui_companion(session, companion_id)
+    if companion is None:
+        return None
+    companion.last_seen_at = now
+    rows = list(
+        session.exec(
+            select(VoiceUILedger)
+            .where(
+                VoiceUILedger.companion_id == companion_id,
+                VoiceUILedger.id > since,
+            )
+            .order_by(VoiceUILedger.id)
+        ).all()
+    )
+    session.add(companion)
+    session.commit()
+    return rows
 
 
 def create_session(

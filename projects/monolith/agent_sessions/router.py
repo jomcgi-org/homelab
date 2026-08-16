@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
-from agent_sessions import model_family, store
+from agent_sessions import model_family, store, voice_ui
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
@@ -32,6 +32,7 @@ from core.db import get_session
 from faas.embervm_client import EmberVMTransportError
 from goosecracker.api import REPO_CATALOG
 from agent_sessions.rationale import parse_rationale
+from auth.api import Principal, current_principal, get_principal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -176,6 +177,37 @@ class StartRequest(BaseModel):
 class MessageRequest(BaseModel):
     prompt: str
     model: str | None = None
+
+
+class CompanionRequest(BaseModel):
+    companion_id: str | None = None
+
+
+@router.post("/companion")
+async def register_voice_ui_companion(
+    companion_request: CompanionRequest | None = None,
+    _principal_context: Principal = Depends(get_principal),
+) -> dict:
+    principal = current_principal()
+    # Authentication is intentionally observational here. An anonymous MCP or
+    # HTTP principal is recorded per ADR 057 and is not rejected.
+    companion_id = await asyncio.to_thread(
+        voice_ui.register_companion,
+        companion_request.companion_id if companion_request is not None else None,
+        principal.subject,
+        str(principal.authority),
+    )
+    return {"companion_id": companion_id}
+
+
+@router.get("/companion/{companion_id}/ledger")
+async def poll_voice_ui_ledger(
+    companion_id: str, since: int = Query(default=0)
+) -> list[dict]:
+    rows = await asyncio.to_thread(voice_ui.poll_ledger, companion_id, since)
+    if rows is None:
+        raise HTTPException(status_code=404, detail="Unknown voice UI companion")
+    return rows
 
 
 @router.get("/sessions")

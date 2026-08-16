@@ -2,8 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, LargeBinary, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Index,
+    Integer,
+    LargeBinary,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
+
+_JSONB = JSONB().with_variant(JSON(), "sqlite")
+_BIGINT = BigInteger().with_variant(Integer(), "sqlite")
 
 
 class AgentSession(SQLModel, table=True):
@@ -115,3 +129,48 @@ class PendingMessage(SQLModel, table=True):
     claimed_by_replica: str | None = Field(default=None)
     claimed_at: datetime | None = Field(default=None)  # For lease expiry detection
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class VoiceUICompanion(SQLModel, table=True):
+    __tablename__ = "voice_ui_companions"
+    __table_args__ = {"schema": "agent_sessions", "extend_existing": True}
+
+    id: str = Field(primary_key=True)
+    session_id: int | None = Field(default=None)
+    principal_subject: str
+    principal_authority: str
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_type=DateTime(timezone=True),
+    )
+    last_seen_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_type=DateTime(timezone=True),
+    )
+    closed_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class VoiceUILedger(SQLModel, table=True):
+    __tablename__ = "voice_ui_ledger"
+    __table_args__ = (
+        CheckConstraint(
+            "call IN ('attach', 'show', 'ask', 'dismiss')",
+            name="voice_ui_ledger_call_chk",
+        ),
+        Index("voice_ui_ledger_companion_id_id_idx", "companion_id", "id"),
+        {"schema": "agent_sessions", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True, sa_type=_BIGINT)
+    companion_id: str
+    session_id: int | None = Field(default=None)
+    call: str
+    payload: dict = Field(
+        default_factory=dict, sa_column=Column(_JSONB, nullable=False)
+    )
+    principal_subject: str
+    principal_authority: str
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_type=DateTime(timezone=True),
+    )

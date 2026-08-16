@@ -16,7 +16,7 @@ from sqlmodel import Session
 import httpx
 
 import agent.api as agent_api
-from agent_sessions import store, voice
+from agent_sessions import store, voice, voice_ui
 from agent_sessions import model_family
 from agent_sessions.rationale import rationale_trailer_instruction
 from agent_sessions.models import AgentSession, AgentTurn
@@ -30,6 +30,7 @@ from core.db import get_engine
 from core.mcp_app import mcp
 from goosecracker.api import REPO_CATALOG
 from agent_sessions.rationale import parse_rationale
+from auth.api import current_principal
 
 # Voice and MCP sessions hydrate this repo unless the caller names another. The
 # /agents console makes the choice explicit in a dropdown; there is no dropdown
@@ -701,6 +702,67 @@ async def monolith_agent_session_start(
     turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     _schedule_next_message(row.id)
     return {"accepted": True, "session_id": row.id, "turn": turn}
+
+
+def _mint_voice_ui_session() -> AgentSession:
+    return _persist_session(
+        str(uuid4()),
+        "<guest>",
+        "main",
+        None,
+        DEFAULT_AGENT_REPO,
+        discord_thread=None,
+        system_prompt=_append_rationale_trailer(
+            voice.VOICE_INSTRUCTION, DEFAULT_AGENT_REPO
+        ),
+    )
+
+
+def _voice_ui_principal() -> tuple[str, str]:
+    principal = current_principal()
+    # Principal facts are recorded, never used as a gate. ADR 057 deliberately
+    # keeps the voice path available when MCP carries an anonymous principal.
+    return principal.subject, str(principal.authority)
+
+
+@mcp.tool
+async def monolith_voice_ui_attach(session_id: int | None = None) -> dict:
+    """Bind the open voice UI companion to an existing or new agent session."""
+    subject, authority = _voice_ui_principal()
+    return await asyncio.to_thread(
+        voice_ui.attach,
+        session_id,
+        subject,
+        authority,
+        _mint_voice_ui_session,
+    )
+
+
+@mcp.tool
+async def monolith_voice_ui_show(
+    surface: str, ref: str, focus: str | None = None
+) -> dict:
+    """Show one run, walkthrough, transcript, or VM surface on the companion."""
+    subject, authority = _voice_ui_principal()
+    return await asyncio.to_thread(
+        voice_ui.show, surface, ref, focus, subject, authority
+    )
+
+
+@mcp.tool
+async def monolith_voice_ui_ask(question: str, options: list[str], ref: str) -> dict:
+    """Record a companion question and return immediately without awaiting an answer."""
+    subject, authority = _voice_ui_principal()
+    return await asyncio.to_thread(
+        voice_ui.ask, question, options, ref, subject, authority
+    )
+
+
+@mcp.tool
+async def monolith_voice_ui_dismiss(surface: str | None = None) -> dict:
+    """Dismiss one companion surface, or the current surface when omitted."""
+    subject, authority = _voice_ui_principal()
+    return await asyncio.to_thread(voice_ui.dismiss, surface, subject, authority)
 
 
 @mcp.tool
