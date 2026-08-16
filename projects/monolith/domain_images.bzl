@@ -57,6 +57,7 @@ MONOLITH_DOMAINS = [
     "swarm",
     "demos",
     "ember_public",
+    "moving",
     "agent",
     "cluster",
     "semgrep_scan",
