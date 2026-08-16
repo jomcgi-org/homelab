@@ -44,7 +44,7 @@ from core.db import get_engine
 from demos.loadtest_corpus import load_corpus
 from ember_public.core import EMBERVM_URL, destroy_demo_pg_instance
 from home.observability.traces import fetch_correlated_spans, fetch_trace_spans
-from sandbox.client import run_python_in_sandbox
+from sandbox.client import run_code_in_sandbox
 from semgrep_scan.client import scan_files
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/demos/firecracker", tags=["demos"])
 
 # Per-workload VM memory (MiB) recorded in the run config for the frontend.
-_WORKLOAD_MEM_MIB = {"semgrep": 1536, "sandbox": 512}
+_WORKLOAD_MEM_MIB = {"semgrep": 1536, "sandbox-python": 512}
 
 # Agent-session non-terminal states: an active agent run holds
 # node-4 capacity, so a load test must not run concurrently with one.
@@ -92,7 +92,7 @@ class SemgrepRequest(BaseModel):
 
 
 @router.post("/python")
-async def run_python(body: PythonRequest) -> dict:
+async def execute_python(body: PythonRequest) -> dict:
     """Run a Python script in the zero-egress sandbox microVM.
 
     Returns stdout/stderr/exit_code plus a backend-measured duration and the
@@ -102,7 +102,9 @@ async def run_python(body: PythonRequest) -> dict:
     with _tracer.start_as_current_span("demo.python", context=Context()):
         trace_id = _current_trace_id()
         started = perf_counter()
-        result = await run_python_in_sandbox(body.code, body.files)
+        result = await run_code_in_sandbox(
+            body.code, language="python", files=body.files
+        )
         elapsed_ms = (perf_counter() - started) * 1000
 
     return {
@@ -438,7 +440,9 @@ async def start_load_test(workload: str) -> dict:
         "daemon_concurrency": loadtest.DAEMON_CONCURRENCY,
         "client_concurrency": 32,
         "vcpus": loadtest.VCPUS_PER_SCAN,
-        "mem_mib": _WORKLOAD_MEM_MIB[workload],
+        "mem_mib": _WORKLOAD_MEM_MIB[
+            "sandbox-python" if workload == "sandbox" else workload
+        ],
         "node": loadtest.SAMPLE_NODE,
         "corpus": [c["name"] for c in corpus],
     }

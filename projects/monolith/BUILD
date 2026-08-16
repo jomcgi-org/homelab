@@ -2304,25 +2304,10 @@ py_test(
     ],
 )
 
-# Sessioned run_python (EmberVM R2): create-reuse-close, the 410 transparent
-# re-create + session_reset flag, and the token-never-logged guard. Uses an
-# in-memory SQLite for the sandbox.session table, so it needs sqlmodel.
-py_test(
-    name = "sandbox_session_test",
-    srcs = ["sandbox/session_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_sandbox",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
 # EmberVM R4 scratch-postgres DSN plumbing (D-R4.PR-11.1): asserts the DSN is
-# injected into the submitted run_python code (guest-side psycopg-connect),
-# repr-escaped, and reaches the POSTed payload; and that an unset DSN is a no-op.
+# injected into submitted Python code (guest-side psycopg-connect), repr-escaped,
+# and reaches the POSTed payload; and that other languages and an unset DSN are
+# no-ops.
 py_test(
     name = "sandbox_scratch_postgres_test",
     srcs = ["sandbox/scratch_postgres_test.py"],

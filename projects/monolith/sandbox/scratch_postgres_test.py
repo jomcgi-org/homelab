@@ -1,10 +1,11 @@
 """Tests for the EmberVM R4 scratch-postgres DSN plumbing (client.py).
 
 Hermetic: no network. Asserts that when SCRATCH_POSTGRES_DSN is set, the DSN is
-injected into the submitted code (so a guest run_python snippet can psycopg-
+injected into submitted Python code (so a guest snippet can psycopg-
 connect), the value is repr-escaped, and that an unset DSN leaves the code
-unchanged. Also asserts the injected DSN reaches the POSTed payload end to end
-via the same fake-client seam client_test uses.
+unchanged. Non-Python code must remain byte-identical. Also asserts the injected
+DSN reaches the POSTed payload end to end via the same fake-client seam
+client_test uses.
 """
 
 from __future__ import annotations
@@ -69,6 +70,13 @@ def test_with_scratch_env_repr_escapes_special_chars(monkeypatch):
     assert repr(dsn) in out
 
 
+def test_with_scratch_env_leaves_rust_byte_identical(monkeypatch):
+    monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", "postgresql://secret")
+    code = 'fn main() { println!("hi"); }\n'
+
+    assert client._with_scratch_env(code, language="rust") == code
+
+
 @pytest.mark.asyncio
 async def test_dsn_reaches_posted_payload(monkeypatch):
     _FakeClient.posts = []
@@ -77,7 +85,7 @@ async def test_dsn_reaches_posted_payload(monkeypatch):
     monkeypatch.setattr(client.httpx, "AsyncClient", _FakeClient)
     monkeypatch.setattr(client, "EMBERVM_URL", "http://embervm")
 
-    await client.run_python_in_sandbox("print('hi')")
+    await client.run_code_in_sandbox("print('hi')")
 
     assert _FakeClient.posts, "expected a POST"
     posted_code = _FakeClient.posts[0]["json"]["code"]
@@ -92,10 +100,23 @@ async def test_no_dsn_leaves_payload_code_untouched(monkeypatch):
     monkeypatch.setattr(client.httpx, "AsyncClient", _FakeClient)
     monkeypatch.setattr(client, "EMBERVM_URL", "http://embervm")
 
-    await client.run_python_in_sandbox("print('hi')")
+    await client.run_code_in_sandbox("print('hi')")
 
     posted_code = _FakeClient.posts[0]["json"]["code"]
     assert posted_code == "print('hi')"
+
+
+@pytest.mark.asyncio
+async def test_rust_payload_is_byte_identical_when_dsn_is_set(monkeypatch):
+    _FakeClient.posts = []
+    monkeypatch.setattr(client, "SCRATCH_POSTGRES_DSN", "postgresql://secret")
+    monkeypatch.setattr(client.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(client, "EMBERVM_URL", "http://embervm")
+    code = 'fn main() { println!("hi"); }\n'
+
+    await client.run_code_in_sandbox(code, language="rust")
+
+    assert _FakeClient.posts[0]["json"]["code"] == code
 
 
 # httpx is imported so the fake-client seam matches client_test's dependency set.
