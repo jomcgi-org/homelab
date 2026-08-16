@@ -111,6 +111,7 @@ them as current behaviour, not direction.
 | [033](033-substrate-threat-model-conformance-encryption-at-rest.md) | Substrate's threat model adopted as the external conformance frame; per-principal envelope encryption at rest; digest-verified, tuple-authorized restore | Accepted; implementation tracked in #4691, not yet built |
 | [034](034-conformance-harness-synthetic-actions-fault-injection.md) | ADR 006's layer 2 (trace validation), delivered and widened: hermetic and deployed lanes, direct-checker and TLC tiers, anti-vacuity manifests, DRILL/VACUOUS as distinct verdicts, strict-bias specs with a load-bearing Freight-approval override | Draft |
 | [035](035-website-snapshotter-task-guest.md) | Task-class `shotter` guest: warm headless Chromium snapshotted as a base, an in-guest proxy that maps `jomcgi.dev`/`private.jomcgi.dev` to internal services and hard-allowlists only those two destinations ahead of the shared credentialed egress sidecar, agent-facing MCP tool returning a real `ImageContent` block | Draft; implementation tracked in #4994, not yet built |
+| [036](036-platform-kek-custody-derived-control-plane.md) | Platform-managed KEK custody: per-principal KEKs derived per epoch from one root held by the control plane's key service; neither 1Password-per-principal nor a class-3 swap-tier mirror | Accepted; amends 033, resolving its open question 1 |
 
 ## Keeping ARCHITECTURE.md true
 
