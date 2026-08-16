@@ -4,7 +4,7 @@ go_library(
     name = "handler",
     srcs = [
         "handler.go",
-        "kernel.go",
+        "lang.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/firecracker/sandbox/guest-init/internal/handler",
     visibility = ["//projects/firecracker/sandbox/guest-init:__subpackages__"],
@@ -17,7 +17,7 @@ go_test(
     name = "handler_test",
     srcs = [
         "handler_test.go",
-        "kernel_test.go",
+        "lang_test.go",
     ],
     embed = [":handler"],
     deps = [

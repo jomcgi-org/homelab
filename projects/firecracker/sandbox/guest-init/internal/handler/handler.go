@@ -1,4 +1,4 @@
-// Package handler executes one untrusted Python snippet per request inside
+// Package handler executes one untrusted language snippet per request inside
 // the sandbox guest (ADR agents/044). The security boundary is the microVM,
 // not this process; the caps below exist to keep responses inside the
 // fc-invoke 8 MiB body budget and to fail fast on runaway code.
@@ -34,7 +34,7 @@ const (
 	maxTimeout     = 25 * time.Second // below the workload requestTimeout (30s)
 
 	// sandboxUID/sandboxGID match the sandbox apko.yaml `sandbox` account
-	// (uid 65532, ADR agents/044): the executed python subprocess drops to
+	// (uid 65532, ADR agents/044): the executed subprocess drops to
 	// this uid so untrusted code never runs as the guest-init root process.
 	sandboxUID = 65532
 	sandboxGID = 65532
@@ -43,12 +43,12 @@ const (
 // MPLConfigDir is matplotlib's config/cache directory, set as MPLCONFIGDIR on
 // every python exec. It sits on the /tmp tmpfs OUTSIDE any per-invoke workdir
 // so the font cache matplotlib builds is never collected as an output file.
-// cmd/main.go creates it and pre-populates the font cache during warm-import,
+// cmd/main.go creates it and pre-populates the font cache during warm-up,
 // so the warm-base snapshot carries it and per-call plotting is both quiet and
 // fast (no first-use font scan).
 const MPLConfigDir = "/tmp/mplconfig"
 
-// dropPrivileges controls whether the python subprocess's Credential is set
+// dropPrivileges controls whether the subprocess's Credential is set
 // to sandboxUID/sandboxGID. It defaults on: production always executes
 // untrusted code as uid 65532, never as the guest-init root process.
 // handler_test.go flips this off for its exec-dependent tests, because a
@@ -65,26 +65,13 @@ type ExecFile struct {
 	ContentB64 string `json:"content_b64"`
 }
 
-// ExecRequest is the /invoke/sandbox request body.
-//
-// Mode selects the execution model. When empty (the default) the request is a
-// one-shot: Code runs as main.py in a fresh, discarded per-invoke workdir with
-// no state carried to the next call. This is the byte-identical task-class and
-// deprecated-fc-invoke contract; the field is omitempty so an unset Mode never
-// changes the wire shape a one-shot caller sends. When Mode == "session" the
-// request is served by the persistent kernel (kernel.go): Code runs in one
-// long-lived python3 child whose module namespace and /tmp/session workdir
-// accrete across calls (EmberVM R2 sessioned run_python, ADR embervm/001).
+// ExecRequest is the /invoke/sandbox request body. Code runs in a fresh,
+// discarded per-invoke workdir with no state carried to the next call.
 type ExecRequest struct {
 	Code           string     `json:"code"`
 	Files          []ExecFile `json:"files,omitempty"`
 	TimeoutSeconds int        `json:"timeout_seconds,omitempty"`
-	Mode           string     `json:"mode,omitempty"`
 }
-
-// ModeSession is the ExecRequest.Mode value that routes a request to the
-// persistent session kernel instead of the one-shot path.
-const ModeSession = "session"
 
 // ExecResult is the /invoke/sandbox response body. Timeout, a nonzero exit
 // code, and output truncation are all represented here rather than as
@@ -98,33 +85,27 @@ type ExecResult struct {
 	DurationMs int64      `json:"duration_ms"`
 	Truncated  bool       `json:"truncated,omitempty"`
 	Error      string     `json:"error,omitempty"`
-	// SessionReset is set only in session mode: it reports that the persistent
-	// namespace was lost before or during this snippet (a fresh child was
-	// started for it), so variables, imports, and files from prior snippets are
-	// gone. The one-shot path never sets it (omitempty keeps its wire shape).
-	SessionReset bool `json:"session_reset,omitempty"`
 }
 
-// Handle is the shim.Handler for the sandbox workload: decode one
-// ExecRequest, run its Code as main.py under python3 in a fresh per-invoke
+// New binds a language Spec to the shim handler once at guest startup.
+func New(spec Spec) shim.Handler {
+	return func(ctx context.Context, r *shim.Request) (*shim.Response, error) {
+		return Handle(ctx, r, spec)
+	}
+}
+
+// Handle decodes one ExecRequest, runs its Code using spec in a fresh per-invoke
 // workdir, and return a structured ExecResult. Malformed requests (an
 // undecodable body) return a non-nil error; domain-invalid requests (empty
 // code, a file path escaping the workdir, bad base64) return a 400-style
 // structured ExecResult instead, per the shim's Handler contract.
-func Handle(ctx context.Context, r *shim.Request) (*shim.Response, error) {
+func Handle(ctx context.Context, r *shim.Request, spec Spec) (*shim.Response, error) {
 	var req ExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		return nil, fmt.Errorf("handler: decode exec request: %w", err)
 	}
 	if strings.TrimSpace(req.Code) == "" {
 		return badRequest("code is required")
-	}
-
-	// Session mode routes to the persistent kernel; the one-shot path below is
-	// untouched and stays byte-identical for an absent Mode (the task class and
-	// the deprecated fc-invoke path both send no Mode).
-	if req.Mode == ModeSession {
-		return handleSession(req)
 	}
 
 	workdir, err := os.MkdirTemp("/tmp", "sandbox-exec-")
@@ -134,7 +115,7 @@ func Handle(ctx context.Context, r *shim.Request) (*shim.Response, error) {
 	defer os.RemoveAll(workdir) // nosemgrep: no-bare-error-return
 
 	// Ownership of workdir and everything written into it is fixed up in one
-	// chownTree pass after all files exist (below), so the python subprocess,
+	// chownTree pass after all files exist (below), so the subprocess,
 	// which drops to sandboxUID/sandboxGID, owns its whole working directory.
 
 	inputs := map[string]inputRecord{}
@@ -156,8 +137,13 @@ func Handle(ctx context.Context, r *shim.Request) (*shim.Response, error) {
 		inputs[filepath.ToSlash(f.Path)] = inputRecord{size: int64(len(data)), hash: sha256.Sum256(data)}
 	}
 
-	if err := os.WriteFile(filepath.Join(workdir, "main.py"), []byte(req.Code), 0o644); err != nil {
-		return nil, fmt.Errorf("handler: write main.py: %w", err)
+	if err := os.WriteFile(filepath.Join(workdir, spec.SourceFile), []byte(req.Code), 0o644); err != nil {
+		return nil, fmt.Errorf("handler: write %s: %w", spec.SourceFile, err)
+	}
+	if spec.Prepare != nil {
+		if err := spec.Prepare(workdir); err != nil {
+			return nil, fmt.Errorf("handler: prepare %s workdir: %w", spec.Name, err)
+		}
 	}
 
 	// Everything under workdir was created by this (root) process, so the
@@ -183,9 +169,9 @@ func Handle(ctx context.Context, r *shim.Request) (*shim.Response, error) {
 		timeout = maxTimeout
 	}
 
-	result := runPython(ctx, workdir, timeout)
+	result := runSnippet(ctx, spec, workdir, timeout)
 
-	files, filesTruncated, walkErr := collectOutputFiles(workdir, inputs)
+	files, filesTruncated, walkErr := collectOutputFiles(workdir, inputs, spec.ExcludeOutputs)
 	if walkErr != nil && result.Error == "" {
 		// A walk failure loses generated-file output, but the stdout/stderr/exit
 		// code the caller most likely wants are still valid; surface it as a
@@ -203,8 +189,8 @@ func Handle(ctx context.Context, r *shim.Request) (*shim.Response, error) {
 }
 
 // chownTree recursively chowns root and every entry beneath it to
-// sandboxUID/sandboxGID, so the python subprocess (which drops to that uid)
-// owns its whole working directory: the workdir itself, the main.py and
+// sandboxUID/sandboxGID, so the subprocess (which drops to that uid)
+// owns its whole working directory: the workdir itself, the source and
 // input files root wrote into it, and any nested parent dirs MkdirAll
 // created. Without this, those inodes stay root-owned and the subprocess,
 // being "other", can only read them, so an in-place rewrite of an input
@@ -243,12 +229,10 @@ type inputRecord struct {
 	hash [32]byte
 }
 
-// runPython execs `python3 main.py` in workdir with a hard wall-clock
-// timeout, capped stdout/stderr, and dropped privileges (unless disabled for
-// tests). It always returns a populated ExecResult; execution failures land
-// in ExecResult.Error/ExitCode rather than as a Go error, per the shim
-// contract that user-code failures are results, not handler errors.
-func runPython(ctx context.Context, workdir string, timeout time.Duration) ExecResult {
+// runSnippet compiles when needed and then executes a snippet in workdir. Both
+// stages share one hard wall-clock timeout and capped stdout/stderr buffers.
+// Execution failures are results, not handler errors, per the shim contract.
+func runSnippet(ctx context.Context, spec Spec, workdir string, timeout time.Duration) ExecResult {
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -256,54 +240,14 @@ func runPython(ctx context.Context, workdir string, timeout time.Duration) ExecR
 	stdout.limit = stdoutCap
 	stderr.limit = stderrCap
 
-	cmd := exec.CommandContext(execCtx, "python3", "main.py")
-	cmd.Dir = workdir
-	// A raw Firecracker boot hands PID 1 no environment (the kernel ignores
-	// the OCI image config), and this handler runs as a descendant of that
-	// PID 1, so nothing useful is inherited. Set everything the python
-	// subprocess needs explicitly. HOME/TMPDIR point at workdir because it
-	// must be writable (the rootfs HOME baked in apko.yaml is read-only), and
-	// pinning TMPDIR there keeps any tempfile use inside user code within the
-	// caps-enforced, cleaned-up-on-return working directory.
-	cmd.Env = []string{
-		"PATH=/usr/bin:/bin:/usr/local/bin",
-		"HOME=" + workdir,
-		"MPLBACKEND=Agg",
-		"PYTHONUNBUFFERED=1",
-		"TMPDIR=" + workdir,
-		// Keep matplotlib's font cache OUT of the workdir. With HOME=workdir
-		// matplotlib would write $HOME/.cache/matplotlib/fontlist.json on
-		// first use, which collectOutputFiles then returns as a spurious
-		// ~36 KiB attachment on every plot. MPLConfigDir points at a dir the
-		// warm-base snapshot already pre-populated (main.go), so per-call
-		// matplotlib reads the cache from there and writes nothing here.
-		"MPLCONFIGDIR=" + MPLConfigDir,
-		// Put the baked helpers dir on the import path so executed code can
-		// `from sandbox_tools import render_table` (a consistently styled table
-		// PNG, ADR agents/044). It is a stdlib-plus-matplotlib module baked at
-		// /opt/sandbox in the guest image, outside the workdir so it is never
-		// collected as an output file.
-		"PYTHONPATH=/opt/sandbox",
-	}
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if dropPrivileges {
-		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: sandboxUID, Gid: sandboxGID}
-	}
-	// Setpgid above puts the child in its own process group. On a timeout,
-	// exec.CommandContext's default Cancel only kills the direct python3
-	// process; overriding it to kill the negative pid takes any children
-	// python3 forked (a runaway script's subprocesses) down with it too.
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-
 	start := time.Now()
-	runErr := cmd.Run()
+	var runErr error
+	if len(spec.Compile) > 0 {
+		runErr = runCommand(execCtx, spec, workdir, spec.Compile, &stdout, &stderr)
+	}
+	if runErr == nil {
+		runErr = runCommand(execCtx, spec, workdir, spec.Run, &stdout, &stderr)
+	}
 	duration := time.Since(start)
 
 	result := ExecResult{
@@ -329,6 +273,31 @@ func runPython(ctx context.Context, workdir string, timeout time.Duration) ExecR
 		}
 	}
 	return result
+}
+
+// runCommand executes one argv inside the snippet process group. Setpgid and
+// the custom Cancel ensure a timeout kills descendants as well as the direct
+// compiler or runtime process.
+func runCommand(ctx context.Context, spec Spec, workdir string, argv []string, stdout, stderr *capBuffer) error {
+	if len(argv) == 0 {
+		return errors.New("language spec has no command")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = workdir
+	cmd.Env = spec.Environment(workdir)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if dropPrivileges {
+		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: sandboxUID, Gid: sandboxGID}
+	}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	return cmd.Run()
 }
 
 // capBuffer is an io.Writer that keeps at most limit bytes and sets
@@ -360,18 +329,22 @@ func (c *capBuffer) Write(p []byte) (int, error) {
 func (c *capBuffer) String() string { return c.buf.String() }
 
 // collectOutputFiles walks workdir after execution and returns every regular
-// file except main.py and any input file whose content is unchanged from
-// what Handle wrote. An input the script modified is not "unchanged" and IS
+// file except spec-defined outputs and any input file whose content is unchanged
+// from what Handle wrote. An input the script modified is not "unchanged" and IS
 // returned, since the caller likely wants to see the edit. Per-file and
 // total byte caps apply to the returned set; either one being hit sets
 // truncated, and the file that tripped the cap is simply omitted (not
 // partially included).
-func collectOutputFiles(workdir string, inputs map[string]inputRecord) ([]ExecFile, bool, error) {
+func collectOutputFiles(workdir string, inputs map[string]inputRecord, excludeOutputs []string) ([]ExecFile, bool, error) {
 	var (
 		files     []ExecFile
 		total     int64
 		truncated bool
 	)
+	excluded := make(map[string]struct{}, len(excludeOutputs))
+	for _, path := range excludeOutputs {
+		excluded[filepath.ToSlash(path)] = struct{}{}
+	}
 	err := filepath.WalkDir(workdir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("handler: walk %s: %w", path, err)
@@ -384,7 +357,7 @@ func collectOutputFiles(workdir string, inputs map[string]inputRecord) ([]ExecFi
 			return nil // nosemgrep: no-bare-error-return
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == "main.py" {
+		if _, ok := excluded[rel]; ok {
 			return nil
 		}
 		info, infoErr := d.Info()
