@@ -117,7 +117,7 @@ func TestLanguageSpecs(t *testing.T) {
 		excluded   []string
 	}{
 		{name: "python", sourceFile: "main.py", run: []string{"python3", "main.py"}, extraEnv: []string{"PYTHONUNBUFFERED=1", "MPLBACKEND=Agg", "MPLCONFIGDIR=/tmp/mplconfig", "PYTHONPATH=/opt/sandbox"}, warm: []string{"python3", "-c"}, excluded: []string{"main.py"}},
-		{name: "go", sourceFile: "main.go", run: []string{"go", "run", "."}, extraEnv: []string{"GOROOT=/usr/lib/go", "GOCACHE=/tmp/gocache", "GOPATH=/tmp/gopath", "GOMODCACHE=/tmp/gopath/pkg/mod", "GOTOOLCHAIN=local", "GOPROXY=off", "GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOMAXPROCS=1"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.go", "go.mod", "go.sum"}},
+		{name: "go", sourceFile: "main.go", run: []string{"go", "run", "."}, extraEnv: []string{"GOROOT=/usr/lib/go", "GOCACHE=/tmp/gocache", "GOPATH=/tmp/gopath", "GOMODCACHE=/tmp/gopath/pkg/mod", "GOTOOLCHAIN=local", "GOPROXY=off", "GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOMAXPROCS=1", "TMPDIR=/tmp"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.go", "go.mod", "go.sum"}},
 		{name: "rust", sourceFile: "main.rs", compile: []string{"rustc", "-O", "main.rs", "-o", "main"}, run: []string{"./main"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.rs", "main"}},
 		{name: "elixir", sourceFile: "main.exs", run: []string{"elixir", "main.exs"}, extraEnv: []string{"ERL_CRASH_DUMP=/dev/null", "ELIXIR_ERL_OPTIONS=-noinput +fnu"}, warm: []string{"elixir", "-e", ":ok"}, excluded: []string{"main.exs"}},
 		{name: "ocaml", sourceFile: "main.ml", run: []string{"ocaml", "main.ml"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.ml", "main.cmi", "main.cmo"}},
@@ -188,6 +188,28 @@ func TestGoEnvironmentSetsGoroot(t *testing.T) {
 	env := languageSpecs["go"].Environment("/tmp/workdir")
 	if !contains(env, "GOROOT=/usr/lib/go") {
 		t.Errorf("Go environment %#v does not contain GOROOT", env)
+	}
+}
+
+// TestGoTmpdirOverridesTheWorkdir pins the override that lets go read the
+// go.mod prepareGo writes. Go ignores a go.mod sitting in os.TempDir() itself,
+// and the base environment points TMPDIR at the workdir, which is that same
+// directory.
+//
+// The assertion is deliberately about ORDER, not membership. os/exec keeps the
+// last duplicate, so a TMPDIR=/tmp placed before the base entry would satisfy a
+// contains() check while leaving go reading go.mod out of the temp root and
+// failing exactly as it does in production.
+func TestGoTmpdirOverridesTheWorkdir(t *testing.T) {
+	env := languageSpecs["go"].Environment("/tmp/workdir")
+	effective := ""
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TMPDIR=") {
+			effective = kv
+		}
+	}
+	if effective != "TMPDIR=/tmp" {
+		t.Errorf("effective TMPDIR = %q, want %q", effective, "TMPDIR=/tmp")
 	}
 }
 
