@@ -23,6 +23,7 @@
 # gazelle:exclude shared
 # gazelle:exclude ships
 # gazelle:exclude hikes
+# gazelle:exclude moving
 # gazelle:exclude stars
 # gazelle:exclude trips
 # gazelle:exclude dr_jobs
@@ -898,6 +899,30 @@ py_library(
 )
 
 py_library(
+    name = "pkg_moving",
+    srcs = glob(
+        [
+            "moving/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        "@pip//fastapi",
+        "@pip//pydantic",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_library(
     name = "pkg_stars",
     srcs = glob(
         [
@@ -1352,6 +1377,7 @@ py_library(
             "shared/**/*.py",
             "ships/**/*.py",
             "hikes/**/*.py",
+            "moving/**/*.py",
             "stars/**/*.py",
             "trips/**/*.py",
             "dr_jobs/**/*.py",
@@ -1836,6 +1862,7 @@ py_test(
             "grimoire_chat/**/*.py",
             "knowledge/**/*.py",
             "hikes/**/*.py",
+            "moving/**/*.py",
             "dr_jobs/**/*.py",
             "trips/**/*.py",
             "home/**/*.py",
@@ -4776,6 +4803,65 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_ships",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "moving_models_test",
+    srcs = [
+        "moving/conftest.py",
+        "moving/models_test.py",
+    ],
+    imports = ["."],
+    deps = [
+        ":pkg_moving",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "moving_collisions_test",
+    srcs = ["moving/collisions_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_moving",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "moving_viewer_test",
+    srcs = [
+        "moving/conftest.py",
+        "moving/viewer_test.py",
+    ],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        ":pkg_moving",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "moving_router_test",
+    srcs = [
+        "moving/conftest.py",
+        "moving/router_test.py",
+    ],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        ":pkg_moving",
+        "@pip//fastapi",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
