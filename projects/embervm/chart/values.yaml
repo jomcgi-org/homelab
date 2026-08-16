@@ -967,10 +967,15 @@ noded:
   # real concurrency; this only stops a runaway from exhausting the node.
   maxLiveVMs: 8
 
-  # Use Firecracker dirty-page diffs for repeated memory banks. The diff is
-  # merged into a new full after the guest resumes, so the object-store format
-  # remains unchanged. False restores the prior full-only behavior.
-  diffBanking: true
+  # Use Firecracker dirty-page diffs for repeated memory banks. Disabled by
+  # default because the merge-at-bank protocol pays a full-size copy of the
+  # previous base on ext4 scratch, which has no reflink support, so the Bank RPC
+  # gets longer, not shorter. Enable only after the in-place merge design or
+  # reflink-capable scratch lands, tracked in #4970.
+  diffBanking: false
+  # Comma-separated workload allowlist for dirty tracking at both Prime and
+  # Relight. Keep task and park-only workloads outside the diff path.
+  diffBankingWorkloads: sandbox-session
 
   # Serving tap pre-provisioning (ADR embervm/014 decision 4): the number of serving
   # taps EnsureNetwork pre-creates at brick boot, left down until AllocateTap draws

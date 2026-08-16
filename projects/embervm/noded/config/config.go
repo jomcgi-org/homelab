@@ -279,11 +279,11 @@ type Config struct {
 	// DiffBanking enables dirty-page diff snapshots for session VMs restored from
 	// a prior bank. The driver always keeps the committed bundle as a full memory
 	// image and falls back to a full snapshot on every diff-path error. Default
-	// true. Env EMBERVM_NODED_DIFF_BANKING.
+	// false. Env EMBERVM_NODED_DIFF_BANKING.
 	DiffBanking bool
-	// DiffBankingWorkloads names the memory-banking workloads whose initial Prime
-	// must enable dirty tracking. The chart derives it from the workload values so
-	// task and park-only session VMs keep tracking off. Env
+	// DiffBankingWorkloads names the memory-banking workloads whose Prime and
+	// Relight paths must enable dirty tracking. Task and park-only session VMs keep
+	// tracking off. Env
 	// EMBERVM_NODED_DIFF_BANKING_WORKLOADS.
 	DiffBankingWorkloads []string
 	// ControlPlaneURL is the control plane's HTTP base URL the daemon dials home to
@@ -436,7 +436,7 @@ func Load() (Config, error) {
 		PodUID:                os.Getenv("EMBERVM_POD_UID"),
 		SizeClass:             os.Getenv("EMBERVM_NODED_SIZE_CLASS"),
 		WarmRestoreWithVolume: boolDefault("EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME", false),
-		DiffBanking:           boolDefault("EMBERVM_NODED_DIFF_BANKING", true),
+		DiffBanking:           boolDefault("EMBERVM_NODED_DIFF_BANKING", false),
 		DiffBankingWorkloads:  csvDefault("EMBERVM_NODED_DIFF_BANKING_WORKLOADS"),
 		ControlPlaneURL:       os.Getenv("EMBERVM_NODED_CONTROL_PLANE_URL"),
 		ControlPlaneTokenPath: getenvDefault("EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),

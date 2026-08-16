@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,7 @@ type fakeLauncher struct {
 	machineConfigs  []map[string]any
 	snapshotCreates []map[string]any
 	snapshotLoads   []map[string]any
+	failDiffCreate  bool
 }
 
 type fakeProcess struct {
@@ -72,7 +74,12 @@ func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (P
 		_ = json.Unmarshal(b, &body)
 		l.mu.Lock()
 		l.snapshotCreates = append(l.snapshotCreates, body)
+		failDiffCreate := l.failDiffCreate && body["snapshot_type"] == "Diff"
 		l.mu.Unlock()
+		if failDiffCreate {
+			http.Error(w, "injected diff create failure", http.StatusInternalServerError)
+			return
+		}
 		// Persist the bundle files the controller asked for.
 		if sp, ok := body["snapshot_path"].(string); ok {
 			_ = os.WriteFile(sp, []byte("snap"), 0o600)
@@ -140,6 +147,15 @@ func shortTempDir(t *testing.T) string {
 	return d
 }
 
+func executableSnapshotEditor(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(shortTempDir(t), "snapshot-editor")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write snapshot-editor: %v", err)
+	}
+	return path
+}
+
 func testDriver(t *testing.T) *Driver {
 	t.Helper()
 	return New(Config{
@@ -197,9 +213,11 @@ func TestDriverClaimBootsMicroVM(t *testing.T) {
 func TestDriverTracksDirtyPagesOnlyForBankingClaims(t *testing.T) {
 	launcher := &fakeLauncher{}
 	d := New(Config{
-		KernelImagePath: "/opt/kata/vmlinux",
-		RootfsPath:      "/dev/mapper/thread",
-		SnapshotRoot:    shortTempDir(t),
+		KernelImagePath:    "/opt/kata/vmlinux",
+		RootfsPath:         "/dev/mapper/thread",
+		SnapshotRoot:       shortTempDir(t),
+		DiffBanking:        true,
+		SnapshotEditorPath: executableSnapshotEditor(t),
 	}, launcher, nil)
 	banking, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "banking", TrackDirtyPages: true})
 	if err != nil {
@@ -761,7 +779,7 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	}
 
 	// Relight a fresh VM from the banked bundle: a new microVM id and a fresh thread.
-	h2, err := d.RestoreSession(ctx, "sref-abc123")
+	h2, err := d.RestoreSession(ctx, "sref-abc123", false)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -782,7 +800,7 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	if _, err := os.Stat(d.sessionDir("sref-abc123")); !os.IsNotExist(err) {
 		t.Fatalf("session bundle dir should be gone after evict, stat err=%v", err)
 	}
-	if _, err := d.RestoreSession(ctx, "sref-abc123"); err == nil {
+	if _, err := d.RestoreSession(ctx, "sref-abc123", false); err == nil {
 		t.Fatal("relight of an evicted session bundle should error")
 	}
 	// Idempotent evict: removing an already-gone bundle is not an error.
@@ -795,12 +813,13 @@ func TestSessionBankSequenceFullThenDiff(t *testing.T) {
 	ctx := context.Background()
 	launcher := &fakeLauncher{}
 	d := New(Config{
-		KernelImagePath: "/opt/kata/vmlinux",
-		RootfsPath:      "/dev/mapper/thread",
-		SnapshotRoot:    shortTempDir(t),
-		Node:            "node-4",
-		Arch:            "amd64",
-		DiffBanking:     true,
+		KernelImagePath:    "/opt/kata/vmlinux",
+		RootfsPath:         "/dev/mapper/thread",
+		SnapshotRoot:       shortTempDir(t),
+		Node:               "node-4",
+		Arch:               "amd64",
+		DiffBanking:        true,
+		SnapshotEditorPath: executableSnapshotEditor(t),
 	}, launcher, nil)
 	d.mergeDiffMemory = func(_ context.Context, basePath, diffPath, outputPath string) error {
 		base, err := os.ReadFile(basePath)
@@ -825,10 +844,11 @@ func TestSessionBankSequenceFullThenDiff(t *testing.T) {
 		t.Fatalf("Release first bank: %v", err)
 	}
 
-	restored, err := d.RestoreSession(ctx, "bank-1")
+	restored, err := d.RestoreSession(ctx, "bank-1", true)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
+	diffRequestStart := len(launcher.requestPaths())
 	if _, err := d.SnapshotSession(ctx, restored, "bank-2"); err != nil {
 		t.Fatalf("second SnapshotSession: %v", err)
 	}
@@ -846,6 +866,9 @@ func TestSessionBankSequenceFullThenDiff(t *testing.T) {
 	if got := creates[1]["snapshot_type"]; got != "Diff" {
 		t.Fatalf("second bank snapshot_type = %v, want Diff", got)
 	}
+	if got, want := launcher.requestPaths()[diffRequestStart:], []string{"PATCH /vm", "PUT /snapshot/create"}; !slices.Equal(got, want) {
+		t.Fatalf("diff bank request order = %v, want %v (no resume)", got, want)
+	}
 	merged, err := os.ReadFile(d.sessionMemfile("bank-2"))
 	if err != nil {
 		t.Fatalf("read merged memory: %v", err)
@@ -859,10 +882,11 @@ func TestLoadEnablesDiffSnapshotsOnlyForSessionBanks(t *testing.T) {
 	ctx := context.Background()
 	launcher := &fakeLauncher{}
 	d := New(Config{
-		SnapshotRoot: shortTempDir(t),
-		Node:         "node-4",
-		Arch:         "amd64",
-		DiffBanking:  true,
+		SnapshotRoot:       shortTempDir(t),
+		Node:               "node-4",
+		Arch:               "amd64",
+		DiffBanking:        true,
+		SnapshotEditorPath: executableSnapshotEditor(t),
 	}, launcher, nil)
 
 	for _, path := range []string{
@@ -881,7 +905,7 @@ func TestLoadEnablesDiffSnapshotsOnlyForSessionBanks(t *testing.T) {
 		}
 	}
 
-	session, err := d.RestoreSession(ctx, "session-bank")
+	session, err := d.RestoreSession(ctx, "session-bank", true)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -895,8 +919,8 @@ func TestLoadEnablesDiffSnapshotsOnlyForSessionBanks(t *testing.T) {
 	if err := d.Release(ctx, serving); err != nil {
 		t.Fatalf("Release serving: %v", err)
 	}
-	d.cfg.DiffBanking = false
-	disabledSession, err := d.RestoreSession(ctx, "disabled-session-bank")
+	d.diffBanking = false
+	disabledSession, err := d.RestoreSession(ctx, "disabled-session-bank", true)
 	if err != nil {
 		t.Fatalf("RestoreSession with knob disabled: %v", err)
 	}
@@ -911,43 +935,63 @@ func TestLoadEnablesDiffSnapshotsOnlyForSessionBanks(t *testing.T) {
 	if got := loads[0]["enable_diff_snapshots"]; got != true {
 		t.Fatalf("session enable_diff_snapshots = %v, want true", got)
 	}
+	if got := loads[0]["track_dirty_pages"]; got != true {
+		t.Fatalf("session track_dirty_pages = %v, want true", got)
+	}
 	if got, present := loads[1]["enable_diff_snapshots"]; present {
 		t.Fatalf("serving enable_diff_snapshots = %v, want omitted false", got)
+	}
+	if got, present := loads[1]["track_dirty_pages"]; present {
+		t.Fatalf("serving track_dirty_pages = %v, want omitted false", got)
 	}
 	if got, present := loads[2]["enable_diff_snapshots"]; present {
 		t.Fatalf("disabled session enable_diff_snapshots = %v, want omitted false", got)
 	}
+	if got, present := loads[2]["track_dirty_pages"]; present {
+		t.Fatalf("disabled session track_dirty_pages = %v, want omitted false", got)
+	}
 }
 
-func TestSessionDiffMergeFailureFallsBackToFull(t *testing.T) {
-	ctx := context.Background()
-	launcher := &fakeLauncher{}
+func restoredDiffBankingSession(t *testing.T, launcher *fakeLauncher, baseRef string) (*Driver, substrate.Handle) {
+	t.Helper()
 	d := New(Config{
-		SnapshotRoot: shortTempDir(t),
-		Node:         "node-4",
-		Arch:         "amd64",
-		DiffBanking:  true,
+		SnapshotRoot:       shortTempDir(t),
+		Node:               "node-4",
+		Arch:               "amd64",
+		DiffBanking:        true,
+		SnapshotEditorPath: executableSnapshotEditor(t),
 	}, launcher, nil)
-	if err := os.MkdirAll(d.sessionDir("base-bank"), 0o700); err != nil {
+	if err := os.MkdirAll(d.sessionDir(baseRef), 0o700); err != nil {
 		t.Fatalf("mkdir base bank: %v", err)
 	}
-	if err := os.WriteFile(d.sessionSnapfile("base-bank"), []byte("snap"), 0o600); err != nil {
+	if err := os.WriteFile(d.sessionSnapfile(baseRef), []byte("snap"), 0o600); err != nil {
 		t.Fatalf("write base snapfile: %v", err)
 	}
-	if err := os.WriteFile(d.sessionMemfile("base-bank"), []byte("base-full"), 0o600); err != nil {
+	if err := os.WriteFile(d.sessionMemfile(baseRef), []byte("base-full"), 0o600); err != nil {
 		t.Fatalf("write base memfile: %v", err)
 	}
-	h, err := d.RestoreSession(ctx, "base-bank")
+	h, err := d.RestoreSession(context.Background(), baseRef, true)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
-	d.mergeDiffMemory = func(context.Context, string, string, string) error {
+	return d, h
+}
+
+func TestSessionDiffMergeFailureFallsBackToFull(t *testing.T) {
+	launcher := &fakeLauncher{}
+	d, h := restoredDiffBankingSession(t, launcher, "base-bank")
+	ctx, cancel := context.WithCancel(context.Background())
+	d.mergeDiffMemory = func(mergeCtx context.Context, _, _, _ string) error {
+		cancel()
+		if err := mergeCtx.Err(); err != nil {
+			t.Errorf("merge context inherited Bank cancellation: %v", err)
+		}
 		return errors.New("injected merge failure")
 	}
 	if _, err := d.SnapshotSession(ctx, h, "fallback-bank"); err != nil {
 		t.Fatalf("SnapshotSession fallback: %v", err)
 	}
-	if err := d.Release(ctx, h); err != nil {
+	if err := d.Release(context.Background(), h); err != nil {
 		t.Fatalf("Release fallback bank: %v", err)
 	}
 
@@ -963,6 +1007,106 @@ func TestSessionDiffMergeFailureFallsBackToFull(t *testing.T) {
 	}
 	if _, err := os.Stat(d.sessionSnapfile("fallback-bank")); err != nil {
 		t.Fatalf("fallback full snapfile missing: %v", err)
+	}
+}
+
+func TestSessionDiffMissingBaseFallsBackToFull(t *testing.T) {
+	launcher := &fakeLauncher{}
+	d, h := restoredDiffBankingSession(t, launcher, "missing-base-bank")
+	inst := d.get(h.ID)
+	if inst == nil {
+		t.Fatal("restored instance missing")
+	}
+	if err := os.Remove(inst.bankBaseMemPath); err != nil {
+		t.Fatalf("remove bank base: %v", err)
+	}
+
+	if _, err := d.SnapshotSession(context.Background(), h, "missing-base-fallback"); err != nil {
+		t.Fatalf("SnapshotSession fallback: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+
+	creates := launcher.snapshotCreateBodies()
+	if len(creates) != 1 {
+		t.Fatalf("snapshot creates = %d, want one Full fallback: %v", len(creates), creates)
+	}
+	if got, present := creates[0]["snapshot_type"]; present {
+		t.Fatalf("fallback snapshot_type = %v, want omitted Full", got)
+	}
+}
+
+func TestSessionDiffCreateFailureFallsBackToFull(t *testing.T) {
+	launcher := &fakeLauncher{failDiffCreate: true}
+	d, h := restoredDiffBankingSession(t, launcher, "diff-create-base")
+
+	if _, err := d.SnapshotSession(context.Background(), h, "diff-create-fallback"); err != nil {
+		t.Fatalf("SnapshotSession fallback: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+
+	creates := launcher.snapshotCreateBodies()
+	if len(creates) != 2 {
+		t.Fatalf("snapshot creates = %d, want Diff then Full: %v", len(creates), creates)
+	}
+	if got := creates[0]["snapshot_type"]; got != "Diff" {
+		t.Fatalf("first snapshot_type = %v, want Diff", got)
+	}
+	if got, present := creates[1]["snapshot_type"]; present {
+		t.Fatalf("fallback snapshot_type = %v, want omitted Full", got)
+	}
+}
+
+func TestSessionFullBankRecordsBaseOnlyWhenTrackingArmed(t *testing.T) {
+	launcher := &fakeLauncher{}
+	d := New(Config{
+		KernelImagePath:    "/opt/kata/vmlinux",
+		RootfsPath:         "/dev/mapper/thread",
+		SnapshotRoot:       shortTempDir(t),
+		DiffBanking:        true,
+		SnapshotEditorPath: executableSnapshotEditor(t),
+	}, launcher, nil)
+	h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "untracked"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	inst := d.get(h.ID)
+	if _, err := d.SnapshotSession(context.Background(), h, "untracked-bank"); err != nil {
+		t.Fatalf("SnapshotSession: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+	if inst.bankBaseMemPath != "" {
+		t.Fatalf("untracked instance recorded bank base %q", inst.bankBaseMemPath)
+	}
+}
+
+func TestNewDisablesDiffBankingWithoutExecutableSnapshotEditor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(*testing.T) string
+	}{
+		{name: "missing", path: func(t *testing.T) string { return filepath.Join(shortTempDir(t), "missing-editor") }},
+		{name: "not executable", path: func(t *testing.T) string {
+			path := filepath.Join(shortTempDir(t), "snapshot-editor")
+			if err := os.WriteFile(path, []byte("editor"), 0o600); err != nil {
+				t.Fatalf("write non-executable editor: %v", err)
+			}
+			return path
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := New(Config{DiffBanking: true, SnapshotEditorPath: tc.path(t)}, &fakeLauncher{}, nil)
+			if d.diffBanking {
+				t.Fatal("diff banking stayed enabled without an executable snapshot-editor")
+			}
+		})
+	}
+}
+
+func TestMergeMemoryDiffArgs(t *testing.T) {
+	got := mergeMemoryDiffArgs("/snap/copy", "/snap/diff")
+	want := []string{"edit-memory", "rebase", "--memory-path", "/snap/copy", "--diff-path", "/snap/diff"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("snapshot-editor argv = %v, want %v", got, want)
 	}
 }
 

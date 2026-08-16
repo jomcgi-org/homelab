@@ -355,12 +355,16 @@ func (r *sessionSnapshotRegistry) add(e sessionSnapshotEntry) {
 	}
 }
 
-// has reports whether a snapshot_ref is a known banked session snapshot.
-func (r *sessionSnapshotRegistry) has(ref string) bool {
+// get returns a copy of a known banked session snapshot and its workload
+// identity. Startup-rescanned entries may have an empty workload until adoption.
+func (r *sessionSnapshotRegistry) get(ref string) (sessionSnapshotEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, ok := r.snaps[ref]
-	return ok
+	e, ok := r.snaps[ref]
+	if !ok {
+		return sessionSnapshotEntry{}, false
+	}
+	return *e, true
 }
 
 // remove deletes a snapshot_ref from the inventory (after EvictSnapshot). Idempotent.

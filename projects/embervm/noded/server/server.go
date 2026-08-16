@@ -127,8 +127,9 @@ type sessionDriver interface {
 	// bundle (memfile + snapfile, the base-bundle format) under sessions/<ref>. It
 	// does NOT resume: the caller Releases the VM immediately after (Bank destroys).
 	SnapshotSession(ctx context.Context, h substrate.Handle, snapshotRef string) (substrate.SnapshotRef, error)
-	// RestoreSession launches a fresh VM from a banked session bundle and resumes it.
-	RestoreSession(ctx context.Context, snapshotRef string) (substrate.Handle, error)
+	// RestoreSession launches a fresh VM from a banked session bundle, optionally
+	// re-arms dirty tracking, and resumes it.
+	RestoreSession(ctx context.Context, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error)
 	// RemoveSessionBundle deletes a banked session bundle from disk (idempotent).
 	RemoveSessionBundle(snapshotRef string) error
 	// SessionsDir is the directory holding banked session bundles, rescanned on start.
@@ -1443,10 +1444,19 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	if err := s.admitOrReject(0, classMemOnly); err != nil {
 		return nil, err
 	}
-	if !s.sessionSnap.has(ref) {
+	snapshot, ok := s.sessionSnap.get(ref)
+	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: unknown session snapshot_ref %q", ref)
 	}
-	h, err := s.sessionDriver.RestoreSession(ctx, ref)
+	workload := snapshot.workload
+	if workload == "" {
+		// A startup disk rescan cannot recover workload identity from the bundle
+		// path, so use the control plane's adoption trace until the next Bank writes
+		// the identity into the in-memory registry.
+		workload = req.GetTrace().GetWorkload()
+	}
+	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
+	h, err := s.sessionDriver.RestoreSession(ctx, ref, trackDirtyPages)
 	if err != nil {
 		// The snapshot is left on disk (never deleted on a failed restore).
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight session snapshot %q: %v", ref, err)
