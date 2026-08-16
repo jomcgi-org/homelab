@@ -3,7 +3,7 @@ defmodule Embervm.BaseBuilder do
   Turns a `Workload`'s OCI image into a pristine base snapshot by driving the
   node daemon's `BuildBase` RPC, then reports the result back into the
   Workload's `status` subresource (`snapshotRef`, `snapshotDigest`, and the
-  `Ready`/`BaseBuilt` conditions).
+  `Ready`/`BaseBuilt`/`BaseVendorCoverage` conditions).
 
   This is the first control-plane component that DRIVES the node daemon (issues
   a mutating RPC and reconciles its result into CR status), where
@@ -102,8 +102,9 @@ defmodule Embervm.BaseBuilder do
 
   Status is patched with a JSON merge-patch, which REPLACES arrays wholesale, so
   two writers touching `conditions` would clobber each other. Ownership is split
-  by key: this module owns `conditions` (`Ready` + `BaseBuilt`), `snapshotRef`,
-  and `snapshotDigest` for valid task Workloads; the watcher owns
+  by key: this module owns `conditions` (`Ready` + `BaseBuilt` +
+  `BaseVendorCoverage`), `snapshotRef`, and `snapshotDigest` for valid task
+  Workloads; the watcher owns
   `observedGeneration` and `primedFloorSatisfied` (disjoint keys, no lost
   update) and keeps `conditions` only for the invalid-CR validation lane, which
   never reaches this module.
@@ -454,8 +455,9 @@ defmodule Embervm.BaseBuilder do
       nodes: node_runtime,
       workloads: %{},
       workload_sync_done: false,
-      # pid -> %{node_id, name, signature} for the CURRENT build worker, so a
-      # result from a superseded worker (or for a since-changed spec) is dropped.
+      # pid -> %{node_id, name, signature, cpu_vendor} for the CURRENT build
+      # worker, so a result from a superseded worker (or for a since-changed spec)
+      # is dropped and an accepted result is attributed to its build vendor.
       workers: %{},
       # In-flight base exports, a MapSet of {workload, ref} (fast-durability-export
       # fix). A base export now returns a fast ack and completes asynchronously on
@@ -601,6 +603,7 @@ defmodule Embervm.BaseBuilder do
            snapshot_ref: w.snapshot_ref,
            snapshot_digest: w.snapshot_digest,
            built: w.built_signature != nil and w.built_signature == signature(w),
+           vendor_built: w.vendor_built,
            superseded_refs: w.superseded_refs,
            base_refs: w.base_refs,
            backoff_ms: w.backoff_ms
@@ -1292,12 +1295,44 @@ defmodule Embervm.BaseBuilder do
         %{
           instance_id: instance_id,
           node_id: Map.get(f, :node_id) || instance_id,
+          cpu_vendor: cpu_vendor(f),
           size_class: Map.get(f, :size_class, ""),
           mem_budget_mib: Map.get(f, :mem_budget_mib, 0)
         }
 
       :error ->
-        %{instance_id: instance_id, node_id: instance_id, size_class: "", mem_budget_mib: 0}
+        %{
+          instance_id: instance_id,
+          node_id: instance_id,
+          cpu_vendor: "",
+          size_class: "",
+          mem_budget_mib: 0
+        }
+    end
+  end
+
+  defp cpu_vendor(fact) do
+    fact
+    |> Map.get(:cpu_vendor, "")
+    |> to_string()
+    |> String.trim()
+  end
+
+  # Coverage considers only vendors reported by currently registered, build-eligible
+  # instances. A missing capacity fact or blank vendor is still a reporting gap, not
+  # evidence that a vendor lacks a base, so it contributes no vendor here.
+  defp fleet_vendors(state, w) do
+    state
+    |> eligible_build_instances(w.mem_mib || 0)
+    |> Enum.map(& &1.cpu_vendor)
+    |> Enum.reject(&(&1 == ""))
+    |> MapSet.new()
+  end
+
+  defp vendor_needs_build?(w, vendor) do
+    case Map.get(w.vendor_built, vendor) do
+      nil -> true
+      built -> Map.get(built, :signature) != signature(w)
     end
   end
 
@@ -1406,6 +1441,11 @@ defmodule Embervm.BaseBuilder do
       built_signature: nil,
       snapshot_ref: nil,
       snapshot_digest: nil,
+      # A base is keyed per CPU vendor, while the scalar fields beside this map
+      # mean only "some vendor, somewhere" built successfully. Keep the precise
+      # history so pi-runtime's observed amd-only base cannot masquerade as Intel
+      # coverage, without changing which builds this module enqueues yet.
+      vendor_built: %{},
       superseded_refs: [],
       # R2 refcounting: per-superseded-ref refcount tracking, keyed by snapshot
       # ref. A superseded base is destroyed (via EvictSnapshot) ONLY when zero
@@ -1631,6 +1671,12 @@ defmodule Embervm.BaseBuilder do
     request = build_request(w, state.runtime_images)
     sig = signature(w)
 
+    vendor =
+      case find_capacity_fact(state.capacity_table, node_id) do
+        {:ok, fact} -> cpu_vendor(fact)
+        :error -> ""
+      end
+
     {pid, ref} =
       spawn_monitor(fn ->
         me = self()
@@ -1656,7 +1702,12 @@ defmodule Embervm.BaseBuilder do
     state
     |> put_in([:nodes, node_id, :building], w.name)
     |> put_in([:nodes, node_id, :worker], {pid, ref})
-    |> put_in([:workers, pid], %{node_id: node_id, name: w.name, signature: sig})
+    |> put_in([:workers, pid], %{
+      node_id: node_id,
+      name: w.name,
+      signature: sig,
+      cpu_vendor: vendor
+    })
   end
 
   # The image lane sets image_ref (proto field 2); the zip lane leaves it empty
@@ -1703,7 +1754,7 @@ defmodule Embervm.BaseBuilder do
   # A build finished. Clear the node's building slot and worker index, apply the
   # result to the Workload's state and status (unless it was forgotten or its
   # spec changed under us), then start the next queued build on that node.
-  defp finish_build(state, pid, %{node_id: node_id, name: name, signature: built_sig}, result) do
+  defp finish_build(state, pid, %{node_id: node_id, name: name, signature: built_sig} = worker_meta, result) do
     state =
       state
       |> update_in([:workers], &Map.delete(&1, pid))
@@ -1718,7 +1769,7 @@ defmodule Embervm.BaseBuilder do
 
         w ->
           if signature(w) == built_sig do
-            apply_result(state, w, built_sig, result)
+            apply_result(state, w, worker_meta, result)
           else
             # Spec changed under us: this result is for a stale signature. Discard
             # it and re-enqueue the current desired build.
@@ -1735,22 +1786,29 @@ defmodule Embervm.BaseBuilder do
   # first time the acceptance property's "always restorable" ref is set/moved),
   # push any superseded ref onto the turnover list (Task 11 seam), and reset
   # backoff.
-  defp apply_result(state, w, built_sig, {:ok, %BuildBaseResponse{} = resp}) do
-    # Strict boolean (not `&&`): a first build has w.snapshot_ref == nil, and
+  defp apply_result(
+         state,
+         w,
+         %{signature: built_sig, cpu_vendor: vendor},
+         {:ok, %BuildBaseResponse{} = resp}
+       ) do
+    previous_ref = if vendor == "", do: w.snapshot_ref, else: get_in(w.vendor_built, [vendor, :ref])
+
+    # Strict boolean (not `&&`): a first build has previous_ref == nil, and
     # `nil && _` returns nil, which the strict `and` on the base_refs guard below
     # rejects with BadBooleanError. `!=` always yields a boolean.
-    turned_over? = w.snapshot_ref != nil and w.snapshot_ref != resp.snapshot_ref
+    turned_over? = previous_ref != nil and previous_ref != resp.snapshot_ref
 
     superseded =
-      if turned_over?, do: [w.snapshot_ref | w.superseded_refs], else: w.superseded_refs
+      if turned_over?, do: [previous_ref | w.superseded_refs], else: w.superseded_refs
 
     # On turnover, start refcounting the freshly-superseded base. Counts begin
     # unknown (nil); eviction is withheld until the PoolManager and SessionStore
     # report both as zero (report_base_refs/3). A ref already tracked keeps its
     # reported counts.
     base_refs =
-      if turned_over? and not Map.has_key?(w.base_refs, w.snapshot_ref) do
-        Map.put(w.base_refs, w.snapshot_ref, %{
+      if turned_over? and not Map.has_key?(w.base_refs, previous_ref) do
+        Map.put(w.base_refs, previous_ref, %{
           node_id: w.node_id,
           primed: nil,
           sessions: nil,
@@ -1760,11 +1818,23 @@ defmodule Embervm.BaseBuilder do
         w.base_refs
       end
 
+    vendor_built =
+      if vendor == "" do
+        w.vendor_built
+      else
+        Map.put(w.vendor_built, vendor, %{
+          signature: built_sig,
+          ref: resp.snapshot_ref,
+          digest: resp.image_digest
+        })
+      end
+
     w = %{
       w
       | built_signature: built_sig,
         snapshot_ref: resp.snapshot_ref,
         snapshot_digest: resp.image_digest,
+        vendor_built: vendor_built,
         superseded_refs: superseded,
         base_refs: base_refs,
         backoff_ms: nil,
@@ -2717,7 +2787,7 @@ defmodule Embervm.BaseBuilder do
 
   # A failed build: keep any existing base (Ready stays True if one is recorded),
   # report the daemon error, and schedule a backed-off retry.
-  defp apply_result(state, w, _built_sig, {:error, reason}) do
+  defp apply_result(state, w, _worker_meta, {:error, reason}) do
     message = format_build_error(reason)
 
     Logger.warning("embervm base builder: BuildBase for #{w.namespace}/#{w.name} failed: #{message}")
@@ -2768,16 +2838,19 @@ defmodule Embervm.BaseBuilder do
 
   # -- status writing ----------------------------------------------------------
 
-  # Build and patch the two conditions this module owns. Ready is derived purely
-  # from whether a restorable base exists (snapshot_ref present); BaseBuilt
-  # tracks the DESIRED base. Only a :built result writes snapshotRef/Digest, so a
-  # build-in-progress or failure never clears an existing (still restorable) ref.
+  # Build and patch the three conditions this module owns. Ready is derived purely
+  # from whether a restorable base exists (snapshot_ref present); BaseBuilt tracks
+  # the DESIRED scalar base. BaseVendorCoverage exposes the per-vendor gap behind
+  # pi-runtime's observed amd-only Ready=True state, but does not change Ready or
+  # enqueue work. Only a :built result writes snapshotRef/Digest, so a build in
+  # progress or failure never clears an existing (still restorable) ref.
   defp write_base_status(state, w, phase) do
     ready = ready_condition(state, w)
     base_built = base_built_condition(state, phase)
+    vendor_coverage = base_vendor_coverage_condition(state, w)
 
     status_map =
-      %{"conditions" => [ready, base_built]}
+      %{"conditions" => [ready, base_built, vendor_coverage]}
       |> maybe_put_snapshot(state, w, phase)
 
     case state.status_writer.(w.namespace, w.name, status_map) do
@@ -2922,6 +2995,36 @@ defmodule Embervm.BaseBuilder do
   defp base_built_condition(state, {:pending, :no_node}) do
     condition(state, "BaseBuilt", "Unknown", "NoNodeAvailable", "no node daemon is configured to build the base")
   end
+
+  defp base_vendor_coverage_condition(state, w) do
+    vendors = fleet_vendors(state, w) |> Enum.sort()
+    missing = Enum.filter(vendors, &(not Map.has_key?(w.vendor_built, &1)))
+    stale = Enum.filter(vendors, &(Map.has_key?(w.vendor_built, &1) and vendor_needs_build?(w, &1)))
+
+    if missing == [] and stale == [] do
+      condition(
+        state,
+        "BaseVendorCoverage",
+        "True",
+        "VendorCoverageComplete",
+        "all known fleet CPU vendors have a base at the desired signature"
+      )
+    else
+      message =
+        "missing vendors: #{vendor_names(missing)}; stale vendors: #{vendor_names(stale)}"
+
+      condition(
+        state,
+        "BaseVendorCoverage",
+        "False",
+        "VendorCoverageIncomplete",
+        message
+      )
+    end
+  end
+
+  defp vendor_names([]), do: "none"
+  defp vendor_names(vendors), do: Enum.join(vendors, ", ")
 
   defp condition(state, type, status, reason, message) do
     %{
