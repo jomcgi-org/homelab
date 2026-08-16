@@ -144,6 +144,7 @@ ADRs document significant architectural decisions and their context.
 | [003 - gVisor RuntimeClass](security/003-gvisor-runtime-class.md)                              | User-space kernel isolation for agent sandbox pods via runsc                                                                               |
 | [004 - Public Read-Only Service Isolation](security/004-public-read-only-service-isolation.md) | Separate read-only public service on a replica, isolated from private data and secrets                                                     |
 | [005 - Public Chat Adversarial Hardening](security/005-public-chat-adversarial-hardening.md)   | Defense-in-depth for anonymous GPU-backed chat: Turnstile sessions, reserved-headroom semaphore, server-side limits, DB-confined retrieval |
+| [006 - Crossing on `friends.jomcgi.dev` as a Second Authorization Lane](security/006-moving-friends-authorization-lane.md) | Serve the `moving` family move-planner app from `friends.jomcgi.dev`, not `private.jomcgi.dev`, as a new HTTPRoute with its own SecurityPolicy gated to a new authentik group `family`, so a shared-hostname policy mistake cannot reach ArgoCD, SigNoz, Longhorn, or Kargo |
 
 ## Services
 
