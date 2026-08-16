@@ -108,6 +108,21 @@ var languageSpecs = map[string]Spec{
 			"GOFLAGS=-mod=mod",
 			"CGO_ENABLED=0",
 			"GOMAXPROCS=1",
+			// Overrides the base TMPDIR, which points at the workdir. Go refuses
+			// to read a go.mod that sits in os.TempDir() itself, so with the two
+			// equal it ignores the go.mod prepareGo just wrote and fails with
+			// "go.mod file not found in current directory or any parent
+			// directory". Only equality trips it: a temp root above or below the
+			// workdir is fine, which is why /tmp works and the workdir does not.
+			//
+			// Duplicate keys are not ambiguous here. os/exec dedupes cmd.Env and
+			// keeps the LAST occurrence, so this entry wins over the base one.
+			//
+			// /tmp rather than a workdir subdirectory because output collection
+			// walks the workdir: temp files written below it would come back to
+			// the caller as attachments. GOCACHE already lives on /tmp, and the
+			// tool's documented contract is that files under /tmp are lost.
+			"TMPDIR=/tmp",
 		},
 		Warm: []string{
 			"/bin/sh",
