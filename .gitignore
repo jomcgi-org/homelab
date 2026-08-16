@@ -89,6 +89,10 @@ bb-out/
 # for triage, never committed
 .codex-dispatch/
 
+# Same, for grok CLI dispatches. There is no wrapper for those, so the log is
+# whatever the caller tees; it still never belongs in a commit.
+.grok-dispatch/
+
 # Chart versions published by main's push, handed to write-back-versions.sh
 # (ADR platform/009 decision 1). Written by bazel/helm/push.sh.tpl, consumed and
 # deleted in the same CI action, never committed.
