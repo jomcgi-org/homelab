@@ -8,9 +8,17 @@
 # with that module, not a local label.
 #
 # Session class, not stateful: a session VM survives an invoke (SessionAssign,
-# not Assign), banks to a node snapshot when idle, and relights on the next
-# invoke, so the CLI process and its conversation accrete across turns.
-# persistenceEnabled gates the ADR 027 disk-backed mode; deploy keeps that flip off.
+# not Assign), goes idle rather than dying, and resumes on the next invoke, so
+# the CLI process and its conversation accrete across turns.
+#
+# persistenceEnabled gates the ADR 027 disk-backed mode, and deploy sets it
+# TRUE for this workload, so read that file before reasoning about which idle
+# path runs here. The flag selects the branch in do_bank (session_manager.ex):
+# persistence ON parks (VM teardown, workspace stays on its volume, rejoin is a
+# cold spawn), persistence OFF memory-banks to a node snapshot. The chart
+# default below is false, so the chart alone renders the banking path while
+# production runs the parking one. The knob is named idleBankSeconds in both
+# cases, which is why the name is not evidence of which branch you are on.
 #
 # Egress is not a field here, but this workload's NAME is load-bearing for it.
 # The lane is gated per workload (EMBERVM_NODED_EGRESS_WORKLOADS), and the
