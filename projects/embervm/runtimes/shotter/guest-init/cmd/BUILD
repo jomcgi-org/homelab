@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 # ember-shotter-init is PID 1 of the shotter task guest. It is cross-compiled
 # for the only supported guest architecture and layered into the apko image by
@@ -11,6 +11,7 @@ go_library(
         "mount_other.go",
         "net_linux.go",
         "net_other.go",
+        "proxy.go",
         "vsock_linux.go",
         "vsock_other.go",
     ],
@@ -26,4 +27,11 @@ go_binary(
     name = "cmd",
     embed = [":cmd_lib"],
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "cmd_test",
+    srcs = ["proxy_test.go"],
+    embed = [":cmd_lib"],
+    deps = ["//projects/firecracker/substrate/vsockproto"],
 )
