@@ -42,7 +42,8 @@
       "Bash(column:*)",
       "WebFetch(domain:*)",
       "Bash(bb:*)",
-      "mcp__buildbuddy"
+      "mcp__buildbuddy",
+      "mcp__claude_ai_jomcgi"
     ],
     "additionalDirectories": ["/tmp/claude-worktrees"]
   },
