@@ -95,7 +95,11 @@ def _ledger_rows(session: Session) -> list[VoiceUILedger]:
             (),
             {"accepted": True, "companion_open": False},
         ),
-        (mcp.monolith_voice_ui_show, ("run", "run:1"), {"accepted": True}),
+        (
+            mcp.monolith_voice_ui_show,
+            ("run", "run:1"),
+            {"accepted": True, "companion_open": False},
+        ),
         (
             mcp.monolith_voice_ui_ask,
             ("Continue?", ["Yes", "No"], "ask:1"),
@@ -117,10 +121,23 @@ def test_tools_accept_without_open_companion_and_write_nothing(
     assert _ledger_rows(session) == []
 
 
-def test_unknown_surface_without_companion_still_degrades_to_voice(session):
-    result = asyncio.run(mcp.monolith_voice_ui_show("unknown", "ref"))
+def test_unknown_surface_is_rejected_identically_with_or_without_companion(session):
+    expected = {
+        "accepted": False,
+        "error": (
+            "unknown surface unknown; valid surfaces: run, transcript, vm, walkthrough"
+        ),
+        "companion_open": True,
+    }
 
-    assert result == {"accepted": True}
+    assert asyncio.run(mcp.monolith_voice_ui_show("unknown", "ref")) == expected
+    assert asyncio.run(mcp.monolith_voice_ui_dismiss("unknown")) == expected
+    assert _ledger_rows(session) == []
+
+    _open_companion()
+
+    assert asyncio.run(mcp.monolith_voice_ui_show("unknown", "ref")) == expected
+    assert asyncio.run(mcp.monolith_voice_ui_dismiss("unknown")) == expected
     assert _ledger_rows(session) == []
 
 
@@ -137,7 +154,7 @@ def test_stale_or_closed_companion_is_not_open(session, closed):
 
     result = asyncio.run(mcp.monolith_voice_ui_show("run", "ref"))
 
-    assert result == {"accepted": True}
+    assert result == {"accepted": True, "companion_open": False}
     assert _ledger_rows(session) == []
 
 
@@ -226,8 +243,11 @@ def test_unknown_show_surface_is_rejected_without_ledger_row(session):
 
     result = asyncio.run(mcp.monolith_voice_ui_show("map", "ref"))
 
-    assert result["accepted"] is False
-    assert "unknown surface map" in result["error"]
+    assert result == {
+        "accepted": False,
+        "error": "unknown surface map; valid surfaces: run, transcript, vm, walkthrough",
+        "companion_open": True,
+    }
     assert _ledger_rows(session) == []
 
 
@@ -251,6 +271,7 @@ def test_each_accepted_call_writes_one_row_with_caller_principal(session, call):
         result = _run_as(principal, mcp.monolith_voice_ui_dismiss("transcript"))
 
     assert result["accepted"] is True
+    assert result["companion_open"] is True
     rows = _ledger_rows(session)
     assert len(rows) == 1
     assert rows[0].call == call
@@ -321,3 +342,20 @@ def test_poll_returns_rows_after_since_in_order_and_refreshes_heartbeat(
     )
     assert isinstance(refreshed, datetime)
     assert refreshed_comparable > old_comparable
+
+
+def test_poll_does_not_refresh_closed_companion_heartbeat(client, session):
+    companion_id = client.post("/api/agents/companion").json()["companion_id"]
+    companion = session.get(VoiceUICompanion, companion_id)
+    companion.last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    companion.closed_at = datetime.now(timezone.utc)
+    session.add(companion)
+    session.commit()
+    session.expire_all()
+    last_seen_at = session.get(VoiceUICompanion, companion_id).last_seen_at
+
+    response = client.get(f"/api/agents/companion/{companion_id}/ledger")
+
+    assert response.status_code == 200
+    session.expire_all()
+    assert session.get(VoiceUICompanion, companion_id).last_seen_at == last_seen_at
