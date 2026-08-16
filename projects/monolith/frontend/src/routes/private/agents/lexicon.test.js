@@ -15,6 +15,7 @@ const SURFACES = [
   "MasterView.svelte",
   "PaneHeader.svelte",
   "SessionWalkthrough.svelte",
+  "WalkthroughNarrative.svelte",
 ];
 
 function allValues(section) {
