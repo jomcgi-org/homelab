@@ -30,6 +30,19 @@ tar(
     mtree = [
         "./usr/local/bin/ember-claude-shim type=file content=$(execpath shim.py) mode=0755 uid=0 gid=0",
     ],
+    # The pi runtime image ships this SAME artifact rather than rebuilding its
+    # own, so the two guests can never drift in the shim. Same reasoning for
+    # guest_config_tar and guest_init_tar_amd64 below.
+    visibility = ["//projects/embervm/runtimes/pi:__pkg__"],
+)
+
+# The apko config as a data dependency, so the pi runtime's package-parity guard
+# can read this image's package list. Exported rather than duplicated: the guard
+# exists precisely to catch the two lists drifting.
+filegroup(
+    name = "apko_yaml",
+    srcs = ["apko.yaml"],
+    visibility = ["//projects/embervm/runtimes/pi:__pkg__"],
 )
 
 # The CLI reads its source bundle at runtime, so patch it as a Bazel artifact
@@ -82,6 +95,11 @@ tar(
     mtree = [
         "./usr/share/ember-claude/claude.json type=file content=$(execpath guest-config/claude.json) mode=0644 uid=0 gid=0",
     ],
+    # Shared with the pi runtime image, which carries no claude CLI but still
+    # needs this file: guest-init's seedTrustRecord reads it UNCONDITIONALLY and
+    # errors if it is absent (volume_linux.go), so a pi guest without it never
+    # finishes boot.
+    visibility = ["//projects/embervm/runtimes/pi:__pkg__"],
 )
 
 apko_image(
@@ -167,6 +185,10 @@ tar(
     mtree = [
         "./usr/local/bin/ember-runtime-guest-init type=file content=$(execpath :guest_init_amd64_bin) mode=0755 uid=0 gid=0",
     ],
+    # Shared with the pi runtime image. Both workloads name the same
+    # harnessInit path (/usr/local/bin/ember-runtime-guest-init) in the chart's
+    # `workloads` table, so they must be the same binary.
+    visibility = ["//projects/embervm/runtimes/pi:__pkg__"],
 )
 
 # Guard (#4458): the ENOSPC reclaim deletes base bundles on a wedged brick, so

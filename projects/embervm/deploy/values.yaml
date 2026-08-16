@@ -627,6 +627,23 @@ claudeRuntimeWorkload:
   # /var/lib/embervm/scratch on node-1/2/3 rather than on node-4.
   persistenceEnabled: true
 
+# The pi-runtime workload: the small session lane (256 MiB), carrying only the
+# pi CLI. Sizing and the "why 256 holds" arithmetic are in chart/values.yaml.
+#
+# ON, but NOTHING ROUTES TO IT YET. The monolith still sends every model family,
+# qwen included, to claude-runtime (agent_sessions/transport.py defaults its
+# workload to "claude-runtime"), so enabling this here builds the base and
+# stands the CR up without changing a single live turn. That ordering is
+# deliberate: embervm and monolith are separate ArgoCD apps with independent
+# rollouts, so shipping the routing flip in the same change would mean whichever
+# app synced first decided whether qwen sessions 404 on an unknown workload for
+# a few minutes. It also means the 256 MiB sizing is proven by a real session
+# create here BEFORE the */5 synthetic probe depends on it.
+#
+# The follow-up that routes model=qwen here is a monolith-side change.
+piRuntimeWorkload:
+  enabled: true
+
 # SpecTrace gate for spec validation (GitHub issue #4770). Debug-gated, spec-shaped
 # trace that validates TLA+ specs against real behaviour. Deliberately OFF in production.
 # Chart defaults are all OFF; flip specTrace.enabled=true locally or in a dev values

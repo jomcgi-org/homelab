@@ -245,19 +245,35 @@ containers:
         value: "true"
       - name: EMBERVM_NODED_EGRESS_SIDECAR_ADDR
         value: "127.0.0.1:8888"
-      # The allowlist is DERIVED from the workload that actually consumes the
+      # The allowlist is DERIVED from the workloads that actually consume the
       # lane, never hand-copied. An explicit egress.workloads wins; otherwise the
-      # claude runtime's own name is used. A second copy of a name, policed by
-      # nothing, is the coupling this chart deleted when placeholder substitution
-      # went away.
+      # enabled runtime workloads' own names are used. A second copy of a name,
+      # policed by nothing, is the coupling this chart deleted when placeholder
+      # substitution went away.
       #
       # This covers the CR and the allowlist, which move together. It does NOT
       # cover sessions banked before a rename: session.workload is durable and is
       # replayed as the relight trace, so those resume under the old name, miss
       # the new allowlist, and come back with no egress lane.
       {{- $egressWorkloads := $ctx.Values.egress.workloads }}
-      {{- if and (not $egressWorkloads) $ctx.Values.claudeRuntimeWorkload.enabled }}
-      {{- $egressWorkloads = list $ctx.Values.claudeRuntimeWorkload.name }}
+      {{- if not $egressWorkloads }}
+      {{- $derived := list }}
+      {{- if $ctx.Values.claudeRuntimeWorkload.enabled }}
+      {{- $derived = append $derived $ctx.Values.claudeRuntimeWorkload.name }}
+      {{- end }}
+      {{- /*
+        pi-runtime is the second consumer of the lane and needs it for the SAME
+        reason the claude runtime does: its guest points a client at an egress
+        URL (the in-cluster vLLM endpoint on egress.internal.allowlist). A
+        runtime workload enabled but missing from this list gets no forwarder,
+        which does not deny loudly, it dial-times-out inside the guest.
+        Derived from the enabled workloads rather than hand-listed, so a new
+        runtime workload cannot be added without its lane.
+      */}}
+      {{- if $ctx.Values.piRuntimeWorkload.enabled }}
+      {{- $derived = append $derived $ctx.Values.piRuntimeWorkload.name }}
+      {{- end }}
+      {{- $egressWorkloads = $derived }}
       {{- end }}
       {{- if not $egressWorkloads }}
       {{- $egressWorkloads = list "__no_workload__" }}

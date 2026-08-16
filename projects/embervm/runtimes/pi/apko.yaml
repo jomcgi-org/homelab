@@ -1,0 +1,141 @@
+# EmberVM pi runtime base image: a session-class guest that runs ONLY the pi
+# coding agent (the Qwen adapter, issue #4234) under the same shim and the same
+# frozen HTTP-over-vsock guest contract on port 1027 as ../claude.
+#
+# WHY THIS EXISTS SEPARATELY FROM ../claude, which already ships pi.
+#
+# The claude runtime carries all three CLIs, so a qwen turn pays for two it can
+# never invoke. Measured on the published image (300 MB compressed across seven
+# layers): claude 85.7 MB, codex 114.2 MB, pi 39.0 MB, wolfi base 59.7 MB, the
+# shim and guest-init the remainder. Dropping the two unusable CLI tars is a 200
+# MB cut, about 3x, and that is what makes the memMib arithmetic work: the
+# claude runtime is sized at 4096 MiB for a 262 MB Node ELF with a V8 heap on
+# top, while pi is a single Bun-compiled binary. The workload built on this
+# image runs at 256 MiB (chart piRuntimeWorkload), so a banked session snapshot
+# is 256 MiB rather than 4 GiB.
+#
+# The named consumer is the */5 synthetic probe (monolith
+# ember_public/synthetic_probe.py probe_qwen), which cold-boots a guest every
+# five minutes forever to run one trivial turn.
+#
+# THE PACKAGE SET IS DELIBERATELY IDENTICAL to ../claude/apko.yaml, and the
+# slimness comes ENTIRELY from omitting the claude and codex tars in BUILD. That
+# is a decision, not an oversight: the whole wolfi package set is 59.7 MB of the
+# 300, so trimming it buys little, while keeping it identical makes this image a
+# behavioural drop-in for a pi turn. A guest here has the same git, gh, curl and
+# jq a pi session would reach for, so the only thing that differs between the
+# two images is which CLIs exist. Diverge the package sets only with a reason
+# recorded here.
+#
+# AMD64-ONLY, matching ../claude and ../../image. pi itself ships dual-arch (its
+# payload sits at the arch-independent path pi/pi in both release tarballs), so
+# unlike the claude CLI it is not what constrains this. Every cluster node and
+# the RBE build executor are amd64, and the shared guest-init is built through
+# an amd64 platform transition, so an aarch64 variant would have no consumer and
+# no layer to carry. To add one, flip arm64 = True in BUILD and add aarch64
+# here TOGETHER with a per-arch guest-init tar.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - ca-certificates-bundle
+    # pi is Bun-compiled and dynamically linked, so glibc is pinned explicitly
+    # rather than left to arrive transitively: a base that happens to pull it
+    # today would break the guest silently if that transitive edge ever changed.
+    # Same reasoning as ../claude/apko.yaml.
+    - glibc
+    # The Bash tool shells out to bash specifically, not /bin/sh. busybox alone
+    # gives an ash-flavoured sh and the tool's commands assume bash.
+    - bash
+    # Per-turn commits onto the session branch are how agent-diff produces an
+    # exact diffstat (git show <sha> --stat) with no model involvement.
+    - git
+    # Opening a PR from inside a session. gh reads GH_TOKEN/GITHUB_TOKEN, but the
+    # guest never holds one: the egress-proxy sidecar sets the Authorization
+    # header on the way out (ADR 023 phase 6b), so whatever gh sends is discarded.
+    - gh
+    # curl, because the image otherwise has NO http client at all: probing an
+    # endpoint from inside a session meant hand-writing python urllib.
+    - curl
+    # jq, because essentially every gh/API workflow pipes through it.
+    - jq
+    # Kept even though piRuntimeWorkload ships with persistence OFF (a tmpfs
+    # workspace, no volume device to probe or format). guest-init's volume path
+    # is shared with ../claude and formats a blank device on first boot, so
+    # dropping these would turn a later persistenceEnabled flip into a
+    # first-boot failure inside the guest, where it is expensive to see.
+    - e2fsprogs
+    - blkid
+    # The shim is stdlib python, matching the runtimes/python pattern.
+    - python-3.12
+
+archs:
+  - x86_64
+
+accounts:
+  groups:
+    - groupname: runtime
+      gid: 65532
+  users:
+    - username: runtime
+      uid: 65532
+      gid: 65532
+  run-as: 65532
+
+environment:
+  HOME: /home/runtime
+  PYTHONUNBUFFERED: "1"
+  # Guests are driven headlessly over vsock. No TTY is attached, so anything that
+  # would try to render a terminal UI must not be reached.
+  TERM: dumb
+  # EMBER_CLAUDE_WORKSPACE, not an EMBER_PI_* name, because the SHIM IS SHARED:
+  # runtimes/claude/shim.py reads this exact variable (ProcessManager reads
+  # EMBER_CLAUDE_WORKSPACE, DEFAULT_WORKSPACE as the fallback) and this image
+  # ships that same file. Renaming it here would leave the shim on its default
+  # and the rename would look like it worked.
+  EMBER_CLAUDE_WORKSPACE: /workspace
+  # NOTE: egress auth is NOT here, same as ../claude. This block is OCI image
+  # config, which only the docker/crane path reads; a raw Firecracker boot starts
+  # init=ember-runtime-guest-init and never sees it. Those values live in
+  # guest-init's setDefaultEnv, which is what actually delivers them. Adding a
+  # runtime-relevant variable here alone is a silent no-op.
+
+paths:
+  - path: /home/runtime
+    type: directory
+    uid: 65532
+    gid: 65532
+    permissions: 0o755
+  # Kept despite no claude CLI in this image: guest-init seeds the trust record
+  # into $HOME/.claude.json unconditionally (volume_linux.go seedTrustRecord
+  # returns an error if the seed is missing), and the shim is shared, so the
+  # directory has to exist for the same reason the seed tar is still shipped.
+  - path: /home/runtime/.claude
+    type: directory
+    uid: 65532
+    gid: 65532
+    permissions: 0o755
+  - path: /workspace
+    type: directory
+    uid: 65532
+    gid: 65532
+    permissions: 0o755
+  # Mount point for the guest's ONE writable filesystem. It MUST exist in the
+  # image: the rootfs is read-only on every boot, so an init that tried to mkdir
+  # its own mount point would fail with the same EROFS that this whole
+  # arrangement exists to avoid. With persistence off this is where the tmpfs
+  # lands rather than a per-session disk.
+  - path: /session
+    type: directory
+    uid: 0
+    gid: 0
+    permissions: 0o755
+
+entrypoint:
+  # OCI entrypoint for any NON-Firecracker execution path (docker/crane). On a raw
+  # Firecracker boot the kernel ignores this and boots init=<HarnessInit>; both
+  # paths end at the same shim.
+  command: /usr/bin/python3 /usr/local/bin/ember-claude-shim
