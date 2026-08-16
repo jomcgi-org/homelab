@@ -70,9 +70,9 @@ The known-unfixed wall: the stateful class is hard-capped at ten workloads by `s
 How to read a decision: `projects/embervm/ARCHITECTURE.md` states what is
 true (it is standalone and cites no ADRs); the ADR records why. Status is
 the ADR's own header plus its amendment trail. Draft ADRs are 014, 015,
-019-028, and 032. ADRs 019-027 are the design pass this note orders; ADRs
-029 and 030 are shipped corrections to the session model: read them as
-current behaviour, not direction.
+019-028, 032, 034, and 035. ADRs 019-027 are the design pass this note
+orders; ADRs 029 and 030 are shipped corrections to the session model: read
+them as current behaviour, not direction.
 
 | ADR | Decides | Status / superseded by |
 | --- | ------- | ---------------------- |
@@ -109,6 +109,8 @@ current behaviour, not direction.
 | [031](031-health-signals-classified-by-time-to-impact.md) | Health signals classified by time-to-impact: immediate latch for platform-impact-now signals, >24h-sustained latch for maintenance-debt signals; both end in the health surface, not alert-only | Accepted; detector implementation tracked in #4338, not yet built |
 | [032](032-federated-identity-adapters-authentik-sso.md) | Federated identity adapters: the actor / principal / permission split for the management surface, authentik SSO as the homelab identity source | Draft |
 | [033](033-substrate-threat-model-conformance-encryption-at-rest.md) | Substrate's threat model adopted as the external conformance frame; per-principal envelope encryption at rest; digest-verified, tuple-authorized restore | Accepted; implementation tracked in #4691, not yet built |
+| [034](034-conformance-harness-synthetic-actions-fault-injection.md) | ADR 006's layer 2 (trace validation), delivered and widened: hermetic and deployed lanes, direct-checker and TLC tiers, anti-vacuity manifests, DRILL/VACUOUS as distinct verdicts, strict-bias specs with a load-bearing Freight-approval override | Draft |
+| [035](035-website-snapshotter-task-guest.md) | Task-class `shotter` guest: warm headless Chromium snapshotted as a base, an in-guest proxy that maps `jomcgi.dev`/`private.jomcgi.dev` to internal services and hard-allowlists only those two destinations ahead of the shared credentialed egress sidecar, agent-facing MCP tool returning a real `ImageContent` block | Draft; implementation tracked in #4994, not yet built |
 
 ## Keeping ARCHITECTURE.md true
 
