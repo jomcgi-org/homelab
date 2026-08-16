@@ -68,6 +68,13 @@ cfIngress:
   # claiming it would be a collision.
   shipsRedirect:
     enabled: false
+  # Same reason: production's values.yaml is loaded BEFORE this file, so
+  # cfIngress.friends.enabled: true arrives here inherited. Left on, dev would
+  # render a second HTTPRoute claiming friends.jomcgi.dev on the shared Gateway,
+  # a second SecurityPolicy targeting it, and a moving-oidc-client
+  # OnePasswordItem in this namespace. The planner is production only.
+  friends:
+    enabled: false
 
 postgres:
   # One instance. Dev has no availability requirement, and the cluster is not

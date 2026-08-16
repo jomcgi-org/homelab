@@ -114,6 +114,26 @@ cfIngress:
       name: cloudflare-ingress
       namespace: envoy-gateway-system
     team: jomcgi
+  # The moving planner on friends.jomcgi.dev/moving, gated to the authentik
+  # `family` group (ADR security/006). Production only: the chart default is
+  # disabled so dev does not claim this hostname.
+  #
+  # This hostname has NO Cloudflare Access application in front of it, so the
+  # SecurityPolicy in templates/httproute-friends.yaml is the only thing
+  # between /moving and the internet. A SecurityPolicy is a separate object
+  # from the route it targets, so confirm the DENY path against the live URL
+  # after this deploys rather than inferring it from the manifest:
+  #
+  #   1. logged out            -> redirect to authentik, never a 200
+  #   2. authenticated, not in `family` -> 403
+  #   3. in `family`           -> the page renders
+  #   4. https://friends.jomcgi.dev/preview/ still works, and every other
+  #      path on this hostname still 404s
+  friends:
+    enabled: true
+    authentik:
+      onepassword:
+        itemPath: vaults/k8s-homelab/items/moving-oidc
   todo:
     public:
       enabled: false

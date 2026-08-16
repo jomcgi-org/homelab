@@ -1,0 +1,200 @@
+{{- if .Values.cfIngress.friends.enabled }}
+{{- /*
+The moving planner's lane on friends.jomcgi.dev (ADR security/006).
+
+WHY THIS IS A SEPARATE ROUTE rather than rules added to the preview lane's
+route, or to httproute-private.yaml.
+
+A SecurityPolicy targets a WHOLE HTTPRoute, so two authorization models on one
+hostname require two routes. friends.jomcgi.dev already carries /preview/,
+gated to homelab-admin by context-forge-gateway's own route and policy. This
+app answers to a different group entirely, `family`, which contains one person
+who is not an operator. Path isolation is how the two coexist: /preview/ keeps
+its policy untouched, /moving gets its own, and neither can swallow the other.
+
+That route comes from the mcp namespace while this one comes from monolith.
+The shared Gateway listener sets allowedRoutes.namespaces.from: All and the
+two path prefixes are disjoint, so they coexist without conflict.
+
+WHY NOT ON private.jomcgi.dev. The Cloudflare Access policy that guards that
+hostname carries no `authorization` block at all: it authorizes anyone holding
+a valid team session. There is no group concept on that lane, so a narrower
+grant cannot be expressed there. It is also a hostname shared by argocd,
+signoz, longhorn and kargo, so a mistaken binding there sits one claim away
+from the cluster control plane. Here it would expose this app and nothing else.
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "monolith.fullname" . }}-moving
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+    # Descriptive only, naming the cloudflared/gateway routing tier rather than
+    # the auth mechanism. Matches the sibling /preview/ route on this hostname.
+    ingress-tier: {{ .Values.cfIngress.friends.tier }}
+spec:
+  parentRefs:
+    - name: {{ .Values.cfIngress.friends.gateway.name }}
+      namespace: {{ .Values.cfIngress.friends.gateway.namespace }}
+  hostnames:
+    - {{ .Values.cfIngress.friends.hostname | quote }}
+  rules:
+    # Browser-called JSON API, routed to the FastAPI port. Without this rule it
+    # would fall through to the SvelteKit port and come back as the SPA shell,
+    # which the browser reports as:
+    #
+    #   Unexpected token '<', "<!doctype "... is not valid JSON
+    #
+    # reading like a frontend bug while being a routing gap. Nothing in CI
+    # exercises a browser-originated path against the real ingress, so this
+    # class of mistake ships green.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/moving
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.service.apiPort | int }}
+    # SvelteKit client assets. Nothing else on this hostname claims /_app/:
+    # the preview route carries exactly one rule, for /preview/. Two routes
+    # claiming one prefix would be a genuine conflict, so re-check this if the
+    # preview lane ever grows a SvelteKit surface of its own.
+    #
+    # These sit INSIDE this route on purpose, so the SecurityPolicy below
+    # covers them. Serving the bundle unauthenticated would leak the page's
+    # structure and copy to anyone who guessed the path.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /_app/
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.cfIngress.friends.servicePort | int }}
+    # The page itself. The SvelteKit reroute hook maps friends.jomcgi.dev/moving
+    # to /friends/moving internally, so no gateway-level rewrite is needed.
+    #
+    # The OAuth callback and logout paths MUST fall inside this prefix. Envoy
+    # serves them itself rather than forwarding them, but the request has to
+    # select this route first or it 404s before the policy is ever consulted.
+    # That is why redirectURL is /moving/oauth2/callback and not /oauth2/callback.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /moving
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.cfIngress.friends.servicePort | int }}
+---
+{{- /*
+The only thing between /moving and the internet.
+
+friends.jomcgi.dev has NO Cloudflare Access application in front of it, by
+design: the two identity lanes are split by AUDIENCE, not by layer. Operator
+surfaces stay on Access so that authentik being down cannot lock the operator
+out of the tools used to fix authentik. User surfaces live here, and cost no
+Zero Trust seats.
+
+A SecurityPolicy is a separate object from the route it targets, so "the policy
+denies" and "the policy is attached" are different facts. defaultAction: Deny
+cannot protect a route the policy never bound to. Verify the deny path against
+the live URL after deploying, do not infer it from this file.
+*/}}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "monolith.fullname" . }}-moving
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "monolith.fullname" . }}-moving
+  # The oidc and jwt blocks COMPOSE, they are not alternatives:
+  #   oidc  runs the browser redirect against authentik and stores the result
+  #         in a cookie. A bare jwt block cannot: it only validates a token
+  #         already present, so a browser arriving with none gets a 401 rather
+  #         than a login page.
+  #   jwt   validates what arrives and projects a claim into a request header.
+  oidc:
+    provider:
+      issuer: {{ .Values.cfIngress.friends.authentik.issuer | quote }}
+    clientID: {{ .Values.cfIngress.friends.authentik.clientID | quote }}
+    clientSecret:
+      name: {{ .Values.cfIngress.friends.authentik.clientSecretName | quote }}
+    redirectURL: {{ printf "https://%s/moving/oauth2/callback" .Values.cfIngress.friends.hostname | quote }}
+    logoutPath: /moving/oauth2/logout
+    # This host only, never the apex. Envoy sets the cookie on the named domain
+    # AND its subdomains, and these cookies ARE the session, so at the apex they
+    # would ride along to the public site, private, mcp and auth.
+    #
+    # Widening later is safe; narrowing is not. A stale wider-domain cookie
+    # shadows the narrower one and presents as a login LOOP rather than a clean
+    # rejection, fixable only by clearing browser cookies.
+    cookieDomain: {{ .Values.cfIngress.friends.hostname | quote }}
+    # Per-lane names, distinct from the preview lane's preview-* and the dev
+    # lane's dev-*. Two OIDC policies on ONE hostname sharing cookie names
+    # shadow each other's sessions, and the failure mode is an infinite login
+    # loop rather than a clean rejection.
+    cookieNames:
+      accessToken: moving-access-token
+      idToken: moving-id-token
+    scopes:
+      - email
+      - profile
+  jwt:
+    providers:
+      - name: authentik
+        issuer: {{ .Values.cfIngress.friends.authentik.issuer | quote }}
+        remoteJWKS:
+          uri: {{ .Values.cfIngress.friends.authentik.jwksUri | quote }}
+        extractFrom:
+          # The ID token, not the access token: OIDC REQUIRES the ID token to
+          # carry `email` when that scope is granted, whereas whether an access
+          # token does is provider-specific.
+          #
+          # Cookies ONLY, no Authorization header source. This lane serves
+          # browsers at a keyboard, not agents holding bearer tokens, and
+          # naming a source replaces Envoy's default rather than adding to it.
+          cookies:
+            - moving-id-token
+        claimToHeaders:
+          - claim: email
+            header: X-Auth-Email
+        recomputeRoute: false
+  # Authorization decides on the CLAIM, never on the header projected above. A
+  # header can be sent by a caller; a claim sits inside a signature Envoy has
+  # just verified, so it cannot be forged.
+  #
+  # defaultAction: Deny means a token that validates but carries no matching
+  # group is rejected rather than falling through to whatever the route would
+  # otherwise serve. That makes this a second, independent gate rather than a
+  # restatement of authentik's own application policy binding: authentik decides
+  # who may OBTAIN a token, this decides who may USE one here, and either
+  # misconfiguration fails closed on its own.
+  authorization:
+    defaultAction: Deny
+    rules:
+      - name: allow-family
+        action: Allow
+        principal:
+          jwt:
+            provider: authentik
+            claims:
+              - name: groups
+                valueType: StringArray
+                values:
+                  {{- range .Values.cfIngress.friends.authentik.allowedGroups }}
+                  - {{ . | quote }}
+                  {{- end }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: {{ .Values.cfIngress.friends.authentik.clientSecretName | quote }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  itemPath: {{ .Values.cfIngress.friends.authentik.onepassword.itemPath | quote }}
+{{- end }}

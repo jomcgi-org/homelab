@@ -1376,6 +1376,50 @@ cfIngress:
     rateLimit:
       requests: 100
       unit: Minute
+  # The moving planner's lane on friends.jomcgi.dev (ADR security/006), gated to
+  # the authentik `family` group. See templates/httproute-friends.yaml.
+  #
+  # Disabled by default so a second deployment of this chart (dev) does not
+  # claim a production hostname on the shared Gateway, the same reason
+  # shipsRedirect above is gated. Production enables it in deploy/values.yaml.
+  friends:
+    enabled: false
+    tier: public
+    hostname: friends.jomcgi.dev
+    servicePort: 3000
+    gateway:
+      name: cloudflare-ingress
+      namespace: envoy-gateway-system
+    authentik:
+      # authentik derives the OIDC issuer from the APPLICATION slug, not the
+      # provider name, so both of these track the `moving` slug in
+      # projects/platform/authentik/blueprints/moving-auth.yaml. Renaming the
+      # application there breaks token validation here, and the symptom is a
+      # 401 on every request while the discovery document still answers 200.
+      #
+      # The trailing slash is significant: `issuer` is compared as a STRING
+      # against the token's `iss` claim.
+      issuer: https://auth.jomcgi.dev/application/o/moving/
+      jwksUri: https://auth.jomcgi.dev/application/o/moving/jwks/
+      # Pinned in the blueprint rather than generated, because it is not a
+      # secret and this file has to name it.
+      clientID: moving-friends
+      # Secret synced from 1Password into THIS namespace, holding key
+      # `client-secret`. A separate 1Password item from authentik's own bundle
+      # on purpose: this namespace must not receive authentik's secret key and
+      # bootstrap credentials just to read one client secret.
+      clientSecretName: moving-oidc-client
+      # authentik group NAMES, matched against the `groups` claim rather than
+      # the projected header, because a claim inside a verified signature
+      # cannot be forged by a caller. Renaming the group in authentik stops
+      # matching here, and the symptom is a 403 AFTER a fully successful login.
+      #
+      # Empty would render an invalid policy (values requires at least one
+      # entry), which fails closed at admission rather than opening the route.
+      allowedGroups:
+        - family
+      onepassword:
+        itemPath: ""
 
 # Cilium policies for this chart. See templates/cilium-policy.yaml.
 ciliumPolicy:
