@@ -4811,8 +4811,8 @@ py_test(
 py_test(
     name = "moving_models_test",
     srcs = [
-        "moving/conftest.py",
-        "moving/models_test.py",
+        "moving/tests/conftest.py",
+        "moving/tests/models_test.py",
     ],
     imports = ["."],
     deps = [
@@ -4825,7 +4825,7 @@ py_test(
 
 py_test(
     name = "moving_collisions_test",
-    srcs = ["moving/collisions_test.py"],
+    srcs = ["moving/tests/collisions_test.py"],
     imports = ["."],
     deps = [
         ":pkg_moving",
@@ -4836,8 +4836,8 @@ py_test(
 py_test(
     name = "moving_viewer_test",
     srcs = [
-        "moving/conftest.py",
-        "moving/viewer_test.py",
+        "moving/tests/conftest.py",
+        "moving/tests/viewer_test.py",
     ],
     imports = ["."],
     deps = [
@@ -4853,8 +4853,8 @@ py_test(
 py_test(
     name = "moving_router_test",
     srcs = [
-        "moving/conftest.py",
-        "moving/router_test.py",
+        "moving/tests/conftest.py",
+        "moving/tests/router_test.py",
     ],
     imports = ["."],
     deps = [
