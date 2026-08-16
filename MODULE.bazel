@@ -477,6 +477,7 @@ apko.translate_lock(
     name = "semgrep_guest_lock",
     lock = "//projects/firecracker/semgrep/guest:apko.lock.json",
 )
+
 # The six per-language code-executor guests (ADR agents/057). One lock each:
 # they share a guest-init binary but not a package set, so a toolchain bump in
 # one language re-bakes only that language's rootfs.
