@@ -39,6 +39,7 @@ multirun(
         "//projects/embervm/runtimes/pi:image.push",
         "//projects/embervm/runtimes/postgres:image.push",
         "//projects/embervm/runtimes/python:image.push",
+        "//projects/embervm/runtimes/shotter:image.push",
         "//projects/embervm/scratch-prep:image.push",
         "//projects/embervm/tokenbroker/image:image.push",
         "//projects/embervm/xds/image:image.push",

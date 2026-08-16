@@ -21,6 +21,7 @@ oci_digest_manifest(
         "//projects/embervm/runtimes/pi:image.info": "//projects/embervm/runtimes/pi:image.push",
         "//projects/embervm/runtimes/postgres:image.info": "//projects/embervm/runtimes/postgres:image.push",
         "//projects/embervm/runtimes/python:image.info": "//projects/embervm/runtimes/python:image.push",
+        "//projects/embervm/runtimes/shotter:image.info": "//projects/embervm/runtimes/shotter:image.push",
         "//projects/embervm/scratch-prep:image.info": "//projects/embervm/scratch-prep:image.push",
         "//projects/embervm/tokenbroker/image:image.info": "//projects/embervm/tokenbroker/image:image.push",
         "//projects/embervm/xds/image:image.info": "//projects/embervm/xds/image:image.push",
