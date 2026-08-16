@@ -1,13 +1,12 @@
 <script>
   import { onMount, untrack } from "svelte";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
-  import { joinMeta } from "./run-format.js";
   import { parsePatchHunks, walkthroughView } from "./walkthrough.js";
 
   let {
     sessionId = null,
     turnSeq = null,
-    model = "",
+    walkthroughTurnCount = 1,
     fixture = null,
   } = $props();
 
@@ -25,19 +24,7 @@
   const unexplained = $derived(
     walk?.points.filter((item) => item.kind === "unexplained") ?? [],
   );
-
-  function attributionLine(item) {
-    return joinMeta(
-      P.labels.walkAccountLabel,
-      item.attribution?.turn != null
-        ? `${P.labels.turn} ${item.attribution.turn}`
-        : "",
-      item.attribution?.attempt != null
-        ? `${P.labels.attempt} ${item.attribution.attempt}`
-        : "",
-      model,
-    );
-  }
+  const showTurnLabel = $derived(walkthroughTurnCount > 1);
 
   async function load() {
     if (payload || loading || fixture) return;
@@ -127,11 +114,16 @@
   </header>
 {/snippet}
 
-<section class="walk-turn" aria-labelledby={`walk-turn-${turnSeq}`}>
-  <h3 id={`walk-turn-${turnSeq}`}>
-    {P.labels.turn}
-    {turnSeq}
-  </h3>
+<section
+  class="walk-turn"
+  aria-labelledby={showTurnLabel ? `walk-turn-${turnSeq}` : undefined}
+>
+  {#if showTurnLabel}
+    <h3 id={`walk-turn-${turnSeq}`}>
+      {P.labels.turn}
+      {turnSeq}
+    </h3>
+  {/if}
 
   {#if loading}
     <div class="walk-fact">{P.labels.walkLoading}</div>
@@ -143,35 +135,7 @@
       >
     </div>
   {:else if walk}
-    {#if walk.summary?.status === "available"}
-      <p class="summary-sentence">
-        {walk.summary.files}
-        {walk.summary.files === 1
-          ? P.labels.walkFileChanged
-          : P.labels.walkFilesChanged}
-        {P.labels.walkSummaryWith}
-        {walk.summary.insertions}
-        {walk.summary.insertions === 1
-          ? P.labels.walkInsertion
-          : P.labels.walkInsertions}
-        {P.labels.walkSummaryAnd}
-        {walk.summary.deletions}
-        {walk.summary.deletions === 1
-          ? P.labels.walkDeletion
-          : P.labels.walkDeletions}{P.punct.semicolon}
-        {P.labels.walkAgentAccountedSentence}
-        {walk.summary.accounted}
-        {walk.summary.accounted === 1
-          ? P.labels.walkFileWord
-          : P.labels.walkFilesWord}{P.punct.comma}
-        {P.labels.walkSummaryLeaving}
-        {walk.summary.unexplained}
-        {walk.summary.unexplained === 1
-          ? P.labels.walkFileWord
-          : P.labels.walkFilesWord}
-        {P.labels.walkSummaryUnexplainedEnd}{P.punct.period}
-      </p>
-    {:else if walk.summary?.status === "diff_unavailable"}
+    {#if walk.summary?.status === "diff_unavailable"}
       <p class="summary-sentence">{P.labels.walkSummaryDiffUnavailable}</p>
     {/if}
 
@@ -180,25 +144,15 @@
       <div class="walk-fact">{reason}</div>
     {/each}
 
-    {#if walk.hasTestimony}
-      <div class="provenance">
-        <b>{P.labels.walkProvenanceLead}</b>
-        <span>{P.labels.walkNarrativeProvenanceBody}</span>
-      </div>
-    {/if}
-
     <div class="files">
       {#each accounted as item, index (`accounted:${item.path}:${index}`)}
         <article class="file-change">
-          {@render fileHeading(item)}
           {#if item.why}
-            <div class="account">
-              <div class="account-label">{attributionLine(item)}</div>
-              <p>{item.why}</p>
-            </div>
+            <p class="account">{item.why}</p>
           {:else}
             <div class="no-account">{P.labels.walkNoAccount}</div>
           {/if}
+          {@render fileHeading(item)}
           {#each item.deviations as deviation (deviation)}
             <div class="deviation">
               <span>{P.labels.deviationWord}</span>
@@ -230,11 +184,9 @@
           class="unexplained-files"
           aria-labelledby={`walk-unexplained-${turnSeq}`}
         >
-          <h4 id={`walk-unexplained-${turnSeq}`}>
-            {P.labels.walkUnexplainedFilesHeading}
-          </h4>
-          <p class="unexplained-intro">
-            {P.labels.walkUnexplainedBody}
+          <p class="accounting-alert" id={`walk-unexplained-${turnSeq}`}>
+            <strong>{P.labels.walkUnexplainedFilesLine}</strong>
+            {unexplained.map((item) => item.path).join(P.punct.commaSpace)}
           </p>
           {#each unexplained as item, index (`unexplained:${item.path}:${index}`)}
             <article class="file-change unexplained-change">
@@ -250,16 +202,12 @@
           class="contradictions"
           aria-labelledby={`walk-contradictions-${turnSeq}`}
         >
-          <h4 id={`walk-contradictions-${turnSeq}`}>
-            {P.labels.walkContradictedFilesHeading}
-          </h4>
-          <p>{P.labels.walkContradictedBody}</p>
-          {#each walk.contradictions as item, index (`contradiction:${item.path}:${index}`)}
-            <article class="claim">
-              <code>{item.path}</code>
-              {#if item.why}<p>{item.why}</p>{/if}
-            </article>
-          {/each}
+          <p class="accounting-alert" id={`walk-contradictions-${turnSeq}`}>
+            <strong>{P.labels.walkContradictedFilesLine}</strong>
+            {walk.contradictions
+              .map((item) => item.path)
+              .join(P.punct.commaSpace)}
+          </p>
         </section>
       {/if}
 
@@ -319,23 +267,9 @@
     color: var(--text-soft);
     font: var(--size-meta) var(--font-mono);
   }
-  .provenance {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    max-width: 760px;
-    margin-top: 16px;
-    padding: 8px 12px;
-    background: var(--attn-soft);
-    color: var(--text);
-    font-size: var(--size-meta);
-  }
-  .provenance b {
-    color: var(--attn-text);
-  }
   .files {
     min-width: 0;
-    margin-top: 24px;
+    margin-top: 8px;
   }
   .file-change {
     min-width: 0;
@@ -369,21 +303,10 @@
   }
   .account {
     max-width: 760px;
-    margin: 16px 0;
-    padding-left: 12px;
-    border-left: 2px solid var(--attn);
-  }
-  .account-label {
-    color: var(--muted);
-    font: var(--size-meta) var(--font-mono);
-    letter-spacing: 0.13em;
-    text-transform: uppercase;
-  }
-  .account p {
-    margin: 6px 0 0;
+    margin: 0 0 20px;
     color: var(--text);
-    font-size: var(--size-detail);
-    line-height: 1.6;
+    font-size: var(--size-body);
+    line-height: 1.65;
     text-wrap: pretty;
   }
   .no-account,
@@ -455,9 +378,7 @@
     padding-top: 20px;
     border-top: 4px solid var(--line);
   }
-  .supporting > h4,
-  .unexplained-files > h4,
-  .contradictions > h4 {
+  .supporting > h4 {
     margin: 0;
     color: var(--muted);
     font: var(--size-meta) var(--font-mono);
@@ -465,12 +386,16 @@
     text-transform: uppercase;
   }
   .supporting p,
-  .unexplained-intro,
-  .contradictions > p {
+  .accounting-alert {
     max-width: 760px;
     margin: 8px 0 0;
-    color: var(--text-soft);
-    font-size: var(--size-detail);
+    color: var(--text);
+    font-size: var(--size-body);
+    line-height: 1.5;
+  }
+  .accounting-alert strong {
+    margin-right: 6px;
+    color: var(--err);
   }
   .supporting code {
     display: block;
@@ -481,29 +406,10 @@
     margin: 8px 0 0;
     padding-left: 20px;
   }
-  .unexplained-files > h4,
-  .contradictions > h4 {
-    color: var(--err);
-  }
   .unexplained-change {
     margin-top: 16px;
     padding-left: 12px;
     border-left: 4px solid var(--err-line);
-  }
-  .claim {
-    max-width: 760px;
-    margin-top: 12px;
-    padding: 10px 12px;
-    background: var(--err-bg);
-  }
-  .claim code {
-    overflow-wrap: anywhere;
-    color: var(--err);
-  }
-  .claim p {
-    margin: 6px 0 0;
-    color: var(--text);
-    font-size: var(--size-detail);
   }
   @media (max-width: 760px) {
     .walk-turn {
@@ -511,10 +417,6 @@
     }
     .summary-sentence {
       font-size: var(--size-body);
-    }
-    .provenance {
-      display: grid;
-      gap: 2px;
     }
   }
 </style>
