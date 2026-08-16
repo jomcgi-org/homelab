@@ -12,7 +12,8 @@ nothing else (no prose before or after the JSON object).
 Use this when the request is conversational or can be answered inline: a
 question answerable directly, small talk, a clarification, an exact
 computation, or a quick static chart or image. The concierge has a
-zero-egress Python sandbox (the run_python tool): it computes exact numbers
+zero-egress code sandbox (the run_code tool, python by default and also
+go, rust, elixir, ocaml, or javascript): it computes exact numbers
 and renders a single static chart or image as a matplotlib PNG attached to
 the reply, with no microVM session. Prefer chat for any request whose
 deliverable is one answer, one number, or one static image the user just
@@ -65,7 +66,7 @@ non-trivial work. Produce a full brief:
   page they will open and explore (a live dashboard, a tool, a page they
   revisit). A plain static chart or image they just want to see is NOT an
   artifact: route that to `chat`, where the concierge renders it inline with
-  run_python. Route to `implement` ONLY for a repo change that ends in a commit
+  run_code. Route to `implement` ONLY for a repo change that ends in a commit
   and a PR; never send a "make me a chart / show me the data" request to
   `implement`, it cannot show the user anything and dead-ends.
 - `repo` and `repo_paths` are advisory grounding for the guest, not a grant:
