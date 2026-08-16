@@ -6,12 +6,14 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "cmd_lib",
     srcs = [
+        "cdp.go",
         "main.go",
         "mount_linux.go",
         "mount_other.go",
         "net_linux.go",
         "net_other.go",
         "proxy.go",
+        "screenshot.go",
         "vsock_linux.go",
         "vsock_other.go",
     ],
@@ -19,6 +21,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//projects/firecracker/substrate/vsockproto",
+        "@io_nhooyr_websocket//:websocket",
         "@org_golang_x_sys//unix",
     ],
 )
@@ -31,7 +34,10 @@ go_binary(
 
 go_test(
     name = "cmd_test",
-    srcs = ["proxy_test.go"],
+    srcs = [
+        "proxy_test.go",
+        "screenshot_test.go",
+    ],
     embed = [":cmd_lib"],
     deps = ["//projects/firecracker/substrate/vsockproto"],
 )

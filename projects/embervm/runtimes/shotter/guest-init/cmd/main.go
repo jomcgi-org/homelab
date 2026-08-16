@@ -274,15 +274,10 @@ func newMux(ready func() bool, logger *slog.Logger) *http.ServeMux {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	// screenshotHandlerStub reserves the T3 invoke path without pretending that
-	// capture is implemented in this task. T3 replaces this handler with CDP
-	// navigation and PNG capture against the already warm browser.
-	mux.HandleFunc("POST "+screenshotPath, screenshotHandlerStub)
+	// screenshotHandler (screenshot.go) drives the already warm Chromium over
+	// CDP: fresh target per invocation, navigate, wait, capture, close.
+	mux.HandleFunc("POST "+screenshotPath, screenshotHandler(logger))
 	return mux
-}
-
-func screenshotHandlerStub(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "screenshot handler is reserved for Phase 4 Task 3", http.StatusNotImplemented)
 }
 
 func setDefaultEnv(logger *slog.Logger) {
