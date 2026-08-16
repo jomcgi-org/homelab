@@ -56,6 +56,14 @@ helm_chart(
         # R4 stateful consumer (D-R4.PR-11.1): the scratch-postgres base image.
         # Distinct FLAT top-level key (D14a.6), digest-pinned from its .info.
         "scratchPostgres.guestImage": "//projects/embervm/runtimes/postgres:image.info",
+        # ADR embervm/035 (website snapshotter): the shotter base image, a warm
+        # headless Chromium. Distinct FLAT top-level key (D14a.6), digest-pinned
+        # from its .info so the rootfs-builder GUEST_IMAGE, the noded
+        # EMBERVM_NODED_IMAGES entry, and the Workload CR's source.image.ref all
+        # resolve to the same digest. The digest also covers the baked
+        # /etc/shotter-egress.json, which is the guest's egress allowlist, so
+        # moving this pin is what changes the destination policy.
+        "shotter.guestImage": "//projects/embervm/runtimes/shotter:image.info",
         # ADR embervm/010 (Skyframe snapshot demo): the bazel-query base image (a
         # warm Bazel server over Abseil). Distinct FLAT top-level key (D14a.6),
         # digest-pinned from its .info so the noded EMBERVM_NODED_IMAGES ref, the

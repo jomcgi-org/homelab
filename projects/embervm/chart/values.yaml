@@ -550,6 +550,50 @@ bazelQueryWorkload:
   cap: 2
   timeoutSeconds: 20
 
+# The shotter workload (ADR embervm/035: the website snapshotter). Task class,
+# the same warm-snapshot shape as bazel-query above but with a headless Chromium
+# resident instead of a Bazel server: guest-init launches Chromium, polls its CDP
+# endpoint until it genuinely answers, and only then flips /shim/ready, which is
+# what triggers the base snapshot. Each request restores a CoW clone, drives one
+# screenshot over CDP, and the VM is destroyed after the response.
+#
+# Guest contract: vsock 1027, GET /shim/ready (200 only after CDP answers), POST
+# /shim/screenshot with {"url", "width", "height", ...}.
+shotterWorkload:
+  enabled: true
+  name: shotter
+  port: 1027
+  readyPath: /shim/ready
+  invokePath: /shim/screenshot
+  vcpus: 2
+  # ENOSPC COUPLING, the same invariant bazelQueryWorkload documents above and
+  # for the same reason: memMib has to hold the guest's tmpfs in RAM, because a
+  # tmpfs page is guest RAM the instant it is written. Chromium runs with
+  # --disable-dev-shm-usage, so its shared-memory scratch lands on the 512m /tmp
+  # tmpfs set in runtimes/shotter/guest-init/cmd/mount_linux.go. Nothing in the
+  # build enforces the relation between these two numbers, they are a Go string
+  # literal and a YAML integer in different directories, so raising either one
+  # alone trades one failure for another: a bigger tmpfs at the same memMib
+  # turns a clean ENOSPC on /tmp into an opaque guest OOM kill, and a bigger
+  # memMib does not enlarge /tmp. Change both in the same commit.
+  #
+  # 2048 leaves roughly 1.5 GiB above the tmpfs cap for Chromium itself, which
+  # idles far below that at about:blank but grows while rasterizing a page.
+  memMib: 2048
+  # floor 0: unlike bazel-query this is called occasionally by an agent, not on a
+  # hot path, so a miss paying a restore (about 250ms cold spawn worst case) is
+  # the right trade. floor is a PER-BRICK multiplier, so a non-zero floor at
+  # 2048 MiB would reserve capacity on every brick for a tool that is idle most
+  # of the time.
+  floor: 0
+  cap: 2
+  # Timeouts nest strictly inside one another (ADR embervm/035 section 5):
+  # Context Forge TOOL_TIMEOUT 60s > the monolith client read > this 50s >
+  # the guest handler cap (45s max) > the CDP navigate timeout. Each layer must
+  # stay inside the one above so a slow page surfaces as a legible tool error
+  # rather than a connection Context Forge severs from the outside.
+  timeoutSeconds: 50
+
 # Guest-image rootfs provisioning (Task 14), laid out FLAT at top level (NOT
 # under `noded`) because helm_images_values (Bazel image pinning) emits one YAML
 # block per dotted key, so keys sharing a top-level prefix collide on parse. Each
@@ -642,6 +686,14 @@ workloads:
   bazelQuery:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/bazel-query/rootfs.ext4
     harnessInit: /usr/local/bin/ember-bazel-init
+  # Website snapshotter base (ADR embervm/035). Its PID-1 ember-shotter-init
+  # launches headless Chromium, waits for the CDP endpoint to answer, and only
+  # then flips /shim/ready, so BuildBase snapshots a browser that is already
+  # warm. The key must match the top-level `shotter` block below (the deployment
+  # ranges over `workloads` and looks the guest image up by the same key).
+  shotter:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/shotter/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-shotter-init
 
 sandboxPython:
   guestImage:
@@ -797,6 +849,23 @@ scratchPostgres:
 bazelQuery:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/bazel
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+# The shotter base image (ADR embervm/035: the website snapshotter), a warm
+# headless Chromium. Bazel-pinned (helm_chart images="shotter.guestImage") from
+# its .info provider. Distinct FLAT top-level key (never nested) so the image pin
+# does not collide on YAML parse (D14a.6). Three refs derive from here and always
+# match: the rootfs-builder GUEST_IMAGE, the derived EMBERVM_NODED_IMAGES entry,
+# and the Workload CR's source.image.ref.
+#
+# This digest also covers /etc/shotter-egress.json, the destination policy baked
+# into the rootfs, which is the guest's egress allowlist and the primary security
+# control for this workload (ADR embervm/035 section 4). Changing where the
+# snapshotter may dial means rebuilding the image, not editing a values key.
+shotter:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/shotter
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 

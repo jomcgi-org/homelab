@@ -228,6 +228,10 @@ def test_dev_does_not_render_production_only_workloads(renders):
         "scratch-postgres",
         "demo-postgres",
         "sandbox-session",
+        # ADR embervm/035. Dev has no egress lane (egress.enabled is false there),
+        # so a shotter guest could not reach a frontend even if it ran, and its
+        # warm-Chromium base is expensive to build for something never served.
+        "shotter",
     }
 
     # If any of these prod-only workloads are still in dev, it means the
