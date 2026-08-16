@@ -946,17 +946,12 @@ rootfsReclaim:
   # delete and then fails the bake exactly as before, which is what you read
   # before arming. Rollback is setting this back to "" and bumping the chart.
   #
-  # ARMED (#4981). Checked before arming that no brick currently holds a
-  # reclaimable orphan (no *.tmp.* and no *.building under the noded scratch on
-  # either a master brick or node-4), so this arms an EMPTY path: it deletes
-  # nothing today and only acts the first time a bake dies mid-write. Arming a
-  # deletion path while it has nothing to delete is the safe moment to do it.
   #
-  # It matters more now: six sandbox rootfs bakes per brick (ADR agents/057)
-  # is six more chances to die mid-write and strand an intermediate, and the
-  # deadlock this breaks is self-sustaining (a full scratch stops noded, which
-  # stops the control plane's retention sweep from reaching the node at all).
-  enabled: "1"
+  # Arming is a DEPLOY-values decision, never a chart default: this chart is
+  # published as an OCI artifact, so a default of "1" would delete base bundles
+  # on any cluster that installed it without an override
+  # (rootfs_reclaim_guard_test asserts this stays empty).
+  enabled: ""
   # Stop deleting once this much scratch is free.
   #
   # MUST exceed rootfsBuilder.rootfsSize (4G) with headroom for ext4
