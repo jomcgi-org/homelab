@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-08",
+  "generated_at": "2026-08-16",
   "harness_version": "0.1.4",
   "tasks": [
     {
@@ -10,8 +10,8 @@
       "tier": "hard",
       "blurb": "You are working in a snapshot of a real FastAPI monolith backend",
       "source_commit": null,
-      "passed": 11,
-      "n": 16
+      "passed": 12,
+      "n": 17
     },
     {
       "id": "fc-warmpool-daemonset-01",
@@ -21,8 +21,8 @@
       "tier": "hard",
       "blurb": "This is a real snapshot of the firecracker invoke daemon (\"fc-invoke\") from this",
       "source_commit": null,
-      "passed": 14,
-      "n": 17
+      "passed": 15,
+      "n": 18
     },
     {
       "id": "flights-module-01",
@@ -32,8 +32,8 @@
       "tier": "standard",
       "blurb": "You are working in a snapshot of a real FastAPI monolith backend",
       "source_commit": null,
-      "passed": 16,
-      "n": 17
+      "passed": 17,
+      "n": 18
     },
     {
       "id": "go-vsock-frame-01",
@@ -44,7 +44,7 @@
       "blurb": "proto.go is the real vsockproto package from the firecracker substrate: the wire",
       "source_commit": "019b3ffb829700df0a0cf950e502d3d828147985",
       "passed": 14,
-      "n": 17
+      "n": 18
     },
     {
       "id": "hikes-walkhighlands-dom-01",
@@ -54,8 +54,8 @@
       "tier": "hard",
       "blurb": "hikes/walkhighlands.py scrapes walk pages from WalkHighlands",
       "source_commit": "d7837d59819adc0fdad068993604d8e3a342edf8",
-      "passed": 12,
-      "n": 17
+      "passed": 13,
+      "n": 18
     },
     {
       "id": "hikes-walkhighlands-duration-01",
@@ -65,8 +65,8 @@
       "tier": "hard",
       "blurb": "hikes/walkhighlands.py scrapes walk metadata from WalkHighlands",
       "source_commit": "00d549e9e6f31847dc1e103f2eef7408529c578c",
-      "passed": 12,
-      "n": 17
+      "passed": 13,
+      "n": 18
     },
     {
       "id": "null-content-fix-01",
@@ -76,8 +76,8 @@
       "tier": "standard",
       "blurb": "This is the source tree of a model-benchmarking harness",
       "source_commit": "bc6f81dfb",
-      "passed": 15,
-      "n": 16
+      "passed": 16,
+      "n": 17
     },
     {
       "id": "slo-budget-breach-01",
@@ -87,8 +87,8 @@
       "tier": "easy",
       "blurb": "This is a snapshot of a real FastAPI monolith backend",
       "source_commit": null,
-      "passed": 16,
-      "n": 17
+      "passed": 17,
+      "n": 18
     },
     {
       "id": "stars-climatology-months-01",
@@ -98,8 +98,8 @@
       "tier": "hard",
       "blurb": "stars/router.py serves the dark-sky planner",
       "source_commit": "52e97ed330ebc4d11a06402c48371da19bc27f17",
-      "passed": 9,
-      "n": 17
+      "passed": 10,
+      "n": 18
     },
     {
       "id": "worldcup-fixtures-guard-01",
@@ -109,8 +109,8 @@
       "tier": "standard",
       "blurb": "worldcup/client.py fetches and parses World Cup fixtures from an upstream feed.",
       "source_commit": "10cb9aea1d0aec3245387667927fe6af744a8316",
-      "passed": 16,
-      "n": 17
+      "passed": 17,
+      "n": 18
     },
     {
       "id": "worldcup-swing-settled-01",
@@ -120,8 +120,8 @@
       "tier": "hard",
       "blurb": "worldcup/sim.py runs a Monte-Carlo simulation of the World Cup group stage and, for",
       "source_commit": "10e5c849c95f3fd2de02f0c0cf39b10e89f1d64d",
-      "passed": 15,
-      "n": 17
+      "passed": 16,
+      "n": 18
     }
   ],
   "models": [
@@ -776,6 +776,115 @@
           "turns": 4,
           "latency_ms": 55011,
           "cost_usd": 0.618827
+        }
+      ]
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "name": "qwen3.8-27b",
+      "role": "candidate",
+      "n": 11,
+      "pass_rate": 0.9091,
+      "qualified": true,
+      "floor_pass": 4,
+      "floor_n": 4,
+      "floor_failed": [],
+      "hard_pass": 6,
+      "hard_n": 7,
+      "mean_tokens": 113975,
+      "mean_turns": 10.18,
+      "mean_latency_ms": 228809,
+      "cost_usd": 0.0,
+      "cost_per_solve_usd": 0.0,
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "campsites-region-rollup-01",
+          "passed": true,
+          "tokens": 163700,
+          "turns": 15,
+          "latency_ms": 248289,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 191321,
+          "turns": 12,
+          "latency_ms": 279672,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 180831,
+          "turns": 15,
+          "latency_ms": 226176,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": false,
+          "tokens": 22603,
+          "turns": 3,
+          "latency_ms": 356178,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": true,
+          "tokens": 71805,
+          "turns": 9,
+          "latency_ms": 250536,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 133869,
+          "turns": 9,
+          "latency_ms": 427140,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "null-content-fix-01",
+          "passed": true,
+          "tokens": 34716,
+          "turns": 7,
+          "latency_ms": 89242,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 37275,
+          "turns": 7,
+          "latency_ms": 102325,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 237840,
+          "turns": 16,
+          "latency_ms": 268662,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 42595,
+          "turns": 8,
+          "latency_ms": 85509,
+          "cost_usd": 0.0
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 137171,
+          "turns": 11,
+          "latency_ms": 183171,
+          "cost_usd": 0.0
         }
       ]
     },
