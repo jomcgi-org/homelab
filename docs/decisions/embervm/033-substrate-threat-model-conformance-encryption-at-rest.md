@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Accepted
 **Created:** 2026-08-11
-**Amended by:** [ADR embervm/028](028-demand-loaded-rootfs-oci-chunk-store.md), which defines Account-scoped convergent encryption and sharing for immutable derived rootfs chunks only. Mutable artifacts covered here remain principal-scoped.
+**Amended by:** [ADR embervm/028](028-demand-loaded-rootfs-oci-chunk-store.md), which defines Account-scoped convergent encryption and sharing for immutable derived rootfs chunks only. Mutable artifacts covered here remain principal-scoped. Also amended by [ADR embervm/036](036-platform-kek-custody-derived-control-plane.md), which resolves open question 1: platform-managed KEKs are derived per principal and epoch from a single root held by the control plane's key service.
 **Relates to:** [ADR embervm/001](001-embervm-beam-firecracker-workload-orchestrator.md)
 (the no-cross-principal isolation invariant this decision extends to
 confidentiality), [ADR embervm/003](003-control-plane-managed-snapshot-distribution.md)
@@ -222,7 +222,10 @@ confidentiality at rest, which the store did not previously enforce.
 1. KEK custody for the platform-managed mode: 1Password Operator versus a
    key-sharded swap tier mirroring the class-3 credential path in the ADR
    016 security contract. The customer-managed mode has no platform
-   custody question by construction.
+   custody question by construction. **Resolved by
+   [ADR embervm/036](036-platform-kek-custody-derived-control-plane.md)**:
+   neither named candidate; KEKs are derived per principal and epoch from
+   one root in the control plane's key service.
 2. Whether the wake-path decrypt cost, once measured, forces
    decrypt-on-download (node-local plaintext on scratch) rather than
    decrypt-in-line, and if so, how that narrower exposure is documented
