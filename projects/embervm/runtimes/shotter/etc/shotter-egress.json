@@ -1,0 +1,10 @@
+{
+  "mapping": {
+    "jomcgi.dev": "monolith-public-frontend.monolith-public.svc.cluster.local:3000",
+    "private.jomcgi.dev": "monolith.monolith.svc.cluster.local:3000"
+  },
+  "allowlist": [
+    "monolith-public-frontend.monolith-public.svc.cluster.local:3000",
+    "monolith.monolith.svc.cluster.local:3000"
+  ]
+}

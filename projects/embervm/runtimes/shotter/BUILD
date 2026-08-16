@@ -18,6 +18,7 @@ tar(
     name = "guest_init_tar_amd64",
     srcs = [
         "etc/hosts",
+        "etc/shotter-egress.json",
         ":guest_init_amd64_bin",
     ],
     mtree = [
@@ -25,6 +26,13 @@ tar(
         # /etc is read-only in the guest. Bake a local mapping for the hostname
         # guest-init installs before Chromium starts.
         "./etc/hosts type=file content=$(execpath etc/hosts) mode=0644 uid=0 gid=0",
+        # The proxy's destination policy (host mapping plus allowlist). Baked
+        # into the image rather than passed as an env var: a task-class guest
+        # never receives one (see the comment on shotterEgressConfigPath in
+        # proxy.go). Baking it also means the policy is covered by the image
+        # digest instead of arriving from a caller-controlled or mutable
+        # source (ADR embervm/035 section 4).
+        "./etc/shotter-egress.json type=file content=$(execpath etc/shotter-egress.json) mode=0644 uid=0 gid=0",
     ],
 )
 
