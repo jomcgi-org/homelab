@@ -121,6 +121,42 @@ def test_create_session_retryable_backoff_and_restore_payload(monkeypatch):
     assert result.session_id == "s1"
 
 
+def test_create_session_retry_keeps_qwen_on_the_pi_workload(monkeypatch):
+    """The retryable-backoff recursion must carry the model too.
+
+    This is the fifth create path and the easiest to leave unguarded: it
+    re-enters create_session positionally, so dropping the model there is
+    invisible except that the retried create lands on the 4 GiB lane. It is
+    live rather than theoretical, because a retryable create denial is exactly
+    what pi-runtime's cap of 2 produces when the */5 probe overlaps an
+    interactive qwen turn.
+    """
+    attempts = []
+
+    async def handler(request):
+        attempts.append(request)
+        if len(attempts) < 3:
+            return _error_response(request, 409, True)
+        return httpx.Response(
+            200,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    async def fake_sleep(seconds):
+        return None
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    asyncio.run(transport.EmberVmShimTransport().create_session(model="qwen"))
+
+    assert len(attempts) == 3
+    # EVERY attempt, not just the first: the recursion must not lose the model.
+    assert [str(request.url) for request in attempts] == [
+        "https://ember.test/v1/workloads/pi-runtime/sessions"
+    ] * 3
+
+
 @pytest.mark.parametrize("field", ["session_id", "session_token"])
 @pytest.mark.parametrize("value", [None, ""])
 def test_create_session_rejects_missing_or_empty_identity(monkeypatch, field, value):

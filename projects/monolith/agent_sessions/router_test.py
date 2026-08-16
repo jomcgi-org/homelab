@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from agent_sessions import api, store
 from agent_sessions import mcp
+from agent_sessions import transport
 import agent_sessions.router as agent_router
 from agent_sessions.codex_login import codex_login_gate
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
@@ -208,7 +209,7 @@ def test_list_sessions_exposes_node_identity(client, session):
 
 
 def test_list_session_vms_maps_control_plane_states(client, monkeypatch):
-    async def fake_list_sessions(limit=50, offset=0):
+    async def fake_list_sessions(limit=50, offset=0, workload=None):
         return {
             "items": [
                 {"session_id": "s-run", "state": "running", "expires_at": 99},
@@ -236,7 +237,12 @@ def test_list_session_vms_maps_control_plane_states(client, monkeypatch):
 def test_list_session_vms_follows_pagination(client, monkeypatch):
     calls = []
 
-    async def fake_list_sessions(limit=50, offset=0):
+    async def fake_list_sessions(limit=50, offset=0, workload=None):
+        # Only the claude lane is paginated here; the pi lane answers empty so
+        # this test keeps asserting pagination rather than lane fan-out (see
+        # test_refresh_cp_state_polls_every_lane for that).
+        if workload == transport.PI_WORKLOAD:
+            return {"total": 0, "items": []}
         calls.append(offset)
         if offset == 0:
             return {
@@ -257,8 +263,35 @@ def test_list_session_vms_follows_pagination(client, monkeypatch):
     assert body["vms"]["s-tail"]["state"] == "awake"
 
 
+def test_refresh_cp_state_polls_every_lane(client, monkeypatch):
+    """The VM map must cover the pi lane as well as the claude one.
+
+    list_sessions is workload scoped, so a single-lane poll leaves qwen
+    sessions out of the published map. The console reads an absent session_id
+    as "off" (frontend status.js vmState), so a live qwen guest would render
+    "vm off" for its whole turn, and on monolith-dev that is every session
+    because localModelsOnly restricts the picker to qwen.
+    """
+    lanes = []
+
+    async def fake_list_sessions(limit=50, offset=0, workload=None):
+        lanes.append(workload)
+        if workload == transport.PI_WORKLOAD:
+            return {"items": [{"session_id": "s-qwen", "state": "running"}]}
+        return {"items": [{"session_id": "s-claude", "state": "running"}]}
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+    asyncio.run(agent_router._refresh_cp_state())
+    body = client.get("/api/agents/vms").json()
+
+    assert sorted(lanes) == sorted([mcp._transport.workload, transport.PI_WORKLOAD])
+    # Merged, not replaced: the last lane polled must not clobber the first.
+    assert body["vms"]["s-qwen"]["state"] == "awake"
+    assert body["vms"]["s-claude"]["state"] == "awake"
+
+
 def test_list_session_vms_degrades_when_embervm_is_down(client, monkeypatch):
-    async def broken_list_sessions(limit=50, offset=0):
+    async def broken_list_sessions(limit=50, offset=0, workload=None):
         raise EmberVMTransportError("control plane unreachable")
 
     monkeypatch.setattr(mcp._transport, "list_sessions", broken_list_sessions)
@@ -271,7 +304,7 @@ def test_list_session_vms_degrades_when_embervm_is_down(client, monkeypatch):
 def test_vm_cache_refreshes_at_interval_and_stops_when_unused(monkeypatch):
     calls = []
 
-    async def fake_list_sessions(limit=50, offset=0):
+    async def fake_list_sessions(limit=50, offset=0, workload=None):
         calls.append((limit, offset))
         return {"items": [{"session_id": "s-1", "state": "running"}]}
 
@@ -293,7 +326,7 @@ def test_vm_cache_refreshes_at_interval_and_stops_when_unused(monkeypatch):
 def test_vm_stream_emits_initial_and_changed_snapshots(monkeypatch):
     state = [{"session_id": "s-1", "state": "running"}]
 
-    async def fake_list_sessions(limit=50, offset=0):
+    async def fake_list_sessions(limit=50, offset=0, workload=None):
         return {"items": state}
 
     async def exercise():
@@ -329,7 +362,7 @@ def test_refresher_survives_an_iteration_that_raises(monkeypatch):
     """
     calls = []
 
-    async def flaky_list_sessions(limit=50, offset=0):
+    async def flaky_list_sessions(limit=50, offset=0, workload=None):
         calls.append(1)
         if len(calls) == 1:
             raise ValueError("malformed page")
@@ -359,7 +392,7 @@ def test_snapshot_reclaims_a_dead_refresher(monkeypatch):
     """A finished task is not None, so `task is None` alone froze this too."""
     calls = []
 
-    async def fake_list_sessions(limit=50, offset=0):
+    async def fake_list_sessions(limit=50, offset=0, workload=None):
         calls.append(1)
         return {"items": [{"session_id": "s-1", "state": "running"}]}
 
@@ -380,7 +413,7 @@ def test_snapshot_reclaims_a_dead_refresher(monkeypatch):
 
 
 def test_vm_stream_heartbeats_when_idle(monkeypatch):
-    async def fake_list_sessions(limit=50, offset=0):
+    async def fake_list_sessions(limit=50, offset=0, workload=None):
         return {"items": []}
 
     async def exercise():

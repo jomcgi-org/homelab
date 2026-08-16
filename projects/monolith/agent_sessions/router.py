@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
-from agent_sessions import model_family, store, voice_ui
+from agent_sessions import model_family, store, transport as transport_module, voice_ui
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
@@ -264,17 +264,40 @@ def _coarse_vm_map(items: list[dict]) -> dict[str, dict]:
     return vms
 
 
-async def _refresh_cp_state() -> None:
+async def _lane_sessions(workload: str) -> list:
+    """Every session the control plane reports for one workload lane."""
     items = []
     offset = 0
+    for _ in range(4):
+        page = await _transport.list_sessions(
+            limit=500, offset=offset, workload=workload
+        )
+        batch = page.get("items", [])
+        items.extend(batch)
+        offset += len(batch)
+        if not batch or offset >= int(page.get("total") or 0):
+            break
+    return items
+
+
+async def _refresh_cp_state() -> None:
+    # EVERY lane, not just the claude runtime. list_sessions is workload
+    # scoped, and since qwen sessions moved to pi-runtime a single-lane poll
+    # would leave them out of the published map entirely. The console reads an
+    # absent session_id as "off" (frontend status.js vmState), so a live qwen
+    # guest would render "vm off" and "waking vm" for its whole turn. On
+    # monolith-dev that is total, because localModelsOnly restricts the picker
+    # to qwen alone.
+    #
+    # Aggregating here does NOT contradict list_sessions defaulting to one
+    # lane: that default serves the operator tool, where the per-workload
+    # session CAP is the thing being managed. This map is keyed by session_id
+    # and wants the union.
+    lanes = list(dict.fromkeys([_transport.workload, transport_module.PI_WORKLOAD]))
+    items = []
     try:
-        for _ in range(4):
-            page = await _transport.list_sessions(limit=500, offset=offset)
-            batch = page.get("items", [])
-            items.extend(batch)
-            offset += len(batch)
-            if not batch or offset >= int(page.get("total") or 0):
-                break
+        for lane in lanes:
+            items.extend(await _lane_sessions(lane))
     except EmberVMTransportError as exc:
         # Drop the map rather than serving the last known one. A stale entry
         # renders as a confident "awake" chip for a guest that may be long
