@@ -30,6 +30,10 @@ class FakeAsyncClient:
         request = httpx.Request("POST", url, **kwargs)
         return await self.handler(request)
 
+    async def get(self, url, **kwargs):
+        request = httpx.Request("GET", url, **kwargs)
+        return await self.handler(request)
+
     async def delete(self, url, **kwargs):
         request = httpx.Request("DELETE", url, **kwargs)
         return await self.handler(request)
@@ -189,6 +193,49 @@ def test_create_session_restoring_posts_restore_lineage_body(monkeypatch):
     asyncio.run(transport.EmberVmShimTransport().create_session(restore_from="s1"))
 
     assert json.loads(requests[0].content) == {"restore_lineage": "s1"}
+
+
+# -- qwen (pi family) routing: create_session targets pi-runtime -----------
+
+
+def test_create_session_qwen_targets_pi_runtime_workload(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    asyncio.run(transport.EmberVmShimTransport().create_session(model="qwen"))
+
+    assert str(requests[0].url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+
+
+@pytest.mark.parametrize("model", [None, "opus", "sonnet", "fable", "luna"])
+def test_create_session_non_pi_models_target_claude_runtime_workload(
+    monkeypatch, model
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    asyncio.run(transport.EmberVmShimTransport().create_session(model=model))
+
+    assert (
+        str(requests[0].url)
+        == "https://ember.test/v1/workloads/claude-runtime/sessions"
+    )
 
 
 def test_deliver_uses_ember_identity_and_cli_id_in_body(monkeypatch):
@@ -523,7 +570,7 @@ def test_deliver_recreates_reused_stale_session_once(monkeypatch):
         requests.append(request)
         return _turn_response(request, responses.pop(0))
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         nonlocal create_calls
         create_calls += 1
         seen_restore_from.append(restore_from)
@@ -562,7 +609,7 @@ def test_deliver_recreates_reused_session_on_403(monkeypatch):
         requests.append(request)
         return _turn_response(request, responses.pop(0))
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         nonlocal create_calls
         create_calls += 1
         seen_restore_from.append(restore_from)
@@ -601,7 +648,7 @@ def test_deliver_keeps_cli_session_id_when_restore_recovers_workspace(monkeypatc
         requests.append(request)
         return _turn_response(request, responses.pop(0))
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         return restored_session
 
     _client(monkeypatch, handler)
@@ -639,7 +686,7 @@ def test_deliver_falls_back_to_blank_session_when_restore_create_is_denied(
         requests.append(request)
         return _turn_response(request, responses.pop(0))
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         create_calls.append(restore_from)
         if restore_from:
             raise EmberVMTransportError("404 unknown_lineage")
@@ -675,7 +722,7 @@ def test_deliver_reused_session_403_with_failing_retry_raises_session_gone(monke
         requests.append(request)
         return _turn_response(request, responses.pop(0))
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         return fresh
 
     _client(monkeypatch, handler)
@@ -698,7 +745,7 @@ def test_deliver_does_not_retry_reused_session_on_422(monkeypatch):
         requests.append(request)
         return _turn_response(request, 422)
 
-    async def create_session():
+    async def create_session(model=None):
         nonlocal create_calls
         create_calls += 1
         return transport.EmberSession("s2", "t2", None)
@@ -723,7 +770,7 @@ def test_deliver_does_not_retry_reused_session_on_404(monkeypatch):
         requests.append(request)
         return _turn_response(request, 404)
 
-    async def create_session():
+    async def create_session(model=None):
         nonlocal create_calls
         create_calls += 1
         return transport.EmberSession("s2", "t2", None)
@@ -749,7 +796,7 @@ def test_deliver_does_not_retry_fresh_session_failure(monkeypatch):
         requests.append(request)
         return _turn_response(request, 410)
 
-    async def create_session():
+    async def create_session(model=None):
         nonlocal create_calls
         create_calls += 1
         return fresh
@@ -782,7 +829,7 @@ def test_deliver_fresh_session_retryable_then_fails(monkeypatch):
     client = transport.EmberVmShimTransport()
     fresh = transport.EmberSession("s1", "t1", None)
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         return fresh
 
     monkeypatch.setattr(client, "create_session", create_session)
@@ -804,7 +851,7 @@ def test_deliver_retryable_exhaustion(monkeypatch):
     async def fake_sleep(seconds):
         sleeps.append(seconds)
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         return transport.EmberSession("s1", "t1", None)
 
     _client(monkeypatch, handler)
@@ -827,7 +874,7 @@ def test_deliver_410_restore_heir_persisted_on_double_failure(monkeypatch):
         events.append("invoke")
         return _error_response(request, responses.pop(0), False)
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         events.append("create")
         return heir
 
@@ -854,7 +901,7 @@ def test_deliver_workspace_recovery_on_normal_create(monkeypatch):
     async def handler(request):
         return _turn_response(request)
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         return transport.EmberSession("s1", "t1", None)
 
     _client(monkeypatch, handler)
@@ -873,7 +920,7 @@ def test_deliver_workspace_recovery_on_restore_success(monkeypatch):
     async def handler(request):
         return _turn_response(request)
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         return transport.EmberSession(
             "s2", "t2", None, lineage_id="lineage-1", restored=True
         )
@@ -896,7 +943,7 @@ def test_deliver_workspace_recovery_on_restore_denial_fallback(monkeypatch):
     async def handler(request):
         return _turn_response(request)
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         if restore_from:
             raise EmberVMTransportError("restore denied")
         return transport.EmberSession("s3", "t3", None)
@@ -944,7 +991,7 @@ def test_deliver_with_no_ember_restores_and_keeps_cli_when_recovered(monkeypatch
         requests.append(request)
         return _turn_response(request)
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         create_calls.append(restore_from)
         return restored_session
 
@@ -971,7 +1018,7 @@ def test_deliver_with_no_ember_restore_denied_falls_back_to_blank(monkeypatch):
         requests.append(request)
         return _turn_response(request)
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         create_calls.append(restore_from)
         if restore_from:
             raise EmberVMTransportError("404 unknown_lineage")
@@ -1004,7 +1051,7 @@ def test_deliver_with_no_ember_and_no_restore_from_is_unchanged(monkeypatch):
         requests.append(request)
         return _turn_response(request)
 
-    async def create_session(restore_from=None):
+    async def create_session(restore_from=None, model=None):
         create_calls.append(restore_from)
         return fresh
 
@@ -1017,6 +1064,266 @@ def test_deliver_with_no_ember_and_no_restore_from_is_unchanged(monkeypatch):
     assert used == fresh
     assert json.loads(requests[0].content)["session_id"] == "cli-x"
     assert turn.result == "ok"
+
+
+# -- qwen (pi family) routing end-to-end through deliver --------------------
+# These exercise the REAL create_session (no monkeypatch on it), so the
+# create URL is the thing under test, not a fake's return value.
+
+
+def test_deliver_creates_qwen_session_on_pi_workload(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if str(request.url).endswith("/sessions"):
+            return httpx.Response(
+                201,
+                json={"session_id": "s-pi", "session_token": "t-pi"},
+                request=request,
+            )
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    turn, used = asyncio.run(client.deliver(None, None, "hello", model="qwen"))
+
+    create_request, invoke_request = requests
+    assert (
+        str(create_request.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+    )
+    # The workload choice must not leak into the invoke URL: it is always
+    # session-scoped regardless of which workload the session lives on.
+    assert str(invoke_request.url) == "https://ember.test/v1/sessions/s-pi/invoke"
+    assert used.session_id == "s-pi"
+    assert turn.result == "ok"
+
+
+def test_deliver_with_existing_ember_issues_no_create(monkeypatch):
+    """A live binding on claude-runtime must keep working untouched: this
+    change must not migrate an existing session to a different workload."""
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    ember = transport.EmberSession("s1", "t1", None)
+    turn, used = asyncio.run(
+        transport.EmberVmShimTransport().deliver(ember, "cli-1", "hello", model="qwen")
+    )
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://ember.test/v1/sessions/s1/invoke"
+    assert used == ember
+    assert turn.result == "ok"
+
+
+def test_deliver_restore_from_passes_model_to_pi_workload(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if str(request.url).endswith("/sessions"):
+            return httpx.Response(
+                201,
+                json={
+                    "session_id": "s-pi-2",
+                    "session_token": "t-pi-2",
+                    "lineage_id": "lineage-1",
+                    "restored": True,
+                },
+                request=request,
+            )
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    turn, used = asyncio.run(
+        client.deliver(
+            None, "cli-prior", "hello", model="qwen", restore_from="lineage-1"
+        )
+    )
+
+    create_request = requests[0]
+    assert (
+        str(create_request.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+    )
+    assert json.loads(create_request.content) == {"restore_lineage": "lineage-1"}
+    assert used.session_id == "s-pi-2"
+    assert turn.result == "ok"
+
+
+def test_deliver_restore_denied_falls_back_to_blank_on_pi_workload(monkeypatch):
+    """A cross-workload restore is one of the CP's documented denial reasons
+    (workload/principal mismatch). The existing degrade-to-blank fallback
+    must still land on the CORRECT (pi) workload, not silently drop back to
+    claude-runtime."""
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if str(request.url).endswith("/sessions"):
+            body = json.loads(request.content) if request.content else {}
+            if body.get("restore_lineage"):
+                return _error_response(request, 403, False)
+            return httpx.Response(
+                201,
+                json={"session_id": "s-blank", "session_token": "t-blank"},
+                request=request,
+            )
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    turn, used = asyncio.run(
+        client.deliver(
+            None, "cli-prior", "hello", model="qwen", restore_from="lineage-1"
+        )
+    )
+
+    denied_create, blank_create, _invoke = requests
+    assert (
+        str(denied_create.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+    )
+    assert (
+        str(blank_create.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+    )
+    assert used.session_id == "s-blank"
+    assert turn.workspace_recovery == {
+        "created": True,
+        "restored": False,
+        "degraded": "restore_denied",
+    }
+
+
+def test_deliver_session_gone_recreates_qwen_on_pi_workload(monkeypatch):
+    """The 403/410 mid-conversation recovery arm must recreate on the PI lane.
+
+    This arm is the one that fails silently if the model is not threaded: the
+    turn still succeeds, it just runs on the 4 GiB claude-runtime lane, so
+    nothing surfaces the escape. Both of its create_session calls (the restore
+    and the degrade-to-blank fallback) are covered here.
+    """
+    requests = []
+    turn_codes = [410, 200]
+
+    async def handler(request):
+        requests.append(request)
+        if str(request.url).endswith("/sessions"):
+            body = json.loads(request.content) if request.content else {}
+            if body.get("restore_lineage"):
+                return _error_response(request, 403, False)
+            return httpx.Response(
+                201,
+                json={"session_id": "s-pi-new", "session_token": "t-pi-new"},
+                request=request,
+            )
+        return _turn_response(request, turn_codes.pop(0))
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    turn, used = asyncio.run(
+        client.deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello", model="qwen"
+        )
+    )
+
+    first_invoke, denied_create, blank_create, retry_invoke = requests
+    assert str(first_invoke.url) == "https://ember.test/v1/sessions/s1/invoke"
+    # Both creates on the recovery arm must target pi-runtime, not the
+    # claude-runtime default the transport instance carries.
+    assert (
+        str(denied_create.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+    )
+    assert (
+        str(blank_create.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+    )
+    # The lane choice must not leak into the session-scoped invoke URL.
+    assert str(retry_invoke.url) == "https://ember.test/v1/sessions/s-pi-new/invoke"
+    assert used.session_id == "s-pi-new"
+    assert turn.result == "ok"
+
+
+# -- AGENT_PI_WORKLOAD revert lever ------------------------------------------
+
+
+def test_agent_pi_workload_override_sends_qwen_to_claude_runtime(monkeypatch):
+    """The revert lever: setting the override to claude-runtime must put
+    qwen back on the old lane by a values edit, with no code deploy."""
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport, "PI_WORKLOAD", "claude-runtime")
+    asyncio.run(transport.EmberVmShimTransport().create_session(model="qwen"))
+
+    assert (
+        str(requests[0].url)
+        == "https://ember.test/v1/workloads/claude-runtime/sessions"
+    )
+
+
+def test_agent_pi_workload_env_blank_or_unset_resolves_to_pi_runtime(monkeypatch):
+    """AGENT_PI_WORKLOAD unset OR blank both mean "use the code default": there
+    is no security semantic here, so blank is not a deny lever.
+
+    Asserted against the resolver rather than by reloading the module:
+    importlib.reload rebinds EmberSessionGone to a fresh class object, which
+    silently breaks every later pytest.raises(EmberSessionGone) in this file.
+    """
+    monkeypatch.delenv("AGENT_PI_WORKLOAD", raising=False)
+    assert transport._resolve_pi_workload() == "pi-runtime"
+
+    monkeypatch.setenv("AGENT_PI_WORKLOAD", "")
+    assert transport._resolve_pi_workload() == "pi-runtime"
+
+    # A set, non-blank value is the revert lever and IS honoured.
+    monkeypatch.setenv("AGENT_PI_WORKLOAD", "claude-runtime")
+    assert transport._resolve_pi_workload() == "claude-runtime"
+
+
+# -- list_sessions workload lane selection -----------------------------------
+
+
+def test_list_sessions_targets_named_workload(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"items": []}, request=request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(transport.EmberVmShimTransport().list_sessions(workload="pi-runtime"))
+
+    assert (
+        str(requests[0].url).split("?")[0]
+        == "https://ember.test/v1/workloads/pi-runtime/sessions"
+    )
+
+
+def test_list_sessions_defaults_to_claude_runtime(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"items": []}, request=request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(transport.EmberVmShimTransport().list_sessions())
+
+    assert (
+        str(requests[0].url).split("?")[0]
+        == "https://ember.test/v1/workloads/claude-runtime/sessions"
+    )
 
 
 def test_destroy_session_maps_404_to_session_gone(monkeypatch):

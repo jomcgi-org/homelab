@@ -1041,6 +1041,14 @@ sandbox:
   # contract with the embervm chart. Empty falls back to the client default.
   workloadPrefix: "sandbox-"
 
+agentSessions:
+  # EmberVM workload the qwen (pi) family creates its guest sessions on.
+  # Empty means "use the code default" (pi-runtime). This key must exist
+  # even empty: a values file without it render-errors the template. This
+  # is the REVERT LEVER for routing qwen back to the claude-runtime lane:
+  # set it to "claude-runtime" to revert by values edit, no code deploy.
+  piWorkload: ""
+
 # EmberVM R4 scratch-postgres consumer (ADR embervm/001, D-R4.PR-11.1). When
 # enabled the monolith exposes SCRATCH_POSTGRES_DSN so agent run_code python runs
 # can psycopg-connect to the scale-to-zero scratch Postgres. The datastore's

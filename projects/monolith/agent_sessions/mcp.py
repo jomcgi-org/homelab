@@ -853,8 +853,10 @@ async def monolith_agent_detail(session_id: int, turn: int | None = None) -> dic
 
 
 @mcp.tool
-async def monolith_agent_session_vms(limit: int = 50, offset: int = 0) -> dict:
-    """List the EmberVM session VMs holding claude-runtime workload slots.
+async def monolith_agent_session_vms(
+    limit: int = 50, offset: int = 0, workload: str | None = None
+) -> dict:
+    """List the EmberVM session VMs holding a workload's session slots.
 
     Parked sessions count with banked toward session.maxSessions (the disk
     bucket) and no longer hold a concurrency.cap slot. Stale parked sessions
@@ -862,9 +864,17 @@ async def monolith_agent_session_vms(limit: int = 50, offset: int = 0) -> dict:
     session_cap 429. This lists the slot holders (state, timestamps, expiry)
     either way, so the stale ones can be destroyed with
     monolith-agent-session-destroy.
+
+    Args:
+        workload: Which lane to list, defaults to the claude runtime. Pass
+            "pi-runtime" to see the qwen family's lane instead. The two
+            lanes are never aggregated, since the session cap is per
+            workload.
     """
     try:
-        return await _transport.list_sessions(limit=limit, offset=offset)
+        return await _transport.list_sessions(
+            limit=limit, offset=offset, workload=workload
+        )
     except EmberVMTransportError as exc:
         return {"error": str(exc)}
 
