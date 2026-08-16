@@ -371,6 +371,31 @@ def test_mcp_only_module_is_valid_and_mounts_mcp():
     assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
 
 
+def test_mcp_mount_is_wrapped_in_principal_middleware():
+    """A route existing at /mcp is not the same as that route authenticating.
+
+    build_app keeps the unwrapped app in scope as `raw_mcp_http_app`, because
+    the lifespan has to come off it (PrincipalMiddleware is a plain callable
+    with no .lifespan). So the unauthenticated app is reachable by name at the
+    mount, and mounting it instead is a one-word edit.
+
+    Nothing else catches that. The middleware's own tests construct it
+    directly, which proves it works rather than that it is installed, and the
+    mount test above passes for a route that authenticates nothing. Mounting
+    `raw_mcp_http_app` here leaves the ENTIRE suite green (verified: 721 pass)
+    while serving the whole tool catalogue to any unauthenticated caller that
+    reaches the ClusterIP, which Context Forge does without traversing the
+    ingress gate.
+    """
+    from auth.api import PrincipalMiddleware
+
+    profile = dataclasses.replace(_PLAIN_PRIVATE, mcp_enabled=True)
+    app = build_app(profile, [Module(name="tools", register_mcp=lambda: None)])
+
+    mcp_route = next(r for r in app.routes if getattr(r, "path", "") == "/mcp")
+    assert isinstance(mcp_route.app, PrincipalMiddleware)
+
+
 def test_private_app_registers_the_auth_error_handler():
     """The handler being importable is not the same as it being installed.
 
