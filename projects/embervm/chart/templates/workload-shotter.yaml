@@ -1,0 +1,71 @@
+{{- if .Values.shotterWorkload.enabled }}
+# The shotter workload (ADR embervm/035: the website snapshotter). Its guest image
+# ref is the SAME Bazel-pinned value the noded rootfs-builder bakes and
+# EMBERVM_NODED_IMAGES keys on, so BaseBuilder's BuildBase(ref) resolves on the
+# node. The base is a warm headless Chromium: on admission the control plane
+# cold-boots one VM, guest-init launches Chromium and waits for its CDP endpoint
+# to answer before flipping /shim/ready, noded snapshots that as the base
+# (status.snapshotRef), and a submit drives an Assign that renders one page in a
+# CoW clone (the VM is destroyed after the response). Restoring a clone gives a
+# FRESH browser without paying Chromium's launch cost, which is the whole reason
+# this is a task-class guest rather than a long-lived pod.
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: {{ .Values.shotterWorkload.name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  class: task
+  source:
+    image:
+      # Must match the top-level shotter.guestImage exactly (the derived
+      # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
+      ref: "{{ .Values.shotter.guestImage.repository }}@{{ .Values.shotter.guestImage.digest }}"
+      port: {{ .Values.shotterWorkload.port }}
+      readyPath: {{ .Values.shotterWorkload.readyPath | quote }}
+      invokePath: {{ .Values.shotterWorkload.invokePath | quote }}
+      # Base-signature input ONLY. Nothing here reaches the guest's environment:
+      # the control plane sends this map as BuildBaseRequest.init_env and noded
+      # never reads that field (#4429), and the ember.env.* cmdline path that
+      # does deliver env is populated only by ClaimStateful and ClaimGroupMember,
+      # while a task-class Claim takes a ClaimSpec with no env member. So this is
+      # a rebuild epoch, never a knob. The shared hypervisor epoch re-keys this
+      # base whenever the vendored Firecracker binary moves, because a new
+      # hypervisor must never try to load a previous version's snapshot (#4389).
+      #
+      # Guest-readable config for this workload lives in the image instead, at
+      # /etc/shotter-egress.json.
+      initEnv:
+        EMBER_HYPERVISOR_EPOCH: {{ .Values.hypervisorEpoch | quote }}
+  resources:
+    vcpus: {{ .Values.shotterWorkload.vcpus }}
+    memMib: {{ .Values.shotterWorkload.memMib }}
+  concurrency:
+    floor: {{ .Values.shotterWorkload.floor }}
+    cap: {{ .Values.shotterWorkload.cap }}
+  invocation:
+    timeoutSeconds: {{ .Values.shotterWorkload.timeoutSeconds }}
+    retry:
+      # maxAttempts is TOTAL attempts, so 2 means one retry. A guest non-2xx here
+      # is a caller's bad request (an unmapped host, an out-of-bounds viewport,
+      # an unsupported wait_until), never a transient fault, so guest5xx and
+      # timeout are deliberately absent from retryOn: re-rendering a page that
+      # was refused for its inputs would fail identically and just burn a clone.
+      # Only a transport failure, where the Assign never reached the guest and
+      # the page therefore never loaded, is worth one more attempt.
+      maxAttempts: 2
+      retryOn:
+        - transport
+    resultTtlSeconds: 600
+    # 8 MiB. This is the transport ceiling the guest's own PNG cap has to stay
+    # under, and it is in turn well under the 32 MiB noded reads from a guest.
+    # A screenshot that cannot fit is rejected by the guest rather than truncated
+    # here, so the caller gets an error instead of a corrupt image.
+    resultMaxBytes: 8388608
+    deadLetter:
+      # One render per clone with no downstream side effects: a failed task has
+      # nothing to dead-letter, the caller gets the error synchronously.
+      enabled: false
+{{- end }}

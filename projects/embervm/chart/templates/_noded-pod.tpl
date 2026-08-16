@@ -273,6 +273,31 @@ containers:
       {{- if $ctx.Values.piRuntimeWorkload.enabled }}
       {{- $derived = append $derived $ctx.Values.piRuntimeWorkload.name }}
       {{- end }}
+      {{- /*
+        shotter (ADR embervm/035) is the third consumer and the first TASK-class
+        one. It needs the lane because the whole point of the workload is to
+        fetch a page: its guest points Chromium at an in-guest proxy that
+        tunnels over vsock to this sidecar. Same silent failure mode as the two
+        above, a workload enabled but missing here gets no forwarder and
+        dial-times-out inside the guest rather than denying loudly.
+
+        Note the comment above about this being "derived rather than
+        hand-listed" describes the intent, not the mechanism: this is a
+        hand-written if-chain over named workloads, so every new consumer needs
+        its own arm here. Guarding on .enabled is why the chart default must
+        define shotterWorkload.enabled, otherwise a values file lacking the key
+        render-errors the whole pod template.
+
+        The sidecar's policy is shared (external: allow, plus credential
+        injection toward the hosts in egress.secrets), so granting this lane
+        does NOT mean the snapshotter may dial anywhere. What confines it is the
+        allowlist baked into its own image at /etc/shotter-egress.json, which
+        refuses any destination outside the two frontend services before a vsock
+        connection is opened. That is deliberate: see ADR embervm/035 section 4.
+      */}}
+      {{- if $ctx.Values.shotterWorkload.enabled }}
+      {{- $derived = append $derived $ctx.Values.shotterWorkload.name }}
+      {{- end }}
       {{- $egressWorkloads = $derived }}
       {{- end }}
       {{- if not $egressWorkloads }}

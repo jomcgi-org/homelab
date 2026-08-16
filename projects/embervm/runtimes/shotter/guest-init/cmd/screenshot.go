@@ -23,7 +23,16 @@ const (
 	// maxPNGBytes is the encoded PNG ceiling. An oversized capture is
 	// refused, never truncated, matching what the Phase 3 monolith specs
 	// assert.
-	maxPNGBytes = 50 << 20
+	//
+	// Sizes nest the same way the timeouts do, and this is the innermost one.
+	// The workload's invocation.resultMaxBytes is 8 MiB (see
+	// chart/templates/workload-shotter.yaml), which itself sits under the
+	// 32 MiB noded reads back from a guest. Staying under that ceiling is what
+	// makes an oversized capture a legible error from this handler rather than
+	// a truncation or a rejection further out, where the caller cannot tell
+	// what went wrong. Raising this without raising resultMaxBytes first just
+	// moves the failure somewhere less informative.
+	maxPNGBytes = 6 << 20
 
 	defaultWaitUntil = "load"
 

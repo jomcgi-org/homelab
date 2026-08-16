@@ -110,6 +110,12 @@ semgrepWorkload:
 bazelQueryWorkload:
   enabled: false
 
+# The website snapshotter (ADR embervm/035), off in dev. It also has no egress
+# lane here: dev inherits egress.enabled false, so even enabled it could not
+# reach a frontend.
+shotterWorkload:
+  enabled: false
+
 claudeRuntimeWorkload:
   enabled: false
 
@@ -284,6 +290,13 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/scratch-postgres/rootfs.ext4
   bazelQuery:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/bazel-query/rootfs.ext4
+  # MANDATORY even though dev does not run the shotter workload: the Workload CR
+  # and the base BUILDER are gated separately, so a path left at the inherited
+  # production value is UNBACKED inside the container (only nvmeRoot is mounted)
+  # and mkfs would write a multi-GB base image onto node-4's ROOT filesystem,
+  # which is where production's bricks live.
+  shotter:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/shotter/rootfs.ext4
 
 # The serving lane, off. Dev exercises task-class lifecycle for the conformance
 # harness, not serving or stateful workloads.
@@ -336,5 +349,12 @@ runtimeClaude:
 # re-add a `scratchPostgres:` block here.
 
 bazelQuery:
+  guestImage:
+    repository: ""
+
+# Empty repository skips the shotter base builder entirely. Disabling the
+# Workload CR above turns off the cheap switch; this is the expensive one, and
+# leaving it set would have dev build a warm-Chromium base it never serves.
+shotter:
   guestImage:
     repository: ""

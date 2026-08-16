@@ -431,9 +431,26 @@ egress:
     # (ADR 051). Port 8091 only; the main API on 8000 stays deny. Token-bearer auth
     # bounds what a prompt-injected guest can write to (its own session's
     # partial_text), not network access.
+    # monolith-public-frontend...:3000 and monolith...:3000
+    # The two frontend origins the shotter workload renders (ADR embervm/035).
+    # Note monolith.monolith.svc.cluster.local appears twice on purpose: matching
+    # includes the port, so the :8091 entry above does NOT admit :3000. The
+    # main API on :8000 stays denied.
+    #
+    # Accepted cost, recorded in ADR embervm/035 section 4 and carried there as an
+    # open question: this list is global to the sidecar, not per workload, so
+    # these two entries widen reachable destinations for every other
+    # egress-enabled workload (today the claude runtime) too. Accepted because
+    # both are read-only frontend HTTP endpoints already reachable by anything
+    # in-cluster holding a network interface, so this grants no reach a
+    # compromised guest could not obtain another way. It is still a precedent for
+    # whatever needs an entry next, which is why it is written down rather than
+    # treated as settled.
     allowlist:
       - inference.inference.svc.cluster.local:8080
       - monolith.monolith.svc.cluster.local:8091
+      - monolith-public-frontend.monolith-public.svc.cluster.local:3000
+      - monolith.monolith.svc.cluster.local:3000
   # The claude runtime's subscription OAuth token. The sidecar SETS the
   # Authorization header on requests to api.anthropic.com and originates the
   # verified TLS to :443 itself, so the credential never exists inside a guest
