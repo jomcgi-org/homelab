@@ -31,6 +31,13 @@ class ChatResult:
     latency_ms: int
 
 
+def _merge_payload(required: dict, extra_body: dict | None) -> dict:
+    """Merge extra_body under required fields so model/messages/tools cannot be overwritten."""
+    payload = dict(extra_body or {})
+    payload.update(required)
+    return payload
+
+
 class OpenRouterClient:
     def __init__(
         self,
@@ -38,12 +45,13 @@ class OpenRouterClient:
         api_key: str,
         transport=None,
         base_url: str = "https://openrouter.ai/api/v1",
+        timeout: float = 120.0,
     ) -> None:
         self._base_url = base_url
         self._client = httpx.AsyncClient(
             base_url=base_url,
             transport=transport,
-            timeout=httpx.Timeout(120.0),
+            timeout=httpx.Timeout(timeout),
             headers={"Authorization": f"Bearer {api_key}"},
         )
         self._prices: dict[str, tuple[float, float]] = {}
@@ -55,6 +63,7 @@ class OpenRouterClient:
         messages: list[dict],
         temperature: float,
         max_tokens: int = 8192,
+        extra_body: dict | None = None,
     ) -> Completion:
         """Send a chat completion request, retrying on 429 and 5xx with exponential backoff.
 
@@ -62,12 +71,15 @@ class OpenRouterClient:
         Other 4xx errors are raised immediately without retry.
         """
         t0 = time.monotonic()
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+        payload = _merge_payload(
+            {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            extra_body,
+        )
         resp: httpx.Response | None = None
         for attempt in range(5):
             resp = await self._client.post("/chat/completions", json=payload)
@@ -104,6 +116,7 @@ class OpenRouterClient:
         tools: list[dict] | None = None,
         temperature: float = 0.0,
         max_tokens: int = 8192,
+        extra_body: dict | None = None,
     ) -> ChatResult:
         """One turn of a tool-using conversation.
 
@@ -112,14 +125,15 @@ class OpenRouterClient:
         JSON). Returns the full assistant message, which may carry ``tool_calls``.
         """
         t0 = time.monotonic()
-        payload: dict = {
+        required: dict = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
         if tools:
-            payload["tools"] = tools
+            required["tools"] = tools
+        payload = _merge_payload(required, extra_body)
         resp: httpx.Response | None = None
         for attempt in range(5):
             resp = await self._client.post("/chat/completions", json=payload)

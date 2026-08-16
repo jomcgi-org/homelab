@@ -22,6 +22,27 @@ def test_active_excludes_retired(tmp_path):
     assert "cheap/fast" in ids and "old/dead" not in ids
 
 
+def test_load_registry_keeps_api_model_and_extra_body(tmp_path):
+    p = tmp_path / "models.yaml"
+    p.write_text(
+        """
+models:
+  - id: qwen/qwen3.8-27b
+    display_name: qwen3.8-27b
+    status: experimental
+    api_model: qwen3.6-27b
+    extra_body:
+      chat_template_kwargs:
+        reasoning_effort: xhigh
+"""
+    )
+    m = load_registry(p)[0]
+    assert m.api_model == "qwen3.6-27b"
+    assert m.status == "experimental"
+    assert m.extra_body == {"chat_template_kwargs": {"reasoning_effort": "xhigh"}}
+    assert m.id not in [x.id for x in active_models(load_registry(p))]
+
+
 def test_drop_sets_retired_with_reason(tmp_path):
     p = tmp_path / "models.yaml"
     p.write_text(YAML)

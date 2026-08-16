@@ -82,6 +82,21 @@ def test_modelspec_defaults_active_and_temp_zero():
     m = ModelSpec(id="anthropic/claude-sonnet-4.6")
     assert m.status == "active"
     assert m.params.temperature == 0.0
+    assert m.api_model is None
+    assert m.extra_body == {}
+
+
+def test_modelspec_api_model_and_extra_body_round_trip():
+    m = ModelSpec(
+        id="qwen/qwen3.8-27b",
+        api_model="qwen3.6-27b",
+        extra_body={"chat_template_kwargs": {"reasoning_effort": "xhigh"}},
+    )
+    assert m.api_model == "qwen3.6-27b"
+    assert m.extra_body == {"chat_template_kwargs": {"reasoning_effort": "xhigh"}}
+    again = ModelSpec.model_validate(m.model_dump())
+    assert again.api_model == m.api_model
+    assert again.extra_body == m.extra_body
 
 
 def test_resultcell_records_both_attempts_and_provenance():
