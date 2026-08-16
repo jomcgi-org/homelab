@@ -760,9 +760,15 @@ defmodule Embervm.BaseBuilder do
         |> spawn_hydrate(w)
 
       w.built_signature == signature(w) and w.snapshot_ref != nil ->
-        # Desired base already built and recorded: idempotent no-op. (The watcher
-        # separately writes observedGeneration for a generation-only change.)
-        state
+        # The SCALAR base is built, but "some vendor, somewhere" is not the same
+        # as "every fleet vendor". Repair-enqueue any vendor still missing,
+        # stale, or unverified (see vendors_needing_build/2 for why unverified
+        # counts) rather than treating this as a blanket no-op. The workload is
+        # already servable on the vendor that has a base, so this deliberately
+        # does NOT write_base_status(:building): flipping the published status
+        # to building for a repair build a caller cannot observe would be a
+        # regression, and BaseVendorCoverage already reports the gap.
+        enqueue_vendor_repairs(state, w, name)
 
       already_targeting?(state, node_id, name, signature(w)) ->
         # A build for this exact signature is already queued or in flight.
@@ -780,9 +786,14 @@ defmodule Embervm.BaseBuilder do
   # -- restore-first (hydrate-on-miss, base-durability PR-2) --------------------
 
   # Should this workload's recorded base be HYDRATED (S3 restore) rather than
-  # rebuilt? True only when ALL four guards hold (fail-safe: any unmet guard falls
+  # rebuilt? True only when ALL five guards hold (fail-safe: any unmet guard falls
   # through to the ordinary build/no-op branches):
   #
+  #   0. the PINNED instance's own reported CPU vendor matches `scalar_vendor`
+  #      (the vendor apply_result/4 last stamped the scalar snapshot_ref with).
+  #      Per-vendor enqueue makes cross-vendor builds routine, so the scalar ref
+  #      can now belong to a vendor other than the one this instance runs; a
+  #      blank/unknown vendor also fails this guard (fail closed);
   #   1. a base is recorded (snapshot_ref set) AND the spec is unchanged
   #      (built_signature == signature): we are restoring the SAME ref we would
   #      otherwise rebuild, never papering over a spec change (whose target ref is
@@ -881,7 +892,20 @@ defmodule Embervm.BaseBuilder do
   end
 
   defp should_hydrate?(state, w, node_id) do
-    is_binary(w.snapshot_ref) and w.built_signature == signature(w) and
+    # Regression guard: apply_result/4 sets the SCALAR snapshot_ref/scalar_vendor
+    # from whichever vendor built LAST, and per-vendor enqueue (vendors_needing_build/2)
+    # makes cross-vendor builds routine rather than rare. `node_id` here is the
+    # PINNED instance (w.node_id), whose vendor can now differ from scalar_vendor.
+    # Hydrating an intel-built ref onto an amd instance would be wrong, so require
+    # the pinned instance's own vendor to match the vendor the scalar ref actually
+    # belongs to, mirroring the discipline hydrate_for_anchor/3 already applies via
+    # snapshot_refs_by_vendor. A blank/unknown vendor (no capacity fact yet) fails
+    # closed to "do not hydrate": it falls through to the ordinary build/no-op
+    # branches, which are safe.
+    pinned_vendor = Embervm.NodeCapacity.vendor_for(state.capacity_table, node_name(node_id))
+
+    pinned_vendor != "" and pinned_vendor == w.scalar_vendor and
+      is_binary(w.snapshot_ref) and w.built_signature == signature(w) and
       node_reports_base_absent?(state, node_id, w.name) and
       not already_targeting?(state, node_id, w.name, signature(w)) and
       not MapSet.member?(state.hydrating, w.name)
@@ -1362,6 +1386,87 @@ defmodule Embervm.BaseBuilder do
       nil -> true
       built -> Map.get(built, :signature) != signature(w)
     end
+  end
+
+  # Every fleet vendor this workload still needs a build for, sorted for a
+  # deterministic enqueue order. Deliberately covers BOTH classes
+  # `base_vendor_coverage_condition/2` reports separately:
+  #
+  #   * missing: no vendor_built record and no observed ref at all;
+  #   * unverified: an observed ref exists, but vendor_built carries nothing to
+  #     vouch for its signature.
+  #
+  # `vendor_built` is in-memory GenServer state (merge_desc/3 seeds it `%{}`)
+  # with no CRD-status rehydration, so every control-plane restart wipes
+  # attribution: verified live on 2026-08-16 after the 0.19.1 roll, 10 of 11
+  # prod workloads showed `unverified: amd`. Skipping unverified here would
+  # leave BaseVendorCoverage False forever after a restart and repair nothing,
+  # which defeats the point of enqueueing at all.
+  #
+  # A redundant enqueue is cheap, not a bake: noded's server.go returns
+  # AlreadyBuilt: true off the existing snapshotRef before either beginBuild or
+  # driveBuild run. And it terminates: start_worker/3 stamps cpu_vendor from the
+  # building node's capacity fact, apply_result/4 writes vendor_built[vendor]
+  # even for an AlreadyBuilt {:ok, %BuildBaseResponse{}}, and the next reconcile
+  # sees the record and stops enqueuing. The one bounded edge: if the capacity
+  # fact vanishes between enqueue and start_worker, vendor is "" and
+  # apply_result/4 writes no record, so the vendor is re-enqueued on the next
+  # reconcile; already_targeting?/4 keeps that from piling up and it self-clears
+  # once the node reports again.
+  defp vendors_needing_build(state, w) do
+    state |> fleet_vendors(w) |> Enum.filter(&vendor_needs_build?(w, &1)) |> Enum.sort()
+  end
+
+  # The best build-eligible INSTANCE of `vendor`, for a repair enqueue.
+  #
+  # NOT node_of_vendor/3, which is the RETENTION primitive: it scans
+  # representative_facts_by_node with no eligibility filter and without
+  # consulting state.node_ids, because addressing a vendor's store prefix does
+  # not require an instance that could host a build. Enqueueing does. Two things
+  # would break if that primitive were reused here: enqueue/3 does
+  # update_in(state.nodes[instance_id].queue, ...), which RAISES for an instance
+  # outside the placement set and would take the GenServer down; and an instance
+  # that fails build_eligible?/2 for this workload's mem_mib cannot run the build
+  # it is handed, so the build fails and the backoff retry re-enqueues it
+  # forever.
+  #
+  # Deriving from eligible_build_instances/2 is also what keeps this in step
+  # with fleet_vendors/2, which counts vendors from that SAME source: a vendor
+  # that vendors_needing_build/2 returns therefore always resolves here. Ranking
+  # mirrors placement/3 and build_instance_on_node/3 so a repair build never
+  # targets an instance placement itself would reject.
+  defp build_instance_of_vendor(state, w, vendor) do
+    state
+    |> eligible_build_instances(Map.get(w, :mem_mib) || 0)
+    |> Enum.filter(fn i -> Map.get(i, :cpu_vendor) == vendor end)
+    |> case do
+      [] -> nil
+      instances -> instances |> Enum.max_by(&build_rank/1) |> Map.get(:instance_id)
+    end
+  end
+
+  # Enqueue one repair build per vendor that lacks a current-signature base.
+  # Shared by reconcile_desc/2 and retry_workload/2 so the two scalar-guard
+  # branches cannot drift. Never writes status: the workload is already servable
+  # on the vendor that has a base (see the call sites).
+  defp enqueue_vendor_repairs(state, w, name) do
+    state
+    |> vendors_needing_build(w)
+    |> Enum.reduce(state, fn vendor, acc ->
+      case build_instance_of_vendor(acc, w, vendor) do
+        nil ->
+          acc
+
+        instance_id ->
+          if already_targeting?(acc, instance_id, name, signature(w)) do
+            acc
+          else
+            acc
+            |> enqueue(instance_id, name)
+            |> maybe_start_build(instance_id)
+          end
+      end
+    end)
   end
 
   # Look up the capacity fact whose derived instance_id matches (the registry stamps
@@ -2861,8 +2966,13 @@ defmodule Embervm.BaseBuilder do
 
         cond do
           w.built_signature == signature(w) and w.snapshot_ref != nil ->
-            # The desired base got built by some other path meanwhile; nothing to do.
-            state
+            # The desired SCALAR base got built by some other path meanwhile.
+            # That is not the same as full fleet coverage: repair-enqueue any
+            # vendor still missing, stale, or unverified, mirroring
+            # reconcile_desc's scalar-guard branch (see vendors_needing_build/2
+            # for why unverified counts). No write_base_status(:building) here
+            # either, for the same reason: the workload already serves.
+            enqueue_vendor_repairs(state, w, name)
 
           already_targeting?(state, w.node_id, name, signature(w)) ->
             # A build for the current signature is already queued or in flight
