@@ -33,6 +33,13 @@
   } from "./workspace-recovery.js";
   import PaneHeader from "./PaneHeader.svelte";
   import SessionWalkthrough from "./SessionWalkthrough.svelte";
+  import WalkthroughNarrative from "./WalkthroughNarrative.svelte";
+  import {
+    defaultSessionView,
+    SESSION_VIEW_CONVERSATION,
+    SESSION_VIEW_WALKTHROUGH,
+    walkthroughTurns,
+  } from "./session-view.js";
   import { periodForHour } from "$lib/private/period.js";
 
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
@@ -89,6 +96,8 @@
   let runDetail = $state(null);
   let runRequestSequence = 0;
   let detail = $state(null);
+  let sessionView = $state(SESSION_VIEW_CONVERSATION);
+  let sessionViewInitializedFor = $state(null);
   let searchQuery = $state("");
   let searchResults = $state(null);
   let searchLoading = $state(false);
@@ -145,6 +154,7 @@
   let requestSequence = 0;
   let renderedPending = $state({});
   let vms = $state({});
+  let vmSnapshotReceived = $state(false);
   let vmStreamStatus = $state({
     mode: "connecting",
     lastUpdateAt: null,
@@ -167,6 +177,7 @@
   const composerModel = $derived(
     composerModelOverride ?? selectedSession?.model ?? "",
   );
+  const eligibleWalkthroughTurns = $derived(walkthroughTurns(detail?.turns));
   const hasRuns = $derived(runs.length > 0);
   const runNeedsAttention = $derived(runs.filter((run) => run.needs).length);
   const runSpend = $derived(
@@ -672,6 +683,7 @@
       });
       // Apply every backend map regardless of indicator mode; see router.py:246-254.
       vms = body?.vms ?? {};
+      vmSnapshotReceived = true;
     } catch (error) {
       // VM state is advisory; keep the last known map on transient failures.
       if (!vmFallbackArmed) return;
@@ -971,6 +983,11 @@
     const wasSessionId = previousSessionId;
     previousSessionId = sessionId;
 
+    if (String(sessionId) !== String(wasSessionId)) {
+      sessionView = SESSION_VIEW_CONVERSATION;
+      sessionViewInitializedFor = null;
+    }
+
     requestSequence += 1;
     runRequestSequence += 1;
     detail = null;
@@ -1004,6 +1021,21 @@
           ?.focus({ preventScroll: true }),
       );
     }
+  });
+
+  $effect(() => {
+    const sessionId = selectedId;
+    const turns = detail?.turns;
+    if (
+      sessionId == null ||
+      turns == null ||
+      !vmSnapshotReceived ||
+      String(sessionViewInitializedFor) === String(sessionId)
+    ) {
+      return;
+    }
+    sessionView = defaultSessionView(vmState(selectedSession, vms), turns);
+    sessionViewInitializedFor = sessionId;
   });
 
   $effect(() => {
@@ -1130,6 +1162,7 @@
         });
         // Apply every backend map regardless of indicator mode; see router.py:246-254.
         vms = body?.vms ?? {};
+        vmSnapshotReceived = true;
       } catch (error) {
         // Retain the last snapshot and expose that the advisory frame failed.
         updateVmStreamStatus({
@@ -1312,15 +1345,14 @@
     {#if fixture?.walkthrough}
       <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
            component gets its payload inline and never fetches. -->
-      <div class="turns">
-        <div class="turns-inner">
-          <article class="turn">
-            <SessionWalkthrough
-              turnSeq={fixture.walkthrough.turnSeq}
-              model={fixture.walkthrough.model}
-              fixture={fixture.walkthrough}
-            />
-          </article>
+      <div class="walkthrough-page">
+        <div class="walkthrough-inner">
+          <h2>{P.labels.walkSummary}</h2>
+          <WalkthroughNarrative
+            turnSeq={fixture.walkthrough.turnSeq}
+            model={fixture.walkthrough.model}
+            fixture={fixture.walkthrough}
+          />
         </div>
       </div>
     {:else if fixture && !fixture.home}
@@ -1346,6 +1378,26 @@
                 : "no live microVM; the next prompt boots fresh"}
               >vm {vmState(selectedSession, vms)}</span
             >
+            <span
+              class="session-view-toggle"
+              role="group"
+              aria-label={P.labels.sessionViewLabel}
+            >
+              <button
+                type="button"
+                class:on={sessionView === SESSION_VIEW_CONVERSATION}
+                aria-pressed={sessionView === SESSION_VIEW_CONVERSATION}
+                onclick={() => (sessionView = SESSION_VIEW_CONVERSATION)}
+                >{P.labels.conversationView}</button
+              >
+              <button
+                type="button"
+                class:on={sessionView === SESSION_VIEW_WALKTHROUGH}
+                aria-pressed={sessionView === SESSION_VIEW_WALKTHROUGH}
+                onclick={() => (sessionView = SESSION_VIEW_WALKTHROUGH)}
+                >{P.labels.walkthroughView}</button
+              >
+            </span>
             <span
               class={`vm-stream-state ${vmStreamStatus.mode}`}
               title={vmStreamStatus.mode === "connecting"
@@ -1419,42 +1471,138 @@
             "luna"} · {shortId(selectedSession)}
         </div>
       </header>
-      <div class="turns" bind:this={turnsEl}>
-        <div class="turns-inner">
-          {#each detail?.turns ?? [] as turn, turnIndex (turn.seq)}
-            <!-- {@const} has to be an immediate child of the block, not of the
+      {#if sessionView === SESSION_VIEW_CONVERSATION}
+        <div class="turns" bind:this={turnsEl}>
+          <div class="turns-inner">
+            {#each detail?.turns ?? [] as turn (turn.seq)}
+              <!-- {@const} has to be an immediate child of the block, not of the
                  element inside it, so this sits above <article> rather than
                  next to the markup that reads it. -->
-            {@const hasIntent =
-              turn.prompt_intent !== null && turn.prompt_intent !== undefined}
-            <article class="turn">
-              <div class="prompt">
-                <span class="role">you</span>
-                {#if hasIntent}
-                  <div class="prompt-text intent-prompt">
-                    <span class="intent-label">{P.labels.promptIntent}</span>
-                    <div>{turn.prompt_intent}</div>
-                  </div>
-                  {#if turnProtocol(turn)}
-                    <details class="prompt-protocol">
-                      <summary>{P.labels.viewProtocol}</summary>
-                      <pre>{turnProtocol(turn)}</pre>
-                    </details>
+              {@const hasIntent =
+                turn.prompt_intent !== null && turn.prompt_intent !== undefined}
+              <article class="turn">
+                <div class="prompt">
+                  <span class="role">you</span>
+                  {#if hasIntent}
+                    <div class="prompt-text intent-prompt">
+                      <span class="intent-label">{P.labels.promptIntent}</span>
+                      <div>{turn.prompt_intent}</div>
+                    </div>
+                    {#if turnProtocol(turn)}
+                      <details class="prompt-protocol">
+                        <summary>{P.labels.viewProtocol}</summary>
+                        <pre>{turnProtocol(turn)}</pre>
+                      </details>
+                    {/if}
+                  {:else}
+                    <div class="prompt-text">{turn.prompt}</div>
                   {/if}
-                {:else}
-                  <div class="prompt-text">{turn.prompt}</div>
+                </div>
+                {#if turn.usage?.activities?.length}
+                  <details class="steps">
+                    <summary
+                      >{turn.usage.activities.length}
+                      {turn.usage.activities.length === 1
+                        ? "step"
+                        : "steps"}</summary
+                    >
+                    <ol class="step-list">
+                      {#each turn.usage.activities as activity}
+                        <li>
+                          <span class="step-verb"
+                            >{activityParts(activity).verb}</span
+                          >
+                          <span class="step-detail"
+                            >{activityParts(activity).detail}</span
+                          >
+                        </li>
+                      {/each}
+                    </ol>
+                  </details>
                 {/if}
-              </div>
-              {#if turn.usage?.activities?.length}
-                <details class="steps">
-                  <summary
-                    >{turn.usage.activities.length}
-                    {turn.usage.activities.length === 1
-                      ? "step"
-                      : "steps"}</summary
-                  >
-                  <ol class="step-list">
-                    {#each turn.usage.activities as activity}
+                {#if turnFailed(turn)}
+                  <pre class="turn-error">{resultWithoutTrailer(turn) ||
+                      "The turn failed without output."}</pre>
+                {:else if turn.result_text}
+                  <div class="result-md">
+                    {@html renderAgentMarkdown(resultWithoutTrailer(turn))}
+                  </div>
+                {/if}
+                {#if selectedSession.repo}
+                  <SessionWalkthrough
+                    sessionId={selectedSession.id}
+                    turnSeq={turn.seq}
+                    model={turn.model || selectedSession.model || "luna"}
+                  />
+                {/if}
+                <div class="turn-meta mono">
+                  <span>{turn.model || selectedSession.model || "luna"}</span>
+                  <span>{relativeTime(turn.created_at)}</span>
+                  {#if cost(turn.cost_usd)}<span>{cost(turn.cost_usd)}</span
+                    >{/if}
+                  {#if turn.stop_reason && turn.stop_reason !== "end_turn"}
+                    <span>{turn.stop_reason}</span>
+                  {/if}
+                  {#if turnFailed(turn)}<span class="badge-failed"
+                      >{P.labels.turnFailed}</span
+                    >{/if}
+                </div>
+              </article>
+              {@const degradedCause = workspaceRecoveryMessage(turn)}
+              {#if degradedCause}
+                <div
+                  class="turn-degraded"
+                  title={P.workspaceRecoveryCauses[degradedCause]}
+                >
+                  {P.labels.workspaceRecovery}
+                </div>
+              {/if}
+            {/each}
+
+            {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
+              {@const partial = renderedPending[entry.seq]}
+              {@const state = liveStateLabel(entry, index)}
+              <article class="turn live">
+                <div class="prompt">
+                  <span class="role">you</span>
+                  <div class="prompt-text">{entry.prompt}</div>
+                </div>
+                <div class={`live-line ${state === "working" ? "" : "quiet"}`}>
+                  <span class="live-dot" aria-hidden="true"></span>
+                  {#if state === "working"}
+                    {#if partial?.partial_activities?.length}
+                      <span class="live-latest"
+                        >{activityLine(
+                          partial.partial_activities[
+                            partial.partial_activities.length - 1
+                          ],
+                        )}</span
+                      >
+                    {:else if partial?.partial_text}
+                      <span class="live-latest">{P.labels.working}</span>
+                    {:else if vmRunning(selectedSession, vms)}
+                      <!-- Claimed, VM confirmed running, no output yet: the
+                         CLI is spinning up / the model has the prompt. -->
+                      <span class="live-latest">{P.labels.startingAgent}</span>
+                    {:else}
+                      <!-- Claimed but the control plane does not report the
+                         guest running yet: park rejoin or cold boot. -->
+                      <span class="live-latest">{P.labels.wakingVm}</span>
+                    {/if}
+                  {:else if state === "starting"}
+                    <span class="live-latest">{P.labels.startingUp}</span>
+                  {:else}
+                    <span class="live-latest">{P.labels.waitingForTurn}</span>
+                  {/if}
+                </div>
+                {#if partial?.partial_activities?.length > 1}
+                  <ol class="step-list live-steps" aria-label="Agent activity">
+                    {#if partial.partial_activities.length > 6}
+                      <li class="step-earlier">
+                        … {partial.partial_activities.length - 6} earlier steps
+                      </li>
+                    {/if}
+                    {#each partial.partial_activities.slice(-6) as activity}
                       <li>
                         <span class="step-verb"
                           >{activityParts(activity).verb}</span
@@ -1465,120 +1613,42 @@
                       </li>
                     {/each}
                   </ol>
-                </details>
-              {/if}
-              {#if turnFailed(turn)}
-                <pre class="turn-error">{resultWithoutTrailer(turn) ||
-                    "The turn failed without output."}</pre>
-              {:else if turn.result_text}
-                <div class="result-md">
-                  {@html renderAgentMarkdown(resultWithoutTrailer(turn))}
-                </div>
-              {/if}
-              {#if selectedSession.repo}
-                <SessionWalkthrough
-                  sessionId={selectedSession.id}
-                  turnSeq={turn.seq}
-                  model={turn.model || selectedSession.model || "luna"}
-                  prominent={vmState(selectedSession, vms) !== "awake" &&
-                    turnIndex === (detail?.turns ?? []).length - 1}
-                />
-              {/if}
-              <div class="turn-meta mono">
-                <span>{turn.model || selectedSession.model || "luna"}</span>
-                <span>{relativeTime(turn.created_at)}</span>
-                {#if cost(turn.cost_usd)}<span>{cost(turn.cost_usd)}</span>{/if}
-                {#if turn.stop_reason && turn.stop_reason !== "end_turn"}
-                  <span>{turn.stop_reason}</span>
                 {/if}
-                {#if turnFailed(turn)}<span class="badge-failed"
-                    >{P.labels.turnFailed}</span
-                  >{/if}
-              </div>
-            </article>
-            {@const degradedCause = workspaceRecoveryMessage(turn)}
-            {#if degradedCause}
-              <div
-                class="turn-degraded"
-                title={P.workspaceRecoveryCauses[degradedCause]}
-              >
-                {P.labels.workspaceRecovery}
+                {#if partial?.partial_text}
+                  <div class="result-md">
+                    {@html renderAgentMarkdown(partial.partial_text)}
+                  </div>
+                {/if}
+              </article>
+            {/each}
+
+            {#if !(detail?.turns ?? []).length && !(detail?.pending_queue ?? []).length}
+              <div class="empty transcript-empty">
+                {detail
+                  ? "No turns yet. Send a prompt below."
+                  : P.labels.loadingSession}
               </div>
             {/if}
-          {/each}
-
-          {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
-            {@const partial = renderedPending[entry.seq]}
-            {@const state = liveStateLabel(entry, index)}
-            <article class="turn live">
-              <div class="prompt">
-                <span class="role">you</span>
-                <div class="prompt-text">{entry.prompt}</div>
-              </div>
-              <div class={`live-line ${state === "working" ? "" : "quiet"}`}>
-                <span class="live-dot" aria-hidden="true"></span>
-                {#if state === "working"}
-                  {#if partial?.partial_activities?.length}
-                    <span class="live-latest"
-                      >{activityLine(
-                        partial.partial_activities[
-                          partial.partial_activities.length - 1
-                        ],
-                      )}</span
-                    >
-                  {:else if partial?.partial_text}
-                    <span class="live-latest">{P.labels.working}</span>
-                  {:else if vmRunning(selectedSession, vms)}
-                    <!-- Claimed, VM confirmed running, no output yet: the
-                         CLI is spinning up / the model has the prompt. -->
-                    <span class="live-latest">{P.labels.startingAgent}</span>
-                  {:else}
-                    <!-- Claimed but the control plane does not report the
-                         guest running yet: park rejoin or cold boot. -->
-                    <span class="live-latest">{P.labels.wakingVm}</span>
-                  {/if}
-                {:else if state === "starting"}
-                  <span class="live-latest">{P.labels.startingUp}</span>
-                {:else}
-                  <span class="live-latest">{P.labels.waitingForTurn}</span>
-                {/if}
-              </div>
-              {#if partial?.partial_activities?.length > 1}
-                <ol class="step-list live-steps" aria-label="Agent activity">
-                  {#if partial.partial_activities.length > 6}
-                    <li class="step-earlier">
-                      … {partial.partial_activities.length - 6} earlier steps
-                    </li>
-                  {/if}
-                  {#each partial.partial_activities.slice(-6) as activity}
-                    <li>
-                      <span class="step-verb"
-                        >{activityParts(activity).verb}</span
-                      >
-                      <span class="step-detail"
-                        >{activityParts(activity).detail}</span
-                      >
-                    </li>
-                  {/each}
-                </ol>
-              {/if}
-              {#if partial?.partial_text}
-                <div class="result-md">
-                  {@html renderAgentMarkdown(partial.partial_text)}
-                </div>
-              {/if}
-            </article>
-          {/each}
-
-          {#if !(detail?.turns ?? []).length && !(detail?.pending_queue ?? []).length}
-            <div class="empty transcript-empty">
-              {detail
-                ? "No turns yet. Send a prompt below."
-                : P.labels.loadingSession}
-            </div>
-          {/if}
+          </div>
         </div>
-      </div>
+      {:else}
+        <div class="walkthrough-page">
+          <div class="walkthrough-inner">
+            <h2>{P.labels.walkSummary}</h2>
+            {#each eligibleWalkthroughTurns as turn (turn.seq)}
+              <WalkthroughNarrative
+                sessionId={selectedSession.id}
+                turnSeq={turn.seq}
+                model={turn.model || selectedSession.model || "luna"}
+              />
+            {:else}
+              <div class="empty walkthrough-empty">
+                {P.labels.walkthroughUnavailableForSession}
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
 
       <form
         class="composer"
@@ -2260,6 +2330,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    overflow-x: hidden;
     background: var(--panel-bg);
   }
   .transcript-head {
@@ -2315,6 +2386,32 @@
     color: var(--info);
     background: var(--info-soft);
   }
+  .session-view-toggle {
+    display: inline-flex;
+    overflow: hidden;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    background: var(--panel-bg);
+  }
+  .session-view-toggle button {
+    min-height: 24px;
+    padding: 3px 8px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-soft);
+    font: var(--size-meta) var(--font-mono);
+  }
+  .session-view-toggle button + button {
+    border-left: 1px solid var(--line-strong);
+  }
+  .session-view-toggle button:hover {
+    background: var(--hover);
+  }
+  .session-view-toggle button.on {
+    background: var(--ink);
+    color: var(--ink-text);
+  }
   .vm-stream-state {
     display: inline-flex;
     align-items: center;
@@ -2366,6 +2463,29 @@
   .turns-inner {
     max-width: 860px;
     margin: 0 auto;
+  }
+  .walkthrough-page {
+    flex: 1;
+    min-width: 0;
+    padding: 20px 28px;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .walkthrough-inner {
+    width: 100%;
+    max-width: 1040px;
+    min-width: 0;
+    margin: 0 auto;
+  }
+  .walkthrough-inner > h2 {
+    margin: 0;
+    color: var(--text);
+    font: 700 var(--size-body) var(--font-mono);
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+  }
+  .walkthrough-empty {
+    margin-top: 24px;
   }
   .turn {
     padding: 16px 0 12px;
@@ -2875,9 +2995,13 @@
     }
     .transcript-head,
     .turns,
+    .walkthrough-page,
     .composer {
       padding-left: 16px;
       padding-right: 16px;
+    }
+    .session-view-toggle button {
+      min-height: 32px;
     }
   }
   .sr-only {

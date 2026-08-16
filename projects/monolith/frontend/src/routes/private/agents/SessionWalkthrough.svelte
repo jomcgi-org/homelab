@@ -18,7 +18,6 @@
     sessionId = null,
     turnSeq = null,
     model = "",
-    prominent = false,
     // Fixture preview (?fixture=walk-*): payload/patches supplied inline,
     // so the preview never fetches.
     fixture = null,
@@ -27,7 +26,7 @@
   let payload = $state(untrack(() => fixture?.payload ?? null));
   let loading = $state(false);
   let failed = $state(false);
-  let opened = $state(untrack(() => Boolean(fixture || prominent)));
+  let opened = $state(untrack(() => Boolean(fixture)));
   let selected = $state(0);
   // Mobile pane swap: the points list and the detail pane are one column
   // under the console's 760px breakpoint, and selecting a point drills in.
@@ -189,12 +188,7 @@
   );
 </script>
 
-<details
-  class="walk"
-  class:prominent
-  open={Boolean(fixture || prominent)}
-  ontoggle={onToggle}
->
+<details class="walk" open={Boolean(fixture)} ontoggle={onToggle}>
   <summary class="walk-summary">
     <span>{P.labels.walkSummary}</span>
     {#if walk}
@@ -214,22 +208,31 @@
   {:else if walk}
     {#if walk.summary?.status === "available"}
       <div class="walk-fact">
-        {P.labels.walkSummaryDiffLead}{P.punct.colon}
         {walk.summary.files}
         {walk.summary.files === 1
           ? P.labels.walkFileChanged
-          : P.labels.walkFilesChanged}, +{walk.summary.insertions}/&minus;{walk
-          .summary.deletions}{P.punct.dot}
-        {P.labels.walkSummaryAccountedLead}{P.punct.colon}
+          : P.labels.walkFilesChanged}
+        {P.labels.walkSummaryWith}
+        {walk.summary.insertions}
+        {walk.summary.insertions === 1
+          ? P.labels.walkInsertion
+          : P.labels.walkInsertions}
+        {P.labels.walkSummaryAnd}
+        {walk.summary.deletions}
+        {walk.summary.deletions === 1
+          ? P.labels.walkDeletion
+          : P.labels.walkDeletions}{P.punct.semicolon}
+        {P.labels.walkAgentAccountedSentence}
         {walk.summary.accounted}
         {walk.summary.accounted === 1
           ? P.labels.walkFileWord
-          : P.labels.walkFilesWord}{P.punct.dot}
-        {P.labels.walkSummaryUnexplainedLead}{P.punct.colon}
+          : P.labels.walkFilesWord}{P.punct.comma}
+        {P.labels.walkSummaryLeaving}
         {walk.summary.unexplained}
         {walk.summary.unexplained === 1
           ? P.labels.walkFileWord
-          : P.labels.walkFilesWord}{P.punct.dot}
+          : P.labels.walkFilesWord}
+        {P.labels.walkSummaryUnexplainedEnd}{P.punct.period}
       </div>
     {:else if walk.summary?.status === "diff_unavailable"}
       <div class="walk-fact">{P.labels.walkSummaryDiffUnavailable}</div>
@@ -257,9 +260,6 @@
         {/if}
         <div class="wbody" class:drilled>
           <div class="points">
-            <div class="pbband">
-              {headerCountLine(walk)}
-            </div>
             {#each items as item, index (`${item.kind}:${item.path}`)}
               <button
                 class="point"
@@ -414,36 +414,6 @@
   .walk-count {
     color: var(--text-soft);
   }
-  /* A finished session promotes only its final walkthrough. The heavy ink
-     frame gives the explanation more weight than the turn separators while
-     keeping it in the transcript column and in the normal scroll flow. */
-  .walk.prominent {
-    margin-top: 16px;
-    padding-top: 0;
-    border: 4px solid var(--ink);
-    border-radius: var(--radius-lg);
-    background: var(--panel-bg);
-  }
-  .walk.prominent .walk-summary {
-    box-sizing: border-box;
-    width: 100%;
-    padding: 12px 16px;
-    color: var(--text);
-    font-size: var(--size-body);
-    font-weight: 700;
-  }
-  .walk.prominent[open] .walk-summary {
-    border-bottom: 1px solid var(--line);
-  }
-  .walk.prominent .walk-count {
-    margin-left: auto;
-  }
-  .walk.prominent > .walk-fact {
-    margin-inline: 16px;
-  }
-  .walk.prominent > .walk-frame {
-    margin: 12px;
-  }
   .walk-fact {
     margin-top: 8px;
     color: var(--muted);
@@ -493,15 +463,6 @@
     background: var(--page-bg);
     max-height: 420px;
     overflow: auto;
-  }
-  .pbband {
-    position: sticky;
-    top: 0;
-    padding: 8px 12px 6px;
-    background: var(--page-bg);
-    border-bottom: 1px solid var(--line);
-    font: var(--size-meta) var(--font-mono);
-    color: var(--muted);
   }
   .point {
     display: grid;

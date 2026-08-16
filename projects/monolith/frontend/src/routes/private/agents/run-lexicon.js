@@ -168,6 +168,11 @@ export const RUN_LEXICON = {
     sessionsRegion: "Agent sessions",
     transcriptRegion: "Agent transcript",
     backToSessions: "Back to agent sessions",
+    sessionViewLabel: "Session view",
+    conversationView: "Conversation",
+    walkthroughView: "Walkthrough",
+    walkthroughUnavailableForSession:
+      "No walkthrough is available for this session yet.",
     // Session walkthrough (ADR 056). Server-composed sentences (the payload
     // `message`, rationale quotes, truncation labels) are data, not lexicon;
     // these are the interface's own words only.
@@ -185,12 +190,24 @@ export const RUN_LEXICON = {
     walkSummaryDiffLead: "Git diff",
     walkSummaryAccountedLead: "Agent accounted for",
     walkSummaryUnexplainedLead: "Unexplained",
+    walkSummaryWith: "with",
+    walkSummaryAnd: "and",
+    walkInsertion: "insertion",
+    walkInsertions: "insertions",
+    walkDeletion: "deletion",
+    walkDeletions: "deletions",
+    walkAgentAccountedSentence: "the agent accounted for",
+    walkSummaryLeaving: "leaving",
+    walkSummaryUnexplainedEnd: "unexplained",
     walkSummaryDiffUnavailable:
       "The diff is unavailable for this turn, so this is the agent's account only.",
     walkProvenanceLead: "Agent-authored.",
     walkProvenanceBody:
       "These points are the implementer's account of its own change. The diff beside them is from git.",
+    walkNarrativeProvenanceBody:
+      "This prose is the implementer's account of its own change. The diff below it is from git.",
     walkAccountLabel: "agent's account",
+    walkNoAccount: "No agent account was recorded for this file.",
     walkUnexplainedMark: "!",
     walkContradictedMark: "×",
     walkUnexplainedTitle: "Unexplained change.",
@@ -200,6 +217,9 @@ export const RUN_LEXICON = {
     walkContradictedBody:
       "The agent named this file; the compare does not contain it.",
     walkMechanicalStep: "produced by tooling this turn",
+    walkMechanicalHeading: "tool-produced changes",
+    walkUnexplainedFilesHeading: "unexplained files",
+    walkContradictedFilesHeading: "contradicted paths",
     walkTouchedLabel: "files touched by tools this turn",
     walkDiffLoading: "loading diff…",
     walkDiffUnavailable: "diff unavailable",
@@ -208,7 +228,14 @@ export const RUN_LEXICON = {
     walkRetry: "retry",
     walkLoading: "loading…",
   },
-  punct: { dot: "·", arrow: "→", colon: ":" },
+  punct: {
+    dot: "·",
+    arrow: "→",
+    colon: ":",
+    comma: ",",
+    semicolon: ";",
+    period: ".",
+  },
   // Operator-register detail for a degraded workspace restore, surfaced as the
   // banner's title. Keyed by the message key workspace-recovery.js returns.
   // This console is repo-facing, so naming the backend cause is the right
