@@ -7,11 +7,16 @@ from core.db import get_session
 from moving.models import Viewer
 
 
-async def get_viewer(
+def get_viewer(
     session: Session = Depends(get_session),
     x_auth_email: str | None = Header(None),
 ) -> str:
     """Resolve viewer identity from the X-Auth-Email header.
+
+    Deliberately sync, like every path operation in router.py. FastAPI runs a
+    ``def`` dependency in the threadpool and an ``async def`` one on the event
+    loop, so declaring this async would put the one blocking DB call that runs
+    on EVERY request to this domain directly on the loop.
 
     Gateway-wide ClientTrafficPolicy strips any inbound X-Auth-Email before
     the auth filter, so the only value that can arrive is the one Envoy
