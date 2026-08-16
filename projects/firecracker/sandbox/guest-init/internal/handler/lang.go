@@ -11,6 +11,35 @@ import (
 
 const defaultLanguageFile = "/etc/sandbox-language"
 
+// SearchPath is where every sandbox image installs its toolchain. It is both
+// the PATH handed to a snippet and the PATH guest-init must adopt for ITSELF.
+//
+// exec.Command resolves a bare argv[0] with LookPath against the CALLING
+// process's PATH, at construction time, and assigning cmd.Env afterwards does
+// not affect that lookup. Firecracker gives PID 1 no environment at all, so
+// without AdoptSearchPath the PATH below reaches only a child that is never
+// started, and every language fails with:
+//
+//	exec: "python3": executable file not found in $PATH
+const SearchPath = "/usr/bin:/bin:/usr/local/bin"
+
+// EnsureSearchPath puts SearchPath into guest-init's own environment when it
+// inherited none, so exec.Command can resolve a bare argv[0]. Call it before
+// any exec, including the warm-up, which fails the same way and is
+// deliberately non-fatal.
+//
+// Conditional on purpose. An inherited PATH is deliberate and belongs to
+// whoever set it; the fault this repairs is an EMPTY one, which is all a
+// Firecracker PID 1 ever has. It also keeps this package's exec-dependent
+// tests on their runner's real PATH rather than an image layout that only
+// exists inside a guest.
+func EnsureSearchPath() error {
+	if os.Getenv("PATH") != "" {
+		return nil
+	}
+	return os.Setenv("PATH", SearchPath)
+}
+
 // languageFile is indirect so SelectSpec can be tested without writing to /etc.
 var languageFile = defaultLanguageFile
 
@@ -152,7 +181,7 @@ func SelectSpec() (Spec, error) {
 // request commands point them at the collected, caps-enforced workdir.
 func (s Spec) Environment(workdir string) []string {
 	env := []string{
-		"PATH=/usr/bin:/bin:/usr/local/bin",
+		"PATH=" + SearchPath,
 		"HOME=" + workdir,
 		"TMPDIR=" + workdir,
 	}

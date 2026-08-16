@@ -1,12 +1,54 @@
 package handler
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+// TestRunCommandResolvesBareArgvWithNoInheritedPath drives the real exec path
+// with the environment a Firecracker guest actually has: none.
+//
+// This crosses the seam the Environment() assertions stop short of. A correct
+// PATH in the returned slice proves nothing on its own, because exec.Command
+// resolves argv[0] against the CALLING process's PATH and never looks at
+// cmd.Env. That gap failed all six languages in production with
+// `exec: "python3": executable file not found in $PATH` while every
+// env-slice assertion in this file stayed green.
+func TestRunCommandResolvesBareArgvWithNoInheritedPath(t *testing.T) {
+	t.Setenv("PATH", "")
+	if _, err := exec.LookPath("sh"); err == nil {
+		t.Fatal("precondition failed: a bare name resolved with an empty PATH")
+	}
+
+	stdout := &capBuffer{limit: 4096}
+	stderr := &capBuffer{limit: 4096}
+	err := runCommand(context.Background(), Spec{Name: "test"}, t.TempDir(),
+		[]string{"sh", "-c", "echo resolved"}, stdout, stderr)
+	if err != nil {
+		t.Fatalf("runCommand with a bare argv[0] and no inherited PATH: %v (stderr %q)", err, stderr.buf.String())
+	}
+	if got := strings.TrimSpace(stdout.buf.String()); got != "resolved" {
+		t.Errorf("stdout = %q, want %q", got, "resolved")
+	}
+}
+
+// TestEnsureSearchPathLeavesAnInheritedPathAlone pins the conditional. An
+// inherited PATH belongs to whoever set it, and clobbering it would point this
+// package's exec-dependent tests at an image layout that exists only in a guest.
+func TestEnsureSearchPathLeavesAnInheritedPathAlone(t *testing.T) {
+	t.Setenv("PATH", "/deliberate/path")
+	if err := EnsureSearchPath(); err != nil {
+		t.Fatalf("EnsureSearchPath: %v", err)
+	}
+	if got := os.Getenv("PATH"); got != "/deliberate/path" {
+		t.Errorf("inherited PATH was overwritten: got %q", got)
+	}
+}
 
 func TestSelectSpec(t *testing.T) {
 	originalPath := languageFile

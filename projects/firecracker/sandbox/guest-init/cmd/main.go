@@ -41,6 +41,15 @@ func run(logger *slog.Logger) error {
 	// across disposable microVMs restored from the one warm-base snapshot.
 	mountTmpfsTmp(logger)
 
+	// Before ANY exec, including the warm-up below. Firecracker hands PID 1 no
+	// environment, and exec.Command resolves argv[0] against this process's
+	// PATH rather than the one in cmd.Env, so without this every language
+	// reports "executable file not found in $PATH" and the warm-up fails
+	// silently because a failed warm-up is deliberately non-fatal.
+	if err := handler.EnsureSearchPath(); err != nil {
+		return fmt.Errorf("ensure sandbox search path: %w", err)
+	}
+
 	spec, err := handler.SelectSpec()
 	if err != nil {
 		return fmt.Errorf("select sandbox language: %w", err)
@@ -121,7 +130,10 @@ func warmup(logger *slog.Logger, spec handler.Spec) {
 	cmd.Dir = "/tmp"
 	cmd.Env = spec.Environment("/tmp")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		logger.Warn("language warm-up failed; guest still serves cold", "language", spec.Name, "err", err, "out", string(out))
+		// Error, not Warn: readiness still flips and the warm base still
+		// snapshots, so this log line is the ONLY signal that a guest cannot
+		// run its own toolchain. It was a Warn while all six languages failed.
+		logger.Error("language warm-up failed; guest still serves cold", "language", spec.Name, "err", err, "out", string(out))
 		return
 	}
 	logger.Info("language warm-up done", "language", spec.Name)
