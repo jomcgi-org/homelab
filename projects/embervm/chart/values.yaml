@@ -967,6 +967,11 @@ noded:
   # real concurrency; this only stops a runaway from exhausting the node.
   maxLiveVMs: 8
 
+  # Use Firecracker dirty-page diffs for repeated memory banks. The diff is
+  # merged into a new full after the guest resumes, so the object-store format
+  # remains unchanged. False restores the prior full-only behavior.
+  diffBanking: true
+
   # Serving tap pre-provisioning (ADR embervm/014 decision 4): the number of serving
   # taps EnsureNetwork pre-creates at brick boot, left down until AllocateTap draws
   # one, so instance boot skips netlink create/attach work. Zero (the default)

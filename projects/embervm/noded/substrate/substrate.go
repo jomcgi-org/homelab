@@ -33,6 +33,9 @@ type ClaimSpec struct {
 	// BaseSnapshotRef, when set, requests a restore from a warmed base snapshot
 	// for an instant ready start instead of a cold boot.
 	BaseSnapshotRef SnapshotRef
+	// TrackDirtyPages enables Firecracker dirty logging for a VM whose workload
+	// memory-banks. It is false for task and park-only session claims.
+	TrackDirtyPages bool
 	// Arch pins CPU architecture; Firecracker snapshots are non-portable and a
 	// mismatched restore fails closed.
 	Arch string

@@ -415,6 +415,7 @@ func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
 		Vendor:                cfg.CpuVendor,
 		Template:              cfg.CpuTemplate,
 		WarmRestoreWithVolume: cfg.WarmRestoreWithVolume,
+		DiffBanking:           cfg.DiffBanking,
 	}, &driver.ExecLauncher{
 		Bin:             cfg.BinPath,
 		OOMScoreAdj:     cfg.GuestOomScoreAdj,

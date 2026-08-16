@@ -527,6 +527,37 @@ func TestPrimeAssignAutoDestroy(t *testing.T) {
 	}
 }
 
+func TestPrimeTracksDirtyPagesOnlyForConfiguredBankingWorkload(t *testing.T) {
+	drv := &fakeDriver{}
+	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+	srv.cfg.DiffBanking = true
+	srv.cfg.DiffBankingWorkloads = []string{"sandbox-session"}
+	seedBase(srv, "session__banking01", "sandbox-session")
+	seedBase(srv, "task__plain01", "echo")
+
+	banking, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "session__banking01"})
+	if err != nil {
+		t.Fatalf("banking Prime: %v", err)
+	}
+	if !drv.claimSpec().TrackDirtyPages {
+		t.Fatal("banking Prime did not request dirty-page tracking")
+	}
+	if _, err := client.Destroy(context.Background(), &nodev1.DestroyRequest{VmId: banking.GetVmId()}); err != nil {
+		t.Fatalf("destroy banking VM: %v", err)
+	}
+
+	nonBanking, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "task__plain01"})
+	if err != nil {
+		t.Fatalf("non-banking Prime: %v", err)
+	}
+	if drv.claimSpec().TrackDirtyPages {
+		t.Fatal("non-banking Prime requested dirty-page tracking")
+	}
+	if _, err := client.Destroy(context.Background(), &nodev1.DestroyRequest{VmId: nonBanking.GetVmId()}); err != nil {
+		t.Fatalf("destroy non-banking VM: %v", err)
+	}
+}
+
 // TestPrimeCallsSetClock verifies that Prime syncs the guest clock after the
 // restored guest passes its readiness gate.
 func TestPrimeCallsSetClock(t *testing.T) {

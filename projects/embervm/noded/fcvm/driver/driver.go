@@ -18,8 +18,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -115,6 +117,12 @@ type Config struct {
 	// device attached. Keep this disabled until guest-init defers its volume
 	// mount, so the guest can handle the volume contents changing before resume.
 	WarmRestoreWithVolume bool
+	// DiffBanking enables dirty-page diff snapshots for session lineages restored
+	// from a prior bank. Every published session bundle remains a full snapshot.
+	DiffBanking bool
+	// SnapshotEditorPath is the Firecracker snapshot-editor binary used to merge
+	// session diffs. Empty defaults to the editor vendored beside Firecracker.
+	SnapshotEditorPath string
 }
 
 func (c Config) withDefaults() Config {
@@ -175,6 +183,10 @@ type Driver struct {
 	// keyed by the opaque token CheckpointStateful returns: a PAUSED-but-not-
 	// destroyed VM plus its temp snapshot, awaiting a commit or abort. Guarded by mu.
 	checkpoints map[string]*statefulCheckpoint
+	// mergeDiffMemory is an injectable seam for the snapshot-editor invocation.
+	// Production uses mergeMemoryDiff; tests replace it to exercise failure and
+	// atomic-publication paths without executing a Linux binary on macOS.
+	mergeDiffMemory func(context.Context, string, string, string) error
 }
 
 // statefulCheckpoint is one paused-awaiting-resolve stateful VM (ADR embervm/008):
@@ -198,6 +210,9 @@ type instance struct {
 	dir    string
 	sock   string
 	memMib int
+	// bankBaseMemPath is non-empty only for a session restored from a committed
+	// bank. It is the full memory image the next sequential diff rebases onto.
+	bankBaseMemPath string
 }
 
 var (
@@ -211,12 +226,18 @@ func New(cfg Config, launcher Launcher, newClient func(socketPath string) fcAPI)
 	if newClient == nil {
 		newClient = func(sock string) fcAPI { return fcclient.New(sock) }
 	}
+	if cfg.SnapshotEditorPath == "" {
+		cfg.SnapshotEditorPath = "/opt/fc/snapshot-editor"
+	}
 	d := &Driver{
 		cfg:         cfg.withDefaults(),
 		launcher:    launcher,
 		newClient:   newClient,
 		live:        make(map[string]*instance),
 		checkpoints: make(map[string]*statefulCheckpoint),
+	}
+	d.mergeDiffMemory = func(ctx context.Context, basePath, diffPath, outputPath string) error {
+		return mergeMemoryDiff(ctx, cfg.SnapshotEditorPath, basePath, diffPath, outputPath)
 	}
 	if cfg.BaseRootfsPath != "" {
 		if cfg.Provisioner == "devmapper" {
@@ -707,6 +728,44 @@ func (d *Driver) sessionMemfile(ref string) string {
 	return filepath.Join(d.sessionDir(ref), "memfile")
 }
 
+// mergeMemoryDiff copies a committed full to outputPath and asks Firecracker's
+// snapshot-editor to rebase the sequential diff onto that copy. The base is
+// never edited in place, so it remains restorable until the new full publishes.
+func mergeMemoryDiff(ctx context.Context, editorPath, basePath, diffPath, outputPath string) error {
+	if err := copyFile(basePath, outputPath); err != nil {
+		return fmt.Errorf("copy base memory: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, editorPath,
+		"edit-memory", "rebase",
+		"--memory-path", outputPath,
+		"--diff-path", diffPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = os.Remove(outputPath)
+		return fmt.Errorf("snapshot-editor rebase: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// mergeMemoryDiffAtomic publishes a merged full only after the merge succeeds.
+// A crash or editor failure can leave only the merge temp; an existing full at
+// finalPath is replaced by one atomic rename and is otherwise untouched.
+func (d *Driver) mergeMemoryDiffAtomic(ctx context.Context, basePath, diffPath, finalPath string) error {
+	mergeTmp := finalPath + ".merge.tmp"
+	_ = os.Remove(mergeTmp)
+	if err := d.mergeDiffMemory(ctx, basePath, diffPath, mergeTmp); err != nil {
+		_ = os.Remove(mergeTmp)
+		return err
+	}
+	sparse.BestEffort(mergeTmp, "session-diff-merge")
+	if err := os.Rename(mergeTmp, finalPath); err != nil {
+		_ = os.Remove(mergeTmp)
+		return fmt.Errorf("publish merged memory: %w", err)
+	}
+	return nil
+}
+
 // ServingDir is the parent directory holding all banked SERVING snapshot bundles,
 // under the serving/ prefix of the snapshot root (a sibling of bases/ and sessions/).
 // The daemon rescans exactly this dir on start to report its banked-serving
@@ -739,13 +798,28 @@ func (d *Driver) servingMetafile(ref string) string {
 // from the given snapfile + memfile (File backend, resume). Used by all restore
 // paths that do not need to rebind a snapshot drive.
 func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
-	return d.loadPatchAndResume(ctx, threadID, snapPath, memPath, sockName, "")
+	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", false, false)
 }
 
-// loadPatchAndResume restores a snapshot, optionally repoints its volume drive,
-// and resumes it. Firecracker requires the drive patch while the loaded VM is
-// still paused.
-func (d *Driver) loadPatchAndResume(ctx context.Context, threadID, snapPath, memPath, sockName, volumeDiskPath string) (substrate.Handle, error) {
+// loadTrackedInto enables dirty logging for a memory-banking workload restored
+// from its pristine base. It deliberately does not set a bank base, so the first
+// session bank remains a full.
+func (d *Driver) loadTrackedInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
+	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", true, false)
+}
+
+// loadBankingInto restores a committed session full and re-arms Firecracker's
+// dirty-page tracker. Dirty tracking does not survive snapshot load, so this must
+// be set on every relight whose next bank may be a diff.
+func (d *Driver) loadBankingInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
+	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", d.cfg.DiffBanking, d.cfg.DiffBanking)
+}
+
+// loadPatchAndResumeWithDiff restores a snapshot, optionally repoints its volume
+// drive, and resumes it. Firecracker requires the drive patch while the loaded VM
+// is still paused. enableDiffSnapshots re-arms dirty tracking; bankBase marks a
+// restored session full as the base for the next sequential diff.
+func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapPath, memPath, sockName, volumeDiskPath string, enableDiffSnapshots, bankBase bool) (substrate.Handle, error) {
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -764,9 +838,10 @@ func (d *Driver) loadPatchAndResume(ctx context.Context, threadID, snapPath, mem
 	client := d.newClient(sock)
 	resumeVM := volumeDiskPath == ""
 	if err := client.LoadSnapshot(ctx, fcclient.SnapshotLoad{
-		SnapshotPath: snapPath,
-		MemBackend:   &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
-		ResumeVM:     resumeVM,
+		SnapshotPath:        snapPath,
+		MemBackend:          &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
+		EnableDiffSnapshots: enableDiffSnapshots,
+		ResumeVM:            resumeVM,
 	}); err != nil {
 		return d.abort(proc, err)
 	}
@@ -782,7 +857,11 @@ func (d *Driver) loadPatchAndResume(ctx context.Context, threadID, snapPath, mem
 		}
 	}
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
-	d.track(&instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: d.cfg.MemMib})
+	inst := &instance{handle: h, proc: proc, client: client, dir: dir, sock: sock, memMib: d.cfg.MemMib}
+	if bankBase {
+		inst.bankBaseMemPath = memPath
+	}
+	d.track(inst)
 	return h, nil
 }
 
@@ -815,7 +894,10 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 			return substrate.Handle{}, fmt.Errorf("driver: base bundle missing for %q: %w", ref.ID, err)
 		}
 		if spec.VolumeDiskPath != "" {
-			return d.loadPatchAndResume(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock", spec.VolumeDiskPath)
+			return d.loadPatchAndResumeWithDiff(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock", spec.VolumeDiskPath, spec.TrackDirtyPages, false)
+		}
+		if spec.TrackDirtyPages {
+			return d.loadTrackedInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
 		}
 		return d.loadInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
 	}
@@ -827,12 +909,13 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 			}
 			return d.cfg.RootfsPath
 		}(),
-		vcpus:          d.cfg.VCPUs,
-		memMib:         d.cfg.MemMib,
-		nic:            spec.NIC,
-		volumeDiskPath: spec.VolumeDiskPath,
-		volumeMount:    spec.VolumeMount,
-		harnessInit:    spec.ColdBootHarnessInit,
+		vcpus:           d.cfg.VCPUs,
+		memMib:          d.cfg.MemMib,
+		trackDirtyPages: spec.TrackDirtyPages,
+		nic:             spec.NIC,
+		volumeDiskPath:  spec.VolumeDiskPath,
+		volumeMount:     spec.VolumeMount,
+		harnessInit:     spec.ColdBootHarnessInit,
 	})
 }
 
@@ -845,7 +928,10 @@ type coldBootSpec struct {
 	rootfsPath string
 	vcpus      int
 	memMib     int
-	nic        *substrate.NICSpec
+	// trackDirtyPages is enabled only for cold boots known to enter a
+	// memory-banking lineage. All other classes avoid KVM dirty-log overhead.
+	trackDirtyPages bool
+	nic             *substrate.NICSpec
 	// harnessInit, when non-empty, is the guest-init path emitted as init=<path> on
 	// the kernel command line for THIS cold boot, overriding the driver-global
 	// cfg.HarnessInit. The serving cold-boot (ClaimServing) resolves it per call from
@@ -927,7 +1013,11 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	// so they are not in this span).
 	_, bspan := tracer.Start(ctx, "firecracker_boot")
 	bootErr := func() error {
-		if err := client.PutMachineConfig(ctx, fcclient.MachineConfig{VCPUCount: cb.vcpus, MemSizeMib: cb.memMib}); err != nil {
+		if err := client.PutMachineConfig(ctx, fcclient.MachineConfig{
+			VCPUCount:       cb.vcpus,
+			MemSizeMib:      cb.memMib,
+			TrackDirtyPages: cb.trackDirtyPages,
+		}); err != nil {
 			return err
 		}
 		if err := client.PutBootSource(ctx, fcclient.BootSource{KernelImagePath: d.cfg.KernelImagePath, BootArgs: d.bootArgsFor(cb)}); err != nil {
@@ -1273,13 +1363,12 @@ func (d *Driver) RemoveBaseBundle(baseKey string) error {
 // + snapfile, no archive backing file), so a session snapshot is as portable and
 // restorable as a base: the memory image IS the session state.
 //
-// Unlike SnapshotBase, it does NOT resume the guest: a Bank pauses, snapshots, and
-// then the caller destroys the VM (the session releases its live capacity and
-// holds only disk). Pausing before the snapshot is required so the memfile is a
-// consistent point-in-time image; leaving the VM paused is fine because the caller
-// Releases the handle immediately after. On a snapshot failure the VM is torn down
-// (a stranded paused VM would squat capacity), matching SnapshotBase's failure
-// posture.
+// The first bank writes a full and leaves the guest paused for the caller to
+// destroy. A bank after RestoreSession writes a diff, resumes immediately, merges
+// the diff onto a copy of the prior full, and then returns for the same teardown.
+// This keeps the merge off the pause-critical path while every published bundle
+// remains self-contained. On a snapshot failure the VM is torn down (a stranded
+// paused VM would squat capacity), matching SnapshotBase's failure posture.
 //
 // The bundle is written to temp paths and renamed into place (memfile before
 // snapfile, so a concurrent restore reading the snapfile always finds its memfile),
@@ -1297,7 +1386,8 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 	// Any failure AFTER the handle is confirmed tears the VM down here (it may be
 	// running, or stranded paused mid-snapshot), so a failed bank NEVER leaves a
 	// live or paused handle behind for the server to misreport as session capacity.
-	// On success the VM is left paused; the caller (server Bank) destroys it.
+	// On success the caller (server Bank) destroys the VM, whether the full path
+	// left it paused or the diff path resumed it for the offline merge.
 	banked := false
 	defer func() {
 		if !banked {
@@ -1311,21 +1401,91 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 	memPath := d.sessionMemfile(snapshotRef)
 	snapTmp := snapPath + ".tmp"
 	memTmp := memPath + ".tmp"
+	diffTmp := memPath + ".diff.tmp"
+	paused := false
 
-	if err := inst.client.Pause(ctx); err != nil {
+	ensurePaused := func() error {
+		if paused {
+			return nil
+		}
+		if err := inst.client.Pause(ctx); err != nil {
+			return err
+		}
+		paused = true
+		return nil
+	}
+	cleanupTemps := func() {
+		_ = os.Remove(snapTmp)
+		_ = os.Remove(memTmp)
+		_ = os.Remove(diffTmp)
+	}
+	publishFull := func(diffErr error) error {
+		if diffErr != nil {
+			slog.Warn("driver: session diff bank failed, falling back to full",
+				"snapshot_ref", snapshotRef,
+				"error", diffErr,
+			)
+		}
+		cleanupTemps()
+		if err := ensurePaused(); err != nil {
+			return fmt.Errorf("driver: pause session for full fallback: %w", err)
+		}
+		if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
+			if diffErr != nil {
+				return fmt.Errorf("driver: create full fallback after diff error %v: %w", diffErr, err)
+			}
+			return fmt.Errorf("driver: create session snapshot: %w", err)
+		}
+		sparse.BestEffort(memTmp, "session-bank")
+		if err := os.Rename(memTmp, memPath); err != nil {
+			return fmt.Errorf("driver: publish session memfile: %w", err)
+		}
+		if err := os.Rename(snapTmp, snapPath); err != nil {
+			return fmt.Errorf("driver: publish session snapfile: %w", err)
+		}
+		inst.bankBaseMemPath = memPath
+		return nil
+	}
+
+	if err := ensurePaused(); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause session: %w", err)
 	}
-	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: create session snapshot: %w", err)
-	}
-	sparse.BestEffort(memTmp, "session-bank")
-	// Publish memfile before snapfile: a restore reads the snapfile to locate the
-	// memfile, so the memfile must already be in place when the snapfile appears.
-	if err := os.Rename(memTmp, memPath); err != nil {
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish session memfile: %w", err)
-	}
-	if err := os.Rename(snapTmp, snapPath); err != nil {
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish session snapfile: %w", err)
+
+	useDiff := d.cfg.DiffBanking && inst.bankBaseMemPath != ""
+	if useDiff {
+		if _, err := os.Stat(inst.bankBaseMemPath); err != nil {
+			if err := publishFull(fmt.Errorf("base memory unavailable: %w", err)); err != nil {
+				return substrate.SnapshotRef{}, err
+			}
+		} else if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{
+			SnapshotType: "Diff",
+			SnapshotPath: snapTmp,
+			MemFilePath:  diffTmp,
+		}); err != nil {
+			if err := publishFull(fmt.Errorf("create diff snapshot: %w", err)); err != nil {
+				return substrate.SnapshotRef{}, err
+			}
+		} else if err := inst.client.Resume(ctx); err != nil {
+			if err := publishFull(fmt.Errorf("resume after diff snapshot: %w", err)); err != nil {
+				return substrate.SnapshotRef{}, err
+			}
+		} else {
+			paused = false
+			if err := d.mergeMemoryDiffAtomic(ctx, inst.bankBaseMemPath, diffTmp, memPath); err != nil {
+				if err := publishFull(fmt.Errorf("merge diff snapshot: %w", err)); err != nil {
+					return substrate.SnapshotRef{}, err
+				}
+			} else if err := os.Rename(snapTmp, snapPath); err != nil {
+				if err := publishFull(fmt.Errorf("publish diff snapfile: %w", err)); err != nil {
+					return substrate.SnapshotRef{}, err
+				}
+			} else {
+				_ = os.Remove(diffTmp)
+				inst.bankBaseMemPath = memPath
+			}
+		}
+	} else if err := publishFull(nil); err != nil {
+		return substrate.SnapshotRef{}, err
 	}
 	banked = true
 	return substrate.SnapshotRef{
@@ -1357,7 +1517,7 @@ func (d *Driver) RestoreSession(ctx context.Context, snapshotRef string) (substr
 	// A restored session gets its own fresh thread (host bundle dir + vsock socket);
 	// the bundle's embedded config is re-bound into it by loadInto.
 	threadID := newID("sess")
-	return d.loadInto(ctx, threadID, snapPath, d.sessionMemfile(snapshotRef), "restore.sock")
+	return d.loadBankingInto(ctx, threadID, snapPath, d.sessionMemfile(snapshotRef), "restore.sock")
 }
 
 // RemoveSessionBundle deletes a banked session snapshot's on-disk bundle

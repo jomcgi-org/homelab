@@ -195,6 +195,10 @@ containers:
         value: {{ printf "http://%s.%s.svc:%v" (include "embervm.fullname" $ctx) $ctx.Release.Namespace $ctx.Values.service.port | quote }}
       - name: EMBERVM_NODED_MAX_LIVE_VMS
         value: {{ $ctx.Values.noded.maxLiveVMs | quote }}
+      - name: EMBERVM_NODED_DIFF_BANKING
+        value: {{ $ctx.Values.noded.diffBanking | quote }}
+      - name: EMBERVM_NODED_DIFF_BANKING_WORKLOADS
+        value: {{ ternary $ctx.Values.sandboxSessionWorkload.name "" $ctx.Values.sandboxSessionWorkload.enabled | quote }}
       - name: EMBERVM_NODED_DAEMON_RESERVE_MIB
         value: {{ $ctx.Values.bricks.daemonReserveMib | default 512 | quote }}
       # Serving tap pre-provisioning (ADR embervm/014 decision 4). Zero (default)
