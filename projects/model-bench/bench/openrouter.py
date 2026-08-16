@@ -31,6 +31,16 @@ class ChatResult:
     latency_ms: int
 
 
+_TRANSIENT = (
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
+
+
 def _merge_payload(required: dict, extra_body: dict | None) -> dict:
     """Merge extra_body under required fields so model/messages/tools cannot be overwritten."""
     payload = dict(extra_body or {})
@@ -56,6 +66,32 @@ class OpenRouterClient:
         )
         self._prices: dict[str, tuple[float, float]] = {}
 
+    async def _post_completions(self, payload: dict) -> httpx.Response:
+        """POST /chat/completions, retrying transient transport errors, 429, and 5xx."""
+        resp: httpx.Response | None = None
+        last_exc: Exception | None = None
+        for attempt in range(5):
+            try:
+                resp = await self._client.post("/chat/completions", json=payload)
+            except _TRANSIENT as exc:
+                last_exc = exc
+                if attempt < 4:
+                    await asyncio.sleep(min(2**attempt, 8))
+                    continue
+                raise
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < 4:
+                    await asyncio.sleep(min(2**attempt, 8))
+                    continue
+                resp.raise_for_status()
+            elif resp.status_code >= 400:
+                resp.raise_for_status()
+            return resp
+        if resp is not None:
+            return resp
+        assert last_exc is not None
+        raise last_exc
+
     async def complete(
         self,
         *,
@@ -80,21 +116,7 @@ class OpenRouterClient:
             },
             extra_body,
         )
-        resp: httpx.Response | None = None
-        for attempt in range(5):
-            resp = await self._client.post("/chat/completions", json=payload)
-            if resp.status_code == 429 or resp.status_code >= 500:
-                if attempt < 4:
-                    await asyncio.sleep(min(2**attempt, 8))
-                    continue
-                # Exhausted retries: raise the last bad response.
-                resp.raise_for_status()
-            elif resp.status_code >= 400:
-                resp.raise_for_status()
-            break
-
-        assert resp is not None
-        data = resp.json()
+        data = (await self._post_completions(payload)).json()
         message = data.get("choices", [{}])[0].get("message", {}) or {}
         text = message.get("content") or ""
         usage = data.get("usage", {})
@@ -134,19 +156,7 @@ class OpenRouterClient:
         if tools:
             required["tools"] = tools
         payload = _merge_payload(required, extra_body)
-        resp: httpx.Response | None = None
-        for attempt in range(5):
-            resp = await self._client.post("/chat/completions", json=payload)
-            if resp.status_code == 429 or resp.status_code >= 500:
-                if attempt < 4:
-                    await asyncio.sleep(min(2**attempt, 8))
-                    continue
-                resp.raise_for_status()
-            elif resp.status_code >= 400:
-                resp.raise_for_status()
-            break
-        assert resp is not None
-        data = resp.json()
+        data = (await self._post_completions(payload)).json()
         message = data.get("choices", [{}])[0].get("message", {}) or {}
         usage = data.get("usage", {})
         return ChatResult(
