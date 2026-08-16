@@ -249,8 +249,23 @@ nodeConfirmedDestroy: true
 # moves, including the ones whose CRs are disabled, because the base BUILDERS are
 # gated separately from the Workload CRs.
 workloads:
-  sandbox:
-    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox/rootfs.ext4
+  # The six per-language sandbox guests (ADR agents/057). Every one needs its
+  # own dev path for the reason in the block comment above: the base BUILDERS
+  # are gated separately from the Workload CRs, so an inherited production path
+  # is unbacked in the container and mkfs lands a multi-GB image on node-4's
+  # ROOT filesystem, where production's bricks live.
+  sandboxPython:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox-python/rootfs.ext4
+  sandboxGo:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox-go/rootfs.ext4
+  sandboxRust:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox-rust/rootfs.ext4
+  sandboxElixir:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox-elixir/rootfs.ext4
+  sandboxOcaml:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox-ocaml/rootfs.ext4
+  sandboxJavascript:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/sandbox-javascript/rootfs.ext4
   semgrep:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/semgrep/rootfs.ext4
   runtimePython:
