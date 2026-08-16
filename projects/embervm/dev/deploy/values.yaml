@@ -113,6 +113,29 @@ bazelQueryWorkload:
 claudeRuntimeWorkload:
   enabled: false
 
+# The ONE session workload dev runs, and the exception to the paragraph above.
+#
+# It earns its place by being the thing dev is for: this workload is the first
+# in the fleet sized at 256 MiB, and the only question that cannot be answered
+# by reading is whether a guest actually boots and reports /shim/ready in that
+# much RAM. Dev's 1gi brick has 768 MiB guest-schedulable, so one fits with
+# headroom, and its base is the ~100 MB pi image rather than the 300 MB claude
+# one that cost the first dev brick three of its four minutes.
+#
+# WHAT DEV CAN AND CANNOT PROVE HERE. Dev does not enable the egress lane
+# (egress.enabled defaults false and dev is silent on it), and a pi turn reaches
+# the in-cluster vLLM endpoint through that lane, so dev proves base build, cold
+# boot, readiness and session create/destroy at 256 MiB. It does NOT prove a
+# turn. That is production's to prove, which is why the CR ships enabled there
+# with nothing routed to it yet.
+#
+# Watch for `pressure:mem` on create: admission compares raw cgroup headroom
+# against need (256) plus the reject floor (512), and a brick that has baked a
+# base carries page cache in memory.current. If dev flaps on admission, that is
+# a real finding about small guests on small bricks, not a dev-only artifact.
+piRuntimeWorkload:
+  enabled: true
+
 # scratchPostgres carries BOTH of its dev settings here, deliberately. It also
 # needs an empty guest image (the base-builder block below empties one repository
 # per unused workload), but a second `scratchPostgres:` key at that level is a
@@ -234,6 +257,14 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/runtime-python/rootfs.ext4
   runtimeClaude:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/runtime-claude/rootfs.ext4
+  # MANDATORY even though dev may not run the workload: every workload's path
+  # has to move, including the ones whose CRs are disabled, because the base
+  # BUILDERS are gated separately from the Workload CRs. Left at the inherited
+  # production path this is UNBACKED inside the container (only nvmeRoot is
+  # mounted), so mkfs writes a multi-GB base image to node-4's ROOT filesystem,
+  # which is where production's bricks live. See the block comment above.
+  runtimePi:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/runtime-pi/rootfs.ext4
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/scratch-postgres/rootfs.ext4
   bazelQuery:
@@ -268,9 +299,11 @@ servingEnvoy:
 # not claude-runtime"), for a workload no session can ever use. Measured: the
 # first dev brick spent roughly three of its four minutes on that one builder.
 #
-# Only `sandbox` keeps its builder, because it is the only Workload CR dev
-# enables. Emptying the repository is what the loop's `if` tests, so the init
-# container is not rendered at all.
+# `sandbox` and `runtimePi` keep their builders, because they are the Workload
+# CRs dev enables. Emptying the repository is what the loop's `if` tests, so the
+# init container is not rendered at all. There is deliberately NO `runtimePi:`
+# entry below: emptying it would leave the CR enabled with no base to restore,
+# which reports as a workload that never goes Ready.
 semgrep:
   guestImage:
     repository: ""

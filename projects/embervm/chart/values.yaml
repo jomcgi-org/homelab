@@ -619,6 +619,16 @@ workloads:
   runtimeClaude:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/runtime-claude/rootfs.ext4
     harnessInit: /usr/local/bin/ember-runtime-guest-init
+  # The pi-only sibling of runtimeClaude: the SAME guest-init and the SAME shim,
+  # from an image that carries only the pi CLI (runtimes/pi). harnessInit is
+  # therefore identical, and must stay so: both images ship the one
+  # guest_init_tar_amd64 artifact from the claude runtime package. The key must
+  # match the top-level `runtimePi` block below, and it is kebabcased into the
+  # build-runtime-pi-rootfs initContainer name, which has to be a valid RFC 1123
+  # label.
+  runtimePi:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/runtime-pi/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-runtime-guest-init
   # R4 scratch-postgres stateful base (ADR embervm/001, D-R4.PR-11.1). Its PID-1
   # ember-postgres-init mounts the writable volume, decodes POSTGRES_PASSWORD from
   # the mmds_env boot-args, and runs initdb-if-empty then postgres. The key must
@@ -695,6 +705,23 @@ runtimePython:
 runtimeClaude:
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/claude
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+# The runtime-pi base image: the same session-class guest as runtimeClaude (same
+# shim, same guest-init, same vsock contract) carrying ONLY the pi coding agent,
+# so a qwen turn stops paying for the claude and codex CLIs it can never invoke.
+# Bazel-pinned (helm_chart images="runtimePi.guestImage") from its .info
+# provider. Distinct FLAT top-level key (never nested), per D14a.6, and the key
+# matches the `workloads.runtimePi` entry above because the deployment ranges
+# over `workloads` and looks the image up by the same key.
+#
+# amd64 only, like every other guest image here. Setting this repository to ""
+# is what un-renders the base builder, which is a SEPARATE switch from
+# piRuntimeWorkload.enabled (the CR): dev turns off both.
+runtimePi:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/pi
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -1495,4 +1522,89 @@ claudeRuntimeWorkload:
   invocation:
     # Total duration for a session invoke. CRD maximum is 900s (workload-crd.yaml:868).
     # Ordering: shim per-event 600s < CP total 900s < monolith outer 1800s.
+    timeoutSeconds: 900
+
+# The pi-runtime session workload: the small lane. Same frozen guest contract as
+# claude-runtime (vsock 1027, /shim/ready, invoke at /shim/turn) served by the
+# SAME shim, from an image carrying only the pi CLI (runtimes/pi).
+#
+# THE NAMED CONSUMER IS THE SYNTHETIC PROBE. The monolith maps model `qwen` to
+# family `pi` (agent_sessions/__init__.py), and ember_public's probe_qwen runs
+# one trivial turn every five minutes forever. Served on claude-runtime that is
+# a 4096 MiB cold boot of a guest holding a 262 MB Node ELF and a 114 MB codex
+# binary the turn can never invoke. Here it is 256 MiB.
+#
+# WHY 256 MiB HOLDS, and where it stops holding. What lives in guest RAM is the
+# Bun-compiled pi binary, the stdlib-python shim, and the tmpfs the guest-init
+# mounts over /tmp and /workspace. The pi binary's code pages are mmapped from
+# the rootfs BLOCK DEVICE, so they are reclaimable page cache rather than a
+# resident cost, and pi's context is bounded hard at 30000 tokens
+# (PI_CONTEXT_WINDOW in the shim) against Qwen's 32768 window, so the JS heap
+# has a ceiling rather than a frontier model's appetite. The CRD floors memMib
+# at 128 (chart/crds/workload-crd.yaml:215), so this is legal, not a special
+# case.
+#
+# It stops holding the moment a session hydrates a repository. With persistence
+# off (below) /workspace IS the tmpfs, so a checkout is spent out of these same
+# 256 MiB with no disk to fall back on. THIS IS THE SMALL-TASK LANE: probes and
+# short conversational turns, not repo-attached work. A repo-attached qwen
+# session belongs on claude-runtime until this workload is given a volume.
+# Raising it is a values-only change; the honest ladder is 256 -> 512 -> a
+# persistenceEnabled flip with a workspaceSizeBytes, in that order.
+piRuntimeWorkload:
+  enabled: false
+  name: pi-runtime
+  port: 1027
+  readyPath: /shim/ready
+  invokePath: /shim/turn
+  # Same base-signature epoch mechanism as claudeRuntimeWorkload: entries here
+  # re-key and rebuild ONLY this workload's base and reach the guest's
+  # environment through NOTHING (the control plane sends the map as
+  # BuildBaseRequest.init_env and noded never reads that field, #4429). Use it as
+  # a rebuild epoch, never as a knob.
+  initEnv: {}
+  # 1 vcpu, not the claude runtime's 2. A turn here is one bounded-context model
+  # round trip against the in-cluster vLLM endpoint, so the guest is waiting on
+  # the network, not computing. A guest still pays full boot cost regardless, so
+  # this is the floor rather than a saving worth pushing further.
+  vcpus: 1
+  memMib: 256
+  # persistence OFF, so this is ADR 027's memory:true quadrant: an idle session
+  # banks a memory snapshot and relights from it. That quadrant was expensive
+  # enough at claude-runtime's 4096 MiB to be worth replacing with volumes; at
+  # 256 MiB a bank is 256 MiB of snapshot, which is cheap enough that the simple
+  # path is the right one. It also keeps this workload clear of the placeholder
+  # volume drive coupling (warmRestoreWithVolumeClasses plus a base epoch, which
+  # MUST move together) that the claude runtime carries.
+  persistenceEnabled: false
+  # floor 0 for the same reason claude-runtime uses it, and more so: the floor is
+  # applied PER BRICK INSTANCE, and a cold spawn to first request is ~250ms
+  # against a model API leg measured in seconds. Warmth would buy a few percent
+  # of a turn for a permanently resident guest on every brick.
+  floor: 0
+  # cap bounds NEW session VMs at create time. 2 covers the */5 probe overlapping
+  # with one interactive session; the probe destroys its session before
+  # returning, so steady state is 0.
+  cap: 2
+  session:
+    # 20s: a probe session is created, served and destroyed inside one call, and
+    # an interactive qwen turn is a fast round trip. A longer idle window would
+    # hold cap slots for conversations that have already ended.
+    idleBankSeconds: 20
+    maxLifetimeSeconds: 21600
+    # 1h, matching claude-runtime: a failed or abandoned turn leaves a banked
+    # zombie counting against maxSessions, and at a 6h TTL a handful of retries
+    # saturates a cap this small.
+    bankedTtlSeconds: 3600
+    # Live + banked. 4 x 256 MiB = 1 GiB of snapshot worst case, against
+    # claude-runtime's 8 x 4 GiB = 32 GiB.
+    maxSessions: 4
+    invokeQueueCap: 4
+  invocation:
+    # 900s, the same as claude-runtime, and deliberately NOT tightened even
+    # though a bounded-context Qwen turn is far shorter than a frontier one. The
+    # ordering shim per-event 600s < CP total 900s < monolith outer 1800s is
+    # load-bearing: the INNERMOST timeout has to fire first so a wedged CLI
+    # returns a specific shim error instead of a generic transport cancel.
+    # Dropping this below 600 inverts that for a few minutes of a held cap slot.
     timeoutSeconds: 900
