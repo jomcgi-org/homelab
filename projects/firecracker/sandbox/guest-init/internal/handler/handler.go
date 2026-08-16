@@ -282,6 +282,14 @@ func runCommand(ctx context.Context, spec Spec, workdir string, argv []string, s
 	if len(argv) == 0 {
 		return errors.New("language spec has no command")
 	}
+	// Immediately before the exec that depends on it, not once at startup far
+	// from here. exec.CommandContext resolves argv[0] against THIS process's
+	// PATH, and a guest whose PID 1 inherits no environment resolves nothing.
+	// A no-op once PATH is set, so calling it per command costs a getenv and
+	// cannot be left behind by a refactor of main.
+	if err := EnsureSearchPath(); err != nil {
+		return fmt.Errorf("ensure sandbox search path: %w", err)
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = workdir
 	cmd.Env = spec.Environment(workdir)
