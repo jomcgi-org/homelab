@@ -62,6 +62,14 @@ func run(logger *slog.Logger) error {
 	setDefaultEnv(logger)
 	bringUpLoopback(logger)
 	setHostname(logger)
+	proxyConfig, err := LoadProxyConfig()
+	if err != nil {
+		logger.Warn("ember-shotter-init: proxy configuration invalid; all destinations refused", "err", err)
+	}
+	proxyErr, err := startProxyServer(ctx, proxyConfig, logger)
+	if err != nil {
+		return fmt.Errorf("start egress proxy: %w", err)
+	}
 
 	var ready atomic.Bool
 	serveErr := startVsockServer(ctx, logger, ready.Load)
@@ -69,14 +77,14 @@ func run(logger *slog.Logger) error {
 	chromiumExit, err := launchChromium(ctx, logger)
 	if err != nil {
 		logger.Error("ember-shotter-init: Chromium warm launch failed; readiness remains false", "err", err)
-		return waitForShutdown(ctx, serveErr, nil, logger)
+		return waitForShutdown(ctx, serveErr, proxyErr, nil, logger)
 	}
 
 	if err := waitForCDP(ctx, chromiumExit, logger); err != nil {
 		logger.Error("ember-shotter-init: CDP warm probe failed; readiness remains false", "err", err)
 		// Chromium's Wait goroutine still reaps the process. Keep PID 1 and the
 		// readiness server alive so BuildBase reports its outer readiness timeout.
-		return waitForShutdown(ctx, serveErr, nil, logger)
+		return waitForShutdown(ctx, serveErr, proxyErr, nil, logger)
 	}
 
 	logger.Info("ember-shotter-init: warm ordering checkpoint 2, CDP /json/version answered")
@@ -85,9 +93,9 @@ func run(logger *slog.Logger) error {
 	case <-time.After(settleDelay):
 	case err := <-chromiumExit:
 		logger.Error("ember-shotter-init: Chromium exited during settle; readiness remains false", "err", err)
-		return waitForShutdown(ctx, serveErr, nil, logger)
+		return waitForShutdown(ctx, serveErr, proxyErr, nil, logger)
 	case <-ctx.Done():
-		return waitForShutdown(ctx, serveErr, chromiumExit, logger)
+		return waitForShutdown(ctx, serveErr, proxyErr, chromiumExit, logger)
 	}
 
 	// This log is the ordering assertion used with the preceding checkpoint:
@@ -97,7 +105,7 @@ func run(logger *slog.Logger) error {
 	ready.Store(true)
 	logger.Info("ember-shotter-init: readiness flipped, warm Chromium base ready")
 
-	return waitForShutdown(ctx, serveErr, chromiumExit, logger)
+	return waitForShutdown(ctx, serveErr, proxyErr, chromiumExit, logger)
 }
 
 func chromiumArgv() []string {
@@ -292,7 +300,7 @@ func setDefaultEnv(logger *slog.Logger) {
 	}
 }
 
-func waitForShutdown(ctx context.Context, serveErr, chromiumExit <-chan error, logger *slog.Logger) error {
+func waitForShutdown(ctx context.Context, serveErr, proxyErr, chromiumExit <-chan error, logger *slog.Logger) error {
 	select {
 	case <-ctx.Done():
 		logger.Info("ember-shotter-init: shutdown signal")
@@ -300,6 +308,11 @@ func waitForShutdown(ctx context.Context, serveErr, chromiumExit <-chan error, l
 	case err := <-serveErr:
 		if err != nil {
 			return fmt.Errorf("vsock server stopped: %w", err)
+		}
+		return nil
+	case err := <-proxyErr:
+		if err != nil {
+			return fmt.Errorf("egress proxy stopped: %w", err)
 		}
 		return nil
 	case err := <-chromiumExit:
