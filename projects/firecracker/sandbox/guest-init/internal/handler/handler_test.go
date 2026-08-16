@@ -44,7 +44,7 @@ func call(t *testing.T, req ExecRequest) (*shim.Response, error) {
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	return Handle(context.Background(), &shim.Request{Path: "/invoke/sandbox", Body: bytes.NewReader(body)})
+	return Handle(context.Background(), &shim.Request{Path: "/invoke/sandbox", Body: bytes.NewReader(body)}, languageSpecs["python"])
 }
 
 func decodeResult(t *testing.T, resp *shim.Response) ExecResult {
@@ -231,7 +231,7 @@ func TestHandleEmptyCodeRejected(t *testing.T) {
 }
 
 func TestHandleDecodeErrorReturnsHandlerError(t *testing.T) {
-	_, err := Handle(context.Background(), &shim.Request{Path: "/invoke/sandbox", Body: strings.NewReader("not json {{")})
+	_, err := Handle(context.Background(), &shim.Request{Path: "/invoke/sandbox", Body: strings.NewReader("not json {{")}, languageSpecs["python"])
 	if err == nil {
 		t.Fatal("expected a non-nil error for an undecodable body")
 	}
@@ -259,6 +259,28 @@ func TestHandleTimeoutKillsProcess(t *testing.T) {
 	// that, proving the process (and not just the request) was terminated.
 	if elapsed > 10*time.Second {
 		t.Errorf("Handle took %s, want well under the 30s sleep", elapsed)
+	}
+}
+
+func TestRunSnippetCompileFailureShortCircuits(t *testing.T) {
+	requirePython(t)
+	dir := t.TempDir()
+	spec := Spec{
+		Name:       "compiled-test",
+		Compile:    []string{"python3", "-c", "import sys; print('compile out'); print('compile err', file=sys.stderr); sys.exit(7)"},
+		Run:        []string{"python3", "-c", "open('ran.txt', 'w').write('ran')"},
+		SourceFile: "main.test",
+	}
+
+	result := runSnippet(context.Background(), spec, dir, 5*time.Second)
+	if result.ExitCode != 7 {
+		t.Errorf("exit code = %d, want compiler exit code 7", result.ExitCode)
+	}
+	if !strings.Contains(result.Stdout, "compile out") || !strings.Contains(result.Stderr, "compile err") {
+		t.Errorf("compiler output missing: stdout=%q stderr=%q", result.Stdout, result.Stderr)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ran.txt")); !os.IsNotExist(err) {
+		t.Errorf("run command executed after compile failure, stat err = %v", err)
 	}
 }
 
@@ -314,7 +336,7 @@ func TestCollectOutputFilesSkipsMainAndUnchangedInputIncludesChangedAndGenerated
 		"changed.txt":   {size: int64(len(changedOriginal)), hash: sha256.Sum256(changedOriginal)},
 	}
 
-	files, truncated, err := collectOutputFiles(dir, inputs)
+	files, truncated, err := collectOutputFiles(dir, inputs, []string{"main.py"})
 	if err != nil {
 		t.Fatalf("collectOutputFiles: %v", err)
 	}
@@ -344,7 +366,7 @@ func TestCollectOutputFilesPerFileCap(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "big.bin", bytes.Repeat([]byte("a"), perFileCap+1))
 
-	files, truncated, err := collectOutputFiles(dir, nil)
+	files, truncated, err := collectOutputFiles(dir, nil, nil)
 	if err != nil {
 		t.Fatalf("collectOutputFiles: %v", err)
 	}
@@ -366,7 +388,7 @@ func TestCollectOutputFilesTotalCap(t *testing.T) {
 	writeFile(t, dir, "b.bin", bytes.Repeat([]byte("b"), half))
 	writeFile(t, dir, "c.bin", bytes.Repeat([]byte("c"), half))
 
-	_, truncated, err := collectOutputFiles(dir, nil)
+	_, truncated, err := collectOutputFiles(dir, nil, nil)
 	if err != nil {
 		t.Fatalf("collectOutputFiles: %v", err)
 	}

@@ -1,16 +1,15 @@
-// Command sandbox-guest-init is the PID 1 of the zero-egress python sandbox
+// Command sandbox-guest-init is the PID 1 of a zero-egress language sandbox
 // microVM (ADR agents/044). It mounts a tmpfs over /tmp (the rootfs is
 // read-only and shared across every microVM restored from the warm-base
-// snapshot), pre-imports the baked scientific python libraries once so their
-// pages are resident in the snapshot memfile before any real request lands,
-// then serves the fc-invoke shim protocol: an HTTP server over AF_VSOCK on
-// vsockproto.GuestHTTPPort. Each /invoke request runs one Python snippet
-// (internal/handler.Handle) and returns its stdout, stderr, exit code, and
-// any files the snippet created.
+// snapshot), warms the selected language runtime before any real request
+// lands, then serves the fc-invoke shim protocol: an HTTP server over AF_VSOCK
+// on vsockproto.GuestHTTPPort. Each /invoke request runs one snippet and
+// returns its stdout, stderr, exit code, and any files it created.
 package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -42,29 +41,18 @@ func run(logger *slog.Logger) error {
 	// across disposable microVMs restored from the one warm-base snapshot.
 	mountTmpfsTmp(logger)
 
-	// A raw Firecracker boot hands PID 1 no environment (the kernel ignores
-	// the OCI image config), so PATH must be set explicitly before the
-	// warmup exec below; this mirrors the PATH handler.Handle sets for every
-	// request.
-	_ = os.Setenv("PATH", "/usr/bin:/bin:/usr/local/bin")
-
-	// matplotlib's config/cache dir, shared by the warm-import below and every
-	// per-request exec (handler.MPLConfigDir). Created world-writable (0777)
-	// because warm-import runs as root here but per-request python runs as the
-	// dropped uid 65532; both must be able to (re)write the font cache. It
-	// lives on the /tmp tmpfs so it is captured in the warm-base snapshot.
-	_ = os.Setenv("MPLCONFIGDIR", handler.MPLConfigDir)
-	if err := os.MkdirAll(handler.MPLConfigDir, 0o777); err != nil {
-		logger.Warn("could not create MPLCONFIGDIR; matplotlib will fall back and may leak a font cache into workdirs", "err", err)
-	} else {
-		_ = os.Chmod(handler.MPLConfigDir, 0o777)
+	spec, err := handler.SelectSpec()
+	if err != nil {
+		return fmt.Errorf("select sandbox language: %w", err)
 	}
+	logger.Info("sandbox language selected", "language", spec.Name)
 
-	warmImports(logger)
+	prepareWarmCacheDirs(logger, spec)
+	warmup(logger, spec)
 
 	// The warm-base snapshot (ADR 022) is taken once /shim/ready first
-	// returns 200, so flipping this only after warmImports is the mechanism
-	// that captures the pre-imported library pages in every restored guest.
+	// returns 200, so flipping this only after warmup captures the populated
+	// runtime cache and resident pages in every restored guest.
 	var ready atomic.Bool
 	ready.Store(true)
 
@@ -75,13 +63,11 @@ func run(logger *slog.Logger) error {
 	logger.Info("shim HTTP server listening", "port", vsockproto.GuestHTTPPort)
 
 	// WithClock installs POST /shim/clock so the node can resync this guest's
-	// wall clock after a session relight (EmberVM R2 Task 4). Best-effort: a
+	// wall clock after restoring it. Best-effort: a
 	// set failure is a 500 the node logs and moves past, never a relight
-	// failure. The sandbox guest serves both the one-shot task class and
-	// sessioned run_python from the same binary, so the endpoint is always
-	// present here (harmless for one-shot callers, which never POST it).
+	// failure.
 	srv := shim.NewServer(
-		handler.Handle,
+		handler.New(spec),
 		shim.WithReady(ready.Load),
 		shim.WithClock(func(epochMs int64) error {
 			if err := setWallClock(epochMs); err != nil {
@@ -108,30 +94,35 @@ func run(logger *slog.Logger) error {
 	}
 }
 
-// warmImports pre-imports the baked scientific python libraries once, before
-// readiness flips, so the warm-base snapshot captures their page cache in
-// RAM: every restored guest then starts a request already warm instead of
-// paying a cold import on the first real invocation. numpy is not a pinned
-// Wolfi package (see guest/apko.yaml) but IS importable: scipy and pandas
-// pull in a compatible version transitively. Best-effort: a missing or
-// broken import is logged, not fatal, so a library regression never bricks
-// the guest, it only misses the warm-cache benefit.
-func warmImports(logger *slog.Logger) {
+// prepareWarmCacheDirs creates shared caches on the writable /tmp tmpfs. The
+// warm-up runs as root while request processes run as uid 65532, so every
+// cache must remain world-writable.
+func prepareWarmCacheDirs(logger *slog.Logger, spec handler.Spec) {
+	for _, dir := range spec.CacheDirs {
+		if err := os.MkdirAll(dir, 0o777); err != nil {
+			logger.Warn("could not create warm cache directory", "path", dir, "err", err)
+			continue
+		}
+		if err := os.Chmod(dir, 0o777); err != nil {
+			logger.Warn("could not make warm cache directory world-writable", "path", dir, "err", err)
+		}
+	}
+}
+
+// warmup runs the selected language's best-effort warm command before
+// readiness flips. A failed warm-up never prevents the guest from serving.
+func warmup(logger *slog.Logger, spec handler.Spec) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	// Beyond importing, render one throwaway figure so matplotlib builds its
-	// font cache (fontlist.json) into MPLCONFIGDIR now, captured in the
-	// warm-base snapshot. Without an actual draw the cache is not built at
-	// import time, and the first real plot per guest would both scan fonts and
-	// write the cache into the request workdir.
-	cmd := exec.CommandContext(ctx, "python3", "-c",
-		"import matplotlib; matplotlib.use('Agg'); "+
-			"import numpy, pandas, scipy, PIL, yaml, dateutil; "+
-			"import io, matplotlib.pyplot as plt; "+
-			"plt.plot([0, 1], [0, 1]); plt.savefig(io.BytesIO(), format='png')")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		logger.Warn("warm-import failed; guest still serves, just cold on the first request", "err", err, "out", string(out))
+	if len(spec.Warm) == 0 {
 		return
 	}
-	logger.Info("warm-import done")
+	cmd := exec.CommandContext(ctx, spec.Warm[0], spec.Warm[1:]...)
+	cmd.Dir = "/tmp"
+	cmd.Env = spec.Environment("/tmp")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		logger.Warn("language warm-up failed; guest still serves cold", "language", spec.Name, "err", err, "out", string(out))
+		return
+	}
+	logger.Info("language warm-up done", "language", spec.Name)
 }
