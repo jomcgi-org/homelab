@@ -6,6 +6,11 @@ from core.mcp_app import mcp
 from sandbox.client import run_code_in_sandbox
 
 
+# The language bullets below wrap ``javascript`` in backticks on purpose. The MCP
+# gateway runs every tool description through an XSS filter whose pattern treats
+# whitespace followed by "javascript:" as a URI scheme, so a bare `- javascript:`
+# bullet makes the gateway reject this tool and serve a catalogue without it. The
+# refresh still reports success and names the drop only in validationErrors.
 @mcp.tool
 async def run_code(
     code: str, language: str = "python", files: list[dict] | None = None
@@ -34,7 +39,7 @@ async def run_code(
     - ocaml: ``let () = ...`` entry point, run with ``ocaml main.ml`` in
       bytecode script mode. Standard library only. There is no opam, Core, or
       Lwt.
-    - javascript: a CommonJS script under ``node main.js``. Node standard
+    - ``javascript``: a CommonJS script under ``node main.js``. Node standard
       library only. There is no npm or node_modules. ``fetch`` exists, but every
       call fails because there is no network.
 

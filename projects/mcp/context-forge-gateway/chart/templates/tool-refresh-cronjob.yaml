@@ -84,9 +84,28 @@ spec:
                   gid = next((g["id"] for g in items if g.get("name") == name), None)
                   if not gid:
                       raise SystemExit(f"gateway {name!r} not found among {len(items)} gateways")
-                  r = httpx.post(f"{base}/gateways/{gid}/tools/refresh", headers=headers, timeout=90)
-                  print(name, r.status_code, r.text[:400])
+                  # CF forwards this request's Authorization to the upstream MCP server,
+                  # and the monolith 401s any bearer it cannot verify, so discovery fails
+                  # with the CF-minted admin JWT. X-Upstream-Authorization overrides what
+                  # the upstream sees and is honoured independently of the passthrough
+                  # allowlist. The scheme is deliberately NOT Bearer: the monolith ignores
+                  # a non-bearer scheme and treats discovery as anonymous, which is what it
+                  # already permits. Swap in a real workload token once authentik service
+                  # accounts land (#4943).
+                  refresh_headers = dict(headers, **{"X-Upstream-Authorization": "Discovery anonymous"})
+                  r = httpx.post(f"{base}/gateways/{gid}/tools/refresh", headers=refresh_headers, timeout=90)
+                  print(name, r.status_code, r.text[:2000])
                   r.raise_for_status()
+                  # A failed refresh answers 200 with success=false in the BODY, so checking
+                  # the status alone reports green while the catalogue silently goes stale.
+                  result = r.json()
+                  if not result.get("success"):
+                      raise SystemExit(f"refresh failed: {result.get('error')}")
+                  # A tool whose description trips CF's XSS validator is dropped from the
+                  # catalogue while the refresh still reports success overall.
+                  invalid = result.get("validationErrors") or []
+                  if invalid:
+                      raise SystemExit(f"refresh dropped {len(invalid)} tool(s): {invalid}")
                   PY
               resources:
                 {{- toYaml .Values.toolRefresh.resources | nindent 16 }}
