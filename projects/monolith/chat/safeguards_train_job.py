@@ -8,7 +8,7 @@ chart/values.yaml jobs.cronWorkflows). Pipeline:
    window, newest first, capped.
 2. Compute phase: fit the forest OFF this pod by shipping the literal source
    of chat.safeguards_forest plus a driver into the Firecracker sandbox
-   (sandbox.client.run_python_in_sandbox); the guest has numpy transitively
+   (sandbox.client.run_code_in_sandbox); the guest has numpy transitively
    via pandas/scipy and a 25s wall-clock cap, which the dataset cap and tree
    count are sized to fit. When the sandbox is unreachable or errors, fall
    back to fitting in-process (same code, this pod's CPU): the job pod is

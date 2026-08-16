@@ -234,7 +234,7 @@ async def needs_agent(message, *, _caller=None) -> bool:
     True only for repo work, a standalone interactive webpage/app, or thorough
     multi-source research; False for conversation, general knowledge, a simple
     factual question, OR anything the chat agent's own tools already cover -
-    including charting/plotting data (run_python renders a chart that attaches
+    including charting/plotting data (run_code renders a chart that attaches
     to Discord) and computing this channel's activity stats (counts, rankings,
     per-user/per-day breakdowns). The bright line for a chart request: a Python
     image stays chat; only a click-around webpage is agent. Fails closed to
@@ -259,7 +259,8 @@ async def needs_agent(message, *, _caller=None) -> bool:
             "keyword)\n"
             "- counts, rankings, and per-user or per-day breakdowns of this "
             "channel's own activity (who posted most, messages per day)\n"
-            "- run_python: run code to compute results AND draw "
+            "- run_code: run code (python by default) to compute results AND "
+            "draw "
             "charts/graphs/plots with matplotlib; the resulting image "
             "attaches directly here in the chat\n"
             "- render tables, and look things up on the web\n"
@@ -273,7 +274,7 @@ async def needs_agent(message, *, _caller=None) -> bool:
             "thorough multi-source research. KEY RULE: if the ask is to chart, "
             "graph, plot, or visualize DATA (including this channel's own "
             "stats, e.g. 'messages per user per day'), that is \"chat\" - "
-            "run_python makes the chart and it attaches here. Do NOT choose "
+            "run_code makes the chart and it attaches here. Do NOT choose "
             '"agent" just because a chart or visualization was requested; '
             'choose "agent" for a chart only if the user explicitly asked for '
             "an interactive or standalone webpage rather than an image. Reply "

@@ -68,7 +68,7 @@ LLM_MAX_RETRIES = 3
 LLM_RETRY_BASE_DELAY = 1.0  # seconds
 STREAM_EDIT_INTERVAL = 1.0
 
-# run_python attachment flush (ADR agents/044). The sandbox handler already
+# run_code attachment flush (ADR agents/044). The sandbox handler already
 # caps well under this (2 MiB/file, 5 MiB total), so this is a backstop
 # against Discord's own base-tier upload limit, not the primary control.
 RUN_PYTHON_MAX_ATTACHMENTS = 8
@@ -80,8 +80,8 @@ AGENT_REPLY_REPAIR_MAX_TURNS = int(os.environ.get("AGENT_REPLY_REPAIR_MAX_TURNS"
 _CHART_ONLY_CAPTION = "Here's the chart 👇"
 
 
-def _build_run_python_attachments(generated_files: list) -> "list[discord.File]":
-    """Build discord.File objects from run_python (path, bytes) tuples.
+def _build_run_code_attachments(generated_files: list) -> "list[discord.File]":
+    """Build discord.File objects from run_code (path, bytes) tuples.
 
     Capped at RUN_PYTHON_MAX_ATTACHMENTS files and RUN_PYTHON_MAX_ATTACHMENT_BYTES
     per file; anything over either cap is logged and dropped. Shared by the
@@ -99,7 +99,7 @@ def _build_run_python_attachments(generated_files: list) -> "list[discord.File]"
         files.append(discord.File(io.BytesIO(data), filename=filename))
     if dropped:
         logger.info(
-            "run_python: skipping %d generated file(s) over the attachment "
+            "run_code: skipping %d generated file(s) over the attachment "
             "cap/size limit: %s",
             len(dropped),
             ", ".join(dropped),
@@ -118,7 +118,7 @@ async def _deliver_chat_reply(send, text: "str | None", generated_files: list):
     Returns the sent message, or None. Best-effort: on failure, falls back to a
     text-only send so the reply is not lost entirely.
     """
-    files = _build_run_python_attachments(generated_files) if generated_files else []
+    files = _build_run_code_attachments(generated_files) if generated_files else []
     body = (text or "").strip()
     if not body and files:
         body = _CHART_ONLY_CAPTION
@@ -129,12 +129,12 @@ async def _deliver_chat_reply(send, text: "str | None", generated_files: list):
             return await send(content=body or None, files=files)
         return await send(body)
     except Exception:
-        logger.exception("run_python: failed to deliver chat reply with attachments")
+        logger.exception("run_code: failed to deliver chat reply with attachments")
         if body:
             try:
                 return await send(body)
             except Exception:
-                logger.exception("run_python: text-only fallback also failed")
+                logger.exception("run_code: text-only fallback also failed")
         return None
 
 
@@ -1299,7 +1299,7 @@ class ChatBot(discord.Client):
         """Author a chat-verdict reply through the tool-enabled concierge agent.
 
         A chat verdict means "no microVM session", not "no tools": this runs the
-        same PydanticAI agent a direct mention does, so run_python (exact math,
+        same PydanticAI agent a direct mention does, so run_code (exact math,
         a matplotlib chart) and the other concierge tools work here too. The
         orchestrator's reply guidance is injected as a system prompt (via
         ChatDeps.orchestrator_guidance) to keep the reply grounded; the raw
@@ -1329,7 +1329,7 @@ class ChatBot(discord.Client):
                 files = list(deps.generated_files)
                 proposals = list(deps.pending_proposal)
             # Shield the reply from leaked tool-call scaffolding (a small model
-            # emitting a run_python call as plain text) and from stray markdown
+            # emitting a run_code call as plain text) and from stray markdown
             # image tags. Always scrub; when a leak is detected, run the bounded
             # model-repair loop and log the occurrence for later eval. Outside
             # the session block: the repair uses its own inference seam, not the
@@ -1900,13 +1900,14 @@ class ChatBot(discord.Client):
                             args = json.loads(args)
                         except (json.JSONDecodeError, TypeError):
                             pass
-                    if event.part.tool_name == "run_python" and isinstance(args, dict):
+                    if event.part.tool_name == "run_code" and isinstance(args, dict):
                         # A code blob makes a useless checklist row; show the
                         # first line of the snippet instead of the generic
                         # query extraction below.
                         code = args.get("code", "") or ""
                         first_line = code.splitlines()[0] if code else ""
-                        query = f"run python: {first_line[:80]}"
+                        language = args.get("language", "python") or "python"
+                        query = f"run {language}: {first_line[:80]}"
                     elif isinstance(args, dict):
                         query = args.get("query", str(args))
                     else:
@@ -2040,19 +2041,19 @@ class ChatBot(discord.Client):
                 message.reply,
             )
 
-            # run_python may have generated files (e.g. a chart) this run. The
+            # run_code may have generated files (e.g. a chart) this run. The
             # tool can't post to Discord itself, so flush them here as a
             # follow-up message to the same channel/thread the reply went to
             # (mirrors the pending_proposal flush above). Guarded end-to-end
             # so an attachment failure never eats the text reply already sent.
             if deps.generated_files:
                 try:
-                    discord_files = _build_run_python_attachments(deps.generated_files)
+                    discord_files = _build_run_code_attachments(deps.generated_files)
                     if discord_files:
                         await message.reply(files=discord_files)
                 except Exception:
                     logger.exception(
-                        "run_python: failed to flush generated file attachments"
+                        "run_code: failed to flush generated file attachments"
                     )
                 finally:
                     deps.generated_files.clear()

@@ -317,7 +317,7 @@ class TestNeedsAgent:
     @pytest.mark.asyncio
     async def test_prompt_routes_python_charts_to_chat(self):
         """A chart/plot of data (including this channel's own stats) must stay
-        "chat": the chat agent has run_python to render and attach the image.
+        "chat": the chat agent has run_code to render and attach the image.
         The prompt must enumerate that capability and state the bright line so
         a "chart messages per user per day" ask no longer trips to the agent
         just for containing the word "chart"."""
@@ -326,7 +326,7 @@ class TestNeedsAgent:
         await needs_agent(message, _caller=caller)
         prompt = caller.call_args[0][0].lower()
         # the tool that makes an inline chart possible is named for the model
-        assert "run_python" in prompt
+        assert "run_code" in prompt
         # the bright line: a python image is chat, a click-around page is agent
         assert "chart" in prompt
         assert "attaches" in prompt

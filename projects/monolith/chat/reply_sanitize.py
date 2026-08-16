@@ -1,7 +1,7 @@
 """Shield chat-agent replies from leaked tool-call scaffolding.
 
 The chat route (ADR 036) runs the same tool-enabled concierge agent a direct
-mention does, so a small model (Qwen) sometimes emits a ``run_python`` tool call
+mention does, so a small model (Qwen) sometimes emits a ``run_code`` tool call
 as plain assistant text that the harness failed to parse. The raw
 ``<tool_call><arg_key>code</arg_key><arg_value>...</arg_value></tool_call>``
 scaffolding (and the Python it wraps) then leaks into the Discord message. It

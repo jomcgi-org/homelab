@@ -1033,15 +1033,16 @@ chat:
   onepassword:
     itemPath: ""
 
-# EmberVM backs the semgrep and Python sandbox workloads.
+# EmberVM backs the semgrep and per-language code sandbox workloads.
 sandbox:
-  # The EmberVM session-class workload backing sessioned run_python (R2, ADR
-  # embervm/001). Sessions are created here; the one-shot task class stays on
-  # `sandbox`. Empty falls back to the client default ("sandbox-session").
-  sessionWorkload: "sandbox-session"
+  # run_code selects a language by choosing a WORKLOAD: the client POSTs to
+  # `<workloadPrefix><language>` (sandbox-python, sandbox-go, ...). One knob
+  # rather than six, because the language name IS the workload suffix by
+  # contract with the embervm chart. Empty falls back to the client default.
+  workloadPrefix: "sandbox-"
 
 # EmberVM R4 scratch-postgres consumer (ADR embervm/001, D-R4.PR-11.1). When
-# enabled the monolith exposes SCRATCH_POSTGRES_DSN so agent run_python sessions
+# enabled the monolith exposes SCRATCH_POSTGRES_DSN so agent run_code python runs
 # can psycopg-connect to the scale-to-zero scratch Postgres. The datastore's
 # superuser password lives in 1Password (the SAME item the embervm chart syncs
 # into its own namespace); the monolith syncs it into ITS OWN namespace via

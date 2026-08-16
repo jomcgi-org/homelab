@@ -1,0 +1,60 @@
+{{- range $key, $wl := .Values.sandboxWorkloads }}
+{{- $top := index $.Values $key }}
+{{- if $wl.enabled }}
+---
+# One task-class Workload per sandbox language (ADR agents/057, issue #4981).
+#
+# Six sibling guests rather than one polyglot image: the polyglot alternative is
+# cheaper in brick slots and scratch disk, but it couples the python hot path to
+# five toolchains it does not need, so a rust package regression would take
+# python down with it.
+#
+# Rendered from a range rather than six near-identical files, because six
+# copy-pasted CRs differing only in name and memMib is precisely where drift
+# starts. The image pins CANNOT be collapsed the same way: helm_images_values
+# emits one YAML block per dotted key, so two keys sharing a top-level prefix
+# collapse to the last on parse. Each language therefore keeps a FLAT top-level
+# `sandbox<Lang>.guestImage` block, and the map key here is that same name so
+# `index $.Values $key` resolves it.
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: {{ $wl.name }}
+  namespace: {{ $.Release.Namespace }}
+  annotations:
+    # Apply after the CRD (wave 0) establishes.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  class: task
+  source:
+    image:
+      # Must match the top-level sandbox<Lang>.guestImage exactly: the derived
+      # EMBERVM_NODE_IMAGE_IDENTITY entry, the rootfs-builder GUEST_IMAGE, and
+      # this ref all join on the same string.
+      ref: "{{ $top.guestImage.repository }}@{{ $top.guestImage.digest }}"
+      port: {{ $wl.port | default 1027 }}
+      readyPath: {{ $wl.readyPath | default "/shim/ready" | quote }}
+      invokePath: {{ $wl.invokePath | default "/invoke" | quote }}
+      # Baked guest env; part of the base signature (base_builder signature/1
+      # includes sorted init_env), so the shared hypervisor epoch re-keys these
+      # bases whenever the vendored Firecracker binary moves: a new hypervisor
+      # must never try to load a previous version's snapshot (#4389).
+      initEnv:
+        EMBER_HYPERVISOR_EPOCH: {{ $.Values.hypervisorEpoch | quote }}
+  resources:
+    vcpus: {{ $wl.vcpus | default 1 }}
+    memMib: {{ $wl.memMib }}
+  concurrency:
+    # floor is 0 for every language, python included. Verified against
+    # dispatcher.ex pick_node/3: when no warm VM is parked it falls through to a
+    # MISS tier that places a brand-new VM from the base snapshot, so a zero
+    # floor serves correctly and simply pays a restore on first use. That is the
+    # snapshot design used as intended rather than worked around with standing
+    # pools, and it hands the bricks back the RAM five cold languages would
+    # otherwise hold permanently.
+    floor: {{ $wl.floor | default 0 }}
+    cap: {{ $wl.cap }}
+  invocation:
+    timeoutSeconds: {{ $wl.timeoutSeconds }}
+{{- end }}
+{{- end }}

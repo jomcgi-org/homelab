@@ -380,7 +380,7 @@ agent:
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1).
 # DISABLED 2026-08 alongside the embervm Workload CR (its only real consumer,
 # the loom deployment, is decommissioned): SCRATCH_POSTGRES_DSN is unrendered,
-# so run_python sessions get no scratch DB env and the sandbox client leaves
+# so run_code python runs get no scratch DB env and the sandbox client leaves
 # the feature off. demoListenPort keeps DEMO_POSTGRES_DSN and the password
 # Secret alive for the demos page exhibit. Flip enabled back on (with the
 # embervm side) to restore the tenant datastore.

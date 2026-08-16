@@ -416,109 +416,71 @@ sampleWorkload:
   enabled: false
   name: echo
 
-# The first REAL EmberVM workload (Task 14): the python sandbox. A task-class
-# Workload whose guest image is baked into a base rootfs by the noded
-# rootfs-builder and cold-booted into a base snapshot on admission. See
-# templates/workload-sandbox.yaml. The image ref is sourced from
-# noded.sandbox.guestImage so it matches the rootfs-builder + node image table.
-sandboxWorkload:
-  enabled: true
-  name: sandbox
-  # The sandbox guest shim contract (projects/firecracker/sandbox): HTTP over
-  # vsock port 1027, ready at /shim/ready, one python snippet per /invoke.
-  port: 1027
-  readyPath: /shim/ready
-  invokePath: /invoke
-  vcpus: 1
-  memMib: 512
-  # floor MUST stay strictly below the SMALLEST brick's live-VM slot ceiling.
-  #
-  # PoolManager applies floor PER BRICK INSTANCE (`refill_node/2` runs once per
-  # capacity fact and compares this floor against that instance's own
-  # `free_primed_slots`), and memory capacity is not represented by
-  # `noded.maxLiveVMs`:
-  # Admission gates on measured memory headroom (workload need + reject floor),
-  # not on a count derived from the cgroup budget. MaxLiveVMs is only the runaway
-  # backstop and is no longer derived from the budget, so this floor must stay
-  # below the configured backstop. The Task 14b sizing of 4 was written for the
-  # wildcard DaemonSet (16 slots on a 63Gi node-4); the DS is now retired and
-  # bricks are the only capacity. An unsatisfiable floor never stops priming, so
-  # the pool claimed 100% of every 2gi brick and a node-pinned stateful wake could
-  # never find a
-  # free slot (issue #4077: demo-postgres wedged evicted for 2.5h while both
-  # node-2 bricks sat at 3/3, all six slots primed sandbox VMs). Autoscaling made
-  # it worse, not better: because the floor is per instance, each new brick
-  # arrived wanting its own 4.
-  #
-  # 0, down from 2, because the per-instance semantics above make any nonzero
-  # floor a MULTIPLIER over the fleet, and the fleet is now six bricks: floor 2
-  # at 512 MiB was 6 GiB of primed VMs standing by for a workload whose entire
-  # demand is the */5 synthetic probe plus occasional visitor traffic on the
-  # public demo. Measured 2026-08-16 across the live fleet: 8 primed VMs holding
-  # 8192 MiB of reservation against ~510 MiB of actual working set.
-  #
-  # A floor of 0 does NOT mean a cold boot per request. The pool primes on demand
-  # from the workload's base snapshot, which is the same demand-paged restore a
-  # primed VM was created by, so a miss costs a restore (~250ms cold spawn worst
-  # case) rather than a build. That is the same trade claudeRuntimeWorkload
-  # already takes deliberately at floor 0, and the same one bazelQueryWorkload's
-  # floor comment describes as cheap.
-  #
-  # Rollback is setting this back to 2, but prefer fixing #4077 (fleet-wide pool
-  # size) over re-arming a per-instance multiplier.
-  floor: 0
-  cap: 16
-  timeoutSeconds: 30
-
-# The sandbox-session workload (EmberVM R2, ADR embervm/001): the sessioned
-# variant of the sandbox, R2's named first consumer (sessioned run_python). Same
-# guest image + Bazel-pinned digest as `sandbox` above (both derive from
-# .Values.sandbox.guestImage), so one baked rootfs serves both; the kernel mode
-# is opt-in per request. class=session with a spec.session block.
+# The six per-language code-executor workloads (ADR agents/057, issue #4981).
+# Task class, one snippet per invoke, zero egress. Rendered by
+# templates/workload-sandbox-languages.yaml, which ranges over this map.
 #
-# Node-4 disk arithmetic (bounded, not discovered; ADR 002 rule 4): memMib 2048
-# means a full bank snapshot is ~2 GiB; maxSessions 8 (live + banked) caps the
-# snapshot dir at 8 x 2 GiB = 16 GiB worst case, plus up to cap (4) live VMs at
-# 2 GiB RAM each. The Task 9 watermark alert + LRU eviction are the backstop.
-sandboxSessionWorkload:
-  enabled: true
-  name: sandbox-session
-  # Same frozen guest shim contract as the one-shot sandbox: vsock 1027,
-  # /shim/ready, /invoke. The session mode is selected by the request body
-  # ({"mode":"session"}), not a different path.
-  port: 1027
-  readyPath: /shim/ready
-  invokePath: /invoke
-  vcpus: 1
-  memMib: 2048
-  # floor: pristine VMs kept warm for fast session create. cap: max live
-  # session VMs. Small on purpose (see the disk arithmetic above).
-  #
-  # 0, down from 1: at 2048 MiB this floor is the single most expensive one in
-  # the chart per primed VM, and it is per BRICK INSTANCE (see the sandbox floor
-  # note above), so six bricks wanted 12 GiB of pristine session VMs. The
-  # workload has served 0 live / 0 banked sessions since it was created (31d as
-  # of 2026-08-16): its named consumer is SANDBOX_SESSION_WORKLOAD in the
-  # monolith's sandbox client, and the sessioned run_python path that would call
-  # it is not wired to anything today. Warmth for a workload with no caller is
-  # pure reservation.
-  #
-  # The CR stays enabled: the R2 sessioned rung is the thing being kept, and a
-  # create still works, it just pays a restore. Rollback is setting this to 1.
-  floor: 0
-  cap: 4
-  session:
-    # Bank an idle session (no in-flight, no queued invoke) after 2 minutes.
-    idleBankSeconds: 120
-    # Version-convergence bound: a session rides its birth base until this
-    # expires (6h), then the next invoke 410s onto the current base.
-    maxLifetimeSeconds: 21600
-    # GC a banked snapshot untouched this long (here, the full 6h lifetime).
-    bankedTtlSeconds: 21600
-    # Max sessions (live + banked) for this workload.
-    maxSessions: 8
-    # Max invokes queued behind the one in-flight invoke per session.
-    invokeQueueCap: 4
+# Each map key MUST match a flat top-level `<key>.guestImage` block further down
+# AND the `workloads.<key>` rootfs entry: all three join on the same identifier,
+# and the template resolves the image with `index $.Values $key`.
+#
+# floor is 0 for EVERY language, python included. Verified against
+# dispatcher.ex pick_node/3: with no warm VM parked it falls through to a MISS
+# tier that places a brand-new VM from the base snapshot, so a zero floor serves
+# correctly and pays a restore on first use instead of holding RAM. Python
+# previously kept 2 parked VMs; it now gives that back to the bricks, which is
+# what makes five additional (mostly cold) languages affordable at all.
+#
+# The five compiled/interpreted newcomers cap at 4 rather than python's 16: they
+# are bounded guesses, not measurements. Revisit with real demand.
+sandboxWorkloads:
+  sandboxPython:
+    enabled: true
+    name: sandbox-python
+    memMib: 512
+    floor: 0
+    cap: 16
+    timeoutSeconds: 30
+  # Go and Rust carry more memory and a longer budget than the rest, for two
+  # different reasons. Go's warm GOCACHE is WRITTEN into the /tmp tmpfs, so it
+  # is charged against memMib rather than page cache. Rust pages in rustc plus
+  # libLLVM. Both run a COMPILER inside the same wall clock as the program, so
+  # timeoutSeconds covers compile + run, not run alone.
+  sandboxGo:
+    enabled: true
+    name: sandbox-go
+    memMib: 1024
+    floor: 0
+    cap: 4
+    timeoutSeconds: 45
+  sandboxRust:
+    enabled: true
+    name: sandbox-rust
+    memMib: 1024
+    floor: 0
+    cap: 4
+    timeoutSeconds: 45
+  sandboxElixir:
+    enabled: true
+    name: sandbox-elixir
+    memMib: 512
+    floor: 0
+    cap: 4
+    timeoutSeconds: 30
+  sandboxOcaml:
+    enabled: true
+    name: sandbox-ocaml
+    memMib: 512
+    floor: 0
+    cap: 4
+    timeoutSeconds: 30
+  sandboxJavascript:
+    enabled: true
+    name: sandbox-javascript
+    memMib: 512
+    floor: 0
+    cap: 4
+    timeoutSeconds: 30
 
 # The semgrep workload (Task 14b): EmberVM's named first consumer, side-by-side
 # with fc-invoke's semgrep path (which is halved 16->8 in the substrate chart to
@@ -537,12 +499,17 @@ semgrepWorkload:
   # scan, which surfaces as a red */5 probe rather than as a saving. The
   # reservation problem was the floor multiplier below, not this number.
   memMib: 1536
-  # 1, down from 4. Floor is applied PER BRICK INSTANCE (see the sandbox floor
-  # note above), so at 1536 MiB a floor of 4 was a 6 GiB ask per brick that a
-  # 2gi brick can never satisfy: an unsatisfiable floor never stops priming, so
-  # it permanently pressured placement on every small brick in the fleet while
-  # only ever being partly met. That is the #4077 failure mode, and the sandbox
-  # floor was already cut to 2 for it while this one was left at 4.
+  # 1, down from 4. This was cut during #4077, when floor was applied PER BRICK
+  # INSTANCE: at 1536 MiB a floor of 4 was then a 6 GiB ask per brick that a 2gi
+  # brick could never satisfy, and an unsatisfiable floor never stops priming,
+  # so it permanently pressured placement on every small brick in the fleet.
+  #
+  # That per-instance behaviour is GONE. `PoolManager.plan_fleet_allocation/4`
+  # computes floor deficits against `fleet_free_totals/1`, which sums free
+  # primed slots across every instance, so a floor is now ONE number for the
+  # whole fleet. The sizing below is kept anyway (see the next paragraph), but
+  # do not reason about it as a per-brick multiplier: that arithmetic no longer
+  # applies, and the sandbox floors it once justified are now 0.
   #
   # 1 rather than 0 because semgrep is the one demo path with a per-request cost
   # high enough that a warm clone is worth a brick slot, and it keeps one
@@ -593,8 +560,34 @@ bazelQueryWorkload:
 # ref to it. Adding a workload here (with a matching top-level <name>.guestImage)
 # provisions its base and enables an initContainer that bakes it.
 workloads:
-  sandbox:
-    rootfsPath: /var/lib/embervm/scratch/embervm-noded/sandbox/rootfs.ext4
+  # The six sandbox language guests (ADR agents/057). One base rootfs each: they
+  # share a guest-init binary but not a package set, so a toolchain bump in one
+  # language re-bakes only that language's rootfs. Keys are kebabcased into the
+  # build-<key>-rootfs initContainer name, which must be a valid RFC 1123 label,
+  # so sandboxPython renders build-sandbox-python-rootfs.
+  #
+  # NOTE ON ROLLOUT COST: initContainers run SERIALLY, so every brick pod now
+  # bakes six rootfs before noded starts. On a cold digest cache that is roughly
+  # 4 to 5 minutes each, and bricks roll one at a time. Expect a long first roll
+  # with a capacity dip; subsequent rolls hardlink from the content-addressed
+  # cache and cost nothing.
+  sandboxPython:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/sandbox-python/rootfs.ext4
+    harnessInit: /usr/local/bin/sandbox-guest-init
+  sandboxGo:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/sandbox-go/rootfs.ext4
+    harnessInit: /usr/local/bin/sandbox-guest-init
+  sandboxRust:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/sandbox-rust/rootfs.ext4
+    harnessInit: /usr/local/bin/sandbox-guest-init
+  sandboxElixir:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/sandbox-elixir/rootfs.ext4
+    harnessInit: /usr/local/bin/sandbox-guest-init
+  sandboxOcaml:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/sandbox-ocaml/rootfs.ext4
+    harnessInit: /usr/local/bin/sandbox-guest-init
+  sandboxJavascript:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/sandbox-javascript/rootfs.ext4
     harnessInit: /usr/local/bin/sandbox-guest-init
   semgrep:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/semgrep/rootfs.ext4
@@ -650,14 +643,39 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/bazel-query/rootfs.ext4
     harnessInit: /usr/local/bin/ember-bazel-init
 
-# The python sandbox guest image, Bazel-pinned (helm_chart images="sandbox.guestImage")
-# from the frozen fc-invoke sandbox guest's .info provider, so the guest contract
-# is unchanged (zero image changes, per the R0 plan). Consumed by the sandbox
-# rootfs-builder init container, the derived EMBERVM_NODED_IMAGES, and the sandbox
-# Workload CR (all three refs derive from here, so they always match).
-sandbox:
+sandboxPython:
   guestImage:
-    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/guest
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/python
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+sandboxGo:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/go
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+sandboxRust:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/rust
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+sandboxElixir:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/elixir
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+sandboxOcaml:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/ocaml
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+sandboxJavascript:
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/firecracker/sandbox/javascript
     tag: latest
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
@@ -927,7 +945,18 @@ rootfsReclaim:
   # "1" arms deletion. Default "" logs a dry-run manifest of what it WOULD
   # delete and then fails the bake exactly as before, which is what you read
   # before arming. Rollback is setting this back to "" and bumping the chart.
-  enabled: ""
+  #
+  # ARMED (#4981). Checked before arming that no brick currently holds a
+  # reclaimable orphan (no *.tmp.* and no *.building under the noded scratch on
+  # either a master brick or node-4), so this arms an EMPTY path: it deletes
+  # nothing today and only acts the first time a bake dies mid-write. Arming a
+  # deletion path while it has nothing to delete is the safe moment to do it.
+  #
+  # It matters more now: six sandbox rootfs bakes per brick (ADR agents/057)
+  # is six more chances to die mid-write and strand an intermediate, and the
+  # deadlock this breaks is self-sustaining (a full scratch stops noded, which
+  # stops the control plane's retention sweep from reaching the node at all).
+  enabled: "1"
   # Stop deleting once this much scratch is free.
   #
   # MUST exceed rootfsBuilder.rootfsSize (4G) with headroom for ext4
