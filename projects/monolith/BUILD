@@ -107,6 +107,7 @@ _BACKEND_SRCS = glob(
         "shared/**/*.py",
         "ships/**/*.py",
         "hikes/**/*.py",
+        "moving/**/*.py",
         "stars/**/*.py",
         "trips/**/*.py",
         "dr_jobs/**/*.py",
