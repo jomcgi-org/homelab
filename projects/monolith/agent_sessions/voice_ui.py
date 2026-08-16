@@ -92,11 +92,12 @@ def show(
     principal_authority: str,
 ) -> dict:
     if surface not in SURFACES:
-        return {
-            "accepted": False,
-            "error": _surface_error(surface),
-            "companion_open": True,
-        }
+        # Argument validity is decided before any companion lookup, so a
+        # malformed call gets the same answer whether or not a screen is up.
+        # companion_open is deliberately absent: it has not been determined,
+        # and asserting it here would both be a guess and reintroduce the
+        # dependency on screen state this ordering exists to remove.
+        return {"accepted": False, "error": _surface_error(surface)}
     with Session(get_engine()) as session:
         companion = store.get_open_voice_ui_companion(session, _now())
         if companion is None:
@@ -135,11 +136,8 @@ def dismiss(
     principal_authority: str,
 ) -> dict:
     if surface is not None and surface not in SURFACES:
-        return {
-            "accepted": False,
-            "error": _surface_error(surface),
-            "companion_open": True,
-        }
+        # See show(): companion_open is omitted because it is undetermined.
+        return {"accepted": False, "error": _surface_error(surface)}
     with Session(get_engine()) as session:
         companion = store.get_open_voice_ui_companion(session, _now())
         if companion is None:

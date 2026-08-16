@@ -122,12 +122,13 @@ def test_tools_accept_without_open_companion_and_write_nothing(
 
 
 def test_unknown_surface_is_rejected_identically_with_or_without_companion(session):
+    # companion_open is absent on purpose: the call is rejected before any
+    # companion lookup, so claiming either value would be a guess.
     expected = {
         "accepted": False,
         "error": (
             "unknown surface unknown; valid surfaces: run, transcript, vm, walkthrough"
         ),
-        "companion_open": True,
     }
 
     assert asyncio.run(mcp.monolith_voice_ui_show("unknown", "ref")) == expected
@@ -246,7 +247,6 @@ def test_unknown_show_surface_is_rejected_without_ledger_row(session):
     assert result == {
         "accepted": False,
         "error": "unknown surface map; valid surfaces: run, transcript, vm, walkthrough",
-        "companion_open": True,
     }
     assert _ledger_rows(session) == []
 
