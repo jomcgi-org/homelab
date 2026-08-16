@@ -31,6 +31,24 @@ entries:
       groups:
         - !Find [authentik_core.group, [name, authentik Admins]]
         - !KeyOf homelab-admin
+        # `family` is declared and owned by moving-auth.yaml, not here, and
+        # referencing it across files is deliberate rather than sloppy.
+        #
+        # user.groups and group.users are the SAME many-to-many relation, and
+        # a blueprint sets the whole list rather than appending to it. If
+        # moving-auth.yaml also declared membership (from the group's side, as
+        # `users:`), the two files would each replace what the other wrote and
+        # the membership would flap on every reconcile: present after one pass,
+        # gone after the next. That presents as intermittent 403s on
+        # friends.jomcgi.dev/moving, which is a miserable thing to debug.
+        #
+        # So akadmin's group list has exactly ONE writer, and it is this entry.
+        # Anyone adding akadmin to a future group adds it here too.
+        #
+        # Other `family` members (Anna) are added in the UI on purpose. No
+        # blueprint declares their user, so nothing in Git can fight the UI
+        # over their membership.
+        - !Find [authentik_core.group, [name, family]]
 
   # ── 3. Gate the MCP application ─────────────────────────────────────────
   # Until this exists the application has ZERO policy bindings, which in
