@@ -2255,6 +2255,310 @@ defmodule Embervm.BaseBuilderTest do
     })
   end
 
+  test "a successful build records its vendor, signature, ref, and digest" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "amd", cpu_vendor: " amd ")
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap-amd", "sha256:amd")} end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-amd" end)
+
+    workload = :sys.get_state(builder).workloads["w"]
+
+    assert workload.vendor_built == %{
+             "amd" => %{
+               signature: workload.built_signature,
+               ref: "snap-amd",
+               digest: "sha256:amd"
+             }
+           }
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+    assert :sys.get_state(builder).workloads["w"].vendor_built == workload.vendor_built
+  end
+
+  test "a build without a capacity fact keeps scalar bookkeeping and records no vendor" do
+    agent = start_recorder()
+    table = new_cap_table()
+
+    build_fun = fn :fake_channel, req ->
+      case req.image_ref do
+        "imgA" -> {:ok, resp("snap1", "sha256:one")}
+        "imgB" -> {:ok, resp("snap2", "sha256:two")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-9/brick", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgB"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2" end)
+
+    workload = :sys.get_state(builder).workloads["w"]
+    assert workload.vendor_built == %{}
+    assert workload.snapshot_digest == "sha256:two"
+    assert workload.superseded_refs == ["snap1"]
+    assert Map.has_key?(workload.base_refs, "snap1")
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
+  end
+
+  test "a build with a blank CPU vendor records no vendor" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "blank", cpu_vendor: "   ")
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/blank", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap1", "sha256:one")} end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    workload = :sys.get_state(builder).workloads["w"]
+    assert workload.vendor_built == %{}
+    assert workload.snapshot_ref == "snap1"
+    assert workload.snapshot_digest == "sha256:one"
+    assert workload.built_signature != nil
+  end
+
+  test "turnover supersedes only the previous ref for the build vendor" do
+    agent = start_recorder()
+    table = new_cap_table()
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+
+    build_fun = fn :fake_channel, req ->
+      case req.image_ref do
+        "imgA" -> {:ok, resp("amd-a")}
+        "imgI" -> {:ok, resp("intel-i")}
+        "imgA2" -> {:ok, resp("amd-a2")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a" end)
+
+    :ok = BaseBuilder.remove_node(builder, "node-4/amd")
+    NodeCapacity.drop(table, {"node-4", "amd"})
+    put_brick(table, "node-1", "intel", cpu_vendor: "intel")
+    :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgI"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i" end)
+
+    after_intel = :sys.get_state(builder).workloads["w"]
+    assert after_intel.superseded_refs == []
+    assert after_intel.base_refs == %{}
+    assert after_intel.vendor_built["amd"].ref == "amd-a"
+    assert after_intel.vendor_built["intel"].ref == "intel-i"
+
+    :ok = BaseBuilder.remove_node(builder, "node-1/intel")
+    NodeCapacity.drop(table, {"node-1", "intel"})
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+    :ok = BaseBuilder.add_node(builder, "node-4/amd", "amd")
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 3, image_ref: "imgA2"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-a2" end)
+
+    after_amd = :sys.get_state(builder).workloads["w"]
+    assert after_amd.superseded_refs == ["amd-a"]
+    assert Map.has_key?(after_amd.base_refs, "amd-a")
+    refute Map.has_key?(after_amd.base_refs, "intel-i")
+  end
+
+  test "coverage reports a registered vendor with no build while Ready stays true" do
+    agent = start_recorder()
+    table = new_cap_table()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    put_brick(table, "node-4", "amd",
+      cpu_vendor: "amd",
+      size_class: "16gi",
+      mem_budget: 16_384
+    )
+
+    put_brick(table, "node-1", "intel",
+      cpu_vendor: "intel",
+      size_class: "8gi",
+      mem_budget: 8_192
+    )
+
+    build_fun = fn :fake_channel, _req ->
+      Agent.update(builds, &(&1 + 1))
+      {:ok, resp("amd-base")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [
+          %{id: "node-4/amd", address: "amd"},
+          %{id: "node-1/intel", address: "intel"}
+        ],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    status = latest(agent, "w")
+    coverage = condition(status, "BaseVendorCoverage")
+    assert %{"status" => "False", "reason" => "VendorCoverageIncomplete"} = coverage
+    assert coverage["message"] =~ "missing vendors: intel"
+    assert coverage["message"] =~ "stale vendors: none"
+    assert %{"status" => "True"} = condition(status, "Ready")
+
+    built_and_later =
+      recorded(agent)
+      |> Enum.drop_while(fn {_namespace, _name, status_map} -> status_map["snapshotRef"] != "amd-base" end)
+
+    assert built_and_later != []
+
+    for {_namespace, "w", status_map} <- built_and_later do
+      assert %{"status" => "True"} = condition(status_map, "Ready")
+    end
+
+    assert Agent.get(builds, & &1) == 1
+  end
+
+  test "a registered instance without a capacity fact is not a missing vendor" do
+    agent = start_recorder()
+    table = new_cap_table()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    put_brick(table, "node-4", "amd",
+      cpu_vendor: "amd",
+      size_class: "",
+      mem_budget: 16_384
+    )
+
+    build_fun = fn :fake_channel, _req ->
+      Agent.update(builds, &(&1 + 1))
+      {:ok, resp("amd-base")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [
+          %{id: "node-4/amd", address: "amd"},
+          %{id: "node-1/intel", address: "intel"}
+        ],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+    Process.sleep(50)
+    assert Agent.get(builds, & &1) == 1
+  end
+
+  test "coverage reports an old vendor signature as stale rather than missing" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+
+    build_fun = fn :fake_channel, req ->
+      case req.image_ref do
+        "imgA" ->
+          {:ok, resp("amd-v1")}
+
+        "imgB" ->
+          send(test_pid, {:building_new_signature, self()})
+
+          receive do
+            :finish -> {:ok, resp("amd-v2")}
+          end
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{image_ref: "imgA"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-v1" end)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgB"}))
+    assert_receive {:building_new_signature, worker}, 1_000
+
+    coverage = condition(latest(agent, "w"), "BaseVendorCoverage")
+    assert %{"status" => "False"} = coverage
+    assert coverage["message"] =~ "missing vendors: none"
+    assert coverage["message"] =~ "stale vendors: amd"
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "Ready")
+
+    send(worker, :finish)
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-v2" end)
+  end
+
+  test "single-vendor convergence remains one build and reports full coverage" do
+    agent = start_recorder()
+    table = new_cap_table()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+    put_brick(table, "node-4", "amd", cpu_vendor: "amd")
+
+    build_fun = fn :fake_channel, _req ->
+      Agent.update(builds, &(&1 + 1))
+      {:ok, resp("amd-base")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/amd", address: "amd"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
+    Process.sleep(50)
+
+    assert Agent.get(builds, & &1) == 1
+    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
+  end
+
   test "status carries one entry per CPU vendor the fleet reports a base on" do
     agent = start_recorder()
     table = new_cap_table()

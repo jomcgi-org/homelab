@@ -1125,7 +1125,13 @@ spec:
                     properties:
                       type:
                         type: string
-                        description: Ready | BaseBuilt.
+                        description: >-
+                          Ready | BaseBuilt | BaseVendorCoverage. Ready means a
+                          restorable base exists SOMEWHERE, which on a
+                          vendor-split fleet is not the same as everywhere:
+                          BaseVendorCoverage is the per-CPU-vendor view and goes
+                          False while any known fleet vendor lacks a base at the
+                          desired signature.
                       status:
                         type: string
                         enum:
