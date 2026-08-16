@@ -31,7 +31,13 @@ authentik:
     # Once enabled, token exchange is off by default per provider and has to
     # be turned on under the provider's Grant Types setting.
     image:
+      # Private overlay of the official server image with a lab-local license
+      # CA. Built from github.com/jomcgi/authentik-fork. Tag tracks the
+      # upstream authentik release the overlay is FROM.
+      repository: ghcr.io/jomcgi/authentik-fork
       tag: "2026.8.0-rc7"
+    imagePullSecrets:
+      - name: ghcr-imagepull-secret
     # authentik.existingSecret replaces the chart-generated configuration
     # secret, so the PostgreSQL connection settings must be supplied here too.
     # Without these values authentik falls back to localhost:5432.
@@ -127,6 +133,18 @@ authentik:
             owner: authentik
         monitoring:
           enablePodMonitor: true
+
+    - apiVersion: onepassword.com/v1
+      kind: OnePasswordItem
+      type: kubernetes.io/dockerconfigjson
+      metadata:
+        name: ghcr-imagepull-secret
+        namespace: authentik
+        labels:
+          app.kubernetes.io/name: authentik
+          app.kubernetes.io/part-of: authentik
+      spec:
+        itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
 
     - apiVersion: onepassword.com/v1
       kind: OnePasswordItem

@@ -3,6 +3,15 @@
 This deploys the official authentik Helm chart with a separately managed
 CloudNativePG database, as decided by ADR 032.
 
+The server and worker run a private overlay of `ghcr.io/goauthentik/server`
+from `ghcr.io/jomcgi/authentik-fork`, which swaps the enterprise license CA
+for a lab-local one. The pull secret is the existing
+`vaults/k8s-homelab/items/ghcr-read-permissions` item, mirrored as
+`ghcr-imagepull-secret` in this namespace. After the overlay is live, paste
+the license JWT (local file
+`~/repos/authentik-fork/secrets/authentik.license`) in the admin UI under
+Enterprise, Licenses, Install.
+
 Before ArgoCD can make the server ready, create the 1Password item at
 `vaults/k8s-homelab/items/authentik`. It must contain a field named
 `AUTHENTIK_SECRET_KEY` with a generated, durable value, plus
