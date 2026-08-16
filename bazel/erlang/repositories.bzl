@@ -183,14 +183,21 @@ exports_files(["bin/protoc"], visibility = ["//visibility:public"])
 
 def _erlang_impl(_ctx):
     http_archive(
-        # OTP version MUST match the apko image's Wolfi erlang-27 (27.3.4.2)
+        # OTP version MUST match the apko image's Wolfi erlang-27 (27.3.4.16)
         # exactly: an include_erts:false release pins exact OTP app versions in
         # its .boot, so a build/runtime patch mismatch fails the pod at boot. If
         # Wolfi's erlang-27 bumps, re-pin both this and the image package together.
+        #
+        # The pin is only re-pinnable while BOTH sides still publish the version.
+        # 27.3.4.2 was dropped from the Wolfi APKINDEX (its apk still resolves on
+        # the CDN, which is why nothing broke), so `apko lock` could no longer
+        # satisfy the image's `erlang-27=27.3.4.2-r0` constraint and every lock
+        # refresh failed. Choose a version present in BOTH the Wolfi index and
+        # builds.hex.pm/builds/otp/ubuntu-22.04, not merely the newest of one.
         name = "otp_ubuntu2204_amd64",
-        urls = ["https://builds.hex.pm/builds/otp/ubuntu-22.04/OTP-27.3.4.2.tar.gz"],
-        sha256 = "32c3ee239855556350f9700cf942a0a70b60228a277f314397a709e992345dfc",
-        strip_prefix = "OTP-27.3.4.2",
+        urls = ["https://builds.hex.pm/builds/otp/ubuntu-22.04/OTP-27.3.4.16.tar.gz"],
+        sha256 = "16b455351679b5e200594a5f6b742fd0f9f8d42b0dd2b35eebbbcd2288bb44bd",
+        strip_prefix = "OTP-27.3.4.16",
         build_file_content = _OTP_BUILD,
     )
     http_archive(

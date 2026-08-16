@@ -35,6 +35,23 @@ while IFS= read -r config; do
 	# would flip them all back on its next run. Strip it so both agree.
 	config="${config#./}"
 
+	# A real apko config has a top-level `contents:` block. The find below also
+	# matches Helm templates that merely BEGIN with "apko-" (the renovate
+	# apko-lock CronWorkflow and its ConfigMap), which are Kubernetes manifests
+	# apko can never resolve. Left in, they failed on every run, and because this
+	# script exits non-zero when ANY config fails, the update-apko-locks
+	# pre-commit hook rejected every commit that touched any apko.yaml anywhere
+	# in the repo.
+	#
+	# Filter on SHAPE, not on path: a path exclusion holds only until the next
+	# misnamed file lands somewhere else. Skips are logged rather than silent, so
+	# a REAL config that somehow fails this test shows up as a visible line
+	# instead of quietly never being locked again.
+	if ! grep -qE '^contents:' "$config"; then
+		echo "  Skipping (no top-level 'contents:', not an apko config): $config"
+		continue
+	fi
+
 	echo "  Updating lock for: $config"
 
 	# Do NOT pipe bazel straight into a filter. A pipeline's exit status is the
@@ -53,11 +70,25 @@ while IFS= read -r config; do
 "
 	fi
 done < <(
-	# Find all apko config files (including architecture-specific ones, excluding lock files)
-	find . \( -name "apko.yaml" -o -name "apko-*.yaml" \) \
-		-not -path "*/node_modules/*" \
-		-not -path "*/.git/*" \
-		-not -name "*.lock.json"
+	# With arguments (the pre-commit hook passes the configs being committed),
+	# lock exactly those. With none, lock everything.
+	#
+	# Scope matters more than it looks. A repo-wide refresh rewrites every lock
+	# to whatever Wolfi ships today, and each rewritten lock re-bakes that
+	# guest's multi-GB rootfs on every brick. Committing one apko.yaml should not
+	# quietly drag a fleet-wide re-bake along with it. Keeping everything current
+	# is the renovate-apko-lock-maintenance CronWorkflow's job, on its own
+	# schedule, where the resulting diff gets reviewed as its own change.
+	if [ "$#" -gt 0 ]; then
+		printf '%s\n' "$@"
+	else
+		# All apko config files (including architecture-specific ones, excluding
+		# lock files). Non-configs are filtered by shape in the loop above.
+		find . \( -name "apko.yaml" -o -name "apko-*.yaml" \) \
+			-not -path "*/node_modules/*" \
+			-not -path "*/.git/*" \
+			-not -name "*.lock.json"
+	fi
 )
 
 if [ "$failed_count" -ne 0 ]; then

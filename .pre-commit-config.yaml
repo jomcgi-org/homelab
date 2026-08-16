@@ -26,12 +26,17 @@ repos:
         files: 'pyproject\.toml$'
         pass_filenames: false
 
+      # pass_filenames is true so a commit only re-locks the configs it actually
+      # touches. Repo-wide is still available by running the script with no
+      # arguments; it is the renovate-apko-lock-maintenance CronWorkflow's job,
+      # not something a single commit should drag along (each rewritten lock
+      # re-bakes that guest's rootfs on every brick).
       - id: update-apko-locks
         name: Update apko locks
         entry: bazel/tools/format/update-apko-locks.sh
         language: script
         files: 'apko\.yaml$'
-        pass_filenames: false
+        pass_filenames: true
 
       - id: update-atlas-sum
         name: Update Atlas migration checksums

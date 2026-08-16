@@ -11,10 +11,17 @@
 # run. If an arm64 node ever joins, this must become a per-arch release build (a
 # per-arch NIF), the bazel/ocaml pattern; until then, one arch is simpler.
 #
-# erlang-27 is pinned to 27.3.4.2-r0 to EXACTLY match the build OTP
+# erlang-27 is pinned to 27.3.4.16-r0 to EXACTLY match the build OTP
 # (bazel/erlang/repositories.bzl): an include_erts:false release pins exact OTP
 # app versions in its .boot script, so a build/runtime patch mismatch crash-loops
 # the pod at boot. Re-pin both together when Wolfi bumps erlang-27.
+#
+# Do not let this drift far. Wolfi drops old versions from its APKINDEX while
+# leaving the apk itself resolvable on the CDN, so a stale exact pin keeps
+# BUILDING long after `apko lock` stops being able to satisfy it. That is how
+# 27.3.4.2 got here: every lock refresh in the repo failed against this one
+# constraint while nothing visibly broke. Pick a version present in BOTH the
+# Wolfi index and builds.hex.pm/builds/otp/ubuntu-22.04.
 contents:
   repositories:
     - https://packages.wolfi.dev/os
@@ -23,7 +30,7 @@ contents:
   packages:
     - ca-certificates-bundle
     - busybox
-    - erlang-27=27.3.4.2-r0
+    - erlang-27=27.3.4.16-r0
 
 archs:
   - x86_64
