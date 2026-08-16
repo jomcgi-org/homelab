@@ -117,9 +117,9 @@ func TestLanguageSpecs(t *testing.T) {
 		excluded   []string
 	}{
 		{name: "python", sourceFile: "main.py", run: []string{"python3", "main.py"}, extraEnv: []string{"PYTHONUNBUFFERED=1", "MPLBACKEND=Agg", "MPLCONFIGDIR=/tmp/mplconfig", "PYTHONPATH=/opt/sandbox"}, warm: []string{"python3", "-c"}, excluded: []string{"main.py"}},
-		{name: "go", sourceFile: "main.go", run: []string{"go", "run", "."}, extraEnv: []string{"GOCACHE=/tmp/gocache", "GOPATH=/tmp/gopath", "GOMODCACHE=/tmp/gopath/pkg/mod", "GOTOOLCHAIN=local", "GOPROXY=off", "GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOMAXPROCS=1"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.go", "go.mod", "go.sum"}},
+		{name: "go", sourceFile: "main.go", run: []string{"go", "run", "."}, extraEnv: []string{"GOROOT=/usr/lib/go", "GOCACHE=/tmp/gocache", "GOPATH=/tmp/gopath", "GOMODCACHE=/tmp/gopath/pkg/mod", "GOTOOLCHAIN=local", "GOPROXY=off", "GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOMAXPROCS=1"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.go", "go.mod", "go.sum"}},
 		{name: "rust", sourceFile: "main.rs", compile: []string{"rustc", "-O", "main.rs", "-o", "main"}, run: []string{"./main"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.rs", "main"}},
-		{name: "elixir", sourceFile: "main.exs", run: []string{"elixir", "main.exs"}, extraEnv: []string{"ERL_CRASH_DUMP=/dev/null", "ELIXIR_ERL_OPTIONS=-noinput"}, warm: []string{"elixir", "-e", ":ok"}, excluded: []string{"main.exs"}},
+		{name: "elixir", sourceFile: "main.exs", run: []string{"elixir", "main.exs"}, extraEnv: []string{"ERL_CRASH_DUMP=/dev/null", "ELIXIR_ERL_OPTIONS=-noinput +fnu"}, warm: []string{"elixir", "-e", ":ok"}, excluded: []string{"main.exs"}},
 		{name: "ocaml", sourceFile: "main.ml", run: []string{"ocaml", "main.ml"}, warm: []string{"/bin/sh", "-c"}, excluded: []string{"main.ml", "main.cmi", "main.cmo"}},
 		{name: "javascript", sourceFile: "main.js", run: []string{"node", "main.js"}, warm: []string{"node", "-e", "0"}, excluded: []string{"main.js"}},
 	}
@@ -172,6 +172,31 @@ func TestGoEnvironmentIsOffline(t *testing.T) {
 		if !contains(env, required) {
 			t.Errorf("Go environment %#v does not contain %q", env, required)
 		}
+	}
+}
+
+// TestGoEnvironmentSetsGoroot pins the variable without which the go binary
+// exits 2 before compiling anything, because Wolfi trims it and it cannot then
+// infer its own root.
+//
+// This is a data assertion and it is worth being honest about its limits: it
+// proves the string is in the slice, not that /usr/lib/go is where this image
+// actually puts the toolchain. That was established by reading the shipped
+// image (bin/go, pkg/tool/linux_amd64/compile, src/runtime/proc.go) and is
+// only ever re-proved by running go in the sandbox.
+func TestGoEnvironmentSetsGoroot(t *testing.T) {
+	env := languageSpecs["go"].Environment("/tmp/workdir")
+	if !contains(env, "GOROOT=/usr/lib/go") {
+		t.Errorf("Go environment %#v does not contain GOROOT", env)
+	}
+}
+
+// TestElixirRunsWithUtf8NameEncoding pins +fnu. The image ships no locale data,
+// so without it the BEAM starts in latin1 and warns on every run.
+func TestElixirRunsWithUtf8NameEncoding(t *testing.T) {
+	env := languageSpecs["elixir"].Environment("/tmp/workdir")
+	if !contains(env, "ELIXIR_ERL_OPTIONS=-noinput +fnu") {
+		t.Errorf("Elixir environment %#v does not request utf8 name encoding", env)
 	}
 }
 

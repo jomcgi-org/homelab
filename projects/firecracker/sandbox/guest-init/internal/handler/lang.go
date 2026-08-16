@@ -94,6 +94,12 @@ var languageSpecs = map[string]Spec{
 		Prepare:    prepareGo,
 		Run:        []string{"go", "run", "."},
 		Env: []string{
+			// Wolfi ships the go binary built with -trimpath, so it cannot infer
+			// its own root and exits 2 with "cannot find GOROOT directory: 'go'
+			// binary is trimmed and GOROOT is not set". Verified against the
+			// shipped image, which carries a complete root at this path:
+			// bin/go, pkg/tool/linux_amd64/compile, and src/runtime.
+			"GOROOT=/usr/lib/go",
 			"GOCACHE=/tmp/gocache",
 			"GOPATH=/tmp/gopath",
 			"GOMODCACHE=/tmp/gopath/pkg/mod",
@@ -135,7 +141,13 @@ var languageSpecs = map[string]Spec{
 		Run:        []string{"elixir", "main.exs"},
 		Env: []string{
 			"ERL_CRASH_DUMP=/dev/null",
-			"ELIXIR_ERL_OPTIONS=-noinput",
+			// +fnu sets the VM's native name encoding to utf8. Without it every
+			// run prints "the VM is running with native name encoding of latin1
+			// which may cause Elixir to malfunction as it expects utf8" to
+			// stderr, and any snippet touching a non-ASCII filename misbehaves.
+			// The usual alternative, a UTF-8 locale, is not available: the guest
+			// image ships no locale data.
+			"ELIXIR_ERL_OPTIONS=-noinput +fnu",
 		},
 		Warm:           []string{"elixir", "-e", ":ok"},
 		ExcludeOutputs: []string{"main.exs"},
