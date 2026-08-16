@@ -11,8 +11,11 @@
     formatTaskDueDate,
     ganttDatePosition,
     ganttTimeline,
+    groupMilestonesByDate,
     mergeAgendaItems,
     moveCountdown,
+    packLaneBars,
+    packLegTags,
     progressSummary,
     sortOpenTasks,
     sumSellValues,
@@ -20,6 +23,18 @@
     titleCaseName,
   } from "./moving.js";
   import "./moving-theme.css";
+
+  // Kept in step with the matching values in moving-theme.css: the milestone
+  // row and each bar sub-row are a fixed height, and the plot reserves a fixed
+  // --pad-btm (46px) for the axis. ROW_GAP is not a CSS gap: .rows uses
+  // justify-content: space-between, so the height below reserves
+  // ROW_GAP * lanes of slack and space-between then distributes it evenly
+  // across the gaps. Only --pad-top (leg tag stagger) and the plot's total
+  // height are computed here, because those two grow with the data.
+  const MILESTONE_ROW_H = 34;
+  const BAR_ROW_H = 34;
+  const ROW_GAP = 14;
+  const PLOT_PAD_BTM = 46;
 
   let { data } = $props();
 
@@ -69,22 +84,56 @@
       }))
       .filter((collision) => collision.wording),
   );
-  const milestonePoints = $derived(
-    milestones
-      .map((milestone) => ({
-        ...milestone,
+  const milestoneGroups = $derived(groupMilestonesByDate(milestones));
+  const milestoneMarkers = $derived(
+    milestoneGroups
+      .map((group) => ({
+        ...group,
         position: ganttDatePosition(
-          milestone.occurs_on,
+          group.occursOn,
           timeline.startsOn,
           timeline.endsOn,
         ),
       }))
-      .filter((milestone) => milestone.position != null),
+      .filter((group) => group.position != null),
   );
   const legSpans = $derived(
     spans
       .filter((span) => span.kind === "move" || span.kind === "trip")
       .toSorted((left, right) => left.starts_on.localeCompare(right.starts_on)),
+  );
+  const legTagPack = $derived(
+    packLegTags(
+      legSpans
+        .map((span) => ({
+          ...span,
+          position: ganttDatePosition(
+            span.starts_on,
+            timeline.startsOn,
+            timeline.endsOn,
+          ),
+        }))
+        .filter((span) => span.position != null),
+    ),
+  );
+  const plotPadTop = $derived(
+    12 + Math.max(1, legTagPack.staggerCount) * 38 + 10,
+  );
+  const packedLanes = $derived(
+    timeline.lanes.map((lane) => {
+      const packed = packLaneBars(lane.bars);
+      return { ...lane, bars: packed.bars, subRowCount: packed.subRowCount };
+    }),
+  );
+  const plotHeight = $derived(
+    plotPadTop +
+      MILESTONE_ROW_H +
+      packedLanes.reduce(
+        (total, lane) => total + lane.subRowCount * BAR_ROW_H,
+        0,
+      ) +
+      ROW_GAP * packedLanes.length +
+      PLOT_PAD_BTM,
   );
   const currentDateLabel = new Intl.DateTimeFormat("en-GB", {
     weekday: "short",
@@ -202,6 +251,27 @@
     if (milestone.gcal_state === "synced") return "✓";
     return "○";
   }
+
+  function milestoneGroupLabel(group) {
+    const titles = group.milestones.map((item) => item.title).join(", ");
+    return group.count > 1
+      ? `${group.count} milestones, ${formatShortDate(group.occursOn)}: ${titles}`
+      : `${titles}, ${formatShortDate(group.occursOn)}, ${group.state}`;
+  }
+
+  function showMilestoneTooltip(event, group) {
+    showTooltip(
+      event,
+      group.count > 1 ? `${group.count} milestones` : group.milestones[0].title,
+      formatShortDate(group.occursOn),
+      group.milestones
+        .map(
+          (item) =>
+            `${item.title} · ${titleCaseName(item.owner)} · ${item.gcal_state}`,
+        )
+        .join("\n"),
+    );
+  }
 </script>
 
 <svelte:head>
@@ -232,30 +302,36 @@
               <strong>{countdown.headline}</strong>
               <span>{countdown.detail}</span>
             </div>
-          {:else if countdown.days > 0}
-            <h1 id="move-countdown">
-              <span class="hl"
-                >{countdown.days} {countdown.days === 1 ? "day" : "days"}</span
-              >&nbsp;to wheels&#8209;up.
-            </h1>
-          {:else if countdown.days === 0}
-            <h1 id="move-countdown">
-              <span class="hl">Wheels&#8209;up</span>&nbsp;today.
-            </h1>
           {:else}
-            <h1 id="move-countdown">
-              <span class="hl"
-                >{Math.abs(countdown.days)}
-                {Math.abs(countdown.days) === 1 ? "day" : "days"}</span
-              >&nbsp;since wheels&#8209;up.
+            <h1
+              id="move-countdown"
+              title={countdown.description}
+              aria-describedby="move-countdown-desc"
+            >
+              {#if countdown.days > 0}
+                <span class="hl"
+                  >{countdown.days}
+                  {countdown.days === 1 ? "day" : "days"}</span
+                >
+              {:else if countdown.days === 0}
+                <span class="hl">Today</span>
+              {:else}
+                <span class="hl"
+                  >{Math.abs(countdown.days)}
+                  {Math.abs(countdown.days) === 1 ? "day" : "days"}</span
+                >&nbsp;ago
+              {/if}
             </h1>
+            <span id="move-countdown-desc" class="sr-only"
+              >{countdown.description}</span
+            >
           {/if}
         </section>
 
         <section class="cell c-today" aria-labelledby="today-heading">
           <div class="ch">
             <h2 id="today-heading">Do today</h2>
-            <span class="seg-mini" role="group" aria-label="Task scope">
+            <span class="seg-mini" role="group" aria-label="Plan scope">
               <button
                 type="button"
                 aria-pressed={currentScope === "mine"}
@@ -336,15 +412,20 @@
           aria-label={`Timeline, ${formatShortDate(timeline.startsOn)} to ${formatShortDate(timeline.endsOn)}`}
           bind:this={plotCard}
         >
-          <div class="plot">
+          <div
+            class="plot"
+            style:height={`${plotHeight}px`}
+            style:--pad-top={`${plotPadTop}px`}
+          >
             <div class="plot-scale">
               {#each timeline.months.slice(1) as month (month.value)}
                 <span class="vline" style:left={`${month.position}%`}></span>
               {/each}
-              {#each legSpans as span (span.id)}
+              {#each legTagPack.tags as span (span.id)}
                 <div
                   class={`legtag ${spanHueClass(span)}`}
-                  style:left={`${ganttDatePosition(span.starts_on, timeline.startsOn, timeline.endsOn)}%`}
+                  style:left={`${span.position}%`}
+                  style:--stagger={span.stagger}
                 >
                   <b>{span.label}</b>
                   <span>{formatDateRange(span.starts_on, span.ends_on)}</span>
@@ -366,45 +447,47 @@
               <div class="row slim">
                 <span class="name">Milestones</span>
                 <div class="track">
-                  {#each milestonePoints as milestone (milestone.id)}
-                    <button
-                      type="button"
-                      class:fill={milestone.gcal_state === "synced"}
-                      class:held={milestone.gcal_state === "held"}
-                      class="dia"
-                      style:left={`${milestone.position}%`}
-                      aria-label={`${milestone.title}, ${formatShortDate(milestone.occurs_on)}, ${milestone.gcal_state}`}
-                      onpointerenter={(event) =>
-                        showTooltip(
-                          event,
-                          milestone.title,
-                          `${formatShortDate(milestone.occurs_on)} · ${titleCaseName(milestone.owner)}`,
-                          milestone.gcal_state,
-                        )}
-                      onpointerleave={() => (tooltip = null)}
-                      onfocus={(event) =>
-                        showTooltip(
-                          event,
-                          milestone.title,
-                          `${formatShortDate(milestone.occurs_on)} · ${titleCaseName(milestone.owner)}`,
-                          milestone.gcal_state,
-                        )}
-                      onblur={() => (tooltip = null)}
-                      onclick={() => openDialog(calendarDialog)}
-                    ></button>
+                  {#each milestoneMarkers as group (group.id)}
+                    <div class="dia-wrap" style:left={`${group.position}%`}>
+                      <span class="dia-marker">
+                        <button
+                          type="button"
+                          class:fill={group.state === "synced"}
+                          class:held={group.state === "held"}
+                          class="dia"
+                          aria-label={milestoneGroupLabel(group)}
+                          onpointerenter={(event) =>
+                            showMilestoneTooltip(event, group)}
+                          onpointerleave={() => (tooltip = null)}
+                          onfocus={(event) =>
+                            showMilestoneTooltip(event, group)}
+                          onblur={() => (tooltip = null)}
+                          onclick={() => openDialog(calendarDialog)}
+                        ></button>
+                        {#if group.count > 1}
+                          <span class="dia-count" aria-hidden="true"
+                            >{group.count}</span
+                          >
+                        {/if}
+                      </span>
+                      <span class="dia-date"
+                        >{formatShortDate(group.occursOn)}</span
+                      >
+                    </div>
                   {/each}
                 </div>
               </div>
-              {#each timeline.lanes as lane (lane.kind)}
+              {#each packedLanes as lane (lane.kind)}
                 <div class="row">
                   <span class="name">{lane.label}</span>
-                  <div class="track">
+                  <div class="track" style:--sub-rows={lane.subRowCount}>
                     {#each lane.bars as bar (bar.id)}
                       <button
                         type="button"
                         class="bar"
                         style:left={`${bar.position}%`}
                         style:width={`${bar.width}%`}
+                        style:--sub-row={bar.subRow}
                         aria-label={`${bar.label}, ${formatDateRange(bar.starts_on, bar.ends_on)}`}
                         onpointerenter={(event) =>
                           showTooltip(
@@ -427,7 +510,7 @@
                   </div>
                 </div>
               {/each}
-              {#if timeline.lanes.length === 0 && milestonePoints.length === 0}
+              {#if packedLanes.length === 0 && milestoneMarkers.length === 0}
                 <p class="plot-empty">No timeline dates yet.</p>
               {/if}
             </div>
@@ -559,7 +642,7 @@
               class="dot"
               aria-hidden="true"
             ></span>
-            Calendar <span class="v mono">{milestones.length} dates</span>
+            Calendar <span class="v mono">{milestoneGroups.length} dates</span>
           </button>
           <button
             class="dockbtn"

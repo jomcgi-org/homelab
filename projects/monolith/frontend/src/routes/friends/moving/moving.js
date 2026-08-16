@@ -87,18 +87,22 @@ export function moveCountdown(spans, now = new Date()) {
     .filter((span) => span.kind === "move" && dateStamp(span.starts_on) != null)
     .toSorted((left, right) => left.starts_on.localeCompare(right.starts_on));
 
-  if (moves.length === 0) {
+  const move = moves[0];
+
+  // starts_on is when packing begins; ends_on is the day they actually
+  // leave Canada, which is what the countdown is meant to mean. A move
+  // span with no usable ends_on falls back to the same empty shape as
+  // having no move span at all, rather than counting to NaN.
+  if (!move || dateStamp(move.ends_on) == null) {
     return {
       headline: "No move date set",
       detail: "Add a move span when the date is known.",
+      description: null,
       days: null,
     };
   }
 
-  const move = moves[0];
-  const days = Math.round(
-    (dateStamp(move.starts_on) - todayStamp(now)) / DAY_MS,
-  );
+  const days = Math.round((dateStamp(move.ends_on) - todayStamp(now)) / DAY_MS);
   let headline;
   if (days === 0) headline = "Moving day";
   else if (days === 1) headline = "1 day to go";
@@ -106,14 +110,17 @@ export function moveCountdown(spans, now = new Date()) {
   else if (days === -1) headline = "1 day since move day";
   else headline = `${Math.abs(days)} days since move day`;
 
+  const detail = formatDate(move.ends_on, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
   return {
     headline,
-    detail: formatDate(move.starts_on, {
-      weekday: "long",
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-    }),
+    detail,
+    description: `Until you leave Canada, ${detail}`,
     days,
   };
 }
@@ -296,6 +303,108 @@ export function ganttTimeline(spans, milestones, now = new Date()) {
     lanes,
     todayPosition: ganttDatePosition(today, startsOn, endsOn),
   };
+}
+
+// Small percentage-of-track allowance so two bars that merely touch still
+// land in separate sub-rows, leaving room for the label under each.
+const BAR_OVERLAP_ALLOWANCE = 3;
+
+export function packLaneBars(bars) {
+  const list = bars ?? [];
+  const order = list
+    .map((_, index) => index)
+    .toSorted(
+      (left, right) =>
+        list[left].position - list[right].position || left - right,
+    );
+
+  const subRowEnds = [];
+  const subRowByIndex = new Array(list.length);
+
+  for (const index of order) {
+    const bar = list[index];
+    const start = bar.position;
+    const end = bar.position + bar.width;
+    let subRow = subRowEnds.findIndex((rowEnd) => start >= rowEnd);
+    if (subRow === -1) {
+      subRow = subRowEnds.length;
+      subRowEnds.push(end + BAR_OVERLAP_ALLOWANCE);
+    } else {
+      subRowEnds[subRow] = end + BAR_OVERLAP_ALLOWANCE;
+    }
+    subRowByIndex[index] = subRow;
+  }
+
+  return {
+    bars: list.map((bar, index) => ({ ...bar, subRow: subRowByIndex[index] })),
+    subRowCount: subRowEnds.length,
+  };
+}
+
+// Leg tags carry no known text width (unlike bars, which are sized by
+// date span), so overlap is approximated by how close two tags start,
+// rather than measuring pixels.
+const LEG_TAG_MIN_GAP_PERCENT = 24;
+
+export function packLegTags(tags, minGapPercent = LEG_TAG_MIN_GAP_PERCENT) {
+  const list = tags ?? [];
+  const order = list
+    .map((_, index) => index)
+    .toSorted(
+      (left, right) =>
+        list[left].position - list[right].position || left - right,
+    );
+
+  const levelEnds = [];
+  const staggerByIndex = new Array(list.length);
+
+  for (const index of order) {
+    const tag = list[index];
+    let stagger = levelEnds.findIndex(
+      (levelEnd) => tag.position >= levelEnd + minGapPercent,
+    );
+    if (stagger === -1) {
+      stagger = levelEnds.length;
+      levelEnds.push(tag.position);
+    } else {
+      levelEnds[stagger] = tag.position;
+    }
+    staggerByIndex[index] = stagger;
+  }
+
+  return {
+    tags: list.map((tag, index) => ({
+      ...tag,
+      stagger: staggerByIndex[index],
+    })),
+    staggerCount: levelEnds.length,
+  };
+}
+
+export function groupMilestonesByDate(milestones) {
+  const groups = new Map();
+  for (const milestone of milestones ?? []) {
+    if (!groups.has(milestone.occurs_on)) groups.set(milestone.occurs_on, []);
+    groups.get(milestone.occurs_on).push(milestone);
+  }
+
+  return [...groups.entries()]
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([occursOn, items]) => ({
+      id: `ms-${occursOn}`,
+      occursOn,
+      milestones: items,
+      count: items.length,
+      // A shared marker can only show one fill state. Treat the group as
+      // synced only when every milestone on the date is synced, and as
+      // held if any single one is held, so a held milestone is never
+      // buried under a marker that reads as all clear.
+      state: items.some((item) => item.gcal_state === "held")
+        ? "held"
+        : items.every((item) => item.gcal_state === "synced")
+          ? "synced"
+          : "queued",
+    }));
 }
 
 export function mergeAgendaItems(milestones, spans, collisions, tasks) {
