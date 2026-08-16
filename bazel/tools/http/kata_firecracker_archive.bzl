@@ -1,8 +1,8 @@
-"""kata_firecracker_archive - extract firecracker + the guest kernel from a kata-containers static bundle.
+"""kata_firecracker_archive - extract Firecracker tools + the guest kernel.
 
-fc-invoke drives Firecracker directly and needs exactly two files from kata's
-static release: the `firecracker` hypervisor binary and the matching guest
-kernel (`vmlinux.container`). Baking those two files into the fc-invoke image
+fc-invoke drives Firecracker directly and needs the `firecracker` hypervisor
+binary, its `snapshot-editor`, and the matching guest kernel
+(`vmlinux.container`). Baking those files into the fc-invoke image
 removes the last node-level `/opt/kata` install step (see
 projects/platform/firecracker-node), so a node only needs /dev/kvm and scratch.
 
@@ -63,6 +63,8 @@ def _kata_firecracker_archive_impl(repository_ctx):
     ]:
         if not url:
             continue
+        if not fc_url:
+            fail("kata_firecracker_archive: an upstream firecracker_url is required so firecracker and snapshot-editor come from the same release")
 
         extracted = arch + "_extracted"
         repository_ctx.download_and_extract(
@@ -92,25 +94,33 @@ def _kata_firecracker_archive_impl(repository_ctx):
                 output = fc_extracted,
                 type = "tgz",
             )
-            fc_member = "release-{v}-{a}/firecracker-{v}-{a}".format(v = fc_version, a = fc_arch)
+            release_dir = "release-{v}-{a}".format(v = fc_version, a = fc_arch)
+            fc_member = release_dir + "/firecracker-{v}-{a}".format(v = fc_version, a = fc_arch)
+            editor_member = release_dir + "/snapshot-editor-{v}-{a}".format(v = fc_version, a = fc_arch)
             result = repository_ctx.execute(["cp", "-L", fc_extracted + "/" + fc_member, arch + "_firecracker"])
             if result.return_code != 0:
                 fail("kata_firecracker_archive: firecracker member %s not found in %s: %s" % (fc_member, fc_url, result.stderr))
+            result = repository_ctx.execute(["cp", "-L", fc_extracted + "/" + editor_member, arch + "_snapshot-editor"])
+            if result.return_code != 0:
+                fail("kata_firecracker_archive: snapshot-editor member %s not found in %s: %s" % (editor_member, fc_url, result.stderr))
             repository_ctx.delete(fc_extracted)
 
         repository_ctx.execute(["chmod", "0755", arch + "_firecracker"])
+        repository_ctx.execute(["chmod", "0755", arch + "_snapshot-editor"])
         repository_ctx.execute(["chmod", "0644", arch + "_vmlinux.container"])
 
         build_content += """
 genrule(
     name = "tar_{arch}",
-    srcs = ["{arch}_firecracker", "{arch}_vmlinux.container"],
+    srcs = ["{arch}_firecracker", "{arch}_snapshot-editor", "{arch}_vmlinux.container"],
     outs = ["tar_{arch}.tar"],
     cmd = '''
         mkdir -p tmp{package_dir}
         cp $(location {arch}_firecracker) tmp{package_dir}/firecracker
+        cp $(location {arch}_snapshot-editor) tmp{package_dir}/snapshot-editor
         cp $(location {arch}_vmlinux.container) tmp{package_dir}/vmlinux.container
         chmod 0755 tmp{package_dir}/firecracker
+        chmod 0755 tmp{package_dir}/snapshot-editor
         chmod 0644 tmp{package_dir}/vmlinux.container
         tar -C tmp -czf $@ .
     ''',

@@ -361,6 +361,16 @@ direction**: capture decouples from bank
 (close-triggered for no-memory-snapshot workloads), retention becomes
 `latest + N`, and the workspace size cap becomes a declared soft budget.
 
+Memory-banking session lineages use sequential Firecracker dirty-page diffs.
+The first bank is a full; after each relight, snapshot load re-arms dirty
+tracking and the next bank writes a diff relative to that full. The guest is
+resumed before `snapshot-editor` rebases the diff onto a temporary copy of the
+prior full, and an atomic rename publishes the merged full. Only full bundles
+enter the existing zstd content-addressed archive, never diff chains. Any diff
+create, base lookup, editor, merge, or publication error logs a warning and
+falls back to a full bank. `noded.diffBanking` defaults true and restores the
+full-only path when false. Park-only sessions do not enter this path.
+
 **The 6h ceiling is a version-convergence bound, not a data lifetime.**
 It exists so a session cannot ride a stale base image forever, since a
 session pinned to an old base keeps that base's registry entry active and

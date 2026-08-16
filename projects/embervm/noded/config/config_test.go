@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -262,7 +263,7 @@ func TestLoadDefaults(t *testing.T) {
 		"NODE_NAME", "EMBERVM_NODED_ARCH", "EMBERVM_NODED_CPU_VENDOR", "EMBERVM_NODED_BEARER_TOKEN",
 		"EMBERVM_NODED_MAX_LIVE_VMS", "EMBERVM_NODED_IMAGES", "EMBERVM_NODED_IMAGES_FILE",
 		"EMBERVM_NODED_BOOT_READY_TIMEOUT", "EMBERVM_NODED_RESTORE_READY_TIMEOUT",
-		"EMBERVM_NODED_DRAIN_TIMEOUT",
+		"EMBERVM_NODED_DRAIN_TIMEOUT", "EMBERVM_NODED_DIFF_BANKING", "EMBERVM_NODED_DIFF_BANKING_WORKLOADS",
 	} {
 		t.Setenv(k, "")
 	}
@@ -279,6 +280,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.MaxLiveVMs != 8 {
 		t.Errorf("MaxLiveVMs = %d, want 8", c.MaxLiveVMs)
+	}
+	if !c.DiffBanking {
+		t.Error("DiffBanking should default true")
 	}
 	if c.BinPath != "/opt/fc/firecracker" {
 		t.Errorf("BinPath = %q, want /opt/fc/firecracker", c.BinPath)
@@ -326,6 +330,21 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.RequireBlessing {
 		t.Error("RequireBlessing should default false so a rollout can land the control-plane side first")
+	}
+}
+
+func TestLoadDiffBankingOverride(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_DIFF_BANKING", "false")
+	t.Setenv("EMBERVM_NODED_DIFF_BANKING_WORKLOADS", "sandbox-session,another-session")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DiffBanking {
+		t.Error("DiffBanking should be false when EMBERVM_NODED_DIFF_BANKING=false")
+	}
+	if got, want := strings.Join(c.DiffBankingWorkloads, ","), "sandbox-session,another-session"; got != want {
+		t.Errorf("DiffBankingWorkloads = %q, want %q", got, want)
 	}
 }
 

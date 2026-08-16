@@ -550,8 +550,9 @@ multiarch_http_archive(
 # release rather than the old install-kata.sh `releases/latest`. Both arches are
 # required: the fc-invoke image is dual-arch and apko needs a per-arch tar layer.
 #
-# The hypervisor binary itself comes from the upstream Firecracker v1.16.1
-# release, not the kata bundle: kata pins v1.12.1 (still on main), which
+# The hypervisor binary and snapshot-editor come from the same upstream
+# Firecracker v1.16.1 release, not the kata bundle: kata pins v1.12.1 (still on
+# main), which
 # predates the vsock-after-snapshot-restore fixes the warm-restore fleet needs
 # (#4389; upstream #5688/#5882/#5958). Only the guest kernel still comes from
 # kata. Moving the Firecracker version invalidates every snapshot (the format

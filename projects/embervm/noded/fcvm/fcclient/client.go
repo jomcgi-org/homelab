@@ -43,9 +43,10 @@ func New(socketPath string) *Client {
 
 // MachineConfig is the body of PUT /machine-config.
 type MachineConfig struct {
-	VCPUCount  int  `json:"vcpu_count"`
-	MemSizeMib int  `json:"mem_size_mib"`
-	SMT        bool `json:"smt"`
+	VCPUCount       int  `json:"vcpu_count"`
+	MemSizeMib      int  `json:"mem_size_mib"`
+	SMT             bool `json:"smt"`
+	TrackDirtyPages bool `json:"track_dirty_pages,omitempty"`
 }
 
 // BootSource is the body of PUT /boot-source.

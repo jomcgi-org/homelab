@@ -984,8 +984,9 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	readyTimeout := primeReadyTimeout(s.cfg, volumeDiskPath)
 
 	spec := substrate.ClaimSpec{
-		Arch:     s.cfg.Arch,
-		ThreadID: newID("vm"),
+		Arch:            s.cfg.Arch,
+		ThreadID:        newID("vm"),
+		TrackDirtyPages: s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, base.workload),
 		BaseSnapshotRef: substrate.SnapshotRef{
 			ID:     ref,
 			Node:   s.cfg.Node,
@@ -1063,6 +1064,15 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	})
 	s.signalChange()
 	return &nodev1.PrimeResponse{VmId: h.ID}, nil
+}
+
+func diffBankingWorkload(workloads []string, workload string) bool {
+	for _, candidate := range workloads {
+		if candidate == workload {
+			return true
+		}
+	}
+	return false
 }
 
 func primeReadyTimeout(cfg config.Config, volumeDiskPath string) time.Duration {

@@ -8,7 +8,8 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 # processes, mirroring the fc-invoke daemon it forks. DUAL-ARCH, exactly like the
 # fc-invoke daemon image: the Go binary is cross-compiled per arch and layered at
 # /usr/local/bin/embervm-noded (the apko entrypoint), and @kata_firecracker bakes
-# firecracker + the guest kernel at /opt/fc so the node needs no /opt/kata install.
+# firecracker, snapshot-editor, and the guest kernel at /opt/fc so the node needs
+# no /opt/kata install.
 # node-4 (amd64) is the only Firecracker node today, so the aarch64 manifest was
 # never consumed and is no longer built.
 #
@@ -40,7 +41,8 @@ apko_image(
     config = "apko.yaml",
     contents = "@embervm_noded_lock//:contents",
     # :noded_tar is the Go binary (multiarch_tars appends _amd64/_arm64 per arch);
-    # @kata_firecracker bakes the firecracker binary + guest kernel into /opt/fc.
+    # @kata_firecracker bakes firecracker, snapshot-editor, and the guest kernel
+    # into /opt/fc.
     repository = "ghcr.io/jomcgi/homelab/projects/embervm/noded/image",
     tars = [
         ":noded_tar_amd64",
