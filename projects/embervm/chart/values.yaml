@@ -1624,7 +1624,10 @@ claudeRuntimeWorkload:
 #
 # THE NAMED CONSUMER IS THE SYNTHETIC PROBE. The monolith maps model `qwen` to
 # family `pi` (agent_sessions/__init__.py), and ember_public's probe_qwen runs
-# one trivial turn every five minutes forever. Served on claude-runtime that is
+# one trivial turn HOURLY, from its own ember-qwen-session-synthetic
+# CronWorkflow. It is NOT part of the */5 ember-synthetic run: that one covers
+# bazel, semgrep, pages and postgres only. Read the CronWorkflow rather than
+# this comment if the cadence matters to you. Served on claude-runtime that is
 # a 4096 MiB cold boot of a guest holding a 262 MB Node ELF and a 114 MB codex
 # binary the turn can never invoke. Here it is 256 MiB.
 #

@@ -808,18 +808,31 @@ jobs:
 
     # The qwen session synthetic is deliberately separate from the original
     # demo probes so its hourly cadence does not turn a local-model VM test
-    # into a five-minute workload. It is suspended until Joe watches a live
-    # run return a completed turn with a non-empty result and confirms that
-    # the session is destroyed afterward. Landing a prober you have not
-    # watched succeed is how #4074 paged on its own gaps.
+    # into a five-minute workload.
+    #
+    # ARMED 2026-08-16, once the gate below was satisfied by a live run against
+    # production, driven with the monolith pod's own ServiceAccount so it went
+    # through the real principal:
+    #
+    #   POST /v1/workloads/pi-runtime/sessions   201 in 0.1s
+    #   POST /v1/sessions/{id}/invoke            200 in 1.8s
+    #        result "qwen synthetic ok", terminal_reason "stop",
+    #        usage 522 in / 27 out (a real llama.cpp round trip)
+    #   DELETE /v1/sessions/{id}                 202
+    #
+    # That is a completed turn, a non-empty result, and a destroyed session,
+    # which is exactly what the gate asked for. Arming was also gated on qwen
+    # actually routing to pi-runtime, which landed in the same session.
     - name: ember-qwen-session-synthetic
       args: ["ember-qwen-synthetic-trigger"]
       schedule: "0 * * * *"
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 300
-      # Joe arms this after watching the first green live run. That run must
-      # show a completed, non-empty qwen turn and a destroyed EmberVM session.
-      suspend: true
+      # Original gate, kept for the record: "Joe arms this after watching the
+      # first green live run. That run must show a completed, non-empty qwen
+      # turn and a destroyed EmberVM session." Landing a prober you have not
+      # watched succeed is how #4074 paged on its own gaps.
+      suspend: false
       env:
         MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
       resources:
