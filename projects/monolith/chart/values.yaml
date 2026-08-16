@@ -1043,10 +1043,15 @@ sandbox:
 
 agentSessions:
   # EmberVM workload the qwen (pi) family creates its guest sessions on.
-  # Empty means "use the code default" (pi-runtime). This key must exist
-  # even empty: a values file without it render-errors the template. This
-  # is the REVERT LEVER for routing qwen back to the claude-runtime lane:
-  # set it to "claude-runtime" to revert by values edit, no code deploy.
+  # Empty means "use the code default" (pi-runtime). This is the REVERT
+  # LEVER for routing qwen back to the claude-runtime lane: set it to
+  # "claude-runtime" to revert by values edit, no code deploy.
+  #
+  # A consumer values file that OMITS agentSessions renders fine, because
+  # chart defaults merge (verified against both deploy/values.yaml and
+  # dev/deploy/values.yaml). The one shape that breaks the template is an
+  # explicit null override, `agentSessions:` with no body, which gives
+  # "nil pointer evaluating interface {}.piWorkload".
   piWorkload: ""
 
 # EmberVM R4 scratch-postgres consumer (ADR embervm/001, D-R4.PR-11.1). When

@@ -32,12 +32,17 @@ def model_family(model: str | None) -> str:
 # A name that drifts here does not fail loudly. It dial-timeouts inside the
 # guest, because the egress lane for an unrecognised workload is simply never
 # armed.
+#
+# The other half of the same contract: BOTH workload CRs must stay enabled.
+# piRuntimeWorkload.enabled defaults to FALSE in the embervm chart (prod and
+# dev values both set it true), and /api/health now depends on this lane
+# because probe_qwen runs through it. Disabling or renaming that CR makes every
+# qwen create 404, latches ember_synthetic_probe, and takes health red.
+#
+# There is deliberately no workload_for_family() helper here. The live decision
+# is transport._workload_for, which consults the env-resolved
+# transport.PI_WORKLOAD so the AGENT_PI_WORKLOAD revert lever is honoured. A
+# second mapping function reading these raw constants would look like the
+# routing mechanism while silently bypassing that lever.
 DEFAULT_WORKLOAD = "claude-runtime"
 PI_WORKLOAD = "pi-runtime"
-
-
-def workload_for_family(family: str) -> str:
-    """Return the EmberVM workload name a session of this family creates on."""
-    if family == "pi":
-        return PI_WORKLOAD
-    return DEFAULT_WORKLOAD

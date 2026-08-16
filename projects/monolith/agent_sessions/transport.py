@@ -263,7 +263,7 @@ class EmberVmShimTransport:
 
     def __init__(
         self,
-        workload: str = "claude-runtime",
+        workload: str = agent_sessions.DEFAULT_WORKLOAD,
         read_timeout: float = 1800.0,
     ) -> None:
         """Initialize transport for a named EmberVM workload.
