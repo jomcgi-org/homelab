@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -212,24 +213,72 @@ func TestProxyRefusesUnmappedConnectWithoutDial(t *testing.T) {
 	assertRefused(t, allowedProxyConfig(), "CONNECT evil-api.example.com:443 HTTP/1.1\r\nHost: evil-api.example.com:443\r\n\r\n")
 }
 
+// TestLoadProxyConfigFromPathParsesBakedFileShape guards the on-disk schema
+// that BUILD bakes into /etc/shotter-egress.json: a "mapping" object plus an
+// "allowlist" array, the same shape as the checked-in
+// projects/embervm/runtimes/shotter/etc/shotter-egress.json.
+func TestLoadProxyConfigFromPathParsesBakedFileShape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shotter-egress.json")
+	contents := fmt.Sprintf(`{"mapping":{%q:%q},"allowlist":[%q]}`, publicHost, internalService, internalService)
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	config, err := loadProxyConfigFromPath(path)
+	if err != nil {
+		t.Fatalf("loadProxyConfigFromPath: %v", err)
+	}
+	want := allowedProxyConfig()
+	if len(config.HostMapping) != len(want.HostMapping) || config.HostMapping[publicHost] != want.HostMapping[publicHost] {
+		t.Fatalf("HostMapping = %+v, want %+v", config.HostMapping, want.HostMapping)
+	}
+	if len(config.Allowlist) != 1 || config.Allowlist[0] != internalService {
+		t.Fatalf("Allowlist = %+v, want [%q]", config.Allowlist, internalService)
+	}
+
+	assertDial := &recordingDialer{upstream: func(conn net.Conn) { _ = conn.Close() }}
+	server := newProxyServer(config, nil, assertDial.dial)
+	runProxyRequest(t, server, []byte("GET http://jomcgi.dev/path HTTP/1.1\r\nHost: jomcgi.dev\r\n\r\n"))
+	if got := assertDial.callCount(); got != 1 {
+		t.Fatalf("vsock dial count = %d, want 1", got)
+	}
+}
+
 func TestProxyConfigurationFailuresRefuseAllWithoutDial(t *testing.T) {
 	tests := []struct {
-		name      string
-		mapping   *string
-		allowlist *string
+		name string
+		// fileContents nil means the config file is never written, exercising
+		// the absent-file path. A non-nil value is written verbatim.
+		fileContents *string
 	}{
-		{name: "mapping absent", allowlist: stringPointer(fmt.Sprintf("[%q]", internalService))},
-		{name: "allowlist absent", mapping: stringPointer(fmt.Sprintf("{%q:%q}", publicHost, internalService))},
-		{name: "mapping malformed", mapping: stringPointer("{"), allowlist: stringPointer(fmt.Sprintf("[%q]", internalService))},
-		{name: "allowlist malformed", mapping: stringPointer(fmt.Sprintf("{%q:%q}", publicHost, internalService)), allowlist: stringPointer("[")},
+		{name: "config file absent", fileContents: nil},
+		{name: "config file is not valid JSON", fileContents: stringPointer("{")},
+		{
+			name: "mapping destination invalid",
+			fileContents: stringPointer(fmt.Sprintf(
+				`{"mapping":{%q:"not a valid destination"},"allowlist":[%q]}`,
+				publicHost, internalService,
+			)),
+		},
+		{
+			name: "allowlist destination invalid",
+			fileContents: stringPointer(fmt.Sprintf(
+				`{"mapping":{%q:%q},"allowlist":["not a valid destination"]}`,
+				publicHost, internalService,
+			)),
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			setOptionalEnv(t, "SHOTTER_HOST_MAPPING", test.mapping)
-			setOptionalEnv(t, "SHOTTER_ALLOWLIST", test.allowlist)
-			config, err := LoadProxyConfig()
+			path := filepath.Join(t.TempDir(), "shotter-egress.json")
+			if test.fileContents != nil {
+				if err := os.WriteFile(path, []byte(*test.fileContents), 0o644); err != nil {
+					t.Fatalf("write config file: %v", err)
+				}
+			}
+			config, err := loadProxyConfigFromPath(path)
 			if err == nil {
-				t.Fatal("LoadProxyConfig succeeded, want fail-closed error")
+				t.Fatal("loadProxyConfigFromPath succeeded, want fail-closed error")
 			}
 			assertRefused(t, config, "GET http://jomcgi.dev/path HTTP/1.1\r\nHost: jomcgi.dev\r\n\r\n")
 		})
@@ -238,29 +287,4 @@ func TestProxyConfigurationFailuresRefuseAllWithoutDial(t *testing.T) {
 
 func stringPointer(value string) *string {
 	return &value
-}
-
-func setOptionalEnv(t *testing.T, name string, value *string) {
-	t.Helper()
-	oldValue, wasSet := os.LookupEnv(name)
-	t.Cleanup(func() {
-		if wasSet {
-			if err := os.Setenv(name, oldValue); err != nil {
-				t.Errorf("restore %s: %v", name, err)
-			}
-			return
-		}
-		if err := os.Unsetenv(name); err != nil {
-			t.Errorf("unset %s during cleanup: %v", name, err)
-		}
-	})
-	if value == nil {
-		if err := os.Unsetenv(name); err != nil {
-			t.Fatalf("unset %s: %v", name, err)
-		}
-		return
-	}
-	if err := os.Setenv(name, *value); err != nil {
-		t.Fatalf("set %s: %v", name, err)
-	}
 }

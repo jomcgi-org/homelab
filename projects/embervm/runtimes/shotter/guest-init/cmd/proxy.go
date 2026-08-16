@@ -27,6 +27,32 @@ const (
 	proxyReadBufferSize     = 4096
 	proxyHeaderEnd          = "\r\n\r\n"
 	proxyConnectEstablished = "HTTP/1.1 200 Connection Established\r\n\r\n"
+
+	// shotterEgressConfigPath is the destination policy baked into the guest
+	// image by BUILD (see the guest_init_tar_amd64 mtree entry). It MUST stay a
+	// file baked into the rootfs, not an environment variable, for a reason
+	// that is easy to "fix" back into a regression:
+	//
+	// A task-class EmberVM guest never receives an environment variable at
+	// all. BuildBaseRequest.init_env is accepted by the API but noded never
+	// reads it past hashing it into the base-cache key (see the initEnv
+	// comments in projects/embervm/chart/values.yaml and
+	// projects/embervm/deploy/values.yaml, tracked as #4429). The other path
+	// that does deliver env into a guest, the ember.env.* kernel cmdline
+	// entries built in noded/fcvm/driver/driver.go, is only populated by
+	// ClaimStateful and ClaimGroupMember; shotter boots through the
+	// task-class Claim path, whose substrate.ClaimSpec has no env field to
+	// populate in the first place. So an env var read here is not a fallback,
+	// it is dead code that always reads empty and refuses every request.
+	//
+	// This is also the better design on its own, not just a workaround. ADR
+	// embervm/035 section 4 treats this allowlist as the primary control
+	// specifically because the guest's caller does not influence it. A value
+	// sourced from the environment, or from any other mutable control-plane
+	// field, would not be a control at all: whatever could set it could also
+	// widen it. Baking the file into the image ties the policy to the image
+	// digest instead.
+	shotterEgressConfigPath = "/etc/shotter-egress.json"
 )
 
 var errProxyConfigDisabled = errors.New("proxy configuration is unavailable")
@@ -40,23 +66,30 @@ type ProxyConfig struct {
 	Allowlist   []string
 }
 
-// LoadProxyConfig reads the destination policy from the guest environment.
-// Any absent, malformed, or invalid value returns a zero config that refuses
-// every request.
+// proxyConfigFile is the on-disk shape of shotterEgressConfigPath.
+type proxyConfigFile struct {
+	Mapping   map[string]string `json:"mapping"`
+	Allowlist []string          `json:"allowlist"`
+}
+
+// LoadProxyConfig reads the destination policy baked into the guest image at
+// shotterEgressConfigPath. Any absent, unreadable, malformed, or invalid file
+// returns a zero config that refuses every request.
 func LoadProxyConfig() (ProxyConfig, error) {
-	mappingJSON := os.Getenv("SHOTTER_HOST_MAPPING")
-	allowlistJSON := os.Getenv("SHOTTER_ALLOWLIST")
-	if mappingJSON == "" || allowlistJSON == "" {
-		return ProxyConfig{}, fmt.Errorf("%w: SHOTTER_HOST_MAPPING and SHOTTER_ALLOWLIST are required", errProxyConfigDisabled)
+	return loadProxyConfigFromPath(shotterEgressConfigPath)
+}
+
+func loadProxyConfigFromPath(path string) (ProxyConfig, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ProxyConfig{}, fmt.Errorf("%w: read %s: %v", errProxyConfigDisabled, path, err)
 	}
 
-	var config ProxyConfig
-	if err := json.Unmarshal([]byte(mappingJSON), &config.HostMapping); err != nil {
-		return ProxyConfig{}, fmt.Errorf("%w: decode SHOTTER_HOST_MAPPING: %v", errProxyConfigDisabled, err)
+	var file proxyConfigFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return ProxyConfig{}, fmt.Errorf("%w: decode %s: %v", errProxyConfigDisabled, path, err)
 	}
-	if err := json.Unmarshal([]byte(allowlistJSON), &config.Allowlist); err != nil {
-		return ProxyConfig{}, fmt.Errorf("%w: decode SHOTTER_ALLOWLIST: %v", errProxyConfigDisabled, err)
-	}
+	config := ProxyConfig{HostMapping: file.Mapping, Allowlist: file.Allowlist}
 	if err := config.validate(); err != nil {
 		return ProxyConfig{}, fmt.Errorf("%w: %v", errProxyConfigDisabled, err)
 	}
