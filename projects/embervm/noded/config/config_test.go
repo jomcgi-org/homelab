@@ -281,8 +281,8 @@ func TestLoadDefaults(t *testing.T) {
 	if c.MaxLiveVMs != 8 {
 		t.Errorf("MaxLiveVMs = %d, want 8", c.MaxLiveVMs)
 	}
-	if !c.DiffBanking {
-		t.Error("DiffBanking should default true")
+	if c.DiffBanking {
+		t.Error("DiffBanking should default false")
 	}
 	if c.BinPath != "/opt/fc/firecracker" {
 		t.Errorf("BinPath = %q, want /opt/fc/firecracker", c.BinPath)
@@ -334,14 +334,14 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadDiffBankingOverride(t *testing.T) {
-	t.Setenv("EMBERVM_NODED_DIFF_BANKING", "false")
+	t.Setenv("EMBERVM_NODED_DIFF_BANKING", "true")
 	t.Setenv("EMBERVM_NODED_DIFF_BANKING_WORKLOADS", "sandbox-session,another-session")
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.DiffBanking {
-		t.Error("DiffBanking should be false when EMBERVM_NODED_DIFF_BANKING=false")
+	if !c.DiffBanking {
+		t.Error("DiffBanking should be true when EMBERVM_NODED_DIFF_BANKING=true")
 	}
 	if got, want := strings.Join(c.DiffBankingWorkloads, ","), "sandbox-session,another-session"; got != want {
 		t.Errorf("DiffBankingWorkloads = %q, want %q", got, want)

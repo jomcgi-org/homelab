@@ -115,6 +115,7 @@ type SnapshotLoad struct {
 	SnapshotPath        string      `json:"snapshot_path"`
 	MemBackend          *MemBackend `json:"mem_backend,omitempty"`
 	EnableDiffSnapshots bool        `json:"enable_diff_snapshots,omitempty"`
+	TrackDirtyPages     bool        `json:"track_dirty_pages,omitempty"`
 	ResumeVM            bool        `json:"resume_vm"`
 }
 

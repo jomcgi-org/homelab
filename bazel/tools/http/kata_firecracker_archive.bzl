@@ -6,9 +6,10 @@ binary, its `snapshot-editor`, and the matching guest kernel
 removes the last node-level `/opt/kata` install step (see
 projects/platform/firecracker-node), so a node only needs /dev/kvm and scratch.
 
-The hypervisor binary can be overridden with an upstream Firecracker release
-via the `firecracker_*` attributes, keeping only the kernel from kata. The
-kata bundle pins a Firecracker several minor versions behind upstream (v1.12.1
+The hypervisor binary and snapshot-editor come from the required upstream
+Firecracker release configured by the `firecracker_*` attributes; only the
+kernel comes from kata. The kata bundle pins a Firecracker several minor
+versions behind upstream (v1.12.1
 as of kata 3.32.0), which predates the vsock-after-snapshot-restore fixes the
 EmberVM warm-restore fleet needs (#4389: upstream #5688 in v1.15.0, #5882 in
 v1.16.0, #5958 in v1.16.1). Snapshot formats are version-locked and nothing
@@ -17,9 +18,10 @@ signature has no hypervisor input), so any version change here must move
 hypervisorEpoch in projects/embervm/chart/values.yaml in the same PR.
 
 The per-arch kata-static bundle is large (~1.5 GiB amd64) and unpacks to several
-GiB, but only these two files ride into the image (~45 MiB). The full extraction
-is deleted after the two files are copied out, so the external repo retains only
-the two artifacts rather than the whole decompressed bundle. Bazel's built-in
+GiB, but only the kernel plus the upstream Firecracker and snapshot-editor ride
+into the image. The full extraction is deleted after the kernel is copied out,
+so the external repo retains only the three artifacts rather than the whole
+decompressed bundle. Bazel's built-in
 `download_and_extract` handles the `.tar.zst` compression, so no `zstd` binary is
 required on the fetch executor.
 """
@@ -27,7 +29,6 @@ required on the fetch executor.
 # Member paths inside the kata-static tarball (entries are rooted at ./opt/kata).
 # `vmlinux.container` is a symlink to the versioned kernel, so the copy below
 # dereferences it (cp -L) to land the real kernel in the image.
-_FIRECRACKER_MEMBER = "opt/kata/bin/firecracker"
 _KERNEL_MEMBER = "opt/kata/share/kata-containers/vmlinux.container"
 
 # Upstream Firecracker release tarballs name their arches x86_64/aarch64 rather
@@ -74,36 +75,32 @@ def _kata_firecracker_archive_impl(repository_ctx):
             type = "tar.zst",
         )
 
-        # cp -L dereferences: firecracker is a regular ELF, vmlinux.container is
-        # a symlink to the versioned kernel; both land as real files.
+        # cp -L dereferences vmlinux.container, a symlink to the versioned kernel.
         repository_ctx.execute(["cp", "-L", extracted + "/" + _KERNEL_MEMBER, arch + "_vmlinux.container"])
-        if not fc_url:
-            repository_ctx.execute(["cp", "-L", extracted + "/" + _FIRECRACKER_MEMBER, arch + "_firecracker"])
 
         # Reclaim the multi-GiB decompressed bundle; only the needed files survive.
         repository_ctx.delete(extracted)
 
-        if fc_url:
-            # Upstream release tarball layout:
-            #   release-v<ver>-<fcarch>/firecracker-v<ver>-<fcarch>
-            fc_arch = _FC_RELEASE_ARCH[arch]
-            fc_extracted = arch + "_fc_extracted"
-            repository_ctx.download_and_extract(
-                url = fc_url,
-                sha256 = fc_sha,
-                output = fc_extracted,
-                type = "tgz",
-            )
-            release_dir = "release-{v}-{a}".format(v = fc_version, a = fc_arch)
-            fc_member = release_dir + "/firecracker-{v}-{a}".format(v = fc_version, a = fc_arch)
-            editor_member = release_dir + "/snapshot-editor-{v}-{a}".format(v = fc_version, a = fc_arch)
-            result = repository_ctx.execute(["cp", "-L", fc_extracted + "/" + fc_member, arch + "_firecracker"])
-            if result.return_code != 0:
-                fail("kata_firecracker_archive: firecracker member %s not found in %s: %s" % (fc_member, fc_url, result.stderr))
-            result = repository_ctx.execute(["cp", "-L", fc_extracted + "/" + editor_member, arch + "_snapshot-editor"])
-            if result.return_code != 0:
-                fail("kata_firecracker_archive: snapshot-editor member %s not found in %s: %s" % (editor_member, fc_url, result.stderr))
-            repository_ctx.delete(fc_extracted)
+        # Upstream release tarball layout:
+        #   release-v<ver>-<fcarch>/firecracker-v<ver>-<fcarch>
+        fc_arch = _FC_RELEASE_ARCH[arch]
+        fc_extracted = arch + "_fc_extracted"
+        repository_ctx.download_and_extract(
+            url = fc_url,
+            sha256 = fc_sha,
+            output = fc_extracted,
+            type = "tgz",
+        )
+        release_dir = "release-{v}-{a}".format(v = fc_version, a = fc_arch)
+        fc_member = release_dir + "/firecracker-{v}-{a}".format(v = fc_version, a = fc_arch)
+        editor_member = release_dir + "/snapshot-editor-{v}-{a}".format(v = fc_version, a = fc_arch)
+        result = repository_ctx.execute(["cp", "-L", fc_extracted + "/" + fc_member, arch + "_firecracker"])
+        if result.return_code != 0:
+            fail("kata_firecracker_archive: firecracker member %s not found in %s: %s" % (fc_member, fc_url, result.stderr))
+        result = repository_ctx.execute(["cp", "-L", fc_extracted + "/" + editor_member, arch + "_snapshot-editor"])
+        if result.return_code != 0:
+            fail("kata_firecracker_archive: snapshot-editor member %s not found in %s: %s" % (editor_member, fc_url, result.stderr))
+        repository_ctx.delete(fc_extracted)
 
         repository_ctx.execute(["chmod", "0755", arch + "_firecracker"])
         repository_ctx.execute(["chmod", "0755", arch + "_snapshot-editor"])
@@ -154,20 +151,20 @@ kata_firecracker_archive = repository_rule(
             doc = "Upstream Firecracker release tag (e.g. v1.16.1); required when any firecracker_url override is set",
         ),
         "amd64_firecracker_url": attr.string(
-            doc = "Optional upstream firecracker release .tgz for amd64; overrides the kata bundle's hypervisor binary (kernel still comes from kata)",
+            doc = "Required upstream firecracker release .tgz for amd64 (kernel still comes from kata)",
         ),
         "amd64_firecracker_sha256": attr.string(doc = "SHA256 of the amd64 firecracker release .tgz"),
         "arm64_firecracker_url": attr.string(
-            doc = "Optional upstream firecracker release .tgz for arm64; overrides the kata bundle's hypervisor binary (kernel still comes from kata)",
+            doc = "Required upstream firecracker release .tgz for arm64 (kernel still comes from kata)",
         ),
         "arm64_firecracker_sha256": attr.string(doc = "SHA256 of the arm64 firecracker release .tgz"),
         "package_dir": attr.string(
             default = "/opt/fc",
-            doc = "Directory the firecracker binary + kernel are placed in inside the image",
+            doc = "Directory the firecracker binary, snapshot-editor, and kernel are placed in inside the image",
         ),
     },
     doc = """Download a kata-containers static bundle per arch and emit a small tar layer
-carrying just `firecracker` and `vmlinux.container` at `package_dir`.
+carrying `firecracker`, `snapshot-editor`, and `vmlinux.container` at `package_dir`.
 
 Usage in MODULE.bazel:
 

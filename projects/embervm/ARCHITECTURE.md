@@ -361,15 +361,19 @@ direction**: capture decouples from bank
 (close-triggered for no-memory-snapshot workloads), retention becomes
 `latest + N`, and the workspace size cap becomes a declared soft budget.
 
-Memory-banking session lineages use sequential Firecracker dirty-page diffs.
-The first bank is a full; after each relight, snapshot load re-arms dirty
-tracking and the next bank writes a diff relative to that full. The guest is
-resumed before `snapshot-editor` rebases the diff onto a temporary copy of the
-prior full, and an atomic rename publishes the merged full. Only full bundles
-enter the existing zstd content-addressed archive, never diff chains. Any diff
-create, base lookup, editor, merge, or publication error logs a warning and
-falls back to a full bank. `noded.diffBanking` defaults true and restores the
-full-only path when false. Park-only sessions do not enter this path.
+Memory-banking session lineages have an available but dormant sequential
+Firecracker dirty-page diff path. The first bank is a full; after each allowed
+workload relights, snapshot load re-arms dirty tracking and the next bank writes
+a diff relative to that full. `snapshot-editor` synchronously rebases the diff
+onto a temporary copy of the prior full, and an atomic rename publishes the
+merged full before the Bank RPC returns. Only full bundles enter the existing
+zstd content-addressed archive, never diff chains. Any diff create, base lookup,
+editor, merge, or publication error logs a warning and falls back to a full bank.
+`noded.diffBanking` defaults false because this merge-at-bank protocol pays a
+full-size copy of the previous base on ext4 scratch, which has no reflink support,
+so the Bank RPC gets longer, not shorter. Enable it only after the in-place merge
+design or reflink-capable scratch lands, tracked in #4970. Park-only sessions do
+not enter this path.
 
 **The 6h ceiling is a version-convergence bound, not a data lifetime.**
 It exists so a session cannot ride a stale base image forever, since a

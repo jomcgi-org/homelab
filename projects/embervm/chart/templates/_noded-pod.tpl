@@ -198,7 +198,7 @@ containers:
       - name: EMBERVM_NODED_DIFF_BANKING
         value: {{ $ctx.Values.noded.diffBanking | quote }}
       - name: EMBERVM_NODED_DIFF_BANKING_WORKLOADS
-        value: {{ ternary $ctx.Values.sandboxSessionWorkload.name "" $ctx.Values.sandboxSessionWorkload.enabled | quote }}
+        value: {{ $ctx.Values.noded.diffBankingWorkloads | quote }}
       - name: EMBERVM_NODED_DAEMON_RESERVE_MIB
         value: {{ $ctx.Values.bricks.daemonReserveMib | default 512 | quote }}
       # Serving tap pre-provisioning (ADR embervm/014 decision 4). Zero (default)
