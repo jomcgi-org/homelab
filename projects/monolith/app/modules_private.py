@@ -31,6 +31,7 @@ import moving.module
 import sandbox.module
 import scheduler.module
 import semgrep_scan.module
+import shotter.module
 import ships.module
 import stars.module
 import trips.module
@@ -68,6 +69,7 @@ ALL_MODULES: tuple[Module, ...] = (
     # POST /webhooks/github/semgrep; HMAC-verified, no cf-access on that path.
     semgrep_scan.module.MODULE,
     sandbox.module.MODULE,
+    shotter.module.MODULE,
 )
 
 # Domain names composable as standalone binaries via app/main_domain.py.

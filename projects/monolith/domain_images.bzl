@@ -62,6 +62,7 @@ MONOLITH_DOMAINS = [
     "cluster",
     "semgrep_scan",
     "sandbox",
+    "shotter",
 ]
 
 def monolith_domain_images(
