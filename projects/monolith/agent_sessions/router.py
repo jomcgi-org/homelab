@@ -190,7 +190,7 @@ async def register_voice_ui_companion(
 ) -> dict:
     principal = current_principal()
     # Authentication is intentionally observational here. An anonymous MCP or
-    # HTTP principal is recorded per ADR 057 and is not rejected.
+    # HTTP principal is recorded per ADR 058 and is not rejected.
     companion_id = await asyncio.to_thread(
         voice_ui.register_companion,
         companion_request.companion_id if companion_request is not None else None,

@@ -7,7 +7,7 @@ from uuid import uuid4
 from sqlmodel import Session
 
 from agent_sessions import store
-from agent_sessions.models import AgentSession, VoiceUILedger
+from agent_sessions.models import AgentSession
 from core.db import get_engine
 
 SURFACES = frozenset({"run", "walkthrough", "transcript", "vm"})
@@ -47,10 +47,7 @@ def register_companion(
 
 def poll_ledger(companion_id: str, since: int) -> list[dict] | None:
     with Session(get_engine()) as session:
-        rows = store.poll_voice_ui_ledger(session, companion_id, since, _now())
-        if rows is None:
-            return None
-        return [_ledger_payload(row) for row in rows]
+        return store.poll_voice_ui_ledger(session, companion_id, since, _now())
 
 
 def attach(
@@ -94,17 +91,18 @@ def show(
     principal_subject: str,
     principal_authority: str,
 ) -> dict:
+    if surface not in SURFACES:
+        return {
+            "accepted": False,
+            "error": _surface_error(surface),
+            "companion_open": True,
+        }
     with Session(get_engine()) as session:
         companion = store.get_open_voice_ui_companion(session, _now())
         if companion is None:
             # Degrade to voice: a screen is optional, so no open companion means
             # acceptance without a ledger row or any other side effect.
-            return {"accepted": True}
-        if surface not in SURFACES:
-            return {
-                "accepted": False,
-                "error": _surface_error(surface),
-            }
+            return {"accepted": True, "companion_open": False}
         store.record_voice_ui_call(
             session,
             companion,
@@ -113,7 +111,7 @@ def show(
             principal_subject,
             principal_authority,
         )
-        return {"accepted": True}
+        return {"accepted": True, "companion_open": True}
 
 
 def ask(
@@ -136,16 +134,16 @@ def dismiss(
     principal_subject: str,
     principal_authority: str,
 ) -> dict:
+    if surface is not None and surface not in SURFACES:
+        return {
+            "accepted": False,
+            "error": _surface_error(surface),
+            "companion_open": True,
+        }
     with Session(get_engine()) as session:
         companion = store.get_open_voice_ui_companion(session, _now())
         if companion is None:
             return {"accepted": True, "companion_open": False}
-        if surface is not None and surface not in SURFACES:
-            return {
-                "accepted": False,
-                "error": _surface_error(surface),
-                "companion_open": True,
-            }
         store.record_voice_ui_call(
             session,
             companion,
@@ -180,16 +178,3 @@ def _record_if_open(
 
 def _surface_error(surface: str) -> str:
     return f"unknown surface {surface}; valid surfaces: {', '.join(sorted(SURFACES))}"
-
-
-def _ledger_payload(row: VoiceUILedger) -> dict:
-    return {
-        "id": row.id,
-        "companion_id": row.companion_id,
-        "session_id": row.session_id,
-        "call": row.call,
-        "payload": row.payload,
-        "principal_subject": row.principal_subject,
-        "principal_authority": row.principal_authority,
-        "created_at": row.created_at,
-    }

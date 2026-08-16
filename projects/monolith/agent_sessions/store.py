@@ -115,11 +115,13 @@ def record_voice_ui_call(
 
 def poll_voice_ui_ledger(
     session: Session, companion_id: str, since: int, now: datetime
-) -> list[VoiceUILedger] | None:
+) -> list[dict] | None:
     companion = get_voice_ui_companion(session, companion_id)
     if companion is None:
         return None
-    companion.last_seen_at = now
+    if companion.closed_at is None:
+        companion.last_seen_at = now
+        session.add(companion)
     rows = list(
         session.exec(
             select(VoiceUILedger)
@@ -130,9 +132,21 @@ def poll_voice_ui_ledger(
             .order_by(VoiceUILedger.id)
         ).all()
     )
-    session.add(companion)
+    payloads = [
+        {
+            "id": row.id,
+            "companion_id": row.companion_id,
+            "session_id": row.session_id,
+            "call": row.call,
+            "payload": row.payload,
+            "principal_subject": row.principal_subject,
+            "principal_authority": row.principal_authority,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
     session.commit()
-    return rows
+    return payloads
 
 
 def create_session(

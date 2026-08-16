@@ -720,7 +720,7 @@ def _mint_voice_ui_session() -> AgentSession:
 
 def _voice_ui_principal() -> tuple[str, str]:
     principal = current_principal()
-    # Principal facts are recorded, never used as a gate. ADR 057 deliberately
+    # Principal facts are recorded, never used as a gate. ADR 058 deliberately
     # keeps the voice path available when MCP carries an anonymous principal.
     return principal.subject, str(principal.authority)
 
