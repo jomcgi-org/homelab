@@ -104,6 +104,7 @@ _BACKEND_SRCS = glob(
         "knowledge/**/*.py",
         "home/**/*.py",
         "sandbox/**/*.py",
+        "shotter/**/*.py",
         "scheduler/**/*.py",
         "semgrep_scan/**/*.py",
         "shared/**/*.py",
@@ -634,6 +635,49 @@ py_library(
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+    ],
+)
+
+py_library(
+    name = "pkg_shotter",
+    srcs = glob(
+        [
+            "shotter/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_framework",
+        ":pkg_shared",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//fastapi",
+        "@pip//httpx",
+        # shotter/mcp.py imports mcp.types.ImageContent directly (ADR
+        # embervm/035 section 5), so unlike pkg_sandbox this needs the mcp
+        # package explicitly, not just transitively through fastmcp.
+        "@pip//mcp",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -1373,6 +1417,7 @@ py_library(
             "knowledge/**/*.py",
             "home/**/*.py",
             "sandbox/**/*.py",
+            "shotter/**/*.py",
             "scheduler/**/*.py",
             "semgrep_scan/**/*.py",
             "shared/**/*.py",
@@ -1424,6 +1469,10 @@ py_library(
         "@pip//icalendar",
         "@pip//kubernetes_asyncio",
         "@pip//lxml_html_clean",  # explicit: overrides.txt strips lxml[html-clean] extra
+        # shotter/mcp.py imports mcp.types.ImageContent directly (ADR
+        # embervm/035 section 5); every other domain reaches the mcp package
+        # only transitively through fastmcp.
+        "@pip//mcp",
         "@pip//networkx",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
@@ -1559,6 +1608,13 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "cluster/**",
     "goosecracker/**",
     "scheduler/**",
+    # shotter (issue #4994): MCP-only, never globbed into either public srcs
+    # list below, so this entry is belt-and-suspenders rather than load-
+    # bearing today. Listed explicitly so a future public glob edit that
+    # copy-pastes a directory list does not silently pull in the SeaweedFS
+    # write path (boto3 credentials, EMBERVM_URL dispatch) without a second
+    # thought.
+    "shotter/**",
     # Trips: the read path (models.py + read_router.py + __init__.py) ships in
     # the public image; the write/heavy path stays out (pillow/boto3/defusedxml).
     "trips/ingest_router.py",
@@ -6658,12 +6714,11 @@ bdd_test(
     ],
 )
 
-# BDD specs for the website snapshotter MCP tool (Phase 3 of issue #4994).
-# These specs define the tool's contract before implementation: URL validation,
-# viewport bounds, MCP registration, EmberVM dispatch (mocked), and the return
-# shape (ImageContent block plus SeaweedFS URL). Marked future = True so the
-# gating Test action excludes them; they will fail (import error) until Phase 4
-# lands the implementation.
+# BDD specs for the website snapshotter MCP tool (issue #4994). These specs
+# define the tool's contract: URL validation, viewport bounds, MCP
+# registration, EmberVM dispatch (mocked), and the return shape (ImageContent
+# block plus SeaweedFS URL). Promoted out of future = True in T5: the
+# shotter domain now exists and all 29 specs pass.
 bdd_test(
     name = "shotter_bdd_mcp_tool_test",
     srcs = [
@@ -6671,7 +6726,6 @@ bdd_test(
         "shotter/tests/bdd_mcp_tool_test.py",
         "shotter/tests/conftest.py",
     ],
-    future = True,
 )
 
 py_test(
