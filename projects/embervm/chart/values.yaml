@@ -450,10 +450,23 @@ sandboxWorkload:
   # it worse, not better: because the floor is per instance, each new brick
   # arrived wanting its own 4.
   #
-  # 2 leaves at least one free slot on the smallest brick for real demand. This
-  # is a STOPGAP for the per-instance semantics; once floor is a fleet-wide pool
-  # size it should go back up (issue #4077 follow-up).
-  floor: 2
+  # 0, down from 2, because the per-instance semantics above make any nonzero
+  # floor a MULTIPLIER over the fleet, and the fleet is now six bricks: floor 2
+  # at 512 MiB was 6 GiB of primed VMs standing by for a workload whose entire
+  # demand is the */5 synthetic probe plus occasional visitor traffic on the
+  # public demo. Measured 2026-08-16 across the live fleet: 8 primed VMs holding
+  # 8192 MiB of reservation against ~510 MiB of actual working set.
+  #
+  # A floor of 0 does NOT mean a cold boot per request. The pool primes on demand
+  # from the workload's base snapshot, which is the same demand-paged restore a
+  # primed VM was created by, so a miss costs a restore (~250ms cold spawn worst
+  # case) rather than a build. That is the same trade claudeRuntimeWorkload
+  # already takes deliberately at floor 0, and the same one bazelQueryWorkload's
+  # floor comment describes as cheap.
+  #
+  # Rollback is setting this back to 2, but prefer fixing #4077 (fleet-wide pool
+  # size) over re-arming a per-instance multiplier.
+  floor: 0
   cap: 16
   timeoutSeconds: 30
 
@@ -480,7 +493,19 @@ sandboxSessionWorkload:
   memMib: 2048
   # floor: pristine VMs kept warm for fast session create. cap: max live
   # session VMs. Small on purpose (see the disk arithmetic above).
-  floor: 1
+  #
+  # 0, down from 1: at 2048 MiB this floor is the single most expensive one in
+  # the chart per primed VM, and it is per BRICK INSTANCE (see the sandbox floor
+  # note above), so six bricks wanted 12 GiB of pristine session VMs. The
+  # workload has served 0 live / 0 banked sessions since it was created (31d as
+  # of 2026-08-16): its named consumer is SANDBOX_SESSION_WORKLOAD in the
+  # monolith's sandbox client, and the sessioned run_python path that would call
+  # it is not wired to anything today. Warmth for a workload with no caller is
+  # pure reservation.
+  #
+  # The CR stays enabled: the R2 sessioned rung is the thing being kept, and a
+  # create still works, it just pays a restore. Rollback is setting this to 1.
+  floor: 0
   cap: 4
   session:
     # Bank an idle session (no in-flight, no queued invoke) after 2 minutes.
@@ -498,7 +523,7 @@ sandboxSessionWorkload:
 # The semgrep workload (Task 14b): EmberVM's named first consumer, side-by-side
 # with fc-invoke's semgrep path (which is halved 16->8 in the substrate chart to
 # make room). Same frozen guest contract as fc-invoke (vsock 1027, /shim/ready,
-# /invoke), 1 vcpu / 1536Mi / 90s, floor 4 / cap 16.
+# /invoke), 1 vcpu / 1536Mi / 90s, floor 1 / cap 16.
 semgrepWorkload:
   enabled: true
   name: semgrep
@@ -506,8 +531,23 @@ semgrepWorkload:
   readyPath: /shim/ready
   invokePath: /invoke
   vcpus: 1
+  # 1536 is NOT reduced here, deliberately. It is sized for the rule engine's
+  # peak inside the guest, and there is no per-VM memory gauge to size it
+  # against (#4773): cutting it blind trades reservation for an OOM inside a
+  # scan, which surfaces as a red */5 probe rather than as a saving. The
+  # reservation problem was the floor multiplier below, not this number.
   memMib: 1536
-  floor: 4
+  # 1, down from 4. Floor is applied PER BRICK INSTANCE (see the sandbox floor
+  # note above), so at 1536 MiB a floor of 4 was a 6 GiB ask per brick that a
+  # 2gi brick can never satisfy: an unsatisfiable floor never stops priming, so
+  # it permanently pressured placement on every small brick in the fleet while
+  # only ever being partly met. That is the #4077 failure mode, and the sandbox
+  # floor was already cut to 2 for it while this one was left at 4.
+  #
+  # 1 rather than 0 because semgrep is the one demo path with a per-request cost
+  # high enough that a warm clone is worth a brick slot, and it keeps one
+  # instance able to answer the */5 probe without a restore.
+  floor: 1
   cap: 16
   timeoutSeconds: 90
 
@@ -1166,16 +1206,44 @@ bricks:
       8gi: 2
       16gi: 2
   # Memory each brick's noded reserves for itself, subtracted from the class
-  # limit to get guest-schedulable capacity. It MUST match noded's own
-  # EMBERVM_NODED_DAEMON_RESERVE_MIB default; this single source renders both.
-  daemonReserveMib: 512
+  # limit to get guest-schedulable capacity. One source renders BOTH consumers:
+  # noded's EMBERVM_NODED_DAEMON_RESERVE_MIB (_noded-pod.tpl) and the control
+  # plane's per-class usable_mib in EMBERVM_BRICK_CLASSES (deployment.yaml).
+  #
+  # 256, down from 512. This is NOT a footprint reduction: the brick pod still
+  # requests its full class limit from the node either way. It is a capacity
+  # UNLOCK inside a reservation already paid for, worth 256 MiB of extra
+  # guest-schedulable memory per brick, which is what lets a 1gi brick host more
+  # than one small guest.
+  #
+  # By its documented meaning (noded/config/config.go:126, "covering the
+  # daemon's own RSS") 512 was ~50x oversized: measured 2026-08-16 on the idle
+  # bricks, noded's container RSS is 9 MiB (node-1) and 11 MiB (node-2).
+  #
+  # DO NOT take it lower on the strength of that number alone. Two readings of
+  # the same brick disagree, and the gap is the reason for the remaining slack:
+  # the admission predicate reads `memory.max - memory.current`
+  # (noded/server/pressure.go:142) and cgroup v2 counts PAGE CACHE in
+  # memory.current, so a brick that has baked a rootfs or restored a snapshot
+  # from its hostPath scratch carries hundreds of MiB of reclaimable file cache
+  # charged to its own cgroup (node-3's brick: 1391 MiB with zero live VMs). The
+  # 512 was silently paying for that cache and for per-VM Firecracker VMM
+  # overhead, neither of which is what the field says it covers. VMOverheadMib
+  # is the field that should carry the VMM half; it defaults to 0 and is read
+  # only by the `reserved` admission model, which is not switched on. Splitting
+  # this into measured parts is #4773.
+  #
+  # Because the observed model re-checks live headroom at boot, undersizing this
+  # shows up as `pressure:mem` boot rejections and evicted snapshot cache
+  # (slower restores), not as an OOM kill. Rollback is setting it back to 512.
+  daemonReserveMib: 256
   classes:
     # THE SMALLEST CLASS THAT CAN HOST ANYTHING, and the arithmetic is the
-    # reason rather than a preference: daemonReserveMib (512) is subtracted from
-    # the class limit to get guest-schedulable capacity, so 1Gi yields 512Mi for
-    # guests (four 128Mi microVMs) and a 512Mi class would yield ZERO. Do not add
-    # a class at or below daemonReserveMib; it renders a brick that can never
-    # admit a VM, and nothing validates that today.
+    # reason rather than a preference: daemonReserveMib (256) is subtracted from
+    # the class limit to get guest-schedulable capacity, so 1Gi yields 768Mi for
+    # guests (six 128Mi microVMs, or three 256Mi ones) and a 256Mi class would
+    # yield ZERO. Do not add a class at or below daemonReserveMib; it renders a
+    # brick that can never admit a VM, and nothing validates that today.
     #
     # Exists for the conformance work (#4762): checking a spec invariant needs
     # LIFECYCLE EVENTS per unit of memory, not compute, so many tiny VMs beat few
