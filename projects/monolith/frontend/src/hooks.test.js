@@ -18,6 +18,24 @@ describe("reroute", () => {
     );
   });
 
+  it("rewrites the friends moving path under /friends", () => {
+    expect(reroute({ url: url("friends.jomcgi.dev", "/moving") })).toBe(
+      "/friends/moving",
+    );
+  });
+
+  it("does not resolve the apex moving path to the friends tree", () => {
+    expect(reroute({ url: url("jomcgi.dev", "/moving") })).toBe(
+      "/public/moving",
+    );
+  });
+
+  it("does not resolve the private moving path to the friends tree", () => {
+    expect(reroute({ url: url("private.jomcgi.dev", "/moving") })).toBe(
+      "/private/moving",
+    );
+  });
+
   it("leaves /otel/* alone on subdomain hosts so browser spans reach the proxy", () => {
     expect(
       reroute({ url: url("public.jomcgi.dev", "/otel/v1/traces") }),

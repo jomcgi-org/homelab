@@ -1,0 +1,63 @@
+/* Crossing has its own scoped palette. Components contain layout only and
+ * consume these properties, which keeps every color in this plain CSS file.
+ */
+.moving {
+  color-scheme: light;
+  --moving-canvas: #f05a46;
+  --moving-paper: #fff8df;
+  --moving-paper-raised: #ffffff;
+  --moving-ink: #18130f;
+  --moving-muted: #65564b;
+  --moving-accent: #ffd83d;
+  --moving-accent-ink: #18130f;
+  --moving-hero: #86cdf2;
+  --moving-collision: #89d6a4;
+  --moving-danger: #9c241f;
+  --moving-danger-paper: #ffd9ce;
+  --moving-focus: #005fcc;
+  --moving-check: #18130f;
+  --moving-border: 4px;
+  --moving-font:
+    Arial, Helvetica, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --moving-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --moving-size-small: 12px;
+  --moving-size-body: clamp(15px, 1.4vw, 19px);
+  --moving-size-heading: clamp(34px, 5vw, 72px);
+  --moving-size-display: clamp(46px, 8vw, 118px);
+}
+
+html[data-theme="dark"] .moving {
+  color-scheme: dark;
+  --moving-canvas: #161311;
+  --moving-paper: #24201c;
+  --moving-paper-raised: #302a24;
+  --moving-ink: #fff3d4;
+  --moving-muted: #d7c7aa;
+  --moving-accent: #ffd83d;
+  --moving-accent-ink: #18130f;
+  --moving-hero: #174d70;
+  --moving-collision: #174f35;
+  --moving-danger: #ff9787;
+  --moving-danger-paper: #4b211e;
+  --moving-focus: #81bdff;
+  --moving-check: #fff3d4;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) .moving {
+    color-scheme: dark;
+    --moving-canvas: #161311;
+    --moving-paper: #24201c;
+    --moving-paper-raised: #302a24;
+    --moving-ink: #fff3d4;
+    --moving-muted: #d7c7aa;
+    --moving-accent: #ffd83d;
+    --moving-accent-ink: #18130f;
+    --moving-hero: #174d70;
+    --moving-collision: #174f35;
+    --moving-danger: #ff9787;
+    --moving-danger-paper: #4b211e;
+    --moving-focus: #81bdff;
+    --moving-check: #fff3d4;
+  }
+}

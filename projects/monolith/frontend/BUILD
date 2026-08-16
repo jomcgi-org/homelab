@@ -82,10 +82,11 @@ js_run_binary(
 )
 
 # Public-only source tree (ADR 004 Phase 5d code-absence): identical to :src but
-# additionally excludes the authenticated route tree (src/routes/private/**) and
-# private-only components (src/lib/private/**). SvelteKit is filesystem-routed,
-# so omitting these files from the source set drops those pages, their SSR
-# handlers, and their client chunks entirely from the build.
+# additionally excludes both authenticated route trees and private-only
+# components. SvelteKit is filesystem-routed, so omitting these files from the
+# source set drops those pages, their SSR handlers, and their client chunks
+# entirely from the public build. Friends routes have their own authorization
+# lane, so their source must be absent from the anonymous artifact too.
 js_library(
     name = "src_public",
     srcs = glob(
@@ -97,6 +98,7 @@ js_library(
         exclude = [
             "src/**/*.test.js",
             "src/routes/private/**",
+            "src/routes/friends/**",
             "src/lib/private/**",
         ],
     ) + [
@@ -223,6 +225,7 @@ vitest_bin.vitest_test(
     data = [
         ":src",
         ":test_lib",
+        "BUILD",
     ],
 )
 
