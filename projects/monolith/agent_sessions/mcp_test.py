@@ -1290,12 +1290,24 @@ def test_session_vms_returns_transport_payload(monkeypatch):
         "offset": 0,
     }
 
-    async def fake_list_sessions(limit=50, offset=0):
+    async def fake_list_sessions(limit=50, offset=0, workload=None):
         return payload
 
     monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
     result = asyncio.run(mcp.monolith_agent_session_vms())
     assert result == payload
+
+
+def test_session_vms_threads_workload_argument(monkeypatch):
+    calls = []
+
+    async def fake_list_sessions(limit=50, offset=0, workload=None):
+        calls.append(workload)
+        return {"items": []}
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+    asyncio.run(mcp.monolith_agent_session_vms(workload="pi-runtime"))
+    assert calls == ["pi-runtime"]
 
 
 def test_session_destroy_clears_matching_binding(monkeypatch, session):

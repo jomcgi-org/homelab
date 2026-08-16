@@ -21,6 +21,8 @@ from typing import Awaitable, Callable, NamedTuple, Protocol
 
 import httpx
 
+import agent_sessions
+from agent_sessions import model_family
 from faas.embervm_client import (
     EmberVMTimeout,
     EmberVMTransportError,
@@ -99,6 +101,28 @@ def _status_error_detail(exc: httpx.HTTPStatusError) -> str:
 # empty default is what the guards below check: unset means the guest lane is
 # not reachable, not that it is reachable at the empty URL.
 EMBERVM_URL = os.environ.get("EMBERVM_URL", "")
+
+
+# The pi-family workload override, following the SANDBOX_WORKLOAD_PREFIX
+# precedent in the monolith chart: read once at import, from the chart's
+# agentSessions.piWorkload value. There is no security semantic here (unlike
+# an egress allowlist), so an unset OR blank value means "use the code
+# default", not "deny": this is a REVERT LEVER (set it to claude-runtime to
+# put qwen back on the old lane by a values edit, no code deploy), never a
+# deny-by-default control.
+#
+# Extracted as a function purely so the env-reading behaviour is testable
+# WITHOUT importlib.reload. Reloading this module rebinds EmberSessionGone to a
+# fresh class object while other modules (and the test file's own top-level
+# import) keep the previous one, so a later `pytest.raises(EmberSessionGone)`
+# stops matching. That failure is order dependent and reads like flakiness, so
+# do not reintroduce a reload to test this.
+def _resolve_pi_workload() -> str:
+    """Resolve the pi-family workload name from the environment."""
+    return os.environ.get("AGENT_PI_WORKLOAD", "") or agent_sessions.PI_WORKLOAD
+
+
+PI_WORKLOAD = _resolve_pi_workload()
 
 
 class EmberSessionGone(EmberVMTransportError):
@@ -258,8 +282,21 @@ class EmberVmShimTransport:
         self.workload = workload
         self.read_timeout = read_timeout
 
+    def _workload_for(self, model: str | None) -> str:
+        """Resolve the target workload for a session of this model.
+
+        model=None resolves to self.workload (the claude family default, see
+        model_family), same as every other family that is not "pi".
+        """
+        if model_family(model) == "pi":
+            return PI_WORKLOAD
+        return self.workload
+
     async def create_session(
-        self, restore_from: str | None = None, _attempt: int = 0
+        self,
+        restore_from: str | None = None,
+        model: str | None = None,
+        _attempt: int = 0,
     ) -> EmberSession:
         """Create a new session on the guest and return the session ID.
 
@@ -269,6 +306,10 @@ class EmberVmShimTransport:
                 the prior generation's guest workspace from (#4306 slice 4:
                 cross-generation continuity). None (the default) requests a
                 normal, blank create.
+            model: The model this session will run, used only to pick the
+                target workload (see _workload_for). None resolves to
+                self.workload, matching every caller that predates this
+                parameter.
 
         Returns:
             The EmberVM session identity and bearer token. lineage_id is the
@@ -289,7 +330,7 @@ class EmberVmShimTransport:
         if not EMBERVM_URL:
             raise EmberVMTransportError("EMBERVM_URL is not configured")
 
-        url = f"{EMBERVM_URL}/v1/workloads/{self.workload}/sessions"
+        url = f"{EMBERVM_URL}/v1/workloads/{self._workload_for(model)}/sessions"
         headers = auth_headers()
         timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
         # A normal create posts no body at all: the CP's create route parses
@@ -329,7 +370,7 @@ class EmberVmShimTransport:
             logger.warning("embervm session creation failed: %s", exc)
             if _attempt < 3 and _retryable_from_response(exc):
                 await asyncio.sleep((2, 5, 10)[_attempt])
-                return await self.create_session(restore_from, _attempt + 1)
+                return await self.create_session(restore_from, model, _attempt + 1)
             raise EmberVMTransportError(_status_error_detail(exc)) from exc
         except httpx.TransportError as exc:
             logger.warning("embervm session creation transport error: %s", exc)
@@ -340,12 +381,18 @@ class EmberVmShimTransport:
     # is listed here and destroyed. Both calls use management auth, not a
     # session bearer token, so they act on any session in the workload.
 
-    async def list_sessions(self, limit: int = 50, offset: int = 0) -> dict:
-        """List the control plane's sessions for this workload (management auth).
+    async def list_sessions(
+        self, limit: int = 50, offset: int = 0, workload: str | None = None
+    ) -> dict:
+        """List the control plane's sessions for one workload (management auth).
 
         Args:
             limit: Maximum sessions to return (clamped 1-500 server side).
             offset: Offset into the workload's session list.
+            workload: Which lane to list; defaults to self.workload (the
+                claude runtime). The two lanes are never aggregated: the
+                session cap is per workload, so an operator managing a cap
+                wants one lane at a time.
 
         Returns:
             The control plane's paginated session listing.
@@ -356,7 +403,8 @@ class EmberVmShimTransport:
         if not EMBERVM_URL:
             raise EmberVMTransportError("EMBERVM_URL is not configured")
 
-        url = f"{EMBERVM_URL}/v1/workloads/{self.workload}/sessions"
+        target_workload = workload if workload is not None else self.workload
+        url = f"{EMBERVM_URL}/v1/workloads/{target_workload}/sessions"
         headers = auth_headers()
         # NOT self.read_timeout: that 30-minute value is sized for a turn,
         # and this listing now serves the console's fast VM-state poll. A
@@ -499,7 +547,9 @@ class EmberVmShimTransport:
         if ember is None:
             if restore_from:
                 try:
-                    ember = await self.create_session(restore_from=restore_from)
+                    ember = await self.create_session(
+                        restore_from=restore_from, model=model
+                    )
                 except EmberVMTransportError as restore_exc:
                     # Same degrade as the 410/403 arm below: the restore
                     # create was itself DENIED or timed out, so fall back to
@@ -510,7 +560,7 @@ class EmberVmShimTransport:
                         restore_from,
                         restore_exc,
                     )
-                    ember = await self.create_session()
+                    ember = await self.create_session(model=model)
                     workspace_recovery = {
                         "created": True,
                         "restored": False,
@@ -530,7 +580,7 @@ class EmberVmShimTransport:
                     await on_create(ember, cli_for_binding)
                 cli_session_id = cli_for_binding
             else:
-                ember = await self.create_session()
+                ember = await self.create_session(model=model)
                 workspace_recovery = {
                     "created": True,
                     "restored": False,
@@ -629,7 +679,9 @@ class EmberVmShimTransport:
             # is None and session_id is the only handle it ever had.
             restore_from = ember.lineage_id or ember.session_id
             try:
-                new_ember = await self.create_session(restore_from=restore_from)
+                new_ember = await self.create_session(
+                    restore_from=restore_from, model=model
+                )
             except EmberVMTransportError as restore_exc:
                 # The restore create was itself DENIED (unknown_lineage, a
                 # workload/principal mismatch, a live heir, or a concurrent
@@ -643,7 +695,7 @@ class EmberVmShimTransport:
                     restore_from,
                     restore_exc,
                 )
-                new_ember = await self.create_session()
+                new_ember = await self.create_session(model=model)
 
             cli_for_binding = cli_session_id if new_ember.restored else None
             if on_create is not None:
