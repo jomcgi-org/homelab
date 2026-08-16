@@ -17,6 +17,7 @@
 # gazelle:exclude scripts
 # gazelle:exclude home
 # gazelle:exclude sandbox
+# gazelle:exclude shotter
 # gazelle:exclude scheduler
 # gazelle:exclude semgrep_scan
 # gazelle:exclude goosecracker
@@ -6657,6 +6658,22 @@ bdd_test(
     ],
 )
 
+# BDD specs for the website snapshotter MCP tool (Phase 3 of issue #4994).
+# These specs define the tool's contract before implementation: URL validation,
+# viewport bounds, MCP registration, EmberVM dispatch (mocked), and the return
+# shape (ImageContent block plus SeaweedFS URL). Marked future = True so the
+# gating Test action excludes them; they will fail (import error) until Phase 4
+# lands the implementation.
+bdd_test(
+    name = "shotter_bdd_mcp_tool_test",
+    future = True,
+    srcs = [
+        "shotter/tests/__init__.py",
+        "shotter/tests/bdd_mcp_tool_test.py",
+        "shotter/tests/conftest.py",
+    ],
+)
+
 py_test(
     name = "bdd_completeness_test",
     size = "small",
@@ -6664,8 +6681,12 @@ py_test(
         "app/__init__.py",
         "app/bdd_completeness_test.py",
     ],
+    # The data glob hoovers up EVERY domain's tests, so each one needs an
+    # explicit --ignore below or pytest collects and runs it here. A `future`
+    # tag does not help: that tags the dedicated bdd_test target, while this is
+    # a separate py_test that picks the file up by glob.
     data = glob(["*/tests/*_test.py"]),
-    env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/scheduler/tests --ignore=projects/monolith/agent/tests --ignore=projects/monolith/goosecracker/tests --ignore=projects/monolith/moving/tests"},
+    env = {"PYTEST_ADDOPTS": "--import-mode=importlib --ignore=projects/monolith/home/tests --ignore=projects/monolith/chat/tests --ignore=projects/monolith/knowledge/tests --ignore=projects/monolith/scheduler/tests --ignore=projects/monolith/agent/tests --ignore=projects/monolith/goosecracker/tests --ignore=projects/monolith/moving/tests --ignore=projects/monolith/shotter/tests"},
     imports = ["."],
     tags = ["bdd"],
     deps = [
