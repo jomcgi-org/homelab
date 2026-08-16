@@ -204,8 +204,6 @@ export const RUN_LEXICON = {
     walkProvenanceLead: "Agent-authored.",
     walkProvenanceBody:
       "These points are the implementer's account of its own change. The diff beside them is from git.",
-    walkNarrativeProvenanceBody:
-      "This prose is the implementer's account of its own change. The diff below it is from git.",
     walkAccountLabel: "agent's account",
     walkNoAccount: "No agent account was recorded for this file.",
     walkUnexplainedMark: "!",
@@ -218,8 +216,8 @@ export const RUN_LEXICON = {
       "The agent named this file; the compare does not contain it.",
     walkMechanicalStep: "produced by tooling this turn",
     walkMechanicalHeading: "tool-produced changes",
-    walkUnexplainedFilesHeading: "unexplained files",
-    walkContradictedFilesHeading: "contradicted paths",
+    walkUnexplainedFilesLine: "Changed without explanation:",
+    walkContradictedFilesLine: "Claimed but absent from the diff:",
     walkTouchedLabel: "files touched by tools this turn",
     walkDiffLoading: "loading diff…",
     walkDiffUnavailable: "diff unavailable",
@@ -233,6 +231,7 @@ export const RUN_LEXICON = {
     arrow: "→",
     colon: ":",
     comma: ",",
+    commaSpace: ", ",
     semicolon: ";",
     period: ".",
   },

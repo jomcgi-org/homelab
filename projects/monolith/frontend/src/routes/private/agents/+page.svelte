@@ -1350,7 +1350,6 @@
           <h2>{P.labels.walkSummary}</h2>
           <WalkthroughNarrative
             turnSeq={fixture.walkthrough.turnSeq}
-            model={fixture.walkthrough.model}
             fixture={fixture.walkthrough}
           />
         </div>
@@ -1639,7 +1638,7 @@
               <WalkthroughNarrative
                 sessionId={selectedSession.id}
                 turnSeq={turn.seq}
-                model={turn.model || selectedSession.model || "luna"}
+                walkthroughTurnCount={eligibleWalkthroughTurns.length}
               />
             {:else}
               <div class="empty walkthrough-empty">
