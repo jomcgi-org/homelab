@@ -6666,12 +6666,12 @@ bdd_test(
 # lands the implementation.
 bdd_test(
     name = "shotter_bdd_mcp_tool_test",
-    future = True,
     srcs = [
         "shotter/tests/__init__.py",
         "shotter/tests/bdd_mcp_tool_test.py",
         "shotter/tests/conftest.py",
     ],
+    future = True,
 )
 
 py_test(
