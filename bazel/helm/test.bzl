@@ -137,6 +137,17 @@ EOF
             "@multitool//tools/helm",
             ":Chart.yaml",
             ":values.yaml",
-        ] + native.glob(["templates/**"], allow_empty = True) + extra_values,
+        ] + native.glob(["templates/**"], allow_empty = True) +
+               # Vendored subcharts. Without these a chart that declares a
+               # file:// dependency and calls {{ include }} on one of its
+               # defines fails lint inside the sandbox with "no template
+               # ... associated with template gotpl", because the tarball
+               # never reached the runfiles tree. Every consumer of
+               # //projects/platform/cf-ingress-library hit that and set
+               # lint = False rather than fixing it here; those can be
+               # turned back on now, one chart at a time.
+               #
+               # Additive: charts with no charts/ directory glob to nothing.
+               native.glob(["charts/**"], allow_empty = True) + extra_values,
         **kwargs
     )
