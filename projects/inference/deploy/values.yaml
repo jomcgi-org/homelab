@@ -302,6 +302,34 @@ llamacpp:
 
 runtimeClassName: nvidia
 
+# OpenAI-compatible ingress at https://private.jomcgi.dev/llm/v1, so a client
+# outside the cluster (an OpenAI SDK, curl, an IDE assistant) can call the
+# llama.cpp server. See templates/httproute-private.yaml for why this hostname
+# rather than friends.jomcgi.dev, and why the prefix stops at /v1.
+#
+# SAFE TO ENABLE BEFORE ANY CLOUDFLARE WORK. The Access application covering
+# private.jomcgi.dev has no path scope, so it already guards this path the
+# moment the route exists: a browser needs a team login and a headless client
+# gets nothing. Adding a path-scoped Access application for /llm with a Service
+# Auth policy is what later admits a service token, and that is a dashboard
+# action (Access is not managed in this repo).
+#
+# Note a path-scoped application REPLACES the hostname-wide one for /llm rather
+# than layering on it, because Access matches the most specific path. An app
+# holding only a Service Auth policy therefore locks the browser out of /llm.
+# Add a second policy for the operator's email if both are wanted.
+cfIngress:
+  enabled: true
+  tier: trusted
+  hostname: private.jomcgi.dev
+  # The route matches <pathPrefix>/v1 and rewrites it to /v1. Deliberately not
+  # under /app/, which by convention is browser UIs on this hostname.
+  pathPrefix: /llm
+  team: jomcgi
+  gateway:
+    name: cloudflare-ingress
+    namespace: envoy-gateway-system
+
 nodeSelector:
   kubernetes.io/hostname: node-4
 

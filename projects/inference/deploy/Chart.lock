@@ -1,0 +1,6 @@
+dependencies:
+- name: cf-ingress
+  repository: file://../../platform/cf-ingress-library
+  version: 0.1.0
+digest: sha256:41880293baaa2696c2798a0517acd55678eb75660ed4a6da6f107f47709fb2e0
+generated: "2026-08-17T16:51:02.706569-07:00"
