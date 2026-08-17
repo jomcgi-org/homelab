@@ -1339,6 +1339,34 @@
   }
 }
 
+@media (min-width: 1600px) {
+  .moving {
+    font-size: 16.5px;
+  }
+
+  .moving .app {
+    max-width: 1720px;
+  }
+
+  .moving .grid {
+    grid-template-columns: 440px minmax(0, 1fr) 360px;
+  }
+
+  .moving .dia-date,
+  .moving .axis .m,
+  .moving .legtag span {
+    font-size: 11px;
+  }
+
+  .moving .blbl {
+    font-size: 12.5px;
+  }
+
+  .moving .legtag b {
+    font-size: 14px;
+  }
+}
+
 .moving .app.phone .grid {
   display: flex;
   flex-direction: column;
