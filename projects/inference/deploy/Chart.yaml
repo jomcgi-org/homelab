@@ -4,6 +4,14 @@ description: A Helm chart for LLM inference (vLLM LLM serving + llama.cpp CPU em
 type: application
 version: 2.5.4
 appVersion: "b5270"
+dependencies:
+  # Path-based private ingress helper, same as longhorn, argocd and kargo use.
+  # Only the SecurityPolicy is taken from it: templates/httproute-private.yaml
+  # writes its own HTTPRoute, because the library emits no `timeouts` and an
+  # LLM route cannot live with Envoy's 15s default.
+  - name: cf-ingress
+    version: 0.1.0
+    repository: "file://../../platform/cf-ingress-library"
 keywords:
   - llm
   - inference

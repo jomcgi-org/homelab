@@ -1,0 +1,91 @@
+{{- /*
+OpenAI-compatible access to the llama.cpp server from outside the cluster:
+
+  https://private.jomcgi.dev/llm/v1
+
+Base URL for an OpenAI client is that string; the model id is whatever
+llamacpp.extraArgs --alias sets, currently "qwen3.6-27b".
+
+WHY private.jomcgi.dev AND NOT friends.jomcgi.dev. friends carries the authentik
+lanes, and every one of them runs an Envoy `oidc` block, which answers an
+unauthenticated request with a BROWSER REDIRECT. An OpenAI SDK holding a bearer
+token cannot follow that, so it sees the authentik login page rather than a
+completion. Reaching this from a headless client on that hostname would mean an
+authentik client_credentials provider minting short-lived JWTs pasted in as the
+"api key". Here, Cloudflare Access already supports non-browser callers
+natively: a Service Auth policy on the Access application admits a request
+carrying CF-Access-Client-Id / CF-Access-Client-Secret, and injects the
+Cf-Access-Jwt-Assertion header the SecurityPolicy below validates.
+
+WHY THE PREFIX IS /llm/v1 AND NOT /llm. Rewriting the bare prefix to / would
+publish EVERYTHING llama-server routes, including /props and the /metrics
+endpoint that llamacpp.extraArgs --metrics turns on. Matching /llm/v1 exposes
+only the OpenAI surface (/v1/chat/completions, /v1/completions, /v1/models,
+/v1/embeddings). /slots is not in play either way, since --slots is not passed.
+*/}}
+{{- if .Values.cfIngress.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "inference.fullname" . }}-private
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+    ingress-tier: {{ .Values.cfIngress.tier }}
+spec:
+  # group/kind and the backendRef group/kind/weight below are Gateway API schema
+  # defaults, spelled out to match cf-ingress.httproute rather than because this
+  # Application needs it: that library declares them because its ServerSideApply
+  # consumers report OutOfSync forever on any field the chart leaves implicit
+  # and the apiserver then defaults. This app is client-side apply today, so the
+  # cost of stating them is zero and the trap is pre-closed if that changes.
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.cfIngress.gateway.name }}
+      namespace: {{ .Values.cfIngress.gateway.namespace }}
+  hostnames:
+    - {{ .Values.cfIngress.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.cfIngress.pathPrefix }}/v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /v1
+      # Explicit, because this is NOT rendered through cf-ingress.httproute and
+      # that library emits no timeouts at all: Envoy's own route default is 15s,
+      # which truncates any generation longer than a sentence. 600s matches the
+      # monolith's private route, whose callsites hit this same backend.
+      #
+      # Cloudflare is the other clock and it is not configurable here: the edge
+      # returns 524 if the origin sends NO byte for 100s. Streaming responses
+      # emit the first token well inside that, so a long non-streamed completion
+      # is the shape that breaks. Prefer stream: true from the client.
+      timeouts:
+        request: 600s
+        backendRequest: 600s
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ include "inference.fullname" . }}
+          port: {{ .Values.server.port | int }}
+          weight: 1
+---
+{{- /*
+Validates the Cloudflare Access JWT, so the only way to this route is through
+the edge rather than by reaching Envoy some other way.
+
+This carries NO `authorization` block and NO `audiences`, matching every other
+private-tier route (argocd, signoz, longhorn, kargo). The consequence is worth
+stating plainly: any JWT from the team issuer validates here, so the isolation
+between "this service token may call the LLM" and "this service token may call
+argocd" lives ENTIRELY in the Cloudflare Access policy, not in the cluster. Pin
+`audiences` to the /llm application's AUD tag if that ever needs to hold on its
+own.
+*/}}
+{{- include "cf-ingress.security-policy" (dict "name" (printf "%s-private" (include "inference.fullname" .)) "team" .Values.cfIngress.team) }}
+{{- end }}
