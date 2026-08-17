@@ -75,7 +75,13 @@ spec:
           port: {{ .Values.server.port | int }}
           weight: 1
 ---
-{{- /*
+{{/*
+Left-trim deliberately omitted on this comment and on the include below: `{{-`
+would chomp back through the newline after the `---` above and weld the
+separator onto the first line of the policy, which helm lint reports as
+"invalid Yaml document separator". The same shape exists unlinted elsewhere in
+the repo, because every other chart consuming this library sets lint = False.
+
 Validates the Cloudflare Access JWT, so the only way to this route is through
 the edge rather than by reaching Envoy some other way.
 
@@ -87,5 +93,5 @@ argocd" lives ENTIRELY in the Cloudflare Access policy, not in the cluster. Pin
 `audiences` to the /llm application's AUD tag if that ever needs to hold on its
 own.
 */}}
-{{- include "cf-ingress.security-policy" (dict "name" (printf "%s-private" (include "inference.fullname" .)) "team" .Values.cfIngress.team) }}
+{{ include "cf-ingress.security-policy" (dict "name" (printf "%s-private" (include "inference.fullname" .)) "team" .Values.cfIngress.team) }}
 {{- end }}
