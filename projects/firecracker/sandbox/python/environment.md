@@ -75,6 +75,6 @@ table when the output is tabular.
 | sqlite-libs | 3.53.4-r0 |
 | tiff | 4.7.2-r1 |
 | wolfi-baselayout | 20230201-r29 |
-| xz | 5.8.3-r1 |
+| xz | 5.8.3-r2 |
 | yaml | 0.2.5-r9 |
 | zlib | 1.3.2-r4 |

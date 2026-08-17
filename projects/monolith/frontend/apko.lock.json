@@ -175,23 +175,42 @@
         "checksum": "Q1rulXUw2hoSbJX76oQVOtcU4ddP4="
       },
       {
-        "name": "icu78-data-full",
-        "url": "https://packages.wolfi.dev/os/x86_64/icu78-data-full-78.3-r1.apk",
-        "version": "78.3-r1",
+        "name": "c-ares",
+        "url": "https://packages.wolfi.dev/os/x86_64/c-ares-1.34.8-r0.apk",
+        "version": "1.34.8-r0",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-7666",
-          "checksum": "sha1-oI1UH/9+yaXly/8uY+aUUoI+vWE="
+          "range": "bytes=0-8391",
+          "checksum": "sha1-11RoGBx1m5F5GScNg+oe9D5GcRA="
         },
         "data": {
-          "range": "bytes=7667-14026886",
-          "checksum": "sha256-j096fD6K9n0KSD6/VNWVNnGGiGvvkv2sOjNHLQVkP+g="
+          "range": "bytes=8392-158272",
+          "checksum": "sha256-X8alub74T2BEATtjusqBKIhCL2NW3/4ZGToouWR6TrY="
         },
-        "checksum": "Q1oI1UH/9+yaXly/8uY+aUUoI+vWE="
+        "checksum": "Q111RoGBx1m5F5GScNg+oe9D5GcRA="
+      },
+      {
+        "name": "icu78-data-full",
+        "url": "https://packages.wolfi.dev/os/x86_64/icu78-data-full-78.3-r2.apk",
+        "version": "78.3-r2",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-8439",
+          "checksum": "sha1-ZP+kOul6iQpuDbw19T62nU8f64w="
+        },
+        "data": {
+          "range": "bytes=8440-14027408",
+          "checksum": "sha256-s7rIXBUYvqYFnDEg1HUipeTvF4LX9Ivl/OwY3wbZY58="
+        },
+        "checksum": "Q1ZP+kOul6iQpuDbw19T62nU8f64w="
       },
       {
         "name": "libstdc++",
@@ -214,41 +233,22 @@
       },
       {
         "name": "libicu78",
-        "url": "https://packages.wolfi.dev/os/x86_64/libicu78-78.3-r1.apk",
-        "version": "78.3-r1",
+        "url": "https://packages.wolfi.dev/os/x86_64/libicu78-78.3-r2.apk",
+        "version": "78.3-r2",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-7766",
-          "checksum": "sha1-doBEfs/wsoGGCsGjvXHeIs36eVA="
+          "range": "bytes=0-8543",
+          "checksum": "sha1-1I6HbUHegeaAZ7mY+OYhL0VV+J0="
         },
         "data": {
-          "range": "bytes=7767-3046673",
-          "checksum": "sha256-sFsXb0Kf4YqFRgHUcP5tQfpjl/CC9G4ASIzPeUdJ/Jw="
+          "range": "bytes=8544-3159566",
+          "checksum": "sha256-RV7RQsNj20bjbq1hqzyxAuwcPKn1OBfQp+JFBYagt54="
         },
-        "checksum": "Q1doBEfs/wsoGGCsGjvXHeIs36eVA="
-      },
-      {
-        "name": "c-ares",
-        "url": "https://packages.wolfi.dev/os/x86_64/c-ares-1.34.8-r0.apk",
-        "version": "1.34.8-r0",
-        "architecture": "x86_64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-8391",
-          "checksum": "sha1-11RoGBx1m5F5GScNg+oe9D5GcRA="
-        },
-        "data": {
-          "range": "bytes=8392-158272",
-          "checksum": "sha256-X8alub74T2BEATtjusqBKIhCL2NW3/4ZGToouWR6TrY="
-        },
-        "checksum": "Q111RoGBx1m5F5GScNg+oe9D5GcRA="
+        "checksum": "Q11I6HbUHegeaAZ7mY+OYhL0VV+J0="
       },
       {
         "name": "libuv",

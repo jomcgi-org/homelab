@@ -328,22 +328,22 @@
       },
       {
         "name": "xz",
-        "url": "https://packages.wolfi.dev/os/x86_64/xz-5.8.3-r1.apk",
-        "version": "5.8.3-r1",
+        "url": "https://packages.wolfi.dev/os/x86_64/xz-5.8.3-r2.apk",
+        "version": "5.8.3-r2",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-7092",
-          "checksum": "sha1-xMbaAqRKwa/Tx0fRXhz88d+0V3M="
+          "range": "bytes=0-8035",
+          "checksum": "sha1-wWhWq5UUYeBAZc58hZUWaJYLt1o="
         },
         "data": {
-          "range": "bytes=7093-388137",
-          "checksum": "sha256-Ur6ITPMaX3cot0jCgmDHBGOsx9DIjsfMrq07ciRfkgw="
+          "range": "bytes=8036-394695",
+          "checksum": "sha256-UCFndWYtQHI97ZQ3hkMPEoI4G35Er/wx+mZA02QCRqA="
         },
-        "checksum": "Q1xMbaAqRKwa/Tx0fRXhz88d+0V3M="
+        "checksum": "Q1wWhWq5UUYeBAZc58hZUWaJYLt1o="
       },
       {
         "name": "sqlite-libs",

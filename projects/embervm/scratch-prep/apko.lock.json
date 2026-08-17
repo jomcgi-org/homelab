@@ -233,41 +233,41 @@
       },
       {
         "name": "libblkid",
-        "url": "https://packages.wolfi.dev/os/x86_64/libblkid-2.42.2-r2.apk",
-        "version": "2.42.2-r2",
+        "url": "https://packages.wolfi.dev/os/x86_64/libblkid-2.42.2-r3.apk",
+        "version": "2.42.2-r3",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-8539",
-          "checksum": "sha1-sY3o091RNhowucO/3/WhzFuts8o="
+          "range": "bytes=0-8556",
+          "checksum": "sha1-g4mMvjrH0e9Z5f3wKYDrVPUsLxk="
         },
         "data": {
-          "range": "bytes=8540-869124",
-          "checksum": "sha256-VFsvh9J6ZSYiiUOV0vvC0MwdErGm1yMDJQnQC++NefA="
+          "range": "bytes=8557-869136",
+          "checksum": "sha256-cdj6TpJNjDcbzBruH0yp+Ek57SH6UD3AV+YVTM3/8C4="
         },
-        "checksum": "Q1sY3o091RNhowucO/3/WhzFuts8o="
+        "checksum": "Q1g4mMvjrH0e9Z5f3wKYDrVPUsLxk="
       },
       {
         "name": "libuuid",
-        "url": "https://packages.wolfi.dev/os/x86_64/libuuid-2.42.2-r2.apk",
-        "version": "2.42.2-r2",
+        "url": "https://packages.wolfi.dev/os/x86_64/libuuid-2.42.2-r3.apk",
+        "version": "2.42.2-r3",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-8544",
-          "checksum": "sha1-rIyZlMsFPQptRrJBgEV3d5q4GyY="
+          "range": "bytes=0-8563",
+          "checksum": "sha1-pms+1bXDk0H01cRFiUgbTk+X9Ic="
         },
         "data": {
-          "range": "bytes=8545-63078",
-          "checksum": "sha256-BthQWI6Dc6wAEq1j2lB5F2I9KM2+KPmLtGNN1kCBmmI="
+          "range": "bytes=8564-63098",
+          "checksum": "sha256-Y7wEE4OSx8JVo2Vo2XKK+QsS8klVZXtObABSaC7d5N8="
         },
-        "checksum": "Q1rIyZlMsFPQptRrJBgEV3d5q4GyY="
+        "checksum": "Q1pms+1bXDk0H01cRFiUgbTk+X9Ic="
       },
       {
         "name": "e2fsprogs",
@@ -385,22 +385,22 @@
       },
       {
         "name": "util-linux",
-        "url": "https://packages.wolfi.dev/os/x86_64/util-linux-2.42.2-r2.apk",
-        "version": "2.42.2-r2",
+        "url": "https://packages.wolfi.dev/os/x86_64/util-linux-2.42.2-r3.apk",
+        "version": "2.42.2-r3",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-8569",
-          "checksum": "sha1-LzrobVMVxPb1w6KZoSIXkELb0Fc="
+          "range": "bytes=0-8590",
+          "checksum": "sha1-Mn3G28F9lRsE57j7ktVwXujml90="
         },
         "data": {
-          "range": "bytes=8570-81608",
-          "checksum": "sha256-4aw0bvWPlDXQ0Y1mSo62C+Hr1eRHxvld7tDkgMPH9+M="
+          "range": "bytes=8591-81610",
+          "checksum": "sha256-3P/M1FQHft8U/q9DGoip7pKzeA9we5qA1gKz24ounQ8="
         },
-        "checksum": "Q1LzrobVMVxPb1w6KZoSIXkELb0Fc="
+        "checksum": "Q1Mn3G28F9lRsE57j7ktVwXujml90="
       }
     ]
   }

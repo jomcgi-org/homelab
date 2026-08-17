@@ -29,7 +29,7 @@ network at all. Do not reach for it.
 | ca-certificates-bundle | 20260413-r1 |
 | glibc | 2.43-r13 |
 | glibc-locale-posix | 2.43-r13 |
-| icu78-data-full | 78.3-r1 |
+| icu78-data-full | 78.3-r2 |
 | ld-linux | 2.43-r13 |
 | libbrotlicommon1 | 1.2.0-r3 |
 | libbrotlidec1 | 1.2.0-r3 |
@@ -37,7 +37,7 @@ network at all. Do not reach for it.
 | libcrypt1 | 2.43-r13 |
 | libcrypto3 | 3.6.3-r4 |
 | libgcc | 16.1.0-r4 |
-| libicu78 | 78.3-r1 |
+| libicu78 | 78.3-r2 |
 | libnghttp2-14 | 1.70.0-r2 |
 | libssl3 | 3.6.3-r4 |
 | libstdc++ | 16.1.0-r4 |
