@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import AccessPanel from "./AccessPanel.svelte";
   import {
+    clusterMilestoneGroups,
     collisionWording,
     formatCad,
     formatDateRange,
@@ -86,16 +87,18 @@
   );
   const milestoneGroups = $derived(groupMilestonesByDate(milestones));
   const milestoneMarkers = $derived(
-    milestoneGroups
-      .map((group) => ({
-        ...group,
-        position: ganttDatePosition(
-          group.occursOn,
-          timeline.startsOn,
-          timeline.endsOn,
-        ),
-      }))
-      .filter((group) => group.position != null),
+    clusterMilestoneGroups(
+      milestoneGroups
+        .map((group) => ({
+          ...group,
+          position: ganttDatePosition(
+            group.occursOn,
+            timeline.startsOn,
+            timeline.endsOn,
+          ),
+        }))
+        .filter((group) => group.position != null),
+    ),
   );
   const legSpans = $derived(
     spans
@@ -252,23 +255,32 @@
     return "○";
   }
 
+  function milestoneGroupDateLabel(group) {
+    return group.dateCount > 1
+      ? formatDateRange(group.startsOn, group.endsOn)
+      : formatShortDate(group.startsOn);
+  }
+
   function milestoneGroupLabel(group) {
     const titles = group.milestones.map((item) => item.title).join(", ");
+    const dateLabel = milestoneGroupDateLabel(group);
     return group.count > 1
-      ? `${group.count} milestones, ${formatShortDate(group.occursOn)}: ${titles}`
-      : `${titles}, ${formatShortDate(group.occursOn)}, ${group.state}`;
+      ? `${group.count} milestones, ${dateLabel}: ${titles}`
+      : `${titles}, ${dateLabel}, ${group.state}`;
   }
 
   function showMilestoneTooltip(event, group) {
     showTooltip(
       event,
       group.count > 1 ? `${group.count} milestones` : group.milestones[0].title,
-      formatShortDate(group.occursOn),
+      milestoneGroupDateLabel(group),
       group.milestones
-        .map(
-          (item) =>
-            `${item.title} · ${titleCaseName(item.owner)} · ${item.gcal_state}`,
-        )
+        .map((item) => {
+          const line = `${item.title} · ${titleCaseName(item.owner)} · ${item.gcal_state}`;
+          return group.dateCount > 1
+            ? `${formatShortDate(item.occurs_on)} · ${line}`
+            : line;
+        })
         .join("\n"),
     );
   }
@@ -471,7 +483,7 @@
                         {/if}
                       </span>
                       <span class="dia-date"
-                        >{formatShortDate(group.occursOn)}</span
+                        >{milestoneGroupDateLabel(group)}</span
                       >
                     </div>
                   {/each}

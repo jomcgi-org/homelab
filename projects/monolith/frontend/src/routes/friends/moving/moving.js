@@ -407,6 +407,80 @@ export function groupMilestonesByDate(milestones) {
     }));
 }
 
+// The threshold is a percentage of the track because this module cannot
+// measure rendered label width. It has to clear the widest label a cluster
+// can produce, which is a range ("7-9 Oct", about 45px) rather than a single
+// date ("16 Nov", about 34px), so 6.5 percent is roughly 52px at the desktop
+// track width.
+const MILESTONE_MIN_GAP_PERCENT = 6.5;
+
+function milestoneClusterState(milestones) {
+  if (milestones.some((item) => item.gcal_state === "held")) return "held";
+  if (milestones.every((item) => item.gcal_state === "synced")) return "synced";
+  return "queued";
+}
+
+function emitMilestoneCluster(members) {
+  const milestones = members
+    .flatMap((group) => group.milestones)
+    .toSorted((left, right) => left.occurs_on.localeCompare(right.occurs_on));
+  const dates = [...new Set(members.map((group) => group.occursOn))].toSorted(
+    (left, right) => left.localeCompare(right),
+  );
+  const startsOn = dates[0];
+  const endsOn = dates[dates.length - 1];
+  const positions = members.map((group) => group.position);
+  const minPosition = Math.min(...positions);
+  return {
+    id: `ms-${startsOn}`,
+    startsOn,
+    endsOn,
+    occursOn: startsOn,
+    dateCount: dates.length,
+    milestones,
+    count: milestones.length,
+    state: milestoneClusterState(milestones),
+    // The marker sits on the cluster's earliest date, not the midpoint of its
+    // range. The break test below compares first-member positions, so drawing
+    // the label here is what makes the minGapPercent separation it enforces
+    // also true of the labels. A midpoint would drift right by up to half a
+    // cluster's span and could close back onto its neighbour. It also keeps
+    // the diamond on a real date that lines up with the axis.
+    position: minPosition,
+  };
+}
+
+export function clusterMilestoneGroups(
+  groups,
+  minGapPercent = MILESTONE_MIN_GAP_PERCENT,
+) {
+  const list = groups ?? [];
+  if (list.length === 0) return [];
+
+  const order = list
+    .map((_, index) => index)
+    .toSorted(
+      (left, right) =>
+        list[left].position - list[right].position || left - right,
+    );
+
+  const clusters = [];
+  let current = [];
+  for (const index of order) {
+    const group = list[index];
+    if (
+      current.length > 0 &&
+      group.position - current[0].position >= minGapPercent
+    ) {
+      clusters.push(emitMilestoneCluster(current));
+      current = [];
+    }
+    current.push(group);
+  }
+  clusters.push(emitMilestoneCluster(current));
+  return clusters;
+}
+
 export function mergeAgendaItems(milestones, spans, collisions, tasks) {
   const items = [];
   for (const milestone of milestones ?? []) {

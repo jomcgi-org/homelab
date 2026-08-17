@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  clusterMilestoneGroups,
   collisionWording,
   ganttDatePosition,
   groupMilestonesByDate,
@@ -276,6 +277,240 @@ describe("milestone grouping by date", () => {
 
   it("handles no milestones", () => {
     expect(groupMilestonesByDate([])).toEqual([]);
+  });
+});
+
+describe("milestone clustering", () => {
+  function positionedGroup(occursOn, position, milestones) {
+    return {
+      id: `ms-${occursOn}`,
+      occursOn,
+      milestones,
+      count: milestones.length,
+      state: milestones.some((item) => item.gcal_state === "held")
+        ? "held"
+        : milestones.every((item) => item.gcal_state === "synced")
+          ? "synced"
+          : "queued",
+      position,
+    };
+  }
+
+  it("merges 7 Oct and 9 Oct markers that overprint on the real track", () => {
+    const startsOn = "2026-08-01";
+    const endsOn = "2026-11-30";
+    const seventh = ganttDatePosition("2026-10-07", startsOn, endsOn);
+    const ninth = ganttDatePosition("2026-10-09", startsOn, endsOn);
+    const groups = [
+      positionedGroup("2026-10-07", seventh, [
+        {
+          id: "ms-lease",
+          title: "Lease ends",
+          occurs_on: "2026-10-07",
+          owner: "both",
+          gcal_state: "synced",
+        },
+      ]),
+      positionedGroup("2026-10-09", ninth, [
+        {
+          id: "ms-joe",
+          title: "Joe last day of work",
+          occurs_on: "2026-10-09",
+          owner: "joe",
+          gcal_state: "held",
+        },
+        {
+          id: "ms-anna",
+          title: "Anna last day of work",
+          occurs_on: "2026-10-09",
+          owner: "anna",
+          gcal_state: "synced",
+        },
+      ]),
+    ];
+
+    const clusters = clusterMilestoneGroups(groups);
+
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].count).toBe(3);
+    expect(clusters[0].dateCount).toBe(2);
+    expect(clusters[0].startsOn).toBe("2026-10-07");
+    expect(clusters[0].endsOn).toBe("2026-10-09");
+    expect(clusters[0].occursOn).toBe("2026-10-07");
+    expect(clusters[0].id).toBe("ms-2026-10-07");
+    expect(clusters[0].position).toBe(seventh);
+    expect(clusters[0].milestones.map((item) => item.id)).toEqual([
+      "ms-lease",
+      "ms-joe",
+      "ms-anna",
+    ]);
+  });
+
+  it("keeps groups further apart than the threshold separate and sorted", () => {
+    const groups = [
+      positionedGroup("2026-11-16", 80, [
+        {
+          id: "ms-late",
+          title: "Late marker",
+          occurs_on: "2026-11-16",
+          owner: "both",
+          gcal_state: "synced",
+        },
+      ]),
+      positionedGroup("2026-09-01", 20, [
+        {
+          id: "ms-early",
+          title: "Early marker",
+          occurs_on: "2026-09-01",
+          owner: "both",
+          gcal_state: "synced",
+        },
+      ]),
+    ];
+
+    const clusters = clusterMilestoneGroups(groups);
+
+    expect(clusters).toHaveLength(2);
+    expect(clusters.map((group) => group.occursOn)).toEqual([
+      "2026-09-01",
+      "2026-11-16",
+    ]);
+    expect(clusters.map((group) => group.dateCount)).toEqual([1, 1]);
+  });
+
+  it("does not chain-merge a run of close markers into one cluster", () => {
+    const groups = [0, 4, 8, 12].map((position, index) =>
+      positionedGroup(`2026-09-0${index + 1}`, position, [
+        {
+          id: `ms-${index}`,
+          title: `Marker ${index + 1}`,
+          occurs_on: `2026-09-0${index + 1}`,
+          owner: "both",
+          gcal_state: "synced",
+        },
+      ]),
+    );
+
+    const clusters = clusterMilestoneGroups(groups);
+
+    expect(clusters).toHaveLength(2);
+    expect(clusters[0].startsOn).toBe("2026-09-01");
+    expect(clusters[0].endsOn).toBe("2026-09-02");
+    expect(clusters[1].startsOn).toBe("2026-09-03");
+    expect(clusters[1].endsOn).toBe("2026-09-04");
+    expect(clusters.map((group) => group.dateCount)).toEqual([2, 2]);
+  });
+
+  it("lets held win across a cluster, and is synced only when every milestone is", () => {
+    const heldLast = clusterMilestoneGroups([
+      positionedGroup("2026-10-07", 10, [
+        {
+          id: "ms-lease",
+          title: "Lease ends",
+          occurs_on: "2026-10-07",
+          owner: "both",
+          gcal_state: "synced",
+        },
+      ]),
+      positionedGroup("2026-10-09", 12, [
+        {
+          id: "ms-joe",
+          title: "Joe last day of work",
+          occurs_on: "2026-10-09",
+          owner: "joe",
+          gcal_state: "held",
+        },
+      ]),
+    ]);
+    expect(heldLast).toHaveLength(1);
+    expect(heldLast[0].state).toBe("held");
+
+    const allSynced = clusterMilestoneGroups([
+      positionedGroup("2026-09-01", 20, [
+        {
+          id: "ms-a",
+          title: "First",
+          occurs_on: "2026-09-01",
+          owner: "both",
+          gcal_state: "synced",
+        },
+      ]),
+      positionedGroup("2026-09-02", 22, [
+        {
+          id: "ms-b",
+          title: "Second",
+          occurs_on: "2026-09-02",
+          owner: "both",
+          gcal_state: "synced",
+        },
+      ]),
+    ]);
+    expect(allSynced).toHaveLength(1);
+    expect(allSynced[0].state).toBe("synced");
+  });
+
+  it("handles no groups", () => {
+    expect(clusterMilestoneGroups([])).toEqual([]);
+  });
+
+  it("returns the same result when called twice on the same input", () => {
+    const groups = [
+      positionedGroup("2026-10-07", 55.37, [
+        {
+          id: "ms-lease",
+          title: "Lease ends",
+          occurs_on: "2026-10-07",
+          owner: "both",
+          gcal_state: "synced",
+        },
+      ]),
+      positionedGroup("2026-10-09", 57.02, [
+        {
+          id: "ms-joe",
+          title: "Joe last day of work",
+          occurs_on: "2026-10-09",
+          owner: "joe",
+          gcal_state: "held",
+        },
+      ]),
+    ];
+
+    expect(clusterMilestoneGroups(groups)).toEqual(
+      clusterMilestoneGroups(groups),
+    );
+  });
+
+  // The whole point of clustering is that no two date labels overprint, and
+  // labels are drawn centred on the emitted position. A cluster that spanned
+  // a range and then reported its midpoint could drift back within a label's
+  // width of its neighbour, so assert the gap on the output, not the input.
+  it("always leaves a full gap between the positions it emits", () => {
+    // A wide cluster followed by a lone marker is the shape that breaks a
+    // midpoint position: 0 and 6.4 cluster, their midpoint drifts to 3.2, and
+    // the singleton at 6.6 lands 3.4 away, well inside a label's width.
+    const dense = [0, 6.4, 6.6, 13.1, 40].map((position, index) =>
+      positionedGroup(`2026-09-0${index + 1}`, position, [
+        {
+          id: `ms-${index}`,
+          title: `Marker ${index + 1}`,
+          occurs_on: `2026-09-0${index + 1}`,
+          owner: "both",
+          gcal_state: "synced",
+        },
+      ]),
+    );
+
+    const clusters = clusterMilestoneGroups(dense);
+
+    expect(clusters.length).toBeGreaterThan(1);
+    for (let index = 1; index < clusters.length; index += 1) {
+      expect(
+        clusters[index].position - clusters[index - 1].position,
+      ).toBeGreaterThanOrEqual(6.5);
+    }
+    expect(clusters.flatMap((cluster) => cluster.milestones)).toHaveLength(
+      dense.length,
+    );
   });
 });
 
