@@ -366,22 +366,22 @@
       },
       {
         "name": "xz",
-        "url": "https://packages.wolfi.dev/os/x86_64/xz-5.8.3-r1.apk",
-        "version": "5.8.3-r1",
+        "url": "https://packages.wolfi.dev/os/x86_64/xz-5.8.3-r2.apk",
+        "version": "5.8.3-r2",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-7092",
-          "checksum": "sha1-xMbaAqRKwa/Tx0fRXhz88d+0V3M="
+          "range": "bytes=0-8035",
+          "checksum": "sha1-wWhWq5UUYeBAZc58hZUWaJYLt1o="
         },
         "data": {
-          "range": "bytes=7093-388137",
-          "checksum": "sha256-Ur6ITPMaX3cot0jCgmDHBGOsx9DIjsfMrq07ciRfkgw="
+          "range": "bytes=8036-394695",
+          "checksum": "sha256-UCFndWYtQHI97ZQ3hkMPEoI4G35Er/wx+mZA02QCRqA="
         },
-        "checksum": "Q1xMbaAqRKwa/Tx0fRXhz88d+0V3M="
+        "checksum": "Q1wWhWq5UUYeBAZc58hZUWaJYLt1o="
       },
       {
         "name": "zlib",
@@ -688,63 +688,6 @@
         "checksum": "Q1EmPqkatD3RZaAekI7H2++FuHDEU="
       },
       {
-        "name": "ncurses-terminfo-base",
-        "url": "https://packages.wolfi.dev/os/x86_64/ncurses-terminfo-base-6.6.20260808-r0.apk",
-        "version": "6.6.20260808-r0",
-        "architecture": "x86_64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-10346",
-          "checksum": "sha1-VHp9y/46CQG/on5uupgHGiMheSY="
-        },
-        "data": {
-          "range": "bytes=10347-118205",
-          "checksum": "sha256-OTsNRVeL3aycagNO6qIyraETeIsCdllxY2OA59KAF0s="
-        },
-        "checksum": "Q1VHp9y/46CQG/on5uupgHGiMheSY="
-      },
-      {
-        "name": "ncurses",
-        "url": "https://packages.wolfi.dev/os/x86_64/ncurses-6.6.20260808-r0.apk",
-        "version": "6.6.20260808-r0",
-        "architecture": "x86_64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-10489",
-          "checksum": "sha1-l2tlyHB+Jy+Riqvjqlz06KbsZpo="
-        },
-        "data": {
-          "range": "bytes=10490-621374",
-          "checksum": "sha256-zW/cv3ztxoCQD42nrYa4z+kEXdLb4wc6bLl3C0xwnkw="
-        },
-        "checksum": "Q1l2tlyHB+Jy+Riqvjqlz06KbsZpo="
-      },
-      {
-        "name": "libedit",
-        "url": "https://packages.wolfi.dev/os/x86_64/libedit-3.1-r17.apk",
-        "version": "3.1-r17",
-        "architecture": "x86_64",
-        "signature": {
-          "range": "",
-          "checksum": ""
-        },
-        "control": {
-          "range": "bytes=0-5303",
-          "checksum": "sha1-oW50tq89p1M8UMWWI4BtukWKXzU="
-        },
-        "data": {
-          "range": "bytes=5304-116491",
-          "checksum": "sha256-AAk8yOeI7ThYRNCmZx/Ppdmq0xfc3j62qzirOGji79k="
-        },
-        "checksum": "Q1oW50tq89p1M8UMWWI4BtukWKXzU="
-      },
-      {
         "name": "jansson",
         "url": "https://packages.wolfi.dev/os/x86_64/jansson-2.15.1-r0.apk",
         "version": "2.15.1-r0",
@@ -762,6 +705,63 @@
           "checksum": "sha256-U+2RthXXVoQ6cxO4Wn8tNYFFn3nw//nvYIc6tH8253I="
         },
         "checksum": "Q1JmWMyzTL2h3ZMVS+ZaYx4wlpxws="
+      },
+      {
+        "name": "ncurses-terminfo-base",
+        "url": "https://packages.wolfi.dev/os/x86_64/ncurses-terminfo-base-6.6.20260815-r0.apk",
+        "version": "6.6.20260815-r0",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-10345",
+          "checksum": "sha1-QfSrArGa3wpHUhL/3OLIlWodOLA="
+        },
+        "data": {
+          "range": "bytes=10346-118136",
+          "checksum": "sha256-94VmBsGvvPAeGOI3lBlml62NN1wYMApUnj1ovcVI7Co="
+        },
+        "checksum": "Q1QfSrArGa3wpHUhL/3OLIlWodOLA="
+      },
+      {
+        "name": "ncurses",
+        "url": "https://packages.wolfi.dev/os/x86_64/ncurses-6.6.20260815-r0.apk",
+        "version": "6.6.20260815-r0",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-10496",
+          "checksum": "sha1-gn/XV1ycgCwqAncfALw5TA5CASs="
+        },
+        "data": {
+          "range": "bytes=10497-622079",
+          "checksum": "sha256-If2ejH5whFYe4d+4MU0Y5CgzWbYXohWDW0Q3JIQo43c="
+        },
+        "checksum": "Q1gn/XV1ycgCwqAncfALw5TA5CASs="
+      },
+      {
+        "name": "libedit",
+        "url": "https://packages.wolfi.dev/os/x86_64/libedit-3.1-r18.apk",
+        "version": "3.1-r18",
+        "architecture": "x86_64",
+        "signature": {
+          "range": "",
+          "checksum": ""
+        },
+        "control": {
+          "range": "bytes=0-5172",
+          "checksum": "sha1-YnsyUyjEBeiPgRpGOhg25MHuz4g="
+        },
+        "data": {
+          "range": "bytes=5173-116393",
+          "checksum": "sha256-IKJlSh2RJ3enNjo6s+VuUuXpor3KwtQA1tVaY2cjyT4="
+        },
+        "checksum": "Q1YnsyUyjEBeiPgRpGOhg25MHuz4g="
       },
       {
         "name": "nftables",
