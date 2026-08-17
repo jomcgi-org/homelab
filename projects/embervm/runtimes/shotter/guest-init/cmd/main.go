@@ -97,7 +97,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	var ready atomic.Bool
-	serveErr := startVsockServer(ctx, logger, ready.Load)
+	serveErr := startVsockServer(ctx, logger, ready.Load, proxyConfig)
 
 	if proxyConfigErr != nil {
 		// A warm failure never flips readiness (see the package doc above).
@@ -303,7 +303,7 @@ func probeCDP(ctx context.Context, client *http.Client, url string) (cdpVersion,
 	return version, nil
 }
 
-func newMux(ready func() bool, logger *slog.Logger) *http.ServeMux {
+func newMux(ready func() bool, logger *slog.Logger, config ProxyConfig) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /shim/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -347,7 +347,7 @@ func newMux(ready func() bool, logger *slog.Logger) *http.ServeMux {
 
 	// screenshotHandler (screenshot.go) drives the already warm Chromium over
 	// CDP: fresh target per invocation, navigate, wait, capture, close.
-	mux.HandleFunc("POST "+screenshotPath, screenshotHandler(logger))
+	mux.HandleFunc("POST "+screenshotPath, screenshotHandler(logger, config))
 	return mux
 }
 

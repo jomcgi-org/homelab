@@ -122,7 +122,8 @@ type screenshotResponse struct {
 
 // validatedScreenshot is a screenshotRequest that has passed every check:
 // bounded dimensions, a supported wait_until, a bounded timeout, and a
-// navigate URL already downgraded to plaintext http.
+// navigate URL already rewritten to the mapped in-cluster plaintext
+// destination.
 type validatedScreenshot struct {
 	navigateURL     string
 	width, height   int
@@ -141,7 +142,7 @@ func parseScreenshotRequest(body io.Reader) (screenshotRequest, error) {
 	return req, nil
 }
 
-func validateScreenshotRequest(req screenshotRequest) (validatedScreenshot, error) {
+func validateScreenshotRequest(req screenshotRequest, config ProxyConfig) (validatedScreenshot, error) {
 	if strings.TrimSpace(req.URL) == "" {
 		return validatedScreenshot{}, fmt.Errorf("%w: url is required", errValidation)
 	}
@@ -152,7 +153,7 @@ func validateScreenshotRequest(req screenshotRequest) (validatedScreenshot, erro
 	if parsed.Host == "" {
 		return validatedScreenshot{}, fmt.Errorf("%w: url must be absolute with an explicit host", errValidation)
 	}
-	if err := rewriteToPlaintextHTTP(parsed); err != nil {
+	if err := config.rewriteToMappedInternal(parsed); err != nil {
 		return validatedScreenshot{}, err
 	}
 
@@ -199,31 +200,59 @@ func validateScreenshotRequest(req screenshotRequest) (validatedScreenshot, erro
 	}, nil
 }
 
-// rewriteToPlaintextHTTP downgrades an https URL to http in place before
-// Chromium ever sees it. This looks wrong at a glance, so the reason is
-// recorded here rather than only in the PR: the in-guest proxy (proxy.go)
-// maps a mapped public host to its internal destination by host alone and
-// always replaces the port with the internal plaintext port 3000 (ADR
-// embervm/035 section 3). An https URL makes Chromium issue a CONNECT for
-// the requested port, the proxy still maps it to the plaintext 3000
-// destination, the allowlist admits it because the destination itself is
-// allowlisted, and only then does Chromium's TLS handshake fail against a
-// plaintext server. Downgrading here refuses an unroutable request up front
-// instead of failing deep inside a TLS handshake with a confusing error.
-// This is safe because the proxy replays the request head byte for byte, so
-// the origin still sees Host: <the original host> and host-keyed routes
-// keep resolving correctly, and because the plaintext hop never leaves the
-// cluster: it is a vsock tunnel to an in-cluster service, not a public wire.
-func rewriteToPlaintextHTTP(u *url.URL) error {
+// rewriteToMappedInternal rewrites u in place to the mapped in-cluster
+// plaintext destination before Chromium ever sees the URL. Chromium's
+// built-in HSTS preload list covers the entire .dev TLD, so handing it
+// http://jomcgi.dev (or any other .dev host) makes it upgrade the URL to
+// https internally, before any network request, and issue CONNECT
+// public-host:443. The proxy correctly refuses CONNECT for a mapped host
+// (the destination is plaintext :3000 and cannot be tunnelled as TLS), and
+// the top-level navigation then fails. Rewriting scheme, host, and port
+// together here means Chromium navigates to the already-allowlisted
+// in-cluster hop and never sees a .dev hostname. The baked HostMapping is
+// the only lookup: an unmapped host is rejected, never navigated.
+func (c ProxyConfig) rewriteToMappedInternal(u *url.URL) error {
 	switch strings.ToLower(u.Scheme) {
-	case "http":
-		return nil
-	case "https":
-		u.Scheme = "http"
-		return nil
+	case "http", "https":
 	default:
 		return fmt.Errorf("%w: url scheme %q must be http or https", errValidation, u.Scheme)
 	}
+	requestedHost := u.Hostname()
+	for publicHost, mappedDestination := range c.HostMapping {
+		if strings.EqualFold(requestedHost, publicHost) {
+			u.Scheme = "http"
+			u.Host = mappedDestination
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: host %q is not a mapped destination", errValidation, requestedHost)
+}
+
+// publicizeFinalURL rewrites a CDP-reported final URL back to the public
+// https:// host when its host:port is a mapped destination, so the tool
+// never leaks internal service DNS to its caller. An off-origin redirect
+// (host does not match any mapped destination) is returned unchanged.
+func (c ProxyConfig) publicizeFinalURL(finalURL string) string {
+	parsed, err := url.Parse(finalURL)
+	if err != nil || parsed.Host == "" {
+		return finalURL
+	}
+	reported, err := parseDestination(parsed.Host, true)
+	if err != nil {
+		return finalURL
+	}
+	for publicHost, mappedDestination := range c.HostMapping {
+		mapped, err := parseDestination(mappedDestination, false)
+		if err != nil {
+			continue
+		}
+		if destinationsEqual(reported, mapped) {
+			parsed.Scheme = "https"
+			parsed.Host = publicHost
+			return parsed.String()
+		}
+	}
+	return finalURL
 }
 
 func handlerCap(navigateTimeout time.Duration) time.Duration {
@@ -236,7 +265,7 @@ func handlerCap(navigateTimeout time.Duration) time.Duration {
 
 // screenshotHandler drives the already-warm Chromium over CDP and returns a
 // PNG. It replaces the T3 stub reserved in main.go.
-func screenshotHandler(logger *slog.Logger) http.HandlerFunc {
+func screenshotHandler(logger *slog.Logger, config ProxyConfig) http.HandlerFunc {
 	cdpHTTPBase := fmt.Sprintf("http://%s:%d", cdpAddress, cdpPort)
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawReq, err := parseScreenshotRequest(r.Body)
@@ -244,7 +273,7 @@ func screenshotHandler(logger *slog.Logger) http.HandlerFunc {
 			writeScreenshotError(w, logger, err)
 			return
 		}
-		validated, err := validateScreenshotRequest(rawReq)
+		validated, err := validateScreenshotRequest(rawReq, config)
 		if err != nil {
 			writeScreenshotError(w, logger, err)
 			return
@@ -258,6 +287,7 @@ func screenshotHandler(logger *slog.Logger) http.HandlerFunc {
 			writeScreenshotError(w, logger, err)
 			return
 		}
+		resp.FinalURL = config.publicizeFinalURL(resp.FinalURL)
 
 		w.Header().Set("Content-Type", screenshotContentType)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {

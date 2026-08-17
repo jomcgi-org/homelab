@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -389,5 +390,19 @@ func TestBakedShotterEgressConfigParsesAndValidates(t *testing.T) {
 	}
 	if len(config.Allowlist) == 0 {
 		t.Fatal("baked config Allowlist is empty")
+	}
+
+	// Anchor the synthetic constants to the real file. screenshot.go now
+	// rewrites the navigate URL to the mapped destination, so the value below
+	// is what Chromium actually dials. A non-empty check alone would let the
+	// baked file drift away from these constants while every test that asserts
+	// an exact internal hostname stayed green, and the drift would surface only
+	// as a prod navigation to a stale service.
+	wantMapping := map[string]string{
+		publicHost:  internalService,
+		privateHost: privateInternalService,
+	}
+	if !reflect.DeepEqual(config.HostMapping, wantMapping) {
+		t.Fatalf("baked config HostMapping = %v, want %v", config.HostMapping, wantMapping)
 	}
 }

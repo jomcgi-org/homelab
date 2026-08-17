@@ -69,7 +69,7 @@ func dialVsock(ctx context.Context, cid, port uint32) (net.Conn, error) {
 	return &vsockConn{File: file}, nil
 }
 
-func startVsockServer(ctx context.Context, logger *slog.Logger, ready func() bool) <-chan error {
+func startVsockServer(ctx context.Context, logger *slog.Logger, ready func() bool, config ProxyConfig) <-chan error {
 	serveErr := make(chan error, 1)
 	ln, err := listenVsock(guestHTTPPort)
 	if err != nil {
@@ -79,7 +79,7 @@ func startVsockServer(ctx context.Context, logger *slog.Logger, ready func() boo
 		return serveErr
 	}
 	logger.Info("ember-shotter-init: vsock HTTP server listening", "port", guestHTTPPort)
-	srv := &http.Server{Handler: newMux(ready, logger)}
+	srv := &http.Server{Handler: newMux(ready, logger, config)}
 	go func() { serveErr <- srv.Serve(ln) }()
 	go func() {
 		<-ctx.Done()
