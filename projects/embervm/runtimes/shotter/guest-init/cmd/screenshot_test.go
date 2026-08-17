@@ -16,50 +16,97 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func TestRewriteToPlaintextHTTPDowngradesHTTPS(t *testing.T) {
-	parsed, err := url.Parse("https://jomcgi.dev/agents")
-	if err != nil {
-		t.Fatalf("url.Parse: %v", err)
+func TestRewriteToMappedInternalRewritesPublicHosts(t *testing.T) {
+	config := bothMappingsProxyConfig()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "https public with query",
+			in:   "https://jomcgi.dev/x?y=1",
+			want: "http://monolith-public-frontend.monolith-public.svc.cluster.local:3000/x?y=1",
+		},
+		{
+			name: "https private path",
+			in:   "https://private.jomcgi.dev/a",
+			want: "http://monolith.monolith.svc.cluster.local:3000/a",
+		},
+		{
+			name: "mixed-case public host",
+			in:   "https://JOMCGI.DEV/",
+			want: "http://monolith-public-frontend.monolith-public.svc.cluster.local:3000/",
+		},
+		{
+			name: "http public keeps path",
+			in:   "http://jomcgi.dev/agents",
+			want: "http://monolith-public-frontend.monolith-public.svc.cluster.local:3000/agents",
+		},
 	}
-	if err := rewriteToPlaintextHTTP(parsed); err != nil {
-		t.Fatalf("rewriteToPlaintextHTTP: %v", err)
-	}
-	if got := parsed.String(); got != "http://jomcgi.dev/agents" {
-		t.Fatalf("rewritten url = %q, want http://jomcgi.dev/agents", got)
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			parsed, err := url.Parse(testCase.in)
+			if err != nil {
+				t.Fatalf("url.Parse: %v", err)
+			}
+			if err := config.rewriteToMappedInternal(parsed); err != nil {
+				t.Fatalf("rewriteToMappedInternal(%q): %v", testCase.in, err)
+			}
+			if got := parsed.String(); got != testCase.want {
+				t.Fatalf("rewritten url = %q, want %q", got, testCase.want)
+			}
+		})
 	}
 }
 
-func TestRewriteToPlaintextHTTPKeepsHTTP(t *testing.T) {
-	parsed, err := url.Parse("http://jomcgi.dev/agents")
+func TestRewriteToMappedInternalRejectsUnmappedHost(t *testing.T) {
+	parsed, err := url.Parse("https://example.com/")
 	if err != nil {
 		t.Fatalf("url.Parse: %v", err)
 	}
-	if err := rewriteToPlaintextHTTP(parsed); err != nil {
-		t.Fatalf("rewriteToPlaintextHTTP: %v", err)
+	err = bothMappingsProxyConfig().rewriteToMappedInternal(parsed)
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("rewriteToMappedInternal(example.com) err = %v, want errValidation", err)
 	}
-	if got := parsed.String(); got != "http://jomcgi.dev/agents" {
-		t.Fatalf("rewritten url = %q, want http://jomcgi.dev/agents", got)
+	if !strings.Contains(err.Error(), "example.com") {
+		t.Fatalf("err = %v, want a message naming the unmapped host", err)
 	}
 }
 
-func TestRewriteToPlaintextHTTPRejectsOtherScheme(t *testing.T) {
+func TestRewriteToMappedInternalRejectsOtherScheme(t *testing.T) {
 	parsed, err := url.Parse("ftp://jomcgi.dev/agents")
 	if err != nil {
 		t.Fatalf("url.Parse: %v", err)
 	}
-	err = rewriteToPlaintextHTTP(parsed)
+	err = bothMappingsProxyConfig().rewriteToMappedInternal(parsed)
 	if !errors.Is(err, errValidation) {
-		t.Fatalf("rewriteToPlaintextHTTP(ftp) err = %v, want errValidation", err)
+		t.Fatalf("rewriteToMappedInternal(ftp) err = %v, want errValidation", err)
 	}
 }
 
-func TestValidateScreenshotRequestAppliesDefaultsAndDowngradesScheme(t *testing.T) {
-	validated, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/agents"})
+func TestRewriteToMappedInternalFailsClosedOnEmptyConfig(t *testing.T) {
+	parsed, err := url.Parse("https://jomcgi.dev/x")
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	err = (ProxyConfig{}).rewriteToMappedInternal(parsed)
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("empty ProxyConfig rewrite err = %v, want errValidation", err)
+	}
+	if parsed.Host != "jomcgi.dev" || parsed.Scheme != "https" {
+		t.Fatalf("empty config mutated url to %q, want the original public url left in place", parsed.String())
+	}
+}
+
+func TestValidateScreenshotRequestAppliesDefaultsAndRewritesToMappedInternal(t *testing.T) {
+	validated, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/x?y=1"}, bothMappingsProxyConfig())
 	if err != nil {
 		t.Fatalf("validateScreenshotRequest: %v", err)
 	}
-	if validated.navigateURL != "http://jomcgi.dev/agents" {
-		t.Fatalf("navigateURL = %q, want http://jomcgi.dev/agents", validated.navigateURL)
+	wantNavigate := "http://monolith-public-frontend.monolith-public.svc.cluster.local:3000/x?y=1"
+	if validated.navigateURL != wantNavigate {
+		t.Fatalf("navigateURL = %q, want %q", validated.navigateURL, wantNavigate)
 	}
 	if validated.width != defaultWidth || validated.height != defaultHeight {
 		t.Fatalf("dimensions = %dx%d, want %dx%d default", validated.width, validated.height, defaultWidth, defaultHeight)
@@ -73,21 +120,21 @@ func TestValidateScreenshotRequestAppliesDefaultsAndDowngradesScheme(t *testing.
 }
 
 func TestValidateScreenshotRequestRejectsMissingURL(t *testing.T) {
-	_, err := validateScreenshotRequest(screenshotRequest{})
+	_, err := validateScreenshotRequest(screenshotRequest{}, bothMappingsProxyConfig())
 	if !errors.Is(err, errValidation) {
 		t.Fatalf("err = %v, want errValidation", err)
 	}
 }
 
 func TestValidateScreenshotRequestRejectsSchemelessURL(t *testing.T) {
-	_, err := validateScreenshotRequest(screenshotRequest{URL: "jomcgi.dev/agents"})
+	_, err := validateScreenshotRequest(screenshotRequest{URL: "jomcgi.dev/agents"}, bothMappingsProxyConfig())
 	if !errors.Is(err, errValidation) {
 		t.Fatalf("err = %v, want errValidation", err)
 	}
 }
 
 func TestValidateScreenshotRequestRejectsOversizedWidth(t *testing.T) {
-	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", Width: maxDimension + 1, Height: defaultHeight})
+	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", Width: maxDimension + 1, Height: defaultHeight}, bothMappingsProxyConfig())
 	if !errors.Is(err, errValidation) {
 		t.Fatalf("err = %v, want errValidation", err)
 	}
@@ -97,7 +144,7 @@ func TestValidateScreenshotRequestRejectsOversizedWidth(t *testing.T) {
 }
 
 func TestValidateScreenshotRequestRejectsOversizedHeight(t *testing.T) {
-	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", Width: defaultWidth, Height: maxDimension + 1})
+	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", Width: defaultWidth, Height: maxDimension + 1}, bothMappingsProxyConfig())
 	if !errors.Is(err, errValidation) {
 		t.Fatalf("err = %v, want errValidation", err)
 	}
@@ -107,21 +154,21 @@ func TestValidateScreenshotRequestRejectsOversizedHeight(t *testing.T) {
 }
 
 func TestValidateScreenshotRequestRejectsNegativeWidth(t *testing.T) {
-	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", Width: -1})
+	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", Width: -1}, bothMappingsProxyConfig())
 	if !errors.Is(err, errValidation) {
 		t.Fatalf("err = %v, want errValidation", err)
 	}
 }
 
 func TestValidateScreenshotRequestRejectsUnknownWaitUntil(t *testing.T) {
-	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", WaitUntil: "networkidle"})
+	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", WaitUntil: "networkidle"}, bothMappingsProxyConfig())
 	if !errors.Is(err, errValidation) {
 		t.Fatalf("err = %v, want errValidation", err)
 	}
 }
 
 func TestValidateScreenshotRequestAcceptsDOMContentLoaded(t *testing.T) {
-	validated, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", WaitUntil: "domcontentloaded"})
+	validated, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", WaitUntil: "domcontentloaded"}, bothMappingsProxyConfig())
 	if err != nil {
 		t.Fatalf("validateScreenshotRequest: %v", err)
 	}
@@ -131,13 +178,64 @@ func TestValidateScreenshotRequestAcceptsDOMContentLoaded(t *testing.T) {
 }
 
 func TestValidateScreenshotRequestRejectsTimeoutOutOfBounds(t *testing.T) {
-	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", TimeoutMs: maxNavigateTimeoutMs + 1})
+	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", TimeoutMs: maxNavigateTimeoutMs + 1}, bothMappingsProxyConfig())
 	if !errors.Is(err, errValidation) {
 		t.Fatalf("err (too large) = %v, want errValidation", err)
 	}
-	_, err = validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", TimeoutMs: 1})
+	_, err = validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/", TimeoutMs: 1}, bothMappingsProxyConfig())
 	if !errors.Is(err, errValidation) {
 		t.Fatalf("err (too small) = %v, want errValidation", err)
+	}
+}
+
+func TestValidateScreenshotRequestRejectsUnmappedHost(t *testing.T) {
+	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://example.com/"}, bothMappingsProxyConfig())
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("err = %v, want errValidation", err)
+	}
+}
+
+func TestValidateScreenshotRequestRejectsFTPScheme(t *testing.T) {
+	_, err := validateScreenshotRequest(screenshotRequest{URL: "ftp://jomcgi.dev/"}, bothMappingsProxyConfig())
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("err = %v, want errValidation", err)
+	}
+}
+
+func TestValidateScreenshotRequestFailsClosedOnEmptyConfig(t *testing.T) {
+	_, err := validateScreenshotRequest(screenshotRequest{URL: "https://jomcgi.dev/x"}, ProxyConfig{})
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("empty ProxyConfig err = %v, want errValidation", err)
+	}
+}
+
+func TestPublicizeFinalURLRewritesMappedDestination(t *testing.T) {
+	config := bothMappingsProxyConfig()
+	got := config.publicizeFinalURL("http://monolith-public-frontend.monolith-public.svc.cluster.local:3000/x")
+	if got != "https://jomcgi.dev/x" {
+		t.Fatalf("publicizeFinalURL = %q, want https://jomcgi.dev/x", got)
+	}
+	got = config.publicizeFinalURL("http://monolith.monolith.svc.cluster.local:3000/a")
+	if got != "https://private.jomcgi.dev/a" {
+		t.Fatalf("publicizeFinalURL(private) = %q, want https://private.jomcgi.dev/a", got)
+	}
+}
+
+func TestPublicizeFinalURLLeavesOffOriginUnchanged(t *testing.T) {
+	const offOrigin = "https://example.com/redirected"
+	got := bothMappingsProxyConfig().publicizeFinalURL(offOrigin)
+	if got != offOrigin {
+		t.Fatalf("publicizeFinalURL(off-origin) = %q, want unchanged %q", got, offOrigin)
+	}
+}
+
+func TestScreenshotHandlerFailsClosedOnEmptyConfig(t *testing.T) {
+	handler := screenshotHandler(discardLogger(), ProxyConfig{})
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", screenshotPath, strings.NewReader(`{"url":"https://jomcgi.dev/x"}`))
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != 400 {
+		t.Fatalf("status = %d, want 400", recorder.Code)
 	}
 }
 
