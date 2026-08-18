@@ -260,25 +260,33 @@ llamacpp:
   # per-sequence like vLLM's --max-model-len. 131072 / 4 = 32768 per slot, which
   # preserves the 32k window every monolith callsite is written against.
   #
-  # VRAM COST, SOLVED FROM THREE MEASURED POINTS on the 24564 MiB card rather
-  # than estimated:
+  # VRAM COST IS NOT LINEAR IN ctxSize. Do not fit a line to it. Measured on the
+  # 24564 MiB card:
   #
-  #   (1 slot,  98304 KV) = 20942 MiB   measured 2026-08-18
-  #   (3 slots, 98304 KV) = 21590 MiB   measured 2026-08-18
-  #   (4 slots, 131072 KV)= 22562 MiB   measured 2026-08-14
+  #   (1 slot,  98304)  = 20942 MiB   2026-08-18
+  #   (3 slots, 98304)  = 21590 MiB   2026-08-18
+  #   (4 slots, 131072) = 22562 MiB   2026-08-14
+  #   (1 slot, 163840)  = 23426 MiB   2026-08-18
   #
-  # Two unknowns, three equations. Solving on the first and third gives a fixed
-  # base of 18674 MiB (weights + mmproj + non-slot compute), 324 MiB per slot,
-  # and 648 MiB per 32768 tokens of KV at q8_0. That model then predicts the
-  # middle point at exactly 21590, so it has no residual across the range.
+  # The first three fit a line exactly: 18674 MiB fixed + 324 per slot + 648 per
+  # 32768 tokens, predicting the middle point to the megabyte. That fit then
+  # MISSED 163840 by 1188 MiB, because between 98304 and 163840 the real cost is
+  # about 1234 MiB per 32768, roughly double. KV is not the only term that grows
+  # with n_ctx; llama.cpp's attention and compute buffers scale too.
   #
-  # THE FIGURE THIS REPLACED SAID 1.00 GiB PER 32k, WHICH IS A 35% OVERESTIMATE.
-  # Every headroom calculation made from it was pessimistic, which is how 160k
-  # came to look marginal when it is not. Recompute from the constants above
-  # rather than reusing any GiB-per-32k rule of thumb.
+  # A HISTORY WORTH NOT REPEATING. This comment previously carried a rule of
+  # thumb of 1.00 GiB per 32k. That was replaced on 2026-08-18 with the 648 MiB
+  # figure above, described as a "35% overestimate", and 163840 was shipped on
+  # the strength of it. It landed at 656 MiB free rather than the predicted
+  # 2326. The discarded rule of thumb was the more accurate of the two in the
+  # range that actually mattered. An exact fit inside a measured range says
+  # nothing about the slope outside it.
   #
-  # At 1 slot: 131072 -> 21590 used, 163840 -> 22238, 196608 -> 22886, and the
-  # full 262144 training context -> 24182, which is too tight to attempt.
+  # So: INTERPOLATE BETWEEN MEASURED POINTS, never extrapolate past them, and
+  # re-read nvidia-smi after any change rather than trusting the estimate that
+  # motivated it. 131072 at 1 slot is interpolation (~22176, ~2388 free);
+  # anything above 163840 is unexplored and the next step would have to be
+  # measured, not calculated.
   #
   # Qwen3.8-27B carries KV on only 16 of its 64 layers (the rest are Gated
   # DeltaNet linear attention), but head_dim is 256, which is why the per-token
@@ -378,18 +386,21 @@ benchMode:
   # when enabled is true.
   nodePort: 30800
   # Total KV pool while bench mode is on. With one slot this is the whole window
-  # for a single sequence: 160k, against the model's 262144 training context.
+  # for a single sequence: 128k, against the model's 262144 training context and
+  # the 32768 per slot that production serves.
   #
-  # Solved from three measured VRAM points, not estimated (see the derivation on
-  # llamacpp.ctxSize): 18674 MiB fixed + 324 per slot + 648 per 32768 tokens, so
-  # 163840 at one slot lands at 22238 of 24564 MiB, leaving 2326 spare.
-  # Production has run all week at 2974 spare, so this is only marginally
-  # tighter than normal steady state.
+  # 163840 WAS TRIED FIRST AND BACKED OUT. It runs, but it landed at 23426 of
+  # 24564 MiB with 656 MiB free, against a prediction of 2326 that came from
+  # extrapolating a linear fit past its measured range. 656 MiB leaves no
+  # cushion for an allocation spike, and this is a Recreate deployment on a
+  # single GPU, so an OOM is a crash loop with the previous engine already gone,
+  # not a degraded pod. That is not a thing to leave running unattended.
   #
-  # 196608 would also fit at 1678 spare, and the full 262144 would not: 24182
-  # leaves 382 MiB, and this is a Recreate deployment on a single GPU, so an
-  # over-committed pool is a crash loop with the previous engine already gone.
-  ctxSize: 163840
+  # 131072 sits BETWEEN two measured points (98304 -> 20942, 163840 -> 23426),
+  # so ~22176 used and ~2388 free is interpolation rather than extrapolation.
+  # Verify against nvidia-smi after any change here; see the llamacpp.ctxSize
+  # comment for why the arithmetic alone has already been wrong once.
+  ctxSize: 131072
 
 # OpenAI-compatible ingress at https://private.jomcgi.dev/llm/v1, so a client
 # outside the cluster (an OpenAI SDK, curl, an IDE assistant) can call the
