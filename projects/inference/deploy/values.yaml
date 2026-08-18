@@ -342,7 +342,20 @@ benchMode:
   # move with this flag, rather than to the Service, whose name does:
   #
   #   kubectl port-forward -n inference deploy/inference 18080:8080
+  #
+  # And it puts the Service on a NodePort so a machine on the LAN can reach the
+  # model with no credentials, no Cloudflare and no timeout:
+  #
+  #   base_url = http://192.168.1.195:30800/v1     (node-4, the GPU node)
+  #   model    = qwen3.6-27b
+  #
+  # That port is UNAUTHENTICATED and open to anything on the LAN while this is
+  # true. It is welded to this one flag on purpose, so turning bench mode off
+  # closes it and there is no second switch to forget.
   enabled: true
+  # Pinned so the benchmarking machine's base URL survives a re-sync. Only read
+  # when enabled is true.
+  nodePort: 30800
 
 # OpenAI-compatible ingress at https://private.jomcgi.dev/llm/v1, so a client
 # outside the cluster (an OpenAI SDK, curl, an IDE assistant) can call the
