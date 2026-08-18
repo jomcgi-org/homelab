@@ -5,6 +5,7 @@ import pytest  # noqa: F401
 
 from bench.cache import HARNESS_VERSION
 from bench.cli import (
+    _parse_headers,
     _prune_stale,
     _resolve_snapshot_preset,
     _write_leaderboard_json,
@@ -60,6 +61,39 @@ def test_run_parser_accepts_base_url_and_timeout():
     assert args.base_url == "http://127.0.0.1:18080/v1"
     assert args.timeout == 900.0
     assert args.model_filter == "qwen3.8-27b"
+
+
+def test_run_parser_collects_repeated_headers():
+    """Two --header flags are needed together: Cloudflare Access checks both."""
+    p = build_parser()
+    args = p.parse_args(
+        [
+            "run",
+            "--base-url",
+            "https://private.jomcgi.dev/llm/v1",
+            "--header",
+            "CF-Access-Client-Id: abc.access",
+            "--header",
+            "CF-Access-Client-Secret: s3cret",
+        ]
+    )
+    assert _parse_headers(args.header) == {
+        "CF-Access-Client-Id": "abc.access",
+        "CF-Access-Client-Secret": "s3cret",
+    }
+
+
+def test_parse_headers_splits_on_first_colon_only():
+    """A value may contain colons; only the first separates name from value."""
+    assert _parse_headers(["X-Origin: https://example.com:8443/x"]) == {
+        "X-Origin": "https://example.com:8443/x"
+    }
+
+
+def test_parse_headers_rejects_malformed_entry():
+    """Raise rather than skip: a dropped secret reads as a 401, not as a typo."""
+    with pytest.raises(ValueError):
+        _parse_headers(["CF-Access-Client-Id"])
 
 
 def test_prune_stale_removes_only_other_versions(tmp_path, capsys):

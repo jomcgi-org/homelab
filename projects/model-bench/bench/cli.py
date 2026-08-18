@@ -137,8 +137,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         default=None,
         help=(
-            "OpenAI-compatible /v1 base URL (e.g. a kubectl port-forward to "
-            "in-cluster llama.cpp). Skips OpenRouter pricing and the API key."
+            "OpenAI-compatible /v1 base URL (a kubectl port-forward to in-cluster "
+            "llama.cpp, or https://private.jomcgi.dev/llm/v1 from off-cluster). "
+            "Skips OpenRouter pricing and the API key."
+        ),
+    )
+    p_run.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        metavar="NAME:VALUE",
+        help=(
+            "Extra request header, repeatable. Required to reach the endpoint "
+            "through Cloudflare Access from off-cluster, which authenticates on "
+            "CF-Access-Client-Id and CF-Access-Client-Secret rather than on the "
+            "Authorization header:\n"
+            '  --header "CF-Access-Client-Id: $CF_ID" '
+            '--header "CF-Access-Client-Secret: $CF_SECRET"'
         ),
     )
     p_run.add_argument(
@@ -215,6 +230,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_headers(raw: list[str]) -> dict[str, str]:
+    """Turn repeated --header "Name: value" into a dict.
+
+    Splits on the FIRST colon only, so a value containing one (a URL, say)
+    survives. Whitespace around both halves is stripped, because the shell form
+    people actually type has a space after the colon.
+
+    A malformed entry raises rather than being skipped: a silently dropped
+    CF-Access-Client-Secret would present as a 401 from the edge, which reads
+    like a credential problem rather than a typo in the flag.
+    """
+    headers: dict[str, str] = {}
+    for item in raw:
+        name, sep, value = item.partition(":")
+        if not sep or not name.strip():
+            raise ValueError(f"--header must be NAME:VALUE, got {item!r}")
+        headers[name.strip()] = value.strip()
+    return headers
+
+
 async def _run(args) -> None:
     """Run benchmark cells for every active (task, model) pair."""
     api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -258,6 +293,9 @@ async def _run(args) -> None:
         }
         if base_url:
             client_kwargs["base_url"] = base_url
+        extra_headers = _parse_headers(getattr(args, "header", []))
+        if extra_headers:
+            client_kwargs["extra_headers"] = extra_headers
         client = OpenRouterClient(**client_kwargs)
         if not base_url:
             await client.load_prices()
