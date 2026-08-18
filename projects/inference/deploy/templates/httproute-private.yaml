@@ -82,16 +82,70 @@ separator onto the first line of the policy, which helm lint reports as
 "invalid Yaml document separator". The same shape exists unlinted elsewhere in
 the repo, because every other chart consuming this library sets lint = False.
 
-Validates the Cloudflare Access JWT, so the only way to this route is through
-the edge rather than by reaching Envoy some other way.
+Validates the Cloudflare Access JWT when one is present.
 
-This carries NO `authorization` block and NO `audiences`, matching every other
-private-tier route (argocd, signoz, longhorn, kargo). The consequence is worth
-stating plainly: any JWT from the team issuer validates here, so the isolation
-between "this service token may call the LLM" and "this service token may call
-argocd" lives ENTIRELY in the Cloudflare Access policy, not in the cluster. Pin
-`audiences` to the /llm application's AUD tag if that ever needs to hold on its
-own.
+WRITTEN OUT RATHER THAN TAKEN FROM cf-ingress.security-policy, for the one
+field that library cannot express: `optional: true`.
+
+WHY IT IS NEEDED. Cloudflare Access injects Cf-Access-Jwt-Assertion for
+IDENTITY-based sessions. A SERVICE TOKEN request is authenticated by Access and
+forwarded WITHOUT that header, which was measured, not assumed: with the token
+the edge stopped returning its own 403 and Envoy answered
+
+    HTTP/2 401
+    www-authenticate: Bearer realm="http://private.jomcgi.dev/llm/v1/models"
+    Jwt is missing
+
+That string is Envoy's JWT filter, so the request had cleared the edge and died
+here. Every other private-tier route is a browser lane, so this is the first
+one to carry a machine caller and the first to hit it.
+
+WHAT optional CHANGES, precisely. A request with NO JWT is allowed through. A
+request WITH a JWT is still fully validated and rejected if the signature,
+issuer or expiry is wrong, and its email claim is still projected. So this is
+not "auth off", it is "auth applies to callers that have credentials of this
+kind", and the service token is a credential of a different kind that
+Cloudflare has already checked.
+
+WHAT NOW GUARDS THE ROUTE. Cloudflare Access alone, which was already true in
+substance: this policy carries no `authorization` block and no `audiences`, so
+it never decided WHO could call, only that a caller arrived through the edge.
+That last check is what is given up for tokenless callers. The residual exposure
+is something inside the cluster addressing the Envoy gateway directly with a
+private.jomcgi.dev Host header, since nothing reaches this listener from outside
+except the cloudflared tunnel.
+
+IF THIS EVER NEEDS TO HOLD ON ITS OWN, the fix is not to flip optional back: it
+is to make the caller present something verifiable. Pinning `audiences` to the
+/llm application's AUD tag
+(b61144b93ded545d30eaafecec095931d30056a596222fc2a585f1a74397a456) only helps
+once a JWT actually arrives.
 */}}
-{{ include "cf-ingress.security-policy" (dict "name" (printf "%s-private" (include "inference.fullname" .)) "team" .Values.cfIngress.team) }}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "inference.fullname" . }}-private-cf-access
+  labels:
+    {{- include "inference.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "inference.fullname" . }}-private
+  jwt:
+    optional: true
+    providers:
+      - name: cloudflare-access
+        issuer: https://{{ .Values.cfIngress.team }}.cloudflareaccess.com
+        remoteJWKS:
+          # Envoy Gateway's own default, declared explicitly for the same
+          # ServerSideApply field-ownership reason the library documents.
+          cacheDuration: 300s
+          uri: https://{{ .Values.cfIngress.team }}.cloudflareaccess.com/cdn-cgi/access/certs
+        extractFrom:
+          headers:
+            - name: Cf-Access-Jwt-Assertion
+        claimToHeaders:
+          - claim: email
+            header: X-Auth-Email
 {{- end }}

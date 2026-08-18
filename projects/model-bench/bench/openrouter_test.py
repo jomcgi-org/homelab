@@ -97,3 +97,44 @@ def test_chat_merges_extra_body_without_overwriting_model():
     payload = json.loads(seen["json"])
     assert payload["model"] == "served-alias"
     assert payload["chat_template_kwargs"] == {"reasoning_effort": "xhigh"}
+
+
+def test_extra_headers_reach_the_wire():
+    """The Cloudflare Access pair must be ON the request, not merely accepted.
+
+    Access authenticates on these two headers and ignores Authorization, so a
+    client that swallowed them would still look correctly constructed while
+    every call came back 403 from the edge.
+    """
+    seen = {}
+
+    def handler(request):
+        seen.update(request.headers)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    client = OpenRouterClient(
+        api_key="unused",
+        transport=httpx.MockTransport(handler),
+        base_url="https://private.jomcgi.dev/llm/v1",
+        extra_headers={
+            "CF-Access-Client-Id": "abc.access",
+            "CF-Access-Client-Secret": "s3cret",
+        },
+    )
+    asyncio.run(
+        client.complete(
+            model="qwen3.6-27b",
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0.0,
+        )
+    )
+    assert seen["cf-access-client-id"] == "abc.access"
+    assert seen["cf-access-client-secret"] == "s3cret"
+    # Authorization survives alongside them rather than being replaced.
+    assert seen["authorization"] == "Bearer unused"

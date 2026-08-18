@@ -56,13 +56,19 @@ class OpenRouterClient:
         transport=None,
         base_url: str = "https://openrouter.ai/api/v1",
         timeout: float = 120.0,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self._base_url = base_url
+        # extra_headers is merged AFTER Authorization so a caller can override it,
+        # and exists because reaching a base_url through Cloudflare Access needs
+        # CF-Access-Client-Id / CF-Access-Client-Secret. Access authenticates on
+        # those two headers only; it ignores Authorization, which here carries the
+        # placeholder key the local endpoint does not check either.
         self._client = httpx.AsyncClient(
             base_url=base_url,
             transport=transport,
             timeout=httpx.Timeout(timeout),
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={"Authorization": f"Bearer {api_key}", **(extra_headers or {})},
         )
         self._prices: dict[str, tuple[float, float]] = {}
 
