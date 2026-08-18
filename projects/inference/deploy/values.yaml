@@ -333,7 +333,16 @@ runtimeClassName: nvidia
 # nothing until a long-context task exists. Measured live 2026-08-18: 21590 of
 # 24564 MiB in use, base ~18.5 GiB, KV ~1.00 GiB per 32k at q8_0.
 benchMode:
-  enabled: false
+  # ON for a benchmarking session started 2026-08-18. FLIP BACK TO false WHEN
+  # THE RUN ENDS: while this is true the monolith's qwen callsites, monolith-dev
+  # and EmberVM pi-runtime sessions are all failing at DNS, by design.
+  #
+  # The harness runs on the Mac and reaches llama.cpp through a port-forward
+  # (bench/cli.py --base-url), so forward to the DEPLOYMENT, whose name does not
+  # move with this flag, rather than to the Service, whose name does:
+  #
+  #   kubectl port-forward -n inference deploy/inference 18080:8080
+  enabled: true
 
 # OpenAI-compatible ingress at https://private.jomcgi.dev/llm/v1, so a client
 # outside the cluster (an OpenAI SDK, curl, an IDE assistant) can call the
