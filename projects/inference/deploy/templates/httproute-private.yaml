@@ -71,7 +71,7 @@ spec:
       backendRefs:
         - group: ""
           kind: Service
-          name: {{ include "inference.fullname" . }}
+          name: {{ include "inference.serviceName" . }}
           port: {{ .Values.server.port | int }}
           weight: 1
 ---
