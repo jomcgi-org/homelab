@@ -302,6 +302,39 @@ llamacpp:
 
 runtimeClassName: nvidia
 
+# Benchmark mode. ONE BOOLEAN, flipped on to start a session and off to end it.
+#
+# Enabling it does exactly two things, both in templates/_helpers.tpl:
+#
+#   1. Renames the LLM Service to `inference-bench`, so the hardcoded DNS name
+#      every in-cluster caller uses (`inference.inference.svc.cluster.local`)
+#      stops resolving. The external route follows the rename automatically,
+#      because httproute-private.yaml takes its backendRef from the same
+#      helper. So https://private.jomcgi.dev/llm/v1 keeps working and nothing
+#      else can reach the model.
+#   2. Drops llama.cpp to a single slot, which hands that one slot the whole
+#      98304-token KV pool instead of 32768, at unchanged VRAM.
+#
+# ENABLING THIS IS A DELIBERATE OUTAGE for every in-cluster qwen consumer:
+# the monolith's Discord, summarize, chat, vision and classifier callsites,
+# monolith-dev, and EmberVM pi-runtime qwen sessions. They fail at DNS, so
+# expect fast errors and dead letters rather than hangs. Nothing pages: the
+# qwen synthetic CronWorkflow is suspended and has never run, and the composite
+# /health carries no qwen, llama or inference dependency (both verified live,
+# 2026-08-18). Embeddings are untouched, so retrieval keeps working.
+#
+# The pod rolls on each flip. strategy is Recreate on a single GPU, so qwen is
+# fully down for the model load, and the startupProbe allows up to 30 minutes.
+#
+# ctxSize is deliberately NOT raised. The largest task in projects/model-bench
+# is ~6k tokens of prompt against max_tokens 16384, so ~22k worst case, and a
+# single slot already gets 98304. Raising it to 131072 would still fit (that is
+# the VRAM footprint previously measured at 4x32k, ~1.9 GiB free) but buys
+# nothing until a long-context task exists. Measured live 2026-08-18: 21590 of
+# 24564 MiB in use, base ~18.5 GiB, KV ~1.00 GiB per 32k at q8_0.
+benchMode:
+  enabled: false
+
 # OpenAI-compatible ingress at https://private.jomcgi.dev/llm/v1, so a client
 # outside the cluster (an OpenAI SDK, curl, an IDE assistant) can call the
 # llama.cpp server. See templates/httproute-private.yaml for why this hostname
