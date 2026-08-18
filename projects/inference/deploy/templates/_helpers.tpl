@@ -102,6 +102,20 @@ callers still connected they would queue behind a full generation, up to about
 {{- end }}
 
 {{/*
+Total KV pool in tokens. Bench mode overrides it here rather than by editing
+llamacpp.ctxSize, so the single benchMode flag still restores everything: an
+override left behind in production would run 3 slots against a pool sized for
+one, quietly tightening VRAM below the headroom that value was chosen for.
+
+Sizing is solved from three measured points rather than estimated. See the
+llamacpp.ctxSize comment in values.yaml for the derivation and for why the
+GiB-per-32k rule of thumb it replaced was 35% too pessimistic.
+*/}}
+{{- define "inference.llamaCppCtxSize" -}}
+{{- if .Values.benchMode.enabled -}}{{ .Values.benchMode.ctxSize }}{{- else -}}{{ .Values.llamacpp.ctxSize }}{{- end -}}
+{{- end }}
+
+{{/*
 Embedding llama-server CLI arguments.
 */}}
 {{- define "inference.embeddingArgs" -}}
@@ -132,7 +146,7 @@ here.
 */}}
 {{- define "inference.llamaCppArgs" -}}
 --n-gpu-layers {{ .Values.llamacpp.nGpuLayers | quote }} \
---ctx-size {{ .Values.llamacpp.ctxSize | quote }} \
+--ctx-size {{ include "inference.llamaCppCtxSize" . | quote }} \
 --parallel {{ include "inference.llamaCppParallel" . | quote }} \
 {{- if .Values.llamacpp.flashAttn }}
 --flash-attn {{ .Values.llamacpp.flashAttn | quote }} \

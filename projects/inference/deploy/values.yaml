@@ -260,16 +260,37 @@ llamacpp:
   # per-sequence like vLLM's --max-model-len. 131072 / 4 = 32768 per slot, which
   # preserves the 32k window every monolith callsite is written against.
   #
-  # VRAM budget on the 24564 MiB card: 15.92 GiB weights + 0.86 GiB mmproj +
-  # ~1 GiB compute buffers leaves ~6.2 GiB for KV. Qwen3.8-27B carries KV on
-  # only 16 of its 64 layers (the rest are Gated DeltaNet linear attention), but
-  # head_dim is 256, so a 32k sequence still costs a full 1.00 GiB at q8_0.
+  # VRAM COST, SOLVED FROM THREE MEASURED POINTS on the 24564 MiB card rather
+  # than estimated:
   #
-  # Measured at 4 slots: 22562 of 24564 MiB resident, ie under 2 GiB spare, one
-  # slot from the ceiling. 3 slots (98304 / 3 = 32768 each) gives back a full
-  # GiB. Do not raise this without re-reading steady-state VRAM: this is a
-  # Recreate deployment on a single GPU, so an over-committed KV pool is a crash
-  # loop with the previous engine already torn down, not a degraded pod.
+  #   (1 slot,  98304 KV) = 20942 MiB   measured 2026-08-18
+  #   (3 slots, 98304 KV) = 21590 MiB   measured 2026-08-18
+  #   (4 slots, 131072 KV)= 22562 MiB   measured 2026-08-14
+  #
+  # Two unknowns, three equations. Solving on the first and third gives a fixed
+  # base of 18674 MiB (weights + mmproj + non-slot compute), 324 MiB per slot,
+  # and 648 MiB per 32768 tokens of KV at q8_0. That model then predicts the
+  # middle point at exactly 21590, so it has no residual across the range.
+  #
+  # THE FIGURE THIS REPLACED SAID 1.00 GiB PER 32k, WHICH IS A 35% OVERESTIMATE.
+  # Every headroom calculation made from it was pessimistic, which is how 160k
+  # came to look marginal when it is not. Recompute from the constants above
+  # rather than reusing any GiB-per-32k rule of thumb.
+  #
+  # At 1 slot: 131072 -> 21590 used, 163840 -> 22238, 196608 -> 22886, and the
+  # full 262144 training context -> 24182, which is too tight to attempt.
+  #
+  # Qwen3.8-27B carries KV on only 16 of its 64 layers (the rest are Gated
+  # DeltaNet linear attention), but head_dim is 256, which is why the per-token
+  # cost is as high as it is despite that.
+  #
+  # Do not raise this without re-reading steady-state VRAM: this is a Recreate
+  # deployment on a single GPU, so an over-committed KV pool is a crash loop
+  # with the previous engine already torn down, not a degraded pod.
+  #
+  # This is the PRODUCTION value. Bench mode overrides it via benchMode.ctxSize
+  # rather than editing this line, so ending the session restores the pool size
+  # along with everything else and there is no second value to forget.
   ctxSize: 98304
   parallel: 3
   # Quantized V cache requires flash attention; leaving this off silently forces
@@ -356,6 +377,19 @@ benchMode:
   # Pinned so the benchmarking machine's base URL survives a re-sync. Only read
   # when enabled is true.
   nodePort: 30800
+  # Total KV pool while bench mode is on. With one slot this is the whole window
+  # for a single sequence: 160k, against the model's 262144 training context.
+  #
+  # Solved from three measured VRAM points, not estimated (see the derivation on
+  # llamacpp.ctxSize): 18674 MiB fixed + 324 per slot + 648 per 32768 tokens, so
+  # 163840 at one slot lands at 22238 of 24564 MiB, leaving 2326 spare.
+  # Production has run all week at 2974 spare, so this is only marginally
+  # tighter than normal steady state.
+  #
+  # 196608 would also fit at 1678 spare, and the full 262144 would not: 24182
+  # leaves 382 MiB, and this is a Recreate deployment on a single GPU, so an
+  # over-committed pool is a crash loop with the previous engine already gone.
+  ctxSize: 163840
 
 # OpenAI-compatible ingress at https://private.jomcgi.dev/llm/v1, so a client
 # outside the cluster (an OpenAI SDK, curl, an IDE assistant) can call the
