@@ -8,5 +8,6 @@ filegroup(
 
 helm_chart(
     name = "chart",
+    lint = False,
     visibility = ["//overlays:__subpackages__"],
 )

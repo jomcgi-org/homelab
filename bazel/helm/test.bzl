@@ -134,10 +134,10 @@ EOF
             "$(rootpath :Chart.yaml)",
         ] + ["$(rootpath {})".format(f) for f in extra_values],
         data = [
-            "@multitool//tools/helm",
-            ":Chart.yaml",
-            ":values.yaml",
-        ] + native.glob(["templates/**"], allow_empty = True) +
+                   "@multitool//tools/helm",
+                   ":Chart.yaml",
+                   ":values.yaml",
+               ] + native.glob(["templates/**"], allow_empty = True) +
                # Vendored subcharts. Without these a chart that declares a
                # file:// dependency and calls {{ include }} on one of its
                # defines fails lint inside the sandbox with "no template
