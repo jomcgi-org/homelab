@@ -5,12 +5,44 @@ metadata:
   labels:
     {{- include "inference.labels" . | nindent 4 }}
 spec:
+  {{- if .Values.benchMode.enabled }}
+  # NodePort ONLY while bench mode is on, so a machine on the LAN can reach the
+  # model without Cloudflare in the path. That removes the three things that
+  # make the public route awkward for a benchmark harness: the CF-Access-Client
+  # header pair, the 100s no-byte limit that 524s any non-streamed response over
+  # roughly 4800 tokens, and TLS termination at the edge.
+  #
+  # THE FIRST NodePort IN THIS CLUSTER. Everything else reaches the outside
+  # through the cloudflared tunnel, so treat this as a deliberate exception with
+  # a defined lifetime rather than a pattern to copy. It is LAN-only: the repo
+  # invariant that nothing is exposed to the internet directly still holds,
+  # because reaching this from outside would need a router port-forward that
+  # does not exist.
+  #
+  # It is also UNAUTHENTICATED. Anything on 192.168.1.0/24 can use the GPU while
+  # this is up. That is the trade being made for the duration of a session, and
+  # it is why this is welded to benchMode rather than being independently
+  # switchable: turning bench mode off closes it, and there is no way to leave
+  # it open by forgetting a second flag.
+  #
+  # Cilium runs kube-proxy-replacement, so it serves this on EVERY node, not
+  # just the one holding the pod. node-4 (192.168.1.195) is the GPU node and the
+  # shortest path; any other node IP works and simply forwards.
+  type: NodePort
+  {{- else }}
   type: ClusterIP
+  {{- end }}
   ports:
     - port: {{ .Values.server.port }}
       targetPort: http
       protocol: TCP
       name: http
+      {{- if .Values.benchMode.enabled }}
+      # Pinned rather than allocated, so the base URL on the benchmarking
+      # machine survives a re-sync. Nothing else in the cluster claims a
+      # nodePort, so the whole 30000-32767 range was free when this was chosen.
+      nodePort: {{ .Values.benchMode.nodePort | int }}
+      {{- end }}
   selector:
     {{- include "inference.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: inference
