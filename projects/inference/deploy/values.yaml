@@ -328,6 +328,19 @@ llamacpp:
     - "--reasoning-format"
     - "deepseek"
     - "--metrics"
+    # Qwen3.8 ships an MTP draft head. draft-mtp uses tensors already in the
+    # loaded GGUF when they are present; if the image also contains a sidecar
+    # mtp*.gguf, deployment-llamacpp.yaml passes it as --spec-draft-model.
+    # Default --spec-draft-n-max is 3; set explicitly so a llama.cpp default
+    # change cannot silently drop the window. MTP adds a draft KV cache on top
+    # of the measured 21590 MiB at 3x32k q8_0: re-read nvidia-smi after this
+    # lands rather than extrapolating. Same-card measurements of UD-Q4_K_XL
+    # with draft-mtp fit at 64k/1-slot (20.8 GiB) and died at 144k/1-slot;
+    # 98k/3-slot sits between those, so this is interpolation, not a guess.
+    - "--spec-type"
+    - "draft-mtp"
+    - "--spec-draft-n-max"
+    - "3"
 
 runtimeClassName: nvidia
 
@@ -362,9 +375,10 @@ runtimeClassName: nvidia
 # nothing until a long-context task exists. Measured live 2026-08-18: 21590 of
 # 24564 MiB in use, base ~18.5 GiB, KV ~1.00 GiB per 32k at q8_0.
 benchMode:
-  # ON for a benchmarking session started 2026-08-18. FLIP BACK TO false WHEN
-  # THE RUN ENDS: while this is true the monolith's qwen callsites, monolith-dev
-  # and EmberVM pi-runtime sessions are all failing at DNS, by design.
+  # Off. Last session started 2026-08-18; flipping this back restores the
+  # in-cluster Service DNS name and the 3-slot production pool. While true,
+  # the monolith's qwen callsites, monolith-dev and EmberVM pi-runtime sessions
+  # all fail at DNS, by design, and the Service is a LAN NodePort.
   #
   # The harness runs on the Mac and reaches llama.cpp through a port-forward
   # (bench/cli.py --base-url), so forward to the DEPLOYMENT, whose name does not
@@ -381,7 +395,7 @@ benchMode:
   # That port is UNAUTHENTICATED and open to anything on the LAN while this is
   # true. It is welded to this one flag on purpose, so turning bench mode off
   # closes it and there is no second switch to forget.
-  enabled: true
+  enabled: false
   # Pinned so the benchmarking machine's base URL survives a re-sync. Only read
   # when enabled is true.
   nodePort: 30800

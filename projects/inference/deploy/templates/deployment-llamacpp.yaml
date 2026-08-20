@@ -51,13 +51,18 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              MODEL=$(find {{ .Values.llamacpp.modelVolume.mountPath }} -maxdepth 2 -name '*.gguf' ! -name 'mmproj*' -type f | sort | head -1)
+              MODEL=$(find {{ .Values.llamacpp.modelVolume.mountPath }} -maxdepth 2 -name '*.gguf' ! -name 'mmproj*' ! -name 'mtp*' -type f | sort | head -1)
               if [ -z "$MODEL" ]; then
                 echo "ERROR: no .gguf file found under {{ .Values.llamacpp.modelVolume.mountPath }}" >&2
                 exit 1
               fi
               echo "Auto-discovered model: $MODEL"
               set -- --model "$MODEL"
+              MTP=$(find {{ .Values.llamacpp.modelVolume.mountPath }} -maxdepth 2 \( -name 'mtp*.gguf' -o -name 'MTP*.gguf' \) -type f | sort | head -1)
+              if [ -n "$MTP" ]; then
+                echo "Auto-discovered MTP draft: $MTP"
+                set -- "$@" --spec-draft-model "$MTP"
+              fi
               {{- if .Values.llamacpp.mmproj }}
               # Prefer the F16 projector by exact name: a glob like 'mmproj*F16*'
               # also matches mmproj-BF16.gguf, and sorts it first.
