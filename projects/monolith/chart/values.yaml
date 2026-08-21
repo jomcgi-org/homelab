@@ -8,7 +8,7 @@ backend:
   replicas: 1
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/backend
-    tag: main
+    tag: main@sha256:2e9950fe9a55e76aa60b57e5778a3df619a409125c64a05ccf2c2811ca4023ab
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
   resources:
@@ -73,7 +73,7 @@ auth:
 progress:
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/progress
-    tag: main
+    tag: main@sha256:83742fd997aadb3aa914005ec535127ce886740ade1f58b1c2cdbb0ac8f7aa19
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
 
