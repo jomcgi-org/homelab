@@ -131,6 +131,8 @@ defmodule Embervm.SessionManagerTest do
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
         bank_fun: Keyword.get(opts, :bank_fun, fn _ch, req -> {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}} end),
         relight_fun: Keyword.get(opts, :relight_fun, fn _ch, _req -> {:ok, %RelightResponse{vm_id: "vm-relit"}} end),
+        evict_fun: Keyword.get(opts, :evict_fun, fn _ch, _req -> {:ok, %{}} end),
+        evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, fn _ch, _req -> {:ok, %{}} end),
         restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, fn _ch, _req -> {:error, %GRPC.RPCError{status: 5}} end),
         archive_volume_fun: Keyword.get(opts, :archive_volume_fun, fn _ch, _req -> {:ok, %{skipped: false}} end),
         retire_volume_fun: Keyword.get(opts, :retire_volume_fun, fn _ch, _req -> {:ok, %{}} end),
@@ -576,6 +578,49 @@ defmodule Embervm.SessionManagerTest do
     assert :ok == SessionManager.reconcile(ctx.mgr)
     assert {:ok, session} = Task.await(task, 2_000)
     assert session.session_id
+  end
+
+  test "create worker timeout stays between cold prime and client call deadlines" do
+    # A cold prime may use 120 seconds, while SessionManager.create/4 waits 180.
+    timeout = SessionManager.create_worker_timeout_ms()
+    assert timeout > 120_000
+    assert timeout < 180_000
+  end
+
+  test "orphan snapshot eviction does not block session creates" do
+    parent = self()
+
+    evict_fun = fn _channel, _req ->
+      send(parent, {:evict_started, self()})
+
+      receive do
+        :release -> {:ok, %{}}
+      after
+        2_000 -> {:ok, %{}}
+      end
+    end
+
+    ctx = start_stack(evict_fun: evict_fun)
+    put_session_workload(ctx, "wl-orphan-eviction")
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+
+    NodeCapacity.put(
+      ctx.cap_table,
+      "node-4",
+      Map.put(fact, :session_snapshots, [
+        %{session_id: "s-orphan", snapshot_ref: "snap-orphan", workload: "wl-orphan-eviction"}
+      ])
+    )
+
+    reconcile_task = Task.async(fn -> SessionManager.reconcile(ctx.mgr) end)
+    assert_receive {:evict_started, eviction_pid}, 1_000
+
+    create_task = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-orphan-eviction", "p1") end)
+    assert {:ok, created} = Task.await(create_task, 500)
+    assert created.session_id
+    assert :ok = Task.await(reconcile_task, 500)
+
+    send(eviction_pid, :release)
   end
 
   test "create worker crash replies error" do
