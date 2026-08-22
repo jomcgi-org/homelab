@@ -1,11 +1,28 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { mount, tick, unmount } from "svelte";
 import Launcher from "./Launcher.svelte";
+import { RUN_LEXICON as P } from "./run-lexicon.js";
 
 const mounted = [];
 
-async function render(onSubmit) {
+function pageSurface() {
+  const url = new URL("./+page.svelte", import.meta.url);
+  if (url.protocol === "file:") return readFileSync(url, "utf8");
+  const pathname = decodeURIComponent(url.pathname);
+  const candidates = [
+    pathname.startsWith("/@fs/") ? pathname.slice(4) : null,
+    resolve(process.cwd(), pathname.replace(/^\/+/, "")),
+    resolve(process.cwd(), "+page.svelte"),
+  ].filter(Boolean);
+  const filename = candidates.find(existsSync);
+  if (!filename) throw new Error("Unable to locate +page.svelte");
+  return readFileSync(filename, "utf8");
+}
+
+async function render(onSubmit, overrides = {}) {
   const target = document.createElement("div");
   document.body.append(target);
   const component = mount(Launcher, {
@@ -23,9 +40,11 @@ async function render(onSubmit) {
         count: 0,
         allCount: 0,
         sessionCount: 0,
+        runCount: 0,
         spend: 0,
       },
       onSubmit,
+      ...overrides,
     },
   });
   mounted.push({ component, target });
@@ -58,5 +77,70 @@ describe("launcher submit path", () => {
     await tick();
 
     expect(createTask).toHaveBeenCalledTimes(2);
+  });
+
+  test("the page wires both launchers and the New panel to createTask", () => {
+    const pageSource = pageSurface();
+
+    expect(pageSource.match(/onSubmit=\{createTask\}/g) ?? []).toHaveLength(2);
+    expect(pageSource).toMatch(
+      /class="new-panel"[\s\S]*?<form\s+onsubmit=\{\(event\) => \{\s*event\.preventDefault\(\);\s*createTask\(\);/,
+    );
+  });
+
+  test("loads branches for a selected repo and submits the chosen branch", async () => {
+    const createTask = vi.fn();
+    const onLoadBranches = vi.fn();
+    const session = {
+      prompt: "Start this task",
+      model: "",
+      repo: "acme/app",
+      branch: "main",
+    };
+    const target = await render(createTask, {
+      session,
+      repos: [{ id: "acme/app" }, { id: "acme/other" }],
+      branches: [{ name: "main" }, { name: "feature" }],
+      onLoadBranches,
+    });
+    const repo = target.querySelector(`[aria-label="${P.labels.repoWord}"]`);
+    repo.value = "acme/other";
+    repo.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+
+    expect(onLoadBranches).toHaveBeenCalledWith("acme/other");
+    const branch = target.querySelector(
+      `[aria-label="${P.labels.branchWord}"]`,
+    );
+    branch.value = "feature";
+    branch.dispatchEvent(new Event("change", { bubbles: true }));
+    target
+      .querySelector("form")
+      .dispatchEvent(new Event("submit", { bubbles: true }));
+    await tick();
+
+    expect(session.branch).toBe("feature");
+    expect(createTask).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows session and run totals with the shared Jump count", async () => {
+    const target = await render(vi.fn(), {
+      jumpCount: 9,
+      summary: {
+        items: [],
+        count: 5,
+        allCount: 7,
+        sessionCount: 2,
+        runCount: 3,
+        spend: 1,
+      },
+    });
+
+    const summary = target
+      .querySelector(".recent-summary")
+      .textContent.replace(/\s+/g, " ")
+      .trim();
+    expect(summary).toBe("7 days · 2 sessions · 3 runs · $1.00");
+    expect(target.textContent).toContain("All 9 in Jump");
   });
 });

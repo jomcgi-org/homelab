@@ -1,5 +1,5 @@
 <script>
-  import { nodeStateClass } from "./dag.js";
+  import { shapeStateClass } from "./dag.js";
   import { firstLine, fmtCost } from "./run-format.js";
   import { relativeTime } from "./run-history.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
@@ -10,6 +10,7 @@
     session = $bindable(),
     models = [],
     repos = [],
+    branches = [],
     repoLoading = false,
     branchLoading = false,
     creating = false,
@@ -18,8 +19,10 @@
       count: 0,
       allCount: 0,
       sessionCount: 0,
+      runCount: 0,
       spend: 0,
     },
+    jumpCount = 0,
     onLoadBranches = () => {},
     onSubmit = () => {},
     onOpenRun = () => {},
@@ -36,23 +39,13 @@
       : sessionTitle(item.value);
   }
 
-  function shapeClass(run, node) {
-    if (
-      run?.needs?.kind === "human" &&
-      node.state === "blocked" &&
-      run.current?.state === "blocked"
-    ) {
-      return "g-blocked-h";
-    }
-    return nodeStateClass(node);
-  }
-
   function submit() {
     if (!creating && session.prompt.trim()) onSubmit();
   }
 </script>
 
 <section class="home">
+  <!-- Kind is classified server-side; /api/swarm/classify-and-start accepts no kind hint. -->
   <h1>
     {P.labels.launcherQuestion.replace("{model}", modelName)}
   </h1>
@@ -101,7 +94,8 @@
             aria-label={P.labels.repoWord}
             bind:value={session.repo}
             disabled={repoLoading || branchLoading}
-            onchange={() => {
+            onchange={(event) => {
+              session.repo = event.currentTarget.value;
               session.branch = "";
               onLoadBranches(session.repo);
             }}
@@ -112,14 +106,38 @@
               <option value="">{P.labels.noRepo}</option>
               {#each repos as repo}
                 <option value={repo.id} title={repo.description || ""}>
-                  {repo.id}{session.repo === repo.id
-                    ? `@${branchLoading ? P.labels.loadingBranches : session.branch || P.labels.defaultBranch}`
-                    : ""}
+                  {repo.id}
                 </option>
               {/each}
             {/if}
           </select>
         </label>
+        {#if session.repo}
+          <label class="control branch-control">
+            <span class="sr-only">{P.labels.branchWord}</span>
+            <select
+              class="select mono"
+              aria-label={P.labels.branchWord}
+              bind:value={session.branch}
+              disabled={branchLoading}
+              onchange={(event) => {
+                session.branch = event.currentTarget.value;
+              }}
+            >
+              {#if branchLoading}
+                <option value="">{P.labels.loadingBranches}</option>
+              {:else if branches.length === 0}
+                <option value={P.labels.defaultBranch}
+                  >{P.labels.defaultBranch}</option
+                >
+              {:else}
+                {#each branches as branch}
+                  <option value={branch.name}>{branch.name}</option>
+                {/each}
+              {/if}
+            </select>
+          </label>
+        {/if}
         <span class="hint mono">{P.labels.startHint}</span>
         <button
           class="send"
@@ -144,6 +162,9 @@
         {summary.sessionCount}
         {P.labels.recentSessionsCount}
         {P.punct.dot}
+        {summary.runCount}
+        {P.labels.recentRunsCount}
+        {P.punct.dot}
         {fmtCost(summary.spend) || P.labels.zeroCost}
       </span>
     </div>
@@ -164,7 +185,7 @@
               {#each entry.shape?.length ? entry.shape : [{ key: "run", kind: "work", state: entry.state }] as node, index (`${node.key}:${index}`)}
                 <span
                   class:gate={node.kind === "gate"}
-                  class={`shape-node ${shapeClass(entry, node)}`}
+                  class={`shape-node ${shapeStateClass(entry, node)}`}
                 ></span>
               {/each}
             </span>
@@ -197,12 +218,7 @@
       {/each}
     </div>
     <button class="more-link" type="button" onclick={onOpenJump}>
-      <span
-        >{P.labels.allInJump.replace(
-          "{count}",
-          String(summary.allCount ?? summary.count),
-        )}</span
-      >
+      <span>{P.labels.allInJump.replace("{count}", String(jumpCount))}</span>
       <kbd class="kbd">{P.labels.shortcutCommandK}</kbd>
     </button>
   </div>
@@ -293,6 +309,13 @@
     max-width: 280px;
   }
   .repo-control .select {
+    max-width: 100%;
+  }
+  .branch-control {
+    min-width: 0;
+    max-width: 180px;
+  }
+  .branch-control .select {
     max-width: 100%;
   }
   .hint {

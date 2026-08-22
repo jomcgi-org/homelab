@@ -105,14 +105,6 @@ function homeEntry(name, runs, sessions, view = {}) {
   return {
     home: true,
     master: { runs, queues: [] },
-    activity: [
-      ...runs.map((value) => ({ kind: "run", value, cost: value.cost_usd })),
-      ...sessions.map((value) => ({
-        kind: "session",
-        value,
-        cost: value.total_cost_usd,
-      })),
-    ],
     sessions,
     view: {
       engine_tier: "live",
@@ -823,14 +815,6 @@ export const RUN_FIXTURES = {
     [homeSession(203, "quiet session", "2026-08-09T22:53:00Z")],
   ),
   "home-empty": homeEntry("home-empty", [], []),
-  "home-stale-tier": homeEntry("home-stale-tier", [homeActivityRun], [], {
-    engine_tier: "stale",
-    snapshot_age_seconds: 180,
-  }),
-  "home-absent-tier": homeEntry("home-absent-tier", [], [], {
-    engine_tier: "absent",
-    snapshot_age_seconds: 0,
-  }),
   // Ladder rung 1: SHAs recorded, trailer parsed. Also carries the two
   // cross-check states: queues.py is authored but unexplained (as the twin
   // pair the composer emits), and legacy_rollup.py is claimed but absent

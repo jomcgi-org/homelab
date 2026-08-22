@@ -178,6 +178,7 @@ export const RUN_LEXICON = {
     noRecentActivity: "no activity in the last 7 days",
     recentWindow: "7 days",
     recentSessionsCount: "sessions",
+    recentRunsCount: "runs",
     launcherQuestion: "What should {model} do?",
     launcherPlaceholder:
       "Describe the task. One session, or a run with a review gate.",
@@ -219,7 +220,8 @@ export const RUN_LEXICON = {
     relativeYesterday: "yesterday",
     inbox: "Inbox",
     runningGroup: "running",
-    earlierSessionsAndRuns: "earlier sessions and runs",
+    sessionsAndRunsInJump: "{count} sessions and runs in Jump",
+    branchWord: "branch",
     answer: "Answer",
     approvePush: "Approve push",
     expandInbox: "Expand inbox",

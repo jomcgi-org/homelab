@@ -82,6 +82,17 @@ export function nodeStateClass(node) {
   return `g-${node.state}${node.state === "running" ? " pulse" : ""}`;
 }
 
+export function shapeStateClass(run, node) {
+  if (
+    run?.needs?.kind === "human" &&
+    node.state === "blocked" &&
+    run.current?.state === "blocked"
+  ) {
+    return "g-blocked-h";
+  }
+  return nodeStateClass(node);
+}
+
 export function pipClass(attempt) {
   return attempt.state === "done"
     ? "pip"
