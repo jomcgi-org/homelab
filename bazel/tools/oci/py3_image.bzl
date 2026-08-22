@@ -8,7 +8,7 @@ load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_load", "oc
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 
-def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}, workdir = None, base = "@python_base", tars = [], multiarch_tars = [], bash_symlink = True, repository = None, visibility = ["//bazel/images:__pkg__"], multi_platform = True):
+def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}, workdir = None, base = "@python_base", tars = [], multiarch_tars = [], bash_symlink = True, repository = None, visibility = ["//bazel/images:__pkg__"], multi_platform = False):
     """Create a multi-platform Python 3 image from a Python binary.
 
     Args:
@@ -33,7 +33,9 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
                    Defaults to "ghcr.io/jomcgi/homelab/{package_name}".
         visibility: Visibility of the generated .push target. Defaults to ["//bazel/images:__pkg__"]
                    to allow access from the auto-generated //images:push_all multirun.
-        multi_platform: Build for both amd64 and arm64. Defaults to True.
+        multi_platform: Build for both amd64 and arm64. Defaults to False: every
+            node is amd64 and no chart pins an arch, so the arm64 half had no
+            consumer and doubled every layer tar and image action on each change.
     """
     binary = native.package_relative_label(binary)
     binary_path = "{}{}/{}".format(root, binary.package, binary.name)
@@ -171,6 +173,20 @@ def py3_image(name, binary, main = None, root = "/", layer_groups = {}, env = {}
         platform_transition_filegroup(
             name = name,
             srcs = [name + "_image"],
+            target_platform = select({
+                "@platforms//cpu:arm64": "//bazel/tools/platforms:linux_aarch64",
+                "@platforms//cpu:x86_64": "//bazel/tools/platforms:linux_x86_64",
+            }),
+        )
+
+        # rules_oci declares `:{name}.digest` implicitly on oci_image and
+        # oci_image_index, which is what helm_images_values and the digest
+        # manifest read. A filegroup has no such output, so surface the
+        # image's digest under the SAME transition the push target uses;
+        # pinning an untransitioned digest would name an image nobody pushed.
+        platform_transition_filegroup(
+            name = name + ".digest",
+            srcs = [name + "_image.digest"],
             target_platform = select({
                 "@platforms//cpu:arm64": "//bazel/tools/platforms:linux_aarch64",
                 "@platforms//cpu:x86_64": "//bazel/tools/platforms:linux_x86_64",

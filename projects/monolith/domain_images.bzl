@@ -72,6 +72,8 @@ def monolith_domain_images(
         domains,
         base = "@python_base",
         config_test_domain = None,
+        extra_tars = [],
+        extra_env = {},
         visibility = ["//:__subpackages__"]):
     """One dual-arch, build-only OCI image per domain from a shared binary.
 
@@ -86,6 +88,8 @@ def monolith_domain_images(
         config_test_domain: Domain whose amd64 image gets a non-manual
             verify-py3-image.sh config test (the CI canary for the env
             formulas). None skips the canary.
+        extra_tars: Extra tar layers appended to every domain image.
+        extra_env: Extra env entries shared by every domain image.
         visibility: Visibility of the per-domain image targets.
     """
     binary_label = native.package_relative_label(binary)
@@ -136,11 +140,12 @@ def monolith_domain_images(
         binary = binary,
         root = "/",
     )
-    extra = [name + "_bash_symlink", name + "_srcs"]
+    extra = [name + "_bash_symlink", name + "_srcs"] + list(extra_tars)
 
     images = []
     for d in domains:
         env = dict(shared_env)
+        env.update(extra_env)
         env["MONOLITH_DOMAIN"] = d
 
         oci_image(
