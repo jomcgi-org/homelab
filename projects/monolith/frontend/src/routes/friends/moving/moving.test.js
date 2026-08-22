@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clusterMilestoneGroups,
+  collidingSpanIds,
   collisionWording,
   ganttDatePosition,
   groupMilestonesByDate,
@@ -17,6 +18,50 @@ const spans = [
   { id: "span-1", kind: "visitor", label: "Visitors" },
   { id: "span-2", kind: "trip", label: "Japan trip" },
 ];
+
+describe("colliding span ids", () => {
+  it("includes both spans from the Steph and Jack pack-out collision", () => {
+    const collision = {
+      type: "span_span",
+      item1_id: "span-steph-jack",
+      item2_id: "span-vancouver-pack-out",
+    };
+
+    expect(collidingSpanIds([collision])).toEqual(
+      new Set(["span-steph-jack", "span-vancouver-pack-out"]),
+    );
+  });
+
+  it("includes only the span from a task and span collision", () => {
+    const result = collidingSpanIds([
+      {
+        type: "task_span",
+        item1_id: "task-book-movers",
+        item2_id: "span-vancouver-pack-out",
+      },
+    ]);
+
+    expect(result).toEqual(new Set(["span-vancouver-pack-out"]));
+    expect(result.has("task-book-movers")).toBe(false);
+  });
+
+  it("returns an empty set for empty or null input", () => {
+    expect(collidingSpanIds([])).toEqual(new Set());
+    expect(collidingSpanIds(null)).toEqual(new Set());
+  });
+
+  it("is deterministic for the same input", () => {
+    const collisions = [
+      {
+        type: "span_span",
+        item1_id: "span-steph-jack",
+        item2_id: "span-vancouver-pack-out",
+      },
+    ];
+
+    expect(collidingSpanIds(collisions)).toEqual(collidingSpanIds(collisions));
+  });
+});
 
 describe("collision wording", () => {
   it("words a span overlap using resolved labels and its date range", () => {
