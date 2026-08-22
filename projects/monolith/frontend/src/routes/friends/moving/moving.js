@@ -225,6 +225,19 @@ export function collisionWording(collision, tasks, spans) {
   return null;
 }
 
+export function collidingSpanIds(collisions) {
+  const ids = new Set();
+  for (const collision of collisions ?? []) {
+    if (collision.type === "span_span") {
+      ids.add(collision.item1_id);
+      ids.add(collision.item2_id);
+    } else if (collision.type === "task_span") {
+      ids.add(collision.item2_id);
+    }
+  }
+  return ids;
+}
+
 export function ganttDatePosition(value, startsOn, endsOn) {
   const valueStamp = dateStamp(value);
   const startStamp = dateStamp(startsOn);

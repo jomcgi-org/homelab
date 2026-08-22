@@ -10,6 +10,9 @@
   --blue: #6fc2ff;
   --coral: #ff7169;
   --green: #4ade80;
+  /* Fraction of the line box covered by the yellow highlight band. It is full
+     height in dark mode because uncovered glyph tops would be dark on dark. */
+  --hl-cover: 74%;
   --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
   --font-ui: "Hanken Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-code: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -34,6 +37,7 @@
     --ink-2: #b5af9f;
     --ink-3: #7d786c;
     --rule: rgba(240, 234, 217, 0.16);
+    --hl-cover: 100%;
   }
 }
 
@@ -45,6 +49,7 @@
   --ink-2: #57534a;
   --ink-3: #8a857a;
   --rule: rgba(26, 26, 26, 0.14);
+  --hl-cover: 74%;
 }
 
 :root[data-theme="dark"] .moving {
@@ -55,6 +60,7 @@
   --ink-2: #b5af9f;
   --ink-3: #7d786c;
   --rule: rgba(240, 234, 217, 0.16);
+  --hl-cover: 100%;
 }
 
 .moving,
@@ -210,7 +216,9 @@
 .moving .c-hero {
   grid-area: hero;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
   padding: 26px 26px 24px;
 }
 
@@ -238,10 +246,18 @@
   font-weight: 600;
 }
 
+.moving .hero-sub {
+  margin: 12px 0 0;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+}
+
 .moving .hl {
   padding: 0 0.08em;
   background: linear-gradient(var(--yellow), var(--yellow)) no-repeat 0 62%;
-  background-size: 100% 74%;
+  background-size: 100% var(--hl-cover);
   color: #1a1a1a;
 }
 
@@ -686,6 +702,11 @@
   box-shadow: 0 0 0 2px var(--paper);
   cursor: default;
   transition: background 0.12s ease;
+}
+
+/* Coral is the collision color everywhere else, so this ring needs no legend. */
+.moving .bar.collides {
+  box-shadow: 0 0 0 2px var(--coral);
 }
 
 /* Vertical expansion stays within its sub-row; horizontal could overlap bars. */
@@ -1336,7 +1357,7 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .moving .hl {
-    background-size: 0% 74%;
+    background-size: 0% var(--hl-cover);
     animation: moving-sweep 0.7s cubic-bezier(0.2, 0.8, 0.3, 1) 0.15s forwards;
   }
 
@@ -1346,7 +1367,7 @@
 
   @keyframes moving-sweep {
     to {
-      background-size: 100% 74%;
+      background-size: 100% var(--hl-cover);
     }
   }
 

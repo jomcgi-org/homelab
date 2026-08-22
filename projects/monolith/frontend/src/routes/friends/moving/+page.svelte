@@ -5,6 +5,7 @@
   import AccessPanel from "./AccessPanel.svelte";
   import {
     clusterMilestoneGroups,
+    collidingSpanIds,
     collisionWording,
     formatCad,
     formatDateRange,
@@ -58,6 +59,7 @@
   const milestones = $derived(data.state?.milestones ?? []);
   const roles = $derived(data.state?.roles ?? []);
   const rawCollisions = $derived(data.state?.collisions ?? []);
+  const collidingIds = $derived(collidingSpanIds(rawCollisions));
   const viewer = $derived(data.state?.viewer ?? "");
   const countdown = $derived(moveCountdown(spans, now));
   const openTasks = $derived(sortOpenTasks(tasks));
@@ -315,11 +317,7 @@
               <span>{countdown.detail}</span>
             </div>
           {:else}
-            <h1
-              id="move-countdown"
-              title={countdown.description}
-              aria-describedby="move-countdown-desc"
-            >
+            <h1 id="move-countdown" aria-describedby="move-countdown-desc">
               {#if countdown.days > 0}
                 <span class="hl"
                   >{countdown.days}
@@ -334,9 +332,9 @@
                 >&nbsp;ago
               {/if}
             </h1>
-            <span id="move-countdown-desc" class="sr-only"
-              >{countdown.description}</span
-            >
+            <p class="hero-sub" id="move-countdown-desc">
+              {countdown.description}
+            </p>
           {/if}
         </section>
 
@@ -355,11 +353,7 @@
                 onclick={() => setScope("all")}>All</button
               >
             </span>
-            <span class="badge"
-              >{overdueRows.length
-                ? `${overdueRows.length} late`
-                : "clear"}</span
-            >
+            <span class="badge">{overdueRows.length} late</span>
           </div>
           <div class="cta-body">
             {#if taskError}
@@ -499,6 +493,7 @@
                       <button
                         type="button"
                         class="bar"
+                        class:collides={collidingIds.has(bar.id)}
                         style:left={`${bar.position}%`}
                         style:width={`${bar.width}%`}
                         style:--sub-row={bar.subRow}
