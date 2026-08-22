@@ -53,8 +53,11 @@ bricks:
 # Platform KEK root (ADR embervm/036, #4976): dev derives per-principal KEKs
 # from the embervm-kek-root item. The secretKeyRef is optional, so until the
 # item exists the custodian is inert and nothing below encrypts.
+# OFF until the embervm-kek-root item exists in 1Password: with it enabled
+# and no item, the OnePasswordItem stays Ready=False and ArgoCD reports the
+# app Degraded (2026-08-22). Create the item, then flip enabled: true.
 kekRoot:
-  enabled: true
+  enabled: false
   onepassword:
     itemPath: "vaults/k8s-homelab/items/embervm-kek-root"
 
