@@ -850,12 +850,89 @@ defmodule Embervm.BaseBuilderTest do
     assert entry.skipped_unexported == false
     assert Enum.sort(entry.evict_refs) == ["w__superseded", "w__tmporphan"]
     assert entry.evict_bytes == 3_072
+    assert entry.retention_accounting.bases_kept_current_unverified == 0
 
     # Gate on: both the superseded READY base and the .tmp orphan are evicted;
     # the current base is never touched.
     assert_receive {:evicted, "w", "w__superseded"}, 1_000
     assert_receive {:evicted, "w", "w__tmporphan"}, 1_000
     refute_receive {:evicted, "w", "w__current"}, 100
+  end
+
+  test "retention sweep holds candidates when the desired local base is unverified" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__phantom")} end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end,
+        retention_disk_driven_enabled: true
+      )
+
+    build_current(builder, agent, "w__phantom")
+    put_local_bases_fact(table, "w", "w__phantom", true, [ready_base("w__old", "w", 2_048)])
+
+    log =
+      capture_log(fn ->
+        send(test_pid, {:plan, BaseBuilder.retention_sweep_now(builder)})
+      end)
+
+    assert_receive {:plan, [entry]}
+    assert entry.evict_refs == []
+    assert entry.retention_accounting.bases_kept_current_unverified == 1
+    assert log =~ "retention held: current base unverified"
+    assert log =~ "workload w on node node-4"
+    assert log =~ "w__phantom"
+    assert log =~ "w__old"
+    refute_receive {:evicted, "w", "w__old"}, 200
+  end
+
+  test "retention sweep holds candidates when the desired local base is still building" do
+    agent = start_recorder()
+    test_pid = self()
+    table = new_cap_table()
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:evicted, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end,
+        retention_disk_driven_enabled: true
+      )
+
+    build_current(builder, agent, "w__current")
+
+    building =
+      ready_base("w__current", "w", 512)
+      |> Map.put(:base_state, :BASE_BUILD_STATE_BUILDING)
+
+    put_local_bases_fact(table, "w", "w__current", true, [
+      building,
+      ready_base("w__old", "w", 2_048)
+    ])
+
+    log =
+      capture_log(fn ->
+        send(test_pid, {:plan, BaseBuilder.retention_sweep_now(builder)})
+      end)
+
+    assert_receive {:plan, [entry]}
+    assert entry.evict_refs == []
+    assert entry.retention_accounting.bases_kept_current_unverified == 1
+    assert log =~ "retention held: current base unverified"
+    assert log =~ "w__old"
+    refute_receive {:evicted, "w", "w__old"}, 200
   end
 
   test "retention sweep evicts an unknown workload once the watcher is synced and coalesces bricks" do
@@ -3537,6 +3614,40 @@ defmodule Embervm.BaseBuilderTest do
     # Neither vendor's CURRENT base is touched.
     refute_receive {:remote_evicted, "w", _, "w__amd_cur"}, 200
     refute_receive {:remote_evicted, "w", _, "w__intel_cur"}, 200
+  end
+
+  test "remote retention holds candidates when keep refs are absent from the listing" do
+    agent = start_recorder()
+    table = new_cap_table()
+    test_pid = self()
+
+    put_vendor_fact(table, "node-4", nil, "w", "w__phantom", "amd")
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__phantom")} end,
+        list_fun: fn _channel, _workload, _vendor ->
+          {:ok, [%{ref: "w__old", size_bytes: 20}], false}
+        end,
+        remote_evict_fun: fn _channel, workload, vendor, ref ->
+          send(test_pid, {:remote_evicted, workload, vendor, ref})
+          {:ok, %{}}
+        end,
+        remote_retention_sweep_enabled: true
+      )
+
+    build_current(builder, agent, "w__phantom")
+
+    log = capture_log(fn -> BaseBuilder.retention_sweep_now(builder) end)
+
+    assert log =~ "retention held: current base unverified"
+    assert log =~ "workload w on vendor amd"
+    assert log =~ "w__phantom"
+    assert log =~ "w__old"
+    assert log =~ "1 held because the current base was unverified"
+    refute_receive {:remote_evicted, "w", "amd", "w__old"}, 500
   end
 
   test "remote retention spares a superseded base a session or primed VM still holds" do
