@@ -825,7 +825,13 @@ jobs:
     # actually routing to pi-runtime, which landed in the same session.
     - name: ember-qwen-session-synthetic
       args: ["ember-qwen-synthetic-trigger"]
-      schedule: "0 * * * *"
+      # Offset from the */5 demo probe on purpose: both endpoints share one
+      # in-flight guard in synthetic_router.py, so a trigger at :00 lands while
+      # the 5-minute probe is running and returns {"skipped": true}, which the
+      # job reports as Succeeded while recording nothing (every hourly run from
+      # arming until 2026-08-22 did exactly that; the only recorded result was
+      # an off-schedule trigger at 14:03).
+      schedule: "2 * * * *"
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 300
       # Original gate, kept for the record: "Joe arms this after watching the
