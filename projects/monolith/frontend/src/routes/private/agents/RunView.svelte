@@ -49,14 +49,22 @@
   const selectedNode = $derived(
     run?.nodes?.find((node) => node.key === selectedKey) ?? null,
   );
-  const hasAside = $derived(
-    selectedNode?.blocked_on?.kind === "human" ||
-      Boolean(selectedNode?.attempts?.length),
+  const escalatedNode = $derived(
+    selectedNode?.state === "escalated"
+      ? selectedNode
+      : (run?.nodes?.find((node) => node.state === "escalated") ?? null),
   );
-  const needsHuman = $derived(
-    run?.nodes?.some(
-      (node) => node.state === "escalated" || node.blocked_on?.kind === "human",
-    ) ?? false,
+  const showsEscalation = $derived(
+    run?.state === "escalated" || selectedNode?.state === "escalated",
+  );
+  const escalatedSessionId = $derived(
+    escalatedNode?.attempts?.at(-1)?.session_id ?? null,
+  );
+  const hasAside = $derived(
+    showsEscalation || Boolean(selectedNode?.attempts?.length),
+  );
+  const isEscalated = $derived(
+    run?.state === "escalated" || Boolean(escalatedNode),
   );
   const humanAttention = $derived(
     run?.nodes?.some((node) => node.blocked_on?.kind === "human") ?? false,
@@ -309,10 +317,10 @@
     </header>
 
     <div class="facts" data-register="fact">
-      <span class:attention={needsHuman} class="fact-state">
-        {#if needsHuman}
+      <span class:attention={isEscalated} class="fact-state">
+        {#if isEscalated}
           <StateIcon icon="blocked_human" class="g-blocked-h" />
-          {P.labels.waitingOnYou}
+          {P.labels.escalatedToYou}
         {:else}
           {P.stateWords[run.state] || run.state}
         {/if}
@@ -413,30 +421,24 @@
           {@render nodeDetail(selectedNode)}
         </div>
         {#if hasAside}
-          <aside class="decide">
-            {#if isHumanGate(selectedNode)}
-              <p>{P.labels.decisionConsequence}</p>
-              <!-- No run-detail decision endpoint exists yet; #4781 tracks the run as a mutable artifact. -->
-              <button
-                class="btn primary"
-                type="button"
-                aria-disabled="true"
-                onclick={(event) => event.preventDefault()}
-                >{P.labels.approve}</button
-              >
-              <button
-                class="btn"
-                type="button"
-                aria-disabled="true"
-                onclick={(event) => event.preventDefault()}
-                >{P.labels.deny}</button
-              >
-              <p class="decision-note">{P.labels.decisionsInSession}</p>
-            {:else}
-              {#each selectedNode.attempts ?? [] as attempt}
-                {@render sessionRow(selectedNode, attempt)}
-              {/each}
+          <aside class="attempts">
+            {#if showsEscalation}
+              <!-- Escalation is terminal in the engine today (swarm/workflows.py _escalated); #4781 tracks escalation as a pause with a decision endpoint. Until then the honest affordance is the session. -->
+              <div class="decide">
+                <p>{P.labels.escalationTerminal}</p>
+                {#if escalatedSessionId != null}
+                  <button
+                    class="btn"
+                    type="button"
+                    onclick={() => onSelectSession(escalatedSessionId)}
+                    >{P.labels.openSession}</button
+                  >
+                {/if}
+              </div>
             {/if}
+            {#each selectedNode.attempts ?? [] as attempt}
+              {@render sessionRow(selectedNode, attempt)}
+            {/each}
           </aside>
         {/if}
       </section>

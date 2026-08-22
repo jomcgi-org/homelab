@@ -775,6 +775,7 @@
 .node-detail .node-deviations {
   margin-top: 10px;
 }
+.attempts,
 .decide {
   display: flex;
   flex-direction: column;
@@ -786,10 +787,6 @@
   font-size: 13px;
   line-height: 1.5;
 }
-.decide .decision-note {
-  color: var(--muted);
-  font-size: 12.5px;
-}
 .runview .btn {
   height: 32px;
   padding: 0 12px;
@@ -799,15 +796,7 @@
   background: transparent;
   font-size: 13px;
   text-align: center;
-}
-.runview .btn.primary {
-  border-color: var(--ink);
-  color: var(--ink-text);
-  background: var(--ink);
-}
-.runview .btn[aria-disabled="true"] {
-  opacity: 0.45;
-  cursor: default;
+  cursor: pointer;
 }
 .srow {
   width: 100%;
