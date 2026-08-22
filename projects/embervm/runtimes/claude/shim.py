@@ -398,14 +398,21 @@ PI_CONTEXT_SAFETY_TOKENS = 4096
 # so the exposure is one turn's trailing tool results, not the whole
 # conversation. This is why PI_MAX_OUTPUT_TOKENS matters for compaction but not
 # for 400-safety.
-PI_MAX_OUTPUT_TOKENS = 4096
+#
+# 12288, not 4096: qwen3.8 thinks before it answers and the reasoning counts
+# against this cap. At 4096 a hard task hit the cap mid-reasoning, pi ended
+# the turn with agent_end and no assistant text, and the shim raised
+# "pi turn produced no output" (3 of 5 graded long reps in the #5051
+# baseline). model-bench runs the same model at 16384 and passes 6/7 hard
+# tasks; 12288 keeps the compaction reserve just over half the window.
+PI_MAX_OUTPUT_TOKENS = 12288
 
 # Compaction reserve in tokens. This must exceed PI_MAX_OUTPUT_TOKENS plus
 # PI_CONTEXT_SAFETY_TOKENS so pi starts compacting while there is still room for
 # a full response at turn boundaries. pi checks compaction at agent_end and
 # before a prompt, not between tool iterations, so a run that approaches the
 # reserve mid-execution can still produce short replies.
-PI_COMPACTION_RESERVE_TOKENS = 10240
+PI_COMPACTION_RESERVE_TOKENS = 16896
 
 # Tokens to keep after compaction. pi's default keepRecentTokens (20000)
 # exceeds the usable budget after pi's default 16384 reserve (32768 - 16384 =
