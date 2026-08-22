@@ -410,12 +410,14 @@
             {#if overdueRows.length === 0 && weekRows.length === 0}
               <p class="ncalm">Nothing waiting in the next seven days.</p>
             {/if}
-            <button
-              class="allbtn"
-              type="button"
-              onclick={() => openDialog(tasksDialog)}
-              >All {openTasks.length} tasks →</button
-            >
+            {#if tasks.length > 0}
+              <button
+                class="allbtn"
+                type="button"
+                onclick={() => openDialog(tasksDialog)}
+                >All {openTasks.length} tasks →</button
+              >
+            {/if}
           </div>
         </section>
 
@@ -601,10 +603,17 @@
                 aria-valuemax="100"
                 aria-valuenow={progressView.percent}
               >
-                <i style:width={`${progressView.percent}%`}></i>
+                <i
+                  class:zero={progressView.percent === 0}
+                  style:width={`${progressView.percent}%`}
+                ></i>
               </div>
               <div class="prog-lbl">
-                {progressView.label} · this number only goes up
+                {#if progressView.total === 0}
+                  waiting on the first task
+                {:else}
+                  {progressView.label} · this number only goes up
+                {/if}
               </div>
             </div>
           </div>
@@ -640,7 +649,12 @@
             type="button"
             onclick={() => openDialog(sellDialog)}
           >
-            To sell <span class="v mono">{formatCad(sellTotal)}</span>
+            To sell
+            {#if sellTasks.length === 0}
+              <span class="v">nothing listed</span>
+            {:else}
+              <span class="v mono">{formatCad(sellTotal)}</span>
+            {/if}
           </button>
           <button
             class="dockbtn"
@@ -673,7 +687,12 @@
             type="button"
             onclick={() => openDialog(tasksDialog)}
           >
-            Tasks <span class="v mono">{openTasks.length} open</span>
+            Tasks
+            {#if tasks.length === 0}
+              <span class="v">none yet</span>
+            {:else}
+              <span class="v mono">{openTasks.length} open</span>
+            {/if}
           </button>
         </nav>
 

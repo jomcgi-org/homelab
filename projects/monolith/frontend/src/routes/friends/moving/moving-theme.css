@@ -105,7 +105,8 @@
     "head head head"
     "hero hero prog"
     "today plot plot"
-    "today collide collide"
+    "agenda plot plot"
+    "agenda collide collide"
     "dock dock dock";
 }
 
@@ -257,7 +258,7 @@
 }
 
 .moving .c-agenda {
-  display: none;
+  grid-area: agenda;
 }
 
 .moving .agenda-body {
@@ -322,6 +323,7 @@
 }
 
 .moving .c-legsmini {
+  /* Rejected on desktop because chart leg tags already repeat these details. */
   display: none;
   padding: 4px 16px 12px;
 }
@@ -532,10 +534,11 @@
 }
 
 .moving .vline {
+  /* Component outlines use 2px; internal dividers use the 1px rule tier. */
   position: absolute;
   top: 10px;
   bottom: 40px;
-  width: 2px;
+  width: 1px;
   background: var(--rule);
 }
 
@@ -662,6 +665,13 @@
   transition: background 0.12s ease;
 }
 
+/* Vertical expansion stays within its sub-row; horizontal could overlap bars. */
+.moving .bar::after {
+  position: absolute;
+  content: "";
+  inset: -7px 0;
+}
+
 .moving .bar:hover,
 .moving .bar:focus-visible {
   z-index: 5;
@@ -698,7 +708,7 @@
 }
 
 .moving .dia {
-  position: static;
+  position: relative;
   width: 10px;
   height: 10px;
   padding: 0;
@@ -707,6 +717,12 @@
   background: var(--paper);
   cursor: pointer;
   transition: transform 0.12s ease;
+}
+
+.moving .dia::after {
+  position: absolute;
+  content: "";
+  inset: -8px;
 }
 
 .moving .dia.fill {
@@ -849,6 +865,10 @@
   border-right: 2px solid var(--ink);
   background: var(--green);
   transition: width 0.5s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+.moving .prog-bar i.zero {
+  border-right: 0;
 }
 
 .moving .prog-lbl {
@@ -1324,6 +1344,10 @@
       "today plot"
       "today collide"
       "dock dock";
+  }
+
+  .moving .c-agenda {
+    display: none;
   }
 
   .moving .card-plot {
