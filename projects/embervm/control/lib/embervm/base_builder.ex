@@ -3191,10 +3191,36 @@ defmodule Embervm.BaseBuilder do
             state
 
           true ->
-            state
-            |> enqueue(w.node_id, name)
-            |> write_base_status(w, :building)
-            |> maybe_start_build(w.node_id)
+            # The pin can be stale by the time the timer fires:
+            # remove_node_from_state/2 unpins a workload (node_id -> nil) when
+            # its brick rolls but deliberately leaves an armed retry timer
+            # running (only forget_workload cancels timers), and the #4105
+            # guard above only makes the deref nil-SAFE, it does not give this
+            # branch a usable node. enqueue/3's update_in on
+            # state.nodes[stale] then raised BadMapError and took the whole
+            # builder down (#5082, observed live in embervm-dev). Re-place
+            # through placement/3 exactly like reconcile_desc/2, hold with
+            # {:pending, :no_node} when nothing is eligible (its nil-placement
+            # branch; add_node re-drives held workloads), and persist the new
+            # pin so stickiness tracks where the rebuild actually ran.
+            node_id = placement(state, w, Map.get(w, :mem_mib) || 0)
+
+            cond do
+              node_id == nil ->
+                write_base_status(state, w, {:pending, :no_node})
+
+              already_targeting?(state, node_id, name, signature(w)) ->
+                state
+
+              true ->
+                w = %{w | node_id: node_id}
+                state = put_in(state.workloads[name], w)
+
+                state
+                |> enqueue(node_id, name)
+                |> write_base_status(w, :building)
+                |> maybe_start_build(node_id)
+            end
         end
     end
   end
