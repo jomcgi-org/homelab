@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { Footer, Marquee, Seo } from "$lib/public/components";
+  import { LOCATION } from "$lib/public/seo.js";
   import {
     contact,
     name,
@@ -53,7 +54,7 @@
     "Distributed Systems",
     "OpenTelemetry Contributor",
     "K3S Homelab",
-    "Vancouver, Canada",
+    `${LOCATION.short}, UK`,
   ];
 
   // Scroll-triggered reveals, mirroring the homepage's IntersectionObserver.

@@ -7,6 +7,13 @@
 // this one constant if it ever moves again.
 export const PUBLIC_BASE = "https://jomcgi.dev";
 
+export const LOCATION = {
+  region: "Scotland",
+  country: "United Kingdom",
+  countryCode: "GB",
+  short: "Scotland",
+};
+
 // Schema.org Person: the highest-leverage structured data for a job search.
 // It lets an LLM answer "who is Joe McGinley" from a typed entity (jobTitle,
 // worksFor, sameAs) instead of parsing prose. Facts here are deliberately
@@ -25,9 +32,8 @@ export const person = {
   email: "mailto:joe@jomcgi.dev",
   address: {
     "@type": "PostalAddress",
-    addressLocality: "Vancouver",
-    addressRegion: "BC",
-    addressCountry: "CA",
+    addressRegion: LOCATION.region,
+    addressCountry: LOCATION.countryCode,
   },
   // sameAs links are how a model corroborates identity across the web; they
   // tie this page to the canonical LinkedIn/GitHub profiles.

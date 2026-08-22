@@ -14,6 +14,7 @@ import {
   semgrepRestoreMs,
   semgrepScanSec,
 } from "../../../lib/public/fcstory/metrics.js";
+import { LOCATION } from "../../../lib/public/seo.js";
 
 export const contact = {
   email: "joe@jomcgi.dev",
@@ -22,7 +23,7 @@ export const contact = {
     href: "https://www.linkedin.com/in/jomcgi/",
   },
   github: { label: "github/jomcgi", href: "https://github.com/jomcgi" },
-  location: "Vancouver",
+  location: LOCATION.short,
 };
 
 export const name = "Joe McGinley";
