@@ -62,14 +62,41 @@ func run(logger *slog.Logger) error {
 		"node", cfg.Node, "arch", cfg.Arch,
 		"maxLiveVMs", cfg.MaxLiveVMs, "registryCache", cfg.RegistryCachePath)
 
-	// Startup GC of orphan per-instance (brick) warmth: reap SnapshotRoot/i/<seg>
-	// dirs left by evicted/rolled-out co-located bricks whose pod UID is not ours.
-	// Fail-soft (warmth is regenerable) and narrow: bases/ and the VolumeRoot are
-	// never touched, and this is a no-op on the legacy DaemonSet (flat warmth).
-	if removed := config.PruneStaleInstanceWarmth(cfg, func(segment string, err error) {
+	// Claim our own per-instance warmth before inspecting any sibling. A brick
+	// that cannot publish its claim must not boot, because another brick could
+	// otherwise correctly conclude that its warmth is stale or unclaimed.
+	bootTime := time.Now()
+	if err := config.WriteInstanceHeartbeat(cfg, bootTime); err != nil {
+		return fmt.Errorf("write startup instance warmth heartbeat: %w", err)
+	}
+	// Startup GC is fail-soft and narrow: it reaps only foreign stale claims (or
+	// unclaimed warmth when the transition guard is explicitly enabled), never
+	// bases/, the VolumeRoot, fresh siblings, or this brick's own segment.
+	pruned := config.PruneStaleInstanceWarmth(cfg, bootTime, func(segment string, err error) {
 		logger.Warn("startup GC: could not remove stale instance warmth", "segment", segment, "err", err)
-	}); len(removed) > 0 {
-		logger.Info("startup GC: reaped stale instance warmth", "count", len(removed), "segments", removed)
+	})
+	for _, segment := range pruned.SkippedLive {
+		logger.Debug("startup GC: skipped live instance warmth", "segment", segment)
+	}
+	logger.Info("startup GC: checked instance warmth",
+		"removedCount", len(pruned.Removed), "removedSegments", pruned.Removed,
+		"skippedLiveCount", len(pruned.SkippedLive),
+		"skippedUnclaimedCount", len(pruned.SkippedUnclaimed))
+	if cfg.SnapshotRoot != "" && cfg.SizeClass != "" && cfg.PodUID != "" {
+		go func() {
+			ticker := time.NewTicker(cfg.WarmthHeartbeatInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case now := <-ticker.C:
+					if err := config.WriteInstanceHeartbeat(cfg, now); err != nil {
+						logger.Warn("could not refresh instance warmth heartbeat", "err", err)
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 	}
 	// Unconditional so every brick can restore a placeholder-bearing base hydrated from S3.
 	if _, err := driver.EnsurePlaceholderVolume(cfg.SnapshotRoot); err != nil {
