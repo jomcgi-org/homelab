@@ -261,6 +261,29 @@
   grid-area: agenda;
 }
 
+/* Desktop only: the agenda is by far the tallest cell once real data is in
+   (a season of spans and milestones renders ~1000px), and because it shares
+   grid rows with the chart column, letting it size those rows inflated the
+   chart's cell and opened a giant void between the Gantt and Collisions.
+   Instead the agenda takes whatever height the chart column defines and
+   scrolls internally for the rest; contain: size is what keeps its content
+   out of the grid's track sizing. Scoped above 1080px because the phone's
+   Plan tab sets display: block and must keep normal flow sizing. */
+@media (min-width: 1081px) {
+  .moving .c-agenda {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .moving .agenda-body {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    contain: size;
+  }
+}
+
 .moving .agenda-body {
   padding: 2px 16px 12px;
 }
