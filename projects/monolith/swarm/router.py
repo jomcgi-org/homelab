@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from goosecracker.api import REPO_CATALOG
 from swarm import config, runtime
@@ -72,7 +72,7 @@ class PromoteSessionResponse(BaseModel):
 
 class DecisionRequest(BaseModel):
     decision: str
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=2000)
 
 
 def _dbos():
@@ -136,6 +136,42 @@ def _decision_rows(workflow_id: str):
 
     with Session(get_engine()) as session:
         return list_open_decisions(session, workflow_id)
+
+
+def _decision_rows_for(workflow_ids: list[str]):
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm.store import list_open_decisions_for
+
+    with Session(get_engine()) as session:
+        return list_open_decisions_for(session, workflow_ids)
+
+
+def _expire_open_decisions_sync(workflow_id: str) -> None:
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm import store
+
+    try:
+        with Session(get_engine()) as session:
+            rows = store.list_open_decisions(session, workflow_id)
+            for row in rows:
+                try:
+                    store.expire_decision(session, workflow_id, row.node_key)
+                except Exception:  # noqa: BLE001 - cancellation is authoritative
+                    session.rollback()
+                    logger.warning(
+                        "failed to expire decision %s for workflow %s",
+                        row.id,
+                        workflow_id,
+                        exc_info=True,
+                    )
+    except Exception:  # noqa: BLE001 - cancellation is authoritative
+        logger.warning(
+            "failed to list open decisions for cancelled workflow %s",
+            workflow_id,
+            exc_info=True,
+        )
 
 
 def _compose_run_view(dbos, workflow_id: str) -> dict:
@@ -525,7 +561,7 @@ def list_runs(request: Request, active: bool = True, limit: int = 50) -> dict:
         session_costs,
         _server_app_version(),
         limit=limit,
-        decision_loader=_decision_rows,
+        decision_loader=_decision_rows_for,
     )
 
 
@@ -534,7 +570,11 @@ async def decide_run(
     workflow_id: str, node_key: str, body: DecisionRequest, request: Request
 ) -> dict:
     dbos = _dbos()
-    await asyncio.to_thread(_compose_run_view, dbos, workflow_id)
+    run = await asyncio.to_thread(_compose_run_view, dbos, workflow_id)
+    if run.get("dbos_status") not in ("PENDING", "ENQUEUED"):
+        raise HTTPException(
+            status_code=409, detail="workflow is not awaiting a decision"
+        )
     header_actor = request.headers.get("Cf-Access-Authenticated-User-Email")
     actor_subject = header_actor or "operator"
     actor_authority = "cloudflare-access" if header_actor else "anonymous"
@@ -588,6 +628,7 @@ async def cancel_run(workflow_id: str, request: Request) -> dict:
     # it from this async handler would 500 every request without cancelling
     # anything. Unit tests with a fake DBOS cannot catch that.
     await dbos.cancel_workflow_async(workflow_id, cancel_children=True)
+    await asyncio.to_thread(_expire_open_decisions_sync, workflow_id)
     # Cancel first so no new turn is scheduled while guest sessions are reaped.
     from agent_sessions.api import reap_sessions_for_workflow
 

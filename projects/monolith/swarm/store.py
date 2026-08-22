@@ -92,11 +92,30 @@ def record_decision(
             )
             .order_by(SwarmDecision.requested_at.desc(), SwarmDecision.id.desc())
         ).first()
-        if latest is not None and latest.decision == decision:
-            return latest
+        if latest is not None:
+            if latest.decision == decision and latest.decision != "expired":
+                return latest
+            raise InvalidDecision(
+                f"Decision was already recorded as {latest.decision!r}"
+            )
         raise NoOpenDecision(
             f"No open decision for workflow {workflow_id} node {node_key}"
         )
+
+    # Serialize writers on databases that support row locks. populate_existing
+    # makes a waiter refresh the identity-map object after the first writer
+    # commits, so it cannot overwrite that decision with stale open-row state.
+    if session.get_bind().dialect.name != "sqlite":
+        row = session.exec(
+            select(SwarmDecision)
+            .where(SwarmDecision.id == row.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one()
+        if row.decided_at is not None:
+            if row.decision == decision and row.decision != "expired":
+                return row
+            raise InvalidDecision(f"Decision was already recorded as {row.decision!r}")
     if decision not in row.options:
         raise InvalidDecision(f"Decision {decision!r} is not one of {row.options!r}")
 
@@ -126,13 +145,27 @@ def expire_decision(
 
 
 def list_open_decisions(session: Session, workflow_id: str) -> list[SwarmDecision]:
-    return list(
-        session.exec(
-            select(SwarmDecision)
-            .where(
-                SwarmDecision.workflow_id == workflow_id,
-                SwarmDecision.decided_at.is_(None),
-            )
-            .order_by(SwarmDecision.requested_at, SwarmDecision.id)
-        ).all()
-    )
+    return list_open_decisions_for(session, [workflow_id]).get(workflow_id, [])
+
+
+def list_open_decisions_for(
+    session: Session, workflow_ids: list[str]
+) -> dict[str, list[SwarmDecision]]:
+    if not workflow_ids:
+        return {}
+    rows = session.exec(
+        select(SwarmDecision)
+        .where(
+            SwarmDecision.workflow_id.in_(workflow_ids),
+            SwarmDecision.decided_at.is_(None),
+        )
+        .order_by(
+            SwarmDecision.workflow_id,
+            SwarmDecision.requested_at,
+            SwarmDecision.id,
+        )
+    ).all()
+    grouped: dict[str, list[SwarmDecision]] = {}
+    for row in rows:
+        grouped.setdefault(row.workflow_id, []).append(row)
+    return grouped

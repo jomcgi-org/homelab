@@ -1,12 +1,14 @@
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
+from swarm.models import SwarmDecision
 from swarm.store import (
     InvalidDecision,
     NoOpenDecision,
     expire_decision,
     get_open_decision,
     list_open_decisions,
+    list_open_decisions_for,
     open_decision,
     record_decision,
 )
@@ -118,6 +120,66 @@ def test_record_decision_is_idempotent_on_repeat(db):
         assert repeated.decision_note == "ship it"
         assert repeated.actor_subject == "joe@example.com"
         assert get_open_decision(session, "wf-1", "push_gate") is None
+
+
+def test_record_decision_rejects_conflicting_sequential_writer(db):
+    with Session(db) as session:
+        open_decision(
+            session,
+            "wf-conflict",
+            "push_gate",
+            "push_gate",
+            ["approve", "send_back"],
+            None,
+        )
+        record_decision(
+            session,
+            "wf-conflict",
+            "push_gate",
+            "approve",
+            None,
+            "first@example.com",
+            "cloudflare-access",
+        )
+
+        with pytest.raises(InvalidDecision, match="already recorded as 'approve'"):
+            record_decision(
+                session,
+                "wf-conflict",
+                "push_gate",
+                "send_back",
+                None,
+                "second@example.com",
+                "cloudflare-access",
+            )
+
+        decided = session.exec(
+            select(SwarmDecision).where(SwarmDecision.workflow_id == "wf-conflict")
+        ).one()
+        assert decided.decision == "approve"
+        assert decided.actor_subject == "first@example.com"
+
+
+def test_list_open_decisions_for_groups_workflows_in_one_result(db):
+    with Session(db) as session:
+        for workflow_id, node_key in (
+            ("wf-1", "push_gate"),
+            ("wf-2", "review"),
+        ):
+            open_decision(
+                session,
+                workflow_id,
+                node_key,
+                "push_gate" if node_key == "push_gate" else "review_escalation",
+                ["approve"],
+                None,
+            )
+
+        grouped = list_open_decisions_for(session, ["wf-1", "wf-2", "wf-empty"])
+
+        assert list(grouped) == ["wf-1", "wf-2"]
+        assert grouped["wf-1"][0].node_key == "push_gate"
+        assert grouped["wf-2"][0].node_key == "review"
 
 
 def test_record_decision_rejects_invalid_option(db):

@@ -7,7 +7,7 @@ from sqlmodel import Session, create_engine
 
 from agent_sessions import mcp
 from auth.dependencies import reset_current_principal, set_current_principal
-from auth.principal import Authority, Principal, PrincipalKind
+from auth.principal import Authority, Principal, PrincipalKind, anonymous_principal
 from swarm import store as swarm_store
 from swarm.models import SwarmDecision
 
@@ -127,3 +127,37 @@ def test_agent_run_decide_returns_allowed_options_for_invalid_value(engine):
     assert result["accepted"] is False
     assert "approve" in result["error"]
     assert "send_back" in result["error"]
+
+
+def test_agent_run_decide_refuses_anonymous_before_store_access(monkeypatch):
+    monkeypatch.setattr(
+        mcp,
+        "_record_swarm_decision",
+        lambda *args: (_ for _ in ()).throw(AssertionError("store was touched")),
+    )
+
+    result = _run_as(
+        anonymous_principal(),
+        mcp.monolith_agent_run_decide("wf-1", "push_gate", "approve"),
+    )
+
+    assert result == {
+        "accepted": False,
+        "error": "an identified caller is required to decide",
+    }
+
+
+def test_agent_run_decide_rejects_note_over_2000_characters(engine):
+    _open_decision(engine)
+
+    result = _run_as(
+        _principal(),
+        mcp.monolith_agent_run_decide("wf-1", "push_gate", "approve", "x" * 2001),
+    )
+
+    assert result == {
+        "accepted": False,
+        "error": "note must be at most 2000 characters",
+    }
+    with Session(engine) as session:
+        assert swarm_store.get_open_decision(session, "wf-1", "push_gate") is not None

@@ -1,7 +1,7 @@
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
 import swarm.router as swarm_router
 from swarm import store as swarm_store
@@ -47,7 +47,7 @@ def decision_api(monkeypatch, decision_engine):
     def compose(_dbos, workflow_id):
         if workflow_id != "wf-1":
             raise HTTPException(status_code=404, detail="workflow not found")
-        return {"workflow_id": workflow_id}
+        return {"workflow_id": workflow_id, "dbos_status": "PENDING"}
 
     monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: dbos)
     monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
@@ -491,6 +491,46 @@ def test_decide_run_returns_409_without_open_decision(decision_api):
     assert response.json() == {"detail": "no open decision for this node"}
 
 
+@pytest.mark.parametrize("dbos_status", ["SUCCESS", "CANCELLED"])
+def test_decide_run_returns_409_for_finished_workflow(
+    decision_api, decision_engine, monkeypatch, dbos_status
+):
+    test_client, _dbos = decision_api
+    _open_decision(decision_engine)
+    monkeypatch.setattr(
+        swarm_router,
+        "_compose_run_view",
+        lambda _dbos, workflow_id: {
+            "workflow_id": workflow_id,
+            "dbos_status": dbos_status,
+        },
+    )
+
+    response = test_client.post(
+        "/api/swarm/runs/wf-1/nodes/push_gate/decision",
+        json={"decision": "approve"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "workflow is not awaiting a decision"}
+    with Session(decision_engine) as session:
+        assert swarm_store.get_open_decision(session, "wf-1", "push_gate") is not None
+
+
+def test_decide_run_rejects_note_over_2000_characters(decision_api, decision_engine):
+    test_client, _dbos = decision_api
+    _open_decision(decision_engine)
+
+    response = test_client.post(
+        "/api/swarm/runs/wf-1/nodes/push_gate/decision",
+        json={"decision": "approve", "note": "x" * 2001},
+    )
+
+    assert response.status_code == 422
+    with Session(decision_engine) as session:
+        assert swarm_store.get_open_decision(session, "wf-1", "push_gate") is not None
+
+
 def test_decide_run_returns_422_with_allowed_options(decision_api, decision_engine):
     test_client, _dbos = decision_api
     _open_decision(decision_engine)
@@ -550,6 +590,98 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
         ("reap", "wf-1"),
         ("attributes", "wf-1", "alice@example.com"),
     ]
+
+
+def test_cancel_expires_every_open_decision(monkeypatch, decision_engine):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+
+    class FakeDBOS:
+        async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
+            assert workflow_id == "wf-1"
+            assert cancel_children is True
+
+        async def update_workflow_attributes_async(self, workflow_id, values):
+            return None
+
+    async def reap(_workflow_id):
+        return {"reaped": [], "failed": [], "skipped": []}
+
+    with Session(decision_engine) as session:
+        swarm_store.open_decision(
+            session,
+            "wf-1",
+            "push_gate",
+            "push_gate",
+            ["approve", "send_back"],
+            None,
+        )
+        swarm_store.open_decision(
+            session,
+            "wf-1",
+            "review",
+            "review_escalation",
+            ["retry", "send_back"],
+            None,
+        )
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr("agent_sessions.api.reap_sessions_for_workflow", reap)
+
+    response = client().post("/api/swarm/runs/wf-1/cancel")
+
+    assert response.status_code == 200
+    with Session(decision_engine) as session:
+        rows = session.exec(select(SwarmDecision)).all()
+        assert [row.decision for row in rows] == ["expired", "expired"]
+        assert all(row.decided_at is not None for row in rows)
+
+
+def test_cancel_decision_expiry_is_best_effort(monkeypatch, decision_engine):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+
+    class FakeDBOS:
+        async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
+            return None
+
+        async def update_workflow_attributes_async(self, workflow_id, values):
+            return None
+
+    async def reap(_workflow_id):
+        return {"reaped": [], "failed": [], "skipped": []}
+
+    with Session(decision_engine) as session:
+        for node_key, kind in (
+            ("push_gate", "push_gate"),
+            ("review", "review_escalation"),
+        ):
+            swarm_store.open_decision(
+                session,
+                "wf-1",
+                node_key,
+                kind,
+                ["approve", "send_back"],
+                None,
+            )
+
+    original_expire = swarm_store.expire_decision
+
+    def expire_one(session, workflow_id, node_key):
+        if node_key == "push_gate":
+            raise RuntimeError("decision store write failed")
+        return original_expire(session, workflow_id, node_key)
+
+    monkeypatch.setattr(swarm_store, "expire_decision", expire_one)
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr("agent_sessions.api.reap_sessions_for_workflow", reap)
+
+    response = client().post("/api/swarm/runs/wf-1/cancel")
+
+    assert response.status_code == 200
+    with Session(decision_engine) as session:
+        assert swarm_store.get_open_decision(session, "wf-1", "push_gate") is not None
+        assert swarm_store.get_open_decision(session, "wf-1", "review") is None
 
 
 def test_cancel_reports_reap_failure_without_failing(monkeypatch):
@@ -628,6 +760,26 @@ def test_server_app_version_is_empty_when_dbos_has_not_launched(monkeypatch):
     assert swarm_router._server_app_version() == ""
 
 
+@pytest.mark.parametrize("message", ["workflow not found", "workflow non-existent"])
+def test_compose_run_view_maps_dbos_missing_workflow_errors(monkeypatch, message):
+    class DBOSMissingWorkflowError(RuntimeError):
+        pass
+
+    monkeypatch.setattr(swarm_router, "_session_rows", lambda _workflow_id: [])
+    monkeypatch.setattr(swarm_router, "_decision_rows", lambda _workflow_id: [])
+    monkeypatch.setattr(swarm_router, "_server_app_version", lambda: "version")
+    monkeypatch.setattr(
+        "swarm.view.compose_run",
+        lambda *args: (_ for _ in ()).throw(DBOSMissingWorkflowError(message)),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        swarm_router._compose_run_view(object(), "missing")
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "workflow not found"
+
+
 def test_list_runs_clamps_limit_query_parameter(monkeypatch):
     captured = []
 
@@ -648,6 +800,9 @@ def test_list_runs_clamps_limit_query_parameter(monkeypatch):
     monkeypatch.setattr("core.db.get_engine", lambda: object())
     monkeypatch.setattr("sqlmodel.Session", FakeSession)
     monkeypatch.setattr("swarm.rows.swarm_session_views", lambda session: {})
+    monkeypatch.setattr(
+        "swarm.store.list_open_decisions_for", lambda session, workflow_ids: {}
+    )
     monkeypatch.setattr(swarm_router, "_dbos", lambda: object())
     monkeypatch.setattr(swarm_router, "_server_app_version", lambda: "version")
     monkeypatch.setattr("swarm.view.compose_master", compose)

@@ -30,7 +30,7 @@ from core.db import get_engine
 from core.mcp_app import mcp
 from goosecracker.api import REPO_CATALOG
 from agent_sessions.rationale import parse_rationale
-from auth.api import current_principal
+from auth.api import Authority, current_principal
 
 # Voice and MCP sessions hydrate this repo unless the caller names another. The
 # /agents console makes the choice explicit in a dropdown; there is no dropdown
@@ -817,6 +817,15 @@ async def monolith_agent_run_decide(
     from swarm.store import InvalidDecision, NoOpenDecision
 
     principal = current_principal()
+    # The HTTP path sits behind Cloudflare Access. Requiring an identified MCP
+    # principal provides the equivalent authorization floor for this path.
+    if principal.authority is Authority.ANONYMOUS:
+        return {
+            "accepted": False,
+            "error": "an identified caller is required to decide",
+        }
+    if note is not None and len(note) > 2000:
+        return {"accepted": False, "error": "note must be at most 2000 characters"}
     try:
         return await asyncio.to_thread(
             _record_swarm_decision,
