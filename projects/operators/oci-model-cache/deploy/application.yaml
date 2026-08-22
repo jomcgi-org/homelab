@@ -14,7 +14,7 @@ spec:
         valueFiles:
           - $values/projects/operators/oci-model-cache/deploy/values.yaml
     # Git repo for environment-specific values
-    - repoURL: https://github.com/jomcgi/homelab.git
+    - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       ref: values
   destination:
