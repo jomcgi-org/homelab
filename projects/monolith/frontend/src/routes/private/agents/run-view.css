@@ -145,9 +145,9 @@
   background: var(--err-bg);
 }
 .s-queued {
-  color: var(--info);
-  border-color: var(--info);
-  background: var(--info-soft);
+  color: var(--muted);
+  border-color: var(--line);
+  background: transparent;
 }
 .ic {
   display: inline-flex;
@@ -165,31 +165,55 @@
   width: 12px;
   height: 12px;
 }
+.runview .dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: var(--radius-circle);
+  background: var(--dot-idle);
+}
+.runview .dot.running {
+  background: var(--ok);
+}
+.runview .dot.warn {
+  background: var(--err);
+}
 .g-done,
+.g-completed,
 .g-passed {
-  color: var(--text);
+  color: var(--dot-idle);
 }
 .g-running {
   color: var(--ok);
 }
+.g-working,
+.g-reviewing {
+  color: var(--ok);
+}
 .g-queued {
-  color: var(--info);
+  color: var(--line);
 }
 .g-future {
-  color: var(--dot-idle);
+  color: var(--line);
 }
 .g-escalated,
+.g-needs_input,
+.g-stranded,
+.g-changes_requested,
 .g-blocked-h {
   color: var(--attn);
 }
 .g-failed,
+.g-warn,
 .g-refused {
   color: var(--err);
 }
-.g-cancelled,
+.g-cancelled {
+  color: var(--dot-idle);
+}
 .g-waiting,
 .g-blocked-d {
-  color: var(--muted);
+  color: var(--line);
 }
 .pulse {
   animation: pulse 1.6s ease-in-out infinite;
@@ -348,7 +372,7 @@
   width: 7px;
   height: 7px;
   border-radius: var(--radius-sm);
-  background: var(--text);
+  background: var(--dot-idle);
 }
 .pip.bad {
   background: var(--err);
@@ -357,8 +381,7 @@
   background: var(--ok);
 }
 .pip.free {
-  background: transparent;
-  border: 1px solid var(--line-strong);
+  background: var(--line);
 }
 .dep-chips {
   margin-top: 4px;

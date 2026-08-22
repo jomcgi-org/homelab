@@ -35,11 +35,14 @@
   --ink: #1c2024;
   --ink-text: #ffffff;
   --code-bg: #eef0f2;
-  /* 3.66:1 on white background, 3.20:1 on --page-bg. */
+  /* Done and idle marks use this grey. It is 3.66:1 on white background
+     and 3.20:1 on --page-bg. */
   --dot-idle: #7e878e;
 
-  /* State tokens: hue preserved across periods, lightness adjusted per
-     background. Day period values below. Night period overrides for each. */
+  /* State language: running uses --ok, done uses --dot-idle,
+     human attention uses --attn, failed and warning use --err, and future,
+     queued, dependency-blocked, and free capacity use --line. --info is
+     reserved for links and focus. Day values are below, with night overrides. */
   --ok: #0a7c3c;
   --ok-soft: #dcf2e5;
   /* Diff panes (walkthrough): added/removed lines are fact register, so
@@ -70,6 +73,8 @@
   --size-detail: 13px;
   --size-title: clamp(15px, 2.6cqi + 8px, 19px);
   --scrim-bg: rgba(20, 23, 26, 0.45);
+  /* New-session panel separation from the working surface. */
+  --panel-shadow: -4px 0 12px rgba(0, 0, 0, 0.07);
 }
 
 /* Night period: dark mode palette. */
@@ -120,6 +125,8 @@ html[data-agents-period="night"] .console {
   --diff-del-mark: var(--err);
   /* Raised alpha from day value (0.45) for better modal separation on dark bg. */
   --scrim-bg: rgba(20, 23, 26, 0.65);
+  /* New-session panel separation on the night surface. */
+  --panel-shadow: -4px 0 12px rgba(0, 0, 0, 0.28);
 }
 
 /* Dawn period: warm shift on --page-bg only. */
