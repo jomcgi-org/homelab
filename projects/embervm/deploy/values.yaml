@@ -744,12 +744,19 @@ piRuntimeWorkload:
   # this lane failed at hydration with "Out of diskspace" from 2026-08-16 until
   # this flip (#5051). 4 GiB lineage from the chart default.
   persistenceEnabled: true
-  # 512 MiB. 1024 was tried (#5068) to stop long-task OOM but every pi-runtime
-  # session create then hung 180s at the control-plane GenServer and 500ed
-  # (#5051): the memMib bump rebuilt the base but broke create cluster-wide,
-  # so it was reverted. The OOM ceiling is real; the fix is a larger brick
-  # class or a cap change, not memMib on the 2gi brick.
-  memMib: 512
+  # 1536 MiB, up from 512, to stop the long-task OOM (a multi-turn go/python
+  # build with thinking on exit -9'd pi at 512, #5051 cycle 4). This value is
+  # chosen to land pi on the 16gi brick, not the 2gi one: placement is purely
+  # memMib-driven and a 2gi brick's usable envelope is 1792 (nameplate 2048
+  # minus the 256 daemon reserve), so the eligibility gate needs
+  # memMib + 512 reject-floor <= usable. 1024 (#5068) satisfied 1024+512=1536
+  # <= 1792 and so still placed on 2gi with zero margin, which is what wedged
+  # creates. 1536+512=2048 > 1792 makes every 2gi brick ineligible, so pi lands
+  # on the 16gi class (usable 16128), which is already running and kept warm on
+  # node-4 (desiredReplicas + a nodeFloor). This mirrors claude-runtime, which
+  # runs at memMib 4096 on the same 16gi class. The base re-keys and rebuilds on
+  # the 16gi brick on rollout; watch the first creates land there.
+  memMib: 1536
 
 # SpecTrace gate for spec validation (GitHub issue #4770). Debug-gated, spec-shaped
 # trace that validates TLA+ specs against real behaviour. Deliberately OFF in production.
