@@ -1,7 +1,7 @@
 # ADR 055: Tool-Mediated GitHub Access for Agent Principals
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Superseded by [059 - Authentik Federates MCP Identity; the Monolith Serves MCP Directly](059-authentik-federates-monolith-serves-mcp.md)
 **Created:** 2026-08-10
 **Relates to:** [020 - Deprecate Context Forge, Serve MCP Directly from the
 Monolith](020-deprecate-context-forge-mcp-gateway.md) (Accepted, deferred

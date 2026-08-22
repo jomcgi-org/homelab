@@ -1,7 +1,7 @@
 # ADR 020: Deprecate Context Forge, Serve MCP Directly from the Monolith
 
 **Author:** jomcgi
-**Status:** Accepted
+**Status:** Superseded by [059 - Authentik Federates MCP Identity; the Monolith Serves MCP Directly](059-authentik-federates-monolith-serves-mcp.md)
 **Created:** 2026-06-23
 **Supersedes:** [003 - Context Forge](003-context-forge.md)
 **Relates to:** [006 - OIDC Auth MCP Gateway](006-oidc-auth-mcp-gateway.md) (auth has since moved to the Cloudflare Access edge), [019 - Substrate Executor + AgentWorkflow](019-substrate-executor-agentworkflow.md) (the agent-platform deprecation that removed the other MCP consumers)
