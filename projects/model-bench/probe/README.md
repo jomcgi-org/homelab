@@ -25,6 +25,8 @@ python3 -m probe run --set long --reps 2 --out results.jsonl
 python3 -m probe report --in results.jsonl
 ```
 
+Add `--reasoning` to keep qwen thinking on for every invoke in each session.
+
 The fast set is `commit-message-01`, `slo-budget-breach-01`, and
 `null-content-fix-01`. The long set is `go-vsock-frame-01`,
 `worldcup-swing-settled-01`, and `research-adr-writeback-01`.

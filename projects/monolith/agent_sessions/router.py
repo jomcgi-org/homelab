@@ -169,6 +169,7 @@ def _rows(session: Session, status: str | None = None, limit: int | None = None)
 class StartRequest(BaseModel):
     prompt: str
     model: str | None = None
+    reasoning: bool = False
     workspace: str = "<guest>"
     branch: str = "main"
     repo: str | None = None
@@ -562,6 +563,7 @@ async def start_session(request: Request, start_request: StartRequest) -> dict:
         start_request.model,
         start_request.repo,
         system_prompt=_append_rationale_trailer(None, start_request.repo),
+        reasoning=start_request.reasoning,
         triggered_by=triggered_by,
     )
     turn = await asyncio.to_thread(

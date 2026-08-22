@@ -6,10 +6,47 @@ from pathlib import Path
 
 import httpx
 
+from probe.cli import LoadedTask, _run_once, build_parser
 from probe.fixture import apply_guest_diff, materialize_fixture
 from probe.report import render_report
 from probe.session import AgentSessionClient, poll_turn
 from probe.spans import HOPS, bucket_spans
+
+
+def test_reasoning_flag_sets_session_start_body(monkeypatch):
+    args = build_parser().parse_args(["run", "--task", "sample", "--reasoning"])
+    task = LoadedTask(
+        spec=type(
+            "Spec",
+            (),
+            {
+                "id": "sample",
+                "prompt": "hello",
+                "verifier": type("Verifier", (), {"kind": "judge", "args": {}})(),
+            },
+        )(),
+        mapping={},
+    )
+    start_bodies = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self, payload):
+            start_bodies.append(payload)
+            return {"accepted": False, "error": "stop after start"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("probe.session.AgentSessionClient", FakeClient)
+    monkeypatch.setattr("probe.cli.collect_spans", lambda *_args: {})
+
+    result = _run_once(task, 1, args)
+
+    assert start_bodies[0]["reasoning"] is True
+    assert result["reasoning"] is True
 
 
 def _git(repo: Path, *args: str) -> str:

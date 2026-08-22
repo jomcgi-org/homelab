@@ -1051,8 +1051,12 @@ def test_start_session_marks_message_ui_originated(client, session, monkeypatch)
     )
     monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
 
-    body = client.post("/api/agents/sessions", json={"prompt": "Hello"}).json()
-    assert store.get_session(session, body["session_id"]).system_prompt is None
+    body = client.post(
+        "/api/agents/sessions", json={"prompt": "Hello", "reasoning": True}
+    ).json()
+    persisted = store.get_session(session, body["session_id"])
+    assert persisted.system_prompt is None
+    assert persisted.reasoning is True
     assert mcp._consume_ui_originated(body["session_id"], body["turn"]) is True
     mcp._ui_originated.clear()
 
