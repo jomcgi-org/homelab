@@ -87,27 +87,31 @@ Unsafe states violate those.
    window is `<channel>.stale`, not `<action>.wrong-timing`). The same
    rejection bar applies: a bounded nuisance with a recovery path goes in
    `non_ucas`.
-4. **Write your findings** as a single JSON object (schema below) to
-   `/tmp/stpa.json`. Set `system_dir` to the system directory.
-5. **Render** by running BLOCK A VERBATIM. It renders `/tmp/STPA.candidate.md`
+4. **Pick a per-run scratch dir first**: `STPA_TMP="$(mktemp -d
+   /tmp/stpa-<system>.XXXXXX)"` and export it. Two concurrent runs of this
+   skill sharing fixed `/tmp` paths have crossed before (one run's PR was
+   created with the other's title and body). Every path below is under it.
+5. **Write your findings** as a single JSON object (schema below) to
+   `$STPA_TMP/stpa.json`. Set `system_dir` to the system directory.
+6. **Render** by running BLOCK A VERBATIM. It renders `$STPA_TMP/STPA.candidate.md`
    from your JSON deterministically, compares it against what `origin/main`
    actually has (this checkout may be stale), and prints either
    `STPA_RESULT=nochange` or `STPA_RESULT=changed`. It does NOT touch the
    working tree; BLOCK B lands the file from a disposable worktree.
-6. **If `nochange`:** report "no change, STPA.md already current" and STOP. Do not
+7. **If `nochange`:** report "no change, STPA.md already current" and STOP. Do not
    open a PR.
-7. **If `changed`:** prepare the PR text. Run
-   `diff -u /tmp/STPA.prior.md /tmp/STPA.candidate.md` to see exactly what moved
+8. **If `changed`:** prepare the PR text. Run
+   `diff -u /tmp/STPA.prior.md $STPA_TMP/STPA.candidate.md` to see exactly what moved
    (no prior file means this is the first version). Then:
-   - Write a Conventional-Commits title to `/tmp/stpa-title.txt`, ONE line, <=72
+   - Write a Conventional-Commits title to `$STPA_TMP/stpa-title.txt`, ONE line, <=72
      chars, form `docs(stpa): <what changed>` (e.g.
      `docs(stpa): add queue.dequeue wrong-timing UCA for monolith`; first run:
      `docs(stpa): add monolith control-plane safety model`).
-   - Write a concise markdown body to `/tmp/stpa-body.md`, 2-6 bullets naming the
+   - Write a concise markdown body to `$STPA_TMP/stpa-body.md`, 2-6 bullets naming the
      UCAs / hazards / control-actions added, removed, or materially changed (by
      their semantic keys), plus any scope/maturity shift. Summarize, do not paste
      the diff.
-8. **Open/refresh the PR and merge on green** by running BLOCK B VERBATIM. It
+9. **Open/refresh the PR and merge on green** by running BLOCK B VERBATIM. It
    commits on a stable per-system branch, force-pushes, opens or updates a PR
    against `main`, watches CI, and rebase-merges once all checks pass. Report the
    PR URL and whether it merged or was left open for review.
@@ -166,7 +170,7 @@ Derive each `key` from WHAT IT IS, never its position. Lowercase, no spaces.
 - Prioritize, do not pad. Keep `condition`/`statement` to ONE line, no `|`, no
   newlines.
 
-## JSON schema (write to /tmp/stpa.json; arrays in ANY order, the renderer sorts)
+## JSON schema (write to $STPA_TMP/stpa.json; arrays in ANY order, the renderer sorts)
 
 ```
 {
@@ -198,9 +202,9 @@ survives the rejection bar.
 
 ````bash
 set -euo pipefail
-SYSTEM_DIR="$(jq -r '.system_dir' /tmp/stpa.json)"
+SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/stpa.json)"
 test -n "$SYSTEM_DIR" -a "$SYSTEM_DIR" != "null"
-cat > /tmp/stpa-render.jq <<'JQ'
+cat > $STPA_TMP/stpa-render.jq <<'JQ'
 # Deterministic STPA.md renderer.
 #   input : stpa.json  (semantic-keyed findings, ANY array order)
 #   output: STPA.md    (sorted + templated; a pure function of content)
@@ -285,13 +289,13 @@ def diagram($v):
 
 | sub("\n+$"; "")
 JQ
-LC_ALL=C jq -rf /tmp/stpa-render.jq /tmp/stpa.json > /tmp/STPA.candidate.md
+LC_ALL=C jq -rf $STPA_TMP/stpa-render.jq $STPA_TMP/stpa.json > $STPA_TMP/STPA.candidate.md
 # Compare against what origin/main actually has: this checkout's working tree
 # may be stale (or mid-task on another branch), and BLOCK B lands from a fresh
 # worktree based on origin/main anyway.
 git fetch -q origin main 2>/dev/null || true
 if git show "origin/main:$SYSTEM_DIR/STPA.md" > /tmp/STPA.prior.md 2>/dev/null; then
-  if diff -q /tmp/STPA.prior.md /tmp/STPA.candidate.md >/dev/null; then
+  if diff -q /tmp/STPA.prior.md $STPA_TMP/STPA.candidate.md >/dev/null; then
     echo "STPA_RESULT=nochange"
   else
     echo "STPA_RESULT=changed"
@@ -306,7 +310,7 @@ fi
 
 ```bash
 set -euo pipefail
-SYSTEM_DIR="$(jq -r '.system_dir' /tmp/stpa.json)"
+SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/stpa.json)"
 SLUG="$(printf '%s' "$SYSTEM_DIR" | tr '/' '-' | tr -cd 'a-zA-Z0-9-')"
 BRANCH="bot/stpa-$SLUG"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -320,32 +324,38 @@ git -C "$REPO_ROOT" worktree remove -f "$WT" 2>/dev/null || true
 git -C "$REPO_ROOT" worktree prune
 git -C "$REPO_ROOT" worktree add -B "$BRANCH" "$WT" origin/main
 mkdir -p "$WT/$SYSTEM_DIR"
-cp /tmp/STPA.candidate.md "$WT/$SYSTEM_DIR/STPA.md"
+cp $STPA_TMP/STPA.candidate.md "$WT/$SYSTEM_DIR/STPA.md"
 git -C "$WT" add "$SYSTEM_DIR/STPA.md"
 # The conventional `docs(stpa): ...` title satisfies the commit-msg hook, so we
 # do NOT use --no-verify (the hook is cheap and is the gate we want).
-git -C "$WT" commit -m "$(cat /tmp/stpa-title.txt)" -m "$(cat /tmp/stpa-body.md)"
+git -C "$WT" commit -m "$(cat $STPA_TMP/stpa-title.txt)" -m "$(cat $STPA_TMP/stpa-body.md)"
 git -C "$WT" push -f -u origin "$BRANCH"
 # Create a PR only when there isn't already an OPEN one for this branch. A
 # closed/merged PR on the branch must NOT count as "exists", else the create is
 # skipped and the later `gh pr merge` targets a dead PR and wedges.
 PR_STATE="$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || echo NONE)"
 if [ "$PR_STATE" != "OPEN" ]; then
-  gh pr create --base main --head "$BRANCH" --title "$(cat /tmp/stpa-title.txt)" --body-file /tmp/stpa-body.md
+  gh pr create --base main --head "$BRANCH" --title "$(cat $STPA_TMP/stpa-title.txt)" --body-file $STPA_TMP/stpa-body.md
 fi
 URL="$(gh pr view "$BRANCH" --json url -q .url)"
 echo "PR: $URL"
-# This repo is rebase-merge only (squash is disabled). Poll CI ourselves, then
-# rebase-merge on green. Merge WITHOUT --delete-branch first (the branch is
-# checked out in the worktree, which would make local deletion fail), then
-# clean up the worktree and both branch refs ourselves.
-if gh pr checks "$BRANCH" --watch --fail-fast; then
-  gh pr merge "$BRANCH" --rebase
+# main merges through the GitHub merge queue (rebase only). `gh pr merge
+# --auto --rebase` ENQUEUES; it does not merge. Deleting the branch before the
+# queue finishes yanks the entry and GitHub closes the PR unmerged (#5126), so
+# wait for mergedAt before touching any ref.
+gh pr merge "$BRANCH" --auto --rebase || true
+for _ in $(seq 1 60); do
+  STATE="$(gh pr view "$BRANCH" --json state -q .state)"
+  [ "$STATE" = "MERGED" ] && break
+  [ "$STATE" = "CLOSED" ] && { echo "NOTE: PR closed unmerged: $URL"; exit 1; }
+  sleep 60
+done
+if [ "$STATE" = "MERGED" ]; then
   git -C "$REPO_ROOT" worktree remove -f "$WT" 2>/dev/null || true
   git -C "$REPO_ROOT" branch -D "$BRANCH" 2>/dev/null || true
-  git -C "$REPO_ROOT" push -q origin --delete "$BRANCH" 2>/dev/null || true
-  echo "merged (CI green): $URL"
+  echo "merged: $URL"
 else
-  echo "NOTE: CI not green, PR left open for review: $URL (worktree kept: $WT)"
+  echo "NOTE: not merged after 60 min, PR left queued: $URL (worktree kept: $WT)"
 fi
+rm -rf "$STPA_TMP"
 ```
