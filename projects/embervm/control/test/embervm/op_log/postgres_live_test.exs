@@ -44,7 +44,8 @@ defmodule Embervm.OpLog.PostgresLiveTest do
       Embervm.TestProcess.stop_safely(server)
       {:ok, cleanup_conn} = Postgrex.start_link(Keyword.put(opts, :name, nil))
       {:ok, _} = Postgrex.query(cleanup_conn, ~s(DROP SCHEMA "#{schema}" CASCADE), [])
-      GenServer.stop(cleanup_conn)
+      # Keep every on_exit stop on the race-safe #4078 path.
+      Embervm.TestProcess.stop_safely(cleanup_conn)
     end)
 
     %{server: server}
