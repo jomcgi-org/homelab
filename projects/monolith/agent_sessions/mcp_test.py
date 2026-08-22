@@ -59,6 +59,37 @@ def test_session_start_stores_voice_system_prompt(monkeypatch, session):
     assert "RATIONALE" in row.system_prompt
 
 
+def test_session_start_stores_reasoning(monkeypatch, session):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    result = asyncio.run(mcp.monolith_agent_session_start("hello", reasoning=True))
+
+    assert store.get_session(session, result["session_id"]).reasoning is True
+
+
+def test_execute_pending_message_forwards_reasoning_when_enabled(monkeypatch, session):
+    delivered = []
+
+    async def mock_deliver(*args, **kwargs):
+        delivered.append(kwargs)
+        return _completed_delivery(args[2])
+
+    async def mock_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    row = store.create_session(
+        session, "reasoning", "/workspace", "main", reasoning=True
+    )
+    store.create_pending_message(session, row.id, "hello")
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    assert delivered[0]["reasoning"] is True
+
+
 def test_execute_pending_message_forwards_system_prompt_only_when_set(
     monkeypatch, session
 ):

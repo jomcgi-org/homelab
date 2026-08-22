@@ -182,6 +182,7 @@ def _persist_session(
     *,
     discord_thread: str | None = None,
     system_prompt: str | None = None,
+    reasoning: bool = False,
     workflow_id: str | None = None,
     triggered_by: str | None = None,
     node_key: str | None = None,
@@ -197,6 +198,7 @@ def _persist_session(
             repo,
             discord_thread=discord_thread,
             system_prompt=system_prompt,
+            reasoning=reasoning,
             workflow_id=workflow_id,
             triggered_by=triggered_by,
             node_key=node_key,
@@ -502,6 +504,8 @@ async def _execute_pending_message(session_id: int) -> None:
                 deliver_kwargs["branch"] = session_row.branch
             if session_row.system_prompt is not None:
                 deliver_kwargs["system_prompt"] = session_row.system_prompt
+            if session_row.reasoning:
+                deliver_kwargs["reasoning"] = True
             turn, ember = await _transport.deliver(
                 existing_ember,
                 cli_session_id,
@@ -658,6 +662,7 @@ async def monolith_agent_session_start(
     model: str | None = None,
     repo: str = DEFAULT_AGENT_REPO,
     branch: str = "main",
+    reasoning: bool = False,
 ) -> dict:
     """Start a voice-drivable coding agent session and queue its first turn.
 
@@ -672,6 +677,8 @@ async def monolith_agent_session_start(
             session with NO checkout, which starts faster and suits a session
             that only talks.
         branch: Branch to check out. Defaults to main.
+        reasoning: reasoning=true keeps qwen thinking on for the whole session
+            (default off = fast).
     """
     try:
         model_family(model)
@@ -698,6 +705,7 @@ async def monolith_agent_session_start(
         selected_repo,
         discord_thread=None,
         system_prompt=_append_rationale_trailer(voice.VOICE_INSTRUCTION, selected_repo),
+        reasoning=reasoning,
     )
     turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     _schedule_next_message(row.id)

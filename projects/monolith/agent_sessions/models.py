@@ -43,6 +43,7 @@ class AgentSession(SQLModel, table=True):
     # unbound sessions are unaffected.
     discord_thread: str | None = Field(default=None, unique=True, index=True)
     model: str | None = Field(default=None)
+    reasoning: bool = Field(default=False)
     cli_session_id: str | None = Field(
         default=None
     )  # Claude CLI session_id for resumption

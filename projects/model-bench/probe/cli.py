@@ -191,11 +191,13 @@ def _run_once(task: LoadedTask, rep: int, args) -> dict:
         "model": "qwen",
         "repo": repo,
         "branch": branch,
+        "reasoning": args.reasoning,
     }
     client = AgentSessionClient(args.base_url, timeout_s=min(30, args.timeout))
     started_at = datetime.now(timezone.utc)
     started_monotonic = time.monotonic()
     result = _blank_result(task.spec.id, rep, started_at)
+    result["reasoning"] = args.reasoning
     session_id = None
     terminal_at = started_at
     try:
@@ -428,6 +430,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--repo-path", default=str(_default_repo_path()))
     run.add_argument("--timeout", type=float, default=4200)
     run.add_argument("--keep-session", action="store_true")
+    run.add_argument("--reasoning", action="store_true")
     run.add_argument("--no-spans", action="store_true")
     run.add_argument("--out", default="results.jsonl")
     run.add_argument(

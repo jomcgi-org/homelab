@@ -292,7 +292,11 @@ def test_deliver_uses_ember_identity_and_cli_id_in_body(monkeypatch):
     assert request.headers["Authorization"] == "Bearer t1"
     assert "management" not in request.headers.values()
     assert request.headers["X-Ember-Guest-Path"] == "/shim/turn"
-    assert json.loads(request.content) == {"message": "hello", "session_id": "cli-1"}
+    assert json.loads(request.content) == {
+        "message": "hello",
+        "session_id": "cli-1",
+        "thinking": "off",
+    }
     assert turn.result == "ok"
     assert turn.diff is None
     assert used == ember
@@ -359,8 +363,34 @@ def test_deliver_includes_model_when_present(monkeypatch):
     assert json.loads(requests[0].content) == {
         "message": "hello",
         "session_id": "cli-1",
+        "thinking": "off",
         "model": "fable",
     }
+
+
+@pytest.mark.parametrize(
+    ("reasoning", "expected_thinking"), [(True, "high"), (False, "off")]
+)
+def test_deliver_sets_thinking_from_reasoning(
+    monkeypatch, reasoning, expected_thinking
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None),
+            "cli-1",
+            "hello",
+            reasoning=reasoning,
+        )
+    )
+
+    assert json.loads(requests[0].content)["thinking"] == expected_thinking
 
 
 def test_deliver_includes_progress_token_when_present(monkeypatch):

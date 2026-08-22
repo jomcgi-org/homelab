@@ -240,6 +240,7 @@ class ShimTransport(Protocol):
         branch: str | None = None,
         progress_token: str | None = None,
         system_prompt: str | None = None,
+        reasoning: bool = False,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -511,6 +512,7 @@ class EmberVmShimTransport:
         branch: str | None = None,
         progress_token: str | None = None,
         system_prompt: str | None = None,
+        reasoning: bool = False,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -524,6 +526,7 @@ class EmberVmShimTransport:
             message: User message / prompt to send to Claude.
             system_prompt: The caller's system prompt, appended to the shim's
                 own sandbox prompt. Omitted from the payload if None.
+            reasoning: Whether the guest should use high thinking for each invoke.
             restore_from: A prior LINEAGE handle to inherit the guest
                 workspace from when ember is None (#4306 slice 5: the
                 binding-was-cleared path, e.g. after an EmberSessionGone or
@@ -592,7 +595,11 @@ class EmberVmShimTransport:
         async def invoke(
             current: EmberSession, current_cli_session_id: str | None
         ) -> Turn:
-            payload = {"message": message, "session_id": current_cli_session_id}
+            payload = {
+                "message": message,
+                "session_id": current_cli_session_id,
+                "thinking": "high" if reasoning else "off",
+            }
             if model is not None:
                 payload["model"] = model
             if repo is not None:
