@@ -5,11 +5,9 @@
 // RestoreArtifact / EvictArtifact) so a node (or its NVMe) can be lost without
 // losing data.
 //
-// Standing decision 5: this is a RAW S3-API client (PUT/GET/HEAD/DELETE against
-// <endpoint>/<bucket>/<key>), NOT the aws-sdk-go, and there is NO SigV4 signing
-// in v1 (SeaweedFS in-cluster is anonymous; a static-credential header seam is
-// left for later). The style mirrors the zip-lane fetch pattern already in the
-// server (plain net/http, bounded reads, sha256 verification).
+// Standing decision 5: this is a raw S3-API client (PUT/GET/HEAD/DELETE against
+// <endpoint>/<bucket>/<key>), not the aws-sdk-go. Optional static credentials
+// enable SigV4 signing; absent credentials preserve anonymous requests exactly.
 //
 // Artifact layout (Fork 3): every artifact is a set of files under a key prefix
 // <kind>/<workload>/<ref> (kind lowercase; ref MAY be empty for a singleton
@@ -111,10 +109,22 @@ type Meta struct {
 // an empty endpoint); every method is nil-safe so callers can hold a nil Store
 // and let the verb handlers refuse with FAILED_PRECONDITION rather than panic.
 type Store struct {
-	endpoint string // base URL, no trailing slash (e.g. http://seaweedfs-s3...:8333)
-	bucket   string
-	client   *http.Client
-	compress bool
+	endpoint    string // base URL, no trailing slash (e.g. http://seaweedfs-s3...:8333)
+	bucket      string
+	client      *http.Client
+	compress    bool
+	credentials credentials
+	now         func() time.Time
+}
+
+// Option configures an optional Store capability.
+type Option func(*Store)
+
+// WithCredentials enables SigV4 signing with a static S3 identity.
+func WithCredentials(accessKeyID, secretAccessKey string) Option {
+	return func(s *Store) {
+		s.credentials = credentials{accessKeyID: accessKeyID, secretAccessKey: secretAccessKey}
+	}
 }
 
 // New builds a Store for endpoint + bucket. It returns nil when endpoint is
@@ -122,16 +132,21 @@ type Store struct {
 // restore-on-miss is impossible, and the continuity verbs refuse). The endpoint
 // is normalised to have no trailing slash so key joins are unambiguous. The
 // compress enables zstd for newly exported objects.
-func New(endpoint, bucket string, compress bool) *Store {
+func New(endpoint, bucket string, compress bool, opts ...Option) *Store {
 	if endpoint == "" {
 		return nil
 	}
-	return &Store{
+	s := &Store{
 		endpoint: strings.TrimRight(endpoint, "/"),
 		bucket:   bucket,
 		client:   &http.Client{},
 		compress: compress,
+		now:      time.Now,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // countingReader counts the bytes actually read out of a request body, so an
@@ -187,6 +202,9 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64) er
 		req.ContentLength = size
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
+	if err := s.sign(req); err != nil {
+		return fmt.Errorf("store: sign PUT %q: %w", key, err)
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("store: PUT %q: %w", key, err)
@@ -209,6 +227,9 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, int64, erro
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url(key), nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("store: build GET %q: %w", key, err)
+	}
+	if err := s.sign(req); err != nil {
+		return nil, 0, fmt.Errorf("store: sign GET %q: %w", key, err)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -236,6 +257,9 @@ func (s *Store) Head(ctx context.Context, key string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("store: build HEAD %q: %w", key, err)
 	}
+	if err := s.sign(req); err != nil {
+		return false, fmt.Errorf("store: sign HEAD %q: %w", key, err)
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("store: HEAD %q: %w", key, err)
@@ -259,6 +283,9 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.url(key), nil)
 	if err != nil {
 		return fmt.Errorf("store: build DELETE %q: %w", key, err)
+	}
+	if err := s.sign(req); err != nil {
+		return fmt.Errorf("store: sign DELETE %q: %w", key, err)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -536,6 +563,9 @@ func (s *Store) Reachable(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
+	if err := s.sign(req); err != nil {
+		return false
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return false
@@ -591,6 +621,9 @@ func (s *Store) ListRefs(ctx context.Context, prefix string, limit int) (refs []
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: build LIST %q: %w", p, err)
+	}
+	if err := s.sign(req); err != nil {
+		return nil, false, fmt.Errorf("store: sign LIST %q: %w", p, err)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {

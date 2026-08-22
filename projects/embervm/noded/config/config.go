@@ -393,6 +393,11 @@ type Config struct {
 	// StoreBucket is the single bucket every artifact key lives under (Fork 3).
 	// Default "embervm". Env EMBERVM_NODED_STORE_BUCKET.
 	StoreBucket string
+	// StoreAccessKeyID and StoreSecretAccessKey enable SigV4 for every store
+	// request when both are set. Exactly one is a configuration error. Env
+	// EMBERVM_NODED_STORE_ACCESS_KEY_ID / EMBERVM_NODED_STORE_SECRET_ACCESS_KEY.
+	StoreAccessKeyID     string
+	StoreSecretAccessKey string
 	// StoreCompress enables zstd encoding of newly exported store objects. The
 	// reader always honors each file's marker, so this stays false until every
 	// daemon in the fleet can read compressed objects. Env
@@ -473,14 +478,22 @@ func Load() (Config, error) {
 		GroupProbeInterval:      5 * time.Second,
 		GroupUnhealthyThreshold: atoiDefault("EMBERVM_NODED_GROUP_UNHEALTHY_THRESHOLD", 3),
 
-		StoreEndpoint: os.Getenv("EMBERVM_NODED_STORE_ENDPOINT"),
-		StoreBucket:   getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
-		StoreCompress: boolDefault("EMBERVM_NODED_STORE_COMPRESS", false),
+		StoreEndpoint:        os.Getenv("EMBERVM_NODED_STORE_ENDPOINT"),
+		StoreBucket:          getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
+		StoreCompress:        boolDefault("EMBERVM_NODED_STORE_COMPRESS", false),
+		StoreAccessKeyID:     os.Getenv("EMBERVM_NODED_STORE_ACCESS_KEY_ID"),
+		StoreSecretAccessKey: os.Getenv("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY"),
 
 		RequireBlessing: boolDefault("EMBERVM_NODED_REQUIRE_BLESSING", false),
 	}
 	if c.AdmissionModel != "observed" && c.AdmissionModel != "reserved" {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_ADMISSION_MODEL must be observed or reserved, got %q", c.AdmissionModel)
+	}
+	if c.StoreAccessKeyID == "" && c.StoreSecretAccessKey != "" {
+		return Config{}, fmt.Errorf("EMBERVM_NODED_STORE_ACCESS_KEY_ID is required when EMBERVM_NODED_STORE_SECRET_ACCESS_KEY is set")
+	}
+	if c.StoreAccessKeyID != "" && c.StoreSecretAccessKey == "" {
+		return Config{}, fmt.Errorf("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY is required when EMBERVM_NODED_STORE_ACCESS_KEY_ID is set")
 	}
 	statefulActivatorRangeRaw := "5400-5409"
 	if raw, ok := os.LookupEnv("EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE"); ok {

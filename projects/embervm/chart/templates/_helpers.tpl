@@ -21,6 +21,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- include "embervm.fullname" . -}}
 {{- end -}}
 
+{{- define "embervm.store.credentialsSecretName" -}}
+{{- .Values.noded.store.credentials.secretName | default (printf "%s-store" (include "embervm.fullname" .)) -}}
+{{- end -}}
+
 {{- define "embervm.tokenBroker.name" -}}{{ printf "%s-tokenbroker" (include "embervm.name" .) | trunc 63 | trimSuffix "-" }}{{- end -}}
 {{- define "embervm.tokenBroker.fullname" -}}{{ printf "%s-tokenbroker" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" }}{{- end -}}
 {{- define "embervm.tokenBroker.selectorLabels" -}}app.kubernetes.io/name: {{ include "embervm.tokenBroker.name" . }}

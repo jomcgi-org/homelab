@@ -163,11 +163,16 @@ func run(logger *slog.Logger) error {
 	// returns nil for an empty endpoint (the store is disabled), so the Options
 	// field is left unset in that case to keep the server's typed-nil guards clean
 	// (a nil interface, not an interface holding a nil pointer).
-	artStore := store.New(cfg.StoreEndpoint, cfg.StoreBucket, cfg.StoreCompress)
+	artStore := store.New(
+		cfg.StoreEndpoint,
+		cfg.StoreBucket,
+		cfg.StoreCompress,
+		store.WithCredentials(cfg.StoreAccessKeyID, cfg.StoreSecretAccessKey),
+	)
 	if cfg.StoreEndpoint == "" {
 		logger.Warn("object store DISABLED: EMBERVM_NODED_STORE_ENDPOINT unset; banked state stays local-only (no off-node durability, no restore-on-miss)")
 	} else {
-		logger.Info("object store configured", "endpoint", cfg.StoreEndpoint, "bucket", cfg.StoreBucket)
+		logger.Info("object store configured", "endpoint", cfg.StoreEndpoint, "bucket", cfg.StoreBucket, "signed", cfg.StoreAccessKeyID != "")
 	}
 
 	opts := server.Options{
@@ -211,6 +216,7 @@ func run(logger *slog.Logger) error {
 	}
 	if artStore != nil {
 		opts.Store = artStore
+		opts.SignStoreRequest = artStore.SignRequest
 	}
 	srv := server.New(opts)
 	// Cap the tap-prealloc pool (ADR embervm/014 decision 4) at the brick's

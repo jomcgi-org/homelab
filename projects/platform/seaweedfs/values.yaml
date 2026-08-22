@@ -1,6 +1,12 @@
 # SeaweedFS shared infrastructure configuration
 # Used by multiple projects for S3-compatible object storage
 
+# The 1Password item has one seaweedfs_s3_config field containing the policy in
+# s3-identities.json with its EmberVM credential placeholders substituted.
+s3Identities:
+  onepassword:
+    itemPath: ""
+
 seaweedfs:
   global:
     enableSecurity: false
@@ -167,6 +173,9 @@ seaweedfs:
     replicas: 1
     port: 8333
     enableAuth: false
+    # A separate flip PR sets enableAuth: true and existingConfigSecret:
+    # seaweedfs-s3-identities. Before that flip, inspect weed shell s3.configure
+    # for stale filer-stored identities from incident 2026-06-19.
     # Pre-populate OTEL annotation to match Kyverno injection (prevents ArgoCD drift)
     # Prometheus annotations enable SigNoz autodiscovery
     podAnnotations:

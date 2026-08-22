@@ -1204,9 +1204,9 @@ noded:
   # BuildBaseRequest, so noded needs no endpoint or bucket in its own config, only
   # the fetch timeout and size cap below. The zero-egress policy applies to task
   # microVMs, not the host daemon: this GET is the daemon's own pod-network call,
-  # not guest egress. R1 starts on the UNAUTHENTICATED in-cluster read path (the
-  # bucket is cluster-internal and mesh-gated); if a private bucket is needed
-  # later, credentials arrive here as a 1Password-provisioned secret, additive.
+  # not guest egress. When store credentials below are enabled, an archive URL
+  # under that store endpoint is signed with the same identity; other archive
+  # URLs retain the plain HTTP path.
   zipLane:
     # Bounds a single archive HTTP GET so a hung filer cannot stall a BuildBase.
     fetchTimeout: 60s
@@ -1218,8 +1218,8 @@ noded:
   # R6 off-node durability (ADR embervm/009): the S3-API object store the
   # continuity verbs move banked artifacts to and from, so a node (or its NVMe)
   # can be lost without losing data. The first backend is the in-cluster SeaweedFS
-  # S3 gateway (anonymous in-cluster; no SigV4 in v1, a static-credential seam is
-  # left for later). An EMPTY endpoint DISABLES the store: exports are skipped and
+  # S3 gateway. Optional static credentials enable SigV4 on every noded and
+  # control-plane request. An EMPTY endpoint DISABLES the store: exports are skipped and
   # restore-on-miss is impossible, so state stays local-only (a safe degrade).
   store:
     endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
@@ -1229,6 +1229,19 @@ noded:
     # that honors the per-file zstd marker, so the arming precondition is met and
     # new objects can be compressed safely.
     compress: true
+    # One 1Password item named embervm-store supplies access_key_id and
+    # secret_access_key. These are the same keys used by the embervm identity in
+    # the SeaweedFS identities policy. The env names rendered when enabled are
+    # EMBERVM_NODED_STORE_ACCESS_KEY_ID and EMBERVM_NODED_STORE_SECRET_ACCESS_KEY.
+    credentials:
+      enabled: false
+      secretName: ""
+      accessKeyIdKey: access_key_id
+      secretAccessKeyKey: secret_access_key
+      onepassword:
+        # When set, the chart creates the OnePasswordItem and defaults the
+        # generated Secret name to <embervm.fullname>-store.
+        itemPath: ""
 
   # R7 (ADR embervm/011, standing decision 4): the control plane becomes the
   # sole issuer of volume generations. true rejects a writable attach carrying

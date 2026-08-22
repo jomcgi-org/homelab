@@ -5,7 +5,7 @@ defmodule Embervm.S3Client do
   against the in-cluster SeaweedFS S3 gateway, over the shared `Embervm.Finch`
   pool. The structural mirror of noded's non-SDK store client
   (noded/store/store.go): plain HTTP verbs on `<endpoint>/<bucket>/<key>`,
-  anonymous in-cluster (no SigV4 in v1), nil-safe on a disabled store.
+  optionally SigV4-authenticated, nil-safe on a disabled store.
 
   ## why hand-rolled, and why here
 
@@ -40,9 +40,16 @@ defmodule Embervm.S3Client do
   require Logger
 
   @enforce_keys [:endpoint, :bucket]
-  defstruct [:endpoint, :bucket]
+  alias Embervm.S3Client.SigV4
 
-  @type t :: %__MODULE__{endpoint: String.t(), bucket: String.t()}
+  defstruct [:endpoint, :bucket, :access_key_id, :secret_access_key]
+
+  @type t :: %__MODULE__{
+          endpoint: String.t(),
+          bucket: String.t(),
+          access_key_id: String.t() | nil,
+          secret_access_key: String.t() | nil
+        }
 
   @typedoc "One listed object: key, byte size, Last-Modified as unix ms."
   @type entry :: %{key: String.t(), size: non_neg_integer(), last_modified_ms: integer()}
@@ -65,12 +72,20 @@ defmodule Embervm.S3Client do
   to no trailing slash so key joins are unambiguous.
   """
   @spec new(String.t(), String.t()) :: t() | nil
-  def new(endpoint, bucket)
-  def new("", _bucket), do: nil
-  def new(nil, _bucket), do: nil
+  def new(endpoint, bucket), do: new(endpoint, bucket, [])
 
-  def new(endpoint, bucket) when is_binary(endpoint) and is_binary(bucket) do
-    %__MODULE__{endpoint: String.trim_trailing(endpoint, "/"), bucket: bucket}
+  @spec new(String.t(), String.t(), keyword()) :: t() | nil
+  def new(endpoint, bucket, opts)
+  def new("", _bucket, _opts), do: nil
+  def new(nil, _bucket, _opts), do: nil
+
+  def new(endpoint, bucket, opts) when is_binary(endpoint) and is_binary(bucket) do
+    %__MODULE__{
+      endpoint: String.trim_trailing(endpoint, "/"),
+      bucket: bucket,
+      access_key_id: Keyword.get(opts, :access_key_id),
+      secret_access_key: Keyword.get(opts, :secret_access_key)
+    }
   end
 
   @doc """
@@ -216,29 +231,31 @@ defmodule Embervm.S3Client do
   # One verb with transient-failure retries: transport errors and 5xx retry with
   # exponential backoff; 4xx returns immediately (it will not get better). The
   # response body is always fully read (Finch does this for us).
-  defp request(_client, method, url, body), do: request_with_retry(method, url, body, 1)
+  defp request(client, method, url, body), do: request_with_retry(client, method, url, body, 1)
 
-  defp request_with_retry(method, url, body, attempt) do
-    req = Finch.build(method, url, [], body)
+  defp request_with_retry(client, method, url, body, attempt) do
+    creds = %{access_key_id: client.access_key_id, secret_access_key: client.secret_access_key}
+    headers = SigV4.sign(method, url, [], SigV4.unsigned_payload(), creds, DateTime.utc_now())
+    req = Finch.build(method, url, headers, body)
 
     case Finch.request(req, Embervm.Finch, receive_timeout: @receive_timeout) do
       {:ok, %Finch.Response{status: status}} when status >= 500 ->
-        retry_or_fail(method, url, body, attempt, {:unexpected_status, status})
+        retry_or_fail(client, method, url, body, attempt, {:unexpected_status, status})
 
       {:ok, %Finch.Response{} = resp} ->
         {:ok, %{status: resp.status, body: resp.body}}
 
       {:error, reason} ->
-        retry_or_fail(method, url, body, attempt, reason)
+        retry_or_fail(client, method, url, body, attempt, reason)
     end
   rescue
-    e -> retry_or_fail(method, url, body, attempt, {:raised, e})
+    e -> retry_or_fail(client, method, url, body, attempt, {:raised, e})
   end
 
-  defp retry_or_fail(method, url, body, attempt, reason) do
+  defp retry_or_fail(client, method, url, body, attempt, reason) do
     if attempt < @attempts do
       Process.sleep(@backoff_base_ms * Integer.pow(2, attempt - 1))
-      request_with_retry(method, url, body, attempt + 1)
+      request_with_retry(client, method, url, body, attempt + 1)
     else
       Logger.warning("embervm s3 client: #{method} #{url} failed after #{@attempts} attempts: #{inspect(reason)}")
       {:error, reason}

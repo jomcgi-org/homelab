@@ -334,8 +334,7 @@ containers:
         value: {{ $ctx.Values.noded.zipLane.maxBytes | quote }}
       # R6 off-node durability: the S3-API object store the continuity verbs
       # (ExportArtifact/RestoreArtifact/EvictArtifact) move banked artifacts to
-      # and from. Default the in-cluster SeaweedFS S3 gateway (anonymous, no
-      # SigV4 in v1). An EMPTY endpoint disables the store: exports are skipped
+      # and from. Optional static credentials enable SigV4. An EMPTY endpoint disables the store: exports are skipped
       # and restore-on-miss is impossible, so state stays local-only.
       - name: EMBERVM_NODED_STORE_ENDPOINT
         value: {{ $ctx.Values.noded.store.endpoint | quote }}
@@ -343,6 +342,18 @@ containers:
         value: {{ $ctx.Values.noded.store.bucket | quote }}
       - name: EMBERVM_NODED_STORE_COMPRESS
         value: {{ $ctx.Values.noded.store.compress | quote }}
+      {{- if $ctx.Values.noded.store.credentials.enabled }}
+      - name: EMBERVM_NODED_STORE_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: {{ include "embervm.store.credentialsSecretName" $ctx }}
+            key: {{ $ctx.Values.noded.store.credentials.accessKeyIdKey }}
+      - name: EMBERVM_NODED_STORE_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: {{ include "embervm.store.credentialsSecretName" $ctx }}
+            key: {{ $ctx.Values.noded.store.credentials.secretAccessKeyKey }}
+      {{- end }}
       # R7 (ADR embervm/011, standing decision 4): the control plane becomes
       # the sole issuer of volume generations. false accepts a legacy
       # blessed_generation == 0 self-bump (the default, so this PR can land

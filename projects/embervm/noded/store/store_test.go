@@ -3,12 +3,16 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,16 +31,29 @@ type fakeObjectStore struct {
 	objects map[string][]byte
 	// putOrder records the path of every PUT in order, so a test can assert
 	// meta.json is written LAST.
-	putOrder     []string
-	failFilePuts bool
+	putOrder        []string
+	failFilePuts    bool
+	accessKeyID     string
+	secretAccessKey string
 }
 
-func newFakeObjectStore() *fakeObjectStore {
-	return &fakeObjectStore{objects: make(map[string][]byte)}
+func newFakeObjectStore(creds ...string) *fakeObjectStore {
+	f := &fakeObjectStore{objects: make(map[string][]byte)}
+	if len(creds) == 2 {
+		f.accessKeyID, f.secretAccessKey = creds[0], creds[1]
+	}
+	return f
 }
 
 func (f *fakeObjectStore) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.accessKeyID != "" {
+			if code := f.verifySigV4(r); code != "" {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(code))
+				return
+			}
+		}
 		key := r.URL.Path
 		switch r.Method {
 		case http.MethodPut:
@@ -51,6 +68,11 @@ func (f *fakeObjectStore) handler() http.Handler {
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 		case http.MethodGet:
+			if r.URL.Query().Get("list-type") == "2" {
+				w.Header().Set("Content-Type", "application/xml")
+				_, _ = w.Write([]byte(`<ListBucketResult><IsTruncated>false</IsTruncated><CommonPrefixes><Prefix>base/amd/demo/ref-1/</Prefix></CommonPrefixes></ListBucketResult>`))
+				return
+			}
 			f.mu.Lock()
 			b, ok := f.objects[key]
 			f.mu.Unlock()
@@ -84,6 +106,95 @@ func (f *fakeObjectStore) handler() http.Handler {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})
+}
+
+// verifySigV4 independently reconstructs the signature. It deliberately does
+// not call any production signer helper, so round trips catch disagreement.
+func (f *fakeObjectStore) verifySigV4(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return "MissingAuthorization"
+	}
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 ") || r.Header.Get("x-amz-content-sha256") != "UNSIGNED-PAYLOAD" {
+		return "SignatureDoesNotMatch"
+	}
+	fields := map[string]string{}
+	for _, part := range strings.Split(strings.TrimPrefix(auth, "AWS4-HMAC-SHA256 "), ", ") {
+		pair := strings.SplitN(part, "=", 2)
+		if len(pair) == 2 {
+			fields[pair[0]] = pair[1]
+		}
+	}
+	credential := strings.Split(fields["Credential"], "/")
+	if len(credential) != 5 || credential[0] != f.accessKeyID || credential[2] != "us-east-1" || credential[3] != "s3" || credential[4] != "aws4_request" {
+		return "SignatureDoesNotMatch"
+	}
+	signed := strings.Split(fields["SignedHeaders"], ";")
+	var canonicalHeaders strings.Builder
+	for _, name := range signed {
+		value := r.Header.Get(name)
+		if name == "host" {
+			value = r.Host
+		}
+		canonicalHeaders.WriteString(name + ":" + strings.Join(strings.Fields(value), " ") + "\n")
+	}
+	canonical := r.Method + "\n" + testCanonicalPath(r.URL) + "\n" + testCanonicalQuery(r.URL) + "\n" +
+		canonicalHeaders.String() + "\n" + fields["SignedHeaders"] + "\nUNSIGNED-PAYLOAD"
+	scope := strings.Join(credential[1:], "/")
+	stringToSign := "AWS4-HMAC-SHA256\n" + r.Header.Get("x-amz-date") + "\n" + scope + "\n" + testSHA256Hex(canonical)
+	kDate := testHMAC([]byte("AWS4"+f.secretAccessKey), credential[1])
+	kRegion := testHMAC(kDate, credential[2])
+	kService := testHMAC(kRegion, credential[3])
+	kSigning := testHMAC(kService, credential[4])
+	want := hex.EncodeToString(testHMAC(kSigning, stringToSign))
+	if !hmac.Equal([]byte(want), []byte(fields["Signature"])) {
+		return "SignatureDoesNotMatch"
+	}
+	return ""
+}
+
+func testCanonicalPath(u *url.URL) string {
+	path := u.EscapedPath()
+	if path == "" {
+		return "/"
+	}
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		decoded, err := url.PathUnescape(part)
+		if err == nil {
+			parts[i] = strings.ReplaceAll(url.QueryEscape(decoded), "+", "%20")
+		}
+	}
+	return strings.Join(parts, "/")
+}
+
+func testCanonicalQuery(u *url.URL) string {
+	values := u.Query()
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool { return url.QueryEscape(keys[i]) < url.QueryEscape(keys[j]) })
+	var parts []string
+	for _, key := range keys {
+		vals := append([]string(nil), values[key]...)
+		sort.Strings(vals)
+		for _, value := range vals {
+			parts = append(parts, strings.ReplaceAll(url.QueryEscape(key), "+", "%20")+"="+strings.ReplaceAll(url.QueryEscape(value), "+", "%20"))
+		}
+	}
+	return strings.Join(parts, "&")
+}
+
+func testSHA256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func testHMAC(key []byte, value string) []byte {
+	h := hmac.New(sha256.New, key)
+	_, _ = h.Write([]byte(value))
+	return h.Sum(nil)
 }
 
 func (f *fakeObjectStore) has(key string) bool {
@@ -120,6 +231,16 @@ func newTestStoreWithCompression(t *testing.T, compress bool) (*Store, *fakeObje
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 	return New(srv.URL, "embervm", compress), fake
+}
+
+func newSignedTestStore(t *testing.T) (*Store, *fakeObjectStore) {
+	t.Helper()
+	const accessKeyID = "embervm-test"
+	const secretAccessKey = "test-secret"
+	fake := newFakeObjectStore(accessKeyID, secretAccessKey)
+	srv := httptest.NewServer(fake.handler())
+	t.Cleanup(srv.Close)
+	return New(srv.URL, "embervm", false, WithCredentials(accessKeyID, secretAccessKey)), fake
 }
 
 // writeLocalArtifact writes a set of named files with the given contents into a
@@ -185,6 +306,49 @@ func TestRawRoundTrip(t *testing.T) {
 	// Get of an absent key is ErrNotPresent.
 	if _, _, err := s.Get(ctx, key); err != ErrNotPresent {
 		t.Fatalf("Get absent = %v, want ErrNotPresent", err)
+	}
+}
+
+func TestSignedRawVerbsListAndReachable(t *testing.T) {
+	s, _ := newSignedTestStore(t)
+	ctx := context.Background()
+	key := "base/amd/demo/ref-1/meta.json"
+	if err := s.Put(ctx, key, strings.NewReader("body"), 4); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if ok, err := s.Head(ctx, key); err != nil || !ok {
+		t.Fatalf("Head = %v, %v", ok, err)
+	}
+	r, _, err := s.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	_ = r.Close()
+	refs, _, err := s.ListRefs(ctx, "base/amd/demo", 10)
+	if err != nil || len(refs) != 1 || refs[0] != "ref-1" {
+		t.Fatalf("ListRefs = %#v, %v", refs, err)
+	}
+	listURL := s.endpoint + "/" + s.bucket + "?continuation-token=ref%2F1%2Bnext%3D&list-type=2&prefix=base%2Famd%2Fdemo%2F"
+	listReq, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sign(listReq); err != nil {
+		t.Fatal(err)
+	}
+	listResp, err := s.client.Do(listReq)
+	if err != nil {
+		t.Fatalf("paginated LIST: %v", err)
+	}
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("paginated LIST status = %v", listResp.StatusCode)
+	}
+	_ = listResp.Body.Close()
+	if !s.Reachable(ctx) {
+		t.Fatal("Reachable returned false")
+	}
+	if err := s.Delete(ctx, key); err != nil {
+		t.Fatalf("Delete: %v", err)
 	}
 }
 

@@ -77,6 +77,20 @@ s3 = boto3.client(
 s3.put_object(Bucket="my-bucket", Key="data.json", Body=b'{"hello": "world"}')
 ```
 
+## S3 authentication
+
+[`s3-identities.json`](s3-identities.json) is the reviewable identity and bucket
+policy. Its EmberVM placeholders are replaced in a 1Password item field named
+`seaweedfs_s3_config`; the operator can project that item into the Secret the
+upstream S3 gateway expects.
+
+Until a bucket consumer has its own identity, every new bucket must be added to
+all three legacy identities so enabling authentication does not break it. The
+rollout order is: create and verify the 1Password item, configure consumers with
+their credentials while auth remains off, inspect `weed shell s3.configure` for
+stale filer-stored identities from the 2026-06-19 incident, then enable auth and
+set `existingConfigSecret: seaweedfs-s3-identities` in a separate change.
+
 ## Resource Budgets
 
 | Component  | CPU Request | Memory Request | CPU Limit | Memory Limit |
