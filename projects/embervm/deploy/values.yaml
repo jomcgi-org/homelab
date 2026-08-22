@@ -148,6 +148,15 @@ noded:
     enabled: true
     onepassword:
       itemPath: "vaults/k8s-homelab/items/embervm-noded-token"
+  # SigV4 credentials for the artifact store (#4708). The embervm identity in
+  # the SeaweedFS identities policy; clients sign every request once these are
+  # present, and the gateway starts checking them when s3.enableAuth flips in
+  # projects/platform/seaweedfs.
+  store:
+    credentials:
+      enabled: true
+      onepassword:
+        itemPath: "vaults/k8s-homelab/items/embervm-store"
   # Warmth ownership transition guard (#4962). Every brick on the fleet writes
   # its .alive claim as of chart 0.26.0 (verified on the 2026-08-22 06:44 roll),
   # so unclaimed pre-heartbeat directories are dead and may be reaped. After
