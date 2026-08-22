@@ -36,7 +36,7 @@ def pin_plan(budget_usd: float | None = None, model: str | None = None) -> dict:
     from swarm import config
 
     return {
-        "version": 1,
+        "version": 2,
         "max_attempts": max(1, config.max_attempts()),
         "max_review_cycles": max(1, config.max_review_cycles()),
         "implementer_model": model or config.implementer_model(),

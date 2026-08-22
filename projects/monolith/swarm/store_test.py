@@ -54,6 +54,37 @@ def test_open_decision_is_idempotent(db):
         assert list_open_decisions(session, "wf-1") == [second]
 
 
+def test_open_decision_recovers_from_concurrent_insert(db, monkeypatch):
+    with Session(db) as winner, Session(db) as contender:
+        contender_commit = contender.commit
+
+        def commit_after_winner():
+            open_decision(
+                winner,
+                "wf-race",
+                "push_gate",
+                "push_gate",
+                ["approve", "send_back"],
+                "winner",
+            )
+            contender_commit()
+
+        monkeypatch.setattr(contender, "commit", commit_after_winner)
+
+        recovered = open_decision(
+            contender,
+            "wf-race",
+            "push_gate",
+            "push_gate",
+            ["approve", "send_back"],
+            "contender",
+        )
+
+        assert recovered.note == "winner"
+        assert recovered.id is not None
+        assert list_open_decisions(contender, "wf-race") == [recovered]
+
+
 def test_record_decision_is_idempotent_on_repeat(db):
     with Session(db) as session:
         open_decision(
