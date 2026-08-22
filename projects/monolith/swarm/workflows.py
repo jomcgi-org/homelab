@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import logging
 
 from dbos import DBOS
@@ -15,6 +16,10 @@ from swarm.policy import (
 )
 from swarm.queues import codex_queue
 from swarm.steps import (
+    expire_decision,
+    get_decision,
+    get_open_decision,
+    open_decision,
     pin_plan,
     poll_turn,
     read_branch_head,
@@ -114,6 +119,56 @@ def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
     return None
 
 
+def _timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _await_decision(
+    workflow_id: str,
+    node_key: str,
+    kind: str,
+    options: list[str],
+    note: str,
+    timeout_s: int,
+) -> dict:
+    """Open one durable decision request and poll it to resolution."""
+    requested = open_decision(workflow_id, node_key, kind, options, note)
+    deadline = _timestamp(requested["requested_at"]) + timedelta(seconds=timeout_s)
+
+    while True:
+        current = get_open_decision(workflow_id, node_key)
+        if current is None:
+            # Once an answer sets decided_at the row no longer matches the
+            # partial open-row lookup, so read the same durable row by id.
+            current = get_decision(requested["id"])
+        if current is not None and current["decided_at"] is not None:
+            return current
+        observed_at = _timestamp((current or requested)["observed_at"])
+        if observed_at >= deadline:
+            expired = expire_decision(workflow_id, node_key)
+            if expired is not None:
+                return expired
+            # A human may have answered between the poll and the expiry step.
+            resolved = get_decision(requested["id"])
+            if resolved is not None and resolved["decided_at"] is not None:
+                return resolved
+        DBOS.sleep(POLL_INTERVAL_SECONDS)
+
+
+def _decision_output(row: dict) -> dict:
+    return {
+        "node_key": row["node_key"],
+        "kind": row["kind"],
+        "decision": row["decision"],
+        "note": row["decision_note"],
+        "actor_subject": row["actor_subject"],
+        "decided_at": row["decided_at"],
+    }
+
+
 def _record_turn_intent(session_id: int, turn: dict | None, intent: str) -> None:
     if turn is None:
         return
@@ -142,13 +197,14 @@ def _escalated(
     branch_name: str,
     branch_head: str | None = None,
     cost_usd: float | None = None,
+    decision: dict | None = None,
 ) -> dict:
     # commit_sha stays None on escalation: nothing was verified for review.
     # branch_head carries the last observed remote head so a triager can see
     # the branch is non-empty (e.g. a push that became visible only after a
     # timed-out attempt, which per-attempt freshness deliberately refuses to
     # claim as this run's success).
-    return {
+    output = {
         "status": "escalated",
         "attempts": attempt,
         "implementer_session_id": session_id,
@@ -160,6 +216,9 @@ def _escalated(
         "review_verdict": None,
         "cost_usd": _cost(turn) if cost_usd is None else cost_usd,
     }
+    if decision is not None:
+        output["decision"] = _decision_output(decision)
+    return output
 
 
 @DBOS.workflow()
@@ -197,6 +256,7 @@ def implement_then_review(
     base_sha = None
     commit_sha = None
     total_cost = 0.0
+    push_gate_approved = False
 
     while attempt < max_attempts:
         attempt += 1
@@ -247,14 +307,30 @@ def implement_then_review(
             commit_sha = head_sha
             break
         if action == "escalate":
-            return _escalated(
-                attempt,
-                implementer_session_id,
-                implementer_turn,
-                branch_name,
-                branch_head=head_sha,
-                cost_usd=total_cost,
+            # This is the push gate: the final implementer attempt did not
+            # produce verified branch movement, so approval is the only human
+            # override that can advance the run to review.
+            decision = _await_decision(
+                workflow_id or "unknown",
+                "push_gate",
+                "push_gate",
+                ["approve", "send_back"],
+                "No branch movement was verified after the final implementer attempt.",
+                plan["decision_timeout_seconds"],
             )
+            if decision["decision"] != "approve":
+                return _escalated(
+                    attempt,
+                    implementer_session_id,
+                    implementer_turn,
+                    branch_name,
+                    branch_head=head_sha,
+                    cost_usd=total_cost,
+                    decision=decision,
+                )
+            push_gate_approved = True
+            commit_sha = read_branch_head(repo, branch_name)
+            break
         if head_sha:
             previous_failure = (
                 f"The branch {branch_name} exists on the remote but its head "
@@ -269,16 +345,28 @@ def implement_then_review(
                 "time."
             )
 
-    if commit_sha is None:
+    if commit_sha is None and not push_gate_approved:
         # Defensive: next_action should have escalated already. Never fall
-        # through into the reviewer without a commit to review.
-        return _escalated(
-            attempt,
-            implementer_session_id,
-            implementer_turn,
-            branch_name,
-            cost_usd=total_cost,
+        # through silently into the reviewer without a commit to review. This
+        # is also a push gate because review has not started.
+        decision = _await_decision(
+            workflow_id or "unknown",
+            "push_gate",
+            "push_gate",
+            ["approve", "send_back"],
+            "No commit was available after the implementer loop.",
+            plan["decision_timeout_seconds"],
         )
+        if decision["decision"] != "approve":
+            return _escalated(
+                attempt,
+                implementer_session_id,
+                implementer_turn,
+                branch_name,
+                cost_usd=total_cost,
+                decision=decision,
+            )
+        commit_sha = read_branch_head(repo, branch_name)
 
     reviewer_session_id = None
     reviewer_turn = None
@@ -357,14 +445,30 @@ def implement_then_review(
                         exc_info=True,
                     )
             if implementer_turn is None or not head_sha or head_sha == prior_sha:
-                return _escalated(
-                    attempt,
-                    implementer_session_id,
-                    implementer_turn,
-                    branch_name,
-                    branch_head=head_sha,
-                    cost_usd=total_cost,
+                # Review already requested a send-back attempt, so this is a
+                # review escalation rather than the pre-review push gate.
+                decision = _await_decision(
+                    workflow_id or "unknown",
+                    "review",
+                    "review_escalation",
+                    ["retry", "send_back"],
+                    "The send-back implementation attempt did not move the branch.",
+                    plan["decision_timeout_seconds"],
                 )
+                if decision["decision"] != "retry":
+                    return _escalated(
+                        attempt,
+                        implementer_session_id,
+                        implementer_turn,
+                        branch_name,
+                        branch_head=head_sha,
+                        cost_usd=total_cost,
+                        decision=decision,
+                    )
+                head_sha = read_branch_head(repo, branch_name)
+                if head_sha:
+                    commit_sha = head_sha
+                continue
             commit_sha = head_sha
             continue
 

@@ -18,7 +18,35 @@ def workflow(*args, **kwargs):
     return workflows.implement_then_review.__wrapped__(*args, **kwargs)
 
 
-def run(monkeypatch, turns, heads=None, intents=None):
+def decision_row(
+    decision="expired",
+    *,
+    node_key="push_gate",
+    kind="push_gate",
+    note=None,
+    actor_subject=None,
+    requested_at="2026-08-22T00:00:00+00:00",
+    decided_at="2026-08-22T00:00:05+00:00",
+    observed_at="2026-08-22T00:00:05+00:00",
+):
+    return {
+        "id": 1,
+        "workflow_id": "wf-1",
+        "node_key": node_key,
+        "kind": kind,
+        "options": ["approve", "send_back"],
+        "note": "needs a decision",
+        "requested_at": requested_at,
+        "decided_at": decided_at,
+        "decision": decision,
+        "decision_note": note,
+        "actor_subject": actor_subject,
+        "actor_authority": "cloudflare" if actor_subject else None,
+        "observed_at": observed_at,
+    }
+
+
+def run(monkeypatch, turns, heads=None, intents=None, decisions=None):
     sessions = iter(turns)
     calls = []
     if heads is None:
@@ -38,11 +66,16 @@ def run(monkeypatch, turns, heads=None, intents=None):
             "implementer_model": model or config.implementer_model(),
             "reviewer_model": config.reviewer_model(),
             "turn_timeout_seconds": config.turn_timeout_seconds(),
+            "decision_timeout_seconds": config.decision_timeout_seconds(),
             "budget_usd": budget_usd,
         },
     )
     monkeypatch.setattr(workflows, "start_agent_session", lambda *args: 0)
     monkeypatch.setattr(workflows, "update_turn_shas", lambda *args: True)
+    decision_results = iter(decisions or [decision_row()])
+    monkeypatch.setattr(
+        workflows, "_await_decision", lambda *args: next(decision_results)
+    )
     if intents is not None:
         monkeypatch.setattr(
             workflows,
@@ -144,6 +177,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
             "implementer_model": config.implementer_model(),
             "reviewer_model": config.reviewer_model(),
             "turn_timeout_seconds": config.turn_timeout_seconds(),
+            "decision_timeout_seconds": config.decision_timeout_seconds(),
             "budget_usd": budget_usd,
         },
     )
@@ -170,6 +204,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
             or {"seq": 0, "result_text": "no", "cost_usd": 1}
         ),
     )
+    monkeypatch.setattr(workflows, "_await_decision", lambda *args: decision_row())
 
     result = workflow("task", "jomcgi/homelab", "main")
 
@@ -186,6 +221,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
                     "implementer_model": "luna",
                     "reviewer_model": "opus",
                     "turn_timeout_seconds": 1800,
+                    "decision_timeout_seconds": 86400,
                     "budget_usd": None,
                 }
             },
@@ -232,7 +268,197 @@ def test_exhausted_attempts_escalate_without_reviewer(monkeypatch):
     assert result["reviewer_session_id"] is None
     assert result["review_verdict"] is None
     assert result["branch_head"] is None
+    assert result["decision"]["decision"] == "expired"
     assert len(calls) == 2
+
+
+def test_push_gate_pause_then_approve_resumes_review(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+            102: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: APPROVE",
+                "cost_usd": 1,
+            },
+        },
+        heads=[None, None, None, None, "abc"],
+        decisions=[decision_row("approve", actor_subject="joe@example.com")],
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main")
+
+    assert result["status"] == "review"
+    assert result["commit_sha"] == "abc"
+    assert result["review_verdict"] == "approve"
+    assert [call[-2:] for call in calls] == [
+        ("implement", 1),
+        ("implement", 2),
+        ("review", 1),
+    ]
+
+
+def test_send_back_ends_run_with_human_note(monkeypatch):
+    run(
+        monkeypatch,
+        {
+            101: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+            102: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+        },
+        decisions=[
+            decision_row(
+                "send_back",
+                note="Please push the missing change.",
+                actor_subject="joe@example.com",
+            )
+        ],
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main")
+
+    assert result["status"] == "escalated"
+    assert result["decision"] == {
+        "node_key": "push_gate",
+        "kind": "push_gate",
+        "decision": "send_back",
+        "note": "Please push the missing change.",
+        "actor_subject": "joe@example.com",
+        "decided_at": "2026-08-22T00:00:05+00:00",
+    }
+
+
+def test_review_escalation_retry_resumes_reviewer(monkeypatch):
+    decision_calls = []
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: REQUEST_CHANGES",
+                "cost_usd": 1,
+            },
+            102: {"commit_sha": None, "result_text": "no push", "cost_usd": 1},
+            202: {
+                "commit_sha": None,
+                "result_text": "VERDICT: APPROVE",
+                "cost_usd": 1,
+            },
+        },
+        heads=[None, "abc", "abc", "abc", "def"],
+    )
+    retry = decision_row("retry", node_key="review", kind="review_escalation")
+    retry["options"] = ["retry", "send_back"]
+    monkeypatch.setattr(
+        workflows,
+        "_await_decision",
+        lambda *args: decision_calls.append(args) or retry,
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main")
+
+    assert result["status"] == "review"
+    assert result["commit_sha"] == "def"
+    assert result["review_verdict"] == "approve"
+    assert [call[-2:] for call in calls] == [
+        ("implement", 1),
+        ("review", 1),
+        ("implement", 2),
+        ("review", 1),
+    ]
+    assert decision_calls[0][1:4] == (
+        "review",
+        "review_escalation",
+        ["retry", "send_back"],
+    )
+
+
+def test_await_decision_polls_then_resumes_on_approve(monkeypatch):
+    open_row = decision_row(
+        None,
+        decided_at=None,
+        observed_at="2026-08-22T00:00:01+00:00",
+    )
+    approved = decision_row("approve", actor_subject="joe@example.com")
+    open_polls = iter([open_row, None])
+    sleeps = []
+
+    monkeypatch.setattr(workflows, "open_decision", lambda *args: open_row)
+    monkeypatch.setattr(workflows, "get_open_decision", lambda *args: next(open_polls))
+    monkeypatch.setattr(workflows, "get_decision", lambda decision_id: approved)
+    monkeypatch.setattr(
+        workflows,
+        "DBOS",
+        type("FakeDBOS", (), {"sleep": staticmethod(sleeps.append)}),
+    )
+
+    result = workflows._await_decision(
+        "wf-1", "push_gate", "push_gate", ["approve", "send_back"], "note", 60
+    )
+
+    assert result["decision"] == "approve"
+    assert sleeps == [workflows.POLL_INTERVAL_SECONDS]
+
+
+def test_await_decision_expires_at_pinned_timeout(monkeypatch):
+    open_row = decision_row(
+        None,
+        decided_at=None,
+        requested_at="2026-08-22T00:00:00+00:00",
+        observed_at="2026-08-22T00:00:10+00:00",
+    )
+    expired = decision_row("expired")
+    expired_calls = []
+
+    monkeypatch.setattr(workflows, "open_decision", lambda *args: open_row)
+    monkeypatch.setattr(workflows, "get_open_decision", lambda *args: open_row)
+    monkeypatch.setattr(
+        workflows,
+        "expire_decision",
+        lambda *args: expired_calls.append(args) or expired,
+    )
+
+    result = workflows._await_decision(
+        "wf-1", "push_gate", "push_gate", ["approve", "send_back"], "note", 5
+    )
+
+    assert result["decision"] == "expired"
+    assert expired_calls == [("wf-1", "push_gate")]
+
+
+def test_await_decision_replay_reuses_open_row(monkeypatch):
+    existing = decision_row(
+        None,
+        decided_at=None,
+        observed_at="2026-08-22T00:00:01+00:00",
+    )
+    existing["id"] = 7
+    approved = {**decision_row("approve"), "id": 7}
+    open_calls = []
+    open_polls = iter([existing, None])
+
+    monkeypatch.setattr(
+        workflows,
+        "open_decision",
+        lambda *args: open_calls.append(args) or existing,
+    )
+    monkeypatch.setattr(workflows, "get_open_decision", lambda *args: next(open_polls))
+    monkeypatch.setattr(workflows, "get_decision", lambda decision_id: approved)
+    monkeypatch.setattr(
+        workflows,
+        "DBOS",
+        type("FakeDBOS", (), {"sleep": staticmethod(lambda seconds: None)}),
+    )
+
+    result = workflows._await_decision(
+        "wf-1", "push_gate", "push_gate", ["approve", "send_back"], "note", 60
+    )
+
+    assert result["id"] == 7
+    assert result["decision"] == "approve"
+    assert len(open_calls) == 1
 
 
 def test_preexisting_unmoved_branch_retries_then_escalates_with_branch_head(

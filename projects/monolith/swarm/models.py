@@ -5,10 +5,23 @@ from datetime import datetime, timezone
 from typing import Iterator
 from uuid import uuid4
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    CheckConstraint,
+    Column,
+    Index,
+    Integer,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Session, SQLModel, select
 
 from core.db import get_engine
+
+_JSONB = JSONB().with_variant(JSON(), "sqlite")
+_BIGINT = BigInteger().with_variant(Integer(), "sqlite")
 
 
 class SwarmTask(SQLModel, table=True):
@@ -89,6 +102,41 @@ class SwarmConductorCall(SQLModel, table=True):
     version_before: int | None = None
     version_after: int | None = None
     latency_ms: int | None = None
+
+
+class SwarmDecision(SQLModel, table=True):
+    __tablename__ = "swarm_decision"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('push_gate', 'review_escalation')",
+            name="swarm_decision_kind_check",
+        ),
+        Index(
+            "swarm_decision_open_idx",
+            "workflow_id",
+            "node_key",
+            unique=True,
+            postgresql_where=text("decided_at IS NULL"),
+            sqlite_where=text("decided_at IS NULL"),
+        ),
+        Index("swarm_decision_workflow_requested_idx", "workflow_id", "requested_at"),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    id: int | None = Field(
+        default=None, primary_key=True, sa_type=_BIGINT, nullable=False
+    )
+    workflow_id: str
+    node_key: str
+    kind: str
+    options: list[str] = Field(sa_column=Column(_JSONB, nullable=False))
+    note: str | None = None
+    requested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    decided_at: datetime | None = None
+    decision: str | None = None
+    decision_note: str | None = None
+    actor_subject: str | None = None
+    actor_authority: str | None = None
 
 
 @contextmanager

@@ -1998,6 +1998,17 @@ py_test(
 )
 
 py_test(
+    name = "swarm_store_test",
+    srcs = ["swarm/store_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "rationale_test",
     srcs = ["swarm/rationale_test.py"],
     imports = ["."],
