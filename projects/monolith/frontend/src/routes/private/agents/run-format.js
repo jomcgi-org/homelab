@@ -117,20 +117,6 @@ export function stateFor(word, seconds) {
   return duration ? `${word} ${duration}` : word;
 }
 
-/** "attempt 2 · running 20m · $0.12", omitting whichever parts are absent. */
-export function attemptMeta(n, word, seconds, cost) {
-  return joinMeta(
-    `${RUN_LEXICON.labels.attempt} ${n}`,
-    stateFor(word, seconds),
-    fmtCost(cost),
-  );
-}
-
-/** "2nd in line". */
-export function queuePosition(position) {
-  return `${ordinal(position)} ${RUN_LEXICON.labels.positionWord}`;
-}
-
 /** "2nd on the codex queue". */
 export function queuedOnQueue(position, name) {
   return `${ordinal(position)} ${RUN_LEXICON.labels.queuedOn} ${name} ${RUN_LEXICON.labels.queueWord}`;

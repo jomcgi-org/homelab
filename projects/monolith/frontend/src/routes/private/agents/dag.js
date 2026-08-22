@@ -1,24 +1,28 @@
 export function computeRanks(nodes) {
   const byKey = new Map(nodes.map((node) => [node.key, node]));
   const memo = new Map();
+  const visiting = new Set();
   const rankOf = (node) => {
     if (memo.has(node.key)) return memo.get(node.key);
-    memo.set(node.key, 0);
+    if (visiting.has(node.key)) return 0;
+    visiting.add(node.key);
     const deps = (node.deps || []).map((key) => byKey.get(key)).filter(Boolean);
     const rank = deps.length ? Math.max(...deps.map(rankOf)) + 1 : 0;
+    visiting.delete(node.key);
     memo.set(node.key, rank);
     return rank;
   };
   const groups = [];
   nodes.forEach((node) => (groups[rankOf(node)] ||= []).push(node));
-  return groups;
+  return groups.filter(Array.isArray);
 }
 
 export function layoutEdges(ranks) {
-  return ranks.slice(0, -1).map((rank) => {
-    const strong = rank.every((node) =>
-      ["done", "passed"].includes(node.state),
-    );
+  const safeRanks = (ranks ?? []).filter(Array.isArray);
+  return safeRanks.slice(0, -1).map((rank) => {
+    const strong =
+      rank.length > 0 &&
+      rank.every((node) => ["done", "passed"].includes(node.state));
     return { dim: !strong, strong };
   });
 }

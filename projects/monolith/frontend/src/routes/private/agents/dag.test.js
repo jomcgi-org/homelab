@@ -46,6 +46,26 @@ describe("run DAG helpers", () => {
     ]);
     expect(layoutEdges(ranks)).toHaveLength(ranks.length - 1);
   });
+  test("a partly running parallel rank yields a dim edge", () => {
+    expect(
+      layoutEdges([[{ state: "done" }, { state: "running" }], [{}]]),
+    ).toEqual([{ dim: true, strong: false }]);
+  });
+  test("an all-done parallel rank yields a strong edge", () => {
+    expect(layoutEdges([[{ state: "done" }, { state: "done" }], [{}]])).toEqual(
+      [{ dim: false, strong: true }],
+    );
+  });
+  test("a single-node run has no edges", () => {
+    expect(layoutEdges([[{ state: "running" }]])).toEqual([]);
+  });
+  test("a cycle does not leave holes in its ranks", () =>
+    expect(
+      computeRanks([
+        { key: "a", deps: ["b"] },
+        { key: "b", deps: ["a"] },
+      ]).every(Array.isArray),
+    ).toBe(true));
   test("default selection prefers attention, running, then the last done", () => {
     expect(
       defaultSelectedKey([

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
 import {
-  attemptMeta,
   engineStale,
   fmtCost,
   fmtDur,
@@ -73,14 +72,6 @@ describe("phrases", () => {
     expect(spendOfBudget(null, 50)).toBe(null);
     expect(spendOfBudget(0.2, null)).toBe("$0.20");
     expect(spendOfBudget(null, null)).toBe(null);
-  });
-
-  test("attempt meta omits the parts it does not have", () => {
-    expect(attemptMeta(2, "running", 1200, 0.12)).toBe(
-      "attempt 2 · running 20m · $0.12",
-    );
-    expect(attemptMeta(1, null, 480, 0)).toBe("attempt 1 · 8m");
-    expect(attemptMeta(1, "running", null, null)).toBe("attempt 1 · running");
   });
 
   test("a claim survives without the measurement it would have carried", () => {

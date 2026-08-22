@@ -26,6 +26,7 @@ async function render(props = {}) {
 async function click(element) {
   element.click();
   await tick();
+  await Promise.resolve();
 }
 
 async function keydown(key) {
@@ -41,15 +42,89 @@ async function keydown(key) {
 }
 
 function menuButton(target) {
-  return target.querySelector(`[aria-label="${P.labels.sessionMenu}"]`);
+  return target.querySelector('[aria-haspopup="menu"]');
 }
+
+const runProps = {
+  sessionRow: false,
+  runRow: true,
+  workflowId: "workflow-123",
+  runActive: true,
+  engineTier: "live",
+};
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   for (const { component, target } of mounted.splice(0)) {
     await unmount(component);
     target.remove();
   }
+});
+
+describe("run header menu", () => {
+  test("requires two cancel clicks", async () => {
+    const onCancel = vi.fn();
+    const target = await render({ ...runProps, onCancel });
+
+    await click(menuButton(target));
+    const cancel = target.querySelector('[data-menu-item="cancel"]');
+    await click(cancel);
+
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(cancel.textContent).toBe(P.labels.cancelRunConfirmMenu);
+
+    await click(cancel);
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("gates cancel on an active live run", async () => {
+    const activeLive = await render(runProps);
+    await click(menuButton(activeLive));
+    expect(activeLive.querySelector('[data-menu-item="cancel"]').disabled).toBe(
+      false,
+    );
+
+    const inactive = await render({ ...runProps, runActive: false });
+    await click(menuButton(inactive));
+    expect(inactive.querySelector('[data-menu-item="cancel"]').disabled).toBe(
+      true,
+    );
+
+    const stale = await render({ ...runProps, engineTier: "stale" });
+    await click(menuButton(stale));
+    expect(stale.querySelector('[data-menu-item="cancel"]').disabled).toBe(
+      true,
+    );
+  });
+
+  test("copies the workflow id and shows copied", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const target = await render(runProps);
+
+    await click(menuButton(target));
+    await click(target.querySelector('[data-menu-item="copy"]'));
+
+    expect(writeText).toHaveBeenCalledWith(runProps.workflowId);
+    expect(target.textContent).toContain(P.labels.copied);
+  });
+
+  test("closing the menu resets cancel confirmation", async () => {
+    const onCancel = vi.fn();
+    const target = await render({ ...runProps, onCancel });
+    const trigger = menuButton(target);
+
+    await click(trigger);
+    await click(target.querySelector('[data-menu-item="cancel"]'));
+    await click(trigger);
+    await click(trigger);
+
+    const cancel = target.querySelector('[data-menu-item="cancel"]');
+    expect(cancel.textContent).toBe(P.labels.cancelRunMenu);
+    await click(cancel);
+    expect(onCancel).not.toHaveBeenCalled();
+  });
 });
 
 describe("session header menu", () => {
