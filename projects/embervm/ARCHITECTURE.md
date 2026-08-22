@@ -585,8 +585,9 @@ lives in the fleet section.
 **Artifact model**: one typed verb family,
 `ExportArtifact` / `RestoreArtifact` / `EvictArtifact`, over `ArtifactRef
 {kind: BASE | SESSION | SERVING | STATEFUL | GROUP_SET | VOLUME}`.
-Control-plane-driven, idempotent per key; evict refuses while referenced.
-Keys are namespaced by workload (and vendor, below); the principal-scoped
+Control-plane-driven, idempotent per key; evict refuses while referenced, and
+base retention holds when the current base is unverified (#4401). Keys are
+namespaced by workload (and vendor, below); the principal-scoped
 `shared/<principal>/<sha256>` keyspace is a deliberate, named exception.
 
 **Planned rootfs plane (ADR 028, #4182)**: OCI images convert to deterministic

@@ -2274,17 +2274,29 @@ defmodule Embervm.BaseBuilder do
               {:ok, entries, truncated} ->
                 candidates = Enum.reject(entries, fn e -> MapSet.member?(keep, e.ref) end)
 
-                apply_remote_retention(
-                  state,
-                  instance_id,
-                  w.name,
-                  vendor,
-                  candidates,
-                  truncated,
-                  keep
-                )
+                if candidates != [] and
+                     not Enum.any?(entries, fn entry -> MapSet.member?(keep, entry.ref) end) do
+                  Logger.warning(
+                    "embervm base builder: retention held: current base unverified for workload " <>
+                      "#{w.name} on vendor #{vendor}; desired refs: " <>
+                      "#{inspect(keep |> MapSet.to_list() |> Enum.sort())}; held refs: " <>
+                      "#{inspect(Enum.map(candidates, & &1.ref))}"
+                  )
 
-                {:listed, length(entries), length(candidates)}
+                  {:held_unverified, length(entries), length(candidates)}
+                else
+                  apply_remote_retention(
+                    state,
+                    instance_id,
+                    w.name,
+                    vendor,
+                    candidates,
+                    truncated,
+                    keep
+                  )
+
+                  {:listed, length(entries), length(candidates)}
+                end
 
               {:error, reason} ->
                 # Fail toward KEEPING bytes: a daemon that predates ListArtifacts
@@ -2309,13 +2321,19 @@ defmodule Embervm.BaseBuilder do
   # that deletes from a shared bucket, so the summary reports the shape of the
   # pass even when it is a no-op. One line per 5m tick, not per workload.
   defp log_remote_retention_summary(state, tallies) do
-    listed = Enum.count(tallies, &match?({:listed, _, _}, &1))
+    listed =
+      Enum.count(tallies, fn tally ->
+        match?({:listed, _, _}, tally) or match?({:held_unverified, _, _}, tally)
+      end)
+
+    held_unverified = Enum.count(tallies, &match?({:held_unverified, _, _}, &1))
     no_node = Enum.count(tallies, &(&1 == :no_vendor_node))
     failed = Enum.count(tallies, &(&1 == :list_failed))
 
     {objects, candidates} =
       Enum.reduce(tallies, {0, 0}, fn
         {:listed, n, c}, {o, cc} -> {o + n, cc + c}
+        {:held_unverified, n, c}, {o, cc} -> {o + n, cc + c}
         _, acc -> acc
       end)
 
@@ -2324,6 +2342,7 @@ defmodule Embervm.BaseBuilder do
     Logger.info(
       "embervm base builder: remote base retention sweep (#{mode}) covered #{listed} " <>
         "(workload, vendor) pair(s), #{objects} store object(s), #{candidates} candidate(s); " <>
+        "#{held_unverified} held because the current base was unverified, " <>
         "#{no_node} skipped for no node of that vendor, #{failed} for a failed listing"
     )
 
@@ -2531,14 +2550,41 @@ defmodule Embervm.BaseBuilder do
                 base_age_seconds(b) >= @retention_min_age_seconds,
                 do: b
 
-          if candidates == [] do
-            {:skip, fact[:instance_id], retention_accounting(local_bases, desired, w.base_refs, candidates)}
-          else
-            refs = Enum.map(candidates, & &1.ref)
-            bytes = candidates |> Enum.map(&(&1.size_bytes || 0)) |> Enum.sum()
-            {:evict, fact[:instance_id], refs, bytes,
-              retention_manifest(fact, w.name, candidates, w.generation),
-              retention_accounting(local_bases, desired, w.base_refs, candidates)}
+          current_present? =
+            Enum.any?(local_bases, fn base ->
+              base.ref in desired and base.base_state != :BASE_BUILD_STATE_BUILDING
+            end)
+
+          cond do
+            candidates == [] ->
+              {:skip, fact[:instance_id],
+               retention_accounting(local_bases, desired, w.base_refs, candidates)}
+
+            not current_present? ->
+              held_refs = Enum.map(candidates, & &1.ref)
+
+              Logger.warning(
+                "embervm base builder: retention held: current base unverified for workload " <>
+                  "#{w.name} on node #{fact[:instance_id]}; desired refs: #{inspect(desired)}; " <>
+                  "held refs: #{inspect(held_refs)}"
+              )
+
+              {:skip, fact[:instance_id],
+               retention_accounting(
+                 local_bases,
+                 desired,
+                 w.base_refs,
+                 candidates,
+                 length(candidates)
+               )}
+
+            true ->
+              refs = Enum.map(candidates, & &1.ref)
+              bytes = candidates |> Enum.map(&(&1.size_bytes || 0)) |> Enum.sum()
+
+              {:evict, fact[:instance_id], refs, bytes,
+               retention_manifest(fact, w.name, candidates, w.generation),
+               retention_accounting(local_bases, desired, w.base_refs, candidates)}
           end
       end
     end
@@ -2559,6 +2605,10 @@ defmodule Embervm.BaseBuilder do
   # both refs at most retains one extra base until export finishes and the CP
   # advances its snapshot_ref; the alternative is a window where eviction deletes
   # the exact ref the CP considers current.
+  #
+  # Presence is a separate requirement from membership in this recorded desired
+  # set. Under #4401, retention holds all candidates unless at least one desired
+  # ref is verifiably present in the local or remote inventory being swept.
   defp desired_refs_for_node(node_ref, w) do
     superseded_desired =
       for {ref, entry} <- w.base_refs, not Map.get(entry, :evicted, false), do: ref
@@ -2582,7 +2632,13 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
-  defp retention_accounting(local_bases, desired, base_refs, candidates) do
+  defp retention_accounting(
+         local_bases,
+         desired,
+         base_refs,
+         candidates,
+         bases_kept_current_unverified \\ 0
+       ) do
     desired_count = Enum.count(local_bases, &(&1.ref in desired))
     protected_count = Enum.count(local_bases, fn base ->
       base.ref not in desired and base_protected?(base_refs, base.ref)
@@ -2597,7 +2653,8 @@ defmodule Embervm.BaseBuilder do
       bases_in_desired_set: desired_count,
       bases_protected_by_refcounts: protected_count,
       bases_excluded_as_too_young: too_young_count,
-      bases_selected_as_candidates: length(candidates)
+      bases_selected_as_candidates: length(candidates),
+      bases_kept_current_unverified: bases_kept_current_unverified
     }
   end
 
@@ -2928,7 +2985,7 @@ defmodule Embervm.BaseBuilder do
       accounting =
         Enum.reduce(entries, %{bases_seen_on_disk: 0, bases_in_desired_set: 0,
           bases_protected_by_refcounts: 0, bases_excluded_as_too_young: 0,
-          bases_selected_as_candidates: 0}, fn entry, acc ->
+          bases_selected_as_candidates: 0, bases_kept_current_unverified: 0}, fn entry, acc ->
           Enum.reduce(Map.get(entry, :retention_accounting, %{}), acc, fn {key, value}, totals ->
             Map.update!(totals, key, &(&1 + value))
           end)
