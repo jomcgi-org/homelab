@@ -99,8 +99,8 @@ defmodule Embervm.Router do
   # instance POSTs on start and on a jittered interval, advertising its identity
   # {node, pod_uid, address, boot_id} so the control plane adopts it without ever
   # listing pods (ADR embervm/005, R0 PR-2). Authenticated in-handler against the
-  # noded ServiceAccount (NOT the task-submit allow-list), so a node can register
-  # without being able to submit tasks.
+  # noded ServiceAccount and its bound pod claims (NOT the task-submit allow-list),
+  # so a node can register only itself without being able to submit tasks.
   post "/v1/nodes/register" do
     handle_node_register(conn)
   end
@@ -700,20 +700,29 @@ defmodule Embervm.Router do
 
   # -- node dial-home registration (R0 PR-2) ---------------------------------
 
-  # POST /v1/nodes/register. Authenticates the caller as the noded ServiceAccount
-  # (a valid TokenReview whose username matches the configured noded SA), NOT via
-  # the task-submit allow-list, then upserts the instance in the NodeRegistry.
-  # Registration is advertisement, so a valid-but-malformed body is accepted as a
-  # benign no-op (200) rather than 400: the daemon keeps re-advertising and the
-  # WatchNode stream is the real liveness signal. A missing/invalid token is 401.
+  # POST /v1/nodes/register. Authenticates the caller as the configured noded
+  # ServiceAccount, then requires the registration's pod UID and, when present,
+  # node name to match the bound token claims before updating NodeRegistry.
+  # Registration is advertisement, so a body that cannot be decoded is accepted
+  # as a benign no-op (200). A decodable identity mismatch is 403, and a
+  # missing/invalid token is 401.
   defp handle_node_register(conn) do
     case authorize_node(conn) do
-      :ok ->
+      {:ok, identity} ->
         case read_capped_body(conn) do
           {:ok, body, conn} ->
-            reg = decode_registration(body)
-            _ = Embervm.NodeRegistry.register(reg)
-            send_json(conn, 200, %{registered: true})
+            case decode_registration(body) do
+              {:ok, reg} ->
+                if registration_bound_to?(reg, identity) do
+                  _ = Embervm.NodeRegistry.register(reg)
+                  send_json(conn, 200, %{registered: true})
+                else
+                  reject_registration_identity(conn, reg, identity)
+                end
+
+              :error ->
+                send_json(conn, 200, %{registered: true})
+            end
 
           {:error, :too_large} ->
             send_json(conn, 413, %{error: "registration body too large", retryable: false})
@@ -727,48 +736,86 @@ defmodule Embervm.Router do
     end
   end
 
-  # Node auth: the bearer token must TokenReview to a ServiceAccount username that
+  # Node auth: the bearer token must TokenReview to an identity whose username
   # equals the configured noded SA (:noded_service_account app env, rendered from
-  # the chart). We accept both {:ok, username} (the SA also happens to be
-  # submit-allow-listed) and {:error, {:forbidden, username}} (a valid token that
-  # is simply not on the submit allow-list, the normal case for a node), because
-  # node identity is orthogonal to task-submit rights. An unset configured SA
-  # ("") accepts ANY valid ServiceAccount token (a permissive fallback for a
-  # cluster that has not pinned the SA yet); it never accepts an invalid token.
+  # the chart). Both allow-listed and forbidden-but-verified identities are valid
+  # here because node identity is orthogonal to task-submit rights. The full
+  # identity is returned for registration binding. An unset configured SA fails
+  # closed before any token can authorize a node.
   defp authorize_node(conn) do
     authenticator = Application.get_env(:embervm, :authenticator, Embervm.Auth)
     expected = Application.get_env(:embervm, :noded_service_account, "")
 
-    with {:ok, token} <- bearer_token(conn),
-         {:ok, username} <- node_username(authenticator.authenticate(token)) do
-      if expected == "" or username == expected do
-        :ok
-      else
-        {:error, 403, %{error: "not the noded service account", retryable: false}}
-      end
-    else
-      {:error, :no_token} ->
-        {:error, 401, %{error: "missing bearer token", retryable: false}}
+    case expected do
+      "" ->
+        {:error, 403, %{error: "noded service account not configured", retryable: false}}
 
-      _ ->
-        {:error, 401, %{error: "node authentication failed", retryable: true}}
+      configured_sa ->
+        with {:ok, token} <- bearer_token(conn),
+             {:ok, identity} <- node_identity(authenticator.authenticate_identity(token)) do
+          if identity.username == configured_sa do
+            {:ok, identity}
+          else
+            {:error, 403, %{error: "not the noded service account", retryable: false}}
+          end
+        else
+          {:error, :no_token} ->
+            {:error, 401, %{error: "missing bearer token", retryable: false}}
+
+          _ ->
+            {:error, 401, %{error: "node authentication failed", retryable: true}}
+        end
     end
   end
 
   # Both an allow-listed success and a forbidden-but-verified result carry the
-  # TokenReview username, which is all node auth needs; every other shape is a
-  # genuine auth failure.
-  defp node_username({:ok, username}), do: {:ok, username}
-  defp node_username({:error, {:forbidden, username}}), do: {:ok, username}
-  defp node_username(_), do: :error
+  # full TokenReview identity required for registration binding. Every other
+  # shape is a genuine auth failure.
+  defp node_identity({:ok, %Embervm.Auth.Identity{} = identity}), do: {:ok, identity}
 
-  # Decode the registration JSON into a string-keyed map, tolerating a malformed
-  # body (yields %{} the registry rejects as invalid, still a benign 200).
+  defp node_identity({:error, {:forbidden, %Embervm.Auth.Identity{} = identity}}),
+    do: {:ok, identity}
+
+  defp node_identity(_), do: :error
+
+  defp registration_bound_to?(
+         %{"node" => node, "pod_uid" => pod_uid},
+         %Embervm.Auth.Identity{pod_uid: token_pod_uid, node_name: token_node_name}
+       )
+       when is_binary(pod_uid) and pod_uid != "" and is_binary(token_pod_uid) and
+              token_pod_uid != "" do
+    pod_uid == token_pod_uid and (is_nil(token_node_name) or node == token_node_name)
+  end
+
+  defp registration_bound_to?(_reg, _identity), do: false
+
+  defp reject_registration_identity(conn, reg, identity) do
+    claimed_node = registration_field(reg, "node")
+    claimed_pod_uid = registration_field(reg, "pod_uid")
+
+    Logger.warning(
+      "registration_identity_mismatch claimed_node=#{inspect(claimed_node)} " <>
+        "claimed_pod_uid=#{inspect(claimed_pod_uid)} " <>
+        "token_pod_uid=#{inspect(identity.pod_uid)} token_pod_name=#{inspect(identity.pod_name)}"
+    )
+
+    send_json(conn, 403, %{
+      error: "registration identity does not match token",
+      retryable: false
+    })
+  end
+
+  defp registration_field(%{} = reg, field), do: Map.get(reg, field)
+  defp registration_field(_reg, _field), do: nil
+
+  # Decode the registration JSON while preserving the distinction between an
+  # undecodable advertisement and a decodable body whose identity must be bound.
   defp decode_registration(body) do
-    case safe_decode(body) do
-      %{} = map -> map
-      _ -> %{}
-    end
+    {:ok, :json.decode(body)}
+  rescue
+    _ -> :error
+  catch
+    _, _ -> :error
   end
 
   defp safe_decode(""), do: %{}
@@ -847,8 +894,7 @@ defmodule Embervm.Router do
   # Absent, unreadable, malformed, or non-string all mean "no restore
   # requested" rather than an error: an empty body is the normal, by-far-most-
   # common case for this route, so this is tolerant by design, matching
-  # decode_registration/safe_decode's own body-parsing idiom elsewhere in this
-  # router.
+  # decode_registration's own body-parsing idiom elsewhere in this router.
   defp optional_restore_lineage(conn) do
     case read_capped_body(conn) do
       {:ok, body, conn} ->

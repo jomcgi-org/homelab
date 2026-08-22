@@ -5,8 +5,8 @@ defmodule Embervm.Auth do
 
   A token is authenticated by a Kubernetes `TokenReview` (via `Embervm.K8s`),
   then checked against an allow-list of ServiceAccount usernames from values.
-  Successful reviews are cached keyed by `sha256(token)` with a 60s TTL and
-  collapsed by singleflight, because without caching a saturating submit rate
+  Successful reviewed identities are cached keyed by `sha256(token)` with a 60s
+  TTL and collapsed by singleflight, because without caching a saturating submit rate
   becomes an equal rate of TokenReview calls against the API server. That is the
   exact failure the fc-invoke 5-QPS TokenReview incident (PR #3352) taught us to
   design out: there the client-side rate limiter silently capped throughput
@@ -37,6 +37,8 @@ defmodule Embervm.Auth do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
+  alias Embervm.Auth.Identity
+
   @default_ttl_ms 60_000
   @max_entries 4096
 
@@ -63,6 +65,18 @@ defmodule Embervm.Auth do
   @spec authenticate(GenServer.server(), String.t()) ::
           {:ok, String.t()} | {:error, term()}
   def authenticate(server \\ __MODULE__, token) do
+    server
+    |> authenticate_identity(token)
+    |> identity_username()
+  end
+
+  @doc """
+  Authenticates `token` like `authenticate/2`, but returns the full reviewed
+  identity in successful and authenticated-but-forbidden results.
+  """
+  @spec authenticate_identity(GenServer.server(), String.t()) ::
+          {:ok, Identity.t()} | {:error, {:forbidden, Identity.t()} | term()}
+  def authenticate_identity(server \\ __MODULE__, token) do
     GenServer.call(server, {:authenticate, token}, :infinity)
   end
 
@@ -157,14 +171,14 @@ defmodule Embervm.Auth do
     {{:error, reason}, state}
   end
 
-  defp resolve(state, key, _token, {:ok, username}) do
-    if MapSet.member?(state.allowed, username) do
+  defp resolve(state, key, _token, {:ok, %Identity{} = identity}) do
+    if MapSet.member?(state.allowed, identity.username) do
       now = state.clock.()
-      {{:ok, username}, store(state, key, username, now)}
+      {{:ok, identity}, store(state, key, identity, now)}
     else
-      # Surface the username so the router can audit WHO was rejected. Still not
+      # Surface the identity so callers can audit WHO was rejected. Still not
       # cached (a pure success set, per the moduledoc).
-      {{:error, {:forbidden, username}}, state}
+      {{:error, {:forbidden, identity}}, state}
     end
   end
 
@@ -201,6 +215,13 @@ defmodule Embervm.Auth do
   defp hash(token) do
     :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
   end
+
+  defp identity_username({:ok, %Identity{username: username}}), do: {:ok, username}
+
+  defp identity_username({:error, {:forbidden, %Identity{username: username}}}),
+    do: {:error, {:forbidden, username}}
+
+  defp identity_username({:error, reason}), do: {:error, reason}
 
   defp default_clock, do: System.system_time(:millisecond)
 end

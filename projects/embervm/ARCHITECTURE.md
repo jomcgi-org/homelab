@@ -440,9 +440,11 @@ against them.
 5. **The node agent is authoritative for instance runtime state.**
    What a brick reports over
    dial-home about its VMs, taps, and volumes is the truth; control-plane
-   tables are a reconciled cache. The one carve-out is destruction: an
-   instance is recorded destroyed only after the owning node confirms
-   teardown, and reconciliation is fail-closed toward destruction (an
+   tables are a reconciled cache. The registration route binds that authority
+   to the pod UID and node name claims in the brick's bound ServiceAccount
+   token, so a brick can establish only its own stream. The one carve-out is
+   destruction: an instance is recorded destroyed only after the owning node
+   confirms teardown, and reconciliation is fail-closed toward destruction (an
    unrecognised node VM is an orphan to destroy, unless it carries the
    `origin: ACTIVATOR` marker, in which case it is adopted and backfilled).
    Model-checked (`adoption.tla`) against control-plane and node crashes
@@ -714,17 +716,14 @@ model providers among them.
 
 - **Built**: Firecracker boundary; no NIC for task/session guests;
   principal-bound lineage; no cluster credential in guests; Envoy-only
-  serving ingress.
+  serving ingress; bound dial-home registration identity.
 - **Accepted risk**: unauthenticated noded gRPC on the pod network (#4693);
-  self-asserted dial-home identity under a shared ServiceAccount, so a
-  brick can re-register another brick's identity (#4707); an anonymous
-  default object store, so any pod-network caller can write or delete
-  artifacts (#4708); privileged noded with /dev/kvm; external-allow guest
-  egress via the broker; taint optional.
-- **Planned**: mTLS/SPIFFE and noded network policy (#4693); registration
-  bound to brick identity (#4707); authenticated per-tuple store access
-  (#4708); per-principal envelope encryption and tuple-authorized restore
-  (#4691); granular containment.
+  an anonymous default object store, so any pod-network caller can write or
+  delete artifacts (#4708); privileged noded with /dev/kvm; external-allow
+  guest egress via the broker; taint optional.
+- **Planned**: mTLS/SPIFFE and noded network policy (#4693); authenticated
+  per-tuple store access (#4708); per-principal envelope encryption and
+  tuple-authorized restore (#4691); granular containment.
 
 EmberVM evaluates itself against the threat model published by
 [agent-substrate/substrate](https://github.com/agent-substrate/substrate/blob/main/docs/threat-model.md),
@@ -777,12 +776,12 @@ graph LR
     G1 -- "plaintext egress" --> P
     G2 -- "plaintext egress" --> P
     P -- "fresh TLS, credential injected<br/>only for allowlisted hosts" --> X
-    N -- "facts (dial-home), no transport auth<br/>and self-asserted identity today (#4693, #4707)" --> F
+    N -- "facts (dial-home), bound pod identity<br/>but no gRPC transport auth (#4693)" --> F
     N -- "snapshot bytes, never via the CP,<br/>anonymous store access today (#4708)" --> S
 ```
 
 Trust diagram legend: every edge is a current path; the labelled exposures
-are the Accepted risks tracked by #4693, #4707, and #4708.
+are the Accepted risks tracked by #4693 and #4708.
 
 ### Attacks from guests
 
@@ -812,7 +811,7 @@ are the Accepted risks tracked by #4693, #4707, and #4708.
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
 | Node storage access scoped to actors scheduled on it (36, 37) | **Planned**: a brick receives a short-lived decryption capability for exactly the tuple it is waking (#4691), over authenticated store access (#4708), so a compromised brick or a bulk bucket copy yields nothing readable beyond its own current assignments. Today the default store is anonymous, so any pod-network caller can read, write, or delete any warmth object. |
-| Node API access scoped to its own actors (38) | **Built** for the substantive control: node reports are authoritative only for instances anchored to that node, and wake grants are gated on the volume's anchor (section 4). **Accepted risk**: the (node, pod uid) registration identity is self-asserted under a shared ServiceAccount, so a brick can re-register another brick's identity and become its authoritative source; **Planned** binding to brick identity (#4707). |
+| Node API access scoped to its own actors (38) | **Built**: node reports are authoritative only for instances anchored to that node, wake grants are gated on the volume's anchor (section 4), and the bound token's TokenReview pod-uid and node-name claims must match the claimed (node, pod uid). A brick can register only itself. |
 | Granular admin access and envelope encryption at rest (39, 40) | **Planned** for principal warmth (#4691), with two KEK custody modes: platform-managed (**Decided direction**: per-principal KEKs derived per epoch from a single root held by the control plane's key service, so the deployment carries one standing key secret regardless of principal count, revocation is a minimum-accepted-epoch floor, and keys and ciphertext never sit in the same component), or customer-managed in the principal's own KMS with wrap/unwrap grants only, so key material never enters the platform and revocation is the customer's unilateral act. Immutable private rootfs chunks use Account-scoped convergent encryption with per-manifest principal authorization (ADR 028, #4182); this does not widen mutable artifact encryption. The op-log deliberately shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
 | Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). The journal is prefix-compacted past 30 days; older audit lives only in the observability stack. |
 | Containment of a detected-bad actor (43) | **Built** for one lever: principal cutoff as an admission action, stop minting tokens, 402 at the edge. The volume quarantine is a data-integrity guard against generation divergence, not an adversary control; no brick- or principal-level quarantine primitive exists, and an automatic containment policy is not decided. |

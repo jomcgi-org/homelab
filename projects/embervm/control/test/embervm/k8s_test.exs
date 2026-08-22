@@ -1,13 +1,62 @@
 defmodule Embervm.K8sTest do
   @moduledoc """
   Unit tests for the parts of `Embervm.K8s` that are testable without a live
-  apiserver: the NDJSON line framing that reassembles watch events across TCP
-  chunk boundaries. The streaming/auth/request plumbing itself is exercised
-  in-cluster (the deploy-verify step), not here.
+  apiserver: TokenReview response parsing and the NDJSON line framing that
+  reassembles watch events across TCP chunk boundaries. The streaming and
+  request plumbing itself is exercised in-cluster (the deploy-verify step), not
+  here.
   """
   use ExUnit.Case, async: true
 
   alias Embervm.K8s
+  alias Embervm.Auth.Identity
+
+  describe "parse_review/2" do
+    test "returns the complete bound pod identity" do
+      body =
+        review_body(%{
+          "authentication.kubernetes.io/pod-uid" => ["pod-uid-1"],
+          "authentication.kubernetes.io/pod-name" => ["embervm-brick-1"],
+          "authentication.kubernetes.io/node-name" => ["node-4"]
+        })
+
+      assert {:ok,
+              %Identity{
+                username: "system:serviceaccount:embervm:noded",
+                pod_uid: "pod-uid-1",
+                pod_name: "embervm-brick-1",
+                node_name: "node-4"
+              }} = K8s.parse_review(201, body)
+    end
+
+    test "returns nil bound fields when extra is absent" do
+      body = review_body(:absent)
+
+      assert {:ok,
+              %Identity{
+                username: "system:serviceaccount:embervm:noded",
+                pod_uid: nil,
+                pod_name: nil,
+                node_name: nil
+              }} = K8s.parse_review(200, body)
+    end
+
+    test "returns nil pod_uid when other extras are present" do
+      body =
+        review_body(%{
+          "authentication.kubernetes.io/pod-name" => ["embervm-brick-1"],
+          "authentication.kubernetes.io/node-name" => ["node-4"]
+        })
+
+      assert {:ok,
+              %Identity{
+                username: "system:serviceaccount:embervm:noded",
+                pod_uid: nil,
+                pod_name: "embervm-brick-1",
+                node_name: "node-4"
+              }} = K8s.parse_review(201, body)
+    end
+  end
 
   describe "frame_ndjson/2" do
     test "splits complete lines and returns no remainder when the chunk ends on a newline" do
@@ -73,5 +122,13 @@ defmodule Embervm.K8sTest do
       # The point is that the path is DERIVED from it rather than hardcoded.
       assert K8s.workloads_path() == "/apis/embervm.dev/v1alpha1/namespaces/#{K8s.namespace()}/workloads"
     end
+  end
+
+  defp review_body(extra) do
+    user = %{"username" => "system:serviceaccount:embervm:noded"}
+    user = if extra == :absent, do: user, else: Map.put(user, "extra", extra)
+
+    :json.encode(%{"status" => %{"authenticated" => true, "user" => user}})
+    |> :erlang.iolist_to_binary()
   end
 end

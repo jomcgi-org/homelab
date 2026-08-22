@@ -8,6 +8,7 @@ defmodule Embervm.RouterTest do
   idempotency keys keep tasks from colliding across tests.
   """
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Embervm.{NodeRegistry, TaskStore}
 
@@ -19,6 +20,38 @@ defmodule Embervm.RouterTest do
     def authenticate("good2"), do: {:ok, "principal-2"}
     def authenticate("forbidden"), do: {:error, :forbidden}
     def authenticate(_), do: {:error, :unauthenticated}
+
+    def authenticate_identity("good") do
+      {:ok,
+       %Embervm.Auth.Identity{
+         username: @allowed,
+         pod_uid: "router-test-sa",
+         pod_name: "embervm-brick-good",
+         node_name: "node-4"
+       }}
+    end
+
+    def authenticate_identity("good2") do
+      {:ok,
+       %Embervm.Auth.Identity{
+         username: "principal-2",
+         pod_uid: "router-test-other",
+         pod_name: "embervm-brick-other",
+         node_name: "node-4"
+       }}
+    end
+
+    def authenticate_identity("legacy") do
+      {:ok,
+       %Embervm.Auth.Identity{
+         username: @allowed,
+         pod_uid: nil,
+         pod_name: nil,
+         node_name: nil
+       }}
+    end
+
+    def authenticate_identity(_), do: {:error, :unauthenticated}
   end
 
   # Fakes for the R2 session routes: the router resolves the session manager/store
@@ -347,14 +380,91 @@ defmodule Embervm.RouterTest do
     assert resp.status == 403
   end
 
+  test "POST /v1/nodes/register rejects a pod_uid that differs from the token claim" do
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    parent = self()
+
+    log =
+      capture_log(fn ->
+        resp =
+          req(
+            :post,
+            "/v1/nodes/register",
+            auth("good"),
+            reg_body(%{"pod_uid" => "claimed-other-pod"})
+          )
+
+        send(parent, {:registration_response, resp})
+      end)
+
+    assert_receive {:registration_response, resp}
+    assert resp.status == 403
+    assert json(resp.body) == %{"error" => "registration identity does not match token", "retryable" => false}
+    assert length(Regex.scan(~r/registration_identity_mismatch/, log)) == 1
+    assert log =~ "claimed_node=\"node-4\""
+    assert log =~ "claimed_pod_uid=\"claimed-other-pod\""
+    assert log =~ "token_pod_uid=\"router-test-sa\""
+    assert log =~ "token_pod_name=\"embervm-brick-good\""
+  end
+
+  test "POST /v1/nodes/register rejects a node that differs from the token claim" do
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+
+    resp =
+      req(
+        :post,
+        "/v1/nodes/register",
+        auth("good"),
+        reg_body(%{"node" => "node-5", "pod_uid" => "router-test-sa"})
+      )
+
+    assert resp.status == 403
+    assert json(resp.body)["error"] == "registration identity does not match token"
+  end
+
+  test "POST /v1/nodes/register rejects a token without a bound pod_uid" do
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    resp = req(:post, "/v1/nodes/register", auth("legacy"), reg_body())
+    assert resp.status == 403
+    assert json(resp.body)["error"] == "registration identity does not match token"
+  end
+
+  test "POST /v1/nodes/register rejects an empty body pod_uid" do
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    resp = req(:post, "/v1/nodes/register", auth("good"), reg_body(%{"pod_uid" => ""}))
+    assert resp.status == 403
+    assert json(resp.body)["error"] == "registration identity does not match token"
+  end
+
+  test "POST /v1/nodes/register fails closed when the noded SA is not configured" do
+    Application.put_env(:embervm, :noded_service_account, "")
+    resp = req(:post, "/v1/nodes/register", auth("good"), reg_body(%{"pod_uid" => "router-test-sa"}))
+    assert resp.status == 403
+    assert json(resp.body) == %{"error" => "noded service account not configured", "retryable" => false}
+  end
+
   test "POST /v1/nodes/register accepts a forbidden-but-valid token as the noded SA" do
     # A node token that TokenReviews to the noded SA but is NOT on the task-submit
-    # allow-list surfaces as {:error, {:forbidden, username}}; node auth accepts it.
+    # allow-list carries its reviewed Identity in the forbidden result; node auth
+    # accepts it.
     Application.put_env(:embervm, :noded_service_account, "system:serviceaccount:embervm:node")
 
     defmodule NodeAuth do
       def authenticate("node-token"), do: {:error, {:forbidden, "system:serviceaccount:embervm:node"}}
       def authenticate(_), do: {:error, :unauthenticated}
+
+      def authenticate_identity("node-token") do
+        {:error,
+         {:forbidden,
+          %Embervm.Auth.Identity{
+            username: "system:serviceaccount:embervm:node",
+            pod_uid: "router-test-node-token",
+            pod_name: "embervm-brick-node-token",
+            node_name: "node-4"
+          }}}
+      end
+
+      def authenticate_identity(_), do: {:error, :unauthenticated}
     end
 
     Application.put_env(:embervm, :authenticator, NodeAuth)
