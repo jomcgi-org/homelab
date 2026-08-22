@@ -104,6 +104,19 @@ common:ci --workspace_status_command=./bazel/tools/workspace_status.sh
 common:ci --define=CI=true
 common:ci --repo_env=GHCR_TOKEN
 
+# Fetch external downloads through BuildBuddy's Remote Asset API instead of
+# straight from Wolfi, GitHub, PyPI and friends. Every rctx.download (apko
+# apks, http_archive, wheels, node tarballs) is served from the CAS after the
+# first fetch, so a cold queue candidate no longer depends on an upstream
+# mirror being healthy: on 2026-08-22 a Wolfi chromium apk failed with
+# Bazel's resumed-download "Multiple entries with same key: Range=" and
+# ejected a PR from the merge queue twice. Credentials ride on the same
+# --remote_header the runner already injects. local_fallback keeps a
+# downloader outage from failing a build on its own. go_repository is NOT
+# covered (fetch_repo shells out to the Go toolchain).
+common:ci --experimental_remote_downloader=grpcs://remote.buildbuddy.io
+common:ci --experimental_remote_downloader_local_fallback
+
 # Pass Semgrep App token to test actions for Pro interfile analysis
 test:ci --test_env=SEMGREP_APP_TOKEN
 
