@@ -734,15 +734,12 @@
   }
 
   function runAsk(run) {
-    const pushGate = [...(run?.shape ?? []), ...(run?.nodes ?? [])].find(
-      (node) =>
-        (node.kind === "gate" || node.key === "push_gate") &&
-        (node.key === "push_gate" || /push/i.test(node.label ?? "")) &&
-        (node.state === "escalated" ||
-          (node.state === "blocked" &&
-            (node.blocked_on == null || node.blocked_on?.kind === "human"))),
-    );
-    return pushGate ? P.labels.approvePush : P.labels.needsYou;
+    const escalated =
+      run?.state === "escalated" ||
+      [...(run?.shape ?? []), ...(run?.nodes ?? [])].some(
+        (node) => node.state === "escalated",
+      );
+    return escalated ? P.labels.escalated : P.labels.needsYou;
   }
 
   async function runSearch(value = searchQuery) {
