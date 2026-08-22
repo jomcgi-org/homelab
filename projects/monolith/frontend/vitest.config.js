@@ -17,6 +17,15 @@ export default defineConfig({
       "$app/environment": fileURLToPath(
         new URL("./test/app-environment-stub.js", import.meta.url),
       ),
+      // Client-only route components can still be loaded while compiling an
+      // SSR shell test. These stubs make their SvelteKit navigation imports
+      // resolvable without providing browser behavior.
+      "$app/navigation": fileURLToPath(
+        new URL("./test/app-navigation-stub.js", import.meta.url),
+      ),
+      "$app/stores": fileURLToPath(
+        new URL("./test/app-stores-stub.js", import.meta.url),
+      ),
       // Same reason for `$env/dynamic/private` (used by lib/server/trips-img.js
       // and, transitively, the trips server loads). The real module is injected
       // by SvelteKit at build time; the stub exposes process.env so tests can

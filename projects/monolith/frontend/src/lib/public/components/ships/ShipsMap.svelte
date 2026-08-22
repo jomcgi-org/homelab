@@ -109,8 +109,8 @@
   // View state (type filter, mode, selection) is initialized from the URL on
   // load (so a shared link restores it) and mirrored back as it changes (see the
   // $effect below). This is a lib component, but $app/stores + $app/navigation
-  // work in any client component, and the ships route disables SSR, so reading
-  // $page here is always client-side.
+  // work in any client component. ShipsMap only mounts inside the route's
+  // browser guard, so reading $page here is always client-side.
   const initialView = readShipsParams($page.url.searchParams, LEGEND_KEYS);
 
   let active = $state(initialView.active); // enabled vessel types (all on by default)
