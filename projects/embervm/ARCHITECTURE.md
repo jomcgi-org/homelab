@@ -718,13 +718,13 @@ model providers among them.
   principal-bound lineage; no cluster credential in guests; Envoy-only
   serving ingress; bound dial-home registration identity.
 - **Accepted risk**: production has not enabled the noded bearer token or
-  ingress policy pending its 1Password item (#4693); an anonymous default
-  object store, so any pod-network caller can write or delete artifacts
-  (#4708); privileged noded with /dev/kvm; external-allow guest egress via
-  the broker; taint optional.
-- **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade; authenticated
-  per-tuple store access (#4708); per-principal envelope encryption and
-  tuple-authorized restore (#4691); granular containment.
+  ingress policy pending its 1Password item (#4693); the store stays
+  anonymous until the SigV4 identities flip, so any pod-network caller can
+  write or delete artifacts until then (#4708); privileged noded with
+  /dev/kvm; external-allow guest egress via the broker; taint optional.
+- **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade; per-principal
+  envelope encryption and tuple-authorized restore (#4691); granular
+  containment.
 
 EmberVM evaluates itself against the threat model published by
 [agent-substrate/substrate](https://github.com/agent-substrate/substrate/blob/main/docs/threat-model.md),
@@ -769,7 +769,7 @@ graph LR
     subgraph cp ["Control plane"]
         F["admission, facts,<br/>op-log audit"]
     end
-    S[("artifact store<br/>per-principal encryption Planned #4691")]
+    S[("artifact store<br/>SigV4 per-identity access, enabled per environment by values (#4708)<br/>per-principal encryption Planned #4691")]
     X["external hosts"]
 
     G1 -- "vsock only" --> N
@@ -778,7 +778,7 @@ graph LR
     G2 -- "plaintext egress" --> P
     P -- "fresh TLS, credential injected<br/>only for allowlisted hosts" --> X
     N -- "facts (dial-home), bound pod identity;<br/>bearer + policy built, prod pending (#4693)" --> F
-    N -- "snapshot bytes, never via the CP,<br/>anonymous store access today (#4708)" --> S
+    N -- "snapshot bytes, never via the CP,<br/>SigV4 per-identity access, enabled per environment by values (#4708)" --> S
 ```
 
 Trust diagram legend: every edge is a current path; the labelled exposures
@@ -795,7 +795,7 @@ are the Accepted risks tracked by #4693 and #4708.
 | Worker state fully reset between actors (18, 27, 30) | **Built**: Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no mutable VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, placement is CP-owned, never guest-chosen, and each VM sees an immutable rootfs plus private scratch. ADR 028's Planned physical chunk sharing cannot expose another manifest or writable filesystem. |
 | Credentials never inside the sandbox by default (28, 29) | **Built**: class 1 derivable short-lived credentials may enter PLATFORM-TRUSTED guest classes only and are revoked at bank; the brick-local egress proxy holds other real credentials and injects them only at the sidecar hop, only for hosts in that secret's `egressTo`. UNTRUSTED workload guests never receive any credential class. Revocation at the validator is the control, and RAM scrubbing is rejected as a mechanism (section 9). **Planned**: per-principal grants at the credential broker and request-scoped GitHub tool mediation replacing host-keyed injection. |
 | Quotas and rate limits on creation and spend (9, 33) | **Built** as enforcement machinery, model-checked (`quota.tla`): admission fails closed, a configured quota of 0 is a hard stop at submit, and metering rides the operation (invariant 4). The per-principal daily budget is deliberately unset in the reference deployment (`deploy/values.yaml`), so spend is bounded by admission caps and concurrency, not by a per-principal quota, until a budget is set. |
-| Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Planned**: per-principal envelope encryption of mutable warmth, digest-verified manifests, and restore authorized by the tuple (principal, lineage, brick, workload, generation, lease) (#4691), over authenticated per-tuple store access (#4708). **Accepted risk** today: the default object store is anonymous, so any pod-network caller can write, substitute, or delete an artifact, and a same-vendor substitution passes the vendor stamp silently. The vendor stamp defends against accidents, not against an adversary with store reach. |
+| Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Built**: SigV4 per-identity store access is enabled per environment by values (#4708). **Planned**: per-principal envelope encryption of mutable warmth, digest-verified manifests, and restore authorized by the tuple (principal, lineage, brick, workload, generation, lease) (#4691). **Accepted risk** until the environment flip lands: the default values leave credentials and store authentication off, so any pod-network caller can write, substitute, or delete an artifact, and a same-vendor substitution passes the vendor stamp silently. The vendor stamp defends against accidents, not against an adversary with store reach. |
 
 ### Attacks from clients and the internal network
 
@@ -811,7 +811,7 @@ are the Accepted risks tracked by #4693 and #4708.
 
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
-| Node storage access scoped to actors scheduled on it (36, 37) | **Planned**: a brick receives a short-lived decryption capability for exactly the tuple it is waking (#4691), over authenticated store access (#4708), so a compromised brick or a bulk bucket copy yields nothing readable beyond its own current assignments. Today the default store is anonymous, so any pod-network caller can read, write, or delete any warmth object. |
+| Node storage access scoped to actors scheduled on it (36, 37) | **Built**: SigV4 per-identity store access is enabled per environment by values (#4708). **Planned**: a brick receives a short-lived decryption capability for exactly the tuple it is waking (#4691), so a compromised brick or a bulk bucket copy yields nothing readable beyond its own current assignments. **Accepted risk** until the environment flip lands: the default values leave credentials and store authentication off, so any pod-network caller can read, write, or delete any warmth object. |
 | Node API access scoped to its own actors (38) | **Built**: node reports are authoritative only for instances anchored to that node, wake grants are gated on the volume's anchor (section 4), and the bound token's TokenReview pod-uid and node-name claims must match the claimed (node, pod uid). A brick can register only itself. |
 | Granular admin access and envelope encryption at rest (39, 40) | **Planned** for principal warmth (#4691), with two KEK custody modes: platform-managed (**Decided direction**: per-principal KEKs derived per epoch from a single root held by the control plane's key service, so the deployment carries one standing key secret regardless of principal count, revocation is a minimum-accepted-epoch floor, and keys and ciphertext never sit in the same component), or customer-managed in the principal's own KMS with wrap/unwrap grants only, so key material never enters the platform and revocation is the customer's unilateral act. Immutable private rootfs chunks use Account-scoped convergent encryption with per-manifest principal authorization (ADR 028, #4182); this does not widen mutable artifact encryption. The op-log deliberately shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
 | Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). The journal is prefix-compacted past 30 days; older audit lives only in the observability stack. |

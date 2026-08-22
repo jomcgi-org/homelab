@@ -29,6 +29,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	artifactstore "github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
@@ -1020,6 +1021,35 @@ func newZipTestServer(t *testing.T, archiveBytes []byte, archiveDelay time.Durat
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+func TestFetchArchiveFromStoreUsesSignedRequest(t *testing.T) {
+	archive := []byte("signed archive")
+	sawAuthorization := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuthorization <- r.Header.Get("Authorization")
+		_, _ = w.Write(archive)
+	}))
+	defer ts.Close()
+	signedStore := artifactstore.New(ts.URL, "embervm", false, artifactstore.WithCredentials("embervm", "secret"))
+	s := New(Options{
+		Config: config.Config{
+			StoreEndpoint:       ts.URL,
+			ArchiveFetchTimeout: time.Second,
+			ArchiveMaxBytes:     1024,
+		},
+		Driver:           &fakeDriver{},
+		Transport:        &fakeTransport{},
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SignStoreRequest: signedStore.SignRequest,
+	})
+	got, err := s.fetchAndVerifyArchive(context.Background(), ts.URL+"/embervm/archive.zip", sha256Hex(archive))
+	if err != nil || !bytes.Equal(got, archive) {
+		t.Fatalf("fetchAndVerifyArchive = %q, %v", got, err)
+	}
+	if gotAuth := <-sawAuthorization; !strings.HasPrefix(gotAuth, "AWS4-HMAC-SHA256 ") {
+		t.Fatalf("Authorization = %q", gotAuth)
+	}
 }
 
 // TestBuildBaseZipHappyPath: a zip source fetches the archive, verifies its

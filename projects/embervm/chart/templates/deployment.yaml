@@ -429,6 +429,18 @@ spec:
               value: {{ .Values.noded.store.endpoint | quote }}
             - name: EMBERVM_STORE_BUCKET
               value: {{ .Values.noded.store.bucket | quote }}
+            {{- if .Values.noded.store.credentials.enabled }}
+            - name: EMBERVM_STORE_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "embervm.store.credentialsSecretName" . }}
+                  key: {{ .Values.noded.store.credentials.accessKeyIdKey }}
+            - name: EMBERVM_STORE_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "embervm.store.credentialsSecretName" . }}
+                  key: {{ .Values.noded.store.credentials.secretAccessKeyKey }}
+            {{- end }}
             {{- if .Values.warmthS3Gc.enabled }}
             # The DESTRUCTIVE gate: "1" arms irreversible S3 deletion of proven
             # orphan prefixes (supervised, capped). Unset keeps every sweep a

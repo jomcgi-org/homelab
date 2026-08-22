@@ -74,6 +74,40 @@ def _render(
     return result.stdout
 
 
+def _render_with_set(release: str, settings: list[str]) -> str:
+    helm_bin = os.environ.get("HELM_BIN", "helm")
+    argv = [helm_bin, "template", release, str(_chart_dir()), "--namespace", release]
+    for setting in settings:
+        argv += ["--set", setting]
+    result = subprocess.run(argv, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"helm template failed: {result.stderr}")
+    return result.stdout
+
+
+def test_store_credentials_are_default_off_and_share_one_secret() -> None:
+    anonymous = _render_with_set("e", [])
+    assert "STORE_ACCESS_KEY_ID" not in anonymous
+    assert "onepassword.com/v1" not in "\n".join(
+        doc
+        for kind, _name, doc in _docs(anonymous)
+        if kind == "OnePasswordItem" and "-store" in doc
+    )
+
+    signed = _render_with_set(
+        "e",
+        [
+            "noded.store.credentials.enabled=true",
+            "noded.store.credentials.onepassword.itemPath=vaults/x/items/y",
+        ],
+    )
+    assert "EMBERVM_NODED_STORE_ACCESS_KEY_ID" in signed
+    assert "EMBERVM_STORE_ACCESS_KEY_ID" in signed
+    assert signed.count("name: e-embervm-store") >= 3
+    assert "kind: OnePasswordItem" in signed
+    assert 'itemPath: "vaults/x/items/y"' in signed
+
+
 def _docs(rendered: str):
     for doc in rendered.split("\n---"):
         kind = _DOC_KIND.search(doc)

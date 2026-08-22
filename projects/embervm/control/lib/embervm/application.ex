@@ -706,6 +706,8 @@ defmodule Embervm.Application do
       enabled: warmth_s3_gc_enabled(),
       endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
       bucket: store_bucket(),
+      access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
+      secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY"),
       expected_nodes: warmth_s3_gc_expected_nodes(),
       allow_empty_kinds: warmth_s3_gc_allow_empty_kinds(),
       max_prefixes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_PREFIXES"),

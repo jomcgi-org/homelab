@@ -145,7 +145,23 @@ defmodule Embervm.S3WarmthGc do
   def init(opts) do
     endpoint = Keyword.get(opts, :endpoint, "")
     bucket = Keyword.get(opts, :bucket, "embervm")
-    client = S3Client.new(endpoint, bucket)
+    access_key_id = Keyword.get(opts, :access_key_id, "") || ""
+    secret_access_key = Keyword.get(opts, :secret_access_key, "") || ""
+
+    credential_opts =
+      cond do
+        access_key_id == "" and secret_access_key == "" ->
+          []
+
+        access_key_id == "" or secret_access_key == "" ->
+          Logger.error("embervm s3 client: both access key ID and secret access key are required; using anonymous requests")
+          []
+
+        true ->
+          [access_key_id: access_key_id, secret_access_key: secret_access_key]
+      end
+
+    client = S3Client.new(endpoint, bucket, credential_opts)
 
     # The S3 seam: four funs over the real client by default; tests inject a
     # fake map. A nil client (empty endpoint) leaves the seam nil and every

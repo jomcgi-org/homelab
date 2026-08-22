@@ -290,6 +290,9 @@ type Server struct {
 	// no-ops, and NodeStatus.store_reachable stays false. In production a
 	// *store.Store satisfies it; tests inject an in-memory fake.
 	store artifactStore
+	// signStoreRequest signs zip-lane archive GETs that target the configured
+	// store endpoint. nil preserves the existing anonymous fetch path.
+	signStoreRequest func(*http.Request) error
 	// exported caches which artifacts (by store prefix) have a current store copy
 	// and at which generation, updated by the export queue and read by the
 	// NodeStatus projection for the per-artifact `exported` bool and
@@ -384,6 +387,9 @@ type Options struct {
 	// without a store still compiles and every other class is untouched. In
 	// production a *store.Store satisfies it; tests inject an in-memory fake.
 	Store artifactStore
+	// SignStoreRequest is the real store client's optional SigV4 seam for
+	// zip-lane archive GETs. It is called only for the configured store endpoint.
+	SignStoreRequest func(*http.Request) error
 }
 
 // New builds a Server. Driver and Transport must not be nil.
@@ -393,37 +399,38 @@ func New(opts Options) *Server {
 		logger = slog.Default()
 	}
 	s := &Server{
-		cfg:             opts.Config,
-		driver:          opts.Driver,
-		sessionDriver:   opts.SessionDriver,
-		transport:       opts.Transport,
-		newBuildDriver:  opts.NewBuildDriver,
-		logger:          logger,
-		vms:             newVMRegistry(),
-		bases:           newBaseRegistry(),
-		registry:        newWorkloadRegistry(opts.Config.RegistryCachePath),
-		sessionVMs:      newSessionRegistry(),
-		sessionSnap:     newSessionSnapshotRegistry(),
-		servingVMs:      newServingRegistry(),
-		servingSnap:     newServingSnapshotRegistry(),
-		servingImage:    newServingImageRegistry(),
-		servingNet:      opts.ServingNet,
-		servingDriver:   opts.ServingDriver,
-		statefulVMs:     newStatefulRegistry(),
-		statefulBundles: newStatefulBundleRegistry(),
-		statefulDriver:  opts.StatefulDriver,
-		groupNet:        opts.GroupNet,
-		groupRecords:    opts.GroupRecords,
-		groupMembers:    newGroupMemberRegistry(),
-		groupDriver:     opts.GroupDriver,
-		groupBundles:    newGroupBundleRegistry(),
-		groupClock:      opts.GroupClock,
-		store:           opts.Store,
-		exported:        newExportedCache(),
-		exportDedupe:    make(map[string]struct{}),
-		restoreDedupe:   make(map[string]struct{}),
-		subs:            make(map[chan struct{}]struct{}),
-		activeBuilds:    make(map[string]context.CancelFunc),
+		cfg:              opts.Config,
+		driver:           opts.Driver,
+		sessionDriver:    opts.SessionDriver,
+		transport:        opts.Transport,
+		newBuildDriver:   opts.NewBuildDriver,
+		logger:           logger,
+		vms:              newVMRegistry(),
+		bases:            newBaseRegistry(),
+		registry:         newWorkloadRegistry(opts.Config.RegistryCachePath),
+		sessionVMs:       newSessionRegistry(),
+		sessionSnap:      newSessionSnapshotRegistry(),
+		servingVMs:       newServingRegistry(),
+		servingSnap:      newServingSnapshotRegistry(),
+		servingImage:     newServingImageRegistry(),
+		servingNet:       opts.ServingNet,
+		servingDriver:    opts.ServingDriver,
+		statefulVMs:      newStatefulRegistry(),
+		statefulBundles:  newStatefulBundleRegistry(),
+		statefulDriver:   opts.StatefulDriver,
+		groupNet:         opts.GroupNet,
+		groupRecords:     opts.GroupRecords,
+		groupMembers:     newGroupMemberRegistry(),
+		groupDriver:      opts.GroupDriver,
+		groupBundles:     newGroupBundleRegistry(),
+		groupClock:       opts.GroupClock,
+		store:            opts.Store,
+		signStoreRequest: opts.SignStoreRequest,
+		exported:         newExportedCache(),
+		exportDedupe:     make(map[string]struct{}),
+		restoreDedupe:    make(map[string]struct{}),
+		subs:             make(map[chan struct{}]struct{}),
+		activeBuilds:     make(map[string]context.CancelFunc),
 	}
 	s.activator = newActivator(s)
 	s.statefulActivator = newStatefulActivator(s)
@@ -877,6 +884,12 @@ func (s *Server) fetchAndVerifyArchive(ctx context.Context, archiveURL, wantSha2
 	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, archiveURL, nil)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: build zip archive request: %v", err)
+	}
+	// Store-hosted zip archives use the same identity as continuity objects.
+	if s.signStoreRequest != nil && s.cfg.StoreEndpoint != "" && strings.HasPrefix(archiveURL, strings.TrimRight(s.cfg.StoreEndpoint, "/")+"/") {
+		if err := s.signStoreRequest(req); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: sign zip archive request: %v", err)
+		}
 	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {

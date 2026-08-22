@@ -119,6 +119,32 @@ func TestLoadWarmRestoreWithVolumeEnv(t *testing.T) {
 	}
 }
 
+func TestLoadStoreCredentialsBothOrNeither(t *testing.T) {
+	t.Run("missing access key", func(t *testing.T) {
+		t.Setenv("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY", "secret")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "EMBERVM_NODED_STORE_ACCESS_KEY_ID") {
+			t.Fatalf("Load error = %v, want missing access key", err)
+		}
+	})
+	t.Run("missing secret key", func(t *testing.T) {
+		t.Setenv("EMBERVM_NODED_STORE_ACCESS_KEY_ID", "embervm")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "EMBERVM_NODED_STORE_SECRET_ACCESS_KEY") {
+			t.Fatalf("Load error = %v, want missing secret key", err)
+		}
+	})
+	t.Run("both configured", func(t *testing.T) {
+		t.Setenv("EMBERVM_NODED_STORE_ACCESS_KEY_ID", "embervm")
+		t.Setenv("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY", "secret")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.StoreAccessKeyID != "embervm" || cfg.StoreSecretAccessKey != "secret" {
+			t.Fatal("store credentials were not parsed")
+		}
+	})
+}
+
 func stringPtr(value string) *string {
 	return &value
 }

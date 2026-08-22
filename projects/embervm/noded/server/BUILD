@@ -65,6 +65,7 @@ go_test(
     deps = [
         "//projects/embervm/noded/config",
         "//projects/embervm/noded/serving",
+        "//projects/embervm/noded/store",
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/volume",
         "//projects/embervm/proto/embervm/node/v1:nodev1",
