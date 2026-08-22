@@ -1633,7 +1633,10 @@ defmodule Embervm.NodeRegistry do
   # the daemon listens on the pod network gated by mesh policy). This is the
   # pattern the Task 3 Mint round-trip proved.
   defp default_connect(address) do
-    GRPC.Stub.connect(address, adapter: GRPC.Client.Adapters.Mint)
+    GRPC.Stub.connect(
+      address,
+      [adapter: GRPC.Client.Adapters.Mint] ++ Embervm.NodeAuth.connect_opts()
+    )
   end
 
   defp default_disconnect(channel) do

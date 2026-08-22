@@ -7,7 +7,7 @@ defmodule Embervm.NodeChannelTest do
   are unique per test because the channel cache is process-global
   (persistent_term).
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Embervm.NodeChannel
 
@@ -18,6 +18,19 @@ defmodule Embervm.NodeChannelTest do
   end
 
   defp node_id, do: "node-test-#{System.unique_integer([:positive])}"
+
+  setup do
+    previous = Application.get_env(:embervm, :noded_bearer_token, :not_set)
+
+    on_exit(fn ->
+      case previous do
+        :not_set -> Application.delete_env(:embervm, :noded_bearer_token)
+        token -> Application.put_env(:embervm, :noded_bearer_token, token)
+      end
+    end)
+
+    :ok
+  end
 
   defp start(node_id, connect) do
     {:ok, pid} =
@@ -52,6 +65,16 @@ defmodule Embervm.NodeChannelTest do
     assert {:ok, ^chan} = NodeChannel.get(pid, nid)
     assert {:ok, ^chan} = NodeChannel.get(pid, nid)
     assert Agent.get(dials, & &1) == 1
+  end
+
+  test "production dial options include the configured authorization header" do
+    Application.put_env(:embervm, :noded_bearer_token, "node-secret")
+
+    assert GRPC.Client.Adapters.Mint == NodeChannel.default_connect_opts()[:adapter]
+
+    assert NodeChannel.default_connect_opts()[:headers] == [
+             {"authorization", "Bearer node-secret"}
+           ]
   end
 
   test "invalidate drops the channel so the next get re-dials" do

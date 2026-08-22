@@ -281,11 +281,17 @@ defmodule Embervm.NodeChannel do
   defp pt_key(node_id), do: {__MODULE__, node_id}
 
   # Plaintext h2c over the Mint adapter, the pattern NodeRegistry/BaseBuilder use.
-  # Auth is deferred in R0 (noded runs open; mesh policy is the layer), so no
-  # bearer-token metadata is attached here; enabling it later is an additive
-  # change to the per-RPC metadata, not to this dial.
+  # grpc 1.0.3 copies connection-level headers onto every request, including the
+  # long-lived WatchNode stream, so the shared bearer option belongs at dial time.
   defp default_connect(address) do
-    GRPC.Stub.connect(address, adapter: GRPC.Client.Adapters.Mint)
+    GRPC.Stub.connect(address, default_connect_opts())
+  end
+
+  # Exposed only so the channel-cache test can pin the exact production dial
+  # options without opening a real socket or widening every injected connect_fun.
+  @doc false
+  def default_connect_opts do
+    [adapter: GRPC.Client.Adapters.Mint] ++ Embervm.NodeAuth.connect_opts()
   end
 
   defp default_disconnect(channel) do

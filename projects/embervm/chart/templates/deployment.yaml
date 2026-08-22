@@ -161,6 +161,16 @@ spec:
             - name: EMBERVM_NODED_SERVICE_ACCOUNT
               value: {{ printf "system:serviceaccount:%s:%s" .Release.Namespace (include "embervm.noded.serviceAccountName" .) | quote }}
             {{- end }}
+            {{- if and .Values.noded.bearerTokenSecret.enabled (or .Values.noded.enabled .Values.bricks.enabled) }}
+            # The control plane and every noded pod read the same Secret under
+            # the same enabled flag. Both sides therefore flip together in this
+            # one chart version, avoiding a fleet-wide auth mismatch.
+            - name: EMBERVM_NODED_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "embervm.noded.bearerTokenSecretName" . }}
+                  key: {{ .Values.noded.bearerTokenSecret.key }}
+            {{- end }}
             {{- if and .Values.runtimePython .Values.runtimePython.guestImage .Values.runtimePython.guestImage.repository }}
             # R1 zip lane (ADR embervm/002): the zip-lane runtime name -> pinned
             # runtime base image ref, as `runtime=ref` pairs. BaseBuilder resolves

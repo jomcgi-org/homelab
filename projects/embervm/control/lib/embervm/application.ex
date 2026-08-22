@@ -47,6 +47,11 @@ defmodule Embervm.Application do
     # a cluster that has not pinned the SA); it never accepts an invalid token.
     Application.put_env(:embervm, :noded_service_account, trimmed_env("EMBERVM_NODED_SERVICE_ACCOUNT"))
 
+    # Shared chart secret for noded gRPC authentication. Read and trim it before
+    # any child opens a channel; an empty value deliberately attaches no header.
+    # Like configured_nodes/0, this is pure environment wiring and stays Finch-free.
+    Application.put_env(:embervm, :noded_bearer_token, trimmed_env("EMBERVM_NODED_BEARER_TOKEN"))
+
     # Composite-group (R5) capacity from the chart env into app-env BEFORE the
     # supervisor starts, so Embervm.WorkloadWatcher (reads them at init) sees an
     # operator's override of compositeTcpPortRange / maxGroupSize. Absent or

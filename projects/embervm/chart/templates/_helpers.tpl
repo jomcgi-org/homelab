@@ -62,6 +62,22 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
+The bearer Secret name is shared by the control plane, every noded pod shape,
+and the optional OnePasswordItem. A generated Secret may use the release-derived
+default; a pre-existing Secret must be named explicitly so a typo cannot silently
+point both sides at a Secret the operator never created.
+*/}}
+{{- define "embervm.noded.bearerTokenSecretName" -}}
+{{- if .Values.noded.bearerTokenSecret.name -}}
+{{- .Values.noded.bearerTokenSecret.name -}}
+{{- else if .Values.noded.bearerTokenSecret.onepassword.itemPath -}}
+{{- printf "%s-noded-token" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- fail "noded.bearerTokenSecret.name is required when bearer auth is enabled without noded.bearerTokenSecret.onepassword.itemPath" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Size-class BRICK labels (brick-capacity, ADR embervm/013). A brick is a noded
 Deployment, so it SHARES noded's app.kubernetes.io/name (the pods are noded pods)
 but carries a DISTINCT component ("noded-brick") plus its size-class label. That

@@ -352,12 +352,13 @@ containers:
       # (the /readyz probe below), so Service traffic never reaches a pod with
       # an empty registry.
       {{- if $ctx.Values.noded.bearerTokenSecret.enabled }}
-      # Static bearer token gating the gRPC surface. When unset the daemon
-      # runs open and warns; a Cilium/Linkerd policy is defence-in-depth.
+      # Static bearer token gating the gRPC surface. The control plane reads
+      # this same Secret under the same enabled flag, so enforcement and client
+      # attachment always flip in one chart release.
       - name: EMBERVM_NODED_BEARER_TOKEN
         valueFrom:
           secretKeyRef:
-            name: {{ $ctx.Values.noded.bearerTokenSecret.name }}
+            name: {{ include "embervm.noded.bearerTokenSecretName" $ctx }}
             key: {{ $ctx.Values.noded.bearerTokenSecret.key }}
       {{- end }}
     # Readiness gates on the control-plane registry replay (artifact-
