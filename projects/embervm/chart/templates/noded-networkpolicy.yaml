@@ -79,9 +79,27 @@ spec:
             - port: {{ add .Values.noded.servingPortBase 2 | quote }}
               endPort: {{ add .Values.noded.servingPortBase 254 }}
               protocol: TCP
-    # Noded can optionally bind stateful and group activator listener ranges,
-    # but this chart currently renders neither EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE
-    # nor EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE, and exposes no corresponding
-    # containerPorts. Their zero defaults disable those listeners, so no rule is
-    # invented from servingEnvoy.statefulTcpPortRange or compositeTcpPortRange.
+    # noded binds the stateful (EMBERVM_NODED_STATEFUL_ACTIVATOR_PORT_RANGE,
+    # default 5400-5409) and composite group (EMBERVM_NODED_GROUP_ACTIVATOR_PORT_RANGE,
+    # default 5410-5419) activator ranges BY DEFAULT in noded/config/config.go,
+    # even though this chart renders neither env. The node Envoy's stateful and
+    # group tcp_proxy fallbacks dial podIP:<listenPort> on them, and the control
+    # plane's TCP activator can too. Omitting these dropped serving-envoy's wake
+    # to noded:5401 and took demo-postgres down on 2026-08-22 (#4693); the
+    # ranges are the same values servingEnvoy declares as capacity.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.servingEnvoy.selectorLabels" . | nindent 12 }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.selectorLabels" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.servingEnvoy.statefulTcpPortRange.start | quote }}
+              endPort: {{ .Values.servingEnvoy.statefulTcpPortRange.end }}
+              protocol: TCP
+            - port: {{ .Values.servingEnvoy.compositeTcpPortRange.start | quote }}
+              endPort: {{ .Values.servingEnvoy.compositeTcpPortRange.end }}
+              protocol: TCP
 {{- end }}
