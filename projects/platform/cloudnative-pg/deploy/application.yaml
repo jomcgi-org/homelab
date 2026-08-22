@@ -13,7 +13,7 @@ spec:
         releaseName: cnpg
         valueFiles:
           - $values/projects/platform/cloudnative-pg/deploy/values.yaml
-    - repoURL: https://github.com/jomcgi/homelab.git
+    - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       ref: values
   destination:

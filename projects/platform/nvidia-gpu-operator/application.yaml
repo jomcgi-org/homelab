@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/jomcgi/homelab.git
+    repoURL: https://github.com/jomcgi-org/homelab.git
     path: projects/platform/nvidia-gpu-operator
     targetRevision: HEAD
     helm:

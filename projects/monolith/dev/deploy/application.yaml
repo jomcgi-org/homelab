@@ -89,7 +89,7 @@ spec:
         valueFiles:
           - $values/projects/monolith/deploy/values.yaml
           - $values/projects/monolith/dev/deploy/values.yaml
-    - repoURL: https://github.com/jomcgi/homelab.git
+    - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       ref: values
   destination:
