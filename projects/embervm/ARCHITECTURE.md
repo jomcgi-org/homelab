@@ -60,7 +60,7 @@ compare against.
 | ---------- | ------ | ---------------------- |
 | Task execution | **Built** | Fresh VM per invocation |
 | Zip lane | **Built** | Runtime base and handler shim |
-| Sessions (bank/relight + workspace) | **Built** | Retention and workspace limits apply |
+| Sessions (bank/relight + workspace) | **Built** | Retention TTLs apply; a workspace size budget is **Decided direction** (#5074) |
 | Serving | **Built** | Control-plane lifecycle on misses |
 | Stateful | **Built** | Node-local authoritative volume |
 | Composite | **Built** | No current consumer |
@@ -69,7 +69,7 @@ compare against.
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
 | Transport auth CP-to-noded | **Built** (bearer + policy) | mTLS/SPIFFE remains the upgrade path |
 | Encryption at rest | **Planned** | Per-principal mutable artifacts (#4691); Account-scoped immutable rootfs chunks (ADR 028, #4182) |
-| Cells / multi-cell | **Built** seams, single cell | Second-cell fleet layer is future work |
+| Cells / multi-cell | **Planned** | No cell seams exist in code yet (#4753); one control plane today |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
 | Website snapshotter (task guest) | **Built** | Headless Chromium screenshot over MCP (ADR embervm/035), #4994 |
 
@@ -299,7 +299,8 @@ Facts that make this safe:
   lagging node report can never regress the stored pair key, so a stale
   report cannot legalise a stale snapshot.
 - **The interruptible bank** (`spec.stateful.interruptibleBank: true`, off
-  by default) makes steady-state wakes always hot or warm, never cold. The
+  by default; armed in the reference deployment for demo-postgres only)
+  makes steady-state wakes always hot or warm, never cold. The
   three cold exceptions: genuine first boot, explicit operator reset, and
   the max-lifetime forced roll.
 - **Only a snapshot taken immediately before teardown may be kept.** Any
@@ -323,11 +324,12 @@ three legitimate issuance shapes:
    absence the volume's anchor brick (the brick holding its authoritative
    volume) self-bumps the generation on wake. On CP return the fenced-writer
    anchor-adoption rule trusts a self-bump from the current anchor and
-   backfills it; anything it cannot prove is quarantined. **Decided
-   direction** (Fork B): a durable bounded grant
-   (`{workload, volume_node, gen_floor, gen_ceiling, expires_at}`) that
-   pre-authorises the advance, moving toward a steady-state lease with
-   brick-owned idle-bank.
+   backfills it; anything it cannot prove is quarantined. A first form of
+   Fork B is **Built**: every wake grants the anchor a durable bounded
+   blessing lease (the `blessing_lease_granted` op: start and lease_end
+   generations, reloaded on boot) that pre-authorises the advance.
+   **Decided direction** (Fork B remainder): lease expiry, moving toward a
+   steady-state lease with brick-owned idle-bank.
 
 The advance changes who may *issue* a generation, never who may *write* a
 volume (invariant 6).
@@ -338,8 +340,9 @@ A request to a scaled-to-zero workload lands on a fallback endpoint, parks,
 and triggers a single-flighted wake; the real endpoint is then published and
 bytes splice. The activator (L7 serving, L4 stateful/composite) belongs in
 noded rather than the CP pod so that a CP `Recreate` roll cannot black-hole
-cold wakes: stable DNAT from the node IP, `NodeStatus` advertises the
-activator endpoint, `EndpointPublisher` renders it as the fallback, and
+cold wakes: stable DNAT inside noded's own netns, `NodeStatus` advertises
+the noded pod IP and activator port as the activator endpoint,
+`EndpointPublisher` renders it as the fallback, and
 instance ids minted node-side carry `origin: ACTIVATOR` for the CP to adopt
 and backfill on reconcile. **Planned**: partially landed, soak ongoing.
 
@@ -444,7 +447,8 @@ against them.
    to the pod UID and node name claims in the brick's bound ServiceAccount
    token, so a brick can establish only its own stream. The one carve-out is
    destruction: an instance is recorded destroyed only after the owning node
-   confirms teardown, and reconciliation is fail-closed toward destruction (an
+   confirms teardown (gate `nodeConfirmedDestroy`: false in production
+   today, true in dev, #4758), and reconciliation is fail-closed toward destruction (an
    unrecognised node VM is an orphan to destroy, unless it carries the
    `origin: ACTIVATOR` marker, in which case it is adopted and backfilled).
    Model-checked (`adoption.tla`) against control-plane and node crashes
@@ -494,7 +498,9 @@ against them.
   migrate. The dispatch path never reads the durable store.
 - **Retention**: result TTLs enforced at read time; terminal tasks
   pruned past 7 days; the ops journal prefix-compacted past a 30-day horizon
-  behind a durable `compacted_through_seq` marker; PVC usage alerted at 80%.
+  behind a durable `compacted_through_seq` marker; a PVC usage alert at
+  80% never shipped and would be moot in the reference deployment, whose
+  Postgres op-log renders no embervm PVC.
   Long-horizon audit lives in the observability stack.
 - **Adoption**: noded reports `primed_vm_ids`, session VMs,
   checkpoint-pending VMs, and banked artifacts on every `NodeStatus`; the
@@ -508,13 +514,15 @@ against them.
   ever appended (#4756) or whether the gate it needs is armed in the
   deployed config (#4758), and it passed on both.
   **Planned**: trace validation, op-log events checked against TLA+
-  actions. Still planned, not built; ADR embervm/034 records how it is to
-  be delivered.
+  actions. The debug-gated SpecTrace implementation (#4770) ships and runs
+  in dev with `specTrace.enabled`; production keeps it off. ADR embervm/034
+  records the full delivery path and is still a draft.
 - **Cells**: the unit of horizontal scale is a cell, a complete
   single-writer control plane owning a bounded set of bricks and workloads,
-  with one op-log appender (ordering is within-cell only). The seams exist
-  now (`cell_id` in the schema, workload-to-cell assignment as data,
-  per-cell dial-home address), with exactly one cell (`cell-0`) today. A
+  with one op-log appender (ordering is within-cell only). **Planned**
+  (#4753): no `cell_id`, workload-to-cell assignment, or per-cell
+  dial-home address exists in code yet; there is exactly one control
+  plane today. A
   thin stateless fleet layer (route + capacity roll-up) arrives only with a
   second cell.
 - **Registry survives restarts**: noded persists its last-synced registry to
@@ -556,7 +564,8 @@ a human is paged, rather than overcommitting.
 
 **Built**: every brick and the serving relay run the cluster's disposable
 priority class, so guests are the first to yield under node memory
-pressure; QoS is always Guaranteed; per-workload arbitration happens only
+pressure; QoS is Burstable (memory request==limit, CPU request-only);
+per-workload arbitration happens only
 in CP dispatch.
 
 **Decided direction**: PriorityClass ranking of brick
@@ -587,8 +596,10 @@ lives in the fleet section.
 {kind: BASE | SESSION | SERVING | STATEFUL | GROUP_SET | VOLUME}`.
 Control-plane-driven, idempotent per key; evict refuses while referenced, and
 base retention holds when the current base is unverified (#4401). Keys are
-namespaced by workload (and vendor, below); the principal-scoped
-`shared/<principal>/<sha256>` keyspace is a deliberate, named exception.
+namespaced by workload (and vendor, below); a principal-scoped
+`shared/<principal>/<sha256>` keyspace is **Planned** (#5075), not
+implemented: `ArtifactRef` is `{kind, workload, ref}` with keys
+`<kind>/<vendor>/<workload>/<ref>/<file>`.
 
 **Planned rootfs plane (ADR 028, #4182)**: OCI images convert to deterministic
 flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
@@ -601,8 +612,8 @@ live guest block-read dependency.
 | Failure | task | session | serving | stateful |
 | ------- | ---- | ------- | ------- | -------- |
 | VM process | Fresh VM is discarded; **Built** cold boot fallback | Lineage restores from warmth; **Built** | Endpoint wakes a replacement; **Built** | Volume remains authoritative; **Built** |
-| brick | Assignment and primed pool reconcile; **Built** | Banked state can relight; **Built** | Cold wake fallback; **Built** | Volume is node-resident; failover is a deliberate operator action, **Decided direction** |
-| Kubernetes node | Recreate on another brick; **Built** | S3 warmth is available on deliberate restore; **Built** | Cold wake fallback; **Built** | S3 export at bank commit and failover are **Decided direction** |
+| brick | Assignment and primed pool reconcile; **Built** | Banked state can relight; **Built** | Cold wake fallback; **Built** | Volume is node-resident; failover is the **Built** manual handover RPC (`POST /v1/stateful/:name/handover/:target`, a banked-volume move to a peer anchor) |
+| Kubernetes node | Recreate on another brick; **Built** | S3 warmth is available on deliberate restore; **Built** | Cold wake fallback; **Built** | S3 export at bank commit is **Decided direction**; failover is the **Built** handover RPC (brick row) |
 | control plane | No new task admission; **Built** | Existing local state continues; **Built** | Hits continue; misses wait, node-local activator **Planned** | Existing local state continues; **Built** |
 | object store | Local execution continues; **Built** | Local warmth continues, restore falls back cold; **Built** | Local warmth continues, restore falls back cold; **Built** | Local volume remains authoritative; archive is **Decided direction** |
 
@@ -623,8 +634,9 @@ home node forever, never distributed.
   hot tier.
 - **`archiveInterval`** is the user-facing durability control in
   acceptable-loss units.
-- **Failover and node rotation** are deliberate planned-drain operator
-  actions.
+- **Failover and node rotation** are deliberate operator actions; the
+  banked-volume handover RPC that implements them is **Built**
+  (`POST /v1/stateful/:name/handover/:target`).
 
 **Ownership arbitration is class-scoped** (**Decided direction**):
 
@@ -639,19 +651,22 @@ The divergence bound is the **brick silence timeout**: a brick that has not
 heard from the control plane for longer than the timeout (~6h, in the
 grant-expiry range, so a CP roll never trips it) stops serving
 everything it holds. Token TTL is a convenience, never the correctness
-parameter.
+parameter. **Planned** (#5073): no stop-serving mechanism implements this
+bound today; the nearest fence is blessing-lease exhaustion, which bounds
+generations, not time.
 
 ---
 
 ## 9. Identity, tenancy, security
 
-Only `principal` and `domain` ship now. A domain is contained in exactly one
-principal, so a same-domain-by-default binding can never cross the isolation
-boundary. Shared platform definitions (such as the sandbox-session and
-scan-fleet templates) are owned by a reserved `platform` principal with an
-explicit broad instantiation grant, the widest and most-reviewed grant in
-the system. The op-log's existing `tenant` field is a deployment constant
-occupying the Account slot.
+Only `principal` ships now: it is the TokenReview-authenticated caller
+identity, and the op-log's existing `tenant` field is a deployment constant
+occupying the Account slot. **Planned** (#5072): `domain` (env or grouping
+within exactly one principal, so a same-domain-by-default binding can never
+cross the isolation boundary), and shared platform definitions (such as the
+sandbox-session and scan-fleet templates) owned by a reserved `platform`
+principal with an explicit broad instantiation grant, the widest and
+most-reviewed grant in the system. Neither exists in code today.
 
 **Decided direction:**
 
@@ -669,7 +684,10 @@ Account      billing / grouping, NO isolation semantics
 records, one Git CR per product expanded into CP definitions, and idempotent
 registration as a desired-set reconcile.
 
-**Credential handling**: material may sit where
+**Credential handling** (class taxonomy **Decided direction**; the
+brick-local proxy's `egressTo`-gated header injection, sidecar-only key
+material, and the TLS-MITM CA lane are **Built** in the reference
+deployment): material may sit where
 it can be stolen only if the platform can kill its validity on demand;
 otherwise the request moves to the credential. Secrets are classed:
 derivable short-lived (class 1, may enter PLATFORM-TRUSTED guest classes only,
