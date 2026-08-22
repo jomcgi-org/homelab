@@ -134,14 +134,15 @@ mcp-stack:
       # into Context Forge's Postgres. Upstream defaults this to false, so a
       # healthy tick on its own refreshes nothing: gateway_service.py only
       # enters the sync branch when settings.auto_refresh_servers is true. The
-      # monolith gateway is registered as STREAMABLEHTTP (the by-hand step in
-      # #5035) and its last_seen now advances every HEALTH_CHECK_INTERVAL, so
-      # this is what lets the built-in refresh replace the tool-refresh
-      # CronJob. The CronJob stays until a CF-driven sync has been observed in
-      # the gateway log; retiring it is the rest of #5035.
+      # built-in refresh is now the only catalogue refresh; the tool-refresh
+      # CronJob is retired (#5035). It could not be observed firing before the
+      # retirement: the CronJob's */10 cadence equalled this interval, so the
+      # Job always refreshed first and the built-in path always saw a fresh
+      # last_refresh_at. The proof is last_refresh_at on the gateways row
+      # advancing with no Job in the namespace.
       - name: AUTO_REFRESH_SERVERS
         value: "true"
-      # Seconds between syncs per gateway. Matches the CronJob's cadence the
+      # Seconds between syncs per gateway. Ten minutes keeps the cadence the
       # catalogue has been living with; the upstream floor is 60.
       - name: GATEWAY_AUTO_REFRESH_INTERVAL
         value: "600"

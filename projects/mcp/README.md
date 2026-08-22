@@ -29,8 +29,7 @@ projects/mcp/
     │       ├── _helpers.tpl        # Helm named template helpers
     │       ├── httproute.yaml      # Gateway API HTTPRoute for mcp.jomcgi.dev
     │       ├── networkpolicy.yaml  # Cross-namespace ingress policy (disabled; see below)
-    │       ├── onepassworditem.yaml # 1Password secret sync (JWT_SECRET_KEY, etc.)
-    │       └── tool-refresh-cronjob.yaml # Periodic re-registration of a gateway's tool catalog (enabled by default)
+    │       └── onepassworditem.yaml # 1Password secret sync (JWT_SECRET_KEY, etc.)
     └── deploy/
         ├── application.yaml    # ArgoCD Application (namespace: mcp, ServerSideApply)
         ├── kustomization.yaml  # Makes the app discoverable by the home-cluster root
@@ -57,7 +56,7 @@ helm dependency update projects/mcp/context-forge-gateway/chart
 - **NetworkPolicy disabled:** auth is enforced at the application layer instead.
 - **In-cluster access:** `http://context-forge-gateway-mcp-stack-mcpgateway.mcp.svc.cluster.local:80/mcp`. This is no longer an unauthenticated path: `MCP_REQUIRE_AUTH` is gateway-wide rather than per virtual server, so in-cluster callers authenticate too. In-cluster registration jobs use a JWT (`MCP_CLIENT_AUTH_ENABLED`).
 - **UI and catalog:** disabled by default in `chart/values.yaml`; re-enabled in `deploy/values.yaml` for the production cluster.
-- **Tool catalog refresh:** `toolRefresh.enabled: true` by default (`chart/values.yaml`), running a CronJob every 10 minutes (`toolRefresh.schedule`). Context Forge caches each gateway's tool catalog in its own Postgres and does not re-discover it on its own: the built-in auto-refresh only fires after a healthy tick from the health-check loop, and that loop speaks streamable HTTP while the monolith gateway was registered as SSE, so its `last_seen` never advanced. The monolith now serves streamable HTTP at `/mcp/`; the registration (in Context Forge's Postgres, updated by hand) must be `STREAMABLEHTTP` with URL `http://<monolith svc>/mcp/`, and the CronJob stays until the health tick is seen advancing `last_seen` (#5035). It mints a short-lived admin JWT and POSTs `/gateways/{id}/tools/refresh` for the gateway named in `toolRefresh.gatewayName` (default `monolith`).
+- **Tool catalog refresh:** The monolith registration lives in Context Forge's Postgres, not git, and is set by hand to `STREAMABLEHTTP`. Context Forge's health-check loop is now the only catalog refresh path, with `AUTO_REFRESH_SERVERS=true` and `GATEWAY_AUTO_REFRESH_INTERVAL=600`. Failure reporting is warning only, and a tool rejected by the XSS validator is dropped silently, so check `last_refresh_at` on the monolith `gateways` row and compare the tool count.
 
 ## Tool-mediated GitHub access (ADR 055, Draft, not built)
 

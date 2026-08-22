@@ -168,32 +168,6 @@ scopedRoutes: []
 #    tier: public
 #    serverId: "<virtual server uuid>"
 
-# Periodic tool-catalog refresh. CF does not auto-discover new monolith MCP
-# tools (its health-gated auto-refresh never fired while the monolith gateway
-# was registered as SSE), so a CronJob POSTs the gateways/<id>/tools/refresh
-# admin endpoint on a schedule. The monolith now serves streamable HTTP; keep
-# this until the health tick is seen advancing last_seen (#5035).
-# Reuses the gateway image (bundles mcpgateway + httpx) and the context-forge
-# secret (JWT_SECRET_KEY + PLATFORM_ADMIN_EMAIL) to mint a short-lived admin JWT.
-toolRefresh:
-  enabled: true
-  # Every 10 minutes: tool changes follow a monolith rollout, not a tight loop.
-  schedule: "*/10 * * * *"
-  # Cap each run's lifetime so a hung refresh pod cannot linger.
-  activeDeadlineSeconds: 120
-  # Gateway whose catalog to refresh, matched by name via the gateways API.
-  gatewayName: monolith
-  image:
-    repository: ghcr.io/ibm/mcp-context-forge
-    tag: "v1.0.7"
-    pullPolicy: IfNotPresent
-  resources:
-    requests:
-      cpu: 10m
-      memory: 128Mi
-    limits:
-      memory: 128Mi
-
 # Browser-authenticated preview lane on friends.jomcgi.dev. See
 # templates/httproute-preview.yaml for why this is a route of its own rather
 # than a rule on the scoped route, and blueprints/preview-auth.yaml in the
