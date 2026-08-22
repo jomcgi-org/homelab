@@ -241,3 +241,17 @@ path noded attaches are byte-identical.
 {{- $suffix := $digest | toString | replace ":" "-" | replace "@" "-" | replace "/" "-" -}}
 {{- printf "%s-%s.ext4" (trimSuffix ".ext4" .wl.rootfsPath) $suffix -}}
 {{- end -}}
+
+{{/*
+KEK root Secret name (ADR embervm/036). Generated from the release when the
+1Password item is named; a pre-existing Secret must be named explicitly.
+*/}}
+{{- define "embervm.kekRootSecretName" -}}
+{{- if .Values.kekRoot.name -}}
+{{- .Values.kekRoot.name -}}
+{{- else if .Values.kekRoot.onepassword.itemPath -}}
+{{- printf "%s-kek-root" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- fail "kekRoot.name is required when kekRoot.enabled is true without kekRoot.onepassword.itemPath" -}}
+{{- end -}}
+{{- end -}}
