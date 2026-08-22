@@ -50,7 +50,9 @@
   .post-body :global(h1),
   .post-body :global(h2),
   .post-body :global(h3),
-  .post-body :global(h4) {
+  .post-body :global(h4),
+  .post-body :global(h5),
+  .post-body :global(h6) {
     font-family: var(--serif);
     font-weight: 400;
     line-height: 1.1;
@@ -75,7 +77,9 @@
     margin: 28px 0 10px;
   }
 
-  .post-body :global(h4) {
+  .post-body :global(h4),
+  .post-body :global(h5),
+  .post-body :global(h6) {
     font-family: var(--mono);
     font-size: 1rem;
     font-weight: 600;
@@ -167,7 +171,38 @@
     font-size: inherit;
   }
 
+  .post-body :global(table) {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 22px;
+    border: 2px solid var(--ink);
+    font-family: var(--mono);
+    font-size: 0.8em;
+  }
+
+  .post-body :global(th),
+  .post-body :global(td) {
+    padding: 8px 10px;
+    border: 1px solid var(--rule-2);
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .post-body :global(thead th) {
+    border-color: var(--ink);
+    background: var(--bg-elev);
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  .post-body :global(tbody tr:nth-child(even)) {
+    background: var(--bg-elev);
+  }
+
   .post-body :global(img) {
+    max-width: 100%;
     margin: 24px 0;
     border: 2px solid var(--ink);
   }

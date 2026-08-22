@@ -4622,7 +4622,7 @@ py_test(
 )
 
 py_test(
-    name = "gen_posts_manifest_test",
+    name = "knowledge_gen_posts_manifest_test",
     srcs = ["knowledge/gen_posts_manifest_test.py"],
     imports = ["."],
     deps = [
