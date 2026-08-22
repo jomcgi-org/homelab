@@ -291,6 +291,12 @@ def test_noded_network_policy_gate_and_listener_ports():
     # the Cilium CRD caps toPorts.ports at 40 items.
     assert "endPort: 30254" in policy
     assert 'port: "30254"' not in policy
+    # noded binds the stateful and composite activator ranges by default even
+    # though the chart renders no env for them; omitting them dropped the
+    # stateful wake (2026-08-22, #4693).
+    for start, end in (("5400", 5409), ("5410", 5419)):
+        assert f'port: "{start}"' in policy
+        assert f"endPort: {end}" in policy
 
     disabled = _render(
         "noded-policy",
