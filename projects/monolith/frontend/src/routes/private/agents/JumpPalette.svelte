@@ -11,7 +11,6 @@
     sessions = [],
     runs = [],
     terminalRuns = [],
-    vms = {},
     inbox = { needsYou: [], running: [] },
     onClose,
     onOpenRun,
@@ -39,6 +38,10 @@
     Boolean(query.trim()) &&
       matches.inbox.length === 0 &&
       matches.earlier.length === 0,
+  );
+  const hasQuery = $derived(Boolean(query.trim()));
+  const historyScope = $derived(
+    P.labels.jumpHistoryScope.replace("{count}", String(sessions.length)),
   );
   const activeOptionId = $derived(
     rows[highlighted] ? optionId(highlighted) : undefined,
@@ -78,7 +81,8 @@
   });
 
   $effect(() => {
-    if (highlighted >= rows.length) highlighted = 0;
+    const next = rows.length && highlighted < rows.length ? highlighted : 0;
+    if (highlighted !== next) highlighted = next;
   });
 
   function optionId(index) {
@@ -86,7 +90,6 @@
   }
 
   function valueFor(item) {
-    void vms;
     if (item.kind === "session") {
       return sessions.find((session) => String(session.id) === String(item.id));
     }
@@ -186,6 +189,7 @@
 {#if open}
   <button
     class="jump-scrim"
+    tabindex="-1"
     type="button"
     aria-label={P.labels.jumpClose}
     onclick={onClose}
@@ -225,11 +229,14 @@
         {/each}
       {/if}
 
-      {#if matches.earlier.length}
+      {#if matches.earlier.length || hasQuery}
         <div class="jump-section-label">{P.labels.jumpEarlier}</div>
         {#each matches.earlier as item, index (`${item.kind}:${item.id}`)}
           {@render jumpRow(item, matches.inbox.length + index)}
         {/each}
+        {#if hasQuery}
+          <div class="jump-history-scope">{historyScope}</div>
+        {/if}
       {/if}
 
       {#if noMatches}
@@ -245,7 +252,7 @@
       {/each}
     </div>
 
-    <div class="jump-footer mono">
+    <div class="jump-footer">
       <span><kbd>{P.labels.shortcutMove}</kbd> {P.labels.jumpMove}</span>
       <span><kbd>{P.labels.shortcutEnter}</kbd> {P.labels.jumpOpen}</span>
       <span><kbd>{P.labels.shortcutNewTab}</kbd> {P.labels.jumpNewTab}</span>
@@ -261,6 +268,7 @@
     class="jump-row"
     type="button"
     role="option"
+    tabindex="-1"
     aria-selected={highlighted === index}
     onmouseenter={() => (highlighted = index)}
     onclick={() => activate(item)}
@@ -298,7 +306,7 @@
         {item.title}
       {/if}
     </span>
-    {#if item.meta}<span class="jump-meta mono">{item.meta}</span>{/if}
+    {#if item.meta}<span class="jump-meta">{item.meta}</span>{/if}
     {#if item.hint}<kbd class="jump-hint">{item.hint}</kbd>{/if}
   </button>
 {/snippet}
@@ -409,9 +417,15 @@
   .jump-row.highlighted {
     background: var(--page-bg);
   }
+  .jump-meta,
+  .jump-footer {
+    /* The page's .mono is scoped to +page.svelte and cannot reach a child
+       component, so the family is set here. */
+    font-family: var(--font-mono);
+  }
   .jump-mark {
-    width: 16px;
-    flex: 0 0 16px;
+    min-width: 16px;
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -434,7 +448,6 @@
     background: var(--err);
   }
   .run-shape-strip {
-    max-width: 16px;
     display: inline-flex;
     align-items: center;
     gap: 2px;
@@ -479,6 +492,11 @@
     padding: 0 36px;
     color: var(--muted);
     font-size: 14px;
+  }
+  .jump-history-scope {
+    padding: 7px 10px 9px 36px;
+    color: var(--muted);
+    font: 11.5px var(--font-mono);
   }
   .jump-footer {
     min-height: 36px;

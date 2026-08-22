@@ -11,6 +11,7 @@ const surface = (name) =>
 
 const SURFACES = [
   "+page.svelte",
+  "jump.js",
   "RunView.svelte",
   "MasterView.svelte",
   "PaneHeader.svelte",

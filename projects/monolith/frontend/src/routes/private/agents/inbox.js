@@ -1,4 +1,5 @@
 import { isInFlight, runActivityAt } from "./run-history.js";
+import { sessionActivityAt } from "./jump.js";
 
 function parsedActivity(value) {
   if (!value) return 0;
@@ -21,8 +22,7 @@ function sessionItem(session, vms) {
     kind: "session",
     id: session.id,
     value: session,
-    activityAt:
-      session.last_turn_at ?? session.updated_at ?? session.created_at,
+    activityAt: sessionActivityAt(session),
     vm: vms?.[session.ember_session_id] ?? null,
   };
 }

@@ -2,8 +2,8 @@ import { firstLine } from "./run-format.js";
 import { relativeTime, runActivityAt } from "./run-history.js";
 import { RUN_LEXICON as P } from "./run-lexicon.js";
 
-function sessionActivityAt(session) {
-  return session?.last_turn_at ?? session?.updated_at ?? session?.created_at;
+export function sessionActivityAt(session) {
+  return session?.last_turn_at ?? session?.created_at;
 }
 
 function parsedActivity(value) {
@@ -13,15 +13,9 @@ function parsedActivity(value) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function sessionTitle(session) {
+export function sessionTitle(session) {
   return (
-    firstLine(
-      session?.title ||
-        session?.first_prompt ||
-        session?.prompt ||
-        session?.turns?.[0]?.prompt ||
-        session?.pending_queue?.[0]?.prompt,
-    ) ||
+    firstLine(session?.title) ||
     (session?.repo
       ? `${session.repo}@${session.branch || P.labels.defaultBranch}`
       : "") ||
@@ -130,7 +124,10 @@ export function jumpMatches(
   }
 
   const earlierByKey = new Map();
-  for (const session of sessions ?? []) {
+  // A session a run spawned is a detail of that run, never a peer: same
+  // rule as inbox.js and the page's isStandalone.
+  const standalone = (s) => s?.workflow_id == null || s.workflow_id === "";
+  for (const session of (sessions ?? []).filter(standalone)) {
     const item = earlierSession(session, needle);
     const key = keyFor(item);
     if (!seen.has(key) && !earlierByKey.has(key)) earlierByKey.set(key, item);
