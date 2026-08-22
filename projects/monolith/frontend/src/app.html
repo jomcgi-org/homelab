@@ -5,17 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script>
       try {
-        if (
-          typeof window !== "undefined" &&
-          localStorage.getItem("agents-sidebar-collapsed") === "true"
-        ) {
-          document.documentElement.setAttribute(
-            "data-agents-rail",
-            "collapsed",
-          );
+        if (typeof window !== "undefined") {
+          const rail = localStorage.getItem("agents-sidebar-collapsed");
+          if (rail === "folded" || rail === "open") {
+            document.documentElement.setAttribute("data-agents-rail", rail);
+          }
         }
       } catch (e) {
-        // localStorage blocked or quota exceeded; continue with expanded
+        // localStorage blocked or quota exceeded; continue with automatic state
       }
     </script>
     <script>

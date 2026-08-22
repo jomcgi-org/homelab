@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { arrivalSelection, inboxGroups } from "./inbox.js";
+import {
+  arrivalSelection,
+  inboxGroups,
+  railState,
+  recentSummary,
+} from "./inbox.js";
 
 const run = (id, updatedAt, extra = {}) => ({
   workflow_id: id,
@@ -97,5 +102,81 @@ describe("arrival selection", () => {
 
   test("returns null when the inbox is empty", () => {
     expect(arrivalSelection([], [])).toBeNull();
+  });
+});
+
+describe("rail state", () => {
+  test.each([
+    [{ needsYou: 0, running: 0, manual: null }, "folded"],
+    [{ needsYou: 1, running: 0, manual: null }, "open"],
+    [{ needsYou: 0, running: 1, manual: null }, "open"],
+    [{ needsYou: 1, running: 1, manual: null }, "open"],
+  ])("maps inbox transition %o to %s", (input, expected) => {
+    expect(railState(input)).toBe(expected);
+  });
+
+  test("manual override wins in either inbox state", () => {
+    expect(railState({ needsYou: 3, running: 2, manual: "folded" })).toBe(
+      "folded",
+    );
+    expect(railState({ needsYou: 0, running: 0, manual: "open" })).toBe("open");
+  });
+});
+
+describe("recent summary", () => {
+  test("interleaves five recent standalone sessions and runs with totals", () => {
+    const now = new Date("2026-08-22T12:00:00Z");
+    const summary = recentSummary(
+      [
+        session("session-new", "2026-08-22T11:00:00Z", {
+          status: "completed",
+          total_cost_usd: 0.03,
+        }),
+        session("run-owned", "2026-08-22T11:30:00Z", {
+          workflow_id: "run-new",
+          total_cost_usd: 9,
+        }),
+        session("session-old", "2026-08-14T11:00:00Z", {
+          status: "completed",
+          total_cost_usd: 7,
+        }),
+      ],
+      [
+        run("run-new", "2026-08-22T11:30:00Z", {
+          dbos_status: "SUCCESS",
+          cost_usd: 0.07,
+        }),
+        run("run-middle", "2026-08-22T10:30:00Z", {
+          dbos_status: "SUCCESS",
+          cost_usd: 0.02,
+        }),
+        run("run-four", "2026-08-22T10:00:00Z", {
+          dbos_status: "SUCCESS",
+          cost_usd: 0.01,
+        }),
+        run("run-five", "2026-08-22T09:30:00Z", {
+          dbos_status: "SUCCESS",
+          cost_usd: 0.04,
+        }),
+        run("run-six", "2026-08-22T09:00:00Z", {
+          dbos_status: "SUCCESS",
+          cost_usd: 0.05,
+        }),
+      ],
+      now,
+    );
+
+    expect(summary.items.map(({ kind, id }) => `${kind}:${id}`)).toEqual([
+      "run:run-new",
+      "session:session-new",
+      "run:run-middle",
+      "run:run-four",
+      "run:run-five",
+    ]);
+    expect(summary.count).toBe(6);
+    expect(summary.allCount).toBe(7);
+    expect(summary.sessionCount).toBe(1);
+    expect(summary.runCount).toBe(5);
+    expect(summary.spend).toBeCloseTo(0.22);
   });
 });

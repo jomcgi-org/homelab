@@ -454,91 +454,9 @@
   font: var(--size-meta) var(--font-mono);
   flex: none;
 }
-.m-meta,
-.m-totals,
-.queue-line {
-  color: var(--text-soft);
-  font: var(--size-meta) var(--font-mono);
-}
-.m-totals,
-.queue-line {
-  margin-top: 12px;
-}
 [data-register="belief"] {
   color: var(--muted);
 }
-
-/* Attention band: blocked-on-human case.
- * ADR 054 decision 6: amber is reserved for this case.
- * Decision 12: state colour is reserved for fact, never derived.
- */
-.att-band {
-  background: var(--attn-soft);
-  border: 1px solid var(--attn);
-  border-radius: var(--radius-lg);
-  padding: 12px 12px;
-  margin-bottom: 12px;
-}
-.att-band .col-label {
-  color: var(--attn-text);
-  display: block;
-  font-size: var(--size-meta);
-  font-weight: 650;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-  margin-bottom: 8px;
-}
-.att-row {
-  display: block;
-  width: 100%;
-  padding: 8px 0;
-  color: var(--text);
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--attn);
-  text-align: left;
-  font: inherit;
-  cursor: pointer;
-}
-.att-row:last-child {
-  border-bottom: 0;
-}
-/* Derived from --attn rather than restating its value. The literal
-   rgba(178, 94, 0, ...) is #b25e00 spelled out, so it would drift silently
-   the first time the token changes. */
-.att-row:hover {
-  background: color-mix(in srgb, var(--attn) 5%, transparent);
-}
-.att-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-  font-size: var(--size-detail);
-}
-.att-title .entry-meta {
-  color: var(--attn-text);
-  font-size: var(--size-meta);
-}
-.att-reason {
-  color: var(--text-soft);
-  font-size: var(--size-meta);
-  line-height: 1.3;
-}
-
-/* Quiet state: nothing needs you.
- * Deliberately subordinate to launcher above it.
- */
-.m-quiet {
-  color: var(--muted);
-  font-size: var(--size-detail);
-  padding: 12px 0;
-  text-align: center;
-}
-
-/* Master view container. Inherits from .runview. The stale-tier treatment
-   lives in MasterView.svelte's scoped block, which applies the filter and
-   opacity directly to .activity-row, .att-row and .queue-line. */
 
 /* Shared session and run header controls. */
 .pill {
@@ -597,8 +515,8 @@
   justify-content: center;
 }
 
-/* Run detail is a full pane, while MasterView retains the compact card. */
-.runview:not(.master-view) {
+/* Run detail occupies the full pane. */
+.runview {
   min-width: 0;
   padding: 0 0 12px;
   border: 0;
@@ -677,26 +595,26 @@
 .fact-stale {
   margin-left: auto;
 }
-.runview:not(.master-view) > .conflict,
-.runview:not(.master-view) > .banner,
-.runview:not(.master-view) > .obs-line,
-.runview:not(.master-view) > .rv-task-details {
+.runview > .conflict,
+.runview > .banner,
+.runview > .obs-line,
+.runview > .rv-task-details {
   margin-right: 32px;
   margin-left: 32px;
 }
-.runview:not(.master-view) > .conflict {
+.runview > .conflict {
   margin-top: 6px;
   color: var(--attn-text);
   font-size: 12.5px;
 }
-.runview:not(.master-view) > .disposition {
+.runview > .disposition {
   margin: 14px 32px 0;
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 6px;
   font-size: 13px;
 }
-.runview:not(.master-view) > .disposition.human-attention {
+.runview > .disposition.human-attention {
   border-color: var(--line);
   background: var(--attn-soft);
 }
@@ -946,7 +864,7 @@
   color: var(--muted);
   font: 11.5px var(--font-mono);
 }
-.runview:not(.master-view) > .rv-foot {
+.runview > .rv-foot {
   display: flex;
   justify-content: space-between;
   margin: 0 32px;
@@ -973,11 +891,11 @@
     width: 100%;
     margin-left: 0;
   }
-  .runview:not(.master-view) > .conflict,
-  .runview:not(.master-view) > .banner,
-  .runview:not(.master-view) > .obs-line,
-  .runview:not(.master-view) > .rv-task-details,
-  .runview:not(.master-view) > .disposition {
+  .runview > .conflict,
+  .runview > .banner,
+  .runview > .obs-line,
+  .runview > .rv-task-details,
+  .runview > .disposition {
     margin-right: 16px;
     margin-left: 16px;
   }
@@ -1020,7 +938,7 @@
   }
   .sessions,
   .run-deviations,
-  .runview:not(.master-view) > .rv-foot {
+  .runview > .rv-foot {
     margin-right: 16px;
     margin-left: 16px;
   }

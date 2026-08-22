@@ -114,7 +114,12 @@ function homeEntry(name, runs, sessions, view = {}) {
       })),
     ],
     sessions,
-    view: { engine_tier: "live", snapshot_age_seconds: 0, ...view },
+    view: {
+      engine_tier: "live",
+      now: NOW,
+      snapshot_age_seconds: 0,
+      ...view,
+    },
     name,
   };
 }
