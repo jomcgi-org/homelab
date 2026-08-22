@@ -69,7 +69,11 @@ filegroup(
 
 # Smoke test: proves the prebuilt ubuntu-22.04 OTP boots and runs crypto ON the
 # RBE executor (the decisive de-risk before wiring mix/elixir + apko). Built by
-# `bazel test //...`; no-remote-cache so it re-verifies the live executor.
+# `bazel test //...`. It was no-remote-cache "to re-verify the live executor",
+# which meant it, mix_test_smoke, release_boot_smoke and the claude late-resume
+# smoke re-ran on EVERY invocation (PR, queue candidate, main, write-back) with
+# unchanged inputs. The inputs are hermetic, so it caches like everything else
+# now; the executor was de-risked in 2026-07.
 genrule(
     name = "otp_smoke",
     srcs = [
@@ -78,8 +82,7 @@ genrule(
     ],
     outs = ["otp_smoke.txt"],
     cmd = "$(location otp_smoke.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$@\"",
-    tags = ["no-remote-cache"],
-    tools = ["otp_smoke.sh"],
+        tools = ["otp_smoke.sh"],
 )
 
 # Proves the prebuilt OTP + precompiled Elixir compile and ExUnit-test the
@@ -118,8 +121,7 @@ genrule(
           "EMBERVM_NODE_PROTO_SRC=\"$(location //projects/embervm/proto/embervm/node/v1:node_proto)\" " +
           "EMBERVM_FAKE_NODE_SRC=\"$(location //projects/embervm/proto/embervm/node/v1/fakenode)\" " +
           "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations :hex_tarballs)",
-    tags = ["no-remote-cache"],
-    tools = ["mix_test.sh"],
+        tools = ["mix_test.sh"],
 )
 
 bzl_library(

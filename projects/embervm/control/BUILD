@@ -61,6 +61,5 @@ genrule(
     ],
     outs = ["release_boot_smoke.txt"],
     cmd = "$(location //bazel/erlang:release_boot.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location :release_tar)\" \"$@\"",
-    tags = ["no-remote-cache"],
-    tools = ["//bazel/erlang:release_boot.sh"],
+        tools = ["//bazel/erlang:release_boot.sh"],
 )

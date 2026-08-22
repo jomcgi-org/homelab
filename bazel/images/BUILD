@@ -72,10 +72,10 @@ multirun(
 
 # Charts only. `bazel run` has to materialise every command's runfiles on the
 # runner before any command executes, so running push_all drags all ~24 images'
-# layers out of CAS even when every action is a cache hit. Off main nothing may
-# publish anyway (push.sh.tpl takes the PR path), so PR CI runs this subset: it
-# carries the pre-merge missed-chart-bump guard at chart-sized cost, while the
-# images are proven to build with `bazel build //bazel/images:push_all`.
+# layers out of CAS even when every action is a cache hit. main's deploy runs
+# this subset through push-changed.sh after the images. PR CI no longer runs it
+# at all: the PR side of the missed-bump guard is retired (ADR platform/009)
+# and the images are proven to build with `bazel build //bazel/images:push_all`.
 multirun(
     name = "push_charts",
     commands = [
