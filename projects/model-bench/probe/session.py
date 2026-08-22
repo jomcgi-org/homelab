@@ -20,6 +20,9 @@ class PollOutcome:
         return "timeout" if self.timed_out else "completed"
 
 
+TRANSIENT_GRACE_S = 300.0
+
+
 class AgentSessionClient:
     """Small typed facade over the monolith session and compare endpoints."""
 
@@ -88,8 +91,23 @@ def poll_turn(
 ) -> PollOutcome:
     """Poll until the persisted terminal turn appears or the deadline passes."""
     deadline = started_monotonic + timeout_s
+    transient_since = None
     while True:
-        detail = client.detail(session_id)
+        try:
+            detail = client.detail(session_id)
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            # A monolith pod roll drops the port-forward for a minute or so;
+            # the turn keeps running in the guest, so keep polling instead of
+            # failing the rep. Give up after TRANSIENT_GRACE_S of continuous
+            # failure so a dead backend still terminates the probe.
+            now = clock()
+            if transient_since is None:
+                transient_since = now
+            if now - transient_since > TRANSIENT_GRACE_S or now >= deadline:
+                raise
+            sleep(min(poll_interval_s * 5, max(0.0, deadline - now)))
+            continue
+        transient_since = None
         turns = detail.get("turns", [])
         if isinstance(turns, list):
             for turn in turns:
