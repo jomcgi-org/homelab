@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -226,11 +227,24 @@ func newTestStore(t *testing.T) (*Store, *fakeObjectStore) {
 }
 
 func newTestStoreWithCompression(t *testing.T, compress bool) (*Store, *fakeObjectStore) {
+	return newTestStoreWithOptions(t, compress)
+}
+
+func newTestStoreWithOptions(t *testing.T, compress bool, opts ...Option) (*Store, *fakeObjectStore) {
 	t.Helper()
 	fake := newFakeObjectStore()
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
-	return New(srv.URL, "embervm", compress), fake
+	return New(srv.URL, "embervm", compress, opts...), fake
+}
+
+type staticDataKeys struct {
+	key      []byte
+	envelope []byte
+}
+
+func (p staticDataKeys) DataKey(context.Context, string, string, string) ([]byte, []byte, error) {
+	return append([]byte(nil), p.key...), append([]byte(nil), p.envelope...), nil
 }
 
 func newSignedTestStore(t *testing.T) (*Store, *fakeObjectStore) {
@@ -444,7 +458,7 @@ func TestRestoreRoundTrip(t *testing.T) {
 	}
 
 	dstDir := t.TempDir()
-	moved, gen, err := s.Restore(ctx, prefix, dstDir)
+	moved, gen, err := s.Restore(ctx, prefix, dstDir, nil)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
@@ -487,7 +501,7 @@ func TestCompressedExportRoundTrip(t *testing.T) {
 		t.Fatalf("compression marker = %q, want zstd", got)
 	}
 	dstDir := t.TempDir()
-	if _, _, err := s.Restore(ctx, "base/zeros", dstDir); err != nil {
+	if _, _, err := s.Restore(ctx, "base/zeros", dstDir, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dstDir, "memfile"))
@@ -517,7 +531,7 @@ func TestCompressedIncompressibleRoundTrip(t *testing.T) {
 		t.Fatalf("incompressible stored object size = %d, want greater than plaintext %d", len(stored), len(plaintext))
 	}
 	dstDir := t.TempDir()
-	if _, _, err := s.Restore(ctx, "base/random", dstDir); err != nil {
+	if _, _, err := s.Restore(ctx, "base/random", dstDir, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dstDir, "random"))
@@ -526,6 +540,104 @@ func TestCompressedIncompressibleRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, plaintext) {
 		t.Fatal("incompressible compressed restore changed the plaintext")
+	}
+}
+
+func TestEncryptedExportRoundTrip(t *testing.T) {
+	key := bytes.Repeat([]byte{0x31}, 32)
+	envelope := []byte("opaque-control-plane-envelope")
+	// Encryption keeps zstd inside the AEAD layer even when the independent
+	// plaintext compression writer is disabled.
+	s, fake := newTestStoreWithOptions(t, false, WithDataKeys(staticDataKeys{key: key, envelope: envelope}))
+	ctx := context.Background()
+	plaintext := makePattern(2*fileChunkSize + 123)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "memfile"), plaintext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prefix := "session/amd/sandbox/session-1"
+	opts := ExportOptions{Kind: "session", Workload: "sandbox", Ref: "session-1"}
+	if _, _, err := s.Export(ctx, prefix, srcDir, []string{"memfile"}, 0, 1, "amd", "T2", opts); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	stored := fake.object("/embervm/" + prefix + "/memfile")
+	if bytes.Equal(stored, plaintext) || bytes.Contains(stored, plaintext[:fileChunkSize]) {
+		t.Fatal("encrypted object contains plaintext bytes")
+	}
+	var meta Meta
+	if err := json.Unmarshal(fake.object("/embervm/"+prefix+"/meta.json"), &meta); err != nil {
+		t.Fatal(err)
+	}
+	fm := meta.Files["memfile"]
+	if fm.Encryption != "aes-256-gcm-v1" {
+		t.Fatalf("encryption marker = %q, want aes-256-gcm-v1", fm.Encryption)
+	}
+	if fm.Compression != "zstd" {
+		t.Fatalf("compression marker = %q, want zstd", fm.Compression)
+	}
+	nonce, err := base64.StdEncoding.DecodeString(fm.Nonce)
+	if err != nil || len(nonce) != 12 {
+		t.Fatalf("nonce = %q, decoded length %d, error %v; want 12 base64 bytes", fm.Nonce, len(nonce), err)
+	}
+	if !bytes.Equal(meta.Envelope, envelope) {
+		t.Fatalf("envelope = %q, want %q", meta.Envelope, envelope)
+	}
+	sum := sha256.Sum256(plaintext)
+	if fm.Sha256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("sha256 = %q, want plaintext digest %q", fm.Sha256, hex.EncodeToString(sum[:]))
+	}
+	_, _, _, _, _, _, gotEnvelope, err := s.ArtifactInfo(ctx, prefix)
+	if err != nil || !bytes.Equal(gotEnvelope, envelope) {
+		t.Fatalf("ArtifactInfo envelope = (%q, %v), want (%q, nil)", gotEnvelope, err, envelope)
+	}
+
+	dstDir := t.TempDir()
+	if _, _, err := s.Restore(ctx, prefix, dstDir, key); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dstDir, "memfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Fatal("encrypted round trip changed plaintext")
+	}
+}
+
+func TestEncryptedRestoreRequiresCorrectKeyAndLeavesNoPartialFile(t *testing.T) {
+	key := bytes.Repeat([]byte{0x41}, 32)
+	s, _ := newTestStoreWithOptions(t, true, WithDataKeys(staticDataKeys{key: key, envelope: []byte("envelope")}))
+	ctx := context.Background()
+	srcDir, names := writeLocalArtifact(t, map[string]string{"memfile": strings.Repeat("secret", 20000)})
+	prefix := "stateful/amd/demo/ref-1"
+	if _, _, err := s.Export(ctx, prefix, srcDir, names, 7, 1, "amd", "T2", ExportOptions{Kind: "stateful", Workload: "demo", Ref: "ref-1"}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		key  []byte
+		want error
+	}{
+		{name: "missing", key: nil, want: ErrKeyRequired},
+		{name: "wrong", key: bytes.Repeat([]byte{0x42}, 32)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dstDir := t.TempDir()
+			_, _, err := s.Restore(ctx, prefix, dstDir, tt.key)
+			if err == nil {
+				t.Fatal("encrypted restore succeeded with invalid key")
+			}
+			if tt.want != nil && !errors.Is(err, tt.want) {
+				t.Fatalf("Restore error = %v, want %v", err, tt.want)
+			}
+			for _, name := range []string{"memfile", "memfile.restore.tmp"} {
+				if _, statErr := os.Stat(filepath.Join(dstDir, name)); !os.IsNotExist(statErr) {
+					t.Fatalf("invalid-key restore left %s, stat err = %v", name, statErr)
+				}
+			}
+		})
 	}
 }
 
@@ -613,7 +725,7 @@ func TestLegacyObjectRestoresWithCompressionEnabled(t *testing.T) {
 	}
 	reader := New(legacy.endpoint, legacy.bucket, true)
 	dstDir := t.TempDir()
-	if _, _, err := reader.Restore(ctx, "base/legacy", dstDir); err != nil {
+	if _, _, err := reader.Restore(ctx, "base/legacy", dstDir, nil); err != nil {
 		t.Fatalf("legacy Restore: %v", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dstDir, "memfile")); string(got) != "legacy-bytes" {
@@ -640,7 +752,7 @@ func TestTruncatedCompressedObjectLeavesNoPartialFile(t *testing.T) {
 	fake.objects["/embervm/base/truncated/memfile"] = compressed[:len(compressed)/2]
 	fake.mu.Unlock()
 	dstDir := t.TempDir()
-	if _, _, err := s.Restore(ctx, "base/truncated", dstDir); err == nil {
+	if _, _, err := s.Restore(ctx, "base/truncated", dstDir, nil); err == nil {
 		t.Fatal("truncated compressed restore succeeded")
 	}
 	if _, err := os.Stat(filepath.Join(dstDir, "memfile")); !os.IsNotExist(err) {
@@ -655,7 +767,7 @@ func TestTruncatedCompressedObjectLeavesNoPartialFile(t *testing.T) {
 // ErrNotPresent sentinel (which the verb handler maps to FAILED_PRECONDITION).
 func TestRestoreAbsentIsNotPresent(t *testing.T) {
 	s, _ := newTestStore(t)
-	if _, _, err := s.Restore(context.Background(), "stateful/nope/none", t.TempDir()); err != ErrNotPresent {
+	if _, _, err := s.Restore(context.Background(), "stateful/nope/none", t.TempDir(), nil); err != ErrNotPresent {
 		t.Fatalf("Restore of absent artifact = %v, want ErrNotPresent", err)
 	}
 }
@@ -677,7 +789,7 @@ func TestRestoreChecksumMismatchLeavesNoCorruptFile(t *testing.T) {
 	fake.mu.Unlock()
 
 	dstDir := t.TempDir()
-	if _, _, err := s.Restore(ctx, prefix, dstDir); err == nil {
+	if _, _, err := s.Restore(ctx, prefix, dstDir, nil); err == nil {
 		t.Fatal("Restore of a checksum-mismatched object should fail")
 	}
 	if _, err := os.Stat(filepath.Join(dstDir, "snapfile")); !os.IsNotExist(err) {

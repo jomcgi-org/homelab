@@ -19,6 +19,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	"github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
@@ -32,7 +33,8 @@ type fakeStore struct {
 	// arts maps a store prefix to its exported files (name -> content) and gen.
 	arts map[string]fakeArtifact
 	// exportCalls counts Export invocations per prefix (skipped or not).
-	exportCalls map[string]int
+	exportCalls  map[string]int
+	dataKeyCalls map[string]int
 	// reachable is what Reachable reports.
 	reachable bool
 	// order records prefixes in export order (for asserting meta-last is N/A here;
@@ -49,20 +51,27 @@ type fakeArtifact struct {
 	// createdAtMs mirrors the real store's meta.json CreatedAtUnixMs, which is
 	// what remote retention orders on.
 	createdAtMs int64
+	envelope    []byte
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		arts:        make(map[string]fakeArtifact),
-		exportCalls: make(map[string]int),
-		reachable:   true,
+		arts:         make(map[string]fakeArtifact),
+		exportCalls:  make(map[string]int),
+		dataKeyCalls: make(map[string]int),
+		reachable:    true,
 	}
 }
 
-func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string) (int64, bool, error) {
+func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string, options ...store.ExportOptions) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.exportCalls[prefix]++
+	var envelope []byte
+	if len(options) > 0 && options[0].Kind != "" {
+		f.dataKeyCalls[prefix]++
+		envelope = []byte("fake-envelope")
+	}
 	// Read the local files into memory, mirroring the real client's read-then-put.
 	got := make(map[string]string, len(files))
 	var total int64
@@ -78,17 +87,20 @@ func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []s
 	if existing, ok := f.arts[prefix]; ok && sameStringMap(existing.files, got) {
 		return 0, true, nil
 	}
-	f.arts[prefix] = fakeArtifact{files: got, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate, createdAtMs: nowMs}
+	f.arts[prefix] = fakeArtifact{files: got, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate, createdAtMs: nowMs, envelope: envelope}
 	f.order = append(f.order, prefix)
 	return total, false, nil
 }
 
-func (f *fakeStore) Restore(_ context.Context, prefix, localDir string) (int64, uint64, error) {
+func (f *fakeStore) Restore(_ context.Context, prefix, localDir string, key []byte) (int64, uint64, error) {
 	f.mu.Lock()
 	art, ok := f.arts[prefix]
 	f.mu.Unlock()
 	if !ok {
 		return 0, 0, errFakeNotPresent
+	}
+	if len(art.envelope) > 0 && len(key) != 32 {
+		return 0, 0, store.ErrKeyRequired
 	}
 	if err := os.MkdirAll(localDir, 0o700); err != nil {
 		return 0, 0, err
@@ -153,18 +165,18 @@ func (f *fakeStore) ListRefs(_ context.Context, prefix string, limit int) ([]str
 	return refs, false, nil
 }
 
-func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64, uint64, string, string, error) {
+func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64, uint64, string, string, uint64, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	art, ok := f.arts[prefix]
 	if !ok {
-		return false, 0, 0, "", "", nil
+		return false, 0, 0, "", "", 0, nil, nil
 	}
 	var total uint64
 	for _, c := range art.files {
 		total += uint64(len(c))
 	}
-	return true, art.createdAtMs, total, art.cpuVendor, art.cpuTemplate, nil
+	return true, art.createdAtMs, total, art.cpuVendor, art.cpuTemplate, art.gen, append([]byte(nil), art.envelope...), nil
 }
 
 func (f *fakeStore) Reachable(_ context.Context) bool {
@@ -177,6 +189,12 @@ func (f *fakeStore) calls(prefix string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.exportCalls[prefix]
+}
+
+func (f *fakeStore) keyCalls(prefix string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dataKeyCalls[prefix]
 }
 
 func (f *fakeStore) has(prefix string) bool {
@@ -192,6 +210,33 @@ func (f *fakeStore) has(prefix string) bool {
 // including one this node never wrote itself.
 func (f *fakeStore) seedArtifact(prefix string, files map[string]string, generation uint64, cpuVendor, cpuTemplate string) {
 	f.seedArtifactAt(prefix, files, generation, cpuVendor, cpuTemplate, 0)
+}
+
+func (f *fakeStore) seedEncryptedArtifact(prefix string, files map[string]string, generation uint64, cpuVendor, cpuTemplate string) {
+	f.seedArtifact(prefix, files, generation, cpuVendor, cpuTemplate)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	art := f.arts[prefix]
+	art.envelope = []byte("fake-envelope")
+	f.arts[prefix] = art
+}
+
+func restoreCapabilityForTest(t *testing.T, s *Server, ref *nodev1.ArtifactRef, generation uint64, change func(*capabilityScope)) []byte {
+	t.Helper()
+	scope := capabilityScope{
+		Principal:  "acct:test",
+		Lineage:    "lineage-test",
+		Node:       s.cfg.Node,
+		PodUID:     s.cfg.PodUID,
+		Workload:   ref.GetWorkload(),
+		Ref:        ref.GetRef(),
+		Kind:       artifactKindStr(ref.GetKind()),
+		Generation: generation,
+	}
+	if change != nil {
+		change(&scope)
+	}
+	return mintCapability(t, []byte(s.cfg.BearerToken), []byte(strings.Repeat("k", 32)), time.Now().Add(time.Hour), scope)
 }
 
 // seedArtifactAt is seedArtifact with an explicit meta.json created-at, for the
@@ -303,7 +348,7 @@ func newStoreTestServerWithVendor(t *testing.T, fs *fakeStore, vendor string) *S
 	root := t.TempDir()
 	volRoot := t.TempDir()
 	s := New(Options{
-		Config:         config.Config{Arch: "amd64", Node: "node-4", CpuVendor: vendor, SnapshotRoot: root, VolumeRoot: volRoot},
+		Config:         config.Config{Arch: "amd64", Node: "node-4", PodUID: "pod-uid-4", BearerToken: "test-shared-bearer", CpuVendor: vendor, SnapshotRoot: root, VolumeRoot: volRoot},
 		Driver:         &fakeDriver{},
 		StatefulDriver: newDiskScanStatefulDriver(root),
 		Transport:      &fakeTransport{},
@@ -322,7 +367,7 @@ func newStoreTestServerWithSku(t *testing.T, fs *fakeStore, vendor, template str
 	root := t.TempDir()
 	volRoot := t.TempDir()
 	s := New(Options{
-		Config:         config.Config{Arch: "amd64", Node: "node-4", CpuVendor: vendor, CpuTemplate: template, SnapshotRoot: root, VolumeRoot: volRoot},
+		Config:         config.Config{Arch: "amd64", Node: "node-4", PodUID: "pod-uid-4", BearerToken: "test-shared-bearer", CpuVendor: vendor, CpuTemplate: template, SnapshotRoot: root, VolumeRoot: volRoot},
 		Driver:         &fakeDriver{},
 		StatefulDriver: newDiskScanStatefulDriver(root),
 		Transport:      &fakeTransport{},
@@ -1422,6 +1467,146 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRestoreArtifactCapabilityGate(t *testing.T) {
+	tests := []struct {
+		name        string
+		encrypted   bool
+		require     bool
+		capability  func(*testing.T, *Server, *nodev1.ArtifactRef, uint64) []byte
+		wantCode    codes.Code
+		wantRestore bool
+	}{
+		{
+			name:        "plaintext_ignores_capability",
+			require:     true,
+			capability:  func(*testing.T, *Server, *nodev1.ArtifactRef, uint64) []byte { return []byte("invalid but ignored") },
+			wantCode:    codes.OK,
+			wantRestore: true,
+		},
+		{
+			name:      "enveloped_valid_capability",
+			encrypted: true,
+			capability: func(t *testing.T, s *Server, ref *nodev1.ArtifactRef, generation uint64) []byte {
+				return restoreCapabilityForTest(t, s, ref, generation, nil)
+			},
+			wantCode:    codes.OK,
+			wantRestore: true,
+		},
+		{
+			name:      "enveloped_missing_capability_enforcement_off",
+			encrypted: true,
+			wantCode:  codes.FailedPrecondition,
+		},
+		{
+			name:      "enveloped_missing_capability_enforcement_on",
+			encrypted: true,
+			require:   true,
+			wantCode:  codes.PermissionDenied,
+		},
+		{
+			name:      "enveloped_capability_for_another_node",
+			encrypted: true,
+			require:   true,
+			capability: func(t *testing.T, s *Server, ref *nodev1.ArtifactRef, generation uint64) []byte {
+				return restoreCapabilityForTest(t, s, ref, generation, func(scope *capabilityScope) {
+					scope.Node = "node-other"
+				})
+			},
+			wantCode: codes.PermissionDenied,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs := newFakeStore()
+			s := newStoreTestServer(t, fs)
+			s.cfg.RequireRestoreCapability = tt.require
+			const generation = 9
+			ref := &nodev1.ArtifactRef{
+				Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL,
+				Workload: "sandbox-session",
+				Ref:      "state-capability",
+			}
+			prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+			files := map[string]string{"memfile": "principal memory", "snapfile": "principal state"}
+			if tt.encrypted {
+				fs.seedEncryptedArtifact(prefix, files, generation, s.cfg.CpuVendor, s.cfg.CpuTemplate)
+			} else {
+				fs.seedArtifact(prefix, files, generation, s.cfg.CpuVendor, s.cfg.CpuTemplate)
+			}
+			var capability []byte
+			if tt.capability != nil {
+				capability = tt.capability(t, s, ref, generation)
+			}
+
+			resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+				Artifact:   ref,
+				Vendor:     s.cfg.CpuVendor,
+				Capability: capability,
+			})
+			if got := status.Code(err); got != tt.wantCode {
+				t.Fatalf("RestoreArtifact code = %v, want %v; err = %v", got, tt.wantCode, err)
+			}
+			localDir := s.artifactLocalDir(ref)
+			if tt.wantRestore {
+				if resp == nil || resp.GetGeneration() != generation {
+					t.Fatalf("RestoreArtifact response = %#v, want generation %d", resp, generation)
+				}
+				if got, readErr := os.ReadFile(filepath.Join(localDir, "memfile")); readErr != nil || string(got) != files["memfile"] {
+					t.Fatalf("restored memfile = %q, %v", got, readErr)
+				}
+				return
+			}
+			for _, name := range []string{"memfile", "memfile.restore.tmp", "snapfile", "snapfile.restore.tmp"} {
+				if _, statErr := os.Stat(filepath.Join(localDir, name)); !os.IsNotExist(statErr) {
+					t.Fatalf("refused restore left %s, stat error = %v", name, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestExportPathsApplyPrincipalEncryptionPolicy(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	s.cfg.StoreEncrypt = true
+	ctx := context.Background()
+
+	syncSession := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: "sandbox-session", Ref: "sync-session"}
+	writeBundleFiles(t, s.artifactLocalDir(syncSession), map[string]string{"memfile": "sync session"})
+	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: syncSession}); err != nil {
+		t.Fatalf("ExportArtifact(session): %v", err)
+	}
+	if got := fs.keyCalls(artifactPrefix(syncSession, s.cfg.CpuVendor)); got != 1 {
+		t.Fatalf("ExportArtifact session data-key calls = %d, want 1", got)
+	}
+
+	syncBase := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "sandbox-session", Ref: "sync-base"}
+	writeBundleFiles(t, s.artifactLocalDir(syncBase), map[string]string{"memfile": "sync base"})
+	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: syncBase}); err != nil {
+		t.Fatalf("ExportArtifact(base): %v", err)
+	}
+	if got := fs.keyCalls(artifactPrefix(syncBase, s.cfg.CpuVendor)); got != 0 {
+		t.Fatalf("ExportArtifact base data-key calls = %d, want 0", got)
+	}
+
+	asyncSession := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: "sandbox-session", Ref: "async-session"}
+	writeBundleFiles(t, s.artifactLocalDir(asyncSession), map[string]string{"memfile": "async session"})
+	asyncSessionKey := artifactPrefix(asyncSession, s.cfg.CpuVendor)
+	s.runExportJob(ctx, exportJob{ref: asyncSession, key: asyncSessionKey})
+	if got := fs.keyCalls(asyncSessionKey); got != 1 {
+		t.Fatalf("runExportJob session data-key calls = %d, want 1", got)
+	}
+
+	asyncBase := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "sandbox-session", Ref: "async-base"}
+	writeBundleFiles(t, s.artifactLocalDir(asyncBase), map[string]string{"memfile": "async base"})
+	asyncBaseKey := artifactPrefix(asyncBase, s.cfg.CpuVendor)
+	s.runExportJob(ctx, exportJob{ref: asyncBase, key: asyncBaseKey})
+	if got := fs.keyCalls(asyncBaseKey); got != 0 {
+		t.Fatalf("runExportJob base data-key calls = %d, want 0", got)
+	}
+}
+
 // TestRestoreArtifactAbsentFails proves RestoreArtifact refuses
 // FAILED_PRECONDITION when the store copy is absent.
 func TestRestoreArtifactAbsentFails(t *testing.T) {
@@ -1941,7 +2126,7 @@ func TestEnqueueIfMissingLegacyAliasGatedToAMDNode(t *testing.T) {
 	waitForExport(t, fs, "stateful/intel/scratch-postgres/r1")
 
 	// The unrelated legacy (AMD) artifact must be untouched by this node's export.
-	if got, _, err := fs.Restore(ctx, legacyPrefix, t.TempDir()); err != nil || got == 0 {
+	if got, _, err := fs.Restore(ctx, legacyPrefix, t.TempDir(), nil); err != nil || got == 0 {
 		t.Fatalf("legacy artifact should be untouched, restore err=%v bytes=%d", err, got)
 	}
 }

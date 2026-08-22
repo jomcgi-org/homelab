@@ -49,8 +49,8 @@ type registration struct {
 	BootID string `json:"boot_id"`
 }
 
-// httpDoer is the subset of *http.Client the register loop uses, seamed so a
-// test can drive the POST without a real control plane.
+// httpDoer is the subset of *http.Client used by dial-home requests, seamed so
+// tests can drive POSTs without a real control plane.
 type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
@@ -223,7 +223,11 @@ func grpcPortOf(listenAddr string) string {
 // header) when the path is unset or unreadable. Fresh-per-request so a rotated
 // projected token is picked up without a daemon restart.
 func (s *Server) controlPlaneToken() string {
-	path := strings.TrimSpace(s.cfg.ControlPlaneTokenPath)
+	return readControlPlaneToken(s.cfg.ControlPlaneTokenPath)
+}
+
+func readControlPlaneToken(path string) string {
+	path = strings.TrimSpace(path)
 	if path == "" {
 		return ""
 	}

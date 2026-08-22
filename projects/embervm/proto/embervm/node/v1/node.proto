@@ -1829,6 +1829,12 @@ message RestoreArtifactRequest {
   // boot at this layer. Empty for VOLUME and SESSION_WORKSPACE, which are
   // vendor-portable filesystem artifacts.
   string vendor = 3;
+  // V1 restore capability, intentionally carried as a request field rather
+  // than gRPC metadata: 0x01 || expiry_unix_ms::uint64 BE ||
+  // key_len::uint16 BE || key || tuple_len::uint16 BE || tuple_json || mac::32.
+  // The MAC is HMAC-SHA256 over the label embervm-restore-cap-v1 followed by
+  // every preceding capability byte.
+  bytes capability = 4;
 }
 
 // RestoreArtifactResponse reports the outcome. bytes_moved is 0 when the artifact

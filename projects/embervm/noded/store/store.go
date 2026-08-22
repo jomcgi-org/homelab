@@ -21,7 +21,9 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -58,6 +60,12 @@ const reachableTimeout = 3 * time.Second
 // local state with bad bytes.
 var ErrNotPresent = errors.New("store: artifact not present (no meta.json)")
 
+// ErrKeyRequired is returned when an encrypted artifact is restored without
+// its 32-byte data key. Plaintext artifacts never require a key.
+var ErrKeyRequired = errors.New("store: encrypted artifact requires a data key")
+
+const fileEncryptionAES256GCMV1 = "aes-256-gcm-v1"
+
 // ErrStaleGeneration is returned by Export when the store already holds a copy of
 // this artifact at a HIGHER generation than the local one. Exporting anyway would
 // overwrite newer durable state with older bytes.
@@ -84,6 +92,8 @@ type FileMeta struct {
 	Size        int64  `json:"size"`
 	Sha256      string `json:"sha256"`
 	Compression string `json:"compression,omitempty"`
+	Encryption  string `json:"encryption,omitempty"`
+	Nonce       string `json:"nonce,omitempty"`
 }
 
 // Meta is the artifact completeness marker, JSON-serialized as meta.json and
@@ -102,6 +112,22 @@ type Meta struct {
 	CreatedAtUnixMs int64               `json:"createdAtUnixMs"`
 	CpuVendor       string              `json:"cpuVendor,omitempty"`
 	CpuTemplate     string              `json:"cpuTemplate,omitempty"`
+	Envelope        []byte              `json:"envelope,omitempty"`
+}
+
+// DataKeyProvider returns a control-plane-minted data key and its opaque
+// envelope for one artifact. The store never mints or derives keys itself.
+type DataKeyProvider interface {
+	DataKey(ctx context.Context, kind, workload, ref string) (key []byte, envelope []byte, err error)
+}
+
+// ExportOptions identifies an artifact to a configured DataKeyProvider. An
+// empty Kind keeps the export plaintext, which lets callers explicitly exclude
+// non-principal artifacts such as bases.
+type ExportOptions struct {
+	Kind     string
+	Workload string
+	Ref      string
 }
 
 // Store is the S3-API object-store client. It is safe for concurrent use (the
@@ -113,6 +139,7 @@ type Store struct {
 	bucket      string
 	client      *http.Client
 	compress    bool
+	dataKeys    DataKeyProvider
 	credentials credentials
 	now         func() time.Time
 }
@@ -124,6 +151,14 @@ type Option func(*Store)
 func WithCredentials(accessKeyID, secretAccessKey string) Option {
 	return func(s *Store) {
 		s.credentials = credentials{accessKeyID: accessKeyID, secretAccessKey: secretAccessKey}
+	}
+}
+
+// WithDataKeys configures the control-plane seam used for encrypted exports.
+// A nil provider preserves the legacy writer behavior byte-for-byte.
+func WithDataKeys(p DataKeyProvider) Option {
+	return func(s *Store) {
+		s.dataKeys = p
 	}
 }
 
@@ -314,7 +349,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 // and cpuTemplate (PR-E) stamp the exporting node's cpu_sku into meta.json;
 // either or both empty stamps the artifact UNSTAMPED for that half of the sku
 // (the pre-PR-E / grandfathered shape), never a placeholder value.
-func (s *Store) Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string) (bytesMoved int64, skipped bool, err error) {
+func (s *Store) Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string, options ...ExportOptions) (bytesMoved int64, skipped bool, err error) {
 	if s == nil {
 		return 0, false, ErrNotPresent
 	}
@@ -358,6 +393,25 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 		}
 	}
 
+	var opts ExportOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	var dataKey []byte
+	if s.dataKeys != nil && opts.Kind != "" {
+		var kerr error
+		dataKey, meta.Envelope, kerr = s.dataKeys.DataKey(ctx, opts.Kind, opts.Workload, opts.Ref)
+		if kerr != nil {
+			return 0, false, fmt.Errorf("store: get data key for %q: %w", prefix, kerr)
+		}
+		if len(dataKey) != 32 {
+			return 0, false, fmt.Errorf("store: data key for %q has length %d, want 32", prefix, len(dataKey))
+		}
+		if len(meta.Envelope) == 0 {
+			return 0, false, fmt.Errorf("store: data key provider returned an empty envelope for %q", prefix)
+		}
+	}
+
 	for name, fm := range meta.Files {
 		path := filepath.Join(localDir, name)
 		f, oerr := os.Open(path)
@@ -366,28 +420,52 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 		}
 		var body io.Reader = f
 		putSize := fm.Size
-		if s.compress {
-			// This is a two-phase rollout. A daemon that does not understand the
-			// marker cannot restore a compressed object. Phase 1 ships the READER
-			// everywhere with the writer OFF; only once the fleet understands
-			// compression is the writer armed. Shipping both at once would let a
-			// new writer produce objects an old reader cannot hydrate during
-			// rollout, causing a self-inflicted outage. This follows the existing
-			// ship-inert, arm-later pattern used by WarmthReaper's
-			// EMBERVM_WARMTH_RETENTION_SWEEP gate.
+		if s.compress || dataKey != nil {
+			// Both compression and encryption use the ship-inert, arm-later
+			// rollout: readers understand their per-file markers before a writer
+			// can produce either format.
 			pr, pw := io.Pipe()
-			enc, eerr := zstd.NewWriter(pw, zstd.WithEncoderConcurrency(1), zstd.WithEncoderLevel(zstd.SpeedFastest))
+			var sink io.WriteCloser = pw
+			var nonce []byte
+			if dataKey != nil {
+				nonce = make([]byte, 12)
+				if _, rerr := rand.Read(nonce); rerr != nil {
+					_ = f.Close()
+					_ = pw.Close()
+					_ = pr.Close()
+					return bytesMoved, false, fmt.Errorf("store: generate nonce for %q: %w", name, rerr)
+				}
+				sink = newSealWriter(pw, dataKey, nonce)
+			}
+			// Encrypted artifacts always retain the established zstd layer, with
+			// sealing outside it: file -> zstd -> AES-GCM frames -> object body.
+			// This is independent of the plaintext-writer compression flag.
+			enc, eerr := zstd.NewWriter(sink, zstd.WithEncoderConcurrency(1), zstd.WithEncoderLevel(zstd.SpeedFastest))
 			if eerr != nil {
 				_ = f.Close()
+				_ = pr.CloseWithError(eerr)
+				_ = sink.Close()
+				_ = pw.Close()
 				return bytesMoved, false, fmt.Errorf("store: create zstd writer for %q: %w", name, eerr)
 			}
+			var encoded io.WriteCloser = enc
 			go func() {
-				_, cerr := io.Copy(enc, f)
-				pw.CloseWithError(errors.Join(cerr, enc.Close()))
+				_, copyErr := io.Copy(encoded, f)
+				encodeErr := encoded.Close()
+				var sealErr error
+				if dataKey != nil && encoded != sink {
+					sealErr = sink.Close()
+				}
+				pw.CloseWithError(errors.Join(copyErr, encodeErr, sealErr))
 			}()
 			body = pr
 			putSize = -1
-			meta.Files[name] = FileMeta{Size: fm.Size, Sha256: fm.Sha256, Compression: "zstd"}
+			fm.Compression = "zstd"
+			if dataKey != nil {
+				fm.Encryption = fileEncryptionAES256GCMV1
+				fm.Nonce = base64.StdEncoding.EncodeToString(nonce)
+			}
+			meta.Files[name] = fm
 		}
 		cr := &countingReader{Reader: body}
 		perr := s.Put(ctx, prefix+"/"+name, cr, putSize)
@@ -415,7 +493,7 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 // and renamed into place only after its checksum matches, so a mismatch (or a
 // short read) never leaves a corrupt file on disk. It returns the bytes written
 // and the marker's generation.
-func (s *Store) Restore(ctx context.Context, prefix, localDir string) (bytesMoved int64, generation uint64, err error) {
+func (s *Store) Restore(ctx context.Context, prefix, localDir string, key []byte) (bytesMoved int64, generation uint64, err error) {
 	if s == nil {
 		return 0, 0, ErrNotPresent
 	}
@@ -430,7 +508,7 @@ func (s *Store) Restore(ctx context.Context, prefix, localDir string) (bytesMove
 		return 0, 0, fmt.Errorf("store: mkdir restore dir %q: %w", localDir, err)
 	}
 	for name, fm := range meta.Files {
-		n, ferr := s.restoreFile(ctx, prefix+"/"+name, filepath.Join(localDir, name), fm)
+		n, ferr := s.restoreFile(ctx, prefix+"/"+name, filepath.Join(localDir, name), fm, key)
 		if ferr != nil {
 			return bytesMoved, 0, ferr
 		}
@@ -443,7 +521,13 @@ func (s *Store) Restore(ctx context.Context, prefix, localDir string) (bytesMove
 // and SHA-256 against the marker, and only then renames it into place. On any
 // mismatch or read error it removes the temp file and returns an error, so a
 // corrupt restore never leaves a bad file where a good one (or none) belongs.
-func (s *Store) restoreFile(ctx context.Context, key, dst string, want FileMeta) (int64, error) {
+func (s *Store) restoreFile(ctx context.Context, key, dst string, want FileMeta, dataKey []byte) (int64, error) {
+	if want.Encryption != "" && want.Encryption != fileEncryptionAES256GCMV1 {
+		return 0, fmt.Errorf("store: unsupported encryption %q for object %q", want.Encryption, key)
+	}
+	if want.Encryption == fileEncryptionAES256GCMV1 && len(dataKey) == 0 {
+		return 0, ErrKeyRequired
+	}
 	body, _, err := s.Get(ctx, key)
 	if err != nil {
 		return 0, err
@@ -457,9 +541,18 @@ func (s *Store) restoreFile(ctx context.Context, key, dst string, want FileMeta)
 	}
 	h := sha256.New()
 	var decoded io.Reader = body
+	if want.Encryption == fileEncryptionAES256GCMV1 {
+		nonce, derr := base64.StdEncoding.DecodeString(want.Nonce)
+		if derr != nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return 0, fmt.Errorf("store: decode nonce for object %q: %w", key, derr)
+		}
+		decoded = newOpenReader(body, dataKey, nonce)
+	}
 	var decoder *zstd.Decoder
 	if want.Compression == "zstd" {
-		decoder, err = zstd.NewReader(body, zstd.WithDecoderConcurrency(1))
+		decoder, err = zstd.NewReader(decoded, zstd.WithDecoderConcurrency(1))
 		if err != nil {
 			_ = f.Close()
 			_ = os.Remove(tmp)
@@ -652,31 +745,28 @@ func (s *Store) ListRefs(ctx context.Context, prefix string, limit int) (refs []
 	return refs, out.IsTruncated, nil
 }
 
-// ArtifactInfo reports the completeness-marker fields ListArtifacts needs that
-// Present does not surface: the created-at it orders retention on and the summed
-// file size, plus the vendor stamp so a caller can verify an object really
-// belongs to the prefix it was listed under.
+// ArtifactInfo reports completeness-marker fields used by list and restore:
+// created-at, summed file size, vendor stamp, generation, and opaque envelope.
 //
-// Returned flat rather than as a Meta so the server package's artifactStore seam
-// can declare it without importing this package (see the seam's own note). Same
-// contract as getMeta: absent marker is (false, ...) with a nil error, so an
-// incomplete artifact reads as not present.
-func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, err error) {
+// Returned flat rather than as a Meta so callers depend only on the fields they
+// consume. Same contract as getMeta: an absent marker is (false, ...) with a nil
+// error, so an incomplete artifact reads as not present.
+func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, generation uint64, envelope []byte, err error) {
 	if s == nil {
-		return false, 0, 0, "", "", nil
+		return false, 0, 0, "", "", 0, nil, nil
 	}
 	ok, meta, merr := s.getMeta(ctx, prefix)
 	if merr != nil {
-		return false, 0, 0, "", "", merr
+		return false, 0, 0, "", "", 0, nil, merr
 	}
 	if !ok {
-		return false, 0, 0, "", "", nil
+		return false, 0, 0, "", "", 0, nil, nil
 	}
 	var total int64
 	for _, fm := range meta.Files {
 		total += fm.Size
 	}
-	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, nil
+	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, meta.Generation, append([]byte(nil), meta.Envelope...), nil
 }
 
 // getMeta fetches and decodes meta.json for a prefix. It returns (false, _, nil)

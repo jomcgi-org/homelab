@@ -342,6 +342,8 @@ containers:
         value: {{ $ctx.Values.noded.store.bucket | quote }}
       - name: EMBERVM_NODED_STORE_COMPRESS
         value: {{ $ctx.Values.noded.store.compress | quote }}
+      - name: EMBERVM_NODED_STORE_ENCRYPT
+        value: {{ $ctx.Values.noded.store.encrypt | quote }}
       {{- if $ctx.Values.noded.store.credentials.enabled }}
       - name: EMBERVM_NODED_STORE_ACCESS_KEY_ID
         valueFrom:
@@ -363,6 +365,8 @@ containers:
       # version the control plane starts blessing (never a mixed state).
       - name: EMBERVM_NODED_REQUIRE_BLESSING
         value: {{ $ctx.Values.noded.requireBlessing | quote }}
+      - name: EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY
+        value: {{ $ctx.Values.noded.requireRestoreCapability | quote }}
       # Artifact-decoupling Phase 2: the node-side image identity table that
       # USED to be rendered here as EMBERVM_NODED_IMAGES is retired. The daemon
       # boots with an EMPTY workload registry and the control plane PUSHES it

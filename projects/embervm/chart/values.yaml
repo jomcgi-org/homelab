@@ -1242,6 +1242,10 @@ noded:
     # that honors the per-file zstd marker, so the arming precondition is met and
     # new objects can be compressed safely.
     compress: true
+    # EMBERVM_NODED_STORE_ENCRYPT. Phase 1 ships the reader fleet-wide with the
+    # writer inert. Arm only after every daemon can read enveloped artifacts and
+    # the control plane wrap endpoint is available.
+    encrypt: false
     # One 1Password item named embervm-store supplies access_key_id and
     # secret_access_key. These are the same keys used by the embervm identity in
     # the SeaweedFS identities policy. The env names rendered when enabled are
@@ -1263,6 +1267,11 @@ noded:
   # in the exact version the control plane starts blessing, never a mixed
   # CP/noded state.
   requireBlessing: true
+
+  # EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY. Phase 1 validates restore
+  # capabilities with enforcement inert. Arm only after the control plane
+  # supplies a capability on every enveloped restore.
+  requireRestoreCapability: false
 
   # 256Mi req / 36Gi limit (Task 14b full side-by-side). The limit is a cgroup
   # OOM CEILING, not a scheduling reservation (the request stays 256Mi), so it

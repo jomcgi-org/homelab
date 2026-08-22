@@ -504,6 +504,35 @@ def test_brick_renders_default_warmth_heartbeat_env():
             )
 
 
+def test_brick_renders_inert_artifact_encryption_envs():
+    """Envelope writing and restore enforcement default off on every brick."""
+    chart = _chart_dir()
+    rendered = _render("envelope", [chart / "values.yaml"], ["bricks.enabled=true"])
+    brick_deployments = [
+        doc
+        for kind, _, doc in _docs(rendered)
+        if kind == "Deployment" and "app.kubernetes.io/component: noded-brick" in doc
+    ]
+    assert brick_deployments, (
+        "default render produced no brick Deployment; this test is inert"
+    )
+
+    expected = {
+        "EMBERVM_NODED_STORE_ENCRYPT": "false",
+        "EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY": "false",
+    }
+    for deployment in brick_deployments:
+        for name, value in expected.items():
+            rendered_env = re.search(
+                rf"name:\s*{name}\s+value:\s*\"([^\"]+)\"", deployment
+            )
+            assert rendered_env, f"brick Deployment is missing {name}"
+            assert rendered_env.group(1) == value, (
+                f"brick Deployment renders {name}={rendered_env.group(1)!r}, "
+                f"want {value!r}"
+            )
+
+
 def test_dev_hostpaths_are_under_production_scratch_never_beside_it(renders):
     """Dev's hostPaths must be UNDER production's, not siblings of it.
 
