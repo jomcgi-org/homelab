@@ -163,6 +163,8 @@ spec:
               value: {{ .Values.swarm.maxReviewCycles | quote }}
             - name: SWARM_TURN_TIMEOUT_SECONDS
               value: {{ .Values.swarm.turnTimeoutSeconds | quote }}
+            - name: SWARM_DECISION_TIMEOUT_SECONDS
+              value: {{ .Values.swarm.decisionTimeoutSeconds | quote }}
             - name: SWARM_CODEX_CONCURRENCY
               value: {{ .Values.swarm.codexConcurrency | quote }}
             {{- end }}
