@@ -1,10 +1,10 @@
 {{- /*
-OpenAI-compatible access to the llama.cpp server from outside the cluster:
+Browser UI and OpenAI-compatible API for the llama.cpp server:
 
-  https://private.jomcgi.dev/llm/v1
+  https://private.jomcgi.dev/llm/      llama.cpp web UI
+  https://private.jomcgi.dev/llm/v1    OpenAI client base URL
 
-Base URL for an OpenAI client is that string; the model id is whatever
-llamacpp.extraArgs --alias sets, currently "qwen3.6-27b".
+Model id is whatever llamacpp.extraArgs --alias sets, currently "qwen3.6-27b".
 
 WHY private.jomcgi.dev AND NOT friends.jomcgi.dev. friends carries the authentik
 lanes, and every one of them runs an Envoy `oidc` block, which answers an
@@ -17,11 +17,22 @@ natively: a Service Auth policy on the Access application admits a request
 carrying CF-Access-Client-Id / CF-Access-Client-Secret, and injects the
 Cf-Access-Jwt-Assertion header the SecurityPolicy below validates.
 
-WHY THE PREFIX IS /llm/v1 AND NOT /llm. Rewriting the bare prefix to / would
-publish EVERYTHING llama-server routes, including /props and the /metrics
-endpoint that llamacpp.extraArgs --metrics turns on. Matching /llm/v1 exposes
-only the OpenAI surface (/v1/chat/completions, /v1/completions, /v1/models,
-/v1/embeddings). /slots is not in play either way, since --slots is not passed.
+WHY TWO RULES, NOT ONLY /llm. The UI is a static build whose assets and most
+API calls are relative (./_app/..., ./v1/chat/completions, ./props, ./slots).
+Those resolve under /llm/ after Envoy rewrites the prefix to /. The OpenAI
+surface stays on /llm/v1 with its own rewrite to /v1 so existing clients keep
+the same base URL. Gateway API picks the longest PathPrefix, so /llm/v1 does
+not fall through to the UI rule.
+
+The slash redirect is load-bearing: at /llm with no trailing slash, relative
+./v1/chat/completions would resolve against / and miss this route entirely
+(same trap as longhorn-private-slash-redirect).
+
+WHAT THIS PUBLISHES. Rewriting /llm to / forwards every llama-server path
+under that prefix, including /props (the UI reads it) and /metrics. Both
+remain behind Cloudflare Access on private.jomcgi.dev. Prometheus still
+scrapes the pod IP, not this hostname. Router-only absolute paths in the UI
+bundle (/v1/models, /models/load) are unused on this single-model server.
 */}}
 {{- if .Values.cfIngress.enabled }}
 apiVersion: gateway.networking.k8s.io/v1
@@ -46,6 +57,19 @@ spec:
   hostnames:
     - {{ .Values.cfIngress.hostname | quote }}
   rules:
+    # Bare /llm would resolve the UI's relative ./v1 and ./_app URLs against
+    # /v1 and /_app on this hostname, which this route does not match.
+    - matches:
+        - path:
+            type: Exact
+            value: {{ .Values.cfIngress.pathPrefix }}
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: {{ .Values.cfIngress.pathPrefix }}/
+            statusCode: 301
     - matches:
         - path:
             type: PathPrefix
@@ -65,6 +89,25 @@ spec:
       # returns 524 if the origin sends NO byte for 100s. Streaming responses
       # emit the first token well inside that, so a long non-streamed completion
       # is the shape that breaks. Prefer stream: true from the client.
+      timeouts:
+        request: 600s
+        backendRequest: 600s
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ include "inference.serviceName" . }}
+          port: {{ .Values.server.port | int }}
+          weight: 1
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.cfIngress.pathPrefix }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
       timeouts:
         request: 600s
         backendRequest: 600s

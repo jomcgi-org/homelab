@@ -416,10 +416,10 @@ benchMode:
   # comment for why the arithmetic alone has already been wrong once.
   ctxSize: 131072
 
-# OpenAI-compatible ingress at https://private.jomcgi.dev/llm/v1, so a client
-# outside the cluster (an OpenAI SDK, curl, an IDE assistant) can call the
-# llama.cpp server. See templates/httproute-private.yaml for why this hostname
-# rather than friends.jomcgi.dev, and why the prefix stops at /v1.
+# Ingress at https://private.jomcgi.dev/llm/ (llama.cpp web UI) and
+# https://private.jomcgi.dev/llm/v1 (OpenAI client base URL). See
+# templates/httproute-private.yaml for why this hostname rather than
+# friends.jomcgi.dev, and why the UI needs the trailing slash.
 #
 # SAFE TO ENABLE BEFORE ANY CLOUDFLARE WORK. The Access application covering
 # private.jomcgi.dev has no path scope, so it already guards this path the
