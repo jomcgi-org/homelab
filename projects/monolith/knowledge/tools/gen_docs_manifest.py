@@ -18,9 +18,9 @@ with the code they describe so they get updated by proximity pressure. Hand-
 written top-level ``docs/*.md`` reference docs are no longer published (they
 rot far from the code they describe); they remain internal-only. Excluded:
 ``docs/plans/**``, vendored README subtrees (a prefix blocklist for
-third-party charts we vendor but did not author), and a per-file blocklist for any README that
-should stay off the public surface. Be conservative: if unsure whether a doc is
-public, it stays off the allowlist.
+third-party charts we vendor but did not author), and a per-file blocklist for
+any allowlisted path that should stay off the public surface. Be conservative:
+if unsure whether a doc is public, it stays off the allowlist.
 
 Regeneration is automatic: the "Format check" CI action (buildbuddy.yaml) runs
 this generator on every push and auto-commits any change to the manifest on PR
@@ -50,9 +50,8 @@ README_SUFFIX = "/README.md"
 # Add future vendored trees here.
 _VENDORED_PREFIXES: tuple[str, ...] = ()
 
-# Per-file blocklist: individual README paths that must NOT appear on the
-# public docs site even though they match the allowlist glob. These are
-# build glue or internal tooling notes, not project documentation.
+# Per-file blocklist: individual paths that must NOT appear on the public docs
+# site even though they match an allowlist glob.
 _BLOCKLIST: frozenset[str] = frozenset(
     {
         "projects/shared/README.md",
@@ -60,6 +59,18 @@ _BLOCKLIST: frozenset[str] = frozenset(
         # would read as the live ingest path to an outside reader.
         "projects/monolith/frontend/visual/README.md",
         "projects/platform/signoz-addons/operator/crds/README.md",
+        # Contains 1Password paths, secret fields, reset steps, and live auth notes.
+        "projects/platform/authentik/README.md",
+        # Names every internet-facing pod secret and documents isolation gaps.
+        "docs/decisions/security/004-public-read-only-service-isolation.md",
+        # Documents exact anti-abuse thresholds and exemptions.
+        "docs/decisions/chat/003-trust-safety-safeguards.md",
+        # Never-implemented draft superseded by docs/decisions/docs/002.
+        "docs/decisions/docs/001-static-docs-site.md",
+        # Contains disposable k3s runtime spike notes.
+        "projects/embervm/runtimes/k3s/drill/README.md",
+        # Documents a personal account workflow.
+        "projects/monolith/claude_routines/README.md",
     }
 )
 
