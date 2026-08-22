@@ -82,7 +82,7 @@ genrule(
     ],
     outs = ["otp_smoke.txt"],
     cmd = "$(location otp_smoke.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$@\"",
-        tools = ["otp_smoke.sh"],
+    tools = ["otp_smoke.sh"],
 )
 
 # Proves the prebuilt OTP + precompiled Elixir compile and ExUnit-test the
@@ -121,7 +121,7 @@ genrule(
           "EMBERVM_NODE_PROTO_SRC=\"$(location //projects/embervm/proto/embervm/node/v1:node_proto)\" " +
           "EMBERVM_FAKE_NODE_SRC=\"$(location //projects/embervm/proto/embervm/node/v1/fakenode)\" " +
           "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations :hex_tarballs)",
-        tools = ["mix_test.sh"],
+    tools = ["mix_test.sh"],
 )
 
 bzl_library(

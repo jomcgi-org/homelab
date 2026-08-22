@@ -73,7 +73,7 @@ sh_test(
     srcs = ["late_resume_smoke_test.sh"],
     args = ["$(rootpath :claude_code_patched_binary_amd64)"],
     data = [":claude_code_patched_binary_amd64"],
-        target_compatible_with = ["@platforms//os:linux"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 # Workspace trust pre-seed. Remote Control server mode and the interactive paths
