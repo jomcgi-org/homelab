@@ -1,7 +1,7 @@
 # ADR 060: Escalation as a Pause, Not a Return, With a Decision Row
 
 **Author:** jomcgi
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-08-22
 **Relates to:** [054 - The Run View: Pinned Plans, Epistemic Registers, and
 Recorded-Not-Inferred Data](054-run-view-pinned-plans-epistemic-registers.md)
