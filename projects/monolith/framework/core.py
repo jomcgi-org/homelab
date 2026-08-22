@@ -539,15 +539,15 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
         for m in modules:
             if m.register_mcp is not None:
                 m.register_mcp()
-        raw_mcp_http_app = monolith_mcp.http_app(transport="sse", path="/")
+        raw_mcp_http_app = monolith_mcp.http_app(transport="http", path="/")
         mcp_lifespan = raw_mcp_http_app.lifespan
 
         # Context Forge reaches this mount over ClusterIP, without the private
         # ingress gate. Verify bearer material here instead of trusting proxy
-        # identity headers that this path never receives. On the SSE transport,
-        # the Principal is pinned to the stream-opener for the entire session:
-        # per-message POST resolution is discarded, so tools reading
-        # current_principal() do not see per-message identity updates.
+        # identity headers that this path never receives. On streamable HTTP
+        # every JSON-RPC message is its own POST, so PrincipalMiddleware resolves
+        # the principal per message and current_principal() inside a tool sees the
+        # caller of that message (this is the #4569 fix path).
         from auth.api import PrincipalMiddleware, get_default_resolver
 
         mcp_http_app = PrincipalMiddleware(

@@ -4,10 +4,11 @@
 # CF caches each gateway's tool catalog in its own Postgres and does NOT
 # re-discover on its own: its auto-refresh runs inside the health-check loop and
 # only fires after a healthy tick, but that loop speaks streamablehttp while the
-# monolith gateway serves SSE, so the monolith gateway's last_seen never advances
-# and CF's built-in auto-refresh never fires for it. Without this, every new or
-# changed monolith MCP tool stays invisible to the homelab connector until
-# someone POSTs the refresh endpoint by hand.
+# monolith gateway was registered as SSE, so last_seen never advanced and the
+# auto-refresh never fired. The monolith now serves streamable HTTP at /mcp/;
+# the registration (in CF's Postgres, updated by hand) must be STREAMABLEHTTP
+# with http://<monolith svc>/mcp/. Keep this CronJob until the health tick is
+# observed advancing last_seen against that registration; retiring it is #5035.
 #
 # This CronJob mints a short-lived admin JWT (JWT_SECRET_KEY + PLATFORM_ADMIN_EMAIL
 # come from the context-forge secret, the same envFrom the gateway uses), looks

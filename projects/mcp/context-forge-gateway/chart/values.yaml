@@ -169,9 +169,10 @@ scopedRoutes: []
 #    serverId: "<virtual server uuid>"
 
 # Periodic tool-catalog refresh. CF does not auto-discover new monolith MCP
-# tools (its health-gated auto-refresh never fires for the SSE monolith gateway,
-# whose last_seen never advances under the streamablehttp health tick), so a
-# CronJob POSTs the gateways/<id>/tools/refresh admin endpoint on a schedule.
+# tools (its health-gated auto-refresh never fired while the monolith gateway
+# was registered as SSE), so a CronJob POSTs the gateways/<id>/tools/refresh
+# admin endpoint on a schedule. The monolith now serves streamable HTTP; keep
+# this until the health tick is seen advancing last_seen (#5035).
 # Reuses the gateway image (bundles mcpgateway + httpx) and the context-forge
 # secret (JWT_SECRET_KEY + PLATFORM_ADMIN_EMAIL) to mint a short-lived admin JWT.
 toolRefresh:

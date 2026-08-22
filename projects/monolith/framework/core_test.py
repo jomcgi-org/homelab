@@ -12,6 +12,7 @@ import dataclasses
 import logging
 
 import core.leadership as leadership
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -369,6 +370,39 @@ def test_mcp_only_module_is_valid_and_mounts_mcp():
 
     assert calls == ["mcp"]
     assert any(getattr(r, "path", "") == "/mcp" for r in app.routes)
+
+
+@pytest.mark.asyncio
+async def test_mcp_mount_serves_streamable_http_not_sse():
+    profile = dataclasses.replace(_PLAIN_PRIVATE, mcp_enabled=True)
+    app = build_app(profile, [Module(name="tools", register_mcp=lambda: None)])
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            sse_response = await client.get("/mcp/sse")
+            initialize_response = await client.post(
+                "/mcp/",
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                },
+            )
+
+    assert sse_response.status_code == 404
+    assert initialize_response.status_code == 200
 
 
 def test_mcp_mount_is_wrapped_in_principal_middleware():

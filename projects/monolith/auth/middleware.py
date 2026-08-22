@@ -24,11 +24,9 @@ ASGIApp = Callable[
 class PrincipalMiddleware:
     """Resolve bearer identity before dispatching an HTTP ASGI request.
 
-    Warning: On the SSE transport, the Principal is the stream-opener's and
-    remains pinned for the entire session. Per-message POST resolution via the
-    context variable is discarded before tool dispatch. Any per-caller result
-    scoping built on current_principal() from inside a tool must account for
-    this: the identity is not re-verified for each MCP message.
+    Streamable HTTP resolves the principal for every JSON-RPC POST. A server
+    mounting an SSE transport would reintroduce principal pinning to the stream
+    opener.
     """
 
     def __init__(self, app: ASGIApp, resolver: TokenResolver) -> None:
