@@ -12,7 +12,7 @@ const BODY = `# Joe McGinley
 - Role: Senior Platform Engineer @ Semgrep (May 2025 to present)
 - Focus: Kubernetes, platform engineering, eBPF, observability (OpenTelemetry), reliability, distributed systems
 - Cloud: AWS / EKS and Google Cloud / GKE
-- Location: ${LOCATION.short}, UK
+- Location: ${LOCATION.short}, ${LOCATION.country}
 
 ## Pages
 
