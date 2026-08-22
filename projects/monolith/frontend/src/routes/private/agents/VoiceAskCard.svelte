@@ -16,6 +16,8 @@
     try {
       await onSend({ session_id: sessionId, prompt: option });
       onAnswered(card.key);
+    } catch {
+      // sendSessionPrompt already raised the console's error banner.
     } finally {
       sending = false;
     }

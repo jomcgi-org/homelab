@@ -164,31 +164,31 @@ export function jumpActions(query) {
   if (!text) {
     return [
       {
-        kind: "voice",
-        id: "action-voice",
-        title: P.labels.openVoiceCompanion,
-        hint: "",
-      },
-      {
         kind: "new",
         id: "action-new",
         title: P.labels.jumpNewSession,
+        hint: "",
+      },
+      {
+        kind: "voice",
+        id: "action-voice",
+        title: P.labels.openVoiceCompanion,
         hint: "",
       },
     ];
   }
   return [
     {
-      kind: "voice",
-      id: "action-voice",
-      title: P.labels.openVoiceCompanion,
-      hint: "",
-    },
-    {
       kind: "new",
       id: "action-new",
       title: `${P.labels.jumpNewSessionWith} ${P.labels.quoteMark}${text}${P.labels.quoteMark}`,
       hint: P.labels.shortcutEnter,
+    },
+    {
+      kind: "voice",
+      id: "action-voice",
+      title: P.labels.openVoiceCompanion,
+      hint: "",
     },
     {
       kind: "search",

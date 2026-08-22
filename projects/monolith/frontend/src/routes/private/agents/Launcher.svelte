@@ -80,7 +80,12 @@
             aria-label={P.labels.modelPicker}
             bind:value={session.model}
           >
-            <option value="">{P.labels.defaultWord}</option>
+            <option value=""
+              >{P.labels.defaultModelOption.replace(
+                "{model}",
+                P.labels.defaultModel,
+              )}</option
+            >
             {#if session.model && !models.includes(session.model)}
               <option value={session.model}>{session.model}</option>
             {/if}

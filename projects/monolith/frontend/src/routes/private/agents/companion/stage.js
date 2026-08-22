@@ -29,8 +29,9 @@ export function applyLedgerRows(stage, rows) {
 
 export function dismissCard(stage, key) {
   const next = cloneStage(stage);
-  next.cards = next.cards.filter((card) => card.key !== key);
-  next.userDismissed[key] = true;
+  const card = next.cards.find((existing) => existing.key === key);
+  next.cards = next.cards.filter((existing) => existing.key !== key);
+  next.userDismissed[key] = card?.rowId ?? true;
   return next;
 }
 
@@ -141,6 +142,7 @@ function applyRow(stage, row) {
   } else if (call === "dismiss") {
     applyDismiss(stage, payload);
   } else if (!KNOWN_CALLS.has(call) && call) {
+    // No writer emits non-voice_ui rows yet (voice_ui.py records four calls); this is the reader half of ADR 058 auto-surfacing.
     upsertCard(
       stage,
       cardFrom(row, {
@@ -161,7 +163,19 @@ function applyShow(stage, row, payload) {
   const ref = payload.ref;
   if (!KNOWN_SURFACES.has(surface) || ref == null || ref === "") return;
   const key = surfaceKey(surface, ref);
-  delete stage.userDismissed[key];
+  // Surface dismissal is sticky until a newer row re-shows this surface:ref.
+  const dismissedAt = stage.userDismissed[key];
+  if (dismissedAt != null) {
+    const dismissedId = Number(dismissedAt);
+    if (
+      dismissedAt === true ||
+      !Number.isFinite(dismissedId) ||
+      Number(row.id) <= dismissedId
+    ) {
+      return;
+    }
+    delete stage.userDismissed[key];
+  }
   upsertCard(
     stage,
     cardFrom(row, {

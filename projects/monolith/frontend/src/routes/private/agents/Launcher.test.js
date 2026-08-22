@@ -79,6 +79,16 @@ describe("launcher submit path", () => {
     expect(createTask).toHaveBeenCalledTimes(2);
   });
 
+  test("empty model option names the default model", async () => {
+    const target = await render(vi.fn());
+    const select = target.querySelector(
+      `[aria-label="${P.labels.modelPicker}"]`,
+    );
+    expect(select.querySelector('option[value=""]').textContent).toBe(
+      "luna (default)",
+    );
+  });
+
   test("the page wires both launchers and the New panel to createTask", () => {
     const pageSource = pageSurface();
 
