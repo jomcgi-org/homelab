@@ -147,6 +147,8 @@
            group_running group_published group_unpublished group_banked group_relit
            group_fresh_booted group_set_evicted group_degraded group_destroying
            group_destroyed group_failed group_stats)a ++
+        # Key custodian facts, no lifecycle model yet.
+        ~w(key_epoch_set key_min_epoch_raised)a ++
         # R6 continuity (node drain + off-node artifact) kinds, out of scope.
         ~w(node_drain_started node_drain_finished artifact_exported
            artifact_restored artifact_evicted_remote)a

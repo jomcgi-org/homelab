@@ -30,6 +30,7 @@ defmodule Embervm.OpLog.PostgresTest do
       {:load_stateful_instances, 1},
       {:load_volumes, 1},
       {:load_volume_blessing, 1},
+      {:load_key_epochs, 1},
       {:load_blessing_leases, 1},
       {:load_checkpoint_dispatches, 1},
       {:load_group_instances, 1},

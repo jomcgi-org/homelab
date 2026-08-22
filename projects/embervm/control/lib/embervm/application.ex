@@ -73,6 +73,11 @@ defmodule Embervm.Application do
     # (an empty class list, an empty prefix) fire and it reconciles nothing.
     put_brick_config()
 
+    # Keep the decoded KEK root in app env only while constructing and starting
+    # the supervision tree. KeyService copies it into its redacted process state;
+    # the `after` block removes the transient second reference on every outcome.
+    Application.put_env(:embervm, :kek_root, kek_root())
+
     children = [
       # The sync-wait waiter registry + park-count ETS owner come FIRST: every
       # terminal task-state write in TaskStore calls Embervm.SyncWait.notify,
@@ -91,6 +96,10 @@ defmodule Embervm.Application do
       # roll loses no pending append. Started unconditionally: with the gate OFF it
       # receives no work (the stores keep write-through ordering), so it is inert.
       Embervm.AsyncWriter,
+      # Platform KEK custodian (ADR embervm/036). It depends only on the op-log,
+      # loads its two small durable epoch facts at boot, and remains inert when no
+      # root is configured.
+      {Embervm.KeyService, key_service_opts()},
       # SpecTrace: writer, store and compactor. All three return :ignore when
       # the gate is off, which is load-bearing rather than tidiness. Left
       # unguarded, a DISABLED trace would still open a postgrex connection to
@@ -426,7 +435,12 @@ defmodule Embervm.Application do
     ]
 
     opts = [strategy: :rest_for_one, name: Embervm.Supervisor]
-    Supervisor.start_link(children, opts)
+
+    try do
+      Supervisor.start_link(children, opts)
+    after
+      Application.delete_env(:embervm, :kek_root)
+    end
   end
 
   # Port comes from the environment (EMBERVM_HTTP_PORT), matching the chart's
@@ -541,6 +555,30 @@ defmodule Embervm.Application do
 
       Embervm.OpLog.Postgres ->
         {Embervm.OpLog.Postgres, dsn: trimmed_env("EMBERVM_OPLOG_DSN"), journal_horizon_ms: journal_horizon_ms()}
+    end
+  end
+
+  defp key_service_opts do
+    [
+      root: Application.fetch_env!(:embervm, :kek_root),
+      op_log: op_log_mod(),
+      op_log_mod: op_log_mod()
+    ]
+  end
+
+  defp kek_root do
+    case trimmed_env("EMBERVM_KEK_ROOT") do
+      "" ->
+        nil
+
+      encoded ->
+        case Base.decode64(encoded) do
+          {:ok, root} when byte_size(root) >= 32 ->
+            root
+
+          _invalid ->
+            raise "invalid EMBERVM_KEK_ROOT: expected base64 decoding to at least 32 bytes"
+        end
     end
   end
 
