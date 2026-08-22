@@ -352,6 +352,27 @@ for line in sys.stdin:
                   "errorMessage": "provider failed: ECONNREFUSED"}]})
         elif os.environ.get("FAKE_PI_MODE") == "textless":
             emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") == "telemetry":
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [], "stopReason": "toolUse", "usage": {}}})
+            emit({"type": "tool_execution_start", "toolCallId": "read-1",
+                  "toolName": "read", "args": {"path": "a.txt"}})
+            emit({"type": "tool_execution_end", "toolCallId": "read-1"})
+            emit({"type": "tool_execution_start", "toolCallId": "bash-1",
+                  "toolName": "bash", "args": {"command": "echo pi"}})
+            emit({"type": "tool_execution_end", "toolCallId": "bash-1"})
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [{"type": "text", "text": "Telemetry done"}],
+                  "stopReason": "stop", "usage": {"input": 5, "output": 7}}})
+            emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") == "no-tools":
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [{"type": "text", "text": "No tools needed"}],
+                  "stopReason": "stop", "usage": {"input": 2, "output": 3}}})
+            emit({"type": "agent_end", "messages": []})
         else:
             emit({"type": "tool_start", "toolName": "bash",
                   "args": {"command": "echo pi"}})
@@ -456,7 +477,53 @@ def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
     assert record["result"] == "Done <voice>Pi completed the work.</voice>"
     assert record["session_id"] == "pi-session"
     assert "input_tokens" in record["usage"]
+    assert record["activities"] == [{"type": "bash", "command": "echo pi"}]
     manager._close_process()
+
+
+def test_pi_turn_reports_model_and_tool_timing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_PI_MODE", "telemetry")
+    clock = [0]
+
+    def timing_now():
+        clock[0] += 1
+        return float(clock[0])
+
+    monkeypatch.setattr(shim, "_turn_timing_now", timing_now)
+    manager = _pi_manager(tmp_path, monkeypatch)
+    record = manager.turn("hello", model="qwen")
+    manager._close_process()
+
+    assert record["num_turns"] == 2
+    assert record["usage"]["model_calls"] == 2
+    assert record["usage"]["tool_calls"] == 2
+    assert record["usage"]["model_ms"] > 0
+    assert record["usage"]["tool_ms"] > 0
+    assert record["usage"]["tools_by_name"] == {
+        "read": {"calls": 1, "ms": 1000},
+        "bash": {"calls": 1, "ms": 1000},
+    }
+    assert record["activities"] == [
+        {"type": "tool_use", "name": "read", "input": {"path": "a.txt"}},
+        {"type": "bash", "command": "echo pi"},
+    ]
+    timing = capsys.readouterr().err
+    assert "phase=pi_model calls=2 ms=" in timing
+    assert "phase=pi_tools calls=2 ms=" in timing
+    assert "bash=1:1000" in timing
+    assert "read=1:1000" in timing
+
+
+def test_pi_turn_without_tools_reports_zero_tool_time(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "no-tools")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    record = manager.turn("hello", model="qwen")
+    manager._close_process()
+
+    assert record["num_turns"] == 1
+    assert record["usage"]["tool_calls"] == 0
+    assert record["usage"]["tool_ms"] == 0
+    assert record["usage"]["tools_by_name"] == {}
 
 
 def test_pi_pushes_progress_during_turn(tmp_path, monkeypatch):
@@ -656,7 +723,7 @@ def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
             "cache_write_tokens": 0,
         },
         "voice": "Codex completed the work.",
-        "activity": [{"type": "bash", "command": "echo test"}],
+        "activities": [{"type": "bash", "command": "echo test"}],
     }
     manager._close_process()
 
@@ -791,7 +858,7 @@ def test_codex_resume_uses_positional_session_and_no_sandbox(tmp_path, monkeypat
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
         }
-        assert record["activity"] == [{"type": "bash", "command": "echo test"}]
+        assert record["activities"] == [{"type": "bash", "command": "echo test"}]
 
     assert manager.process is first_process
     calls = [
@@ -955,7 +1022,7 @@ def test_codex_turn_with_no_tool_items_has_empty_activity(tmp_path, monkeypatch)
     manager = _codex_manager(tmp_path, monkeypatch)
     record = manager.turn("no tools", model="luna")
 
-    assert record["activity"] == []
+    assert record["activities"] == []
     assert record["usage"] == {
         "input_tokens": 3,
         "output_tokens": 4,
@@ -2226,7 +2293,7 @@ def test_turn_extracts_voice_activity_and_tolerates_malformed_json(
     record = manager.turn("make changes")
     assert record["terminal_reason"] == "end_turn"
     assert record["voice"] == "Changed the files and need review."
-    assert record["activity"] == [
+    assert record["activities"] == [
         {"type": "tool_use", "name": "Read", "input": {"file_path": "a.txt"}},
         {"type": "edit", "file_path": "b.txt"},
         {"type": "write", "file_path": "c.txt"},
@@ -4405,7 +4472,7 @@ def test_codex_auth_json_is_parseable_and_inert(tmp_path, monkeypatch):
         "cache_read_tokens": 0,
         "cache_write_tokens": 0,
     }
-    assert record["activity"] == [{"type": "bash", "command": "echo test"}]
+    assert record["activities"] == [{"type": "bash", "command": "echo test"}]
     auth_path = os.path.join(str(tmp_path / "workspace"), ".codex", "auth.json")
     auth = json.loads(open(auth_path).read())
     assert auth["auth_mode"] == "chatgpt"
