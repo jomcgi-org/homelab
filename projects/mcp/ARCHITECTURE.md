@@ -162,11 +162,14 @@ live is not what stands in the way. Two things do:
   nothing means nothing has been verified. Beyond the first fetch the cache
   holds for `AUTH_JWKS_CACHE_TTL_S`, so silence stops being evidence once the
   pod has been up a while.
-- The monolith serves streamable HTTP at `/mcp/`, so every JSON-RPC message
-  is its own POST and a tool reading `current_principal()` sees the caller of
-  that message. Until that switch the mount was SSE, where the principal
-  belonged to the stream opener; #4569 records the mechanism. Whether a token
-  arrives at all (the first bullet) is the remaining gap.
+- Identity had to reach the tool, not just the middleware. On SSE, and on
+  stateful streamable HTTP, the server task is started by the session opener
+  and every later message runs in its context, so `current_principal()` stayed
+  pinned to the opener (#4569 records the mechanism). The mount is now
+  stateless streamable HTTP (`stateless_http=True` in `framework/core.py`), a
+  transport per request in that request's own task, so the principal a tool
+  reads is the caller of that message. A stateful mount would reintroduce the
+  pinning silently.
 
 ## Deployment
 
@@ -211,9 +214,11 @@ monolith's `last_seen` never advanced and its auto-refresh never ran.
 
 The monolith now serves streamable HTTP at `/mcp/`, but the gateway
 registration lives in Context Forge's Postgres, not in git, and is updated by
-hand: transport `STREAMABLEHTTP`, URL `http://<monolith svc>/mcp/`. The
-CronJob stays until the health tick has been observed advancing `last_seen`
-against that registration; retiring it is #5035.
+hand: transport `STREAMABLEHTTP`, URL `http://<monolith svc>/mcp/`. `POST /mcp`
+without the trailing slash answers 307 to `/mcp/`, and a client that does not
+replay the body on redirect looks like a dead gateway, so register the slashed
+form. The CronJob stays until the health tick has been observed advancing
+`last_seen` against that registration; retiring it is #5035.
 
 Two things about that request are load-bearing:
 

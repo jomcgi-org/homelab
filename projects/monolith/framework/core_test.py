@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 
 import core.leadership as leadership
@@ -39,6 +40,34 @@ _PLAIN_PRIVATE = dataclasses.replace(
     otel_enabled=False,
     static_frontend=False,
 )
+
+_WHOAMI_CORE_TEST_REGISTERED = False
+
+
+def _register_whoami_core_test() -> None:
+    global _WHOAMI_CORE_TEST_REGISTERED
+    if _WHOAMI_CORE_TEST_REGISTERED:
+        return
+
+    from auth.api import current_principal
+    from core.mcp_app import mcp
+
+    @mcp.tool(name="whoami_core_test")
+    async def whoami_core_test() -> str:
+        return current_principal().subject
+
+    _WHOAMI_CORE_TEST_REGISTERED = True
+
+
+def _mcp_response_json(response: httpx.Response) -> dict:
+    if response.headers.get("content-type", "").startswith("text/event-stream"):
+        data = next(
+            line.removeprefix("data:").strip()
+            for line in response.text.splitlines()
+            if line.startswith("data:")
+        )
+        return json.loads(data)
+    return response.json()
 
 
 def _routed_module(name: str, prefix: str) -> Module:
@@ -403,6 +432,106 @@ async def test_mcp_mount_serves_streamable_http_not_sse():
 
     assert sse_response.status_code == 404
     assert initialize_response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_sees_per_message_principal(monkeypatch):
+    import auth.api as auth_api
+    from auth.api import Authority, Principal, PrincipalKind
+
+    principals = {
+        subject: Principal(
+            subject=subject,
+            actor=(),
+            scope=(),
+            groups=(),
+            email=f"{subject}@example.com",
+            kind=PrincipalKind.HUMAN,
+            authority=Authority.STANDING,
+        )
+        for subject in ("alice", "bob")
+    }
+
+    class Resolver:
+        async def resolve(self, token: str) -> Principal:
+            return principals[token]
+
+    monkeypatch.setattr(auth_api, "get_default_resolver", lambda: Resolver())
+    profile = dataclasses.replace(_PLAIN_PRIVATE, mcp_enabled=True)
+    app = build_app(
+        profile,
+        [Module(name="whoami", register_mcp=_register_whoami_core_test)],
+    )
+
+    def headers(subject: str, session_id: str | None = None) -> dict[str, str]:
+        result = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {subject}",
+        }
+        if session_id is not None:
+            result["Mcp-Session-Id"] = session_id
+        return result
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            initialize_response = await client.post(
+                "/mcp/",
+                headers=headers("alice"),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                },
+            )
+            assert initialize_response.status_code == 200
+            session_id = initialize_response.headers.get("mcp-session-id")
+
+            initialized_response = await client.post(
+                "/mcp/",
+                headers=headers("alice", session_id),
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                },
+            )
+            assert initialized_response.status_code in (200, 202)
+
+            alice_response = await client.post(
+                "/mcp/",
+                headers=headers("alice", session_id),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "whoami_core_test", "arguments": {}},
+                },
+            )
+            bob_response = await client.post(
+                "/mcp/",
+                headers=headers("bob", session_id),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "whoami_core_test", "arguments": {}},
+                },
+            )
+
+    assert alice_response.status_code == 200
+    assert bob_response.status_code == 200
+    alice_result = _mcp_response_json(alice_response)["result"]
+    bob_result = _mcp_response_json(bob_response)["result"]
+    assert alice_result["content"][0]["text"] == "alice"
+    assert bob_result["content"][0]["text"] == "bob"
 
 
 def test_mcp_mount_is_wrapped_in_principal_middleware():
