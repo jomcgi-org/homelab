@@ -4186,6 +4186,7 @@ py_test(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//sqlmodel",
     ],
 )
 
@@ -6971,6 +6972,19 @@ py_test(
         ":pkg_core",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_swarm_decision_test",
+    srcs = ["agent_sessions/swarm_decision_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_auth",
+        ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],

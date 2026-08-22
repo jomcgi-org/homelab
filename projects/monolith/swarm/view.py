@@ -330,6 +330,19 @@ def _disposition(dbos_status, state, output, nodes, plan):
             "next": "awaiting plan amendment or manual retry",
         }
     if state == "escalated":
+        decision_record = output.get("decision")
+        if (
+            isinstance(decision_record, dict)
+            and decision_record.get("decision") != "expired"
+        ):
+            return {
+                "state": "escalated",
+                "reason": (
+                    f"decided {decision_record.get('decision')} by "
+                    f"{decision_record.get('actor_subject')}"
+                ),
+                "next": None,
+            }
         return {
             "state": "escalated",
             "reason": "the run was escalated, awaiting human review",
@@ -340,7 +353,13 @@ def _disposition(dbos_status, state, output, nodes, plan):
     return {"state": state, "reason": f"state: {state}", "next": None}
 
 
-def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | None:
+def compose_run(
+    dbos,
+    workflow_id,
+    session_rows,
+    server_app_version,
+    open_decisions=None,
+) -> dict | None:
     workflow = dbos.retrieve_workflow(workflow_id)
     if workflow is None:
         return None
@@ -450,7 +469,6 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
             "verdict": None,
             "note": None,
             "deps": [],
-            "blocked_on": None,
             "evidence": None,
         },
         {
@@ -465,7 +483,6 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
             "verdict": None,
             "note": None,
             "deps": ["implement"],
-            "blocked_on": None,
             "evidence": {
                 "kind": "branch_head",
                 "summary": (
@@ -490,10 +507,33 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
             if review_state == "cancelled" and gate_state == "refused"
             else None,
             "deps": ["push_gate"],
-            "blocked_on": None,
             "evidence": None,
         },
     ]
+    open_by_node = {_value(row, "node_key"): row for row in list(open_decisions or [])}
+    output_decision = output.get("decision")
+    for node in nodes:
+        open_row = open_by_node.get(node["key"])
+        node["blocked_on"] = (
+            {
+                "kind": "human",
+                "note": _value(open_row, "note"),
+                "since": _iso(_value(open_row, "requested_at")),
+                "decision_id": _value(open_row, "id"),
+                "options": list(_value(open_row, "options", []) or []),
+                "decision_kind": _value(open_row, "kind"),
+            }
+            if open_row is not None
+            else None
+        )
+        if open_row is not None:
+            node["state"] = "blocked"
+        node["decision_record"] = (
+            output_decision
+            if isinstance(output_decision, dict)
+            and output_decision.get("node_key") == node["key"]
+            else None
+        )
     cost_usd = sum(
         float(_value(row, "total_cost_usd", _value(row, "cost_usd", 0)) or 0)
         for row in sessions
@@ -531,7 +571,12 @@ def compose_run(dbos, workflow_id, session_rows, server_app_version) -> dict | N
 
 
 def compose_master(
-    dbos, active, session_costs, server_app_version, limit: int = 50
+    dbos,
+    active,
+    session_costs,
+    server_app_version,
+    limit: int = 50,
+    decision_loader=None,
 ) -> dict:
     limit = max(1, min(50, limit))
     kwargs = {"has_parent": False, "load_input": True}
@@ -546,7 +591,8 @@ def compose_master(
         status = _status(workflow)
         wf_id = _value(status, "workflow_id", _value(workflow, "workflow_id"))
         rows = session_costs.get(wf_id, []) if isinstance(session_costs, dict) else []
-        run = compose_run(dbos, wf_id, rows, server_app_version)
+        decisions = decision_loader(wf_id) if decision_loader is not None else []
+        run = compose_run(dbos, wf_id, rows, server_app_version, decisions)
         if not run:
             continue
         current = next(

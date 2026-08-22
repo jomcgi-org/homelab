@@ -70,6 +70,11 @@ class PromoteSessionResponse(BaseModel):
     workflow_id: str
 
 
+class DecisionRequest(BaseModel):
+    decision: str
+    note: str | None = None
+
+
 def _dbos():
     if not config.enabled():
         raise HTTPException(status_code=503, detail="Swarm workflows are disabled")
@@ -122,6 +127,61 @@ def _session_rows(workflow_id: str):
 
     with Session(get_engine()) as session:
         return swarm_session_views(session, workflow_id).get(workflow_id, [])
+
+
+def _decision_rows(workflow_id: str):
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm.store import list_open_decisions
+
+    with Session(get_engine()) as session:
+        return list_open_decisions(session, workflow_id)
+
+
+def _compose_run_view(dbos, workflow_id: str) -> dict:
+    from swarm.view import compose_run
+
+    try:
+        result = compose_run(
+            dbos,
+            workflow_id,
+            _session_rows(workflow_id),
+            _server_app_version(),
+            _decision_rows(workflow_id),
+        )
+    except Exception as exc:  # DBOS uses a runtime-specific missing-workflow error.
+        if "not found" in str(exc).lower() or "non-existent" in str(exc).lower():
+            raise HTTPException(status_code=404, detail="workflow not found") from exc
+        raise
+    if result is None:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    return result
+
+
+def _record_decision_sync(
+    workflow_id: str,
+    node_key: str,
+    decision: str,
+    note: str | None,
+    actor_subject: str,
+    actor_authority: str,
+) -> dict:
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm import store
+
+    with Session(get_engine()) as session:
+        idempotent = store.get_open_decision(session, workflow_id, node_key) is None
+        row = store.record_decision(
+            session,
+            workflow_id,
+            node_key,
+            decision,
+            note,
+            actor_subject,
+            actor_authority,
+        )
+        return store.decision_response(row, idempotent)
 
 
 @router.post("/runs")
@@ -442,20 +502,7 @@ def promote_session(request: Request, body: PromoteSessionRequest):
 
 @router.get("/runs/{workflow_id}")
 def get_run(workflow_id: str) -> dict:
-    from swarm.view import compose_run
-
-    dbos = _dbos()
-    try:
-        result = compose_run(
-            dbos, workflow_id, _session_rows(workflow_id), _server_app_version()
-        )
-    except Exception as exc:  # DBOS uses a runtime-specific missing-workflow error.
-        if "not found" in str(exc).lower() or "non-existent" in str(exc).lower():
-            raise HTTPException(status_code=404, detail="workflow not found") from exc
-        raise
-    if result is None:
-        raise HTTPException(status_code=404, detail="workflow not found")
-    return result
+    return _compose_run_view(_dbos(), workflow_id)
 
 
 @router.get("/runs")
@@ -473,8 +520,59 @@ def list_runs(request: Request, active: bool = True, limit: int = 50) -> dict:
         requested_limit = 50
     limit = max(1, min(50, requested_limit))
     return compose_master(
-        _dbos(), active, session_costs, _server_app_version(), limit=limit
+        _dbos(),
+        active,
+        session_costs,
+        _server_app_version(),
+        limit=limit,
+        decision_loader=_decision_rows,
     )
+
+
+@router.post("/runs/{workflow_id}/nodes/{node_key}/decision")
+async def decide_run(
+    workflow_id: str, node_key: str, body: DecisionRequest, request: Request
+) -> dict:
+    dbos = _dbos()
+    await asyncio.to_thread(_compose_run_view, dbos, workflow_id)
+    header_actor = request.headers.get("Cf-Access-Authenticated-User-Email")
+    actor_subject = header_actor or "operator"
+    actor_authority = "cloudflare-access" if header_actor else "anonymous"
+    from swarm.store import InvalidDecision, NoOpenDecision
+
+    try:
+        result = await asyncio.to_thread(
+            _record_decision_sync,
+            workflow_id,
+            node_key,
+            body.decision,
+            body.note,
+            actor_subject,
+            actor_authority,
+        )
+    except NoOpenDecision as exc:
+        raise HTTPException(
+            status_code=409, detail="no open decision for this node"
+        ) from exc
+    except InvalidDecision as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        await dbos.update_workflow_attributes_async(
+            workflow_id,
+            {
+                "decided_by": {
+                    "actor": result["actor_subject"],
+                    "at": result["decided_at"],
+                }
+            },
+        )
+    except Exception:  # noqa: BLE001 - the decision must not fail on metadata
+        logger.warning(
+            "failed to record decision actor for workflow %s",
+            workflow_id,
+            exc_info=True,
+        )
+    return result
 
 
 @router.post("/runs/{workflow_id}/cancel")
