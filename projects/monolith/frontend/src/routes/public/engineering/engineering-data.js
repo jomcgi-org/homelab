@@ -31,7 +31,7 @@ export const marqueeItems = [
   "Python",
   "Kubernetes Operators",
   "Firecracker microVMs",
-  "vLLM on a 4090",
+  "llama.cpp on a 4090",
   "Postgres + pgvector",
   "Bazel + BuildBuddy",
   "ArgoCD GitOps",

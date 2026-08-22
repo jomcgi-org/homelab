@@ -94,9 +94,8 @@
             <a class="more" href="/ember">how &rarr;</a>
           </li>
           <li>
-            A <b>35B model</b> on the RTX 4090 answers at
-            <b>~170 tokens a second</b>; chat, the agents, and note search share
-            it.
+            A <b>27B model</b> runs on the RTX 4090; chat, the agents, and note search
+            share it.
           </li>
           <li>
             One Postgres backs every app; <a class="more" href="/app/notes"
