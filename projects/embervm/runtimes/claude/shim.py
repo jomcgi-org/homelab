@@ -175,7 +175,7 @@ def _turn_timing_now():
         return None
 
 
-def _emit_turn_timing(phase, elapsed=None, path=None, status=None):
+def _emit_turn_timing(phase, elapsed=None, path=None, status=None, extra=None):
     """Best-effort timing telemetry for a single turn phase."""
     try:
         if elapsed is None:
@@ -185,7 +185,13 @@ def _emit_turn_timing(phase, elapsed=None, path=None, status=None):
             fields.append("path=%s" % path)
         if status is not None:
             fields.append("status=%s" % status)
+        extra = extra if isinstance(extra, dict) else {}
+        if "calls" in extra:
+            fields.append("calls=%s" % extra["calls"])
         fields.append("ms=%s" % max(0, int(elapsed * 1000)))
+        for key, value in extra.items():
+            if key != "calls":
+                fields.append("%s=%s" % (key, value))
         sys.stderr.write("%s\n" % " ".join(fields))
         sys.stderr.flush()
     except Exception:
@@ -1932,7 +1938,7 @@ class ClaudeProcess:
                             raise RuntimeError(str(event.get("result")))
                         record = dict(event)
                         record["voice"] = voice_summary(event.get("result", ""))
-                        record["activity"] = activity_from_events(events)
+                        record["activities"] = activity_from_events(events)
                         _emit_elapsed(
                             "model", getattr(self, "_turn_timing_model_start", None)
                         )
@@ -2479,7 +2485,7 @@ wire_api = "responses"
                             "session_id": self.session_id,
                             "usage": usage,
                             "voice": voice_summary(result_text),
-                            "activity": activity_from_events(events),
+                            "activities": activity_from_events(events),
                         }
             finally:
                 if pusher:
@@ -2904,6 +2910,16 @@ class PiProcess:
             cached_activities = []
             activities_are_stale = True
             terminal_reason = "completed"
+            num_turns = 0
+            model_ms = 0
+            tool_ms = 0
+            model_calls = 0
+            tool_calls = 0
+            tools_by_name = {}
+            model_started_at = None
+            model_fallback_started_at = None
+            tools_by_id = {}
+            tools_without_id = collections.deque()
             self._turn_done.clear()
             self._in_flight = True
             try:
@@ -2912,6 +2928,7 @@ class PiProcess:
                 pusher = None
             try:
                 self._turn_timing_model_start = _turn_timing_now()
+                model_fallback_started_at = _turn_timing_now()
                 self._send({"type": "prompt", "message": message})
                 while True:
                     try:
@@ -2932,6 +2949,96 @@ class PiProcess:
                                 "prompt failed: %s" % json.dumps(event)[:1500]
                             )
                         continue
+                    try:
+                        event_type = event.get("type")
+                        if event_type == "message_start":
+                            message_event = event.get("message", {})
+                            if (
+                                not isinstance(message_event, dict)
+                                or message_event.get("role", "assistant") == "assistant"
+                            ):
+                                model_started_at = _turn_timing_now()
+                        elif event_type == "message_end":
+                            message_event = event.get("message", {})
+                            if (
+                                isinstance(message_event, dict)
+                                and message_event.get("role") == "assistant"
+                            ):
+                                # Pi brackets model calls with assistant
+                                # message_start/message_end. Older streams without
+                                # message_start fall back to prompt send for the
+                                # first call and the previous tool_execution_end
+                                # for later calls.
+                                model_finished_at = _turn_timing_now()
+                                model_calls += 1
+                                num_turns += 1
+                                started_at = (
+                                    model_started_at
+                                    if model_started_at is not None
+                                    else model_fallback_started_at
+                                )
+                                if (
+                                    started_at is not None
+                                    and model_finished_at is not None
+                                ):
+                                    model_ms += max(
+                                        0,
+                                        int((model_finished_at - started_at) * 1000),
+                                    )
+                                model_started_at = None
+                                model_fallback_started_at = None
+                        elif event_type == "tool_execution_start":
+                            tool_calls += 1
+                            tool_started_at = _turn_timing_now()
+                            tool_name = event.get("toolName") or event.get("tool_name")
+                            if tool_name:
+                                tool_name = str(tool_name).lower()
+                                tool_usage = tools_by_name.setdefault(
+                                    tool_name, {"calls": 0, "ms": 0}
+                                )
+                                tool_usage["calls"] += 1
+                            tool_entry = (tool_started_at, tool_name)
+                            tool_id = (
+                                event.get("toolCallId")
+                                or event.get("tool_call_id")
+                                or event.get("id")
+                            )
+                            if tool_id is not None:
+                                tools_by_id[str(tool_id)] = tool_entry
+                            else:
+                                tools_without_id.append(tool_entry)
+                        elif event_type == "tool_execution_end":
+                            tool_finished_at = _turn_timing_now()
+                            tool_id = (
+                                event.get("toolCallId")
+                                or event.get("tool_call_id")
+                                or event.get("id")
+                            )
+                            if tool_id is not None:
+                                tool_entry = tools_by_id.pop(str(tool_id), None)
+                            elif tools_without_id:
+                                tool_entry = tools_without_id.popleft()
+                            else:
+                                tool_entry = None
+                            if tool_entry is not None:
+                                tool_started_at, tool_name = tool_entry
+                                elapsed_ms = 0
+                                if (
+                                    tool_started_at is not None
+                                    and tool_finished_at is not None
+                                ):
+                                    elapsed_ms = max(
+                                        0,
+                                        int(
+                                            (tool_finished_at - tool_started_at) * 1000
+                                        ),
+                                    )
+                                tool_ms += elapsed_ms
+                                if tool_name:
+                                    tools_by_name[tool_name]["ms"] += elapsed_ms
+                            model_fallback_started_at = tool_finished_at
+                    except Exception:
+                        pass
                     events.append(self._translate_activity_event(event))
                     if event.get("type") == "session":
                         candidate = event.get("id")
@@ -3012,14 +3119,41 @@ class PiProcess:
                                 "pi turn produced no output: %s" % error_detail
                             )
                         self._state()
+                        usage.update(
+                            {
+                                "model_ms": model_ms,
+                                "tool_ms": tool_ms,
+                                "model_calls": model_calls,
+                                "tool_calls": tool_calls,
+                                "tools_by_name": tools_by_name,
+                            }
+                        )
                         record = {
                             "result": result_text,
                             "terminal_reason": terminal_reason,
                             "session_id": self.session_id,
+                            "num_turns": num_turns,
                             "usage": usage,
                             "voice": voice_summary(result_text),
-                            "activity": activity_from_events(events),
+                            "activities": activity_from_events(events),
                         }
+                        _emit_turn_timing(
+                            "pi_model",
+                            model_ms / 1000.0,
+                            extra={"calls": model_calls},
+                        )
+                        tool_timing_fields = {"calls": tool_calls}
+                        for tool_name in sorted(tools_by_name):
+                            tool_usage = tools_by_name[tool_name]
+                            tool_timing_fields[tool_name] = "%s:%s" % (
+                                tool_usage["calls"],
+                                tool_usage["ms"],
+                            )
+                        _emit_turn_timing(
+                            "pi_tools",
+                            tool_ms / 1000.0,
+                            extra=tool_timing_fields,
+                        )
                         _emit_elapsed(
                             "model", getattr(self, "_turn_timing_model_start", None)
                         )
