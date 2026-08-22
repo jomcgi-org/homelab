@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   arrivalSelection,
   inboxGroups,
+  jumpTotal,
   railState,
   recentSummary,
 } from "./inbox.js";
@@ -120,6 +121,29 @@ describe("rail state", () => {
       "folded",
     );
     expect(railState({ needsYou: 0, running: 0, manual: "open" })).toBe("open");
+  });
+});
+
+describe("jump total", () => {
+  test("counts every standalone session and every active or terminal run", () => {
+    expect(
+      jumpTotal(
+        [
+          session("active", "2026-08-22T12:00:00Z"),
+          session("completed", "2026-08-21T12:00:00Z", {
+            status: "completed",
+          }),
+          session("run-owned", "2026-08-22T11:00:00Z", {
+            workflow_id: "active-run",
+          }),
+        ],
+        [run("active-run", "2026-08-22T11:00:00Z")],
+        [
+          run("completed-run", "2026-08-21T11:00:00Z"),
+          run("failed-run", "2026-08-20T11:00:00Z"),
+        ],
+      ),
+    ).toBe(5);
   });
 });
 

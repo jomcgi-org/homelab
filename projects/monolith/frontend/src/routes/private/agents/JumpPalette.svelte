@@ -1,6 +1,6 @@
 <script>
   import { tick } from "svelte";
-  import { nodeStateClass } from "./dag.js";
+  import { shapeStateClass } from "./dag.js";
   import { jumpActions, jumpMatches } from "./jump.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import { statusClass } from "./status.js";
@@ -96,17 +96,6 @@
     return [...runs, ...terminalRuns].find(
       (run) => String(run.workflow_id) === String(item.id),
     );
-  }
-
-  function shapeClass(run, node) {
-    if (
-      run?.needs?.kind === "human" &&
-      node.state === "blocked" &&
-      run.current?.state === "blocked"
-    ) {
-      return "g-blocked-h";
-    }
-    return nodeStateClass(node);
   }
 
   function openInNewTab(item) {
@@ -288,7 +277,7 @@
           {#each value?.shape?.length ? value.shape : [{ key: "run", kind: "work", state: value?.state }] as node, nodeIndex (`${node.key}:${nodeIndex}`)}
             <span
               class:gate={node.kind === "gate"}
-              class={`shape-node ${shapeClass(value, node)}`}
+              class={`shape-node ${shapeStateClass(value, node)}`}
             ></span>
           {/each}
         </span>
@@ -538,11 +527,6 @@
       height: 48px;
     }
     .jump-footer {
-      gap: 10px;
-      overflow-x: auto;
-      white-space: nowrap;
-    }
-    .jump-footer .kbd {
       display: none;
     }
   }

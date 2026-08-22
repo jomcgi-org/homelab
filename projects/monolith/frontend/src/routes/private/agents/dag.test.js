@@ -6,6 +6,7 @@ import {
   layoutEdges,
   nodeIconKey,
   nodeStateClass,
+  shapeStateClass,
 } from "./dag.js";
 
 const chain = [
@@ -109,6 +110,14 @@ describe("run DAG helpers", () => {
       "blocked_dep",
       "g-blocked-d",
     ]);
+  });
+  test("run-level human attention overrides an ambiguous blocked node", () => {
+    expect(
+      shapeStateClass(
+        { needs: { kind: "human" }, current: { state: "blocked" } },
+        { state: "blocked" },
+      ),
+    ).toBe("g-blocked-h");
   });
   test.each([
     ["done", "done", "g-done"],

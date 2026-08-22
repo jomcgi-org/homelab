@@ -19,12 +19,13 @@
   import "./run-view.css";
   import RunView from "./RunView.svelte";
   import Launcher from "./Launcher.svelte";
-  import { nodeStateClass } from "./dag.js";
+  import { shapeStateClass } from "./dag.js";
   import { firstLine, fmtCost } from "./run-format.js";
   import { clockTime, partitionRuns, relativeTime } from "./run-history.js";
   import {
     arrivalSelection,
     inboxGroups,
+    jumpTotal,
     railState,
     recentSummary,
   } from "./inbox.js";
@@ -75,6 +76,13 @@
     isMobileViewport() && (selectedId != null || selectedRunId != null),
   );
   let manualRail = $state(null);
+  let searchOpensRail = $state(false);
+  // True only after /agents/runs has succeeded at least once. Before that the
+  // inbox is empty for the wrong reason (not fetched, or the fetch failed), so
+  // it must not count as a quiet day: no auto-fold, no override reset. This
+  // makes first paint open-then-fold on a quiet day, chosen over
+  // folded-then-open on a busy one.
+  let runsLoaded = $state(Boolean(fixture));
   if (typeof window !== "undefined") {
     try {
       const storedRail = window.localStorage.getItem(
@@ -186,18 +194,27 @@
   const inboxEmpty = $derived(
     inbox.needsYou.length === 0 && inbox.running.length === 0,
   );
+  const automaticRailMode = $derived(
+    runsLoaded
+      ? railState({
+          needsYou: inbox.needsYou.length,
+          running: inbox.running.length,
+        })
+      : "open",
+  );
   const railMode = $derived(
-    railState({
-      needsYou: inbox.needsYou.length,
-      running: inbox.running.length,
-      manual: manualRail,
-    }),
+    searchOpensRail && manualRail === null
+      ? "open"
+      : (manualRail ?? automaticRailMode),
   );
   const awakeGuests = $derived(
     Object.values(vms).filter((vm) => vm?.state === "awake").length,
   );
+  // Recent is disjoint from the inbox: active sessions already have a row.
   const launcherSessions = $derived(
-    fixture?.home ? (fixture.sessions ?? []) : sessions,
+    fixture?.home
+      ? (fixture.sessions ?? [])
+      : sessions.filter((session) => !isActive(session)),
   );
   const launcherRuns = $derived(
     fixture?.home
@@ -211,11 +228,7 @@
       fixture?.home && fixture.view?.now ? Date.parse(fixture.view.now) : now,
     ),
   );
-  const standaloneHistoryTotal = $derived(
-    sessions.filter((session) => isStandalone(session) && !isActive(session))
-      .length,
-  );
-  const earlierTotal = $derived(standaloneHistoryTotal + terminalRuns.length);
+  const launcherJumpTotal = $derived(jumpTotal(sessions, runs, terminalRuns));
   const visibleSearchResults = $derived(searchResults ?? []);
   const turnSearchHeading = $derived(
     `${P.labels.turnSearch}${P.punct.colon} ${P.labels.quoteMark}${searchQuery}${P.labels.quoteMark}`,
@@ -450,6 +463,7 @@
         );
         runs = activePartition.inFlight;
         terminalRuns = terminalPartition.terminal;
+        runsLoaded = true;
         return;
       } catch {
         if (attempt < RUNS_LOAD_MAX_ATTEMPTS - 1) {
@@ -723,6 +737,7 @@
     searchQuery = "";
     searchResults = null;
     searchLoading = false;
+    searchOpensRail = false;
   }
 
   function toggleSidebar() {
@@ -740,17 +755,6 @@
             (node.blocked_on == null || node.blocked_on?.kind === "human"))),
     );
     return pushGate ? P.labels.approvePush : P.labels.needsYou;
-  }
-
-  function shapeStateClass(run, node) {
-    if (
-      run?.needs?.kind === "human" &&
-      node.state === "blocked" &&
-      run.current?.state === "blocked"
-    ) {
-      return "g-blocked-h";
-    }
-    return nodeStateClass(node);
   }
 
   async function runSearch(value = searchQuery) {
@@ -792,7 +796,14 @@
 
   async function searchTurnsFromJump(text) {
     const query = text.trim();
-    if (railMode === "folded") toggleSidebar();
+    if (!query) {
+      clearTurnSearch();
+      return;
+    }
+    if (railMode === "folded") {
+      if (manualRail === null) searchOpensRail = true;
+      else toggleSidebar();
+    }
     if (mobileTranscript) returnToSessionList();
     searchQuery = query;
     await runSearch(query);
@@ -850,7 +861,7 @@
       const requestBody = {
         task: newSession.prompt.trim(),
         ...(pendingTaskId ? { task_id: pendingTaskId } : {}),
-        model: newSession.model,
+        model: newSession.model || P.labels.defaultModel,
         repo: newSession.repo || null,
         branch: newSession.branch || null,
       };
@@ -1174,10 +1185,20 @@
   let previousInboxEmpty = null;
   $effect(() => {
     const empty = inboxEmpty;
+    if (!runsLoaded) return;
     if (previousInboxEmpty !== null && previousInboxEmpty !== empty) {
       manualRail = null;
     }
     previousInboxEmpty = empty;
+  });
+
+  let previousAutomaticRailMode = null;
+  $effect(() => {
+    const automatic = automaticRailMode;
+    if (automatic === "folded" && previousAutomaticRailMode !== "folded") {
+      clearTurnSearch();
+    }
+    previousAutomaticRailMode = automatic;
   });
 
   $effect(() => {
@@ -1210,7 +1231,7 @@
     <button
       class="top-search"
       type="button"
-      aria-label={P.labels.jumpOpenLabel}
+      aria-label={P.labels.searchPlaceholder}
       aria-haspopup="dialog"
       onclick={() => openJump()}
     >
@@ -1295,15 +1316,19 @@
 
         <div class="inbox-body">
           {#if (!fixture || fixture.home) && !selectedId && !selectedRunId && inboxEmpty && searchResults === null}
+            <!-- The launcher stays in both responsive panes because CSS cannot
+                 move one component across the detail and inbox scroll roots. -->
             <div class="mobile-home">
               <Launcher
                 bind:session={newSession}
                 models={availableModels}
                 {repos}
+                {branches}
                 {repoLoading}
                 {branchLoading}
                 {creating}
                 summary={launcherRecent}
+                jumpCount={launcherJumpTotal}
                 onLoadBranches={loadBranches}
                 onSubmit={createTask}
                 onOpenRun={selectRun}
@@ -1388,7 +1413,12 @@
               aria-haspopup="dialog"
               onclick={() => openJump()}
             >
-              <span>{earlierTotal} {P.labels.earlierSessionsAndRuns}</span>
+              <span
+                >{P.labels.sessionsAndRunsInJump.replace(
+                  "{count}",
+                  String(launcherJumpTotal),
+                )}</span
+              >
               <kbd class="kbd">{P.labels.shortcutCommandK}</kbd>
             </button>
           {/if}
@@ -1858,10 +1888,12 @@
           bind:session={newSession}
           models={availableModels}
           {repos}
+          {branches}
           {repoLoading}
           {branchLoading}
           {creating}
           summary={launcherRecent}
+          jumpCount={launcherJumpTotal}
           onLoadBranches={loadBranches}
           onSubmit={createTask}
           onOpenRun={selectRun}
@@ -1943,7 +1975,7 @@
           </div>
         {/if}
         <label>
-          branch<select
+          {P.labels.branchWord}<select
             class="mono"
             bind:value={newSession.branch}
             disabled={!newSession.repo || branchLoading}
@@ -1951,7 +1983,9 @@
             {#if branchLoading}
               <option value="">{P.labels.loadingBranches}</option>
             {:else if branches.length === 0}
-              <option value="main">main</option>
+              <option value={P.labels.defaultBranch}
+                >{P.labels.defaultBranch}</option
+              >
             {:else}
               {#each branches as branch}
                 <option value={branch.name}>{branch.name}</option>
@@ -3111,6 +3145,17 @@
     align-items: center;
     gap: 6px;
     padding-top: 8px;
+  }
+  /* A persisted manual "open" must beat the server-rendered automatic fold
+     before hydration, or a quiet day flashes a rail the user unfolded. */
+  :global(html[data-agents-rail="open"]) .console.rail-folded .inbox {
+    flex-basis: 440px;
+  }
+  :global(html[data-agents-rail="open"]) .console.rail-folded .inbox-expanded {
+    display: flex;
+  }
+  :global(html[data-agents-rail="open"]) .console.rail-folded .fold-rail {
+    display: none;
   }
   @keyframes pulse {
     50% {

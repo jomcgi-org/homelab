@@ -71,6 +71,14 @@ export function railState({ needsYou = 0, running = 0, manual = null } = {}) {
   return Number(needsYou) === 0 && Number(running) === 0 ? "folded" : "open";
 }
 
+export function jumpTotal(sessions = [], runs = [], terminalRuns = []) {
+  return (
+    (sessions ?? []).filter(standalone).length +
+    (runs ?? []).length +
+    (terminalRuns ?? []).length
+  );
+}
+
 export function recentSummary(sessions = [], runs = [], now = Date.now()) {
   const nowMs = now instanceof Date ? now.getTime() : Number(now);
   const allItems = [
