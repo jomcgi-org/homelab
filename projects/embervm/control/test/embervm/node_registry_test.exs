@@ -587,6 +587,15 @@ defmodule Embervm.NodeRegistryTest do
     end
   end
 
+  # #4078 expiry seam: keep the streamer alive without yielding a NodeStatus.
+  # The test can then make status silence cross :down solely by advancing its
+  # injected clock, with no asynchronous emit left to restamp last_status_at.
+  defp silent_watch do
+    fn _ch, _node_id, _emit ->
+      receive do: (:never -> {:ok, :closed})
+    end
+  end
+
   defp register_seams(opts) do
     Keyword.merge(
       [
@@ -759,6 +768,7 @@ defmodule Embervm.NodeRegistryTest do
       start_registry(
         register_seams(
           clock: clock,
+          watch_fun: silent_watch(),
           channel_remover_fun: fn key -> Agent.update(removed, &[key | &1]) end,
           age_check_ms: 60_000,
           unknown_after_ms: 5_000,
@@ -768,10 +778,9 @@ defmodule Embervm.NodeRegistryTest do
       )
 
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
-    await_initial_status(reg, "node-4/uid-1")
 
     # Drive both expiry signals: registration lapses (advance past expire_after) AND
-    # the stream goes dead (advance past down_after with no fresh status).
+    # the stream goes dead (advance past down_after while silent_watch emits no status).
     advance.(100_000)
     :ok = NodeRegistry.tick(reg)
 

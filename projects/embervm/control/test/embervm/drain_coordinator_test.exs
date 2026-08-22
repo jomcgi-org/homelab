@@ -86,13 +86,17 @@ defmodule Embervm.DrainCoordinatorTest do
 
     send(pid, {:node_draining, "node-4", 0})
 
-    # The three healthy classes still drain despite the session sweeper raising.
-    assert_receive {:drained, :stateful, "node-4"}
-    assert_receive {:drained, :group, "node-4"}
-    assert_receive {:drained, :serving, "node-4"}
+    # The finished op is the deterministic completion signal for the sequential
+    # fan-out. Give only that signal a scheduler budget (#4078), then inspect the
+    # messages that necessarily preceded it without further wall-clock waits.
+    assert_receive {:op, :node_drain_finished, finished}, 2_000
+    assert_received {:op, :node_drain_started, _started}
+    assert_received {:drained, :stateful, "node-4"}
+    assert_received {:drained, :group, "node-4"}
+    assert_received {:drained, :serving, "node-4"}
+    refute_received {:drained, :session, "node-4"}
 
-    # The finished op still lands, with the failed class counted as 0.
-    assert_receive {:op, :node_drain_finished, finished}
+    # The failed class is counted as 0.
     assert finished.session == 0
     # The coordinator itself did not crash.
     assert Process.alive?(pid)

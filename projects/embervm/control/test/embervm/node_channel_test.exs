@@ -41,17 +41,9 @@ defmodule Embervm.NodeChannelTest do
         disconnect_fun: fn _ -> :ok end
       )
 
-    # start_link/1 links the GenServer to this test process, so it may already
-    # be torn down (by the link, concurrently with on_exit) by the time this
-    # callback runs; tolerate an already-stopped process instead of racing an
-    # alive?-then-stop check against it.
-    on_exit(fn ->
-      try do
-        GenServer.stop(pid)
-      catch
-        :exit, _ -> :ok
-      end
-    end)
+    # start_link/1 links the GenServer to this test process, so #4078 teardown
+    # uses the shared helper when the process has already exited.
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
 
     pid
   end
