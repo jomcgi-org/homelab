@@ -132,6 +132,12 @@ tracing:
 # ~1.5Gi/VM that is ~24Gi worst case, well within budget. This only raises the
 # runaway backstop, not any pool floor.
 noded:
+  # Warmth ownership transition guard (#4962). Every brick on the fleet writes
+  # its .alive claim as of chart 0.26.0 (verified on the 2026-08-22 06:44 roll),
+  # so unclaimed pre-heartbeat directories are dead and may be reaped. After
+  # this, startup GC only ever removes a claim older than staleAfterSeconds.
+  warmthHeartbeat:
+    reapUnclaimed: true
   # WILDCARD DAEMONSET DEPRECATED (bricks-only migration). The per-node wildcard
   # noded DaemonSet is retired: node capacity is now provided entirely by the
   # size-class brick Deployments the BrickController autoscales (bricks.autoscale
