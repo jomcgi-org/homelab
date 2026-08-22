@@ -3401,7 +3401,10 @@ defmodule Embervm.BaseBuilder do
   # Plaintext h2c to the noded Service over the Mint adapter, opened per build
   # (builds are infrequent and serialized). Same pattern as Embervm.NodeRegistry.
   defp default_connect(address) do
-    GRPC.Stub.connect(address, adapter: GRPC.Client.Adapters.Mint)
+    GRPC.Stub.connect(
+      address,
+      [adapter: GRPC.Client.Adapters.Mint] ++ Embervm.NodeAuth.connect_opts()
+    )
   end
 
   defp default_disconnect(channel) do

@@ -59,11 +59,15 @@ def _chart_dir() -> Path:
     raise RuntimeError("Could not find chart Chart.yaml")
 
 
-def _render(release: str, values: list[Path]) -> str:
+def _render(
+    release: str, values: list[Path], set_values: list[str] | None = None
+) -> str:
     helm_bin = os.environ.get("HELM_BIN", "helm")
     argv = [helm_bin, "template", release, str(_chart_dir()), "--namespace", release]
     for v in values:
         argv += ["--values", str(v)]
+    for value in set_values or []:
+        argv += ["--set", value]
     result = subprocess.run(argv, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"helm template failed: {result.stderr}")
@@ -135,6 +139,108 @@ def test_renders_are_non_empty(renders):
     assert renders["dev"].count("kind:") > 5, (
         "dev render has suspiciously few documents; this test may be inert"
     )
+
+
+def test_noded_bearer_secret_flips_control_plane_and_bricks_together():
+    chart = _chart_dir()
+    enabled = _render(
+        "noded-auth",
+        [chart / "values.yaml"],
+        [
+            "bricks.enabled=true",
+            "noded.bearerTokenSecret.enabled=true",
+            "noded.bearerTokenSecret.name=x",
+        ],
+    )
+
+    deployments = {
+        name: doc for kind, name, doc in _docs(enabled) if kind == "Deployment"
+    }
+    control_plane = deployments["noded-auth-embervm"]
+    bricks = [doc for name, doc in deployments.items() if "-noded-brick-" in name]
+    assert bricks, "bearer render produced no brick Deployment; this test is inert"
+
+    secret_env = re.compile(
+        r"name:\s*EMBERVM_NODED_BEARER_TOKEN\s+valueFrom:\s+"
+        r"secretKeyRef:\s+name:\s*x\s+key:\s*token",
+        re.S,
+    )
+    assert secret_env.search(control_plane), (
+        "enabled bearer auth did not render secret x on the control-plane Deployment"
+    )
+    assert all(secret_env.search(brick) for brick in bricks), (
+        "enabled bearer auth did not render secret x on every brick Deployment"
+    )
+
+    disabled = _render(
+        "noded-auth",
+        [chart / "values.yaml"],
+        ["bricks.enabled=true", "noded.bearerTokenSecret.enabled=false"],
+    )
+    assert "EMBERVM_NODED_BEARER_TOKEN" not in disabled
+
+
+def test_noded_onepassword_item_uses_default_shared_secret_name():
+    chart = _chart_dir()
+    rendered = _render(
+        "noded-auth",
+        [chart / "values.yaml"],
+        [
+            "bricks.enabled=true",
+            "noded.bearerTokenSecret.enabled=true",
+            "noded.bearerTokenSecret.onepassword.itemPath=vaults/x/items/y",
+        ],
+    )
+
+    item_docs = [
+        doc
+        for kind, name, doc in _docs(rendered)
+        if kind == "OnePasswordItem" and name.endswith("-noded-token")
+    ]
+    assert len(item_docs) == 1
+    assert "name: noded-auth-embervm-noded-token" in item_docs[0]
+
+    token_secret_refs = re.findall(
+        r"name:\s*EMBERVM_NODED_BEARER_TOKEN\s+valueFrom:\s+"
+        r"secretKeyRef:\s+name:\s*(\S+)",
+        rendered,
+        re.S,
+    )
+    assert token_secret_refs
+    assert set(token_secret_refs) == {"noded-auth-embervm-noded-token"}
+
+
+def test_noded_network_policy_gate_and_listener_ports():
+    chart = _chart_dir()
+    enabled = _render(
+        "noded-policy",
+        [chart / "values.yaml"],
+        ["noded.networkPolicy.enabled=true"],
+    )
+    policies = [
+        (name, doc)
+        for kind, name, doc in _docs(enabled)
+        if kind == "CiliumNetworkPolicy" and name.endswith("-noded")
+    ]
+    assert len(policies) == 1
+    _, policy = policies[0]
+    for port in ("8080", "8081", "9090", "30002"):
+        assert f'port: "{port}"' in policy
+    # The serving DNAT range is one endPort entry, never an enumerated list:
+    # the Cilium CRD caps toPorts.ports at 40 items.
+    assert "endPort: 30254" in policy
+    assert 'port: "30254"' not in policy
+
+    disabled = _render(
+        "noded-policy",
+        [chart / "values.yaml"],
+        ["noded.networkPolicy.enabled=false"],
+    )
+    assert not [
+        name
+        for kind, name, _ in _docs(disabled)
+        if kind == "CiliumNetworkPolicy" and name.endswith("-noded")
+    ]
 
 
 def test_dev_claims_no_cluster_scoped_object_production_owns(renders):

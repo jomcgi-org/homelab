@@ -200,11 +200,6 @@ node:
   # discover the noded DaemonSet's pods via EndpointSlices; set this only to point
   # the control plane at a daemon outside this release.
   address: ""
-  # Static bearer token secret (1Password-provisioned) gating the daemon gRPC.
-  # Deferred to Task 11: noded currently runs open (noded.bearerTokenSecret.enabled
-  # false, mesh policy is the layer), so the registry dials plaintext with no
-  # metadata in v1.
-  bearerTokenSecret: ""
 
 # TokenReview auth allow-list: ServiceAccount usernames permitted to submit tasks.
 auth:
@@ -1125,13 +1120,26 @@ noded:
   # (noded's own compile-time default), clear of noded's 8080/9090.
   servingPortBase: 30000
 
-  # Static bearer token gating the gRPC surface. Disabled here (daemon runs open +
-  # warns; Cilium/Linkerd policy is the layer). A 1Password-provisioned secret is
-  # wired in a later PR when the control plane dials the daemon (Task 11).
+  # Static bearer token gating the gRPC surface. One chart value flips both the
+  # daemon check and the control-plane header so a release cannot enforce on only
+  # one side. With onepassword.itemPath set, the chart creates a OnePasswordItem
+  # and name defaults to <embervm.fullname>-noded-token. With itemPath empty,
+  # enabled requires name to identify an explicitly pre-created Secret. The item
+  # must contain one field labelled by key (default "token"). Disabled by default
+  # so existing environments continue to run open until their Secret exists.
   bearerTokenSecret:
     enabled: false
     name: ""
     key: token
+    onepassword:
+      itemPath: ""
+
+  # Ingress allow-list for every charted noded listener: control-plane gRPC,
+  # kubelet and SigNoz health checks, serving-envoy plus control-plane activator
+  # calls, and serving-envoy traffic to the per-VM DNAT range. Ingress-only, so
+  # noded egress remains unrestricted. Disabled by default and enabled in dev.
+  networkPolicy:
+    enabled: false
 
   # Firecracker substrate on node-4. The firecracker binary + guest kernel are
   # baked into the image at /opt/fc, so the node only provides /dev/kvm and the

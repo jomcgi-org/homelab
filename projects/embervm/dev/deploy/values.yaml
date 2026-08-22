@@ -54,6 +54,9 @@ noded:
   # including the three etcd masters.
   enabled: false
 
+  networkPolicy:
+    enabled: true
+
   store:
     bucket: embervm-dev
 

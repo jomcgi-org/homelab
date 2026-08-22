@@ -67,7 +67,7 @@ compare against.
 | Node-local activator | **Planned** | Partly landed |
 | Brick autoscale | **Built** at rung `up`; **Planned** scale-down | Full ladder remains |
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
-| Transport auth CP-to-noded | **Planned** | mTLS/SPIFFE, #4693 |
+| Transport auth CP-to-noded | **Built** (bearer + policy) | mTLS/SPIFFE remains the upgrade path |
 | Encryption at rest | **Planned** | Per-principal mutable artifacts (#4691); Account-scoped immutable rootfs chunks (ADR 028, #4182) |
 | Cells / multi-cell | **Built** seams, single cell | Second-cell fleet layer is future work |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
@@ -717,11 +717,12 @@ model providers among them.
 - **Built**: Firecracker boundary; no NIC for task/session guests;
   principal-bound lineage; no cluster credential in guests; Envoy-only
   serving ingress; bound dial-home registration identity.
-- **Accepted risk**: unauthenticated noded gRPC on the pod network (#4693);
-  an anonymous default object store, so any pod-network caller can write or
-  delete artifacts (#4708); privileged noded with /dev/kvm; external-allow
-  guest egress via the broker; taint optional.
-- **Planned**: mTLS/SPIFFE and noded network policy (#4693); authenticated
+- **Accepted risk**: production has not enabled the noded bearer token or
+  ingress policy pending its 1Password item (#4693); an anonymous default
+  object store, so any pod-network caller can write or delete artifacts
+  (#4708); privileged noded with /dev/kvm; external-allow guest egress via
+  the broker; taint optional.
+- **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade; authenticated
   per-tuple store access (#4708); per-principal envelope encryption and
   tuple-authorized restore (#4691); granular containment.
 
@@ -776,7 +777,7 @@ graph LR
     G1 -- "plaintext egress" --> P
     G2 -- "plaintext egress" --> P
     P -- "fresh TLS, credential injected<br/>only for allowlisted hosts" --> X
-    N -- "facts (dial-home), bound pod identity<br/>but no gRPC transport auth (#4693)" --> F
+    N -- "facts (dial-home), bound pod identity;<br/>bearer + policy built, prod pending (#4693)" --> F
     N -- "snapshot bytes, never via the CP,<br/>anonymous store access today (#4708)" --> S
 ```
 
@@ -801,7 +802,7 @@ are the Accepted risks tracked by #4693 and #4708.
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
 | No direct internet exposure of guests, nodes, or the CP (1, 2, 3) | **Built.** Nothing faces the internet directly; ingress rides the deployment's zero-trust edge tunnel, public routes are scoped at their HTTPRoutes, and the serving shim's reserved `/shim/` prefix is unreachable from outside (section 9). |
-| Mutual authentication and encrypted transport between components (4, 10) | **Planned** (#4693, deferred at R0): noded's gRPC currently runs open on the pod network. The bearer token is designed but disabled (`noded.bearerTokenSecret` ships empty, the CP attaches no metadata), and no network policy selects noded today (the only CiliumNetworkPolicy rendered covers the tokenbroker). mTLS/SPIFFE is a declared additive upgrade path (`proto/embervm/node/v1/node.proto`). Encrypted session-routing tokens are **Decided direction**. Management callers authenticate via Kubernetes TokenReview against an allow-list; the actor / principal / permission split with per-verb authorization is **Decided direction**. |
+| Mutual authentication and encrypted transport between components (4, 10) | **Built** for CP-to-noded authentication and ingress confinement: one bearer Secret is rendered into the control plane and every noded pod from the same values keys and enabled flag, and the control plane attaches it to every unary and streaming gRPC request. An ingress-only CiliumNetworkPolicy allow-lists each noded listener by its caller. Both controls are enabled per environment by values; the dev policy is on, while production awaits the 1Password item before enabling the token and policy (#4693). mTLS/SPIFFE remains the additive upgrade path (`proto/embervm/node/v1/node.proto`). Encrypted session-routing tokens are **Decided direction**. Management callers authenticate via Kubernetes TokenReview against an allow-list; the actor / principal / permission split with per-verb authorization is **Decided direction**. |
 | Control plane isolated from the data plane (6) | **Built** as a seam: the CP runs on Kubernetes, noded runs on bricks, and payloads never traverse the CP (invariant 2). **Accepted risk** in the reference deployment: guests co-locate with the etcd masters (section 11); do not import that clause into a cluster whose etcd is precious. |
 | Runtime configurable only by administrators (7) | **Built.** A workload chooses class and source (zip or image); the sandbox technology, kernel, and platform bases are CI-built platform artifacts it cannot substitute. |
 | A sanctioned, secure path for secrets (11) | **Built.** The cluster's secret operator is the only secret source, and guests receive none (the section 9 credential classes). |
