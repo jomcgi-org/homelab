@@ -9,6 +9,7 @@ const PAGES = [
   { path: "/cv", priority: "0.9" },
   // The docs index; per-doc URLs are reachable from it (listed once, like notes).
   { path: "/docs", priority: "0.8" },
+  // /posts is deliberately unlisted until the first post is published.
   { path: "/app/notes", priority: "0.7" },
 ];
 
