@@ -269,6 +269,12 @@ py_venv_binary(
     visibility = ["//:__subpackages__"],
 )
 
+py_venv_binary(
+    name = "gen_posts_manifest",
+    main = "knowledge/tools/gen_posts_manifest.py",
+    visibility = ["//:__subpackages__"],
+)
+
 # Stdlib-only generator for the ADR 036 orchestrator baked context bundle.
 # Concatenates chat/orchestrator_prompt.md, the recipe catalog under
 # goosecracker/recipes/*.yaml, and a repo structure
@@ -4608,6 +4614,16 @@ py_test(
 py_test(
     name = "knowledge_gen_docs_manifest_test",
     srcs = ["knowledge/gen_docs_manifest_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "gen_posts_manifest_test",
+    srcs = ["knowledge/gen_posts_manifest_test.py"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",
