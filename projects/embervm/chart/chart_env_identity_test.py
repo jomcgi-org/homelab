@@ -463,14 +463,23 @@ def test_noded_bucket_path_configuration(renders):
     )
 
 
-def test_brick_renders_default_warmth_heartbeat_env(renders):
-    """Brick Deployments claim warmth with safe transition defaults."""
+def test_brick_renders_default_warmth_heartbeat_env():
+    """Brick Deployments claim warmth with safe transition defaults.
+
+    Rendered from the chart defaults, not production: production flipped
+    reapUnclaimed on once every brick heartbeated (#4962), and the default
+    is what a fresh environment inherits.
+    """
+    chart = _chart_dir()
+    rendered = _render("warmth", [chart / "values.yaml"], ["bricks.enabled=true"])
     brick_deployments = [
         doc
-        for kind, _, doc in _docs(renders["prod"])
+        for kind, _, doc in _docs(rendered)
         if kind == "Deployment" and "app.kubernetes.io/component: noded-brick" in doc
     ]
-    assert brick_deployments, "production rendered no brick Deployment; test is inert"
+    assert brick_deployments, (
+        "default render produced no brick Deployment; test is inert"
+    )
 
     expected = {
         "EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL": "30s",
