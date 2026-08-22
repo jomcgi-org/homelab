@@ -63,3 +63,14 @@ export const agentFirstModelCallMs = 140;
 export const semgrepRestoreMs = 22;
 export const semgrepScanSec = 0.72;
 export const semgrepColdStartSec = 6.7;
+
+// ---- Restore time figures for UI display (measured, baked by hand) ----
+
+// Agent session base-snapshot restore from disk: the time from dispatch to
+// the guest listening on vsock after a warm restore (not including dispatch
+// latency or the full request path). Used in agent session pages.
+export const sessionRestoreMs = 2.5;
+
+// Serving-class best wake from disk: the fastest measured wake of a serving
+// workload snapshot to answering queries. Used in ember landing and copy.
+export const servingWakeMs = 78;

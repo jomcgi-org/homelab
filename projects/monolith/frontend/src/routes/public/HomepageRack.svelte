@@ -13,6 +13,25 @@
     apps.find((a) => a.slug === slug),
   );
   const featuredApps = apps.filter((a) => a.featured);
+
+  let { stats } = $props();
+
+  // Format the hardware eyebrow from live stats when available, or show
+  // static fallback if stats are unavailable.
+  function buildEyebrow(statsData) {
+    if (!statsData?.cluster) return "HOMELAB";
+    const c = statsData.cluster;
+    const g = statsData.gpu;
+    const parts = [];
+    if (c.nodes != null) parts.push(`${c.nodes} nodes`);
+    if (c.cpu_capacity_cores != null)
+      parts.push(`${c.cpu_capacity_cores} CPUs`);
+    if (c.memory_capacity_gb != null) parts.push(`${c.memory_capacity_gb} GB`);
+    if (g != null) parts.push("one RTX 4090");
+    return parts.length > 0 ? parts.join(" · ") : "HOMELAB";
+  }
+
+  const eyebrow = buildEyebrow(stats);
 </script>
 
 <section
@@ -21,7 +40,7 @@
   aria-label="Homelab hardware and systems"
 >
   <p class="rack-eyebrow">
-    4 nodes &middot; 52 CPUs &middot; 112 GB &middot; one RTX 4090
+    {eyebrow}
   </p>
   <h2>HOMELAB</h2>
 

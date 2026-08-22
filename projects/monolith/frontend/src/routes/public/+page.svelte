@@ -226,7 +226,7 @@
 </div>
 
 <!-- ═══ Project stack ═══ -->
-<HomepageRack />
+<HomepageRack {stats} />
 
 <!-- ═══ Footer ═══ -->
 <Footer />

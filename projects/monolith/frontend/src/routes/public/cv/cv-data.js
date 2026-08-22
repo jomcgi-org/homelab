@@ -32,7 +32,7 @@ export const tagline =
   "Senior Platform Engineer @ Semgrep · AWS / EKS · Kubernetes · eBPF";
 
 export const summary =
-  "Mostly I build infrastructure and abstractions so that other engineers don't have to think about it: Kubernetes, eBPF, and the layers under them. Caremad about developer and user experience.";
+  "Mostly I build infrastructure and abstractions so that other engineers don't have to think about it: Kubernetes, eBPF, and the layers under them. Care mad about developer and user experience.";
 
 export const jobs = [
   // Current role stays deliberately scope-level: what the job is, not a
