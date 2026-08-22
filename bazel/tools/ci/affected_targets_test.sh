@@ -192,6 +192,20 @@ check_rdeps_empty3() {
 	[[ "$(cat "$1")" == "//..." ]] && pass "rdeps_exit3_empty_fallback" || fail "rdeps_exit3_empty_fallback" "got '$(cat "$1")'"
 }
 
+# rules_py venv helper targets (<py_test>.venv) come back from rdeps beside the
+# py_test; requesting both at top level is a Bazel action conflict (#5121), so
+# the script must drop them and keep everything else.
+setup_venv() { setup_rdeps_fail; }
+check_venv() {
+	local got
+	got="$(cat "$1" | tr '\n' ' ' | sed 's/ *$//')"
+	if [[ "$got" == "//p:chart_test //p:other_lib" ]]; then
+		pass "venv_targets_dropped"
+	else
+		fail "venv_targets_dropped" "got '$got'"
+	fi
+}
+
 # stderr noise from the fake bazel never leaks into stdout or the rdeps query
 setup_noise() { setup_rdeps_fail; }
 check_noise() {
@@ -340,6 +354,9 @@ run_test "lockfile" "setup_lockfile"
 run_test "bzl" "setup_bzl"
 BAZEL_RDEPS_EXIT="3" run_test "rdeps_empty3" "setup_rdeps_empty3"
 run_test "noise" "setup_noise"
+venv_fixture="$TMP/rdeps_venv.txt"
+printf '%s\n' "//p:chart_test" "//p:chart_test.venv" "//p:other_lib" >"$venv_fixture"
+BAZEL_RDEPS_OUTPUT="$venv_fixture" run_test "venv" "setup_venv"
 run_test "py_map" "setup_py_map"
 run_test "nested" "setup_nested"
 run_test "outside" "setup_outside"
