@@ -407,6 +407,15 @@ PI_CONTEXT_SAFETY_TOKENS = 4096
 # tasks; 12288 keeps the compaction reserve just over half the window.
 PI_MAX_OUTPUT_TOKENS = 12288
 
+# Thinking level for the pi lane. "off" makes pi send
+# chat_template_kwargs.enable_thinking=false to the qwen server, which for a
+# short task cuts generation from a full reasoning trace to a direct answer
+# (measured 32 -> 4 tokens on a trivial prompt, #5051). This is the SMALL-TASK
+# lane (chart comment), so thinking off is the intended default; flip to
+# "high" to restore full reasoning. The value must be one of pi's
+# ThinkingLevel strings: off, minimal, low, medium, high.
+PI_DEFAULT_THINKING_LEVEL = "off"
+
 # Compaction reserve in tokens. This must exceed PI_MAX_OUTPUT_TOKENS plus
 # PI_CONTEXT_SAFETY_TOKENS so pi starts compacting while there is still room for
 # a full response at turn boundaries. pi checks compaction at agent_end and
@@ -2690,12 +2699,14 @@ class PiProcess:
                     "compat": {
                         "supportsDeveloperRole": False,
                         "supportsReasoningEffort": False,
+                        "thinkingFormat": "qwen-chat-template",
                     },
                     "models": [
                         {
                             "id": PI_MODELS[DEFAULT_PI_MODEL],
                             "contextWindow": PI_CONTEXT_WINDOW,
                             "maxTokens": PI_MAX_OUTPUT_TOKENS,
+                            "reasoning": True,
                         }
                     ],
                 }
@@ -2705,12 +2716,13 @@ class PiProcess:
             json.dump(config, stream)
 
     def _write_settings_json(self, pi_home):
-        """Write pi's settings.json with compaction configuration.
+        """Write pi's settings.json with managed lane configuration.
 
         pi may persist unrelated keys in settings.json, so this method reads
-        any existing file, merges the compaction block, and writes back. If
-        the file is missing, unreadable, or contains invalid JSON, fall back
-        to writing just the compaction block without crashing the spawn.
+        any existing file, merges the compaction and thinking defaults, and
+        writes back. If the file is missing, unreadable, or contains invalid
+        JSON, fall back to writing just those defaults without crashing the
+        spawn.
         """
         agent_dir = os.path.join(pi_home, "agent")
         _ensure_cli_dir(agent_dir)
@@ -2733,6 +2745,7 @@ class PiProcess:
             "reserveTokens": PI_COMPACTION_RESERVE_TOKENS,
             "keepRecentTokens": PI_COMPACTION_KEEP_RECENT_TOKENS,
         }
+        existing_settings["defaultThinkingLevel"] = PI_DEFAULT_THINKING_LEVEL
 
         try:
             with open(settings_path, "w") as stream:
