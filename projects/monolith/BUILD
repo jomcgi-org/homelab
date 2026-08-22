@@ -2164,6 +2164,7 @@ py_test(
     deps = [
         ":pkg_framework",
         "@pip//fastapi",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",

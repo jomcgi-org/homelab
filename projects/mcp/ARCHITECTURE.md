@@ -162,9 +162,11 @@ live is not what stands in the way. Two things do:
   nothing means nothing has been verified. Beyond the first fetch the cache
   holds for `AUTH_JWKS_CACHE_TTL_S`, so silence stops being evidence once the
   pod has been up a while.
-- On the SSE transport the principal belongs to the stream rather than the
-  message, so a tool reading `current_principal()` sees whoever opened the
-  stream. Recorded on #4569 with the mechanism.
+- The monolith serves streamable HTTP at `/mcp/`, so every JSON-RPC message
+  is its own POST and a tool reading `current_principal()` sees the caller of
+  that message. Until that switch the mount was SSE, where the principal
+  belonged to the stream opener; #4569 records the mechanism. Whether a token
+  arrives at all (the first bullet) is the remaining gap.
 
 ## Deployment
 
@@ -204,8 +206,14 @@ A CronJob mints a short-lived admin JWT and POSTs
 It exists because Context Forge caches each gateway's tool catalogue in its own
 Postgres and does not rediscover on its own. The built-in auto-refresh only
 fires after a healthy tick from the health-check loop, and that loop speaks
-streamable HTTP while the monolith gateway serves SSE. So the monolith's
-`last_seen` never advances and its auto-refresh never runs.
+streamable HTTP while the monolith gateway was registered as SSE. So the
+monolith's `last_seen` never advanced and its auto-refresh never ran.
+
+The monolith now serves streamable HTTP at `/mcp/`, but the gateway
+registration lives in Context Forge's Postgres, not in git, and is updated by
+hand: transport `STREAMABLEHTTP`, URL `http://<monolith svc>/mcp/`. The
+CronJob stays until the health tick has been observed advancing `last_seen`
+against that registration; retiring it is #5035.
 
 Two things about that request are load-bearing:
 
