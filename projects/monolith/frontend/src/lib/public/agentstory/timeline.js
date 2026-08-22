@@ -78,15 +78,15 @@ export const CALLS = {
       a: 0.04,
       b: 0.32,
       cls: "w-frost",
-      text: "PUT s3://embervm/session-workspace/<lineage>",
+      text: "PUT workspace snapshot to object store",
     },
     {
       a: 0.42,
       b: 0.66,
       cls: "w-frost",
-      text: "GET s3://embervm/session-workspace/<lineage>  → brick-3",
+      text: "GET workspace snapshot → new node",
     },
-    { a: 0.68, b: 0.82, cls: "w-ember", text: "PUT /snapshot/load  (brick-3)" },
+    { a: 0.68, b: 0.82, cls: "w-ember", text: "PUT /snapshot/load (new node)" },
     {
       a: 0.84,
       b: 0.96,

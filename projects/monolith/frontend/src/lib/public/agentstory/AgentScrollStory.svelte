@@ -10,6 +10,7 @@
     easeInOut,
     sub,
   } from "./timeline.js";
+  import { sessionRestoreMs } from "$lib/public/fcstory/metrics.js";
 
   let scrollerEl,
     heroEl,
@@ -143,7 +144,7 @@
     if (beat === "pre") setPill("off", "off");
     else if (beat === "wake")
       setPill(
-        w < 0.45 ? "restoring" : "awake · 2.5 ms",
+        w < 0.45 ? "restoring" : `awake · ${sessionRestoreMs} ms`,
         w < 0.45 ? "asleep" : "run",
       );
     else if (beat === "hydrate") setPill("awake · turn running", "run");
@@ -365,7 +366,7 @@
                   did last night's chart bump deploy?
                 </div>
                 <div class="ci evt" data-at="0.14">
-                  <b>vm awake · 2.5 ms</b>
+                  <b>vm awake · {sessionRestoreMs} ms</b>
                 </div>
                 <div class="ci evt" data-at="0.30">
                   clone jomcgi/homelab · <b>full history</b>
@@ -389,7 +390,7 @@
                   add a regression test for that fix
                 </div>
                 <div class="ci evt frost" data-at="0.905">
-                  restored on <b>brick-3</b> · --resume
+                  restored on <b>new node</b> · --resume
                 </div>
                 <div class="ci msg bot" data-at="0.935">
                   Picking up where we left off.
@@ -549,7 +550,7 @@
                   width="208"
                   height="20"
                 /><text class="swap-t" id="t-fake" x="428" y="298"
-                  >Bearer ember-guest…dummy…</text
+                  >Bearer &lt;placeholder&gt;</text
                 ><line
                   class="strike"
                   id="s-fake"
@@ -609,8 +610,7 @@
                   width="470"
                   height="92"
                   rx="10"
-                /><text class="llabel frost" x="212" y="412"
-                  >seaweedfs s3 · bucket embervm</text
+                /><text class="llabel frost" x="212" y="412">object store</text
                 ><g id="g-s3base"
                   ><rect
                     class="box paper frost-b"
@@ -642,7 +642,7 @@
                   width="164"
                   height="92"
                   rx="10"
-                /><text class="llabel" x="712" y="410">brick-3</text><rect
+                /><text class="llabel" x="712" y="410">new node</text><rect
                   class="box paper ember-b"
                   x="712"
                   y="418"
@@ -666,7 +666,7 @@
                 id="p-load"
                 d="M300,264 C315,235 370,215 440,192"
               /><text class="elabel el-ember" id="l-load" x="204" y="210"
-                >load · 2.5 ms</text
+                >load · {sessionRestoreMs} ms</text
               ><path
                 class="epath ep-amber"
                 id="p-patch"
@@ -725,13 +725,13 @@
     </p>
     <ol>
       <li>
-        01 · wake: vm awake · 2.5 ms, one shared base snapshot, volume patched
-        while paused
+        01 · wake: vm awake · {sessionRestoreMs} ms, one shared base snapshot, volume
+        patched while paused
       </li>
       <li>02 · hydrate: clone jomcgi/homelab through the egress sidecar</li>
       <li>03 · creds: real credentials stay outside the vm</li>
       <li>04 · park: idle 20 s, vm destroyed, disk kept</li>
-      <li>05 · resume: workspace in s3, restored on brick-3</li>
+      <li>05 · resume: workspace in s3, restored on new node</li>
     </ol>
   </div>
   <main class="doc">
@@ -739,7 +739,9 @@
     <dl class="tiers-mini">
       <div>
         <dt class="ram">guest ram</dt>
-        <dd>disposable · rebuilt in <b>2.5 ms</b> · never snapshotted</dd>
+        <dd>
+          disposable · rebuilt in <b>{sessionRestoreMs} ms</b> · never snapshotted
+        </dd>
       </div>
       <div>
         <dt class="disk">node scratch</dt>
@@ -748,7 +750,7 @@
         </dd>
       </div>
       <div>
-        <dt class="s3">seaweedfs s3</dt>
+        <dt class="s3">durable storage</dt>
         <dd>
           retired workspaces · <b>survives the machine</b> · deleted after 7 days
         </dd>

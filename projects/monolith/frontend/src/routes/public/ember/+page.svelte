@@ -10,6 +10,7 @@
   // and the wake action stays on /ember/postgres where its Turnstile gate
   // and rate limits live.
   import { onMount } from "svelte";
+  import { servingWakeMs } from "$lib/public/fcstory/metrics.js";
   import "$lib/public/ember/ember.css";
   import "./landing.css";
 
@@ -59,7 +60,7 @@
 
   // Headline numbers count up from zero on load; skipped under reduced
   // motion (which also keeps visual-regression captures deterministic).
-  let bestWake = $state(78);
+  let bestWake = $state(servingWakeMs);
   let vmRestore = $state(22);
 
   onMount(() => {
@@ -72,7 +73,7 @@
       const tick = (t) => {
         const p = Math.min(1, (t - t0) / dur);
         const ease = 1 - Math.pow(1 - p, 3);
-        bestWake = Math.round(78 * ease);
+        bestWake = Math.round(servingWakeMs * ease);
         vmRestore = Math.round(22 * ease);
         if (p < 1) requestAnimationFrame(tick);
       };
@@ -143,14 +144,14 @@
       desc: "Ember becomes a standalone artifact somebody else could run: no dependency on the rest of this cluster.",
     },
     {
-      done: false,
+      done: true,
       name: "transport auth",
-      desc: "Every control channel authenticates: a bearer token on the control-plane-to-daemon lane first, mTLS with per-node identity as the upgrade path.",
+      desc: "The control-plane-to-daemon lane authenticates with a bearer token behind an ingress policy, enabled in production; per-node mTLS stays the upgrade path.",
     },
     {
-      done: false,
+      done: true,
       name: "encryption at rest",
-      desc: "Each principal's snapshots and workspaces get their own envelope keys, platform-managed or held in the customer's own KMS, and a restore must prove principal, lineage, node, and lease before a key is released.",
+      desc: "Each principal's snapshots and workspaces use envelope encryption with capability-gated restore.",
     },
   ];
 </script>
@@ -159,7 +160,7 @@
   <title>Ember · a workload orchestrator on Firecracker microVMs</title>
   <meta
     name="description"
-    content="A workload orchestrator that runs untrusted code in hardware-isolated Firecracker microVMs. Services sleep as snapshots and wake on demand, disk to answering queries in 78 ms. Includes a live Postgres you can wake yourself."
+    content="A workload orchestrator that runs untrusted code in hardware-isolated Firecracker microVMs. Services sleep as snapshots and wake on demand, disk to answering queries in {servingWakeMs} ms. Includes a live Postgres you can wake yourself."
   />
 </svelte:head>
 
