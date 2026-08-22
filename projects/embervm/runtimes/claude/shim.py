@@ -415,6 +415,24 @@ PI_MAX_OUTPUT_TOKENS = 12288
 # "high" to restore full reasoning. The value must be one of pi's
 # ThinkingLevel strings: off, minimal, low, medium, high.
 PI_DEFAULT_THINKING_LEVEL = "off"
+PI_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high")
+
+
+def _resolve_thinking_level(value):
+    """Map an inbound thinking request to a valid pi ThinkingLevel.
+
+    None or an unrecognised value falls back to PI_DEFAULT_THINKING_LEVEL, so a
+    bad or missing field can never crash a turn or silently pick a wrong level.
+    A bare True means "the caller wants thinking" -> "high"; False -> "off".
+    """
+    if value is True:
+        return "high"
+    if value is False:
+        return "off"
+    if isinstance(value, str) and value in PI_THINKING_LEVELS:
+        return value
+    return PI_DEFAULT_THINKING_LEVEL
+
 
 # Compaction reserve in tokens. This must exceed PI_MAX_OUTPUT_TOKENS plus
 # PI_CONTEXT_SAFETY_TOKENS so pi starts compacting while there is still room for
@@ -2919,6 +2937,7 @@ class PiProcess:
         model=DEFAULT_PI_MODEL,
         progress_token=None,
         system_prompt=None,
+        thinking=None,
     ):
         with self.turn_lock:
             cli_ready_start = _turn_timing_now()
@@ -2999,6 +3018,13 @@ class PiProcess:
             try:
                 self._turn_timing_model_start = _turn_timing_now()
                 model_fallback_started_at = _turn_timing_now()
+                level = _resolve_thinking_level(thinking)
+                try:
+                    self._command({"type": "set_thinking_level", "level": level})
+                except Exception:
+                    # pi older than the RPC, or a transient RPC error, must never
+                    # fail the turn: the model just keeps its current level.
+                    pass
                 self._send({"type": "prompt", "message": message})
                 while True:
                     try:
@@ -3698,6 +3724,7 @@ class ProcessManager:
         branch=None,
         progress_token=None,
         system_prompt=None,
+        thinking=None,
     ):
         total_start = _turn_timing_now()
         with self._mount_lock:
@@ -3739,7 +3766,11 @@ class ProcessManager:
             prompt = {"system_prompt": system_prompt} if system_prompt else {}
             if adapter is self.pi:
                 record = adapter.turn(
-                    message, session_id, model or DEFAULT_PI_MODEL, **(extra | prompt)
+                    message,
+                    session_id,
+                    model or DEFAULT_PI_MODEL,
+                    thinking=thinking,
+                    **(extra | prompt),
                 )
             elif adapter is self.codex:
                 record = adapter.turn(
@@ -3874,6 +3905,20 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         ):
             self._send(400, {"error": "system_prompt must be a non-empty string"})
             return
+        thinking = payload.get("thinking")
+        if thinking is not None and not (
+            thinking is True
+            or thinking is False
+            or (isinstance(thinking, str) and thinking in PI_THINKING_LEVELS)
+        ):
+            self._send(
+                400,
+                {
+                    "error": "thinking must be a bool or one of %s"
+                    % (PI_THINKING_LEVELS,)
+                },
+            )
+            return
         if "session_id" in payload:
             sid = payload.get("session_id")
             if sid is not None and (not isinstance(sid, str) or not sid.strip()):
@@ -3888,11 +3933,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 {"progress_token": progress_token.strip()} if progress_token else {}
             )
             prompt = {"system_prompt": system_prompt.strip()} if system_prompt else {}
+            thinking_override = {"thinking": thinking} if thinking is not None else {}
             record = self.manager.turn(
                 message,
                 session_id,
                 payload.get("model"),
-                **(hydration | progress | prompt),
+                **(hydration | progress | prompt | thinking_override),
             )
             if repo is not None and isinstance(record, dict):
                 if getattr(self.manager, "_hydration_error", None):
