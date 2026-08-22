@@ -136,7 +136,14 @@ class SwarmDecision(SQLModel, table=True):
     decision: str | None = None
     decision_note: str | None = None
     actor_subject: str | None = None
-    actor_authority: str | None = None
+    # CHECK-free by design. Values are cloudflare-access, anonymous, or an
+    # Authority enum string from MCP.
+    actor_authority: str | None = Field(
+        default=None,
+        description=(
+            "cloudflare-access, anonymous, or an Authority enum string from MCP"
+        ),
+    )
 
 
 @contextmanager

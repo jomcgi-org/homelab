@@ -331,10 +331,20 @@ def _disposition(dbos_status, state, output, nodes, plan):
         }
     if state == "escalated":
         decision_record = output.get("decision")
+        existing_reason = "the run was escalated, awaiting human review"
         if (
             isinstance(decision_record, dict)
             and decision_record.get("decision") != "expired"
         ):
+            if decision_record.get("decision") == "approve":
+                return {
+                    "state": "escalated",
+                    "reason": (
+                        f"approved by {decision_record.get('actor_subject')}, "
+                        f"then escalated: {existing_reason}"
+                    ),
+                    "next": None,
+                }
             return {
                 "state": "escalated",
                 "reason": (
@@ -345,9 +355,27 @@ def _disposition(dbos_status, state, output, nodes, plan):
             }
         return {
             "state": "escalated",
-            "reason": "the run was escalated, awaiting human review",
+            "reason": existing_reason,
             "next": None,
         }
+    if state == "blocked":
+        blocked = next(
+            (
+                node
+                for node in nodes
+                if (node.get("blocked_on") or {}).get("kind") == "human"
+            ),
+            None,
+        )
+        if blocked is not None:
+            blocked_on = blocked["blocked_on"]
+            return {
+                "state": "gated",
+                "reason": blocked_on.get("note")
+                or f"{blocked['label']} is waiting on your decision",
+                "next": "choose one of: "
+                + ", ".join(str(option) for option in blocked_on.get("options", [])),
+            }
     if state in ("running", "queued", "reviewing", "blocked"):
         return {"state": "running", "reason": "this run is in progress", "next": None}
     return {"state": state, "reason": f"state: {state}", "next": None}
@@ -510,7 +538,11 @@ def compose_run(
             "evidence": None,
         },
     ]
-    open_by_node = {_value(row, "node_key"): row for row in list(open_decisions or [])}
+    open_by_node = (
+        {_value(row, "node_key"): row for row in list(open_decisions or [])}
+        if raw in ("PENDING", "ENQUEUED")
+        else {}
+    )
     output_decision = output.get("decision")
     for node in nodes:
         open_row = open_by_node.get(node["key"])
@@ -529,7 +561,10 @@ def compose_run(
         if open_row is not None:
             node["state"] = "blocked"
         node["decision_record"] = (
-            output_decision
+            {
+                **output_decision,
+                "decided_at": _iso(output_decision.get("decided_at")),
+            }
             if isinstance(output_decision, dict)
             and output_decision.get("node_key") == node["key"]
             else None
@@ -585,14 +620,20 @@ def compose_master(
     else:
         kwargs.update(limit=limit, sort_desc=True)
     statuses = list(dbos.list_workflows(**kwargs) or [])
+    workflow_ids = [
+        _value(_status(workflow), "workflow_id", _value(workflow, "workflow_id"))
+        for workflow in statuses
+    ]
+    decisions = (
+        (decision_loader(workflow_ids) or {}) if decision_loader is not None else {}
+    )
     runs = []
     started = time.perf_counter() if not active else None
-    for workflow in statuses:
-        status = _status(workflow)
-        wf_id = _value(status, "workflow_id", _value(workflow, "workflow_id"))
+    for workflow, wf_id in zip(statuses, workflow_ids):
         rows = session_costs.get(wf_id, []) if isinstance(session_costs, dict) else []
-        decisions = decision_loader(wf_id) if decision_loader is not None else []
-        run = compose_run(dbos, wf_id, rows, server_app_version, decisions)
+        run = compose_run(
+            dbos, wf_id, rows, server_app_version, decisions.get(wf_id, [])
+        )
         if not run:
             continue
         current = next(

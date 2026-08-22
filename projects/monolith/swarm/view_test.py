@@ -162,6 +162,36 @@ def test_compose_run_populates_blocked_on_from_open_decision():
     }
     assert run["nodes"][0]["blocked_on"] is None
     assert run["nodes"][2]["blocked_on"] is None
+    assert run["disposition"] == {
+        "state": "gated",
+        "reason": "No branch movement was verified.",
+        "next": "choose one of: approve, send_back",
+    }
+
+
+@pytest.mark.parametrize("dbos_status", ["SUCCESS", "CANCELLED"])
+def test_compose_run_ignores_open_decisions_for_terminal_workflow(dbos_status):
+    status = Status("wf-terminal-decision", dbos_status, ["task", "repo", "main"])
+
+    run = compose_run(
+        DBOS(Workflow(status)),
+        status.workflow_id,
+        [],
+        "unknown",
+        [
+            {
+                "id": 45,
+                "node_key": "push_gate",
+                "kind": "push_gate",
+                "options": ["approve", "send_back"],
+                "note": None,
+                "requested_at": datetime(2026, 8, 22, tzinfo=timezone.utc),
+            }
+        ],
+    )
+
+    assert all(node["blocked_on"] is None for node in run["nodes"])
+    assert all(node["state"] != "blocked" for node in run["nodes"])
 
 
 def test_compose_master_needs_fires_for_open_human_decision():
@@ -175,18 +205,20 @@ def test_compose_master_needs_fires_for_open_human_decision():
 
     loaded = []
 
-    def load_decisions(workflow_id):
-        loaded.append(workflow_id)
-        return [
-            {
-                "id": 43,
-                "node_key": "review",
-                "kind": "review_escalation",
-                "options": ["retry", "send_back"],
-                "note": "The retry did not move the branch.",
-                "requested_at": datetime(2026, 8, 22, tzinfo=timezone.utc),
-            }
-        ]
+    def load_decisions(workflow_ids):
+        loaded.append(workflow_ids)
+        return {
+            status.workflow_id: [
+                {
+                    "id": 43,
+                    "node_key": "review",
+                    "kind": "review_escalation",
+                    "options": ["retry", "send_back"],
+                    "note": "The retry did not move the branch.",
+                    "requested_at": datetime(2026, 8, 22, tzinfo=timezone.utc),
+                }
+            ]
+        }
 
     result = compose_master(
         ListingDBOS(Workflow(status, {"plan": FX4_EXPECTED_PLAN})),
@@ -196,7 +228,7 @@ def test_compose_master_needs_fires_for_open_human_decision():
         decision_loader=load_decisions,
     )
 
-    assert loaded == [status.workflow_id]
+    assert loaded == [[status.workflow_id]]
     assert result["runs"][0]["current"] == {"label": "review", "state": "blocked"}
     assert result["runs"][0]["needs"] == {
         "kind": "human",
@@ -247,6 +279,86 @@ def test_disposition_names_recorded_decision_and_actor():
     )
 
     assert disposition["reason"] == "decided send_back by alice@example.com"
+
+
+def test_disposition_describes_approval_that_still_escalated():
+    disposition = _disposition(
+        "SUCCESS",
+        "escalated",
+        {
+            "decision": {
+                "decision": "approve",
+                "actor_subject": "alice@example.com",
+            }
+        },
+        [],
+        {},
+    )
+
+    assert disposition["reason"] == (
+        "approved by alice@example.com, then escalated: "
+        "the run was escalated, awaiting human review"
+    )
+
+
+def test_blocked_disposition_uses_label_when_decision_has_no_note():
+    disposition = _disposition(
+        "PENDING",
+        "blocked",
+        {},
+        [
+            {
+                "label": "review",
+                "blocked_on": {
+                    "kind": "human",
+                    "note": None,
+                    "options": ["retry", "send_back"],
+                },
+            }
+        ],
+        {},
+    )
+
+    assert disposition == {
+        "state": "gated",
+        "reason": "review is waiting on your decision",
+        "next": "choose one of: retry, send_back",
+    }
+
+
+def test_waiting_gate_keeps_policy_and_recorded_decisions():
+    decided_at = datetime(2026, 8, 22, 12, 35, tzinfo=timezone.utc)
+    status = Status(
+        "wf-waiting-decision-record",
+        "PENDING",
+        ["task", "repo", "main"],
+        {
+            "decision": {
+                "decision_id": 46,
+                "node_key": "push_gate",
+                "kind": "push_gate",
+                "decision": "approve",
+                "ask": "Approve the unverified branch?",
+                "decision_note": None,
+                "actor_subject": "alice@example.com",
+                "actor_authority": "cloudflare-access",
+                "decided_at": decided_at,
+            }
+        },
+    )
+
+    run = compose_run(
+        DBOS(Workflow(status, {"plan": FX4_EXPECTED_PLAN})),
+        status.workflow_id,
+        _running_implement(status.workflow_id),
+        "unknown",
+    )
+
+    gate = run["nodes"][1]
+    assert gate["state"] == "waiting"
+    assert gate["decision"]["basis"] == "policy.next_action"
+    assert gate["decision_record"]["decision"] == "approve"
+    assert gate["decision_record"]["decided_at"] == "2026-08-22T12:35:00Z"
 
 
 def test_composed_run_attaches_mechanical_deviations():
@@ -659,6 +771,58 @@ def test_master_rows_include_active_and_shape():
         {"key": "push_gate", "kind": "gate", "state": "future"},
         {"key": "review", "kind": "work", "state": "future"},
     ]
+
+
+def test_compose_master_bulk_loads_decisions_for_all_listed_workflows():
+    workflows = [
+        Workflow(Status("wf-one", "PENDING", ["one", "repo", "main"])),
+        Workflow(Status("wf-two", "ENQUEUED", ["two", "repo", "main"])),
+    ]
+
+    class ListingDBOS(DBOS):
+        def __init__(self):
+            super().__init__(workflows[0])
+
+        def retrieve_workflow(self, workflow_id):
+            return next(
+                workflow
+                for workflow in workflows
+                if workflow.status.workflow_id == workflow_id
+            )
+
+        def list_workflows(self, **kwargs):
+            if "parent_workflow_id" in kwargs:
+                return []
+            return workflows
+
+    loaded = []
+
+    def load_decisions(workflow_ids):
+        loaded.append(workflow_ids)
+        return {
+            "wf-two": [
+                {
+                    "id": 47,
+                    "node_key": "review",
+                    "kind": "review_escalation",
+                    "options": ["retry", "send_back"],
+                    "note": None,
+                    "requested_at": datetime(2026, 8, 22, tzinfo=timezone.utc),
+                }
+            ]
+        }
+
+    result = compose_master(
+        ListingDBOS(),
+        True,
+        {"wf-one": [], "wf-two": []},
+        "unknown",
+        decision_loader=load_decisions,
+    )
+
+    assert loaded == [["wf-one", "wf-two"]]
+    assert [run["workflow_id"] for run in result["runs"]] == ["wf-one", "wf-two"]
+    assert result["runs"][1]["current"] == {"label": "review", "state": "blocked"}
 
 
 def test_master_terminal_listing_uses_limit_and_descending_sort():
