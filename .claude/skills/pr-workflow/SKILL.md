@@ -19,10 +19,10 @@ git -C ~/repos/homelab worktree add -b feat/my-feature /tmp/claude-worktrees/my-
 Then work in `/tmp/claude-worktrees/my-feature`, run `ci` until green, commit
 with Conventional Commits, push, open the PR.
 
-Run `ci` (or at least `ci test`) **before** pushing. PR Workflows should be
-mostly cache-hit, not your first test run. A pre-push hook runs `ci test` when
-installed (`pre-commit install --hook-type pre-push`); `SKIP_CI_TEST=1` skips it
-for docs-only changes.
+Run `ci` **before** pushing so the PR run is mostly cache-hit. The pre-push
+hook no longer runs `ci test` by default: PR CI and the queue candidate both
+test the change after push, so a third run was pure cost. `RUN_CI_TEST=1 git
+push` runs it for a change you want proven before it is public.
 
 ## Before you push again
 
