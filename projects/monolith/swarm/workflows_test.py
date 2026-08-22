@@ -1,3 +1,5 @@
+import pytest
+
 import swarm.workflows as workflows
 from swarm import config
 
@@ -46,7 +48,14 @@ def decision_row(
     }
 
 
-def run(monkeypatch, turns, heads=None, intents=None, decisions=None):
+def run(
+    monkeypatch,
+    turns,
+    heads=None,
+    intents=None,
+    decisions=None,
+    decision_timeout=60,
+):
     sessions = iter(turns)
     calls = []
     if heads is None:
@@ -56,17 +65,26 @@ def run(monkeypatch, turns, heads=None, intents=None, decisions=None):
                 heads.extend([None, turns[session].get("commit_sha")])
     branch_heads = iter(heads)
     monkeypatch.setattr(workflows, "codex_queue", lambda: Queue())
+
+    class FakeDBOS:
+        workflow_id = "wf-1"
+
+        @staticmethod
+        def update_workflow_attributes(workflow_id, values):
+            pass
+
+    monkeypatch.setattr(workflows, "DBOS", FakeDBOS)
     monkeypatch.setattr(
         workflows,
         "pin_plan",
         lambda budget_usd=None, model=None: {
-            "version": 1,
+            "version": 2,
             "max_attempts": max(1, config.max_attempts()),
             "max_review_cycles": max(1, config.max_review_cycles()),
             "implementer_model": model or config.implementer_model(),
             "reviewer_model": config.reviewer_model(),
             "turn_timeout_seconds": config.turn_timeout_seconds(),
-            "decision_timeout_seconds": config.decision_timeout_seconds(),
+            "decision_timeout_seconds": decision_timeout,
             "budget_usd": budget_usd,
         },
     )
@@ -123,7 +141,7 @@ def test_commit_on_first_attempt_goes_to_review(monkeypatch):
     assert result["attempts"] == 1
     assert result["commit_sha"] == "abc"
     assert result["review_verdict"] == "approve"
-    assert result["work_branch"] == "claude/swarm-unknown"
+    assert result["work_branch"] == "claude/swarm-wf-1"
     assert len(calls) == 2
     assert calls[0][-2:] == ("implement", 1)
     assert calls[1][-2:] == ("review", 1)
@@ -171,7 +189,7 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
         workflows,
         "pin_plan",
         lambda budget_usd=None, model=None: {
-            "version": 1,
+            "version": 2,
             "max_attempts": max(1, config.max_attempts()),
             "max_review_cycles": max(1, config.max_review_cycles()),
             "implementer_model": config.implementer_model(),
@@ -215,18 +233,62 @@ def test_pinned_attempt_bound_survives_config_change(monkeypatch):
             "wf-1",
             {
                 "plan": {
-                    "version": 1,
+                    "version": 2,
                     "max_attempts": 2,
                     "max_review_cycles": 2,
                     "implementer_model": "luna",
                     "reviewer_model": "opus",
                     "turn_timeout_seconds": 1800,
-                    "decision_timeout_seconds": 86400,
+                    "decision_timeout_seconds": 0,
                     "budget_usd": None,
                 }
             },
         )
     ]
+
+
+def test_recovered_plan_without_decision_timeout_uses_current_config(monkeypatch):
+    monkeypatch.setenv("SWARM_DECISION_TIMEOUT_SECONDS", "45")
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+            102: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+        },
+    )
+    monkeypatch.setattr(
+        workflows,
+        "pin_plan",
+        lambda budget_usd=None, model=None: {
+            "version": 1,
+            "max_attempts": 2,
+            "max_review_cycles": 2,
+            "implementer_model": "luna",
+            "reviewer_model": "opus",
+            "turn_timeout_seconds": 1800,
+            "budget_usd": budget_usd,
+        },
+    )
+    decision_calls = []
+    monkeypatch.setattr(
+        workflows,
+        "_await_decision",
+        lambda *args: decision_calls.append(args) or decision_row(),
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main")
+
+    assert result["status"] == "escalated"
+    assert decision_calls[0][-1] == 45
+    assert len(calls) == 2
+
+
+def test_missing_dbos_workflow_id_fails_visibly(monkeypatch):
+    monkeypatch.setattr(workflows, "pin_plan", lambda *args: {})
+    monkeypatch.setattr(workflows, "DBOS", object())
+
+    with pytest.raises(RuntimeError, match="DBOS workflow id is unavailable"):
+        workflow("task", "jomcgi/homelab", "main")
 
 
 def test_attributes_write_failure_does_not_kill_the_run(monkeypatch):
@@ -272,6 +334,30 @@ def test_exhausted_attempts_escalate_without_reviewer(monkeypatch):
     assert len(calls) == 2
 
 
+def test_zero_decision_timeout_keeps_escalation_terminal(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+            102: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+        },
+        decision_timeout=0,
+    )
+    decision_calls = []
+    monkeypatch.setattr(
+        workflows,
+        "_await_decision",
+        lambda *args: decision_calls.append(args) or decision_row(),
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main")
+
+    assert result["status"] == "escalated"
+    assert "decision" not in result
+    assert decision_calls == []
+    assert len(calls) == 2
+
+
 def test_push_gate_pause_then_approve_resumes_review(monkeypatch):
     calls = run(
         monkeypatch,
@@ -300,6 +386,28 @@ def test_push_gate_pause_then_approve_resumes_review(monkeypatch):
     ]
 
 
+def test_push_gate_approve_without_commit_still_escalates(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+            102: {"commit_sha": None, "result_text": "no", "cost_usd": 1},
+        },
+        heads=[None, None, None, None, None],
+        decisions=[decision_row("approve", actor_subject="joe@example.com")],
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main")
+
+    assert result["status"] == "escalated"
+    assert result["commit_sha"] is None
+    assert result["decision"]["decision"] == "approve"
+    assert [call[-2:] for call in calls] == [
+        ("implement", 1),
+        ("implement", 2),
+    ]
+
+
 def test_send_back_ends_run_with_human_note(monkeypatch):
     run(
         monkeypatch,
@@ -320,16 +428,20 @@ def test_send_back_ends_run_with_human_note(monkeypatch):
 
     assert result["status"] == "escalated"
     assert result["decision"] == {
+        "decision_id": 1,
         "node_key": "push_gate",
         "kind": "push_gate",
         "decision": "send_back",
-        "note": "Please push the missing change.",
+        "ask": "needs a decision",
+        "decision_note": "Please push the missing change.",
         "actor_subject": "joe@example.com",
+        "actor_authority": "cloudflare",
         "decided_at": "2026-08-22T00:00:05+00:00",
     }
 
 
-def test_review_escalation_retry_resumes_reviewer(monkeypatch):
+def test_review_escalation_retry_runs_implementer_before_reviewer(monkeypatch):
+    monkeypatch.setenv("SWARM_MAX_ATTEMPTS", "3")
     decision_calls = []
     calls = run(
         monkeypatch,
@@ -341,13 +453,14 @@ def test_review_escalation_retry_resumes_reviewer(monkeypatch):
                 "cost_usd": 1,
             },
             102: {"commit_sha": None, "result_text": "no push", "cost_usd": 1},
+            103: {"commit_sha": "def", "result_text": "fixed", "cost_usd": 1},
             202: {
                 "commit_sha": None,
                 "result_text": "VERDICT: APPROVE",
                 "cost_usd": 1,
             },
         },
-        heads=[None, "abc", "abc", "abc", "def"],
+        heads=[None, "abc", "abc", "abc", "abc", "def"],
     )
     retry = decision_row("retry", node_key="review", kind="review_escalation")
     retry["options"] = ["retry", "send_back"]
@@ -366,6 +479,7 @@ def test_review_escalation_retry_resumes_reviewer(monkeypatch):
         ("implement", 1),
         ("review", 1),
         ("implement", 2),
+        ("implement", 3),
         ("review", 1),
     ]
     assert decision_calls[0][1:4] == (
@@ -373,6 +487,33 @@ def test_review_escalation_retry_resumes_reviewer(monkeypatch):
         "review_escalation",
         ["retry", "send_back"],
     )
+
+
+def test_review_escalation_retry_at_attempt_limit_records_decision(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: REQUEST_CHANGES",
+                "cost_usd": 1,
+            },
+            102: {"commit_sha": None, "result_text": "no push", "cost_usd": 1},
+        },
+        heads=[None, "abc", "abc", "abc"],
+        decisions=[decision_row("retry", node_key="review", kind="review_escalation")],
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main")
+
+    assert result["status"] == "review_cycles_exhausted"
+    assert result["decision"]["decision"] == "retry"
+    assert [call[-2:] for call in calls] == [
+        ("implement", 1),
+        ("review", 1),
+        ("implement", 2),
+    ]
 
 
 def test_await_decision_polls_then_resumes_on_approve(monkeypatch):
@@ -399,7 +540,7 @@ def test_await_decision_polls_then_resumes_on_approve(monkeypatch):
     )
 
     assert result["decision"] == "approve"
-    assert sleeps == [workflows.POLL_INTERVAL_SECONDS]
+    assert sleeps == [workflows.DECISION_POLL_INTERVAL_SECONDS]
 
 
 def test_await_decision_expires_at_pinned_timeout(monkeypatch):
@@ -426,6 +567,61 @@ def test_await_decision_expires_at_pinned_timeout(monkeypatch):
 
     assert result["decision"] == "expired"
     assert expired_calls == [("wf-1", "push_gate")]
+
+
+def test_await_decision_returns_expired_when_row_is_deleted(monkeypatch):
+    open_row = decision_row(
+        None,
+        decided_at=None,
+        observed_at="2026-08-22T00:00:01+00:00",
+    )
+    expire_calls = []
+
+    monkeypatch.setattr(workflows, "open_decision", lambda *args: open_row)
+    monkeypatch.setattr(workflows, "get_open_decision", lambda *args: None)
+    monkeypatch.setattr(workflows, "get_decision", lambda *args: None)
+    monkeypatch.setattr(
+        workflows,
+        "expire_decision",
+        lambda *args: expire_calls.append(args) or None,
+    )
+
+    result = workflows._await_decision(
+        "wf-1", "push_gate", "push_gate", ["approve", "send_back"], "note", 60
+    )
+
+    assert result["decision"] == "expired"
+    assert expire_calls == [("wf-1", "push_gate")]
+
+
+def test_await_decision_iteration_cap_terminates_stalled_clock(monkeypatch):
+    open_row = decision_row(
+        None,
+        decided_at=None,
+        observed_at="2026-08-22T00:00:01+00:00",
+    )
+    polls = []
+    sleeps = []
+
+    monkeypatch.setattr(workflows, "open_decision", lambda *args: open_row)
+    monkeypatch.setattr(
+        workflows,
+        "get_open_decision",
+        lambda *args: polls.append(args) or open_row,
+    )
+    monkeypatch.setattr(
+        workflows,
+        "DBOS",
+        type("FakeDBOS", (), {"sleep": staticmethod(sleeps.append)}),
+    )
+
+    result = workflows._await_decision(
+        "wf-1", "push_gate", "push_gate", ["approve", "send_back"], "note", 60
+    )
+
+    assert result["decision"] == "expired"
+    assert len(polls) == 5
+    assert sleeps == [workflows.DECISION_POLL_INTERVAL_SECONDS] * 4
 
 
 def test_await_decision_replay_reuses_open_row(monkeypatch):
@@ -776,7 +972,7 @@ def test_implementer_stores_intent(monkeypatch):
     assert intents[0] == (
         101,
         0,
-        workflows.implementer_prompt_parts("task", "claude/swarm-unknown")[0],
+        workflows.implementer_prompt_parts("task", "claude/swarm-wf-1")[0],
     )
 
 
@@ -796,7 +992,7 @@ def test_reviewer_stores_intent(monkeypatch):
     assert intents[1] == (
         201,
         0,
-        workflows.reviewer_prompt_parts("task", "claude/swarm-unknown", "abc")[0],
+        workflows.reviewer_prompt_parts("task", "claude/swarm-wf-1", "abc")[0],
     )
 
 
@@ -826,7 +1022,7 @@ def test_implementer_feedback_loop_stores_intent(monkeypatch):
 
     expected = workflows.implementer_prompt_parts(
         "task",
-        "claude/swarm-unknown",
+        "claude/swarm-wf-1",
         review_feedback="Fix X\nVERDICT: REQUEST_CHANGES",
     )[0]
     assert intents[2] == (102, 0, expected)

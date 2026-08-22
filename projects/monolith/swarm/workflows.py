@@ -5,6 +5,7 @@ import logging
 
 from dbos import DBOS
 
+from swarm import config
 from swarm.policy import (
     implementer_prompt,  # noqa: F401 - retained for policy seam compatibility
     implementer_prompt_parts,
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 # durable checkpoint, so the interval also sets how much wait is re-done after a
 # process restart.
 POLL_INTERVAL_SECONDS = 5
+DECISION_POLL_INTERVAL_SECONDS = 30
 
 
 @DBOS.workflow()
@@ -137,13 +139,22 @@ def _await_decision(
     """Open one durable decision request and poll it to resolution."""
     requested = open_decision(workflow_id, node_key, kind, options, note)
     deadline = _timestamp(requested["requested_at"]) + timedelta(seconds=timeout_s)
+    max_iterations = 2 * timeout_s // DECISION_POLL_INTERVAL_SECONDS + 1
 
-    while True:
+    for iteration in range(max_iterations):
         current = get_open_decision(workflow_id, node_key)
         if current is None:
             # Once an answer sets decided_at the row no longer matches the
             # partial open-row lookup, so read the same durable row by id.
             current = get_decision(requested["id"])
+            if current is None:
+                expired = expire_decision(workflow_id, node_key)
+                if expired is not None:
+                    return expired
+                resolved = get_decision(requested["id"])
+                if resolved is not None and resolved["decided_at"] is not None:
+                    return resolved
+                return _expired_decision(requested)
         if current is not None and current["decided_at"] is not None:
             return current
         observed_at = _timestamp((current or requested)["observed_at"])
@@ -155,16 +166,41 @@ def _await_decision(
             resolved = get_decision(requested["id"])
             if resolved is not None and resolved["decided_at"] is not None:
                 return resolved
-        DBOS.sleep(POLL_INTERVAL_SECONDS)
+            if resolved is None:
+                return _expired_decision(requested)
+        if iteration + 1 < max_iterations:
+            DBOS.sleep(DECISION_POLL_INTERVAL_SECONDS)
+    return _expired_decision(requested)
+
+
+def _expired_decision(requested: dict) -> dict:
+    return {
+        **requested,
+        "decision": "expired",
+        "decided_at": requested["observed_at"],
+        "decision_note": None,
+        "actor_subject": None,
+        "actor_authority": None,
+    }
+
+
+def _decision_timeout(plan: dict) -> int:
+    timeout = plan.get("decision_timeout_seconds")
+    if timeout is None:
+        return config.decision_timeout_seconds()
+    return int(timeout)
 
 
 def _decision_output(row: dict) -> dict:
     return {
+        "decision_id": row["id"],
         "node_key": row["node_key"],
         "kind": row["kind"],
         "decision": row["decision"],
-        "note": row["decision_note"],
+        "ask": row["note"],
+        "decision_note": row["decision_note"],
         "actor_subject": row["actor_subject"],
+        "actor_authority": row["actor_authority"],
         "decided_at": row["decided_at"],
     }
 
@@ -221,6 +257,32 @@ def _escalated(
     return output
 
 
+def _review_cycles_exhausted(
+    attempt: int,
+    implementer_session_id: int | None,
+    commit_sha: str | None,
+    branch_name: str,
+    reviewer_session_id: int | None,
+    reviewer_turn: dict | None,
+    total_cost: float,
+    decision: dict | None = None,
+) -> dict:
+    output = {
+        "status": "review_cycles_exhausted",
+        "attempts": attempt,
+        "implementer_session_id": implementer_session_id,
+        "commit_sha": commit_sha,
+        "work_branch": branch_name,
+        "reviewer_session_id": reviewer_session_id,
+        "review_text": reviewer_turn.get("result_text") if reviewer_turn else None,
+        "review_verdict": "request_changes",
+        "cost_usd": total_cost,
+    }
+    if decision is not None:
+        output["decision"] = _decision_output(decision)
+    return output
+
+
 @DBOS.workflow()
 def implement_then_review(
     task: str,
@@ -232,21 +294,25 @@ def implement_then_review(
     plan = pin_plan(budget_usd, model)
     try:
         workflow_id = DBOS.workflow_id
-    except Exception:  # noqa: BLE001 - no workflow context
-        workflow_id = None
-    if workflow_id is not None:
-        # The authoritative pin is pin_plan's own step record; this copy exists
-        # only so the run endpoint can read the plan without walking steps. A
-        # convenience write must never be able to kill a run at its first
-        # instruction, so a failure here is logged and dropped.
-        try:
-            DBOS.update_workflow_attributes(workflow_id, {"plan": plan})
-        except Exception:  # noqa: BLE001 - the step record is the real pin
-            logger.warning(
-                "failed to copy pinned plan onto workflow attributes",
-                exc_info=True,
-            )
-    branch_name = work_branch(workflow_id or "unknown")
+    except Exception as exc:  # noqa: BLE001 - report missing workflow context
+        # Fail visibly instead of sharing a branch or decision row under
+        # "unknown". A crashed workflow can be recovered; a collided decision
+        # row cannot be attributed or answered safely.
+        raise RuntimeError("DBOS workflow id is unavailable") from exc
+    if not workflow_id:
+        raise RuntimeError("DBOS workflow id is unavailable")
+    # The authoritative pin is pin_plan's own step record; this copy exists
+    # only so the run endpoint can read the plan without walking steps. A
+    # convenience write must never be able to kill a run at its first
+    # instruction, so a failure here is logged and dropped.
+    try:
+        DBOS.update_workflow_attributes(workflow_id, {"plan": plan})
+    except Exception:  # noqa: BLE001 - the step record is the real pin
+        logger.warning(
+            "failed to copy pinned plan onto workflow attributes",
+            exc_info=True,
+        )
+    branch_name = work_branch(workflow_id)
     max_attempts = plan["max_attempts"]
     max_review_cycles = plan["max_review_cycles"]
     attempt = 0
@@ -310,13 +376,23 @@ def implement_then_review(
             # This is the push gate: the final implementer attempt did not
             # produce verified branch movement, so approval is the only human
             # override that can advance the run to review.
+            decision_timeout = _decision_timeout(plan)
+            if decision_timeout <= 0:
+                return _escalated(
+                    attempt,
+                    implementer_session_id,
+                    implementer_turn,
+                    branch_name,
+                    branch_head=head_sha,
+                    cost_usd=total_cost,
+                )
             decision = _await_decision(
-                workflow_id or "unknown",
+                workflow_id,
                 "push_gate",
                 "push_gate",
                 ["approve", "send_back"],
                 "No branch movement was verified after the final implementer attempt.",
-                plan["decision_timeout_seconds"],
+                decision_timeout,
             )
             if decision["decision"] != "approve":
                 return _escalated(
@@ -330,6 +406,18 @@ def implement_then_review(
                 )
             push_gate_approved = True
             commit_sha = read_branch_head(repo, branch_name)
+            # Never fall through into the reviewer without a commit to review,
+            # even when a human approved the push gate.
+            if commit_sha is None:
+                return _escalated(
+                    attempt,
+                    implementer_session_id,
+                    implementer_turn,
+                    branch_name,
+                    branch_head=head_sha,
+                    cost_usd=total_cost,
+                    decision=decision,
+                )
             break
         if head_sha:
             previous_failure = (
@@ -349,13 +437,22 @@ def implement_then_review(
         # Defensive: next_action should have escalated already. Never fall
         # through silently into the reviewer without a commit to review. This
         # is also a push gate because review has not started.
+        decision_timeout = _decision_timeout(plan)
+        if decision_timeout <= 0:
+            return _escalated(
+                attempt,
+                implementer_session_id,
+                implementer_turn,
+                branch_name,
+                cost_usd=total_cost,
+            )
         decision = _await_decision(
-            workflow_id or "unknown",
+            workflow_id,
             "push_gate",
             "push_gate",
             ["approve", "send_back"],
             "No commit was available after the implementer loop.",
-            plan["decision_timeout_seconds"],
+            decision_timeout,
         )
         if decision["decision"] != "approve":
             return _escalated(
@@ -367,6 +464,17 @@ def implement_then_review(
                 decision=decision,
             )
         commit_sha = read_branch_head(repo, branch_name)
+        # Never fall through into the reviewer without a commit to review,
+        # even when a human approved the push gate.
+        if commit_sha is None:
+            return _escalated(
+                attempt,
+                implementer_session_id,
+                implementer_turn,
+                branch_name,
+                cost_usd=total_cost,
+                decision=decision,
+            )
 
     reviewer_session_id = None
     reviewer_turn = None
@@ -405,55 +513,83 @@ def implement_then_review(
             review_feedback = (
                 reviewer_turn.get("result_text") if reviewer_turn else None
             )
-            prior_sha = read_branch_head(repo, branch_name)
-            attempt += 1
-            impl_intent, impl_protocol = implementer_prompt_parts(
-                task,
-                branch_name,
-                review_feedback=review_feedback,
-            )
-            implementer_session_id = _queued_session(
-                session_key(f"implement-{attempt}"),
-                f"{impl_intent}\n{impl_protocol}",
-                plan["implementer_model"],
-                repo,
-                branch,
-                workflow_id,
-                node_key="implement",
-                node_attempt=attempt,
-            )
-            implementer_turn = _await_turn(
-                implementer_session_id, 0, plan["turn_timeout_seconds"]
-            )
-            total_cost += _cost(implementer_turn)
-            _record_turn_intent(implementer_session_id, implementer_turn, impl_intent)
-            head_sha = read_branch_head(repo, branch_name)
-            base_sha = prior_sha
-            if implementer_turn is not None:
-                try:
-                    update_turn_shas(
+            retry_decision = None
+            while attempt < max_attempts:
+                prior_sha = read_branch_head(repo, branch_name)
+                attempt += 1
+                impl_intent, impl_protocol = implementer_prompt_parts(
+                    task,
+                    branch_name,
+                    review_feedback=review_feedback,
+                )
+                implementer_session_id = _queued_session(
+                    session_key(f"implement-{attempt}"),
+                    f"{impl_intent}\n{impl_protocol}",
+                    plan["implementer_model"],
+                    repo,
+                    branch,
+                    workflow_id,
+                    node_key="implement",
+                    node_attempt=attempt,
+                )
+                implementer_turn = _await_turn(
+                    implementer_session_id, 0, plan["turn_timeout_seconds"]
+                )
+                total_cost += _cost(implementer_turn)
+                _record_turn_intent(
+                    implementer_session_id, implementer_turn, impl_intent
+                )
+                head_sha = read_branch_head(repo, branch_name)
+                base_sha = prior_sha
+                if implementer_turn is not None:
+                    try:
+                        update_turn_shas(
+                            implementer_session_id,
+                            implementer_turn["seq"],
+                            base_sha,
+                            head_sha,
+                        )
+                    except Exception:  # noqa: BLE001 - recording is best effort
+                        logger.warning(
+                            "failed to record turn heads for session %s seq %s",
+                            implementer_session_id,
+                            implementer_turn["seq"],
+                            exc_info=True,
+                        )
+                if implementer_turn is not None and head_sha and head_sha != prior_sha:
+                    commit_sha = head_sha
+                    break
+
+                # A retry repeats this implementer send-back against the same
+                # review findings. It never skips ahead to another reviewer.
+                if retry_decision is not None and attempt >= max_attempts:
+                    return _review_cycles_exhausted(
+                        attempt,
                         implementer_session_id,
-                        implementer_turn["seq"],
-                        base_sha,
-                        head_sha,
+                        commit_sha,
+                        branch_name,
+                        reviewer_session_id,
+                        reviewer_turn,
+                        total_cost,
+                        retry_decision,
                     )
-                except Exception:  # noqa: BLE001 - recording is best effort
-                    logger.warning(
-                        "failed to record turn heads for session %s seq %s",
+                decision_timeout = _decision_timeout(plan)
+                if decision_timeout <= 0:
+                    return _escalated(
+                        attempt,
                         implementer_session_id,
-                        implementer_turn["seq"],
-                        exc_info=True,
+                        implementer_turn,
+                        branch_name,
+                        branch_head=head_sha,
+                        cost_usd=total_cost,
                     )
-            if implementer_turn is None or not head_sha or head_sha == prior_sha:
-                # Review already requested a send-back attempt, so this is a
-                # review escalation rather than the pre-review push gate.
                 decision = _await_decision(
-                    workflow_id or "unknown",
+                    workflow_id,
                     "review",
                     "review_escalation",
                     ["retry", "send_back"],
                     "The send-back implementation attempt did not move the branch.",
-                    plan["decision_timeout_seconds"],
+                    decision_timeout,
                 )
                 if decision["decision"] != "retry":
                     return _escalated(
@@ -465,27 +601,41 @@ def implement_then_review(
                         cost_usd=total_cost,
                         decision=decision,
                     )
-                head_sha = read_branch_head(repo, branch_name)
-                if head_sha:
-                    commit_sha = head_sha
-                continue
-            commit_sha = head_sha
+                retry_decision = decision
+                if attempt >= max_attempts:
+                    return _review_cycles_exhausted(
+                        attempt,
+                        implementer_session_id,
+                        commit_sha,
+                        branch_name,
+                        reviewer_session_id,
+                        reviewer_turn,
+                        total_cost,
+                        retry_decision,
+                    )
+            else:
+                return _review_cycles_exhausted(
+                    attempt,
+                    implementer_session_id,
+                    commit_sha,
+                    branch_name,
+                    reviewer_session_id,
+                    reviewer_turn,
+                    total_cost,
+                    retry_decision,
+                )
             continue
 
         if verdict == "request_changes" and review_cycles >= max_review_cycles:
-            return {
-                "status": "review_cycles_exhausted",
-                "attempts": attempt,
-                "implementer_session_id": implementer_session_id,
-                "commit_sha": commit_sha,
-                "work_branch": branch_name,
-                "reviewer_session_id": reviewer_session_id,
-                "review_text": reviewer_turn.get("result_text")
-                if reviewer_turn
-                else None,
-                "review_verdict": verdict,
-                "cost_usd": total_cost,
-            }
+            return _review_cycles_exhausted(
+                attempt,
+                implementer_session_id,
+                commit_sha,
+                branch_name,
+                reviewer_session_id,
+                reviewer_turn,
+                total_cost,
+            )
         break
 
     return {

@@ -7,6 +7,9 @@ from sqlmodel import Session, select
 
 from swarm.models import SwarmDecision
 
+# The decision endpoint in #5128 is the only writer of decided_at for human
+# answers. Keep decision waits disabled until that endpoint is deployed.
+
 
 class NoOpenDecision(LookupError):
     pass

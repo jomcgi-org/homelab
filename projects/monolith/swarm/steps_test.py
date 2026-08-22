@@ -31,7 +31,7 @@ def test_pin_plan_resolves_config_once(monkeypatch):
     monkeypatch.setenv("SWARM_DECISION_TIMEOUT_SECONDS", "84")
 
     assert steps.pin_plan.__wrapped__(2.0) == {
-        "version": 1,
+        "version": 2,
         "max_attempts": 1,
         "max_review_cycles": 2,
         "implementer_model": "implementer",
