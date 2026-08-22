@@ -27,6 +27,7 @@
     onChangeView = () => {},
     onDestroy = () => {},
     onCancel = () => {},
+    onVoice = () => {},
   } = $props();
 
   let menuOpen = $state(false);
@@ -165,6 +166,13 @@
     closeMenu();
   }
 
+  function openVoice() {
+    destroyArmed = false;
+    cancelArmed = false;
+    onVoice();
+    closeMenu(false);
+  }
+
   onComponentDestroy(() => clearTimeout(copiedTimer));
 </script>
 
@@ -246,6 +254,14 @@
               : runRow
                 ? P.labels.copyWorkflowId
                 : P.labels.headerCopyId}</button
+          >
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="voice"
+            tabindex={activeMenuItem === "voice" ? 0 : -1}
+            onfocus={() => (activeMenuItem = "voice")}
+            onclick={openVoice}>{P.labels.voiceCompanion}</button
           >
           {#if runRow}
             {#if branchUrl}<a

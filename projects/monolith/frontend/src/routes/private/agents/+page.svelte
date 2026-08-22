@@ -2,7 +2,6 @@
   import { onMount, tick } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import { renderAgentMarkdown, resultWithoutTrailer } from "./markdown.js";
   import { RUN_FIXTURES } from "./run-fixtures.js";
   // groupSessions and its helpers grouped run-spawned sessions into the
   // session list. Runs are their own collection now and their sessions live
@@ -12,16 +11,17 @@
     clearSelection,
     selectRun as runSearchTransition,
     selectSession as sessionTransition,
+    setVoiceMode,
     withSearch,
   } from "./url-state.js";
-  import { statusClass, statusLabel, vmRunning, vmState } from "./status.js";
+  import { statusClass, statusLabel, vmState } from "./status.js";
   import "./agents-theme.css";
   import "./run-view.css";
   import RunView from "./RunView.svelte";
   import Launcher from "./Launcher.svelte";
   import { shapeStateClass } from "./dag.js";
   import { firstLine, fmtCost } from "./run-format.js";
-  import { clockTime, partitionRuns, relativeTime } from "./run-history.js";
+  import { partitionRuns, relativeTime } from "./run-history.js";
   import {
     arrivalSelection,
     inboxGroups,
@@ -33,14 +33,18 @@
   import { setupVisualViewport } from "./visual-viewport.js";
   import { nextStatus, streamAge } from "./vm-stream-status.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
-  import {
-    workspaceRecoveryMessage,
-    workspaceRecoveryTitle,
-  } from "./workspace-recovery.js";
   import PaneHeader from "./PaneHeader.svelte";
-  import SessionWalkthrough from "./SessionWalkthrough.svelte";
   import WalkthroughNarrative from "./WalkthroughNarrative.svelte";
   import JumpPalette from "./JumpPalette.svelte";
+  import Turns from "./Turns.svelte";
+  import VoiceCompanion from "./VoiceCompanion.svelte";
+  import {
+    answerCard,
+    applyLedgerRows,
+    dismissCard,
+    emptyStage,
+    togglePinned,
+  } from "./companion/stage.js";
   import { sessionTitle } from "./jump.js";
   import {
     defaultSessionView,
@@ -51,6 +55,9 @@
   import { periodForHour } from "$lib/private/period.js";
 
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
+  const VOICE_POLL_MS = 2000;
+  const VOICE_STORAGE_ID = "voice-companion-id";
+  const VOICE_STORAGE_SINCE = "voice-companion-since";
 
   let { data } = $props();
 
@@ -72,10 +79,13 @@
 
   const selectedId = $derived($page.url.searchParams.get("session"));
   const selectedRunId = $derived($page.url.searchParams.get("run"));
+  const voiceMode = $derived($page.url.searchParams.get("mode") === "voice");
   const mobileTranscript = $derived(
-    isMobileViewport() && (selectedId != null || selectedRunId != null),
+    isMobileViewport() &&
+      (voiceMode || selectedId != null || selectedRunId != null),
   );
   let manualRail = $state(null);
+  const voiceFold = $derived(voiceMode);
   let searchOpensRail = $state(false);
   // True only after /agents/runs has succeeded at least once. Before that the
   // inbox is empty for the wrong reason (not fetched, or the fetch failed), so
@@ -101,6 +111,13 @@
   let runDetail = $state(null);
   let runRequestSequence = 0;
   let detail = $state(null);
+  let voiceStage = $state(emptyStage());
+  let voiceRows = $state([]);
+  let voiceCompanionId = $state(null);
+  let voiceSince = $state(0);
+  let voiceSessionDetail = $state(null);
+  let voiceRunDetails = $state({});
+  let voiceNow = $state(Date.now());
   let sessionView = $state(SESSION_VIEW_CONVERSATION);
   let sessionViewInitializedFor = $state(null);
   let searchQuery = $state("");
@@ -203,12 +220,23 @@
       : "open",
   );
   const railMode = $derived(
-    searchOpensRail && manualRail === null
-      ? "open"
-      : (manualRail ?? automaticRailMode),
+    voiceFold
+      ? "folded"
+      : searchOpensRail && manualRail === null
+        ? "open"
+        : (manualRail ?? automaticRailMode),
   );
   const awakeGuests = $derived(
     Object.values(vms).filter((vm) => vm?.state === "awake").length,
+  );
+  const voiceSession = $derived(voiceSessionDetail?.session ?? null);
+  const voiceVmState = $derived(
+    voiceSession ? vmState(voiceSession, vms) : null,
+  );
+  const voiceTitle = $derived(
+    voiceSession
+      ? firstLine(voiceSession.title) || sessionTitle(voiceSession)
+      : "",
   );
   // Recent is disjoint from the inbox: active sessions already have a row.
   const launcherSessions = $derived(
@@ -268,80 +296,6 @@
 
   function formatRepoContext(session) {
     return session?.repo ? `${session.repo}@${session.branch || "main"}` : "";
-  }
-
-  function cost(value) {
-    const amount = Number(value || 0);
-    if (!(amount > 0)) return "";
-    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
-  }
-
-  // Success allowlist shared with the backend's _CLEAN_TERMINAL_REASONS:
-  // "completed"/"end_turn" from the claude lane, "stop" from the pi
-  // lane's raw stopReason. One deliberate difference: a missing
-  // terminal_reason warns the SESSION server-side (transport died
-  // mid-turn) but does not paint the turn card failed here, since the
-  // card has no error text to show for it.
-  const CLEAN_TERMINAL_REASONS = new Set(["completed", "end_turn", "stop"]);
-
-  function turnFailed(turn) {
-    return Boolean(
-      turn?.terminal_reason &&
-      !CLEAN_TERMINAL_REASONS.has(turn.terminal_reason),
-    );
-  }
-
-  function turnProtocol(turn) {
-    if (turn?.prompt_intent == null) return "";
-    const prefix = `${turn.prompt_intent}\n`;
-    if (!turn.prompt?.startsWith(prefix)) return "";
-    return turn.prompt.slice(prefix.length);
-  }
-
-  function activityParts(activity) {
-    if (typeof activity === "string") return { verb: activity, detail: "" };
-    if (!activity || typeof activity !== "object") {
-      return { verb: "step", detail: "" };
-    }
-    const kind = String(
-      activity.type || activity.tool || activity.name || "",
-    ).toLowerCase();
-    if (kind === "edit" || kind === "write") {
-      return { verb: kind, detail: activity.file_path || activity.path || "" };
-    }
-    if (kind === "bash" || kind === "shell") {
-      return {
-        verb: "run",
-        detail: activity.command || compactInput(activity.input),
-      };
-    }
-    if (activity.name) {
-      return {
-        verb: String(activity.name),
-        detail: compactInput(activity.input),
-      };
-    }
-    return { verb: kind || "step", detail: compactInput(activity.input) };
-  }
-
-  function stepCountLabel(count) {
-    return count === 1 ? P.labels.stepWord : P.labels.stepsWord;
-  }
-
-  function compactInput(input) {
-    if (input == null) return "";
-    const text = typeof input === "string" ? input : JSON.stringify(input);
-    return text.length > 110 ? `${text.slice(0, 110)}…` : text;
-  }
-
-  function activityLine(activity) {
-    const { verb, detail } = activityParts(activity);
-    return detail ? `${verb} ${detail}` : verb;
-  }
-
-  function liveStateLabel(entry, index) {
-    if (entry.claimed_by_replica) return "working";
-    return index === 0 ? "starting" : "waiting";
   }
 
   function nearBottom() {
@@ -475,31 +429,55 @@
     }
   }
 
-  async function loadRunDetail(id, sequence = runRequestSequence) {
+  async function loadRunDetail(
+    id,
+    sequence = runRequestSequence,
+    target = "console",
+  ) {
     if (fixture) return;
     if (id == null) return;
     try {
       const response = await fetch(`/agents/runs/${encodeURIComponent(id)}`);
       if (!response.ok) throw new Error("swarm run unavailable");
       const body = await response.json();
+      const normalized = {
+        ...body,
+        run: body.run ?? body,
+        view: body.view ?? {
+          engine_tier: "live",
+          now: new Date().toISOString(),
+          snapshot_age_seconds: 0,
+        },
+        sessions: (body.sessions ?? sessions).filter(
+          (session) => String(session.workflow_id) === String(id),
+        ),
+      };
+      if (target === "voice") {
+        voiceRunDetails = { ...voiceRunDetails, [String(id)]: normalized };
+        return;
+      }
       if (
         sequence === runRequestSequence &&
         String(selectedRunId) === String(id)
       ) {
-        runDetail = {
-          ...body,
-          run: body.run ?? body,
-          view: body.view ?? {
-            engine_tier: "live",
-            now: new Date().toISOString(),
-            snapshot_age_seconds: 0,
-          },
-          sessions: (body.sessions ?? sessions).filter(
-            (session) => String(session.workflow_id) === String(id),
-          ),
-        };
+        runDetail = normalized;
       }
     } catch {
+      if (target === "voice") {
+        voiceRunDetails = {
+          ...voiceRunDetails,
+          [String(id)]: {
+            run: null,
+            sessions: [],
+            view: {
+              engine_tier: "absent",
+              now: new Date().toISOString(),
+              snapshot_age_seconds: null,
+            },
+          },
+        };
+        return;
+      }
       if (
         sequence === runRequestSequence &&
         String(selectedRunId) === String(id)
@@ -555,6 +533,15 @@
       noScroll: true,
       keepFocus: true,
     });
+  }
+
+  function openVoiceMode() {
+    closeJump();
+    navigateTo(setVoiceMode($page.url.searchParams, true));
+  }
+
+  function leaveVoiceMode() {
+    navigateTo(setVoiceMode($page.url.searchParams, false));
   }
 
   // Correcting the URL for a selection that no longer exists, so it must not
@@ -741,6 +728,7 @@
   }
 
   function toggleSidebar() {
+    if (voiceMode) return;
     manualRail = railMode === "folded" ? "open" : "folded";
     if (manualRail === "folded") clearTurnSearch();
   }
@@ -823,33 +811,55 @@
     }
   }
 
+  async function sendSessionPrompt({ session_id, prompt: text, model }) {
+    const requestBody = { prompt: String(text).trim() };
+    if (model) requestBody.model = model;
+    const response = await fetch(
+      `/agents/session/${encodeURIComponent(session_id)}/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      },
+    );
+    const body = await response.json();
+    if (!response.ok || body.accepted === false) {
+      throw new Error(body.error || "Message was not accepted");
+    }
+    await loadSessions();
+    if (String(selectedId) === String(session_id)) {
+      await loadDetail(session_id, requestSequence, true);
+    }
+    if (String(voiceStage.attachedSessionId) === String(session_id)) {
+      await loadVoiceSession(session_id);
+    }
+  }
+
   async function sendPrompt() {
     if (!selectedId || !prompt.trim() || sending) return;
     sending = true;
     errorMessage = null;
     try {
-      const requestBody = { prompt: prompt.trim() };
-      if (composerModel) requestBody.model = composerModel;
-      const response = await fetch(
-        `/agents/session/${encodeURIComponent(selectedId)}/messages`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody),
-        },
-      );
-      const body = await response.json();
-      if (!response.ok || body.accepted === false)
-        throw new Error(body.error || "Message was not accepted");
+      await sendSessionPrompt({
+        session_id: selectedId,
+        prompt,
+        model: composerModel,
+      });
       prompt = "";
-      await Promise.all([
-        loadSessions(),
-        loadDetail(selectedId, requestSequence, true),
-      ]);
     } catch (error) {
       errorMessage = error.message;
     } finally {
       sending = false;
+    }
+  }
+
+  async function sendVoicePrompt(message) {
+    errorMessage = null;
+    try {
+      await sendSessionPrompt({ ...message, model: voiceSession?.model });
+    } catch (error) {
+      errorMessage = error.message;
+      throw error;
     }
   }
 
@@ -940,7 +950,8 @@
       if (
         fixture ||
         $page.url.searchParams.has("run") ||
-        $page.url.searchParams.has("session")
+        $page.url.searchParams.has("session") ||
+        $page.url.searchParams.get("mode") === "voice"
       ) {
         return;
       }
@@ -1186,7 +1197,11 @@
   $effect(() => {
     const empty = inboxEmpty;
     if (!runsLoaded) return;
-    if (previousInboxEmpty !== null && previousInboxEmpty !== empty) {
+    if (
+      !voiceMode &&
+      previousInboxEmpty !== null &&
+      previousInboxEmpty !== empty
+    ) {
       manualRail = null;
     }
     previousInboxEmpty = empty;
@@ -1199,6 +1214,160 @@
       clearTurnSearch();
     }
     previousAutomaticRailMode = automatic;
+  });
+
+  function readVoiceStorage(key) {
+    try {
+      return window.localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  function writeVoiceStorage(key, value) {
+    try {
+      if (value == null) window.localStorage.removeItem(key);
+      else window.localStorage.setItem(key, String(value));
+    } catch {
+      // localStorage blocked; the companion remains available for this visit.
+    }
+  }
+
+  async function registerVoiceCompanion(signal = AbortSignal.timeout(10000)) {
+    const stored = readVoiceStorage(VOICE_STORAGE_ID);
+    const response = await fetch("/agents/companion", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companion_id: stored || null }),
+      signal,
+    });
+    if (!response.ok) throw new Error("companion register failed");
+    const body = await response.json();
+    if (!body?.companion_id) throw new Error("companion register failed");
+    voiceCompanionId = body.companion_id;
+    writeVoiceStorage(VOICE_STORAGE_ID, voiceCompanionId);
+    if (stored === voiceCompanionId) {
+      const cursor = Number(readVoiceStorage(VOICE_STORAGE_SINCE) ?? "0");
+      voiceSince = Number.isFinite(cursor) ? cursor : 0;
+    } else {
+      voiceSince = 0;
+      writeVoiceStorage(VOICE_STORAGE_SINCE, 0);
+    }
+  }
+
+  async function loadVoiceSession(
+    sessionId,
+    signal = AbortSignal.timeout(10000),
+  ) {
+    const response = await fetch(
+      `/agents/session/${encodeURIComponent(sessionId)}`,
+      { signal },
+    );
+    if (response.ok) voiceSessionDetail = await response.json();
+  }
+
+  function forgetVoiceCompanion() {
+    voiceCompanionId = null;
+    voiceSince = 0;
+    voiceStage = emptyStage();
+    voiceRows = [];
+    voiceSessionDetail = null;
+    voiceRunDetails = {};
+    writeVoiceStorage(VOICE_STORAGE_ID, null);
+    writeVoiceStorage(VOICE_STORAGE_SINCE, 0);
+  }
+
+  async function pollVoiceLedger(signal = AbortSignal.timeout(10000)) {
+    if (!voiceCompanionId) return;
+    const response = await fetch(
+      `/agents/companion/${encodeURIComponent(voiceCompanionId)}/ledger?since=${voiceSince}`,
+      { signal },
+    );
+    if (response.status === 404) {
+      forgetVoiceCompanion();
+      return "unknown";
+    }
+    if (!response.ok) return;
+    const rows = await response.json();
+    voiceNow = Date.now();
+    if (Array.isArray(rows) && rows.length) {
+      const known = new Set(voiceRows.map((row) => String(row.id)));
+      voiceRows = [
+        ...voiceRows,
+        ...rows.filter((row) => !known.has(String(row.id))),
+      ].sort((a, b) => Number(a.id) - Number(b.id));
+      voiceStage = applyLedgerRows(voiceStage, rows);
+      const cursor = Math.max(...rows.map((row) => Number(row.id)));
+      if (Number.isFinite(cursor) && cursor > voiceSince) {
+        voiceSince = cursor;
+        writeVoiceStorage(VOICE_STORAGE_SINCE, cursor);
+      }
+    }
+    if (voiceStage.attachedSessionId != null) {
+      await loadVoiceSession(voiceStage.attachedSessionId, signal);
+    }
+    for (const card of voiceStage.cards) {
+      if (card.surface === "run" && !voiceRunDetails[card.ref]) {
+        await loadRunDetail(card.ref, runRequestSequence, "voice");
+      }
+    }
+  }
+
+  function pinVoiceCard(key) {
+    voiceStage = togglePinned(voiceStage, key);
+  }
+
+  function dismissVoiceCard(key) {
+    voiceStage = dismissCard(voiceStage, key);
+  }
+
+  function answerVoiceCard(key) {
+    voiceStage = answerCard(voiceStage, key);
+  }
+
+  $effect(() => {
+    const enabled = voiceMode;
+    if (!enabled || typeof window === "undefined") return;
+    let stopped = false;
+    let inFlight = false;
+    const controller = new AbortController();
+
+    async function poll() {
+      if (stopped || inFlight) return;
+      inFlight = true;
+      try {
+        if (!voiceCompanionId) {
+          await registerVoiceCompanion(controller.signal);
+        }
+        if (stopped) return;
+        const result = await pollVoiceLedger(controller.signal);
+        if (result === "unknown" && !stopped) {
+          await registerVoiceCompanion(controller.signal);
+          if (!stopped) await pollVoiceLedger(controller.signal);
+        }
+      } catch {
+        // Polling is its own heartbeat. A later tick retries without replacing
+        // the last useful stage or surfacing a second console error channel.
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") void poll();
+    }
+
+    // Run after dependency collection so cursor updates do not restart the
+    // effect and turn the two-second heartbeat into a tight polling loop.
+    queueMicrotask(() => void poll());
+    const interval = setInterval(poll, VOICE_POLL_MS);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      stopped = true;
+      controller.abort();
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   });
 
   $effect(() => {
@@ -1224,10 +1393,48 @@
   bind:this={consoleEl}
   class:mobile-transcript={mobileTranscript}
   class:rail-folded={railMode === "folded"}
+  class:voice-mode={voiceMode}
   class="console"
 >
   <header class="topbar">
     <div class="wordmark">Agents</div>
+    {#if voiceMode}
+      <span class="mode-pill">
+        <span class="level-bars" aria-hidden="true"
+          ><i></i><i></i><i></i><i></i></span
+        >
+        {P.labels.voice}
+      </span>
+      <span class="voice-attachment">
+        {#if voiceStage.attachedSessionId != null}
+          <span class="desktop-attachment">
+            {P.labels.attachedTo}
+            <span class="voice-session-id">#{voiceStage.attachedSessionId}</span
+            >
+            {voiceTitle}
+          </span>
+          <span class="phone-attachment">
+            #{voiceStage.attachedSessionId}
+            {P.punct.dot}
+            {voiceSession?.model || P.labels.defaultModel}
+            {P.punct.dot}
+            {P.labels.vmWord}
+            {voiceVmState || P.labels.unknownValue}
+          </span>
+          <span class="pill voice-vm-pill">
+            {#if voiceVmState === "awake"}<span
+                class="pill-dot"
+                aria-hidden="true"
+              ></span>{/if}
+            {P.labels.vmWord}
+            {voiceVmState || P.labels.unknownValue}
+          </span>
+        {:else}
+          <span class="desktop-attachment">{P.labels.notAttached}</span>
+          <span class="phone-attachment">{P.labels.notAttached}</span>
+        {/if}
+      </span>
+    {/if}
     <button
       class="top-search"
       type="button"
@@ -1248,17 +1455,23 @@
       {awakeGuests}
       {P.labels.guestsAwake}
     </div>
-    <button
-      class="new-button"
-      type="button"
-      bind:this={newButtonEl}
-      onclick={() => (showNewPanel ? closeNewPanel() : openNewPanel())}
-    >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M8 3v10M3 8h10"></path>
-      </svg>
-      New
-    </button>
+    {#if voiceMode}
+      <button class="leave-voice" type="button" onclick={leaveVoiceMode}
+        >{P.labels.leaveVoice}</button
+      >
+    {:else}
+      <button
+        class="new-button"
+        type="button"
+        bind:this={newButtonEl}
+        onclick={() => (showNewPanel ? closeNewPanel() : openNewPanel())}
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 3v10M3 8h10"></path>
+        </svg>
+        New
+      </button>
+    {/if}
   </header>
 
   <div class="shell">
@@ -1449,457 +1662,292 @@
       </div>
     </aside>
 
-    <section class="detail transcript" aria-label={P.labels.transcriptRegion}>
-      {#if !(selectedId && selectedSession)}
-        <div class="mobile-detail-nav">
-          <button
-            class="mobile-back"
-            type="button"
-            aria-label={P.labels.backToSessions}
-            onclick={returnToSessionList}
-          >
-            <svg viewBox="0 0 18 18" aria-hidden="true">
-              <path d="m11 4-5 5 5 5"></path>
-            </svg>
-          </button>
-          <button
-            class="mobile-jump"
-            type="button"
-            aria-label={P.labels.jumpOpenLabel}
-            aria-haspopup="dialog"
-            onclick={() => openJump()}
-          >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <circle cx="7" cy="7" r="4.25"></circle>
-              <path d="m10.25 10.25 3 3"></path>
-            </svg>
-          </button>
-        </div>
-      {/if}
-      {#if fixture?.walkthrough}
-        <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
-           component gets its payload inline and never fetches. -->
-        <div class="walkthrough-page">
-          <div class="walkthrough-inner">
-            <h2>{P.labels.walkSummary}</h2>
-            <WalkthroughNarrative
-              turnSeq={fixture.walkthrough.turnSeq}
-              fixture={fixture.walkthrough}
-            />
-          </div>
-        </div>
-      {:else if fixture && !fixture.home}
-        <RunView
-          run={fixture.run}
-          view={fixture.view}
-          sessions={fixture.sessions}
-          onSelectSession={selectSession}
-          onCrumb={paneCrumb}
+    <section
+      class="detail transcript"
+      aria-label={voiceMode
+        ? P.labels.voiceCompanion
+        : P.labels.transcriptRegion}
+    >
+      {#if voiceMode}
+        <VoiceCompanion
+          stage={voiceStage}
+          rows={voiceRows}
+          sessionDetail={voiceSessionDetail}
+          {vms}
+          runDetails={voiceRunDetails}
+          now={voiceNow}
+          onPin={pinVoiceCard}
+          onDismiss={dismissVoiceCard}
+          onSend={sendVoicePrompt}
+          onAnswered={answerVoiceCard}
         />
-      {:else if selectedId && selectedSession}
-        <header class="transcript-head">
-          <button
-            class="mobile-back"
-            type="button"
-            aria-label={P.labels.backToSessions}
-            onclick={returnToSessionList}
-          >
-            <svg viewBox="0 0 18 18" aria-hidden="true">
-              <path d="m11 4-5 5 5 5"></path>
-            </svg>
-          </button>
-          <PaneHeader
-            sessionRow
-            crumbs={sessionCrumbs}
-            onCrumb={paneCrumb}
-            selectedRun={Boolean(selectedRunId)}
-            sessionId={selectedSession.local_session_id}
-            {sessionView}
-            onBackToRun={returnToRun}
-            onChangeView={(view) => (sessionView = view)}
-            onDestroy={destroySession}
-          >
-            <h1
-              class="session-title"
-              title={headerTitle}
-              tabindex="-1"
-              bind:this={titleEl}
+      {:else}
+        {#if !(selectedId && selectedSession)}
+          <div class="mobile-detail-nav">
+            <button
+              class="mobile-back"
+              type="button"
+              aria-label={P.labels.backToSessions}
+              onclick={returnToSessionList}
             >
-              <span class="session-title-text">{headerTitle}</span>
-              <span class="session-mobile-meta mono">
-                {statusLabel(selectedSession)}
-                {P.punct.dot}
-                {selectedSession.model ||
-                  "luna"}{#if formatRepoContext(selectedSession)}
-                  {P.punct.dot} {formatRepoContext(selectedSession)}
-                {/if}
-              </span>
-            </h1>
-            <span
-              class="pill"
-              title={vms[selectedSession.ember_session_id]?.cp_state
-                ? P.labels.controlPlaneState.replace(
-                    "{state}",
-                    vms[selectedSession.ember_session_id].cp_state,
-                  )
-                : P.labels.noLiveVm}
+              <svg viewBox="0 0 18 18" aria-hidden="true">
+                <path d="m11 4-5 5 5 5"></path>
+              </svg>
+            </button>
+            <button
+              class="mobile-jump"
+              type="button"
+              aria-label={P.labels.jumpOpenLabel}
+              aria-haspopup="dialog"
+              onclick={() => openJump()}
             >
-              {#if vmState(selectedSession, vms) === "awake"}
-                <span class="pill-dot" aria-hidden="true"></span>
-              {/if}
-              {P.labels.vmWord}
-              {vmState(selectedSession, vms)}
-            </span>
-            <span class="pill">{selectedSession.model || "luna"}</span>
-            {#if formatRepoContext(selectedSession)}
-              <span class="pill">{formatRepoContext(selectedSession)}</span>
-            {/if}
-            {#if ["needs_input", "warn"].includes(statusClass(selectedSession))}
-              <span class={`pill state-pill ${statusClass(selectedSession)}`}
-                >{statusLabel(selectedSession)}</span
-              >
-            {/if}
-            <span
-              class="seg"
-              role="group"
-              aria-label={P.labels.sessionViewLabel}
-            >
-              <button
-                type="button"
-                class:selected={sessionView === SESSION_VIEW_CONVERSATION}
-                aria-pressed={sessionView === SESSION_VIEW_CONVERSATION}
-                onclick={() => (sessionView = SESSION_VIEW_CONVERSATION)}
-                >{P.labels.conversationView}</button
-              >
-              <button
-                type="button"
-                class:selected={sessionView === SESSION_VIEW_WALKTHROUGH}
-                aria-pressed={sessionView === SESSION_VIEW_WALKTHROUGH}
-                onclick={() => (sessionView = SESSION_VIEW_WALKTHROUGH)}
-                >{P.labels.walkthroughView}</button
-              >
-            </span>
-          </PaneHeader>
-          <button
-            class="mobile-jump"
-            type="button"
-            aria-label={P.labels.jumpOpenLabel}
-            aria-haspopup="dialog"
-            onclick={() => openJump()}
-          >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <circle cx="7" cy="7" r="4.25"></circle>
-              <path d="m10.25 10.25 3 3"></path>
-            </svg>
-          </button>
-        </header>
-        {#if sessionView === SESSION_VIEW_CONVERSATION}
-          <div class="turns" bind:this={turnsEl}>
-            <div class="turns-inner">
-              {#each detail?.turns ?? [] as turn (turn.seq)}
-                <!-- {@const} has to be an immediate child of the block, not of the
-                 element inside it, so this sits above <article> rather than
-                 next to the markup that reads it. -->
-                {@const hasIntent =
-                  turn.prompt_intent !== null &&
-                  turn.prompt_intent !== undefined}
-                {@const degradedCause = workspaceRecoveryMessage(turn)}
-                <div class="turn-group">
-                  <article class="turn">
-                    <div class="meta prompt-meta mono">
-                      <span class="meta-role">{P.labels.youRole}</span>
-                      <span>{clockTime(turn.created_at)}</span>
-                    </div>
-                    <div class="prompt">
-                      {#if hasIntent}
-                        <div class="prompt-text intent-prompt">
-                          <span class="intent-label"
-                            >{P.labels.promptIntent}</span
-                          >
-                          <div>{turn.prompt_intent}</div>
-                        </div>
-                        {#if turnProtocol(turn)}
-                          <details class="prompt-protocol">
-                            <summary>{P.labels.viewProtocol}</summary>
-                            <pre>{turnProtocol(turn)}</pre>
-                          </details>
-                        {/if}
-                      {:else}
-                        <div class="prompt-text">{turn.prompt}</div>
-                      {/if}
-                    </div>
-                    <!-- AgentTurn persists no completion time, so the response reuses the prompt's created_at (transport duration_ms is not stored). -->
-                    <div class="meta response-meta mono">
-                      <span
-                        >{turn.model || selectedSession.model || "luna"}</span
-                      >
-                      <span>{clockTime(turn.created_at)}</span>
-                      {#if cost(turn.cost_usd)}
-                        <span>{P.punct.dot} {cost(turn.cost_usd)}</span>
-                      {/if}
-                      {#if turn.stop_reason && !CLEAN_TERMINAL_REASONS.has(turn.stop_reason)}
-                        <span class="meta-trailing">{turn.stop_reason}</span>
-                      {/if}
-                      {#if turnFailed(turn)}
-                        <span class="badge-failed">{P.labels.turnFailed}</span>
-                      {/if}
-                    </div>
-                    {#if turn.usage?.activities?.length}
-                      <details class="steps">
-                        <summary>
-                          <svg viewBox="0 0 12 12" aria-hidden="true">
-                            <path d="m4.25 2.5 3.5 3.5-3.5 3.5"></path>
-                          </svg>
-                          {turn.usage.activities.length}
-                          {stepCountLabel(turn.usage.activities.length)}
-                          <!-- No per-step duration reaches the client yet (shim emits type and target only). -->
-                        </summary>
-                        <ol class="step-list">
-                          {#each turn.usage.activities as activity}
-                            <li>
-                              <span class="step-verb"
-                                >{activityParts(activity).verb}</span
-                              >
-                              <span class="step-detail"
-                                >{activityParts(activity).detail}</span
-                              >
-                            </li>
-                          {/each}
-                        </ol>
-                      </details>
-                    {/if}
-                    {#if turnFailed(turn)}
-                      <pre class="turn-error">{resultWithoutTrailer(turn) ||
-                          P.labels.turnFailedWithoutOutput}</pre>
-                    {:else if turn.result_text}
-                      <div class="result-md">
-                        {@html renderAgentMarkdown(resultWithoutTrailer(turn))}
-                      </div>
-                    {/if}
-                    {#if selectedSession.repo}
-                      <SessionWalkthrough
-                        sessionId={selectedSession.id}
-                        turnSeq={turn.seq}
-                        model={turn.model || selectedSession.model || "luna"}
-                      />
-                    {/if}
-                  </article>
-                  {#if degradedCause}
-                    <div
-                      class="turn-degraded"
-                      title={P.workspaceRecoveryCauses[degradedCause]}
-                    >
-                      {P.labels.workspaceRecovery}
-                    </div>
-                  {/if}
-                </div>
-              {/each}
-
-              {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
-                {@const partial = renderedPending[entry.seq]}
-                {@const state = liveStateLabel(entry, index)}
-                <article class="turn live">
-                  <div class="meta prompt-meta mono">
-                    <span class="meta-role">{P.labels.youRole}</span>
-                    <span>{clockTime(entry.created_at)}</span>
-                  </div>
-                  <div class="prompt">
-                    <div class="prompt-text">{entry.prompt}</div>
-                  </div>
-                  <div class="meta response-meta mono">
-                    <span>{entry.model || selectedSession.model || "luna"}</span
-                    >
-                    <span>{clockTime(entry.created_at)}</span>
-                  </div>
-                  {#if state === "working"}
-                    <details class="steps">
-                      <summary>
-                        <svg viewBox="0 0 12 12" aria-hidden="true">
-                          <path d="m4.25 2.5 3.5 3.5-3.5 3.5"></path>
-                        </svg>
-                        {partial?.partial_activities?.length ?? 0}
-                        {stepCountLabel(
-                          partial?.partial_activities?.length ?? 0,
-                        )}
-                        {P.punct.dot}
-                        {P.labels.runningStep}
-                      </summary>
-                      {#if partial?.partial_activities?.length}
-                        <ol
-                          class="step-list"
-                          aria-label={P.labels.agentActivity}
-                        >
-                          {#each partial.partial_activities as activity}
-                            <li>
-                              <span class="step-verb"
-                                >{activityParts(activity).verb}</span
-                              >
-                              <span class="step-detail"
-                                >{activityParts(activity).detail}</span
-                              >
-                            </li>
-                          {/each}
-                        </ol>
-                      {/if}
-                    </details>
-                  {/if}
-                  <div
-                    class={`live-line ${state === "working" ? "" : "quiet"}`}
-                  >
-                    <span class="live-dot" aria-hidden="true"></span>
-                    {#if state === "working"}
-                      {#if partial?.partial_activities?.length}
-                        <span class="live-latest"
-                          >{activityLine(
-                            partial.partial_activities[
-                              partial.partial_activities.length - 1
-                            ],
-                          )}</span
-                        >
-                      {:else if partial?.partial_text}
-                        <span class="live-latest">{P.labels.working}</span>
-                      {:else if vmRunning(selectedSession, vms)}
-                        <!-- Claimed, VM confirmed running, no output yet: the
-                         CLI is spinning up / the model has the prompt. -->
-                        <span class="live-latest">{P.labels.startingAgent}</span
-                        >
-                      {:else}
-                        <!-- Claimed but the control plane does not report the
-                         guest running yet: park rejoin or cold boot. -->
-                        <span class="live-latest">{P.labels.wakingVm}</span>
-                      {/if}
-                    {:else if state === "starting"}
-                      <span class="live-latest">{P.labels.startingUp}</span>
-                    {:else}
-                      <span class="live-latest">{P.labels.waitingForTurn}</span>
-                    {/if}
-                  </div>
-                  {#if partial?.partial_text}
-                    <div class="result-md">
-                      {@html renderAgentMarkdown(partial.partial_text)}
-                    </div>
-                  {/if}
-                </article>
-              {/each}
-
-              {#if !(detail?.turns ?? []).length && !(detail?.pending_queue ?? []).length}
-                <div class="empty transcript-empty">
-                  {detail ? P.labels.noTurnsYet : P.labels.loadingSession}
-                </div>
-              {/if}
-            </div>
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.25"></circle>
+                <path d="m10.25 10.25 3 3"></path>
+              </svg>
+            </button>
           </div>
-        {:else}
+        {/if}
+        {#if fixture?.walkthrough}
+          <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
+           component gets its payload inline and never fetches. -->
           <div class="walkthrough-page">
             <div class="walkthrough-inner">
               <h2>{P.labels.walkSummary}</h2>
-              {#each eligibleWalkthroughTurns as turn (turn.seq)}
-                <WalkthroughNarrative
-                  sessionId={selectedSession.id}
-                  turnSeq={turn.seq}
-                  walkthroughTurnCount={eligibleWalkthroughTurns.length}
-                />
-              {:else}
-                <div class="empty walkthrough-empty">
-                  {P.labels.walkthroughUnavailableForSession}
-                </div>
-              {/each}
+              <WalkthroughNarrative
+                turnSeq={fixture.walkthrough.turnSeq}
+                fixture={fixture.walkthrough}
+              />
             </div>
           </div>
-        {/if}
-
-        <form
-          class="composer"
-          onsubmit={(event) => {
-            event.preventDefault();
-            sendPrompt();
-          }}
-        >
-          <div class="box">
-            <textarea
-              bind:value={prompt}
-              placeholder={P.labels.replyTo.replace(
-                "{model}",
-                composerModel || selectedSession.model || "luna",
-              )}
-              rows="3"
-              onkeydown={(e) => {
-                if (
-                  (e.metaKey || e.ctrlKey) &&
-                  e.key === "Enter" &&
-                  !e.isComposing &&
-                  !sending &&
-                  prompt.trim()
-                ) {
-                  e.preventDefault();
-                  sendPrompt();
-                }
-              }}></textarea>
-            <div class="bar">
-              {@render modelPicker(
-                composerModel,
-                (model) => {
-                  composerModelOverride = model;
-                },
-                true,
-              )}
-              <span class="composer-hint mono">{P.labels.sendHint}</span>
-              <button
-                class="composer-submit"
-                type="submit"
-                aria-label={sending ? P.labels.sending : P.labels.sendPrompt}
-                disabled={sending || !prompt.trim()}
+        {:else if fixture && !fixture.home}
+          <RunView
+            run={fixture.run}
+            view={fixture.view}
+            sessions={fixture.sessions}
+            onSelectSession={selectSession}
+            onCrumb={paneCrumb}
+            onVoice={openVoiceMode}
+          />
+        {:else if selectedId && selectedSession}
+          <header class="transcript-head">
+            <button
+              class="mobile-back"
+              type="button"
+              aria-label={P.labels.backToSessions}
+              onclick={returnToSessionList}
+            >
+              <svg viewBox="0 0 18 18" aria-hidden="true">
+                <path d="m11 4-5 5 5 5"></path>
+              </svg>
+            </button>
+            <PaneHeader
+              sessionRow
+              crumbs={sessionCrumbs}
+              onCrumb={paneCrumb}
+              selectedRun={Boolean(selectedRunId)}
+              sessionId={selectedSession.local_session_id}
+              {sessionView}
+              onBackToRun={returnToRun}
+              onChangeView={(view) => (sessionView = view)}
+              onDestroy={destroySession}
+              onVoice={openVoiceMode}
+            >
+              <h1
+                class="session-title"
+                title={headerTitle}
+                tabindex="-1"
+                bind:this={titleEl}
               >
-                <svg viewBox="0 0 18 18" aria-hidden="true">
-                  <path d="M9 14V4m0 0L5 8m4-4 4 4"></path>
-                </svg>
-              </button>
+                <span class="session-title-text">{headerTitle}</span>
+                <span class="session-mobile-meta mono">
+                  {statusLabel(selectedSession)}
+                  {P.punct.dot}
+                  {selectedSession.model ||
+                    "luna"}{#if formatRepoContext(selectedSession)}
+                    {P.punct.dot} {formatRepoContext(selectedSession)}
+                  {/if}
+                </span>
+              </h1>
+              <span
+                class="pill"
+                title={vms[selectedSession.ember_session_id]?.cp_state
+                  ? P.labels.controlPlaneState.replace(
+                      "{state}",
+                      vms[selectedSession.ember_session_id].cp_state,
+                    )
+                  : P.labels.noLiveVm}
+              >
+                {#if vmState(selectedSession, vms) === "awake"}
+                  <span class="pill-dot" aria-hidden="true"></span>
+                {/if}
+                {P.labels.vmWord}
+                {vmState(selectedSession, vms)}
+              </span>
+              <span class="pill">{selectedSession.model || "luna"}</span>
+              {#if formatRepoContext(selectedSession)}
+                <span class="pill">{formatRepoContext(selectedSession)}</span>
+              {/if}
+              {#if ["needs_input", "warn"].includes(statusClass(selectedSession))}
+                <span class={`pill state-pill ${statusClass(selectedSession)}`}
+                  >{statusLabel(selectedSession)}</span
+                >
+              {/if}
+              <span
+                class="seg"
+                role="group"
+                aria-label={P.labels.sessionViewLabel}
+              >
+                <button
+                  type="button"
+                  class:selected={sessionView === SESSION_VIEW_CONVERSATION}
+                  aria-pressed={sessionView === SESSION_VIEW_CONVERSATION}
+                  onclick={() => (sessionView = SESSION_VIEW_CONVERSATION)}
+                  >{P.labels.conversationView}</button
+                >
+                <button
+                  type="button"
+                  class:selected={sessionView === SESSION_VIEW_WALKTHROUGH}
+                  aria-pressed={sessionView === SESSION_VIEW_WALKTHROUGH}
+                  onclick={() => (sessionView = SESSION_VIEW_WALKTHROUGH)}
+                  >{P.labels.walkthroughView}</button
+                >
+              </span>
+            </PaneHeader>
+            <button
+              class="mobile-jump"
+              type="button"
+              aria-label={P.labels.jumpOpenLabel}
+              aria-haspopup="dialog"
+              onclick={() => openJump()}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.25"></circle>
+                <path d="m10.25 10.25 3 3"></path>
+              </svg>
+            </button>
+          </header>
+          {#if sessionView === SESSION_VIEW_CONVERSATION}
+            <Turns
+              {detail}
+              {selectedSession}
+              {renderedPending}
+              {vms}
+              bind:element={turnsEl}
+            />
+          {:else}
+            <div class="walkthrough-page">
+              <div class="walkthrough-inner">
+                <h2>{P.labels.walkSummary}</h2>
+                {#each eligibleWalkthroughTurns as turn (turn.seq)}
+                  <WalkthroughNarrative
+                    sessionId={selectedSession.id}
+                    turnSeq={turn.seq}
+                    walkthroughTurnCount={eligibleWalkthroughTurns.length}
+                  />
+                {:else}
+                  <div class="empty walkthrough-empty">
+                    {P.labels.walkthroughUnavailableForSession}
+                  </div>
+                {/each}
+              </div>
             </div>
-          </div>
-        </form>
-      {:else if selectedId}
-        <!-- ?session= for a row absent from the server-rendered list. Without
+          {/if}
+
+          <form
+            class="composer"
+            onsubmit={(event) => {
+              event.preventDefault();
+              sendPrompt();
+            }}
+          >
+            <div class="box">
+              <textarea
+                bind:value={prompt}
+                placeholder={P.labels.replyTo.replace(
+                  "{model}",
+                  composerModel || selectedSession.model || "luna",
+                )}
+                rows="3"
+                onkeydown={(e) => {
+                  if (
+                    (e.metaKey || e.ctrlKey) &&
+                    e.key === "Enter" &&
+                    !e.isComposing &&
+                    !sending &&
+                    prompt.trim()
+                  ) {
+                    e.preventDefault();
+                    sendPrompt();
+                  }
+                }}></textarea>
+              <div class="bar">
+                {@render modelPicker(
+                  composerModel,
+                  (model) => {
+                    composerModelOverride = model;
+                  },
+                  true,
+                )}
+                <span class="composer-hint mono">{P.labels.sendHint}</span>
+                <button
+                  class="composer-submit"
+                  type="submit"
+                  aria-label={sending ? P.labels.sending : P.labels.sendPrompt}
+                  disabled={sending || !prompt.trim()}
+                >
+                  <svg viewBox="0 0 18 18" aria-hidden="true">
+                    <path d="M9 14V4m0 0L5 8m4-4 4 4"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </form>
+        {:else if selectedId}
+          <!-- ?session= for a row absent from the server-rendered list. Without
            this branch the pane falls through to the launcher and swaps
            once loadDetail resolves. -->
-        <div class="loading-session">
-          <PaneHeader kind={P.labels.session} />
-          <div class="empty blank-state">{P.labels.loadingSession}</div>
-        </div>
-      {:else if selectedRunId}
-        {#if runDetail?.run}
-          <RunView
-            run={runDetail.run}
-            view={runDetail.view}
-            sessions={runDetail.sessions}
-            onSelectSession={selectSession}
-            onCancel={() => cancelRun(selectedRunId)}
-            onCrumb={paneCrumb}
-          />
-          <!-- loadRunDetail's catch leaves runDetail set with run: null and the
+          <div class="loading-session">
+            <PaneHeader kind={P.labels.session} />
+            <div class="empty blank-state">{P.labels.loadingSession}</div>
+          </div>
+        {:else if selectedRunId}
+          {#if runDetail?.run}
+            <RunView
+              run={runDetail.run}
+              view={runDetail.view}
+              sessions={runDetail.sessions}
+              onSelectSession={selectSession}
+              onCancel={() => cancelRun(selectedRunId)}
+              onCrumb={paneCrumb}
+              onVoice={openVoiceMode}
+            />
+            <!-- loadRunDetail's catch leaves runDetail set with run: null and the
              tier marked absent. Without this branch that state is
              indistinguishable from the pre-fetch one, so a ?run= naming a run
              that does not resolve sits on "Loading run…" forever and reads as
              broken navigation rather than a missing run. -->
-        {:else if runDetail?.view?.engine_tier === "absent"}
-          <div class="empty blank-state">{P.labels.absentNotice}</div>
-        {:else}<div class="empty blank-state">{P.labels.loadingRun}</div>{/if}
-      {:else}
-        <Launcher
-          bind:session={newSession}
-          models={availableModels}
-          {repos}
-          {branches}
-          {repoLoading}
-          {branchLoading}
-          {creating}
-          summary={launcherRecent}
-          jumpCount={launcherJumpTotal}
-          onLoadBranches={loadBranches}
-          onSubmit={createTask}
-          onOpenRun={selectRun}
-          onOpenSession={selectInboxSession}
-          onOpenJump={() => openJump()}
-        />
+          {:else if runDetail?.view?.engine_tier === "absent"}
+            <div class="empty blank-state">{P.labels.absentNotice}</div>
+          {:else}<div class="empty blank-state">{P.labels.loadingRun}</div>{/if}
+        {:else}
+          <Launcher
+            bind:session={newSession}
+            models={availableModels}
+            {repos}
+            {branches}
+            {repoLoading}
+            {branchLoading}
+            {creating}
+            summary={launcherRecent}
+            jumpCount={launcherJumpTotal}
+            onLoadBranches={loadBranches}
+            onSubmit={createTask}
+            onOpenRun={selectRun}
+            onOpenSession={selectInboxSession}
+            onOpenJump={() => openJump()}
+          />
+        {/if}
       {/if}
     </section>
   </div>
@@ -2019,6 +2067,7 @@
     onOpenSession={selectInboxSession}
     onNewSession={openNewSessionFromJump}
     onSearchTurns={searchTurnsFromJump}
+    onOpenVoice={openVoiceMode}
   />
 
   {#if errorMessage}<div class="error-banner" role="status">
@@ -2126,12 +2175,10 @@
     font-family: var(--font-ui);
   }
   .console .mono,
-  .console pre,
   .console select.mono {
     font-family: var(--font-mono);
   }
-  .mono,
-  pre {
+  .mono {
     font-size: var(--size-body-mono);
   }
   button,
@@ -2149,8 +2196,7 @@
   }
   button:focus-visible,
   textarea:focus-visible,
-  select:focus-visible,
-  .steps summary:focus-visible {
+  select:focus-visible {
     outline: 2px solid var(--info);
     outline-offset: 2px;
   }
@@ -2237,6 +2283,79 @@
     flex: 0 0 auto;
     font-size: 14px;
     font-weight: 600;
+  }
+  .mode-pill {
+    height: 32px;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    border-radius: var(--radius-pill);
+    color: var(--info);
+    background: var(--info-soft);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .level-bars {
+    height: 14px;
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+  }
+  .level-bars i {
+    width: 3px;
+    border-radius: 1px;
+    background: var(--info);
+    transform-origin: bottom;
+  }
+  .level-bars i:nth-child(1) {
+    height: 6px;
+  }
+  .level-bars i:nth-child(2) {
+    height: 14px;
+  }
+  .level-bars i:nth-child(3) {
+    height: 9px;
+  }
+  .level-bars i:nth-child(4) {
+    height: 12px;
+  }
+  .voice-attachment {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-soft);
+    font-size: 13px;
+  }
+  .desktop-attachment {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .phone-attachment {
+    display: none;
+  }
+  .voice-session-id {
+    color: var(--muted);
+    font-family: var(--font-mono);
+  }
+  .voice-vm-pill {
+    flex: 0 0 auto;
+  }
+  .leave-voice {
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    background: var(--panel-bg);
+    font-size: 13px;
+  }
+  .leave-voice:hover {
+    background: var(--hover);
   }
   .top-search {
     flex: 0 1 320px;
@@ -2692,18 +2811,6 @@
     border-radius: var(--radius-circle);
     background: var(--muted);
   }
-  .turns {
-    flex: 1;
-    padding: 24px 28px 20px;
-    overflow: auto;
-  }
-  .turns-inner {
-    max-width: 720px;
-    margin: 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 28px;
-  }
   .walkthrough-page {
     flex: 1;
     min-width: 0;
@@ -2726,236 +2833,6 @@
   }
   .walkthrough-empty {
     margin-top: 24px;
-  }
-  .turn {
-    padding: 0;
-  }
-  .meta {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    color: var(--muted);
-    font-size: 11.5px;
-    line-height: 1.4;
-  }
-  .meta-role {
-    color: var(--text-soft);
-    font: 600 12px var(--font-ui);
-  }
-  .prompt-meta {
-    margin-bottom: 6px;
-  }
-  .response-meta {
-    margin-top: 12px;
-  }
-  .meta-trailing,
-  .badge-failed {
-    margin-left: auto;
-  }
-  .meta-trailing + .badge-failed {
-    margin-left: 0;
-  }
-  .prompt {
-    padding: 12px 14px;
-    border: 0;
-    border-radius: 6px;
-    background: var(--code-bg);
-    font-size: 14px;
-    line-height: 1.5;
-    white-space: pre-wrap;
-  }
-  .prompt-text {
-    color: var(--text);
-    overflow-wrap: anywhere;
-    min-width: 0;
-  }
-  .steps {
-    margin: 8px 0 0;
-  }
-  .steps summary {
-    height: 28px;
-    width: fit-content;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0 9px 0 7px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-pill);
-    color: var(--text-soft);
-    font: 12px var(--font-mono);
-    list-style: none;
-    cursor: pointer;
-    user-select: none;
-  }
-  .steps summary::-webkit-details-marker {
-    display: none;
-  }
-  .steps summary svg {
-    width: 12px;
-    height: 12px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.5;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    transition: transform 120ms ease;
-  }
-  .steps[open] summary svg {
-    transform: rotate(90deg);
-  }
-  .steps summary:hover {
-    color: var(--text);
-  }
-  .step-list {
-    margin: 8px 0 0 6px;
-    padding: 0 0 0 12px;
-    border-left: 2px solid var(--line);
-    list-style: none;
-    display: grid;
-    gap: 4px;
-  }
-  .step-list li {
-    min-width: 0;
-    display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
-    gap: 8px;
-    color: var(--text-soft);
-    font: 12.5px var(--font-mono);
-  }
-  .step-verb {
-    color: var(--text);
-    font-weight: 600;
-  }
-  .step-detail {
-    color: var(--muted);
-    overflow-wrap: anywhere;
-  }
-  .live-line {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 12px 0 0;
-    color: var(--ok);
-    font-family: var(--font-mono);
-    font-size: var(--size-body-mono);
-    min-width: 0;
-  }
-  .live-line.quiet {
-    color: var(--muted);
-  }
-  .live-dot {
-    flex: 0 0 6px;
-    width: 6px;
-    height: 6px;
-    border-radius: var(--radius-circle);
-    /* currentColor: .live-line is --ok only while working; .quiet is --muted. */
-    background: currentColor;
-  }
-  .live-latest {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .result-md {
-    margin-top: 8px;
-    color: var(--text-soft);
-    font-size: 14px;
-    line-height: 1.6;
-    overflow-wrap: anywhere;
-  }
-  .result-md :global(p) {
-    margin: 0 0 8px;
-  }
-  .result-md :global(p:last-child) {
-    margin-bottom: 0;
-  }
-  .result-md :global(h2),
-  .result-md :global(h3) {
-    color: var(--text);
-    margin: 16px 0 8px;
-    font-size: var(--size-title);
-  }
-  .result-md :global(h3) {
-    font-size: var(--size-body);
-  }
-  .result-md :global(ul),
-  .result-md :global(ol) {
-    margin: 8px 0 8px;
-    padding-left: 22px;
-  }
-  .result-md :global(li) {
-    margin: 4px 0;
-  }
-  .result-md :global(code) {
-    font-family: var(--font-mono);
-    font-size: 12.5px;
-    background: var(--code-bg);
-    border-radius: 3px;
-    padding: 2px 4px;
-  }
-  .result-md :global(pre) {
-    background: var(--code-bg);
-    border: 0;
-    border-radius: 6px;
-    padding: 12px 14px;
-    overflow-x: auto;
-    margin: 8px 0;
-    font-size: 12.5px;
-    line-height: 1.55;
-  }
-  .result-md :global(pre code) {
-    background: none;
-    padding: 0;
-  }
-  .result-md :global(a) {
-    color: var(--info);
-  }
-  .result-md :global(blockquote) {
-    border-left: 1px solid var(--line-strong);
-    margin: 8px 0;
-    padding: 4px 12px;
-    color: var(--muted);
-  }
-  .result-md :global(table) {
-    border-collapse: collapse;
-    margin: 8px 0;
-  }
-  .result-md :global(th),
-  .result-md :global(td) {
-    border: 1px solid var(--line);
-    padding: 4px 8px;
-    text-align: left;
-  }
-  .turn-error {
-    margin: 8px 0 0;
-    padding: 12px 14px;
-    background: var(--err-bg);
-    border: 1px solid var(--err-line);
-    border-radius: 6px;
-    color: var(--err);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    font-size: 12.5px;
-    line-height: 1.55;
-  }
-  /* --attn-text, not --attn: --attn on --attn-soft is 4.09:1 in the day
-     palette and 3.91:1 at night, both under the 4.5:1 AA floor for body
-     text. --attn-text is the role token for text on this fill, at 6.01:1
-     and 7.34:1. The border keeps --attn, where the 3:1 UI-boundary floor
-     applies. Same pairing as .state-pill.warn. */
-  .turn-degraded {
-    margin: 8px 0 0;
-    padding: 8px 12px;
-    background: var(--attn-soft);
-    border: 1px solid var(--attn);
-    border-radius: var(--radius-lg);
-    color: var(--attn-text);
-    font-size: var(--size-meta);
-    line-height: 1.5;
-  }
-  .badge-failed {
-    color: var(--err);
-    font-weight: 600;
   }
   .composer {
     border-top: 1px solid var(--line);
@@ -3123,9 +3000,14 @@
     font-size: var(--size-detail);
   }
   @media (prefers-reduced-motion: no-preference) {
-    .dot.working,
-    .live-dot {
+    .dot.working {
       animation: pulse 1.2s ease-in-out infinite;
+    }
+    .level-bars i:nth-child(odd) {
+      animation: voice-level 900ms ease-in-out infinite alternate;
+    }
+    .level-bars i:nth-child(even) {
+      animation: voice-level 700ms ease-in-out infinite alternate-reverse;
     }
   }
   /* The static shell applies a manual fold before hydration. The component
@@ -3157,9 +3039,28 @@
   :global(html[data-agents-rail="open"]) .console.rail-folded .fold-rail {
     display: none;
   }
+  :global(html[data-agents-rail="open"]) .console.voice-mode .inbox,
+  .console.voice-mode.rail-folded .inbox {
+    flex-basis: 56px;
+  }
+  :global(html[data-agents-rail="open"]) .console.voice-mode .inbox-expanded,
+  .console.voice-mode.rail-folded .inbox-expanded {
+    display: none;
+  }
+  :global(html[data-agents-rail="open"]) .console.voice-mode .fold-rail,
+  .console.voice-mode.rail-folded .fold-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
   @keyframes pulse {
     50% {
       opacity: 0.35;
+    }
+  }
+  @keyframes voice-level {
+    50% {
+      transform: scaleY(0.45);
     }
   }
   /* Matches MOBILE_MEDIA_QUERY at the top of this file */
@@ -3192,6 +3093,32 @@
     }
     .guest-state {
       display: none;
+    }
+    .console.voice-mode .wordmark,
+    .console.voice-mode .top-search,
+    .console.voice-mode .desktop-attachment,
+    .console.voice-mode .voice-vm-pill {
+      display: none;
+    }
+    .console.voice-mode .mode-pill {
+      padding: 0 10px;
+    }
+    .console.voice-mode .voice-attachment {
+      flex: 1;
+      overflow: hidden;
+    }
+    .console.voice-mode .phone-attachment {
+      display: block;
+      overflow: hidden;
+      color: var(--muted);
+      font: 12px var(--font-mono);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .console.voice-mode .leave-voice {
+      min-width: 44px;
+      height: 44px;
+      padding: 0 8px;
     }
     .console .shell .inbox {
       flex: 0 0 100%;
@@ -3319,7 +3246,6 @@
     .hist {
       min-height: 44px;
     }
-    .turns,
     .walkthrough-page {
       padding-left: 16px;
       padding-right: 16px;
@@ -3355,11 +3281,6 @@
     }
     .model-picker.composer-model select {
       min-height: 44px;
-    }
-    .steps summary {
-      min-height: 44px;
-      display: inline-flex;
-      align-items: center;
     }
     .composer-hint {
       /* A phone has no ⌘↵. */

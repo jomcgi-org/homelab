@@ -183,8 +183,14 @@ describe("jump matches", () => {
 });
 
 describe("jump actions", () => {
-  test("offers only a plain new session for an empty query", () => {
+  test("offers voice and a plain new session for an empty query", () => {
     expect(jumpActions("")).toEqual([
+      {
+        kind: "voice",
+        id: "action-voice",
+        title: "Open voice companion",
+        hint: "",
+      },
       {
         kind: "new",
         id: "action-new",
@@ -196,6 +202,12 @@ describe("jump actions", () => {
 
   test("offers prefilled session and turn-search actions for a query", () => {
     expect(jumpActions("fix login")).toEqual([
+      {
+        kind: "voice",
+        id: "action-voice",
+        title: "Open voice companion",
+        hint: "",
+      },
       {
         kind: "new",
         id: "action-new",

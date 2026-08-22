@@ -9,7 +9,15 @@ export function parseUrlState(value) {
   return {
     runId: params.get("run"),
     sessionId: params.get("session"),
+    mode: params.get("mode") === "voice" ? "voice" : null,
   };
+}
+
+export function setVoiceMode(value, enabled) {
+  const params = searchParamsFrom(value);
+  if (enabled) params.set("mode", "voice");
+  else params.delete("mode");
+  return params.toString();
 }
 
 export function selectRun(value, runId) {

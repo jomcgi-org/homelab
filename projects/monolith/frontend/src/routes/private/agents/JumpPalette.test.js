@@ -73,6 +73,19 @@ afterEach(async () => {
 });
 
 describe("jump palette keyboard behavior", () => {
+  test("opens voice companion from Actions", async () => {
+    const onOpenVoice = vi.fn();
+    const target = await render({ onOpenVoice });
+    const voice = [...target.querySelectorAll('[role="option"]')].find(
+      (option) => option.textContent.includes(P.labels.openVoiceCompanion),
+    );
+
+    voice.click();
+    await tick();
+
+    expect(onOpenVoice).toHaveBeenCalledTimes(1);
+  });
+
   test("renders an accessible dialog and focuses its combobox", async () => {
     const target = await render();
     const dialog = target.querySelector('[role="dialog"]');

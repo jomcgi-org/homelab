@@ -33,6 +33,9 @@
     onSelectSession = () => {},
     onCancel = () => {},
     onCrumb = () => {},
+    onVoice = () => {},
+    compact = false,
+    focus = null,
   } = $props();
 
   let selectedKey = $state(null);
@@ -91,7 +94,16 @@
       !nodes.some((node) => node.key === selectedKey)
     ) {
       selectedRunId = run?.workflow_id ?? null;
-      selectedKey = defaultSelectedKey(nodes);
+      selectedKey =
+        focus && nodes.some((node) => node.key === focus)
+          ? focus
+          : defaultSelectedKey(nodes);
+    }
+  });
+
+  $effect(() => {
+    if (focus && run?.nodes?.some((node) => node.key === focus)) {
+      selectedKey = focus;
     }
   });
 
@@ -219,8 +231,18 @@
   }
 </script>
 
-<div class:tier-stale={view.engine_tier === "stale"} class="runview">
-  {#if !run || view.engine_tier === "absent"}
+<div
+  class:compact
+  class:tier-stale={view.engine_tier === "stale"}
+  class="runview"
+>
+  {#if compact}
+    {#if run && view.engine_tier !== "absent"}
+      {@render dagStrip()}
+    {:else}
+      <div class="absent-note">{P.labels.absentNotice}</div>
+    {/if}
+  {:else if !run || view.engine_tier === "absent"}
     <PaneHeader kind={P.labels.run} {onCrumb}>
       {#snippet chips()}
         <span class="state-chip">{P.labels.sessionsOnly}</span>
@@ -264,6 +286,7 @@
         reviewedCommitUrl={reviewedNode?.verdict?.commit_url}
         reviewedCommitSha={reviewedNode?.verdict?.commit_sha}
         {onCancel}
+        {onVoice}
       >
         <h1 class="run-title" title={run.task.text}>
           {firstLine(run.task.text)}
@@ -378,57 +401,7 @@
       </div>
     {/if}
 
-    <div class="dag staged">
-      {#each ranks as rank, rankIndex}
-        {#if rankIndex}
-          <div
-            class:dim={edges[rankIndex - 1].dim}
-            class:strong={edges[rankIndex - 1].strong}
-            class="edge"
-          ></div>
-        {/if}
-        <div class="rank">
-          {#if rank.length > 1}
-            <div class="stage-head">{rank.length} {P.labels.parallel}</div>
-          {/if}
-          {#each rank as node}
-            <button
-              type="button"
-              class:attn={node.state === "escalated" || isHumanGate(node)}
-              class:sel={node.key === selectedKey}
-              class="node"
-              aria-label={joinMeta(
-                node.label,
-                P.nodeStates[node.state] || node.state,
-                nodeOwner(node),
-                nodeTiming(node),
-              )}
-              aria-pressed={node.key === selectedKey}
-              onclick={() => (selectedKey = node.key)}
-            >
-              <span class="nh">
-                <StateIcon
-                  icon={nodeIconKey(node)}
-                  class={nodeStateClass(node)}
-                />
-                <span>{node.label}</span>
-              </span>
-              <span class="nm">
-                <span>{nodeOwner(node)}</span>
-                <span>{nodeTiming(node)}</span>
-              </span>
-              {#if node.kind !== "gate"}
-                <span class="pips" aria-hidden="true">
-                  {#each capacityPips(run.plan, node) as pip}
-                    <span class={pip}></span>
-                  {/each}
-                </span>
-              {/if}
-            </button>
-          {/each}
-        </div>
-      {/each}
-    </div>
+    {@render dagStrip()}
 
     {#if runView === "plan" && selectedNode}
       <section class:without-aside={!hasAside} class="detail-block">
@@ -513,6 +486,60 @@
     </div>
   {/if}
 </div>
+
+{#snippet dagStrip()}
+  <div class="dag staged">
+    {#each ranks as rank, rankIndex}
+      {#if rankIndex}
+        <div
+          class:dim={edges[rankIndex - 1].dim}
+          class:strong={edges[rankIndex - 1].strong}
+          class="edge"
+        ></div>
+      {/if}
+      <div class="rank">
+        {#if rank.length > 1}
+          <div class="stage-head">{rank.length} {P.labels.parallel}</div>
+        {/if}
+        {#each rank as node}
+          <button
+            type="button"
+            class:attn={node.state === "escalated" || isHumanGate(node)}
+            class:sel={node.key === selectedKey}
+            class="node"
+            aria-label={joinMeta(
+              node.label,
+              P.nodeStates[node.state] || node.state,
+              nodeOwner(node),
+              nodeTiming(node),
+            )}
+            aria-pressed={node.key === selectedKey}
+            onclick={() => (selectedKey = node.key)}
+          >
+            <span class="nh">
+              <StateIcon
+                icon={nodeIconKey(node)}
+                class={nodeStateClass(node)}
+              />
+              <span>{node.label}</span>
+            </span>
+            <span class="nm">
+              <span>{nodeOwner(node)}</span>
+              <span>{nodeTiming(node)}</span>
+            </span>
+            {#if node.kind !== "gate"}
+              <span class="pips" aria-hidden="true">
+                {#each capacityPips(run.plan, node) as pip}
+                  <span class={pip}></span>
+                {/each}
+              </span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/each}
+  </div>
+{/snippet}
 
 {#snippet sessionRow(node, attempt)}
   <button

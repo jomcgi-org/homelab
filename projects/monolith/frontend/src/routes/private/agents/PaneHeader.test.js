@@ -128,6 +128,20 @@ describe("run header menu", () => {
 });
 
 describe("session header menu", () => {
+  test("opens voice companion from session and run menus", async () => {
+    const sessionVoice = vi.fn();
+    const sessionTarget = await render({ onVoice: sessionVoice });
+    await click(menuButton(sessionTarget));
+    await click(sessionTarget.querySelector('[data-menu-item="voice"]'));
+    expect(sessionVoice).toHaveBeenCalledTimes(1);
+
+    const runVoice = vi.fn();
+    const runTarget = await render({ ...runProps, onVoice: runVoice });
+    await click(menuButton(runTarget));
+    await click(runTarget.querySelector('[data-menu-item="voice"]'));
+    expect(runVoice).toHaveBeenCalledTimes(1);
+  });
+
   test("requires two destroy clicks", async () => {
     const onDestroy = vi.fn();
     const target = await render({ onDestroy });
