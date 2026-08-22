@@ -1,0 +1,29 @@
+id: research-adr-writeback-01
+version: "1"
+class: code-fix
+tier: hard
+mode: agentic
+snapshot:
+  commit: 4dd25198e362dc5a15629ac7dcc5181dbd2b6054
+  paths:
+    - docs/decisions
+  strip_components: 0
+agent:
+  max_turns: 40
+  exec: true
+prompt: |
+  Research question about this repository. Using only the checkout and its git
+  history, find the ADR (Architecture Decision Record under docs/decisions/) that
+  decided chart versions are written back to main AFTER a merge rather than bumped
+  in the PR. Report (1) the ADR file path relative to the repo root and (2) the full
+  40-character SHA of the commit that FIRST added that file (the commit that created
+  it, not a later edit). Write the answer as JSON to answer.json at the repo root:
+  {"adr": "<path>", "first_commit": "<sha>"}. Do not commit.
+target_files: [answer.json]
+verifier:
+  kind: json-match
+  args:
+    file: answer.json
+    expect:
+      adr: docs/decisions/platform/009-post-merge-chart-versioning-kargo-promotion.md
+      first_commit: f3c878ff033ea4a2b22230acbcb74eb2af4d90e1
