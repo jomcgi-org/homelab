@@ -11,53 +11,28 @@ import {
 
 const MANIFEST = [
   {
-    path: "projects/firecracker/README.md",
-    slug: "projects/firecracker",
-    title: "Firecracker",
-    section: "Projects",
+    path: "projects/embervm/README.md",
+    slug: "embervm",
+    project: "embervm",
+    kind: "readme",
+    title: "EmberVM",
     order: 0,
   },
   {
-    path: "projects/monolith/knowledge/README.md",
-    slug: "projects/monolith/knowledge",
-    title: "Knowledge",
-    section: "Projects",
+    path: "projects/embervm/ARCHITECTURE.md",
+    slug: "embervm/architecture",
+    project: "embervm",
+    kind: "architecture",
+    title: "EmberVM Architecture",
     order: 1,
   },
   {
-    path: "projects/monolith/README.md",
-    slug: "projects/monolith",
-    title: "Monolith",
-    section: "Projects",
+    path: "projects/mcp/README.md",
+    slug: "mcp",
+    project: "mcp",
+    kind: "readme",
+    title: "Model Context Protocol",
     order: 2,
-  },
-  {
-    path: "docs/decisions/index.md",
-    slug: "decisions",
-    title: "ADRs",
-    section: "Decisions",
-    order: 3,
-  },
-  {
-    path: "docs/decisions/agents/001-a.md",
-    slug: "decisions/agents/001-a",
-    title: "Agent One",
-    section: "Decisions",
-    order: 4,
-  },
-  {
-    path: "docs/decisions/agents/002-b.md",
-    slug: "decisions/agents/002-b",
-    title: "Agent Two",
-    section: "Decisions",
-    order: 5,
-  },
-  {
-    path: "docs/decisions/security/001-s.md",
-    slug: "decisions/security/001-s",
-    title: "Sec One",
-    section: "Decisions",
-    order: 6,
   },
 ];
 
@@ -68,6 +43,7 @@ describe("slugifyHeading", () => {
     expect(slugifyHeading("Hello, World!")).toBe("hello-world");
     expect(slugifyHeading("RBAC & Policy")).toBe("rbac-policy");
   });
+
   it("falls back to 'section' for empty input", () => {
     expect(slugifyHeading("***")).toBe("section");
   });
@@ -76,131 +52,131 @@ describe("slugifyHeading", () => {
 describe("resolveDocHref", () => {
   it("keeps external links and marks them external", () => {
     expect(
-      resolveDocHref("https://example.com", "docs/security.md", pathIndex),
-    ).toEqual({
-      href: "https://example.com",
-      external: true,
-    });
+      resolveDocHref(
+        "https://example.com",
+        "projects/embervm/README.md",
+        pathIndex,
+      ),
+    ).toEqual({ href: "https://example.com", external: true });
     expect(
-      resolveDocHref("mailto:a@b.c", "docs/security.md", pathIndex).external,
+      resolveDocHref("mailto:a@b.c", "projects/embervm/README.md", pathIndex)
+        .external,
     ).toBe(true);
   });
 
   it("keeps in-page anchors and site-absolute links", () => {
-    expect(resolveDocHref("#intro", "docs/security.md", pathIndex)).toEqual({
-      href: "#intro",
-    });
-    expect(resolveDocHref("/app/trips", "docs/security.md", pathIndex)).toEqual(
-      { href: "/app/trips" },
-    );
+    expect(
+      resolveDocHref("#intro", "projects/embervm/README.md", pathIndex),
+    ).toEqual({ href: "#intro" });
+    expect(
+      resolveDocHref("/app/trips", "projects/embervm/README.md", pathIndex),
+    ).toEqual({ href: "/app/trips" });
   });
 
-  it("rewrites a relative link to a published doc into a /docs slug", () => {
+  it("resolves a cross-kind link", () => {
     expect(
       resolveDocHref(
-        "knowledge/README.md",
-        "projects/monolith/README.md",
+        "ARCHITECTURE.md",
+        "projects/embervm/README.md",
         pathIndex,
       ),
-    ).toEqual({
-      href: "/docs/projects/monolith/knowledge",
-    });
-    // from a sibling ADR up to another category
-    expect(
-      resolveDocHref(
-        "../security/001-s.md",
-        "docs/decisions/agents/001-a.md",
-        pathIndex,
-      ),
-    ).toEqual({ href: "/docs/decisions/security/001-s" });
+    ).toEqual({ href: "/docs/embervm/architecture" });
   });
 
   it("preserves a fragment when rewriting", () => {
     expect(
       resolveDocHref(
-        "knowledge/README.md#deploy",
-        "projects/monolith/README.md",
+        "ARCHITECTURE.md#boot-flow",
+        "projects/embervm/README.md",
         pathIndex,
       ),
-    ).toEqual({
-      href: "/docs/projects/monolith/knowledge#deploy",
-    });
+    ).toEqual({ href: "/docs/embervm/architecture#boot-flow" });
   });
 
-  it("resolves an index doc via its directory alias", () => {
+  it("resolves the README through its directory alias", () => {
+    expect(
+      resolveDocHref(".", "projects/embervm/ARCHITECTURE.md", pathIndex),
+    ).toEqual({ href: "/docs/embervm" });
+  });
+
+  it("strips a link to an unpublished doc", () => {
     expect(
       resolveDocHref(
-        "../index.md",
-        "docs/decisions/agents/001-a.md",
+        "runtimes/k3s/README.md",
+        "projects/embervm/README.md",
         pathIndex,
       ),
-    ).toEqual({
-      href: "/docs/decisions",
-    });
-  });
-
-  it("resolves a README doc via its directory alias", () => {
-    expect(
-      resolveDocHref("..", "projects/monolith/knowledge/README.md", pathIndex),
-    ).toEqual({
-      href: "/docs/projects/monolith",
-    });
-  });
-
-  it("strips a link to an unpublished doc (returns null)", () => {
-    expect(
-      resolveDocHref("plans/secret.md", "docs/security.md", pathIndex),
     ).toBeNull();
     expect(
-      resolveDocHref("../../.claude/AGENTS.md", "docs/security.md", pathIndex),
+      resolveDocHref(
+        "../../docs/decisions/index.md",
+        "projects/embervm/README.md",
+        pathIndex,
+      ),
     ).toBeNull();
   });
 });
 
 describe("buildSidebar", () => {
-  it("nests project READMEs by path and groups ADRs by category", () => {
-    const s = buildSidebar(MANIFEST);
-    expect(s.projects.map((p) => p.name)).toEqual(["firecracker", "monolith"]);
+  it("builds projects and existing tabs in manifest order", () => {
+    const sidebar = buildSidebar(MANIFEST);
 
-    const firecracker = s.projects[0];
-    expect(firecracker.slug).toBe("projects/firecracker");
-    expect(firecracker.title).toBe("Firecracker");
-    expect(firecracker.children).toEqual([]);
-
-    const monolith = s.projects[1];
-    expect(monolith.slug).toBe("projects/monolith");
-    expect(monolith.children.map((c) => c.slug)).toEqual([
-      "projects/monolith/knowledge",
+    expect(sidebar.map((project) => project.project)).toEqual([
+      "embervm",
+      "mcp",
     ]);
-    expect(monolith.children[0].children).toEqual([]);
-
-    expect(s.decisions.index.slug).toBe("decisions");
-    expect(s.decisions.categories.map((c) => c.name)).toEqual([
-      "agents",
-      "security",
-    ]);
-    expect(s.decisions.categories[0].items.map((i) => i.slug)).toEqual([
-      "decisions/agents/001-a",
-      "decisions/agents/002-b",
-    ]);
+    expect(sidebar[0]).toEqual({
+      project: "embervm",
+      title: "EmberVM",
+      slug: "embervm",
+      tabs: [
+        {
+          kind: "readme",
+          label: "Readme",
+          slug: "embervm",
+          title: "EmberVM",
+        },
+        {
+          kind: "architecture",
+          label: "Architecture",
+          slug: "embervm/architecture",
+          title: "EmberVM Architecture",
+        },
+      ],
+    });
+    expect(sidebar[1].tabs.map((tab) => tab.kind)).toEqual(["readme"]);
   });
 
-  it("gives a group node a null slug when its directory has no README", () => {
-    const manifest = [
+  it("uses the project name when a README is missing", () => {
+    const sidebar = buildSidebar([
       {
-        path: "projects/platform/linkerd/README.md",
-        slug: "projects/platform/linkerd",
-        title: "Linkerd",
-        section: "Projects",
+        path: "projects/platform/STPA.md",
+        slug: "platform/stpa",
+        project: "platform",
+        kind: "stpa",
+        title: "Platform STPA",
         order: 0,
       },
-    ];
-    const s = buildSidebar(manifest);
-    expect(s.projects[0]).toMatchObject({ name: "platform", slug: null });
-    expect(s.projects[0].children[0]).toMatchObject({
-      name: "linkerd",
-      slug: "projects/platform/linkerd",
+    ]);
+
+    expect(sidebar[0]).toMatchObject({
+      project: "platform",
+      title: "platform",
+      slug: "platform",
     });
+    expect(sidebar[0].tabs.map((tab) => tab.kind)).toEqual(["stpa"]);
+  });
+
+  it("uses fixed document-kind order even if entry order differs", () => {
+    const sidebar = buildSidebar([
+      { ...MANIFEST[1], order: 0 },
+      { ...MANIFEST[0], order: 1 },
+    ]);
+
+    expect(sidebar[0].tabs.map((tab) => tab.kind)).toEqual([
+      "readme",
+      "architecture",
+    ]);
   });
 });
 
@@ -212,7 +188,7 @@ describe("renderDoc", () => {
     "",
     "## Section One",
     "",
-    "See [knowledge](knowledge/README.md), [internal plan](plans/secret.md) and [home](https://example.com).",
+    "See [architecture](ARCHITECTURE.md), [internal notes](NOTES.md) and [home](https://example.com).",
     "",
     "### Sub Heading",
     "",
@@ -226,17 +202,17 @@ describe("renderDoc", () => {
   ].join("\n");
 
   const { html, toc } = renderDoc(
-    { path: "projects/monolith/README.md", content },
+    { path: "projects/embervm/README.md", content },
     pathIndex,
   );
 
-  it("rewrites intra-doc links to /docs slugs", () => {
-    expect(html).toContain('href="/docs/projects/monolith/knowledge"');
+  it("rewrites intra-doc links to public document slugs", () => {
+    expect(html).toContain('href="/docs/embervm/architecture"');
   });
 
   it("strips links to unpublished docs but keeps the text", () => {
-    expect(html).toContain("internal plan");
-    expect(html).not.toContain("plans/secret");
+    expect(html).toContain("internal notes");
+    expect(html).not.toContain("NOTES.md");
   });
 
   it("opens external links in a new tab", () => {
@@ -253,7 +229,7 @@ describe("renderDoc", () => {
     ]);
   });
 
-  it("renders a mermaid fence as a labelled source block marked for client rendering", () => {
+  it("renders a mermaid fence as a labelled source block", () => {
     expect(html).toContain('data-lang="mermaid"');
     expect(html).toContain('class="doc-code doc-mermaid"');
     expect(html).toContain("A--&gt;B");
@@ -265,9 +241,15 @@ describe("renderDoc", () => {
   });
 
   it("de-duplicates repeated heading ids", () => {
-    const dup = ["## Notes", "", "x", "", "## Notes", "", "y"].join("\n");
-    const r = renderDoc({ path: "docs/security.md", content: dup }, pathIndex);
-    expect(r.toc.map((t) => t.id)).toEqual(["notes", "notes-1"]);
+    const duplicate = ["## Notes", "", "x", "", "## Notes", "", "y"].join("\n");
+    const result = renderDoc(
+      { path: "projects/embervm/README.md", content: duplicate },
+      pathIndex,
+    );
+    expect(result.toc.map((heading) => heading.id)).toEqual([
+      "notes",
+      "notes-1",
+    ]);
   });
 });
 

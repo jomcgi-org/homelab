@@ -1,10 +1,10 @@
 <script>
   import DocsSearch from "./DocsSearch.svelte";
+  import DocsTabs from "./DocsTabs.svelte";
 
   /**
-   * @typedef {{name:string, title:string, slug:string|null, children:ProjectNode[]}} ProjectNode
    * @type {{
-   *   sidebar: { projects: ProjectNode[], decisions: { index: {slug:string,title:string}|null, categories: {name:string, items:{slug:string,title:string}[]}[] } },
+   *   sidebar: {project:string,title:string,slug:string,tabs:{kind:string,label:string,slug:string,title:string}[]}[],
    *   toc?: { depth:number, text:string, id:string }[],
    *   activeSlug?: string,
    *   children: import('svelte').Snippet,
@@ -13,139 +13,33 @@
   let { sidebar, toc = [], activeSlug = "", children } = $props();
 
   const hasToc = $derived(Array.isArray(toc) && toc.length > 0);
+  const activeProject = $derived(
+    sidebar.find((project) =>
+      project.tabs.some((tab) => tab.slug === activeSlug),
+    )?.project ?? "",
+  );
 
-  // Top-nav active state, mirroring the old VitePress nav: ADRs lights up on
-  // any decisions page, Projects on any other doc. The /docs index (empty
-  // slug) leaves both inactive.
-  const onDecisions = $derived(activeSlug.startsWith("decisions"));
-  const onProjects = $derived(activeSlug !== "" && !onDecisions);
-
-  /** @param {ProjectNode[]} nodes @param {string|null} topName @returns {{slug:string,title:string,group:string}[]} */
-  function flattenProjects(nodes, topName) {
-    const out = [];
-    for (const node of nodes) {
-      const top = topName ?? node.name;
-      if (node.slug)
-        out.push({ slug: node.slug, title: node.title, group: top });
-      if (node.children.length)
-        out.push(...flattenProjects(node.children, top));
-    }
-    return out;
-  }
-
-  // Flat doc list for search: titles/slugs only (already client-safe), tagged
-  // with their sidebar group so results can show where each doc lives. Project
-  // docs are tagged with their top-level project name (e.g. "firecracker").
-  const allDocs = $derived([
-    ...flattenProjects(sidebar.projects, null),
-    ...(sidebar.decisions.index
-      ? [
-          {
-            slug: sidebar.decisions.index.slug,
-            title: sidebar.decisions.index.title,
-            group: "Decisions",
-          },
-        ]
-      : []),
-    ...sidebar.decisions.categories.flatMap((c) =>
-      c.items.map((d) => ({ slug: d.slug, title: d.title, group: c.name })),
+  // Search indexes the public project, document kind, and document title. No
+  // manifest bodies or legacy section metadata cross to the client.
+  const allDocs = $derived(
+    sidebar.flatMap((project) =>
+      project.tabs.map((tab) => ({
+        slug: tab.slug,
+        title: tab.title,
+        project: project.project,
+        kind: tab.kind,
+        label: tab.label,
+      })),
     ),
-  ]);
+  );
 
-  // Collapsible ADR categories (accordion), matching VitePress's `collapsed`
-  // groups. Start collapsed except the category holding the active doc, which
-  // opens so the current page is visible on load.
-  const DECISIONS_PREFIX = "decisions/";
-  const activeCat = activeSlug.startsWith(DECISIONS_PREFIX)
-    ? activeSlug.slice(DECISIONS_PREFIX.length).split("/")[0]
-    : null;
-  let openCats = $state(activeCat ? { [activeCat]: true } : {});
+  let openProject = $state("");
 
-  /** @param {string} name */
-  function toggleCat(name) {
-    openCats = { ...openCats, [name]: !openCats[name] };
-  }
-
-  // Same accordion idea for the nested project tree, but keyed by the full
-  // dotted path (e.g. "monolith/knowledge") since groups can nest to
-  // arbitrary depth. Every ancestor of the active doc starts expanded.
-  const PROJECTS_PREFIX = "projects/";
-  /** @type {Record<string, boolean>} */
-  const initialOpenProjects = {};
-  if (activeSlug.startsWith(PROJECTS_PREFIX)) {
-    const parts = activeSlug.slice(PROJECTS_PREFIX.length).split("/");
-    let acc = "";
-    for (const part of parts) {
-      acc = acc ? `${acc}/${part}` : part;
-      initialOpenProjects[acc] = true;
-    }
-  }
-  let openProjects = $state(initialOpenProjects);
-
-  /** @param {string} path */
-  function toggleProject(path) {
-    openProjects = { ...openProjects, [path]: !openProjects[path] };
+  /** @param {string} project */
+  function toggleProject(project) {
+    openProject = openProject === project ? "" : project;
   }
 </script>
-
-{#snippet projectTree(nodes, path)}
-  <ul class="side-list">
-    {#each nodes as node}
-      {@const nodePath = path ? `${path}/${node.name}` : node.name}
-      {#if node.children.length}
-        <li class="side-group">
-          <div class="side-group-row">
-            <button
-              type="button"
-              class="side-group-toggle"
-              aria-expanded={!!openProjects[nodePath]}
-              onclick={() => toggleProject(nodePath)}
-            >
-              <svg
-                class="side-cat-chevron"
-                class:open={openProjects[nodePath]}
-                width="9"
-                height="9"
-                viewBox="0 0 10 10"
-                aria-hidden="true"
-              >
-                <path
-                  d="M3 1 L7 5 L3 9"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                  stroke-linecap="square"
-                />
-              </svg>
-            </button>
-            {#if node.slug}
-              <a
-                class="side-group-link"
-                class:active={activeSlug === node.slug}
-                href={`/docs/${node.slug}`}
-                title={node.title}>{node.name}</a
-              >
-            {:else}
-              <span class="side-group-name">{node.name}</span>
-            {/if}
-          </div>
-          {#if openProjects[nodePath]}
-            {@render projectTree(node.children, nodePath)}
-          {/if}
-        </li>
-      {:else}
-        <li>
-          <a
-            class="side-link"
-            class:active={activeSlug === node.slug}
-            href={`/docs/${node.slug}`}
-            title={node.title}>{node.name}</a
-          >
-        </li>
-      {/if}
-    {/each}
-  </ul>
-{/snippet}
 
 <header class="docs-topbar">
   <div class="docs-topbar-inner">
@@ -157,15 +51,7 @@
     <div class="docs-topbar-right">
       <DocsSearch docs={allDocs} />
 
-      <nav class="docs-topnav" aria-label="Documentation sections">
-        <a class="docs-topnav-link" class:active={onProjects} href="/docs"
-          >Projects</a
-        >
-        <a
-          class="docs-topnav-link"
-          class:active={onDecisions}
-          href="/docs/decisions">ADRs</a
-        >
+      <nav class="docs-topnav" aria-label="Documentation links">
         <a
           class="docs-topnav-link"
           href="https://github.com/jomcgi/homelab"
@@ -182,62 +68,56 @@
     <aside class="docs-side">
       <nav class="side-nav mono" aria-label="Documentation">
         <p class="side-head">Projects</p>
-        {@render projectTree(sidebar.projects, "")}
-
-        <p class="side-head">Decisions</p>
         <ul class="side-list">
-          {#if sidebar.decisions.index}
-            <li>
-              <a
-                class="side-link"
-                class:active={activeSlug === sidebar.decisions.index.slug}
-                href={`/docs/${sidebar.decisions.index.slug}`}>Index</a
-              >
-            </li>
-          {/if}
-        </ul>
-
-        {#each sidebar.decisions.categories as cat}
-          <button
-            type="button"
-            class="side-cat"
-            aria-expanded={!!openCats[cat.name]}
-            onclick={() => toggleCat(cat.name)}
-          >
-            <svg
-              class="side-cat-chevron"
-              class:open={openCats[cat.name]}
-              width="9"
-              height="9"
-              viewBox="0 0 10 10"
-              aria-hidden="true"
-            >
-              <path
-                d="M3 1 L7 5 L3 9"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="square"
-              />
-            </svg>
-            <span class="side-cat-name">{cat.name}</span>
-            <span class="side-cat-count">{cat.items.length}</span>
-          </button>
-          {#if openCats[cat.name]}
-            <ul class="side-list">
-              {#each cat.items as item}
-                <li>
-                  <a
-                    class="side-link"
-                    class:active={activeSlug === item.slug}
-                    href={`/docs/${item.slug}`}
-                    title={item.title}>{item.title}</a
+          {#each sidebar as project}
+            {@const expanded =
+              activeProject === project.project ||
+              openProject === project.project}
+            <li class="side-project" class:expanded>
+              <div class="side-project-row">
+                <a
+                  class="side-project-link"
+                  class:active={activeProject === project.project}
+                  href={`/docs/${project.slug}`}
+                  title={project.title}>{project.title}</a
+                >
+                <button
+                  type="button"
+                  class="side-project-toggle"
+                  aria-label={`Toggle ${project.title} document tabs`}
+                  aria-expanded={expanded}
+                  onclick={() => toggleProject(project.project)}
+                >
+                  <svg
+                    class="side-project-chevron"
+                    class:open={expanded}
+                    width="9"
+                    height="9"
+                    viewBox="0 0 10 10"
+                    aria-hidden="true"
                   >
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        {/each}
+                    <path
+                      d="M3 1 L7 5 L3 9"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="square"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <div class="side-project-tabs">
+                <DocsTabs
+                  tabs={project.tabs}
+                  activeKind={activeProject === project.project
+                    ? project.tabs.find((tab) => tab.slug === activeSlug)?.kind
+                    : ""}
+                  compact
+                />
+              </div>
+            </li>
+          {/each}
+        </ul>
       </nav>
     </aside>
 
@@ -263,7 +143,7 @@
 </div>
 
 <style>
-  /* ── Top bar: apex back link on the left, docs section nav on the right.
+  /* ── Top bar: apex back link on the left, docs search and GitHub on the right.
      This is the *only* header on docs pages: the global site nav is
      suppressed on /docs (see routes/+layout.svelte), so this bar owns
      `top: 0` alone. Its height (~64px with the search box) sets the
@@ -322,7 +202,7 @@
     border-bottom-color: var(--coral);
   }
 
-  /* ── Right-hand cluster: search + section nav ── */
+  /* ── Right-hand cluster: search + repository link ── */
   .docs-topbar-right {
     display: flex;
     align-items: center;
@@ -443,93 +323,55 @@
     margin-top: 0;
   }
 
-  /* ── Collapsible ADR category (accordion disclosure) ── */
-  .side-cat {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    margin: 12px 0 6px;
-    padding: 4px 0;
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--ink-2);
-    text-align: left;
-    transition: color 120ms ease;
-  }
-
-  .side-cat:hover {
-    color: var(--ink);
-  }
-
-  .side-cat-chevron {
-    flex: 0 0 auto;
-    transition: transform 140ms ease;
-  }
-
-  .side-cat-chevron.open {
-    transform: rotate(90deg);
-  }
-
-  .side-cat-name {
-    flex: 1 1 auto;
-  }
-
-  .side-cat-count {
-    flex: 0 0 auto;
-    color: var(--ink-3);
-  }
-
   .side-list {
     list-style: none;
     margin: 0 0 4px;
     padding: 0;
   }
 
-  .side-link {
-    display: block;
-    font-family: var(--mono);
-    font-size: 12px;
-    line-height: 1.35;
-    color: var(--ink-2);
-    text-decoration: none;
-    padding: 5px 8px;
-    border: 2px solid transparent;
-    transition:
-      border-color 120ms ease,
-      background 120ms ease;
+  .side-project {
+    padding: 4px 0;
   }
 
-  .side-link:hover {
-    border-color: var(--ink);
-    background: var(--bg-elev);
+  .side-project + .side-project {
+    border-top: 1px solid var(--rule-2);
   }
 
-  .side-link.active {
-    border-color: var(--ink);
-    background: var(--accent);
-    font-weight: 600;
-  }
-
-  /* ── Collapsible project group (nests to arbitrary depth) ── */
-  .side-group-row {
+  .side-project-row {
     display: flex;
     align-items: center;
-    gap: 4px;
-    margin: 6px 0 2px;
+    gap: 6px;
   }
 
-  .side-group-toggle {
+  .side-project-link {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 6px 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--ink-2);
+    text-decoration: none;
+  }
+
+  .side-project-link:hover,
+  .side-project-link.active {
+    color: var(--ink);
+  }
+
+  .side-project-link.active {
+    text-decoration: underline;
+    text-decoration-color: var(--coral);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+  }
+
+  .side-project-toggle {
     display: grid;
     place-items: center;
     flex: 0 0 auto;
-    padding: 4px;
+    padding: 6px;
     background: none;
     border: none;
     cursor: pointer;
@@ -537,44 +379,27 @@
     transition: color 120ms ease;
   }
 
-  .side-group-toggle:hover {
+  .side-project-toggle:hover {
     color: var(--ink);
   }
 
-  .side-group-link,
-  .side-group-name {
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 600;
-    line-height: 1.35;
+  .side-project-chevron {
+    transition: transform 140ms ease;
   }
 
-  .side-group-name {
-    color: var(--ink-2);
+  .side-project-chevron.open {
+    transform: rotate(90deg);
   }
 
-  .side-group-link {
-    color: var(--ink-2);
-    text-decoration: none;
-    padding: 3px 6px;
-    border: 2px solid transparent;
-    transition:
-      border-color 120ms ease,
-      background 120ms ease;
+  .side-project-tabs {
+    display: none;
+    padding: 0 2px 4px;
   }
 
-  .side-group-link:hover {
-    border-color: var(--ink);
-    background: var(--bg-elev);
-  }
-
-  .side-group-link.active {
-    border-color: var(--ink);
-    background: var(--accent);
-  }
-
-  .side-group .side-list {
-    padding-left: 14px;
+  .side-project:hover .side-project-tabs,
+  .side-project:focus-within .side-project-tabs,
+  .side-project.expanded .side-project-tabs {
+    display: block;
   }
 
   /* ── Main content card ───────────────────────────────────── */

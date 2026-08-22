@@ -1,12 +1,9 @@
 <script>
   import { Seo } from "$lib/public/components";
   import DocsShell from "../DocsShell.svelte";
+  import DocsTabs from "../DocsTabs.svelte";
 
   let { data } = $props();
-
-  const sectionLabel = $derived(
-    data.section === "Decisions" ? "Architecture Decision Record" : "Project",
-  );
 
   let articleEl = $state();
   let mermaidApi = null;
@@ -61,7 +58,11 @@
 />
 
 <DocsShell sidebar={data.sidebar} toc={data.toc} activeSlug={data.slug}>
-  <p class="doc-eyebrow mono">{sectionLabel}</p>
+  <p class="doc-eyebrow mono">{data.project}</p>
+  <header class="doc-header">
+    <h1>{data.title}</h1>
+    <DocsTabs tabs={data.tabs} activeKind={data.kind} />
+  </header>
   <!-- Server-rendered, sanitised first-party markdown (raw HTML escaped by the
        renderer). The manifest never reaches the client; only this HTML does. -->
   <article class="doc-body" bind:this={articleEl}>{@html data.html}</article>
@@ -79,6 +80,10 @@
     padding: 3px 9px;
     border: 2px solid var(--ink);
     margin: 0 0 18px;
+  }
+
+  .doc-header h1 {
+    margin-bottom: 14px;
   }
 
   /* Client-rendered mermaid SVG, replacing a pre.doc-mermaid block. */
