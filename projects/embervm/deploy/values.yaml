@@ -140,6 +140,14 @@ noded:
   # cause to revert.
   networkPolicy:
     enabled: true
+  # Static bearer token on noded's gRPC surface (#4693). One chart value renders
+  # the same Secret into the control plane and every brick, so enforcement and
+  # client attachment flip in this one chart version. The operator renders the
+  # 1Password item (one field, "token") into the Secret named by the chart.
+  bearerTokenSecret:
+    enabled: true
+    onepassword:
+      itemPath: "vaults/k8s-homelab/items/embervm-noded-token"
   # Warmth ownership transition guard (#4962). Every brick on the fleet writes
   # its .alive claim as of chart 0.26.0 (verified on the 2026-08-22 06:44 roll),
   # so unclaimed pre-heartbeat directories are dead and may be reaped. After
