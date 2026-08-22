@@ -548,6 +548,75 @@ defmodule Embervm.BaseBuilderTest do
     assert Process.alive?(builder)
   end
 
+  # The sibling of the test above, for the branch that actually crashed in
+  # embervm-dev (#5082): the #4105 guard only covers already_targeting?/4, so a
+  # retry whose FIRST build failed (built_signature nil) still fell through to
+  # enqueue(w.node_id, name) with node_id nil after remove_node_from_state/2
+  # unpinned it, and update_in(state.nodes[nil].queue, ...) raised BadMapError.
+  # The old comment claimed a stale pin is unreachable through the public API;
+  # the nil pin is exactly what remove_node_from_state/2 itself produces.
+  #
+  # The fix re-places through placement/3 like reconcile_desc/2: no eligible
+  # node holds the workload at {:pending, :no_node} (the add_node re-drive test
+  # below proves recovery), and an eligible node gets the rebuild enqueued.
+  test "a retry firing after its node was removed re-places instead of crashing" do
+    agent = start_recorder()
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    # First build FAILS so the retry arms with nothing built (built_signature:
+    # nil), the exact sandbox-rust shape from embervm-dev. A long backoff keeps
+    # the real timer quiet; the test fires {:retry, "w"} by hand.
+    build_fun = fn :fake_channel, _req ->
+      n = Agent.get_and_update(attempts, fn n -> {n + 1, n + 1} end)
+
+      if n < 2 do
+        {:error, %GRPC.RPCError{status: 9, message: "no image source for imgA"}}
+      else
+        {:ok, resp("snap1")}
+      end
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        base_backoff_ms: 30_000,
+        max_backoff_ms: 60_000
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_eventually(fn ->
+      case latest(agent, "w") do
+        nil -> false
+        s -> match?(%{"reason" => "BuildFailed"}, condition(s, "BaseBuilt"))
+      end
+    end)
+
+    # The brick rolls mid-backoff: node leaves the placement set, workload is
+    # unpinned, timer stays armed.
+    :ok = BaseBuilder.remove_node(builder, @node.id)
+    send(builder, {:retry, "w"})
+
+    # Before the fix this crashed the GenServer (BadMapError in enqueue/3);
+    # status/1 orders this assertion after the {:retry, "w"} message. Held at
+    # {:pending, :no_node}, mirroring reconcile_desc's nil-placement branch.
+    assert Process.alive?(builder)
+
+    assert_eventually(fn ->
+      case latest(agent, "w") do
+        nil -> false
+        s -> match?(%{"reason" => "NoNodeAvailable"}, condition(s, "BaseBuilt"))
+      end
+    end)
+
+    # Recovery: the brick comes back and add_node re-drives the held workload,
+    # which now builds (attempt 2 succeeds).
+    :ok = BaseBuilder.add_node(builder, @node.id, @node.address)
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap1"}, latest(agent, "w")) end)
+    assert Agent.get(attempts, & &1) >= 2
+  end
+
   # -- forget -----------------------------------------------------------------
 
   test "forgetting a workload mid-queue drops it without building" do
