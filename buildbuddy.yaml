@@ -171,7 +171,37 @@ actions:
           # ---- 1. tests ---------------------------------------------------
           # -future excludes future-feature BDD specs (executable specs for
           # not-yet-built features): those are intentionally red.
-          bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+          # The PR run uses affected-targets to query only affected Bazel
+          # targets, making PR feedback cheap. The queue candidate on
+          # gh-readonly-queue/* runs the full //... as the exact gate. This
+          # fallback set (BUILD files, dependency locks, bazel/ tooling,
+          # deleted files) is handled by affected-targets.sh and triggers
+          # //... when the graph shape changes.
+          #
+          # ci test locally stays 1:1 with the full run on purpose: PRs
+          # iterate fast while the queue candidate is the authoritative test.
+          if [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
+            bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+          else
+            git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
+            targets_file=$(mktemp)
+            ./bazel/tools/ci/affected-targets.sh "origin/${GIT_REPO_DEFAULT_BRANCH:-main}" HEAD -- --config=ci --deleted_packages=bazel/tools/python > "$targets_file"
+            target_count=$(grep -c . "$targets_file" || true)
+            if [ "$target_count" -eq 0 ]; then
+              echo "No Bazel targets affected by this PR; skipping bazel test (the queue candidate runs //...)"
+            else
+              echo "Running bazel test on $target_count affected targets"
+              set +e
+              bazel test --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future --target_pattern_file="$targets_file"
+              rc=$?
+              set -e
+              if [ "$rc" -eq 4 ]; then
+                echo "affected subset has no test targets; build succeeded"
+              elif [ "$rc" -ne 0 ]; then
+                exit "$rc"
+              fi
+            fi
+          fi
 
           # ---- 2. images build, and the missed-chart-bump guard -----------
           # PR branches publish nothing. `bazel build` proves the images build

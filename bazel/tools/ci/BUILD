@@ -13,3 +13,9 @@ sh_test(
         "//:buildbuddy.yaml",
     ],
 )
+
+sh_test(
+    name = "affected_targets_test",
+    srcs = ["affected_targets_test.sh"],
+    data = ["affected-targets.sh"],
+)
