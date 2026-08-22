@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import {
   capacityPips,
   computeRanks,
+  defaultSelectedKey,
+  layoutEdges,
   nodeIconKey,
   nodeStateClass,
 } from "./dag.js";
@@ -30,6 +32,49 @@ describe("run DAG helpers", () => {
         .at(-1)
         .map((node) => node.key),
     ).toEqual(["slice-1", "slice-2", "slice-3"]));
+  test("layout edges match rank pairs and reflect upstream completion", () => {
+    const ranks = computeRanks([
+      { key: "a", deps: [], state: "done" },
+      { key: "b", deps: ["a"], state: "passed" },
+      { key: "c", deps: ["b"], state: "running" },
+      { key: "d", deps: ["c"], state: "future" },
+    ]);
+    expect(layoutEdges(ranks)).toEqual([
+      { dim: false, strong: true },
+      { dim: false, strong: true },
+      { dim: true, strong: false },
+    ]);
+    expect(layoutEdges(ranks)).toHaveLength(ranks.length - 1);
+  });
+  test("default selection prefers attention, running, then the last done", () => {
+    expect(
+      defaultSelectedKey([
+        { key: "done", state: "done" },
+        { key: "running", state: "running" },
+        { key: "escalated", state: "escalated" },
+      ]),
+    ).toBe("escalated");
+    expect(
+      defaultSelectedKey([
+        { key: "done", state: "done" },
+        { key: "running", state: "running" },
+        { key: "human", state: "blocked", blocked_on: { kind: "human" } },
+      ]),
+    ).toBe("human");
+    expect(
+      defaultSelectedKey([
+        { key: "done", state: "done" },
+        { key: "running", state: "running" },
+      ]),
+    ).toBe("running");
+    expect(
+      defaultSelectedKey([
+        { key: "first", state: "done" },
+        { key: "last", state: "done" },
+        { key: "future", state: "future" },
+      ]),
+    ).toBe("last");
+  });
   test("blocked icon silhouettes distinguish human and dependency", () => {
     const human = { state: "blocked", blocked_on: { kind: "human" } };
     const dependency = {

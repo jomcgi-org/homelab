@@ -2606,59 +2606,11 @@
   .session-title:focus:not(:focus-visible) {
     outline: none;
   }
-  .pill {
-    height: 24px;
-    display: inline-flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: 6px;
-    padding: 0 9px;
-    border-radius: var(--radius-pill);
-    color: var(--text-soft);
-    background: var(--page-bg);
-    font: 11.5px var(--font-mono);
-    white-space: nowrap;
-  }
-  .pill-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: var(--radius-circle);
-    background: var(--ok);
-  }
   .state-pill.needs_input {
     color: var(--attn-text);
   }
   .state-pill.warn {
     color: var(--err);
-  }
-  .seg {
-    height: 28px;
-    display: inline-flex;
-    flex: 0 0 auto;
-    margin-left: auto;
-    overflow: hidden;
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    background: var(--panel-bg);
-  }
-  .seg button {
-    height: 26px;
-    padding: 0 9px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--text-soft);
-    font-size: 12.5px;
-  }
-  .seg button + button {
-    border-left: 1px solid var(--line);
-  }
-  .seg button:hover {
-    background: var(--hover);
-  }
-  .seg button.selected {
-    background: var(--ink);
-    color: var(--ink-text);
   }
   .vm-stream-dot {
     width: 6px;
@@ -3239,8 +3191,8 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .pill,
-    .seg {
+    .transcript-head .pill,
+    .transcript-head .seg {
       display: none;
     }
     .new-panel-scrim {
