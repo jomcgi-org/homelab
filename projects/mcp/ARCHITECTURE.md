@@ -138,9 +138,9 @@ Forwarding works because the monolith gateway has no gateway-level auth
 **The monolith validates the forwarded token as of #4955.** `projects/monolith/auth`
 verifies RS256 against authentik's JWKS on the `/mcp` mount and hands handlers a
 `Principal`. Absent bearer material yields an anonymous least-privilege
-principal rather than a 401, because the tool-refresh CronJob and gateway
-federation call with no user context; material that is present and invalid
-always raises.
+principal rather than a 401, because Context Forge's health-check refresh and
+gateway federation call with no user context; material that is present and
+invalid always raises.
 
 The token names the monolith as a **second audience**, so what arrives is
 validated rather than believed. `blueprints/mcp-auth.yaml` binds a scope mapping
@@ -203,39 +203,26 @@ only in the log as `loc=('body','url') type=value_error`.
 
 ## Tool catalogue refresh
 
-A CronJob mints a short-lived admin JWT and POSTs
-`/gateways/{id}/tools/refresh` every 10 minutes.
+Context Forge caches each gateway's tool catalogue in its own Postgres. The
+health-check loop refreshes that cache only when `AUTO_REFRESH_SERVERS` is true,
+and `GATEWAY_AUTO_REFRESH_INTERVAL=600` limits each gateway to one refresh every
+600 seconds. A refresh requires a successful health tick, and the health-check
+path supports streamable HTTP gateways only.
 
-It exists because Context Forge caches each gateway's tool catalogue in its own
-Postgres and does not rediscover on its own. The built-in auto-refresh only
-fires after a healthy tick from the health-check loop, and that loop speaks
-streamable HTTP while the monolith gateway was registered as SSE. So the
-monolith's `last_seen` never advanced and its auto-refresh never ran.
+The monolith registration lives in Context Forge's Postgres, not in git, and is
+updated by hand: transport `STREAMABLEHTTP`, URL
+`http://<monolith svc>/mcp/`. The slashed form is load-bearing because
+`POST /mcp` answers 307 to `/mcp/`; a client that does not replay the body on
+redirect looks like a dead gateway. The old SSE registration never completed a
+health tick, so built-in refresh never ran. The tool-refresh CronJob was retired
+in #5035 once the streamable HTTP tick was observed advancing `last_seen`.
 
-The monolith now serves streamable HTTP at `/mcp/`, but the gateway
-registration lives in Context Forge's Postgres, not in git, and is updated by
-hand: transport `STREAMABLEHTTP`, URL `http://<monolith svc>/mcp/`. `POST /mcp`
-without the trailing slash answers 307 to `/mcp/`, and a client that does not
-replay the body on redirect looks like a dead gateway, so register the slashed
-form. The CronJob stays until the health tick has been observed advancing
-`last_seen` against that registration; retiring it is #5035.
-
-Two things about that request are load-bearing:
-
-**The refresh sends `X-Upstream-Authorization`, and its scheme is not `Bearer`.**
-Context Forge forwards the caller's `Authorization` to the upstream MCP server,
-so the admin JWT the CronJob mints for Context Forge's own API also arrives at
-the monolith, which rejects any bearer it cannot verify. The monolith ignores a
-non-bearer scheme entirely and serves discovery anonymously, which it already
-permits, so the override makes the forwarded credential a non-event. Replacing
-it with a real workload token is #4943.
-
-**Success is reported in the body, not the status.** A failed refresh answers
-HTTP 200 with `success: false`, and a tool whose description trips Context
-Forge's XSS validator is dropped from the catalogue while the refresh still
-reports success overall, naming the casualty only in `validationErrors`. The
-CronJob checks both, so a silently stale or incomplete catalogue fails the Job
-instead of reading green. It read green for a week before that check existed.
+No bearer arrives at the monolith on this refresh path, so discovery runs as
+anonymous, which the monolith permits. Retiring the CronJob also removes Job
+failure semantics: built-in failures are warning only, and a tool rejected by
+Context Forge's XSS validator can be dropped silently. Operational proof is
+`last_refresh_at` advancing on the monolith `gateways` row with no Job, plus a
+tool count check for an incomplete catalogue.
 
 ## State
 
