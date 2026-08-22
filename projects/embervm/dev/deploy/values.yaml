@@ -213,12 +213,16 @@ baseRetention:
 warmthRetention:
   sweepEnabled: "1"
 
-# S3-direct warmth GC stays disabled here, and not for symmetry: arming it also
-# needs warmthS3Gc.expectedNodes naming dev's fleet, because an empty fleet
-# contract makes every sweep abort on the freshness check, dry run included.
-# Arming the flag alone would render config that silently never acts.
+# #4952: S3-direct warmth GC is armed against dev's own embervm-dev bucket.
+# expectedNodes names dev's entire one-node fleet so the freshness contract can
+# pass. The per-sweep caps are a quarter of production for a quarter of the
+# fleet. Rollback is setting enabled back to "".
 warmthS3Gc:
-  enabled: ""
+  enabled: "1"
+  expectedNodes:
+    - node-4
+  maxPrefixes: "50"
+  maxBytes: "26843545600" # 25 GiB
 
 # Tracing: reuse production endpoint (if available).
 tracing:

@@ -296,6 +296,9 @@ spec:
               value: "{{ .Values.servingEnvoy.compositeTcpPortRange.start }}-{{ .Values.servingEnvoy.compositeTcpPortRange.end }}"
             - name: EMBERVM_MAX_GROUP_SIZE
               value: {{ .Values.servingEnvoy.maxGroupSize | quote }}
+            {{- end }}
+            {{- end }}
+            {{- /* #4948: Brick controller config is independent of servingEnvoy and xDS. */}}
             {{- if .Values.bricks.enabled }}
             # Brick capacity (PR-3): the per-size-class DESIRED replica counts the
             # Embervm.BrickController reconciles the brick Deployments to, as a JSON
@@ -327,6 +330,8 @@ spec:
             - name: EMBERVM_BRICK_AUTOSCALE_MODE
               value: {{ $auto.mode | default "off" | quote }}
             {{- end }}
+            {{- if .Values.xds.enabled }}
+            {{- if .Values.servingEnvoy.enabled }}
             # The R5 composite (group) TCP activator port range: the values-declared
             # range the activator physically binds on the pod (Task 7), so the node
             # Envoy's group tcp_proxy fallback dials podIP:<listenPort>. Same range as
