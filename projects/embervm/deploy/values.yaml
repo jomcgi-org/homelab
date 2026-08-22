@@ -693,9 +693,12 @@ piRuntimeWorkload:
   # this lane failed at hydration with "Out of diskspace" from 2026-08-16 until
   # this flip (#5051). 4 GiB lineage from the chart default.
   persistenceEnabled: true
-  # 512 MiB: git index-pack over 88k objects plus the pi heap no longer shares
-  # RAM with the checkout, but 256 MiB left no headroom for the clone itself.
-  memMib: 512
+  # 1024 MiB: at 512 a long agentic task (a multi-turn go or python build under
+  # projects/monolith) OOM-killed pi mid-run (exit -9), which #5067's larger
+  # token budget exposed by letting the loop run more turns before it died.
+  # The guest V8 heap plus a build subprocess plus tmpfs need more than 512 in
+  # a 2gi brick; 1024 leaves ~1 GiB for the brick daemon and its page cache.
+  memMib: 1024
 
 # SpecTrace gate for spec validation (GitHub issue #4770). Debug-gated, spec-shaped
 # trace that validates TLA+ specs against real behaviour. Deliberately OFF in production.
