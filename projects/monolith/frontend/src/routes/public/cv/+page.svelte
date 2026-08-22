@@ -54,7 +54,7 @@
     "Distributed Systems",
     "OpenTelemetry Contributor",
     "K3S Homelab",
-    `${LOCATION.short}, UK`,
+    `${LOCATION.short}, ${LOCATION.country}`,
   ];
 
   // Scroll-triggered reveals, mirroring the homepage's IntersectionObserver.

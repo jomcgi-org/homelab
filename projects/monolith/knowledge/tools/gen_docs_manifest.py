@@ -55,9 +55,6 @@ _VENDORED_PREFIXES: tuple[str, ...] = ()
 _BLOCKLIST: frozenset[str] = frozenset(
     {
         "projects/shared/README.md",
-        # March-era standalone GCP app, slated for decommission; its runbook
-        # would read as the live ingest path to an outside reader.
-        "projects/monolith/frontend/visual/README.md",
         "projects/platform/signoz-addons/operator/crds/README.md",
         # Contains 1Password paths, secret fields, reset steps, and live auth notes.
         "projects/platform/authentik/README.md",
@@ -182,8 +179,13 @@ def iter_doc_paths(root: Path) -> list[str]:
         check=True,
         timeout=120,
     )
-    paths = (p for p in result.stdout.split("\0") if p)
-    return sorted({p for p in paths if _should_index(p)})
+    tracked = {p for p in result.stdout.split("\0") if p}
+    # A blocklist entry that no longer exists means a rename slipped past the
+    # guard: the renamed file would publish while every test still passed.
+    dead = sorted(_BLOCKLIST - tracked)
+    if dead:
+        raise SystemExit(f"_BLOCKLIST names untracked paths: {', '.join(dead)}")
+    return sorted({p for p in tracked if _should_index(p)})
 
 
 def build_manifest(root: Path, paths: list[str]) -> list[dict]:
