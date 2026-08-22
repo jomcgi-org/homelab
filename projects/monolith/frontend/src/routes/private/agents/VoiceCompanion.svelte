@@ -21,11 +21,14 @@
     vms = {},
     runDetails = {},
     now = Date.now(),
+    renderedPending = {},
     onPin = () => {},
     onDismiss = () => {},
     onSend = async () => {},
     onAnswered = () => {},
   } = $props();
+
+  let wireListEl = $state(null);
 
   let wireOpen = $state(false);
   const session = $derived(sessionDetail?.session ?? null);
@@ -34,16 +37,12 @@
   const visibleCards = $derived(
     (stage?.cards ?? []).filter((card) => cardPhase(card, rows) !== "gone"),
   );
-  const voiceLine = $derived.by(() => {
-    const spoken = latestTurn?.voice_summary ?? session?.voice_summary;
-    if (spoken) return spoken;
-    // The detail contract exposes per-turn voice_summary. Old rows can lack it,
-    // so use only the last answer's first sentence without inventing a field.
-    const result = String(latestTurn?.result_text ?? "").trim();
-    return (
-      result.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim() || result.split("\n")[0]
-    );
-  });
+  // Only what the server recorded as spoken (extract_voice_summary already
+  // falls back to the first sentence server-side); never synthesise a line
+  // here, or an inferred surface reads as summoned (ADR 058).
+  const voiceLine = $derived(
+    latestTurn?.voice_summary ?? session?.voice_summary ?? "",
+  );
   const model = $derived(
     latestTurn?.model || session?.model || P.labels.defaultModel,
   );
@@ -97,6 +96,14 @@
     );
     return exact.length ? exact : walkthrough;
   }
+
+  $effect(() => {
+    const currentRows = rows;
+    if (!currentRows.length) return;
+    wireListEl
+      ?.querySelector("li.current")
+      ?.scrollIntoView({ block: "nearest", behavior: "auto" });
+  });
 </script>
 
 <div class="voice-workspace">
@@ -188,9 +195,15 @@
               {/each}
             </div>
           {:else if card.surface === "transcript"}
+            <!-- renderedPending is the selected console session's partials
+             (loadDetail / syncPendingPartials). When the voice-attached
+             session is also selected, the live line and partial text match
+             the session pane; otherwise pending rows still render from
+             sessionDetail.pending_queue without those partials. -->
             <Turns
               detail={sessionDetail}
               selectedSession={session}
+              {renderedPending}
               {vms}
               compact
             />
@@ -232,7 +245,7 @@
         >
       </button>
     </header>
-    <ol>
+    <ol bind:this={wireListEl}>
       {#each rows as row, index (row.id)}
         <li class:current={index === rows.length - 1}>
           <time datetime={row.created_at}>{wireTime(row.created_at)}</time>

@@ -150,6 +150,7 @@ export const RUN_LEXICON = {
     startTask: "Start task",
     modelPicker: "Model",
     defaultModel: "luna",
+    defaultModelOption: "{model} (default)",
     zeroCost: "$0.00",
     vmWord: "vm",
     controlPlaneState: "control plane: {state}",

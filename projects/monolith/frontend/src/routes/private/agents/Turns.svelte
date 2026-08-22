@@ -90,12 +90,15 @@
 <div class:compact class="turns" bind:this={element}>
   <div class="turns-inner">
     {#each detail?.turns ?? [] as turn (turn.seq)}
+      <!-- {@const} has to be an immediate child of the block, not of the
+       element inside it, so this sits above <article> rather than
+       next to the markup that reads it. -->
       {@const hasIntent =
         turn.prompt_intent !== null && turn.prompt_intent !== undefined}
       {@const degradedCause = workspaceRecoveryMessage(turn)}
       <div class="turn-group">
         <article class="turn">
-          <div class="meta prompt-meta mono">
+          <div class="meta prompt-meta">
             <span class="meta-role">{P.labels.youRole}</span>
             <span>{clockTime(turn.created_at)}</span>
           </div>
@@ -115,7 +118,8 @@
               <div class="prompt-text">{turn.prompt}</div>
             {/if}
           </div>
-          <div class="meta response-meta mono">
+          <!-- AgentTurn persists no completion time, so the response reuses the prompt's created_at (transport duration_ms is not stored). -->
+          <div class="meta response-meta">
             <span
               >{turn.model ||
                 selectedSession?.model ||
@@ -187,12 +191,12 @@
       {@const partial = renderedPending[entry.seq]}
       {@const state = liveStateLabel(entry, index)}
       <article class="turn live">
-        <div class="meta prompt-meta mono">
+        <div class="meta prompt-meta">
           <span class="meta-role">{P.labels.youRole}</span>
           <span>{clockTime(entry.created_at)}</span>
         </div>
         <div class="prompt"><div class="prompt-text">{entry.prompt}</div></div>
-        <div class="meta response-meta mono">
+        <div class="meta response-meta">
           <span
             >{entry.model ||
               selectedSession?.model ||
@@ -236,8 +240,12 @@
             {:else if partial?.partial_text}
               <span class="live-latest">{P.labels.working}</span>
             {:else if vmRunning(selectedSession, vms)}
+              <!-- Claimed, VM confirmed running, no output yet: the
+               CLI is spinning up / the model has the prompt. -->
               <span class="live-latest">{P.labels.startingAgent}</span>
             {:else}
+              <!-- Claimed but the control plane does not report the
+               guest running yet: park rejoin or cold boot. -->
               <span class="live-latest">{P.labels.wakingVm}</span>
             {/if}
           {:else if state === "starting"}
@@ -263,6 +271,11 @@
 </div>
 
 <style>
+  /* +page.svelte's scoped pre rule cannot reach a child component. */
+  pre {
+    font-family: var(--font-mono);
+    font-size: var(--size-body-mono);
+  }
   .turns {
     flex: 1;
     padding: 24px 28px 20px;

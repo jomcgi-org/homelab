@@ -116,6 +116,21 @@ describe("companion stage reducer", () => {
     expect(stage.cards).toEqual([]);
   });
 
+  test("a user-dismissed surface stays gone until a newer row re-shows the same surface:ref", () => {
+    const shown = applyLedgerRows(emptyStage(), [
+      row({ id: 1, payload: { surface: "run", ref: "wf-1" } }),
+    ]);
+    const dismissed = dismissCard(shown, surfaceKey("run", "wf-1"));
+    const replayed = applyLedgerRows(dismissed, [
+      row({ id: 1, payload: { surface: "run", ref: "wf-1" } }),
+    ]);
+    expect(replayed.cards).toEqual([]);
+    const older = applyLedgerRows(replayed, [
+      row({ id: 0, payload: { surface: "run", ref: "wf-1" } }),
+    ]);
+    expect(older.cards).toEqual([]);
+  });
+
   test("a user-dismissed card stays gone until a later show of the same key", () => {
     const shown = applyLedgerRows(emptyStage(), [
       row({ id: 1, payload: { surface: "run", ref: "wf-1" } }),

@@ -45,6 +45,7 @@
     emptyStage,
     togglePinned,
   } from "./companion/stage.js";
+  import { decidePoll } from "./companion/poll.js";
   import { sessionTitle } from "./jump.js";
   import {
     defaultSessionView,
@@ -57,7 +58,6 @@
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
   const VOICE_POLL_MS = 2000;
   const VOICE_STORAGE_ID = "voice-companion-id";
-  const VOICE_STORAGE_SINCE = "voice-companion-since";
 
   let { data } = $props();
 
@@ -1246,24 +1246,50 @@
     if (!body?.companion_id) throw new Error("companion register failed");
     voiceCompanionId = body.companion_id;
     writeVoiceStorage(VOICE_STORAGE_ID, voiceCompanionId);
-    if (stored === voiceCompanionId) {
-      const cursor = Number(readVoiceStorage(VOICE_STORAGE_SINCE) ?? "0");
-      voiceSince = Number.isFinite(cursor) ? cursor : 0;
-    } else {
-      voiceSince = 0;
-      writeVoiceStorage(VOICE_STORAGE_SINCE, 0);
-    }
+    // The cursor is never persisted: a reload replays the whole ledger from
+    // 0, which is the only way the stage, the binding and the wire come back
+    // complete (the wire IS the ledger). cardPhase marks old cards gone.
+    if (stored !== voiceCompanionId) voiceSince = 0;
   }
 
   async function loadVoiceSession(
     sessionId,
     signal = AbortSignal.timeout(10000),
+    incremental = false,
   ) {
+    if (sessionId == null) return;
+    const sameSession =
+      String(voiceSessionDetail?.session?.id) === String(sessionId);
+    const useIncremental = incremental && sameSession;
+    const maxSeq = useIncremental
+      ? Math.max(
+          0,
+          ...(voiceSessionDetail?.turns ?? []).map((turn) => turn.seq),
+        )
+      : 0;
+    const suffix = useIncremental ? `?after_seq=${maxSeq}` : "";
     const response = await fetch(
-      `/agents/session/${encodeURIComponent(sessionId)}`,
+      `/agents/session/${encodeURIComponent(sessionId)}${suffix}`,
       { signal },
     );
-    if (response.ok) voiceSessionDetail = await response.json();
+    if (!response.ok) return;
+    const body = await response.json();
+    if (String(voiceStage.attachedSessionId) !== String(sessionId)) return;
+    voiceSessionDetail = useIncremental
+      ? {
+          session: body.session,
+          turns: [
+            ...(voiceSessionDetail?.turns ?? []),
+            ...(body.turns ?? []).filter(
+              (turn) =>
+                !(voiceSessionDetail?.turns ?? []).some(
+                  (existing) => existing.seq === turn.seq,
+                ),
+            ),
+          ],
+          pending_queue: body.pending_queue,
+        }
+      : body;
   }
 
   function forgetVoiceCompanion() {
@@ -1274,7 +1300,6 @@
     voiceSessionDetail = null;
     voiceRunDetails = {};
     writeVoiceStorage(VOICE_STORAGE_ID, null);
-    writeVoiceStorage(VOICE_STORAGE_SINCE, 0);
   }
 
   async function pollVoiceLedger(signal = AbortSignal.timeout(10000)) {
@@ -1283,28 +1308,28 @@
       `/agents/companion/${encodeURIComponent(voiceCompanionId)}/ledger?since=${voiceSince}`,
       { signal },
     );
-    if (response.status === 404) {
+    const rows = response.ok ? await response.json() : [];
+    const decision = decidePoll(
+      { ok: response.ok, status: response.status, rows },
+      voiceSince,
+    );
+    if (decision.forget) {
       forgetVoiceCompanion();
       return "unknown";
     }
     if (!response.ok) return;
-    const rows = await response.json();
     voiceNow = Date.now();
-    if (Array.isArray(rows) && rows.length) {
+    if (decision.rows.length) {
       const known = new Set(voiceRows.map((row) => String(row.id)));
       voiceRows = [
         ...voiceRows,
-        ...rows.filter((row) => !known.has(String(row.id))),
+        ...decision.rows.filter((row) => !known.has(String(row.id))),
       ].sort((a, b) => Number(a.id) - Number(b.id));
-      voiceStage = applyLedgerRows(voiceStage, rows);
-      const cursor = Math.max(...rows.map((row) => Number(row.id)));
-      if (Number.isFinite(cursor) && cursor > voiceSince) {
-        voiceSince = cursor;
-        writeVoiceStorage(VOICE_STORAGE_SINCE, cursor);
-      }
+      voiceStage = applyLedgerRows(voiceStage, decision.rows);
+      voiceSince = decision.cursor;
     }
     if (voiceStage.attachedSessionId != null) {
-      await loadVoiceSession(voiceStage.attachedSessionId, signal);
+      await loadVoiceSession(voiceStage.attachedSessionId, signal, true);
     }
     for (const card of voiceStage.cards) {
       if (card.surface === "run" && !voiceRunDetails[card.ref]) {
@@ -1335,15 +1360,21 @@
     async function poll() {
       if (stopped || inFlight) return;
       inFlight = true;
+      // A hung request must not wedge the loop: the leave signal AND a
+      // timeout, else inFlight never clears and the stage silently freezes.
+      const signal = AbortSignal.any([
+        controller.signal,
+        AbortSignal.timeout(10000),
+      ]);
       try {
         if (!voiceCompanionId) {
-          await registerVoiceCompanion(controller.signal);
+          await registerVoiceCompanion(signal);
         }
         if (stopped) return;
-        const result = await pollVoiceLedger(controller.signal);
+        const result = await pollVoiceLedger(signal);
         if (result === "unknown" && !stopped) {
-          await registerVoiceCompanion(controller.signal);
-          if (!stopped) await pollVoiceLedger(controller.signal);
+          await registerVoiceCompanion(signal);
+          if (!stopped) await pollVoiceLedger(signal);
         }
       } catch {
         // Polling is its own heartbeat. A later tick retries without replacing
@@ -1676,6 +1707,7 @@
           {vms}
           runDetails={voiceRunDetails}
           now={voiceNow}
+          {renderedPending}
           onPin={pinVoiceCard}
           onDismiss={dismissVoiceCard}
           onSend={sendVoicePrompt}
