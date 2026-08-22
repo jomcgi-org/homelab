@@ -1,6 +1,6 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Three specs, ten genrules run the //bazel/tla:tlc.sh driver:
+# Four specs, thirteen genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
@@ -13,6 +13,9 @@
 #     shared safety config, a zero-budget config that makes the hard-stop
 #     invariant non-vacuous, and one NEGATIVE submit-only mode reproducing the
 #     D12.3 overshoot hole.
+#   session_create.tla (SessionManager create starvation, issue #5051) with
+#     positive safety and liveness configs plus one NEGATIVE mode reproducing
+#     the blocking do_reconcile mailbox wedge.
 # The driver fails the build if a "fail" mode finds NO violation (the model went
 # blind). Safety and liveness are split across cfgs because exhaustive liveness over
 # the rich safety graph is too slow for CI; see README.md for the cfg matrix.
@@ -194,6 +197,54 @@ genrule(
           "\"$(location %s)\" " % _JAVA +
           "\"$(location %s)\" " % _JAR +
           "\"$(location quota.tla)\" \"$(location quota_submit_only.cfg)\" \"$@\" fail",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_session_create",
+    srcs = _JRE_SRCS + [
+        "session_create.tla",
+        "session_create.cfg",
+    ],
+    outs = ["session_create.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location session_create.tla)\" " +
+          "\"$(location session_create.cfg)\" " +
+          "\"$@\" pass",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_session_create_liveness",
+    srcs = _JRE_SRCS + [
+        "session_create.tla",
+        "session_create_liveness.cfg",
+    ],
+    outs = ["session_create_liveness.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location session_create.tla)\" " +
+          "\"$(location session_create_liveness.cfg)\" " +
+          "\"$@\" pass",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_session_create_wedge",
+    srcs = _JRE_SRCS + [
+        "session_create.tla",
+        "session_create_wedge.cfg",
+    ],
+    outs = ["session_create_wedge.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location session_create.tla)\" " +
+          "\"$(location session_create_wedge.cfg)\" " +
+          "\"$@\" fail",
     tools = ["//bazel/tla:tlc.sh"],
 )
 

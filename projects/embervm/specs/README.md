@@ -2,13 +2,14 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of [ADR embervm/006](../../../docs/decisions/embervm/006-tla-formal-specification-pilot.md):
-three specs now, checked exhaustively over small bounds, plus the layer-1
+four specs now, checked exhaustively over small bounds, plus the layer-1
 vocabulary sync guard that keeps them honest against the code. Protocol 1 (VM
 lifecycle + adoption) is `adoption.tla`; protocol 2 (session bank/relight
 generation pairing) is `bank_relight.tla`, added by the ADR embervm/014 PR 5
 follow-through. Both are modeled under the ADR embervm/014 worker-authoritative
 consistency rules (node state is the source of truth, node-confirmed destruction).
 Protocol 3 (the fail-closed per-principal daily quota gate) is `quota.tla`.
+The SessionManager create-starvation model is `session_create.tla`.
 
 ## What is here
 
@@ -28,7 +29,12 @@ Protocol 3 (the fail-closed per-principal daily quota gate) is `quota.tla`.
   submit and dispatch, with durable usage as truth and ETS as a rebuildable cache.
 - `quota.cfg`, `quota_zero.cfg`, `quota_submit_only.cfg` : the three quota TLC
   run configurations (below).
-- `BUILD` : ten genrules run TLC over the three specs, one per cfg, via the
+- `session_create.tla` : the PlusCal model of SessionManager's single mailbox,
+  serial reconcile and create handling, and the #5051 create-starvation wedge.
+- `session_create.cfg`, `session_create_liveness.cfg`,
+  `session_create_wedge.cfg` : safety, positive liveness, and negative wedge TLC
+  run configurations (below).
+- `BUILD` : thirteen genrules run TLC over the four specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -205,6 +211,22 @@ below the high-water mark. `GenerationNeverRegresses` fails. The driver runs thi
 in expectation `fail`, so a passing run would mean the model went blind to the
 regression the floor fixes.
 
+## SessionManager create starvation (`session_create.tla`)
+
+`session_create.tla` models SessionManager as a single-mailbox GenServer that
+serially processes periodic `reconcile` messages and session `create` messages.
+Issue #5051 is the create-starvation wedge: when `do_reconcile` performs a slow
+node RPC on the manager, the current reconcile never returns and creates queued
+behind it cannot be dequeued. The fixed mode moves that work off-manager, modeled
+as one reconcile tick, so every submitted create reaches `created` under fair
+scheduling.
+
+| cfg | bounds | switch | checks | expect | proves |
+| --- | --- | --- | --- | --- | --- |
+| `session_create.cfg` | pending 3; creates 2; slow 2 | blocking OFF | `TypeOK` | pass | mailbox, processing, counter, and create state remain within their domains |
+| `session_create_liveness.cfg` | same | blocking OFF | `EventuallyCreated` | pass | non-blocking reconcile lets every submitted create complete |
+| `session_create_wedge.cfg` | same | blocking ON | `EventuallyCreated` | fail | re-finds the #5051 create-starvation wedge behind blocking `do_reconcile` |
+
 ## Protocol 3: the fail-closed quota gate (`quota.tla`)
 
 The quota model covers a per-principal daily vCPU-second budget enforced at both
@@ -287,7 +309,7 @@ which is a stronger argument for D12.3 than the decision entry itself makes.
 
 ## Running TLC
 
-CI runs all ten genrules via `bazel test //projects/embervm/specs/...`. There is
+CI runs all thirteen genrules via `bazel test //projects/embervm/specs/...`. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
 copy of this directory (swap `adoption` for `bank_relight` for protocol 2):
@@ -305,10 +327,11 @@ Never hand-edit the translation region.
 
 ## Scope
 
-The pilot now models three protocols: protocol 1 (VM lifecycle + adoption,
+The pilot now models four protocols: protocol 1 (VM lifecycle + adoption,
 `adoption.tla`) and protocol 2 (session bank/relight generation pairing,
 `bank_relight.tla`, added by the ADR embervm/014 PR 5 follow-through since the
 pilot earned its keep) and protocol 3 (the fail-closed quota gate, `quota.tla`).
 Layer-2 trace validation (op-log events mapped to TLA+ actions and
 checked against a drill trace) is a separate follow-up and is deliberately not
-built here.
+built here. The fourth model, `session_create.tla`, covers SessionManager's
+single-mailbox create starvation from issue #5051.
