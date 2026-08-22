@@ -14,8 +14,8 @@
 </svelte:head>
 
 <h1 class="sr-only">Chat with my knowledge graph</h1>
-<p>
-  Chat with my public knowledge graph, or switch to the graph view to browse it.
+<p class="sr-only">
+  Ask questions of my public notes; every answer cites the notes it came from.
 </p>
 
 {#if browser}

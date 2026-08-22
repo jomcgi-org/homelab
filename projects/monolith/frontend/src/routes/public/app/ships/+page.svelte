@@ -14,7 +14,9 @@
 </svelte:head>
 
 <h1 class="sr-only">Live ships, AIS vessel tracker</h1>
-<p>Real-time tracking of vessels using AIS data.</p>
+<p class="sr-only">
+  Live vessel positions from AIS, the position broadcasts ships transmit.
+</p>
 
 {#if browser}
   <ShipsApp {data} />
