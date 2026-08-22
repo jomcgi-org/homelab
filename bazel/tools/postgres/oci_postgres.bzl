@@ -176,24 +176,42 @@ def _copy_postgres_files(rctx, staging_dir):
                 err = cp_result.stderr,
             ))
 
-    # Copy the ENTIRE Debian arch-specific shared library directory.
-    # The CI host's glibc is older than Debian Bookworm's (2.36), so even
-    # non-glibc libraries like libstdc++ require newer glibc symbols.
-    # We must provide ALL Debian libraries and use the Debian dynamic
-    # linker (ld-linux) for full isolation. Wrapper scripts in bin/
-    # ensure all PG binaries (including child processes like postgres -V
-    # spawned by initdb) go through the Debian ld-linux.
+    # Copy the Debian shared libraries the PostgreSQL binaries and extension
+    # modules actually link against, resolved with the Debian dynamic linker
+    # itself. The CI host's glibc is older than Debian Bookworm's (2.36), so
+    # even non-glibc libraries like libstdc++ need newer glibc symbols; the
+    # wrappers in bin/ run everything through the Debian ld-linux with
+    # --library-path so all of that comes from here, never from the host.
+    #
+    # This used to copy the WHOLE usr/lib/x86_64-linux-gnu (492 MB: libLLVM
+    # twice at 129 MB for the JIT, 50 MB of perl for plperl, libz3, ...).
+    # That directory is in the runfiles of EVERY bdd_test, and a remote test
+    # execution materialises its whole input tree: 535 MB of postgres in a
+    # 1.07 GB tree, times hundreds of test executions per full run
+    # (invocation e4e74dd6, 2026-08-22). The closure is a small fraction.
+    # If the loader cannot run here (macOS host), fall back to the full copy
+    # so the repository still assembles.
     arch_lib_src = _child_path(staging_dir, "usr/lib/x86_64-linux-gnu")
     arch_lib_dest = _child_path(repo_dir, "usr/lib/x86_64-linux-gnu")
     result = rctx.execute(["test", "-d", arch_lib_src], timeout = 5)
     if result.return_code == 0:
         rctx.execute(["mkdir", "-p", arch_lib_dest], timeout = 10)
-        result = rctx.execute(
-            ["cp", "-a", "-R", arch_lib_src + "/.", arch_lib_dest + "/"],
-            timeout = 120,
-        )
-        if result.return_code != 0:
-            fail("Failed to copy arch lib directory: {err}".format(err = result.stderr))
+        needed = _resolve_lib_closure(rctx, staging_dir, arch_lib_src)
+        if needed == None:
+            result = rctx.execute(
+                ["cp", "-a", "-R", arch_lib_src + "/.", arch_lib_dest + "/"],
+                timeout = 120,
+            )
+            if result.return_code != 0:
+                fail("Failed to copy arch lib directory: {err}".format(err = result.stderr))
+        else:
+            for rel in needed:
+                src = _child_path(arch_lib_src, rel)
+                dest = _child_path(arch_lib_dest, rel)
+                rctx.execute(["mkdir", "-p", dest.rsplit("/", 1)[0]], timeout = 10)
+                result = rctx.execute(["cp", "-a", src, dest], timeout = 30)
+                if result.return_code != 0:
+                    fail("Failed to copy {rel}: {err}".format(rel = rel, err = result.stderr))
 
     # Copy the Debian dynamic linker (ld-linux-x86-64.so.2).
     for ld_src_rel in ["lib64", "lib/x86_64-linux-gnu"]:
@@ -217,6 +235,14 @@ def _copy_postgres_files(rctx, staging_dir):
     if result.return_code != 0:
         fail("Failed to copy postgresql lib directory: {err}".format(err = result.stderr))
 
+    # No JIT in the test server. llvmjit.so is the provider module postgres
+    # dlopens lazily; without it `jit` silently reports unavailable and every
+    # query runs interpreted, which is what a test wants anyway. Keeping it
+    # would pull libLLVM (129 MB) and libz3 (23 MB) into the closure below,
+    # and the bitcode directory (23 MB) is only ever read by that provider.
+    for jit_rel in ["llvmjit.so", "llvmjit_types.bc", "bitcode"]:
+        rctx.execute(["rm", "-rf", _child_path(pg_lib_dest, jit_rel)], timeout = 30)
+
     # Copy the postgresql share directory (timezone, locale, SQL configs)
     pg_share_src = _child_path(staging_dir, "usr/share/postgresql/16")
     pg_share_dest = _child_path(repo_dir, "usr/share/postgresql/16")
@@ -224,6 +250,70 @@ def _copy_postgres_files(rctx, staging_dir):
     result = rctx.execute(["cp", "-a", "-R", pg_share_src + "/.", pg_share_dest + "/"], timeout = 30)
     if result.return_code != 0:
         fail("Failed to copy postgresql share directory: {err}".format(err = result.stderr))
+
+def _resolve_lib_closure(rctx, staging_dir, arch_lib_src):
+    """Resolve the shared-library closure of the PG binaries and modules.
+
+    Runs the Debian ld-linux from the staging tree with --list (the loader's
+    own ldd) over every PostgreSQL binary and every .so under the postgres
+    lib directory, so dlopen'd extension modules (vector.so, plpgsql.so, ...)
+    are covered as well as the executables. Every listed library that lives
+    under usr/lib/x86_64-linux-gnu is kept, together with each symlink hop
+    down to the real file, since the loader resolves by SONAME symlink.
+
+    Returns a sorted list of paths relative to arch_lib_src, or None when
+    the loader cannot execute on this host (then the caller copies all).
+    """
+    ld = None
+    for ld_rel in ["lib64/ld-linux-x86-64.so.2", "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"]:
+        candidate = _child_path(staging_dir, ld_rel)
+        if rctx.execute(["test", "-f", candidate], timeout = 5).return_code == 0:
+            ld = candidate
+            break
+    if ld == None:
+        return None
+
+    pg_lib = _child_path(staging_dir, "usr/lib/postgresql/16/lib")
+    elves = [_child_path(staging_dir, b) for b in _PG_BINARIES]
+    found = rctx.execute(
+        ["find", pg_lib, "-maxdepth", "1", "-name", "*.so", "-type", "f"],
+        timeout = 30,
+    )
+    if found.return_code == 0:
+        # llvmjit.so is deleted from the copy (see the caller), so it must
+        # not contribute libLLVM and libz3 to the closure either.
+        elves += [f for f in found.stdout.strip().split("\n") if f and not f.endswith("/llvmjit.so")]
+
+    library_path = arch_lib_src + ":" + pg_lib
+    prefix = arch_lib_src + "/"
+    needed = {}
+    for elf in elves:
+        result = rctx.execute([ld, "--library-path", library_path, "--list", elf], timeout = 60)
+        if result.return_code != 0:
+            # The loader exists but cannot run (foreign host): copy everything.
+            return None
+        for line in result.stdout.split("\n"):
+            # "\tlibssl.so.3 => /.../usr/lib/x86_64-linux-gnu/libssl.so.3 (0x...)"
+            if "=>" not in line:
+                continue
+            target = line.split("=>", 1)[1].strip().split(" ")[0]
+            if not target.startswith(prefix):
+                continue
+            rel = target[len(prefix):]
+            # Keep each hop of the symlink chain; `cp -a` copies links as links.
+            for _ in range(8):
+                needed[rel] = True
+                link = rctx.execute(["readlink", _child_path(arch_lib_src, rel)], timeout = 5)
+                if link.return_code != 0 or not link.stdout.strip():
+                    break
+                hop = link.stdout.strip()
+                if hop.startswith("/"):
+                    if not hop.startswith(prefix):
+                        break
+                    rel = hop[len(prefix):]
+                else:
+                    rel = _child_path(rel.rsplit("/", 1)[0], hop) if "/" in rel else hop
+    return sorted(needed.keys())
 
 def _create_pg_wrappers(rctx):
     """Create wrapper scripts for PG binaries to use the Debian ld-linux.
