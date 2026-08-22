@@ -1,141 +1,149 @@
 import json
+import subprocess
 from pathlib import Path
 
 from knowledge.tools.gen_docs_manifest import (
-    _should_index,
     build_manifest,
-    category_for,
     derive_title,
+    iter_doc_paths,
     make_slug,
-    section_for,
 )
 
 
+def _write(root: Path, rel_path: str, content: str = "# Document\n\nBody") -> None:
+    path = root / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+def _track(root: Path, *rel_paths: str) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    if rel_paths:
+        subprocess.run(["git", "add", "--", *rel_paths], cwd=root, check=True)
+
+
+def _tracked_manifest(root: Path) -> list[dict]:
+    return build_manifest(root, iter_doc_paths(root))
+
+
 def test_derive_title_prefers_h1():
-    assert derive_title("# Hello\n\nbody", "docs/x.md") == "Hello"
+    assert derive_title("# Hello\n\nbody", "projects/embervm/README.md") == "Hello"
 
 
-def test_derive_title_falls_back_to_basename():
-    assert derive_title("no heading", "docs/decisions/agents/001-x.md") == "001-x"
-
-
-def test_derive_title_readme_falls_back_to_parent_dir():
+def test_derive_title_falls_back_for_readme_and_named_doc():
+    assert derive_title("no heading", "projects/embervm/README.md") == "embervm"
     assert (
-        derive_title("no heading", "projects/monolith/knowledge/README.md")
-        == "knowledge"
+        derive_title("no heading", "projects/embervm/ARCHITECTURE.md") == "ARCHITECTURE"
     )
 
 
-def test_should_index_allowlist():
-    # Included: project READMEs (any depth) and the whole ADR tree (incl. index).
-    assert _should_index("projects/firecracker/README.md")
-    assert _should_index("projects/monolith/knowledge/README.md")
-    assert _should_index("docs/decisions/index.md")
-    assert _should_index("docs/decisions/agents/001-background-agents.md")
-    assert _should_index("docs/decisions/docs/002-x.md")
-    # Excluded: hand-written top-level reference docs, plans, nested non-ADR
-    # docs, non-README project files, wrong extension, non-docs paths, and the
-    # manifest itself. (Vendored README subtrees are also excluded via
-    # _VENDORED_PREFIXES, currently empty since the last vendored chart was
-    # removed; the mechanism stays for future vendored trees.)
-    assert not _should_index("docs/security.md")
-    assert not _should_index("docs/plans/2026-06-19-x.md")
-    assert not _should_index("docs/security.txt")
-    assert not _should_index("projects/monolith/chart/values.yaml")
-    assert not _should_index("README.md")
-    assert not _should_index(
-        "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json"
-    )
-    assert not _should_index("projects/platform/authentik/README.md")
-    assert not _should_index(
-        "docs/decisions/security/004-public-read-only-service-isolation.md"
-    )
-    assert not _should_index("docs/decisions/chat/003-trust-safety-safeguards.md")
-    assert not _should_index("docs/decisions/docs/001-static-docs-site.md")
-    assert not _should_index("projects/embervm/runtimes/k3s/drill/README.md")
-    assert not _should_index("projects/monolith/claude_routines/README.md")
+def test_make_slug_uses_project_root_for_readme_and_kind_for_other_docs():
+    assert make_slug("embervm", "readme") == "embervm"
+    assert make_slug("embervm", "architecture") == "embervm/architecture"
+    assert make_slug("monolith", "stpa") == "monolith/stpa"
 
 
-def test_make_slug():
-    assert make_slug("docs/decisions/index.md") == "decisions"
-    assert (
-        make_slug("docs/decisions/agents/001-background-agents.md")
-        == "decisions/agents/001-background-agents"
-    )
-    assert make_slug("projects/firecracker/README.md") == "projects/firecracker"
-    assert (
-        make_slug("projects/monolith/knowledge/README.md")
-        == "projects/monolith/knowledge"
-    )
+def test_project_with_only_readme_yields_one_entry(tmp_path: Path):
+    rel_path = "projects/embervm/README.md"
+    _write(tmp_path, rel_path, "# EmberVM\n\nRuntime docs")
+    _track(tmp_path, rel_path)
+
+    entries = _tracked_manifest(tmp_path)
+
+    assert len(entries) == 1
+    assert entries[0]["slug"] == "embervm"
 
 
-def test_section_and_category():
-    assert section_for("projects/firecracker/README.md") == "Projects"
-    assert section_for("docs/decisions/agents/001-x.md") == "Decisions"
-    assert category_for("docs/decisions/agents/001-x.md") == "agents"
-    assert category_for("docs/decisions/index.md") == ""
-    assert category_for("projects/firecracker/README.md") == ""
+def test_missing_project_directory_yields_nothing(tmp_path: Path):
+    _track(tmp_path)
+    assert _tracked_manifest(tmp_path) == []
 
 
-def test_build_manifest_ordering_and_shape(tmp_path: Path):
-    proj = tmp_path / "projects"
-    (proj / "services").mkdir(parents=True)
-    (proj / "agents").mkdir(parents=True)
-    (proj / "services" / "README.md").write_text("# Services\n\nbody")
-    (proj / "agents" / "README.md").write_text("# Agents\n\nbody")
-    dec = tmp_path / "docs" / "decisions"
-    (dec / "agents").mkdir(parents=True)
-    (dec / "platform").mkdir(parents=True)
-    (dec / "index.md").write_text("# ADRs\n\nindex")
-    (dec / "agents" / "002-b.md").write_text("# Two\n\nb")
-    (dec / "agents" / "001-a.md").write_text("# One\n\na")
-    (dec / "platform" / "001-p.md").write_text("# P\n\np")
+def test_manifest_orders_projects_then_document_kinds(tmp_path: Path):
+    docs = {
+        "projects/platform/STPA.md": "# Platform STPA",
+        "projects/mcp/ARCHITECTURE.md": "# MCP Architecture",
+        "projects/embervm/STPA.md": "# EmberVM STPA",
+        "projects/embervm/README.md": "# EmberVM",
+        "projects/mcp/README.md": "# MCP",
+        "projects/embervm/ARCHITECTURE.md": "# EmberVM Architecture",
+    }
+    for path, content in docs.items():
+        _write(tmp_path, path, content)
+    _track(tmp_path, *reversed(tuple(docs)))
 
-    paths = [
-        "projects/services/README.md",
-        "projects/agents/README.md",
-        "docs/decisions/index.md",
-        "docs/decisions/agents/002-b.md",
-        "docs/decisions/agents/001-a.md",
-        "docs/decisions/platform/001-p.md",
+    entries = _tracked_manifest(tmp_path)
+
+    assert [(entry["project"], entry["kind"]) for entry in entries] == [
+        ("embervm", "readme"),
+        ("embervm", "architecture"),
+        ("embervm", "stpa"),
+        ("mcp", "readme"),
+        ("mcp", "architecture"),
+        ("platform", "stpa"),
     ]
-    entries = build_manifest(tmp_path, paths)
+    assert [entry["order"] for entry in entries] == list(range(6))
 
-    # Projects (alphabetical by path) first, then the decisions index, then
-    # ADRs grouped by category (alpha) and ordered by numeric prefix.
-    assert [e["slug"] for e in entries] == [
-        "projects/agents",
-        "projects/services",
-        "decisions",
-        "decisions/agents/001-a",
-        "decisions/agents/002-b",
-        "decisions/platform/001-p",
-    ]
-    # order is the stable entry index.
-    assert [e["order"] for e in entries] == [0, 1, 2, 3, 4, 5]
-    # Shape + section grouping.
-    assert entries[0]["section"] == "Projects"
-    assert entries[2]["section"] == "Decisions"
-    assert entries[0]["title"] == "Agents"
-    assert entries[0]["content"] == "# Agents\n\nbody"
-    assert set(entries[0]) == {"path", "slug", "title", "section", "order", "content"}
+
+def test_entries_carry_project_and_kind_without_section(tmp_path: Path):
+    rel_path = "projects/monolith/STPA.md"
+    _write(tmp_path, rel_path, "# Monolith STPA\n\nAnalysis")
+    _track(tmp_path, rel_path)
+
+    entry = _tracked_manifest(tmp_path)[0]
+
+    assert entry["project"] == "monolith"
+    assert entry["kind"] == "stpa"
+    assert "section" not in entry
+    assert set(entry) == {
+        "path",
+        "slug",
+        "project",
+        "kind",
+        "title",
+        "order",
+        "content",
+    }
+
+
+def test_nested_readme_is_not_indexed(tmp_path: Path):
+    rel_path = "projects/embervm/runtimes/k3s/drill/README.md"
+    _write(tmp_path, rel_path)
+    _track(tmp_path, rel_path)
+    assert _tracked_manifest(tmp_path) == []
+
+
+def test_decisions_are_not_indexed(tmp_path: Path):
+    rel_path = "docs/decisions/embervm/001-example.md"
+    _write(tmp_path, rel_path)
+    _track(tmp_path, rel_path)
+    assert _tracked_manifest(tmp_path) == []
 
 
 def test_build_manifest_strips_nul_bytes(tmp_path: Path):
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "n.md").write_text("# N\n\nbe\x00fore")
-    entry = build_manifest(tmp_path, ["docs/n.md"])[0]
+    rel_path = "projects/sextant/README.md"
+    _write(tmp_path, rel_path, "# Sextant\n\nbe\x00fore")
+    _track(tmp_path, rel_path)
+
+    entry = _tracked_manifest(tmp_path)[0]
+
     assert "\x00" not in entry["content"]
-    assert entry["content"] == "# N\n\nbefore"
+    assert entry["content"] == "# Sextant\n\nbefore"
 
 
 def test_build_manifest_skips_deleted_tracked_path(tmp_path: Path):
-    entries = build_manifest(tmp_path, ["docs/deleted.md"])
-    assert entries == []
+    rel_path = "projects/model-bench/README.md"
+    _write(tmp_path, rel_path)
+    _track(tmp_path, rel_path)
+    paths = iter_doc_paths(tmp_path)
+    (tmp_path / rel_path).unlink()
+
+    assert build_manifest(tmp_path, paths) == []
 
 
 def test_manifest_json_round_trips(tmp_path: Path):
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "a.md").write_text("# A\n\nalpha")
-    entries = build_manifest(tmp_path, ["docs/a.md"])
+    rel_path = "projects/platform/README.md"
+    _write(tmp_path, rel_path, "# Platform\n\nCurrent state")
+    _track(tmp_path, rel_path)
+    entries = _tracked_manifest(tmp_path)
     assert json.loads(json.dumps(entries)) == entries

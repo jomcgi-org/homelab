@@ -1,6 +1,7 @@
 <script>
   import { Seo } from "$lib/public/components";
   import DocsShell from "./DocsShell.svelte";
+  import DocsTabs from "./DocsTabs.svelte";
 
   let { data } = $props();
 </script>
@@ -16,35 +17,26 @@
     <p class="eyebrow">Homelab</p>
     <h1>Documentation</h1>
     <p class="lede">
-      Project READMEs and architecture decision records for the homelab,
-      rendered straight from the repository.
+      Current-state documentation for the public projects, rendered from the
+      repository.
     </p>
   </header>
 
-  <section class="docs-overview">
-    <h2>Projects</h2>
-    <ul class="ov-list">
-      {#each data.sidebar.projects as node}
-        <li>
-          {#if node.slug}
-            <a class="ov-link" href={`/docs/${node.slug}`}>
-              <span class="ov-name">{node.name}</span>
-              {#if node.title !== node.name}
-                <span class="ov-title">{node.title}</span>
-              {/if}
-            </a>
-          {:else}
-            <span class="ov-name ov-name-muted">{node.name}</span>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+  <section class="docs-overview" aria-label="Public projects">
+    {#each data.projects as project}
+      <article class="project-card">
+        <h2><a href={`/docs/${project.slug}`}>{project.title}</a></h2>
+        <p class="project-name mono">{project.project}</p>
+        <p class="project-excerpt">{project.excerpt}</p>
+        <DocsTabs tabs={project.tabs} compact />
+      </article>
+    {/each}
   </section>
 </DocsShell>
 
 <style>
   .docs-hero {
-    margin-bottom: 36px;
+    margin-bottom: 32px;
   }
 
   .docs-hero h1 {
@@ -64,59 +56,65 @@
     max-width: 64ch;
   }
 
-  .docs-overview h2 {
-    font-family: var(--mono);
-    font-size: 0.95em;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--ink);
-    padding-bottom: 8px;
-    border-bottom: 2px solid var(--ink);
-    margin-bottom: 4px;
+  .docs-overview {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
   }
 
-  .ov-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-
-  .ov-list li + li {
-    border-top: 1px solid var(--rule-2);
-  }
-
-  .ov-link {
+  .project-card {
     display: flex;
-    align-items: baseline;
-    gap: 16px;
-    padding: 12px 4px;
-    text-decoration: none;
-    color: var(--ink);
+    flex-direction: column;
+    min-width: 0;
+    padding: 20px;
+    border: 2px solid var(--ink);
+    background: var(--paper);
+    box-shadow: var(--shadow-hard-sm);
   }
 
-  .ov-link:hover .ov-name {
+  .project-card h2 {
+    padding: 0;
+    margin: 0 0 2px;
+    border: 0;
+    font-family: var(--serif);
+    font-size: 1.5em;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+
+  .project-card h2 a {
+    color: var(--ink);
+    text-decoration: none;
+  }
+
+  .project-card h2 a:hover {
     text-decoration: underline;
     text-decoration-color: var(--coral);
     text-decoration-thickness: 2px;
     text-underline-offset: 3px;
   }
 
-  .ov-name {
-    font-family: var(--mono);
-    font-size: 0.9em;
+  .project-name {
+    margin: 0 0 14px;
+    color: var(--ink-3);
+    font-size: 10px;
     font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
   }
 
-  .ov-name-muted {
-    display: block;
-    padding: 12px 4px;
-    color: var(--ink-2);
-  }
-
-  .ov-title {
+  .project-excerpt {
+    flex: 1 1 auto;
+    margin: 0 0 18px;
     font-family: var(--sans);
-    font-size: 0.9em;
+    font-size: 0.92em;
+    line-height: 1.55;
     color: var(--ink-2);
+  }
+
+  @media (max-width: 720px) {
+    .docs-overview {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 </style>

@@ -3,9 +3,9 @@
 
   /**
    * Client-side navigational search over the doc titles already shipped in the
-   * sidebar (no bodies cross to the browser). Filters titles + section group;
-   * full-text content search is the site's knowledge search, per docs/002.
-   * @type {{ docs: {slug:string,title:string,group:string}[] }}
+   * sidebar (no bodies cross to the browser). Filters project, kind, label,
+   * and title; full-text content search remains a separate concern.
+   * @type {{ docs: {slug:string,title:string,project:string,kind:string,label:string}[] }}
    */
   let { docs } = $props();
 
@@ -22,7 +22,10 @@
     if (!q) return [];
     const out = [];
     for (const d of docs) {
-      if (`${d.title} ${d.group}`.toLowerCase().includes(q)) out.push(d);
+      if (
+        `${d.project} ${d.kind} ${d.label} ${d.title}`.toLowerCase().includes(q)
+      )
+        out.push(d);
       if (out.length >= 12) break;
     }
     return out;
@@ -132,7 +135,7 @@
             }}
           >
             <span class="docs-search-title">{d.title}</span>
-            <span class="docs-search-group">{d.group}</span>
+            <span class="docs-search-context">{d.project} · {d.label}</span>
           </a>
         </li>
       {/each}
@@ -237,7 +240,7 @@
     line-height: 1.25;
   }
 
-  .docs-search-group {
+  .docs-search-context {
     flex: 0 0 auto;
     font-family: var(--mono);
     font-size: 10px;

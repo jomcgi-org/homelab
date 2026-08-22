@@ -6,11 +6,12 @@
 // The markdown bodies are first-party, committed repo docs (reviewed in PRs).
 // Even so we render with a constrained marked config: raw HTML blocks are
 // escaped rather than passed through, intra-repo links are rewritten to /docs
-// slugs, and links to docs that are NOT on the public allowlist are stripped to
-// plain text (preserving ADR docs/001's link-stripping behaviour).
+// slugs, and links to docs that are not on the public allowlist are stripped to
+// plain text.
 
 import { posix } from "node:path";
 import { Marked } from "marked";
+import { DOC_KINDS } from "$lib/public/docs/doc-kinds.js";
 import { signedDocsImgUrl } from "./docs-img.js";
 
 const escapeHtml = (s) =>
@@ -57,8 +58,8 @@ const EXTERNAL = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
 const DECISIONS_DIR_PREFIX = "docs/";
 
 // Map every doc's repo path -> its /docs slug, plus a directory alias for index
-// and README docs so a link to `decisions/` or `projects/firecracker/` (the
-// folder) resolves to the index/README page.
+// and README docs so a link to a published document's folder resolves to that
+// index or README page.
 export function buildPathIndex(manifest) {
   const slugByPath = new Map();
   for (const e of manifest) {
@@ -191,55 +192,39 @@ export function renderDoc(entry, slugByPath) {
   return { html, toc };
 }
 
-const PROJECTS_PREFIX = "projects/";
-const DECISIONS_PREFIX = "decisions/";
-
-// Left-sidebar tree derived purely from the manifest (NOT from any VitePress
-// adr-sidebar.json): project READMEs nested by path, then the decisions index
-// and ADRs grouped by category. Carries titles/slugs only (no bodies), so it
-// is safe to serialise to the client.
+// Flat project navigation derived from manifest order. It carries only project
+// and tab metadata, never document bodies, so it is safe to serialise to the
+// client.
 export function buildSidebar(manifest) {
   const sorted = [...manifest].sort((a, b) => a.order - b.order);
-  const projects = [];
-  const projectNodeByPath = new Map();
-  let decisionsIndex = null;
-  const catMap = new Map();
+  const entriesByProject = new Map();
   for (const e of sorted) {
-    if (e.section === "Projects") {
-      const rel = e.slug.slice(PROJECTS_PREFIX.length);
-      const parts = rel.split("/");
-      let siblings = projects;
-      let nodePath = "";
-      for (let i = 0; i < parts.length; i++) {
-        nodePath = nodePath ? `${nodePath}/${parts[i]}` : parts[i];
-        let node = projectNodeByPath.get(nodePath);
-        if (!node) {
-          node = { name: parts[i], title: parts[i], slug: null, children: [] };
-          projectNodeByPath.set(nodePath, node);
-          siblings.push(node);
-        }
-        if (i === parts.length - 1) {
-          node.title = e.title;
-          node.slug = e.slug;
-        }
-        siblings = node.children;
-      }
-      continue;
-    }
-    if (e.slug === "decisions") {
-      decisionsIndex = { slug: e.slug, title: e.title };
-      continue;
-    }
-    const rest = e.slug.slice(DECISIONS_PREFIX.length);
-    const cat = rest.includes("/") ? rest.slice(0, rest.indexOf("/")) : rest;
-    if (!catMap.has(cat)) catMap.set(cat, []);
-    catMap.get(cat).push({ slug: e.slug, title: e.title });
+    if (!entriesByProject.has(e.project)) entriesByProject.set(e.project, []);
+    entriesByProject.get(e.project).push(e);
   }
-  const categories = [...catMap.entries()].map(([name, items]) => ({
-    name,
-    items,
-  }));
-  return { projects, decisions: { index: decisionsIndex, categories } };
+
+  return [...entriesByProject.entries()].map(([project, entries]) => {
+    const byKind = new Map(entries.map((entry) => [entry.kind, entry]));
+    const readme = byKind.get("readme");
+    return {
+      project,
+      title: readme?.title || project,
+      slug: readme?.slug || project,
+      tabs: DOC_KINDS.flatMap(({ kind, label }) => {
+        const entry = byKind.get(kind);
+        return entry
+          ? [
+              {
+                kind,
+                label,
+                slug: entry.slug,
+                title: entry.title || label,
+              },
+            ]
+          : [];
+      }),
+    };
+  });
 }
 
 // SEO meta for a doc page: title + a description from the first prose paragraph.
@@ -265,4 +250,36 @@ export function getMeta(entry) {
     title: entry.title,
     description: description || `${entry.title} - homelab documentation.`,
   };
+}
+
+// Cards for the /docs overview: one per project, every kind listed with
+// missing ones disabled. Lives here because SvelteKit rejects extra exports
+// from +page.server.js.
+export function buildProjectCards(entries) {
+  const readmeByProject = new Map(
+    entries
+      .filter((entry) => entry.kind === "readme")
+      .map((entry) => [entry.project, entry]),
+  );
+
+  return buildSidebar(entries).map((project) => {
+    const readme = readmeByProject.get(project.project);
+    const available = new Map(project.tabs.map((tab) => [tab.kind, tab]));
+    return {
+      project: project.project,
+      title: project.title,
+      slug: project.slug,
+      excerpt: readme ? getMeta(readme).description : "",
+      tabs: DOC_KINDS.map(({ kind, label }) => {
+        const tab = available.get(kind);
+        return {
+          kind,
+          label,
+          slug: tab?.slug ?? null,
+          title: tab?.title ?? label,
+          disabled: !tab,
+        };
+      }),
+    };
+  });
 }

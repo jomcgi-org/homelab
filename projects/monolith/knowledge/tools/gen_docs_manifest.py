@@ -1,32 +1,20 @@
 """Generate the public docs manifest baked into the monolith-public frontend.
 
-Globs the public-allowlisted repository docs (project READMEs, ``projects/**/
-README.md``, plus the ADR tree ``docs/decisions/**/*.md``) via ``git ls-files``
-and writes a committed JSON manifest with full bodies inline to
+The public docs surface contains a fixed set of projects and, for each project,
+up to four current-state documents: README, architecture, STPA, and threat
+model. Only the exact project/document pairs listed below are published. The
+generator uses ``git ls-files`` so untracked files, nested READMEs, ADRs, and
+other repository documentation never enter the manifest.
+
+The committed JSON manifest stores full bodies inline at
 ``projects/monolith/frontend/src/lib/public/docs/docs-manifest.json``. The
-SvelteKit ``/docs`` route imports that manifest SERVER-SIDE (never in a client
-bundle) and renders each doc with ``marked``.
+SvelteKit ``/docs`` route imports it server-side and sends only rendered HTML
+and small navigation structures to the browser.
 
-Using git (not a filesystem walk) makes the output deterministic across
-platforms and Python versions and never picks up untracked files or build
-artifacts under symlinked ``bazel-out/`` dirs.
-
-Security (ADR docs/001): the public docs surface is built from an EXPLICIT
-allowlist, never the RAG ingest (which indexes internal docs). Both tiers are
-self-maintaining: ADRs are append-only decisions, and READMEs are colocated
-with the code they describe so they get updated by proximity pressure. Hand-
-written top-level ``docs/*.md`` reference docs are no longer published (they
-rot far from the code they describe); they remain internal-only. Excluded:
-``docs/plans/**``, vendored README subtrees (a prefix blocklist for
-third-party charts we vendor but did not author), and a per-file blocklist for
-any allowlisted path that should stay off the public surface. Be conservative:
-if unsure whether a doc is public, it stays off the allowlist.
-
-Regeneration is automatic: the "Format check" CI action (buildbuddy.yaml) runs
-this generator on every push and auto-commits any change to the manifest on PR
-branches (as ci-format-bot), like any other formatting fix, so a doc edit never
-needs a manual regen. To regenerate locally: run this script with any python3
-(or ``bazel run //projects/monolith:gen_docs_manifest``).
+Regeneration is automatic: CI's Format stage runs this generator on every push
+and auto-commits manifest changes on PR branches. To regenerate locally, run
+this script with any python3 (or
+``bazel run //projects/monolith:gen_docs_manifest``).
 """
 
 from __future__ import annotations
@@ -38,41 +26,35 @@ import subprocess
 import sys
 from pathlib import Path
 
-MANIFEST_REL = "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json"
-
-DOCS_PREFIX = "docs/"
-DECISIONS_PREFIX = "docs/decisions/"
-PROJECTS_PREFIX = "projects/"
-README_SUFFIX = "/README.md"
-
-# Vendored subtree prefix blocklist: third-party charts/code we vendor in but
-# did not author, so their READMEs should not appear on the public docs site.
-# Add future vendored trees here.
-_VENDORED_PREFIXES: tuple[str, ...] = ()
-
-# Per-file blocklist: individual paths that must NOT appear on the public docs
-# site even though they match an allowlist glob.
-_BLOCKLIST: frozenset[str] = frozenset(
-    {
-        "projects/shared/README.md",
-        "projects/platform/signoz-addons/operator/crds/README.md",
-        # Contains 1Password paths, secret fields, reset steps, and live auth notes.
-        "projects/platform/authentik/README.md",
-        # Names every internet-facing pod secret and documents isolation gaps.
-        "docs/decisions/security/004-public-read-only-service-isolation.md",
-        # Documents exact anti-abuse thresholds and exemptions.
-        "docs/decisions/chat/003-trust-safety-safeguards.md",
-        # Never-implemented draft superseded by docs/decisions/docs/002.
-        "docs/decisions/docs/001-static-docs-site.md",
-        # Contains disposable k3s runtime spike notes.
-        "projects/embervm/runtimes/k3s/drill/README.md",
-        # Documents a personal account workflow.
-        "projects/monolith/claude_routines/README.md",
-    }
+PUBLIC_PROJECTS = (
+    ("embervm", "projects/embervm"),
+    ("monolith", "projects/monolith"),
+    ("mcp", "projects/mcp"),
+    ("sextant", "projects/sextant"),
+    ("model-bench", "projects/model-bench"),
+    ("oci-model-cache", "projects/operators/oci-model-cache"),
+    ("platform", "projects/platform"),
 )
 
+DOC_KINDS = (
+    ("readme", "README.md", "Readme"),
+    ("architecture", "ARCHITECTURE.md", "Architecture"),
+    ("stpa", "STPA.md", "STPA"),
+    ("threat-model", "THREAT-MODEL.md", "Threat model"),
+)
+
+MANIFEST_REL = "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json"
+
 _H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
-_NUM = re.compile(r"^(\d+)")
+_DOC_BY_PATH = {
+    f"{directory}/{filename}": (project, kind)
+    for project, directory in PUBLIC_PROJECTS
+    for kind, filename, _label in DOC_KINDS
+}
+_PROJECT_ORDER = {
+    project: order for order, (project, _directory) in enumerate(PUBLIC_PROJECTS)
+}
+_KIND_ORDER = {kind: order for order, (kind, _filename, _label) in enumerate(DOC_KINDS)}
 
 
 def _basename(rel_path: str) -> str:
@@ -86,9 +68,9 @@ def derive_title(content: str, rel_path: str) -> str:
     the literal "README", since "README" alone carries no information about
     which project it is.
     """
-    m = _H1.search(content)
-    if m:
-        return m.group(1).strip()
+    match = _H1.search(content)
+    if match:
+        return match.group(1).strip()
     name = _basename(rel_path)
     if name == "README.md":
         return rel_path.rsplit("/", 2)[-2]
@@ -96,81 +78,17 @@ def derive_title(content: str, rel_path: str) -> str:
 
 
 def _should_index(rel_path: str) -> bool:
-    """True if a repo-relative path belongs on the public docs site.
-
-    Allowlist (conservative):
-      - docs/decisions/**/*.md   (the ADR tree, incl. index.md, any depth)
-      - projects/**/README.md    (project READMEs, any depth), excluding
-                                  vendored subtrees in _VENDORED_PREFIXES
-    Everything else (docs/plans/**, hand-written docs/*.md reference docs,
-    non-README project files, vendored README subtrees, the per-file
-    blocklist, the manifest itself) is excluded.
-    """
-    if not rel_path.endswith(".md"):
-        return False
-    if rel_path in _BLOCKLIST or rel_path == MANIFEST_REL:
-        return False
-    if rel_path.startswith(DECISIONS_PREFIX):
-        return True
-    if rel_path.startswith(PROJECTS_PREFIX) and rel_path.endswith(README_SUFFIX):
-        return not any(rel_path.startswith(p) for p in _VENDORED_PREFIXES)
-    return False
+    """Return whether ``rel_path`` is an exact public project/doc pair."""
+    return rel_path in _DOC_BY_PATH
 
 
-def make_slug(rel_path: str) -> str:
-    """URL path under /docs/ for a repo doc path.
-
-    docs/decisions/agents/001-x.md -> decisions/agents/001-x
-    docs/decisions/index.md        -> decisions            (index collapses)
-    projects/firecracker/README.md -> projects/firecracker  (README collapses)
-    """
-    s = rel_path[len(DOCS_PREFIX) :] if rel_path.startswith(DOCS_PREFIX) else rel_path
-    if s.endswith(".md"):
-        s = s[:-3]
-    if s.endswith("/index"):
-        s = s[: -len("/index")]
-    elif s.endswith("/README"):
-        s = s[: -len("/README")]
-    return s
-
-
-def section_for(rel_path: str) -> str:
-    return "Decisions" if rel_path.startswith(DECISIONS_PREFIX) else "Projects"
-
-
-def category_for(rel_path: str) -> str:
-    """ADR category (the dir segment under docs/decisions/); "" otherwise."""
-    if not rel_path.startswith(DECISIONS_PREFIX):
-        return ""
-    rest = rel_path[len(DECISIONS_PREFIX) :]
-    if "/" not in rest:
-        return ""  # docs/decisions/index.md
-    return rest.split("/", 1)[0]
-
-
-def _numeric_prefix(rel_path: str) -> int:
-    m = _NUM.match(_basename(rel_path))
-    return int(m.group(1)) if m else 0
-
-
-def _sort_key(rel_path: str):
-    """Deterministic sidebar ordering.
-
-    Projects (READMEs) first, alphabetical by path, then the ADR tree: the
-    decisions index, then each category alphabetically with its ADRs by
-    numeric prefix.
-    """
-    if section_for(rel_path) == "Projects":
-        return (0, "", 0, rel_path)
-    cat = category_for(rel_path)
-    if cat == "":
-        return (1, "", -1, rel_path)  # decisions/index.md sorts before categories
-    return (1, cat, _numeric_prefix(rel_path), rel_path)
+def make_slug(project: str, kind: str) -> str:
+    """Return the URL path below ``/docs`` for a project document kind."""
+    return project if kind == "readme" else f"{project}/{kind}"
 
 
 def iter_doc_paths(root: Path) -> list[str]:
-    """Tracked allowlisted doc paths. Uses ``git ls-files`` so the set is exactly
-    the committed files (deterministic, no symlinked build artifacts)."""
+    """Return tracked public doc paths in project and document-kind order."""
     result = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=root,
@@ -179,31 +97,35 @@ def iter_doc_paths(root: Path) -> list[str]:
         check=True,
         timeout=120,
     )
-    tracked = {p for p in result.stdout.split("\0") if p}
-    # A blocklist entry that no longer exists means a rename slipped past the
-    # guard: the renamed file would publish while every test still passed.
-    dead = sorted(_BLOCKLIST - tracked)
-    if dead:
-        raise SystemExit(f"_BLOCKLIST names untracked paths: {', '.join(dead)}")
-    return sorted({p for p in tracked if _should_index(p)})
+    tracked = {path for path in result.stdout.split("\0") if path}
+    return [path for path in _DOC_BY_PATH if path in tracked]
 
 
 def build_manifest(root: Path, paths: list[str]) -> list[dict]:
-    """Manifest entries in stable sidebar order. ``order`` is the entry index."""
-    ordered = sorted(paths, key=_sort_key)
+    """Build manifest entries in stable project then document-kind order."""
+    public_paths = [path for path in paths if _should_index(path)]
+    ordered = sorted(
+        public_paths,
+        key=lambda path: (
+            _PROJECT_ORDER[_DOC_BY_PATH[path][0]],
+            _KIND_ORDER[_DOC_BY_PATH[path][1]],
+        ),
+    )
     entries: list[dict] = []
-    for rel in ordered:
-        if not (root / rel).is_file():
+    for rel_path in ordered:
+        source = root / rel_path
+        if not source.is_file():
             continue
-        # Strip NUL bytes (0x00) so the body is JSON-safe and storable; the docs
-        # are first-party markdown, but mirror the repo_docs generator's guard.
-        content = (root / rel).read_text(encoding="utf-8").replace("\x00", "")
+        # Strip NUL bytes so the body is JSON-safe and storable.
+        content = source.read_text(encoding="utf-8").replace("\x00", "")
+        project, kind = _DOC_BY_PATH[rel_path]
         entries.append(
             {
-                "path": rel,
-                "slug": make_slug(rel),
-                "title": derive_title(content, rel),
-                "section": section_for(rel),
+                "path": rel_path,
+                "slug": make_slug(project, kind),
+                "project": project,
+                "kind": kind,
+                "title": derive_title(content, rel_path),
                 "order": len(entries),
                 "content": content,
             }
@@ -216,8 +138,6 @@ def main() -> int:
     out = root / MANIFEST_REL
     out.parent.mkdir(parents=True, exist_ok=True)
     entries = build_manifest(root, iter_doc_paths(root))
-    # indent=2 keeps the committed manifest diff-friendly; insertion order of
-    # each entry's keys is fixed above so the serialization is stable.
     out.write_text(
         json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
