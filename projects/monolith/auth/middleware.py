@@ -24,9 +24,12 @@ ASGIApp = Callable[
 class PrincipalMiddleware:
     """Resolve bearer identity before dispatching an HTTP ASGI request.
 
-    Streamable HTTP resolves the principal for every JSON-RPC POST. A server
-    mounting an SSE transport would reintroduce principal pinning to the stream
-    opener.
+    The principal a tool reads via current_principal() follows the message only
+    when the MCP mount is stateless streamable HTTP (see framework/core.py).
+    Under SSE, or stateful streamable HTTP, the server task is started by the
+    session opener and every later message runs in that task's context, so
+    current_principal() stays pinned to the opener even though this middleware
+    resolved (and may have rejected) each POST correctly.
     """
 
     def __init__(self, app: ASGIApp, resolver: TokenResolver) -> None:

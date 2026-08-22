@@ -539,15 +539,25 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
         for m in modules:
             if m.register_mcp is not None:
                 m.register_mcp()
-        raw_mcp_http_app = monolith_mcp.http_app(transport="http", path="/")
+        raw_mcp_http_app = monolith_mcp.http_app(
+            transport="http", path="/", stateless_http=True
+        )
         mcp_lifespan = raw_mcp_http_app.lifespan
 
         # Context Forge reaches this mount over ClusterIP, without the private
         # ingress gate. Verify bearer material here instead of trusting proxy
-        # identity headers that this path never receives. On streamable HTTP
-        # every JSON-RPC message is its own POST, so PrincipalMiddleware resolves
-        # the principal per message and current_principal() inside a tool sees the
-        # caller of that message (this is the #4569 fix path).
+        # identity headers that this path never receives.
+        #
+        # stateless_http=True is load-bearing for identity, not an optimisation.
+        # Stateful streamable HTTP starts the MCP server task once per session
+        # from the first POST and feeds later messages to it over a memory
+        # stream, so the contextvar PrincipalMiddleware sets on each POST never
+        # reaches the tool: current_principal() would stay pinned to the session
+        # opener (the SSE defect, #4569, in a new coat). Stateful mode also
+        # never reaps sessions (session_idle_timeout is None), so every
+        # initialize that walks away leaks a task for the pod's lifetime.
+        # Stateless mode builds a transport per request in that request's own
+        # task, so the principal a tool reads is the caller of that message.
         from auth.api import PrincipalMiddleware, get_default_resolver
 
         mcp_http_app = PrincipalMiddleware(
