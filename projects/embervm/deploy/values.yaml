@@ -24,6 +24,24 @@ rootfsReclaim:
   # stops the retention sweep from reaching the node at all).
   enabled: "1"
 
+# Node-confirmed destroy ordering (ADR embervm/014 decision 5, #4758). ARMED
+# 2026-08-22. With the gate on, a destroy records a durable destroying intent,
+# runs the node-confirmed teardown RPC, and records destroyed ONLY when the
+# node confirms; an unconfirmed attempt leaves the session in :destroying for
+# the reconcile loop to re-drive (fail closed), instead of the legacy
+# tear-down-locally-then-record ordering.
+#
+# The chart's arming contract asked for dev to exercise the ordering first.
+# Met by the embervm-dev drill of 2026-08-22 (chart 0.27.4): create -> destroy
+# ran the full gate-on lifecycle live, including the fail-closed unconfirmed
+# -> left-:destroying -> reconcile-confirm path; evidence is on issue #4758.
+# ADR 034's harness lane remains future work and is not a dependency of this
+# flip. Costs one control-plane roll (Recreate); prod destroys are unaffected
+# while no session is being destroyed.
+#
+# Rollback: set back to false and bump the chart.
+nodeConfirmedDestroy: true
+
 opLog:
   # Postgres op-log tier (ADR embervm/007), hosted as its own database on the
   # existing monolith-pg CNPG cluster. This retires the node-pinned RWO SQLite
