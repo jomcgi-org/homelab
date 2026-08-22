@@ -35,6 +35,7 @@
   import SessionWalkthrough from "./SessionWalkthrough.svelte";
   import WalkthroughNarrative from "./WalkthroughNarrative.svelte";
   import JumpPalette from "./JumpPalette.svelte";
+  import { sessionTitle } from "./jump.js";
   import {
     defaultSessionView,
     SESSION_VIEW_CONVERSATION,
@@ -237,21 +238,6 @@
 
   function isActive(session) {
     return session?.status === "running" || Number(session?.pending_count) > 0;
-  }
-
-  function shortId(session) {
-    return String(session?.local_session_id || session?.id || "session").slice(
-      0,
-      8,
-    );
-  }
-
-  function sessionTitle(session) {
-    return (
-      firstLine(session?.title) ||
-      (session?.repo ? `${session.repo}@${session.branch || "main"}` : "") ||
-      shortId(session)
-    );
   }
 
   function formatRepoContext(session) {
@@ -743,13 +729,7 @@
 
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
-    if (sidebarCollapsed) {
-      searchController?.abort();
-      searchController = null;
-      searchQuery = "";
-      searchResults = null;
-      searchLoading = false;
-    }
+    if (sidebarCollapsed) clearTurnSearch();
     try {
       document.documentElement.setAttribute(
         "data-agents-rail",
@@ -800,7 +780,6 @@
     const controller = new AbortController();
     searchController = controller;
     searchLoading = true;
-    searchResults = [];
     try {
       const response = await fetch(
         `/agents/search?q=${encodeURIComponent(query)}&limit=30`,
@@ -808,11 +787,15 @@
           signal: controller.signal,
         },
       );
-      if (!response.ok) throw new Error("Search unavailable");
+      if (!response.ok) throw new Error(P.labels.turnSearchUnavailable);
       const body = await response.json();
-      if (!controller.signal.aborted) searchResults = body.results ?? [];
-    } catch {
+      if (!controller.signal.aborted) {
+        searchResults = body.results ?? [];
+        errorMessage = null;
+      }
+    } catch (error) {
       // Keep the previous result set for both aborted and failed requests.
+      if (!controller.signal.aborted) errorMessage = error.message;
     } finally {
       if (searchController === controller) {
         searchController = null;
@@ -824,6 +807,7 @@
   async function searchTurnsFromJump(text) {
     const query = text.trim();
     if (sidebarCollapsed) toggleSidebar();
+    if (mobileTranscript) returnToSessionList();
     searchQuery = query;
     await runSearch(query);
   }
@@ -1295,7 +1279,12 @@
           {#if searchResults !== null}
             <div class="group">
               <div class="turn-search-head">
-                <span>{turnSearchHeading}</span>
+                <span class="turn-search-title">{turnSearchHeading}</span>
+                {#if searchLoading}
+                  <span class="turn-search-loading mono"
+                    >{P.labels.searching}</span
+                  >
+                {/if}
                 <button
                   type="button"
                   aria-label={P.labels.clearTurnSearch}
@@ -1873,7 +1862,7 @@
     </div>
   {/if}
 
-  {#if !mobileTranscript}
+  {#if !mobileTranscript && !showNewPanel}
     <button
       class="jump"
       type="button"
@@ -1894,7 +1883,6 @@
     {sessions}
     {runs}
     {terminalRuns}
-    {vms}
     {inbox}
     onClose={closeJump}
     onOpenRun={selectRun}
@@ -2309,11 +2297,17 @@
     color: var(--muted);
     font-size: var(--size-meta);
   }
-  .turn-search-head span {
+  .turn-search-title {
     min-width: 0;
+    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .turn-search-loading {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 11.5px;
   }
   .turn-search-head button {
     width: 36px;
@@ -2995,6 +2989,11 @@
   }
   /* Matches MOBILE_MEDIA_QUERY at the top of this file */
   @media (max-width: 760px) {
+    /* The floating Jump pill sits in the bottom 88px; keep the last inbox
+       row (the earlier-sessions link) above it. */
+    .inbox-body {
+      padding-bottom: 104px;
+    }
     .topbar {
       gap: 8px;
       padding: 0 8px;
