@@ -8,7 +8,9 @@ vi.mock("$lib/public/posts/posts-manifest.json", () => ({
       title: "Example",
       date: "2026-01-15",
       summary: "One sentence.",
-      content: "# Body\n\nHello **world**.\n",
+      content:
+        "# Body\n\nHello **world**.\n\n[rel](./other.md)\n\n" +
+        '[link](https://example.com)\n\n<script>alert("nope")</script>\n',
     },
   ],
 }));
@@ -40,5 +42,36 @@ describe("/public/posts/[slug] load", () => {
       "cache-control": DOCS_CACHE_CONTROL,
       etag: '"testbuild-posts-example"',
     });
+  });
+
+  it("renders an unpublished relative markdown link as plain text", () => {
+    const result = load({
+      params: { slug: "example" },
+      setHeaders: vi.fn(),
+    });
+
+    expect(result.html).toContain("<p>rel</p>");
+    expect(result.html).not.toContain('href="./other.md"');
+  });
+
+  it("keeps external link safety attributes", () => {
+    const result = load({
+      params: { slug: "example" },
+      setHeaders: vi.fn(),
+    });
+
+    expect(result.html).toContain(
+      '<a href="https://example.com" target="_blank" rel="noopener noreferrer">link</a>',
+    );
+  });
+
+  it("escapes raw script tags", () => {
+    const result = load({
+      params: { slug: "example" },
+      setHeaders: vi.fn(),
+    });
+
+    expect(result.html).toContain('&lt;script&gt;alert("nope")&lt;/script&gt;');
+    expect(result.html).not.toContain("<script>");
   });
 });

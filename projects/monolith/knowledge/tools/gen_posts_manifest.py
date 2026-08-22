@@ -1,9 +1,9 @@
 """Generate the frontmatter-gated manifest for the public /posts route.
 
 Tracked Markdown files under ``docs/posts`` are considered, except README.md.
-Only files that declare the boolean ``public: true`` are parsed and validated
-for publication. The committed manifest contains the metadata and post bodies
-used by the SvelteKit server routes.
+Files with a ``public`` key are parsed and validated, and only those declaring
+the exact gate ``public: true`` are published. The committed manifest contains
+the metadata and post bodies used by the SvelteKit server routes.
 """
 
 from __future__ import annotations
@@ -22,7 +22,8 @@ MANIFEST_REL = "projects/monolith/frontend/src/lib/public/posts/posts-manifest.j
 _FILENAME = re.compile(r"^(\d{4}-\d{2}-\d{2})-(.+)\.md$")
 _KEY_VALUE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):[ \t]*(.*?)[ \t]*$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_PUBLIC_TRUE = re.compile(r"^public:[ \t]*true[ \t]*$")
+_PUBLIC_KEY = re.compile(r"^[ \t]*public[ \t]*:")
+_PUBLIC_VALUES = {"public: true": True, "public: false": False}
 
 
 def _should_index(rel_path: str) -> bool:
@@ -54,17 +55,21 @@ def _frontmatter_lines(source: str) -> tuple[list[str], str]:
     raise ValueError("missing closing frontmatter delimiter")
 
 
-def _declares_public_true(source: str) -> bool:
-    """Find the publication gate without validating an unpublished draft."""
+def _declared_public_value(source: str) -> bool | None:
+    """Return the strict publication gate, or None for an ungated draft."""
     lines = source.splitlines()
     if not lines or lines[0] != "---":
-        return False
+        return None
     for line in lines[1:]:
         if line == "---":
             break
-        if _PUBLIC_TRUE.fullmatch(line):
-            return True
-    return False
+        if _PUBLIC_KEY.match(line):
+            if line not in _PUBLIC_VALUES:
+                raise ValueError(
+                    "public must be exactly 'public: true' or 'public: false'"
+                )
+            return _PUBLIC_VALUES[line]
+    return None
 
 
 def _parse_value(raw: str):
@@ -117,7 +122,14 @@ def _validate_public_post(rel_path: str, metadata: dict[str, object]) -> None:
     except ValueError as exc:
         raise ValueError("date must be a valid calendar date") from exc
 
-    make_slug(rel_path)
+    filename_match = _FILENAME.fullmatch(Path(rel_path).name)
+    if not filename_match:
+        raise ValueError("post filename must match YYYY-MM-DD-<slug>.md")
+    filename_date = filename_match.group(1)
+    if date_value != filename_date:
+        raise ValueError(
+            f"frontmatter date {date_value} does not match filename date {filename_date}"
+        )
 
 
 def iter_post_paths(root: Path) -> list[str]:
@@ -137,21 +149,34 @@ def iter_post_paths(root: Path) -> list[str]:
 
 def build_manifest(root: Path, paths: list[str]) -> list[dict]:
     entries: list[dict] = []
+    path_by_slug: dict[str, str] = {}
     for rel_path in paths:
         if not _should_index(rel_path) or not (root / rel_path).is_file():
             continue
         source = (root / rel_path).read_text(encoding="utf-8")
-        if not _declares_public_true(source):
-            continue
         try:
+            public = _declared_public_value(source)
+            if public is None:
+                continue
             metadata, body = parse_frontmatter(source)
+            if metadata.get("public") is not public:
+                raise ValueError("public gate did not parse as a boolean")
+            if not public:
+                continue
             _validate_public_post(rel_path, metadata)
         except ValueError as exc:
             raise ValueError(f"{rel_path}: {exc}") from exc
+        slug = make_slug(rel_path)
+        previous_path = path_by_slug.get(slug)
+        if previous_path is not None:
+            raise ValueError(
+                f"duplicate post slug '{slug}' in {previous_path} and {rel_path}"
+            )
+        path_by_slug[slug] = rel_path
         entries.append(
             {
                 "path": rel_path,
-                "slug": make_slug(rel_path),
+                "slug": slug,
                 "title": metadata["title"],
                 "date": metadata["date"],
                 "summary": metadata["summary"],

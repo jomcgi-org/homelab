@@ -73,6 +73,86 @@ def test_malformed_frontmatter_on_public_post_raises(tmp_path: Path):
         build_manifest(tmp_path, [path])
 
 
+def test_duplicate_public_post_slugs_raise(tmp_path: Path):
+    first = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(date="2026-01-15"),
+    )
+    second = write_post(
+        tmp_path,
+        "2026-01-20-example.md",
+        public_frontmatter(date="2026-01-20"),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        build_manifest(tmp_path, [first, second])
+
+    message = str(exc_info.value)
+    assert "example" in message
+    assert "2026-01-15-example.md" in message
+    assert "2026-01-20-example.md" in message
+
+
+@pytest.mark.parametrize(
+    "public_line",
+    ['public: "true"', "public: yes", "public: True", "public:", "  public: true"],
+)
+def test_invalid_public_gate_raises(tmp_path: Path, public_line: str):
+    frontmatter = (
+        f"title: Example\ndate: 2026-01-15\nsummary: One sentence.\n{public_line}\n"
+    )
+    path = write_post(tmp_path, "2026-01-15-example.md", frontmatter)
+
+    with pytest.raises(ValueError, match="public must be exactly"):
+        build_manifest(tmp_path, [path])
+
+
+def test_garbage_frontmatter_without_public_key_is_skipped(tmp_path: Path):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-draft.md",
+        "this is not valid frontmatter\n",
+    )
+
+    assert build_manifest(tmp_path, [path]) == []
+
+
+def test_file_without_frontmatter_is_skipped(tmp_path: Path):
+    posts = tmp_path / "docs" / "posts"
+    posts.mkdir(parents=True)
+    post = posts / "2026-01-15-draft.md"
+    post.write_text("# Draft\n\nNo frontmatter here.\n", encoding="utf-8")
+
+    assert build_manifest(tmp_path, ["docs/posts/2026-01-15-draft.md"]) == []
+
+
+def test_frontmatter_date_must_match_filename_date(tmp_path: Path):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(date="2026-01-20"),
+    )
+
+    with pytest.raises(ValueError, match="does not match filename date"):
+        build_manifest(tmp_path, [path])
+
+
+def test_crlf_input_is_parsed(tmp_path: Path):
+    posts = tmp_path / "docs" / "posts"
+    posts.mkdir(parents=True)
+    post = posts / "2026-01-15-example.md"
+    post.write_bytes(
+        b"---\r\ntitle: Example\r\ndate: 2026-01-15\r\n"
+        b"summary: One sentence.\r\npublic: true\r\n---\r\nBody.\r\n"
+    )
+
+    entries = build_manifest(tmp_path, ["docs/posts/2026-01-15-example.md"])
+
+    assert entries[0]["slug"] == "example"
+    assert entries[0]["content"] == "Body.\n"
+
+
 def test_slug_strips_date_prefix():
     assert make_slug("docs/posts/2026-01-15-example.md") == "example"
 

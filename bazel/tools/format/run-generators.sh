@@ -12,8 +12,8 @@
 # Generators covered (each self-locates via BUILD_WORKSPACE_DIRECTORY, so this
 # wrapper only cd's to the workspace and invokes them):
 #   - home-cluster kustomization, the push-all BUILD list, monolith routes,
-#     the two doc-index manifests
-#     (repo_docs_manifest.ndjson + the public docs-manifest.json), the
+#     the three manifests
+#     (repo_docs_manifest.ndjson + public docs and posts manifests), the
 #     ADR 036 orchestrator context bundle (orchestrator_bundle.md), and the
 #     guest env-readmes (ADR agents/044: environment.md per guest image,
 #     derived from that guest's apko.lock.json + env-notes.md).
