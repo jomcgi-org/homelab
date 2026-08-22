@@ -5,7 +5,7 @@
 # s3-identities.json with its EmberVM credential placeholders substituted.
 s3Identities:
   onepassword:
-    itemPath: ""
+    itemPath: "vaults/k8s-homelab/items/embervm-store"
 
 seaweedfs:
   global:
@@ -172,10 +172,14 @@ seaweedfs:
     enabled: true
     replicas: 1
     port: 8333
-    enableAuth: false
-    # A separate flip PR sets enableAuth: true and existingConfigSecret:
-    # seaweedfs-s3-identities. Before that flip, inspect weed shell s3.configure
-    # for stale filer-stored identities from incident 2026-06-19.
+    # Auth enabled 2026-08-22 (#4708). Identities come from s3-identities.json
+    # via the seaweedfs-s3-identities Secret: the embervm identity owns the
+    # ember buckets, and the placeholder keys every other consumer uses today
+    # keep exactly their previous reach on every non-ember bucket (#5047
+    # migrates them). Preflight that day: `s3.configure` in weed shell showed
+    # zero filer-stored identities, so this file config is not shadowed.
+    enableAuth: true
+    existingConfigSecret: seaweedfs-s3-identities
     # Pre-populate OTEL annotation to match Kyverno injection (prevents ArgoCD drift)
     # Prometheus annotations enable SigNoz autodiscovery
     podAnnotations:
