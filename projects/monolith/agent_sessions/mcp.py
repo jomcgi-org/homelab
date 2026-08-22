@@ -773,6 +773,66 @@ async def monolith_voice_ui_dismiss(surface: str | None = None) -> dict:
     return await asyncio.to_thread(voice_ui.dismiss, surface, subject, authority)
 
 
+def _record_swarm_decision(
+    workflow_id: str,
+    node_key: str,
+    decision: str,
+    note: str | None,
+    actor_subject: str,
+    actor_authority: str,
+) -> dict:
+    from swarm import store as swarm_store
+
+    with Session(get_engine()) as session:
+        idempotent = (
+            swarm_store.get_open_decision(session, workflow_id, node_key) is None
+        )
+        row = swarm_store.record_decision(
+            session,
+            workflow_id,
+            node_key,
+            decision,
+            note,
+            actor_subject,
+            actor_authority,
+        )
+        return swarm_store.decision_response(row, idempotent)
+
+
+@mcp.tool
+async def monolith_agent_run_decide(
+    workflow_id: str,
+    node_key: str,
+    decision: str,
+    note: str | None = None,
+) -> dict:
+    """Record a decision for a paused swarm run and return immediately.
+
+    Args:
+        workflow_id: The swarm workflow waiting for a decision.
+        node_key: The blocked node named by the decision request.
+        decision: One of the options recorded on the open decision row.
+        note: Optional context to record with the decision.
+    """
+    from swarm.store import InvalidDecision, NoOpenDecision
+
+    principal = current_principal()
+    try:
+        return await asyncio.to_thread(
+            _record_swarm_decision,
+            workflow_id,
+            node_key,
+            decision,
+            note,
+            principal.subject,
+            str(principal.authority),
+        )
+    except NoOpenDecision:
+        return {"accepted": False, "error": "no open decision for this node"}
+    except InvalidDecision as exc:
+        return {"accepted": False, "error": str(exc)}
+
+
 @mcp.tool
 async def monolith_agent_session_send(
     session_id: int, message: str, model: str | None = None

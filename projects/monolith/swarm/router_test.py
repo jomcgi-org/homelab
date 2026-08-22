@@ -1,14 +1,70 @@
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from sqlmodel import Session, create_engine
 
 import swarm.router as swarm_router
+from swarm import store as swarm_store
+from swarm.models import SwarmDecision
 
 
 def client():
     app = FastAPI()
     app.include_router(swarm_router.router)
     return TestClient(app)
+
+
+@pytest.fixture
+def decision_engine(monkeypatch, tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'swarm_router_decision_test.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    table = SwarmDecision.__table__
+    schema = table.schema
+    table.schema = None
+    try:
+        table.create(engine)
+        monkeypatch.setattr("core.db.get_engine", lambda: engine)
+        yield engine
+    finally:
+        table.schema = schema
+
+
+@pytest.fixture
+def decision_api(monkeypatch, decision_engine):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+
+    class FakeDBOS:
+        def __init__(self):
+            self.attributes = []
+
+        async def update_workflow_attributes_async(self, workflow_id, values):
+            self.attributes.append((workflow_id, values))
+
+    dbos = FakeDBOS()
+
+    def compose(_dbos, workflow_id):
+        if workflow_id != "wf-1":
+            raise HTTPException(status_code=404, detail="workflow not found")
+        return {"workflow_id": workflow_id}
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: dbos)
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(swarm_router, "_compose_run_view", compose)
+    return client(), dbos
+
+
+def _open_decision(engine, *, options=None):
+    with Session(engine) as session:
+        return swarm_store.open_decision(
+            session,
+            "wf-1",
+            "push_gate",
+            "push_gate",
+            options or ["approve", "send_back"],
+            "Approve the unverified branch?",
+        )
 
 
 def test_disabled_returns_503(monkeypatch):
@@ -342,6 +398,111 @@ def test_follower_replica_returns_503(monkeypatch):
     )
     assert response.status_code == 503
     assert "not launched" in response.json()["detail"]
+
+
+def test_decide_run_records_header_actor(decision_api, decision_engine):
+    test_client, dbos = decision_api
+    _open_decision(decision_engine)
+
+    response = test_client.post(
+        "/api/swarm/runs/wf-1/nodes/push_gate/decision",
+        headers={"Cf-Access-Authenticated-User-Email": "alice@example.com"},
+        json={"decision": "approve", "note": "Ship it."},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "workflow_id": "wf-1",
+        "node_key": "push_gate",
+        "decision": "approve",
+        "decided_at": body["decided_at"],
+        "actor_subject": "alice@example.com",
+        "idempotent": False,
+    }
+    assert body["decided_at"] is not None
+    assert dbos.attributes == [
+        (
+            "wf-1",
+            {
+                "decided_by": {
+                    "actor": "alice@example.com",
+                    "at": body["decided_at"],
+                }
+            },
+        )
+    ]
+    with Session(decision_engine) as session:
+        row = session.get(SwarmDecision, 1)
+        assert row.decision_note == "Ship it."
+        assert row.actor_authority == "cloudflare-access"
+
+
+def test_decide_run_repeat_is_idempotent_and_preserves_anonymous_actor(
+    decision_api, decision_engine
+):
+    test_client, _dbos = decision_api
+    _open_decision(decision_engine)
+
+    first = test_client.post(
+        "/api/swarm/runs/wf-1/nodes/push_gate/decision",
+        json={"decision": "send_back"},
+    )
+    second = test_client.post(
+        "/api/swarm/runs/wf-1/nodes/push_gate/decision",
+        headers={"Cf-Access-Authenticated-User-Email": "later@example.com"},
+        json={"decision": "send_back", "note": "A repeated click."},
+    )
+
+    assert first.status_code == 200
+    assert first.json()["actor_subject"] == "operator"
+    assert first.json()["idempotent"] is False
+    assert second.status_code == 200
+    assert second.json()["actor_subject"] == "operator"
+    assert second.json()["decided_at"] == first.json()["decided_at"]
+    assert second.json()["idempotent"] is True
+    with Session(decision_engine) as session:
+        row = session.get(SwarmDecision, 1)
+        assert row.actor_authority == "anonymous"
+        assert row.decision_note is None
+
+
+def test_decide_run_returns_404_for_unknown_workflow(decision_api):
+    test_client, _dbos = decision_api
+
+    response = test_client.post(
+        "/api/swarm/runs/missing/nodes/push_gate/decision",
+        json={"decision": "approve"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "workflow not found"}
+
+
+def test_decide_run_returns_409_without_open_decision(decision_api):
+    test_client, _dbos = decision_api
+
+    response = test_client.post(
+        "/api/swarm/runs/wf-1/nodes/push_gate/decision",
+        json={"decision": "approve"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "no open decision for this node"}
+
+
+def test_decide_run_returns_422_with_allowed_options(decision_api, decision_engine):
+    test_client, _dbos = decision_api
+    _open_decision(decision_engine)
+
+    response = test_client.post(
+        "/api/swarm/runs/wf-1/nodes/push_gate/decision",
+        json={"decision": "maybe"},
+    )
+
+    assert response.status_code == 422
+    assert "approve" in response.json()["detail"]
+    assert "send_back" in response.json()["detail"]
 
 
 def test_cancel_reaps_after_dbos_cancel(monkeypatch):

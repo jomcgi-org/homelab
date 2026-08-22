@@ -7,9 +7,6 @@ from sqlmodel import Session, select
 
 from swarm.models import SwarmDecision
 
-# The decision endpoint in #5128 is the only writer of decided_at for human
-# answers. Keep decision waits disabled until that endpoint is deployed.
-
 
 class NoOpenDecision(LookupError):
     pass
@@ -17,6 +14,17 @@ class NoOpenDecision(LookupError):
 
 class InvalidDecision(ValueError):
     pass
+
+
+def decision_response(row: SwarmDecision, idempotent: bool) -> dict:
+    return {
+        "workflow_id": row.workflow_id,
+        "node_key": row.node_key,
+        "decision": row.decision,
+        "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+        "actor_subject": row.actor_subject,
+        "idempotent": idempotent,
+    }
 
 
 def get_open_decision(

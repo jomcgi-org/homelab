@@ -19,7 +19,7 @@ def test_defaults(monkeypatch):
     assert config.max_attempts() == 2
     assert config.max_review_cycles() == 2
     assert config.turn_timeout_seconds() == 1800
-    assert config.decision_timeout_seconds() == 0
+    assert config.decision_timeout_seconds() == 86400
     assert config.codex_concurrency() == 2
 
 

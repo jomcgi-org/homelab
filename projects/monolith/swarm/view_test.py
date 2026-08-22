@@ -1,6 +1,8 @@
 import re
 from datetime import datetime, timezone
 
+import pytest
+
 from swarm.view import (
     _disposition,
     _structured_verdict,
@@ -125,6 +127,126 @@ def test_escalated_success_carries_branch_head_and_no_commit():
     assert run["nodes"][1]["evidence"]["kind"] == "branch_head"
     assert run["nodes"][2]["verdict"] is None
     assert run["deviations"] == []
+
+
+def test_compose_run_populates_blocked_on_from_open_decision():
+    status = Status("wf-blocked", "PENDING", ["task", "repo", "main"])
+    requested_at = datetime(2026, 8, 22, 12, 30, tzinfo=timezone.utc)
+
+    run = compose_run(
+        DBOS(Workflow(status, {"plan": FX4_EXPECTED_PLAN})),
+        status.workflow_id,
+        [],
+        "unknown",
+        [
+            {
+                "id": 42,
+                "node_key": "push_gate",
+                "kind": "push_gate",
+                "options": ["approve", "send_back"],
+                "note": "No branch movement was verified.",
+                "requested_at": requested_at,
+            }
+        ],
+    )
+
+    push_gate = run["nodes"][1]
+    assert push_gate["state"] == "blocked"
+    assert push_gate["blocked_on"] == {
+        "kind": "human",
+        "note": "No branch movement was verified.",
+        "since": "2026-08-22T12:30:00Z",
+        "decision_id": 42,
+        "options": ["approve", "send_back"],
+        "decision_kind": "push_gate",
+    }
+    assert run["nodes"][0]["blocked_on"] is None
+    assert run["nodes"][2]["blocked_on"] is None
+
+
+def test_compose_master_needs_fires_for_open_human_decision():
+    status = Status("wf-needs", "PENDING", ["task", "repo", "main"])
+
+    class ListingDBOS(DBOS):
+        def list_workflows(self, **kwargs):
+            if "parent_workflow_id" in kwargs:
+                return []
+            return [self.workflow]
+
+    loaded = []
+
+    def load_decisions(workflow_id):
+        loaded.append(workflow_id)
+        return [
+            {
+                "id": 43,
+                "node_key": "review",
+                "kind": "review_escalation",
+                "options": ["retry", "send_back"],
+                "note": "The retry did not move the branch.",
+                "requested_at": datetime(2026, 8, 22, tzinfo=timezone.utc),
+            }
+        ]
+
+    result = compose_master(
+        ListingDBOS(Workflow(status, {"plan": FX4_EXPECTED_PLAN})),
+        True,
+        {status.workflow_id: []},
+        "unknown",
+        decision_loader=load_decisions,
+    )
+
+    assert loaded == [status.workflow_id]
+    assert result["runs"][0]["current"] == {"label": "review", "state": "blocked"}
+    assert result["runs"][0]["needs"] == {
+        "kind": "human",
+        "reason": "waiting on your decision",
+    }
+
+
+@pytest.mark.parametrize("decision", ["send_back", "expired"])
+def test_compose_run_surfaces_decision_record_on_owning_node(decision):
+    decision_record = {
+        "decision_id": 44,
+        "node_key": "push_gate",
+        "kind": "push_gate",
+        "decision": decision,
+        "ask": "No branch movement was verified.",
+        "decision_note": "Do not ship this." if decision != "expired" else None,
+        "actor_subject": "alice@example.com" if decision != "expired" else None,
+        "actor_authority": "cloudflare-access" if decision != "expired" else None,
+        "decided_at": "2026-08-22T12:35:00+00:00",
+    }
+    status = Status(
+        "wf-decision-record",
+        "SUCCESS",
+        ["task", "repo", "main"],
+        {"status": "escalated", "decision": decision_record},
+    )
+
+    run = compose_run(DBOS(Workflow(status)), status.workflow_id, [], "unknown")
+
+    assert run["nodes"][1]["decision_record"] == decision_record
+    assert run["nodes"][1]["decision"] is None
+    assert run["nodes"][0]["decision_record"] is None
+    assert run["nodes"][2]["decision_record"] is None
+
+
+def test_disposition_names_recorded_decision_and_actor():
+    disposition = _disposition(
+        "SUCCESS",
+        "escalated",
+        {
+            "decision": {
+                "decision": "send_back",
+                "actor_subject": "alice@example.com",
+            }
+        },
+        [],
+        {},
+    )
+
+    assert disposition["reason"] == "decided send_back by alice@example.com"
 
 
 def test_composed_run_attaches_mechanical_deviations():
