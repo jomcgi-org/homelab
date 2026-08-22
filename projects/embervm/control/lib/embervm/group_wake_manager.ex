@@ -510,7 +510,7 @@ defmodule Embervm.GroupWakeManager do
          # cold pick). A no-eligible-instance result skips the restore (the delegated
          # wake fails/fresh-boots as it would without a restore).
          {:ok, dial_id} <- select_restore_instance(state, node_id, workload) do
-      restore_set(state, dial_id, node_id, workload, set_id)
+      restore_set(state, dial_id, node_id, workload, set_id, instance_id)
       :ok
     else
       _ -> :ok
@@ -578,11 +578,13 @@ defmodule Embervm.GroupWakeManager do
   # the node-name alias. `node_id` is kept for the vendor stamp only (see the
   # stateful/serving restore notes: RestoreVendor keys on the node name, and the
   # vendor is identical across a node's instances).
-  defp restore_set(state, dial_id, node_id, workload, set_id) do
+  defp restore_set(state, dial_id, node_id, workload, set_id, instance_id) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_GROUP_SET, workload: workload, ref: set_id}
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: workload}}
 
-    case safe_restore_artifact(state, dial_id, node_id, req) do
+    ctx = %{principal: wake_principal(workload), lineage: instance_id, generation: 0}
+
+    case safe_restore_artifact(state, dial_id, node_id, req, ctx) do
       {:ok, resp} ->
         record_restore(state, workload, set_id, resp)
         :ok
@@ -601,10 +603,18 @@ defmodule Embervm.GroupWakeManager do
   # Dial the restore on `dial_id` (the boot's instance, Step 4) but stamp the vendor
   # off `node_id` (the node-name anchor RestoreVendor can resolve). Transport-death
   # invalidation is keyed on `dial_id` (the channel we actually dialled).
-  defp safe_restore_artifact(state, dial_id, node_id, %RestoreArtifactRequest{artifact: ref} = req) do
+  defp safe_restore_artifact(
+         state,
+         dial_id,
+         node_id,
+         %RestoreArtifactRequest{artifact: ref} = req,
+         ctx
+       ) do
     req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
+    brick = restore_brick(state.capacity_table, dial_id, node_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+    with {:ok, req} <- Embervm.RestoreCapability.stamp(req, brick, ctx),
+         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       # The `artifact_restore` span (Task 11): a child span around the
       # RestoreArtifact RPC (the restore-on-miss read path). A group set is always
       # kind GROUP_SET; bytes-moved/skipped stamped from the response.
@@ -620,6 +630,22 @@ defmodule Embervm.GroupWakeManager do
         stamp_restore_span(result)
         result
       end
+    end
+  end
+
+  defp restore_brick(table, dial_id, node_id) do
+    case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do
+      nil when dial_id == node_id ->
+        case NodeCapacity.fetch(table, node_id) do
+          {:ok, brick} -> brick
+          :error -> %{node_id: node_id, pod_uid: ""}
+        end
+
+      nil ->
+        %{node_id: node_id, pod_uid: ""}
+
+      brick ->
+        brick
     end
   end
 

@@ -114,7 +114,7 @@ defmodule Embervm.StatefulHandover do
              to: target
            }),
          {:ok, generation} <- export_source(ctx, workload, source_dial),
-         :ok <- restore_target(ctx, workload, tgt.dial) do
+         :ok <- restore_target(ctx, workload, tgt, generation) do
       # Re-anchor on the target's BARE node name, never its dial id. The row is
       # read back by StatefulManager.anchor_node/2 through an exact
       # NodeCapacity.fetch against `facts.node_id`, so storing the instance id
@@ -201,15 +201,27 @@ defmodule Embervm.StatefulHandover do
     end
   end
 
-  defp restore_target(ctx, workload, target_dial) do
+  defp restore_target(ctx, workload, target, generation) do
     req = %RestoreArtifactRequest{
       artifact: volume_ref(workload),
       trace: %Trace{workload: workload}
     }
 
-    case rpc(ctx, ctx.restore_fun, target_dial, req) do
-      {:ok, _resp} -> :ok
-      {:error, reason} -> {:error, {:restore_failed, reason}}
+    capability_ctx = %{
+      principal: "system:stateful:" <> workload,
+      lineage: workload,
+      generation: generation
+    }
+
+    case Embervm.RestoreCapability.stamp(req, target, capability_ctx) do
+      {:ok, req} ->
+        case rpc(ctx, ctx.restore_fun, target.dial, req) do
+          {:ok, _resp} -> :ok
+          {:error, reason} -> {:error, {:restore_failed, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, {:restore_failed, reason}}
     end
   end
 
@@ -316,7 +328,13 @@ defmodule Embervm.StatefulHandover do
     case find_facts(ctx, node) do
       {:ok, facts} ->
         anchor = Map.get(facts, :node_id) || node
-        {:ok, %{anchor: anchor, dial: Map.get(facts, :instance_id) || anchor}}
+        {:ok,
+         %{
+           anchor: anchor,
+           dial: Map.get(facts, :instance_id) || anchor,
+           node_id: anchor,
+           pod_uid: Map.get(facts, :pod_uid, "")
+         }}
 
       :error ->
         {:error, {:node_not_reporting, node}}

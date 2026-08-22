@@ -532,6 +532,20 @@ def test_brick_renders_inert_artifact_encryption_envs():
                 f"want {value!r}"
             )
 
+    control_plane = next(
+        doc
+        for kind, name, doc in _docs(rendered)
+        if kind == "Deployment" and name == "envelope-embervm"
+    )
+    rendered_env = re.search(
+        r'name:\s*EMBERVM_ARTIFACT_ENCRYPTION\s+value:\s*"([^\"]+)"',
+        control_plane,
+    )
+    assert rendered_env, (
+        "control-plane Deployment is missing EMBERVM_ARTIFACT_ENCRYPTION"
+    )
+    assert rendered_env.group(1) == "0"
+
 
 def test_dev_hostpaths_are_under_production_scratch_never_beside_it(renders):
     """Dev's hostPaths must be UNDER production's, not siblings of it.

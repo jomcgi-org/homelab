@@ -10,7 +10,8 @@ defmodule Embervm.RouterTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
 
-  alias Embervm.{NodeRegistry, TaskStore}
+  alias Embervm.{KeyService, NodeRegistry, TaskStore}
+  alias Embervm.KeyService.Envelope
 
   @allowed "system:serviceaccount:embervm:embervm"
 
@@ -140,6 +141,25 @@ defmodule Embervm.RouterTest do
       do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
 
     def list(_srv, _wl, _opts), do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
+
+    def all(_srv) do
+      [
+        %{
+          session_id: "s-wrap",
+          lineage_id: "lineage-wrap",
+          snapshot_ref: "snap-owned",
+          principal: "acct:artifact-owner"
+        }
+      ]
+    end
+
+    def get_latest_by_lineage(_srv, "lineage-wrap"), do: {:ok, hd(all(nil))}
+    def get_latest_by_lineage(_srv, _lineage), do: :error
+  end
+
+  defmodule FakeKeyOpLog do
+    def load_key_epochs(_server), do: {:ok, []}
+    def append(_server, _op), do: {:ok, System.unique_integer([:positive])}
   end
 
   # A tiny upstream "guest" Plug the activator proxies to: echoes the request path
@@ -284,12 +304,16 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :usage_admins)
       Application.delete_env(:embervm, :session_manager)
       Application.delete_env(:embervm, :session_store_mod)
+      Application.delete_env(:embervm, :session_store)
       Application.delete_env(:embervm, :serving_manager_mod)
       Application.delete_env(:embervm, :test_guest_port)
       Application.delete_env(:embervm, :stateful_store_mod)
       Application.delete_env(:embervm, :workload_catalog_mod)
       Application.delete_env(:embervm, :stateful_manager_mod)
       Application.delete_env(:embervm, :noded_service_account)
+      Application.delete_env(:embervm, :artifact_encryption)
+      Application.delete_env(:embervm, :artifact_key_service)
+      Application.delete_env(:embervm, :artifact_principal)
     end)
 
     :ok
@@ -336,6 +360,16 @@ defmodule Embervm.RouterTest do
 
   defp json(body), do: :json.decode(body)
 
+  defp key_service(root) do
+    start_supervised!(
+      {KeyService, name: nil, root: root, op_log: :fake, op_log_mod: FakeKeyOpLog}
+    )
+  end
+
+  defp wrap_body(kind, workload, ref) do
+    :json.encode(%{kind: kind, workload: workload, ref: ref}) |> IO.iodata_to_binary()
+  end
+
   # -- node dial-home registration (R0 PR-2) ---------------------------------
 
   defp reg_body(overrides \\ %{}) do
@@ -365,6 +399,71 @@ defmodule Embervm.RouterTest do
     resp = req(:post, "/v1/nodes/register", auth("good"), reg_body(%{"pod_uid" => "router-test-sa"}))
     assert resp.status == 200
     assert json(resp.body)["registered"] == true
+  end
+
+  test "POST /v1/artifacts/wrap is 404 while artifact encryption is off" do
+    Application.put_env(:embervm, :artifact_encryption, false)
+    resp =
+      req(:post, "/v1/artifacts/wrap", auth("good"), wrap_body("session", "sbx", "snap-owned"))
+    assert resp.status == 404
+  end
+
+  test "POST /v1/artifacts/wrap requires the noded ServiceAccount" do
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+
+    missing = req(:post, "/v1/artifacts/wrap", [], wrap_body("session", "sbx", "snap-owned"))
+    assert missing.status == 401
+
+    wrong_sa =
+      req(:post, "/v1/artifacts/wrap", auth("good2"), wrap_body("session", "sbx", "snap-owned"))
+
+    assert wrong_sa.status == 403
+  end
+
+  test "POST /v1/artifacts/wrap returns a session-owned data key and envelope" do
+    service = key_service(:binary.copy(<<9>>, 32))
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :artifact_key_service, service)
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    Application.put_env(:embervm, :session_store_mod, FakeSessionStore)
+    Application.put_env(:embervm, :session_store, :fake)
+
+    resp =
+      req(:post, "/v1/artifacts/wrap", auth("good"), wrap_body("session", "sbx", "snap-owned"))
+    assert resp.status == 200
+    body = json(resp.body)
+    assert {:ok, data_key} = Base.decode64(body["data_key"])
+    assert byte_size(data_key) == 32
+    assert {:ok, encoded_envelope} = Base.decode64(body["envelope"])
+    assert {:ok, %Envelope{principal: "acct:artifact-owner", epoch: 1}} =
+             Envelope.decode(encoded_envelope)
+  end
+
+  test "POST /v1/artifacts/wrap returns no_root when the custodian has no root" do
+    service = key_service(nil)
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :artifact_key_service, service)
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+
+    resp = req(:post, "/v1/artifacts/wrap", auth("good"), wrap_body("volume", "pg", "pg"))
+    assert resp.status == 503
+    assert json(resp.body)["error"] == "no_root"
+  end
+
+  test "POST /v1/artifacts/wrap derives a stable volume key" do
+    service = key_service(:binary.copy(<<5>>, 32))
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :artifact_key_service, service)
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    body = wrap_body("volume", "pg", "pg")
+
+    first = req(:post, "/v1/artifacts/wrap", auth("good"), body)
+    second = req(:post, "/v1/artifacts/wrap", auth("good"), body)
+
+    assert first.status == 200
+    assert second.status == 200
+    assert json(first.body)["data_key"] == json(second.body)["data_key"]
   end
 
   test "POST /v1/nodes/register without a token is 401" do

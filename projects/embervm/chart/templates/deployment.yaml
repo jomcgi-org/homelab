@@ -443,6 +443,10 @@ spec:
               value: {{ .Values.noded.store.endpoint | quote }}
             - name: EMBERVM_STORE_BUCKET
               value: {{ .Values.noded.store.bucket | quote }}
+            # Principal-artifact wrap and restore capability gate (#4691).
+            # False by default; see artifactEncryption in values for rollout order.
+            - name: EMBERVM_ARTIFACT_ENCRYPTION
+              value: {{ ternary "1" "0" .Values.artifactEncryption.enabled | quote }}
             {{- if .Values.noded.store.credentials.enabled }}
             - name: EMBERVM_STORE_ACCESS_KEY_ID
               valueFrom:

@@ -105,6 +105,12 @@ defmodule Embervm.Router do
     handle_node_register(conn)
   end
 
+  # Noded uses the same bound ServiceAccount token as dial-home registration to
+  # obtain one wrapped data key for a principal artifact export.
+  post "/v1/artifacts/wrap" do
+    handle_artifact_wrap(conn)
+  end
+
   post "/v1/tasks/:id/redrive" do
     handle_redrive(conn, id)
   end
@@ -239,10 +245,11 @@ defmodule Embervm.Router do
   # session-token routes (verified against Embervm.SessionStore) and the node
   # dial-home registration (verified against the noded ServiceAccount, NOT the
   # submit allow-list). Running management auth on them would 401 a valid token.
-  defp in_handler_auth_route?(conn), do: session_token_route?(conn) or node_register_route?(conn)
+  defp in_handler_auth_route?(conn), do: session_token_route?(conn) or node_route?(conn)
 
-  defp node_register_route?(%Plug.Conn{method: "POST", path_info: ["v1", "nodes", "register"]}), do: true
-  defp node_register_route?(_conn), do: false
+  defp node_route?(%Plug.Conn{method: "POST", path_info: ["v1", "nodes", "register"]}), do: true
+  defp node_route?(%Plug.Conn{method: "POST", path_info: ["v1", "artifacts", "wrap"]}), do: true
+  defp node_route?(_conn), do: false
 
   # The routes whose bearer token is a SESSION token (verified in-handler against
   # Embervm.SessionStore), NOT a management ServiceAccount token: POST
@@ -735,6 +742,95 @@ defmodule Embervm.Router do
         send_json(conn, status, payload)
     end
   end
+
+  defp handle_artifact_wrap(conn) do
+    if Application.get_env(:embervm, :artifact_encryption, false) do
+      case authorize_node(conn) do
+        {:ok, _identity} -> artifact_wrap_body(conn)
+        {:error, status, payload} -> send_json(conn, status, payload)
+      end
+    else
+      send_json(conn, 404, %{error: "not found"})
+    end
+  end
+
+  defp artifact_wrap_body(conn) do
+    principal_resolver = artifact_principal()
+    key_service = artifact_key_service()
+
+    with {:ok, body, conn} <- read_capped_body(conn),
+         {:ok, request} <- decode_artifact_wrap(body),
+         {:ok, principal} <-
+           principal_resolver.resolve(request["kind"], request["workload"], request["ref"]),
+         {:ok, epoch} <- ensure_artifact_epoch(key_service, principal),
+         {:ok, data_key} <- artifact_data_key(key_service, principal, epoch, request),
+         {:ok, envelope} <- Embervm.KeyService.wrap(key_service, principal, data_key) do
+      send_json(conn, 200, %{
+        data_key: Base.encode64(data_key),
+        envelope: envelope |> Embervm.KeyService.Envelope.encode() |> Base.encode64()
+      })
+    else
+      {:error, :unknown_artifact} -> send_json(conn, 404, %{error: "unknown_artifact"})
+      {:error, :no_root} -> send_json(conn, 503, %{error: "no_root"})
+      {:error, :too_large} -> send_json(conn, 413, %{error: "request body too large"})
+      {:error, :bad_request} -> send_json(conn, 400, %{error: "bad_request"})
+      {:error, _reason} -> send_json(conn, 503, %{error: "key_service_unavailable"})
+    end
+  end
+
+  defp decode_artifact_wrap(body) do
+    case :json.decode(body) do
+      %{"kind" => kind, "workload" => workload, "ref" => ref} = request
+      when is_binary(kind) and is_binary(workload) and workload != "" and is_binary(ref) ->
+        if Embervm.ArtifactPrefix.kind_string(kind),
+          do: {:ok, request},
+          else: {:error, :unknown_artifact}
+
+      _ ->
+        {:error, :bad_request}
+    end
+  rescue
+    _ -> {:error, :bad_request}
+  catch
+    _, _ -> {:error, :bad_request}
+  end
+
+  defp ensure_artifact_epoch(key_service, principal) do
+    case Embervm.KeyService.current_epoch(key_service, principal) do
+      {:ok, 0} ->
+        case Embervm.KeyService.set_epoch(key_service, principal, 1, "first_use") do
+          {:ok, 1} -> {:ok, 1}
+          {:error, :epoch_not_increased} ->
+            Embervm.KeyService.current_epoch(key_service, principal)
+          other -> other
+        end
+
+      {:ok, epoch} -> {:ok, epoch}
+      other -> other
+    end
+  end
+
+  defp artifact_data_key(
+         key_service,
+         principal,
+         epoch,
+         %{"kind" => "volume", "workload" => workload}
+       ) do
+    with {:ok, kek} <- Embervm.KeyService.derive_kek(key_service, principal, epoch) do
+      info = "embervm-volume-key-v1" <> workload
+      pseudorandom_key = :crypto.mac(:hmac, :sha256, <<0::256>>, kek)
+      {:ok, :crypto.mac(:hmac, :sha256, pseudorandom_key, info <> <<1>>)}
+    end
+  end
+
+  defp artifact_data_key(_key_service, _principal, _epoch, _request),
+    do: {:ok, :crypto.strong_rand_bytes(32)}
+
+  defp artifact_key_service,
+    do: Application.get_env(:embervm, :artifact_key_service, Embervm.KeyService)
+
+  defp artifact_principal,
+    do: Application.get_env(:embervm, :artifact_principal, Embervm.ArtifactPrincipal)
 
   # Node auth: the bearer token must TokenReview to an identity whose username
   # equals the configured noded SA (:noded_service_account app env, rendered from
