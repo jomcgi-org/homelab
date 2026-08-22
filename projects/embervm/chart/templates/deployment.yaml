@@ -171,6 +171,15 @@ spec:
                   name: {{ include "embervm.noded.bearerTokenSecretName" . }}
                   key: {{ .Values.noded.bearerTokenSecret.key }}
             {{- end }}
+            {{- if .Values.kekRoot.enabled }}
+            # Platform KEK root (ADR embervm/036): base64, held only in the
+            # KeyService process, never logged. Empty leaves the custodian inert.
+            - name: EMBERVM_KEK_ROOT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "embervm.kekRootSecretName" . }}
+                  key: {{ .Values.kekRoot.key }}
+            {{- end }}
             {{- if and .Values.runtimePython .Values.runtimePython.guestImage .Values.runtimePython.guestImage.repository }}
             # R1 zip lane (ADR embervm/002): the zip-lane runtime name -> pinned
             # runtime base image ref, as `runtime=ref` pairs. BaseBuilder resolves

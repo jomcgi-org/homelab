@@ -601,3 +601,26 @@ def test_dev_never_dials_production_control_plane(renders):
             "reach production's control plane is double-assigned by design, since "
             "adoption is additive over whatever primed_vm_ids a node reports."
         )
+
+
+def test_kek_root_renders_item_and_env_only_when_enabled():
+    chart = _chart_dir()
+    enabled = _render(
+        "kek",
+        [chart / "values.yaml"],
+        ["kekRoot.enabled=true", "kekRoot.onepassword.itemPath=vaults/x/items/y"],
+    )
+    items = [doc for kind, _, doc in _docs(enabled) if kind == "OnePasswordItem"]
+    assert any("name: kek-embervm-kek-root" in doc for doc in items)
+    control_plane = next(
+        doc
+        for kind, name, doc in _docs(enabled)
+        if kind == "Deployment" and name == "kek-embervm"
+    )
+    assert re.search(
+        r"name:\s*EMBERVM_KEK_ROOT\s+valueFrom:\s+secretKeyRef:\s+name:\s*kek-embervm-kek-root\s+key:\s*root",
+        control_plane,
+        re.S,
+    )
+    disabled = _render("kek", [chart / "values.yaml"])
+    assert "EMBERVM_KEK_ROOT" not in disabled

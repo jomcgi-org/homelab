@@ -205,6 +205,19 @@ node:
 auth:
   allowedServiceAccounts: []
 
+# Platform KEK root for Embervm.KeyService (ADR embervm/036, #4976). One
+# 1Password item holds the root (field "root", base64 of 32+ random bytes);
+# the control plane derives every per-principal KEK from it in memory and
+# never persists a derived key. Disabled here: the service starts inert and
+# every derive/wrap returns {:error, :no_root}. Set onepassword.itemPath to
+# render the OnePasswordItem and the env; name defaults to <fullname>-kek-root.
+kekRoot:
+  enabled: false
+  name: ""
+  key: root
+  onepassword:
+    itemPath: ""
+
 # Fair dispatcher tuning (Task 11). The pool floor/cap and invocation policy are
 # per-Workload in the CR; these are the cross-workload enforcement knobs.
 dispatcher:
