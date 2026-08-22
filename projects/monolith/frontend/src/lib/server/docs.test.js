@@ -99,6 +99,27 @@ describe("resolveDocHref", () => {
     ).toEqual({ href: "/docs/embervm" });
   });
 
+  it("resolves a trailing-slash directory link through the README alias", () => {
+    const index = buildPathIndex([
+      ...MANIFEST,
+      {
+        path: "projects/operators/oci-model-cache/README.md",
+        slug: "oci-model-cache",
+        project: "oci-model-cache",
+        kind: "readme",
+        title: "OCI Model Cache",
+        order: 3,
+      },
+    ]);
+    expect(
+      resolveDocHref(
+        "../operators/oci-model-cache/",
+        "projects/embervm/README.md",
+        index,
+      ),
+    ).toEqual({ href: "/docs/oci-model-cache" });
+  });
+
   it("strips a link to an unpublished doc", () => {
     expect(
       resolveDocHref(
@@ -132,7 +153,7 @@ describe("buildSidebar", () => {
       tabs: [
         {
           kind: "readme",
-          label: "Readme",
+          label: "README",
           slug: "embervm",
           title: "EmberVM",
         },
@@ -162,7 +183,7 @@ describe("buildSidebar", () => {
     expect(sidebar[0]).toMatchObject({
       project: "platform",
       title: "platform",
-      slug: "platform",
+      slug: "platform/stpa",
     });
     expect(sidebar[0].tabs.map((tab) => tab.kind)).toEqual(["stpa"]);
   });

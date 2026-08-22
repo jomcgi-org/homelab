@@ -28,6 +28,17 @@ const escapeAttr = (s) =>
 
 const stripTags = (s) => String(s).replace(/<[^>]*>/g, "");
 
+// Cut at the last word boundary within `max` chars and append "…" when the
+// plain text is longer; never split a word. A single over-long token with no
+// space in the window is sliced at `max` rather than returned whole.
+function truncateAtWord(text, max) {
+  if (text.length <= max) return text;
+  const slice = text.slice(0, max);
+  const at = slice.lastIndexOf(" ");
+  const cut = at > 0 ? slice.slice(0, at) : slice;
+  return `${cut}…`;
+}
+
 // Strip the common inline markdown markers so a heading's slug id is derived
 // from its plain text (matching what stripTags() yields from the rendered
 // inline HTML, so the TOC anchor and the rendered <h*> id always agree).
@@ -55,11 +66,11 @@ export function slugifyHeading(text) {
 // (//host) prefix: those are external and left untouched.
 const EXTERNAL = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
 
-const DECISIONS_DIR_PREFIX = "docs/";
+const REPO_DOCS_DIR = "docs/";
 
 // Map every doc's repo path -> its /docs slug, plus a directory alias for index
-// and README docs so a link to a published document's folder resolves to that
-// index or README page.
+// and README docs so a link to a published document's folder (with or without a
+// trailing slash) resolves to that index or README page.
 export function buildPathIndex(manifest) {
   const slugByPath = new Map();
   for (const e of manifest) {
@@ -97,8 +108,10 @@ export function resolveDocHref(href, fromPath, slugByPath) {
   if (qi >= 0) rest = rest.slice(0, qi);
   if (!rest) return { href: hash || href }; // was a pure anchor
 
-  const dir = posix.dirname(fromPath || DECISIONS_DIR_PREFIX);
-  const resolved = posix.normalize(posix.join(dir, rest));
+  const dir = posix.dirname(fromPath || REPO_DOCS_DIR);
+  // posix.normalize keeps a trailing slash ("dir/" stays "dir/"), which would
+  // miss the directory alias keyed without one.
+  const resolved = posix.normalize(posix.join(dir, rest)).replace(/\/+$/, "");
   const slug = slugByPath.get(resolved);
   if (slug !== undefined) return { href: `/docs/${slug}${hash}` };
   return null; // not published -> strip to plain text
@@ -206,23 +219,26 @@ export function buildSidebar(manifest) {
   return [...entriesByProject.entries()].map(([project, entries]) => {
     const byKind = new Map(entries.map((entry) => [entry.kind, entry]));
     const readme = byKind.get("readme");
+    const tabs = DOC_KINDS.flatMap(({ kind, label }) => {
+      const entry = byKind.get(kind);
+      return entry
+        ? [
+            {
+              kind,
+              label,
+              slug: entry.slug,
+              title: entry.title || label,
+            },
+          ]
+        : [];
+    });
     return {
       project,
       title: readme?.title || project,
-      slug: readme?.slug || project,
-      tabs: DOC_KINDS.flatMap(({ kind, label }) => {
-        const entry = byKind.get(kind);
-        return entry
-          ? [
-              {
-                kind,
-                label,
-                slug: entry.slug,
-                title: entry.title || label,
-              },
-            ]
-          : [];
-      }),
+      // Never the bare project name: a project with no README still has to
+      // land on a real published tab.
+      slug: readme?.slug || tabs[0]?.slug,
+      tabs,
     };
   });
 }
@@ -245,7 +261,10 @@ export function getMeta(entry) {
     para += (para ? " " : "") + line;
     if (para.length > 200) break;
   }
-  const description = stripInlineMd(stripTags(para)).slice(0, 200).trim();
+  const description = truncateAtWord(
+    stripInlineMd(stripTags(para)).trim(),
+    200,
+  );
   return {
     title: entry.title,
     description: description || `${entry.title} - homelab documentation.`,

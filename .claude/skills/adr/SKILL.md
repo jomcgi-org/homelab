@@ -116,27 +116,17 @@ Reference `docs/security.md` for baseline. Document any deviations.
 
 ````
 
-### Step 3: Register the ADR (required, CI-enforced)
+### Step 3: Register the ADR
 
-ADRs surface automatically on the monolith docs site at `jomcgi.dev/docs/decisions/`;
-there is no VitePress sidebar to regenerate any more (the `docs.jomcgi.dev` site
-and its `config_links_test` gate were retired in ADR 002). Registering a new ADR
-now means regenerating the committed docs manifests and adding an index row, or
-the docs-site / repo-docs freshness checks in
-`bazel/images/validate-generate-scripts.sh` fail CI:
+ADRs are repo-only. They do not appear on the public docs site. The public site
+publishes `projects/<p>/{README,ARCHITECTURE,STPA,THREAT-MODEL}.md` for the
+projects listed in `projects/monolith/knowledge/tools/gen_docs_manifest.py`.
 
-1. **Write the heading first.** The manifests derive the doc title from the
-   first-line `# ADR NNN: <Title>` heading, so write it before regenerating.
+1. **Write the heading first.** The repo-docs knowledge manifest derives the
+   title from the first-line `# ADR NNN: <Title>` heading, so write it before
+   regenerating.
 
-2. **Regenerate the public docs-site manifest** (what the `/docs` route renders):
-
-   ```bash
-   python3 projects/monolith/knowledge/tools/gen_docs_manifest.py
-   ```
-
-   This rewrites `projects/monolith/frontend/src/lib/public/docs/docs-manifest.json`.
-
-3. **Regenerate the repo-docs knowledge manifest** (public-chat RAG grounding):
+2. **Regenerate the repo-docs knowledge manifest** (public-chat RAG grounding):
 
    ```bash
    python3 projects/monolith/knowledge/tools/gen_repo_docs_manifest.py
@@ -144,13 +134,13 @@ the docs-site / repo-docs freshness checks in
 
    This rewrites `projects/monolith/knowledge/repo_docs_manifest.ndjson`.
 
-4. **Add an index row.** Add a row for the new ADR to its category table in
+3. **Add an index row.** Add a row for the new ADR to its category table in
    `docs/decisions/index.md`.
 
 ### Step 4: Commit with conventional commit format
 
-Commit the ADR file, the regenerated `docs-manifest.json` and
-`repo_docs_manifest.ndjson`, and the updated `index.md` together.
+Commit the ADR file, the regenerated `repo_docs_manifest.ndjson`, and the
+updated `index.md` together.
 
 ```bash
 git commit -m "docs(adr): <short description>"
@@ -196,4 +186,4 @@ An ADR is a write-and-forget rationale journal entry. Two consequences:
 - **Diagrams**: Mermaid for all architecture and flow diagrams (renders natively on GitHub)
 - **Sections**: Problem, Decision, Architecture, Alternatives, Security, Risks, References
 - **No work tracking**: outstanding work lives in **GitHub Issues** (source of truth), with PRs as supporting detail, not in the ADR
-- **Files per ADR**: the new ADR file, the regenerated `docs-manifest.json` and `repo_docs_manifest.ndjson`, and the `index.md` row. CI fails if the manifests are stale (see Step 3).
+- **Files per ADR**: the new ADR file, the regenerated `repo_docs_manifest.ndjson`, and the `index.md` row.

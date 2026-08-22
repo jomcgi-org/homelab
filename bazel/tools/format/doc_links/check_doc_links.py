@@ -86,13 +86,9 @@ _TEST_FILE_SUFFIXES: tuple[str, ...] = (
 
 # Individual non-test files carrying an ADR-shaped path as documentation rather
 # than as a link. Keep this list short and commented: an entry here is a claim
-# that the path is an example, not a reference.
-_EXAMPLE_ALLOWLIST: frozenset[str] = frozenset(
-    {
-        # Module docstring shows the manifest's slug rule using a stand-in path.
-        "projects/monolith/knowledge/tools/gen_docs_manifest.py",
-    }
-)
+# that the path is an example, not a reference. Empty: gen_docs_manifest.py no
+# longer documents a stand-in ADR path.
+_EXAMPLE_ALLOWLIST: frozenset[str] = frozenset()
 
 # Generated artifacts that embed whole doc bodies, so they inherit every path
 # mentioned inside the prose they bake in. Regenerating is what fixes them.

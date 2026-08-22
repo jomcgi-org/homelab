@@ -46,6 +46,8 @@ DOC_KINDS = (
 MANIFEST_REL = "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json"
 
 _H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+# Trailing " @ <hex>" on an H1 is a generated snapshot stamp, not part of the title.
+_AT_HEX = re.compile(r"\s+@\s+[0-9a-fA-F]{7,}$")
 _DOC_BY_PATH = {
     f"{directory}/{filename}": (project, kind)
     for project, directory in PUBLIC_PROJECTS
@@ -70,7 +72,7 @@ def derive_title(content: str, rel_path: str) -> str:
     """
     match = _H1.search(content)
     if match:
-        return match.group(1).strip()
+        return _AT_HEX.sub("", match.group(1).strip())
     name = _basename(rel_path)
     if name == "README.md":
         return rel_path.rsplit("/", 2)[-2]
@@ -87,8 +89,7 @@ def make_slug(project: str, kind: str) -> str:
     return project if kind == "readme" else f"{project}/{kind}"
 
 
-def iter_doc_paths(root: Path) -> list[str]:
-    """Return tracked public doc paths in project and document-kind order."""
+def _git_ls_files(root: Path) -> set[str]:
     result = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=root,
@@ -97,7 +98,25 @@ def iter_doc_paths(root: Path) -> list[str]:
         check=True,
         timeout=120,
     )
-    tracked = {path for path in result.stdout.split("\0") if path}
+    return {path for path in result.stdout.split("\0") if path}
+
+
+def require_public_readmes(tracked: set[str]) -> None:
+    """Raise if a PUBLIC_PROJECTS directory has no tracked README.md."""
+    missing = [
+        f"{directory}/README.md"
+        for _project, directory in PUBLIC_PROJECTS
+        if f"{directory}/README.md" not in tracked
+    ]
+    if missing:
+        raise SystemExit(
+            "PUBLIC_PROJECTS directory has no tracked README.md: " + ", ".join(missing)
+        )
+
+
+def iter_doc_paths(root: Path) -> list[str]:
+    """Return tracked public doc paths in project and document-kind order."""
+    tracked = _git_ls_files(root)
     return [path for path in _DOC_BY_PATH if path in tracked]
 
 
@@ -135,6 +154,7 @@ def build_manifest(root: Path, paths: list[str]) -> list[dict]:
 
 def main() -> int:
     root = Path(os.environ.get("BUILD_WORKSPACE_DIRECTORY") or os.getcwd())
+    require_public_readmes(_git_ls_files(root))
     out = root / MANIFEST_REL
     out.parent.mkdir(parents=True, exist_ok=True)
     entries = build_manifest(root, iter_doc_paths(root))

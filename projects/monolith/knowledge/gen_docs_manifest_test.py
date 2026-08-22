@@ -2,11 +2,15 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from knowledge.tools.gen_docs_manifest import (
     build_manifest,
     derive_title,
     iter_doc_paths,
+    main,
     make_slug,
+    require_public_readmes,
 )
 
 
@@ -37,6 +41,20 @@ def test_derive_title_falls_back_for_readme_and_named_doc():
     )
 
 
+def test_derive_title_strips_trailing_git_sha():
+    assert (
+        derive_title(
+            "# STPA Control Analysis: EmberVM @ 55ca7188a\n\nbody",
+            "projects/embervm/STPA.md",
+        )
+        == "STPA Control Analysis: EmberVM"
+    )
+    assert (
+        derive_title("# Keep @ abcdef\n\nbody", "projects/embervm/README.md")
+        == "Keep @ abcdef"
+    )
+
+
 def test_make_slug_uses_project_root_for_readme_and_kind_for_other_docs():
     assert make_slug("embervm", "readme") == "embervm"
     assert make_slug("embervm", "architecture") == "embervm/architecture"
@@ -54,9 +72,13 @@ def test_project_with_only_readme_yields_one_entry(tmp_path: Path):
     assert entries[0]["slug"] == "embervm"
 
 
-def test_missing_project_directory_yields_nothing(tmp_path: Path):
+def test_missing_project_readme_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _track(tmp_path)
-    assert _tracked_manifest(tmp_path) == []
+    monkeypatch.setenv("BUILD_WORKSPACE_DIRECTORY", str(tmp_path))
+    with pytest.raises(SystemExit, match="README.md"):
+        require_public_readmes(set())
+    with pytest.raises(SystemExit, match="README.md"):
+        main()
 
 
 def test_manifest_orders_projects_then_document_kinds(tmp_path: Path):

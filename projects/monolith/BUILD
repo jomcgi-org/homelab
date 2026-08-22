@@ -272,8 +272,7 @@ py_venv_binary(
 # /docs route. Publishes up to four current-state docs for each explicitly
 # allowlisted public project and writes the committed
 # projects/monolith/frontend/src/lib/public/docs/docs-manifest.json. Run via
-# `bazel run //projects/monolith:gen_docs_manifest`; freshness is enforced by the
-# manifest staleness check in bazel/images/validate-generate-scripts.sh. Same no
+# `bazel run //projects/monolith:gen_docs_manifest`. Same no
 # `imports` attr rationale as gen_repo_docs_manifest above.
 py_venv_binary(
     name = "gen_docs_manifest",
