@@ -13,11 +13,13 @@
 # allowlist reaches the in-cluster vLLM endpoint through nothing at all and the
 # turn dies as a dial timeout with no denial logged anywhere useful.
 #
-# persistence is deliberately absent rather than set false: at 256 MiB this
-# workload uses the ADR 027 memory:true quadrant (bank a memory snapshot when
-# idle, relight on the next invoke), which is what the CRD means by no
-# persistence block. See piRuntimeWorkload in values.yaml for why the volume
-# quadrant is not worth its coupling at this size.
+# persistenceEnabled selects the quadrant (ADR 027). OFF renders no block, the
+# memory:true quadrant: an idle session banks a memory snapshot and relights.
+# ON mirrors claude-runtime: a writable volume under /session that survives
+# parking, and the ONLY place a repo checkout can live. Without it /workspace
+# is the guest tmpfs and a `git clone` of the homelab dies with "Out of
+# diskspace" while resolving deltas (#5051, every repo-attached qwen session
+# since the lane moved here on 2026-08-16). Deploy sets it true.
 apiVersion: embervm.dev/v1alpha1
 kind: Workload
 metadata:
@@ -30,6 +32,15 @@ metadata:
     {{- include "embervm.labels" . | nindent 4 }}
 spec:
   class: session
+  {{- if .Values.piRuntimeWorkload.persistenceEnabled }}
+  persistence:
+    memory: false
+    filesystem:
+      enabled: true
+      retention: 1
+      sizeBytes: {{ .Values.piRuntimeWorkload.workspaceSizeBytes }}
+      mountPath: /session
+  {{- end }}
   source:
     image:
       # Bazel-pinned from the runtime-pi guest image's .info provider, the same

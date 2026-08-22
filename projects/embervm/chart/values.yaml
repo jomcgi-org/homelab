@@ -1685,7 +1685,8 @@ claudeRuntimeWorkload:
 # short conversational turns, not repo-attached work. A repo-attached qwen
 # session belongs on claude-runtime until this workload is given a volume.
 # Raising it is a values-only change; the honest ladder is 256 -> 512 -> a
-# persistenceEnabled flip with a workspaceSizeBytes, in that order.
+# persistenceEnabled flip with a workspaceSizeBytes, in that order. Deploy has
+# taken the last rung (#5051): the template wires both keys.
 piRuntimeWorkload:
   enabled: false
   name: pi-runtime
@@ -1712,6 +1713,10 @@ piRuntimeWorkload:
   # volume drive coupling (warmRestoreWithVolumeClasses plus a base epoch, which
   # MUST move together) that the claude runtime carries.
   persistenceEnabled: false
+  # 4 GiB per lineage when persistence is on: a blob:none clone of the homelab
+  # plus the working tree and pi's session files, well under claude-runtime's
+  # 10 GiB because this guest never builds.
+  workspaceSizeBytes: 4294967296
   # floor 0 for the same reason claude-runtime uses it, and more so: the floor is
   # applied PER BRICK INSTANCE, and a cold spawn to first request is ~250ms
   # against a model API leg measured in seconds. Warmth would buy a few percent
