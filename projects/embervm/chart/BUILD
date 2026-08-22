@@ -120,6 +120,29 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
+py_test(
+    name = "chart_sync_wave_test",
+    srcs = ["chart_sync_wave_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = ["@pip//pytest"],
+)
+
+semgrep_test(
+    name = "chart_sync_wave_test_semgrep_test",
+    srcs = ["chart_sync_wave_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
 semgrep_test(
     name = "chart_env_identity_test_semgrep_test",
     srcs = ["chart_env_identity_test.py"],

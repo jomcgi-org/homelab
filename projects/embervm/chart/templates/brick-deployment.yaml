@@ -33,16 +33,19 @@
 # unshaped node losing all four tunnel connections. With ~12 embervm merges in
 # a day that is a recurring self-inflicted outage.
 #
-# Each brick Deployment now gets its own ascending wave, so ArgoCD applies one,
-# waits for it to report Healthy (its rollout complete), and only then applies
-# the next. maxSurge:0/maxUnavailable:1 already serialised the pods WITHIN a
-# Deployment; waves serialise ACROSS them, which is the part that was missing.
+# Brick Deployments now roll in ascending wave groups. At most
+# bricks.syncWaveGroupSize Deployments share a wave, so ArgoCD bounds concurrent
+# rolls and their image pulls, waits for the whole group to report Healthy, then
+# applies the next group. maxSurge:0/maxUnavailable:1 already serialised the pods
+# WITHIN a Deployment; grouped waves bound concurrency ACROSS them, which is the
+# part that was missing.
 #
-# Waves are assigned by list position: classes take syncWaveBase + index, then
-# floors continue from syncWaveBase + len(classes) + index, so the two ranges
-# never collide and adding a class or a floor shifts only the entries after it.
-# Base defaults to 2, which leaves wave 0 for the control plane and shared infra
-# (bricks dial home to the CP, so it must be up first) and wave 1 for the
+# Waves are assigned by list position. Class i takes syncWaveBase + floor(i /
+# group size). Floors start after ceil(len(classes) / group size) class waves,
+# then floor j adds floor(j / group size), so the class and floor ranges never
+# collide. Group size defaults to 1, preserving the previous per-Deployment
+# waves. Base defaults to 2, which leaves wave 0 for the control plane and shared
+# infra (bricks dial home to the CP, so it must be up first) and wave 1 for the
 # Workload CRs, both of which keep their current waves untouched.
 #
 # This is a stopgap, NOT ADR embervm/011. That decision is OnDelete pod
@@ -61,7 +64,7 @@ kind: Deployment
 metadata:
   name: {{ include "embervm.noded.fullname" $ctx }}-brick-{{ $class.name }}
   annotations:
-    argocd.argoproj.io/sync-wave: {{ add $ctx.Values.bricks.syncWaveBase $i | quote }}
+    argocd.argoproj.io/sync-wave: {{ include "embervm.brick.classWave" (dict "ctx" $ctx "index" $i) | quote }}
   labels:
     {{- include "embervm.brick.labels" (dict "ctx" $ctx "class" $class.name) | nindent 4 }}
 spec:
@@ -130,13 +133,12 @@ spec:
 # from its class Deployment's. Reusing the class selector here would be a real
 # bug (two ReplicaSet controllers fighting over the same pods), not just style.
 #
-# Floors roll AFTER every class (wave syncWaveBase + len(classes) + index).
+# Floors roll AFTER every class group. Their waves start at syncWaveBase +
+# ceil(len(classes) / syncWaveGroupSize), then group floors by list position.
 # They are the fixed per-node capacity guarantee, so rolling them last keeps a
 # pinned brick alive on each node for as long as possible while the elastic
-# class Deployments cycle. Rolling them last also spreads them across distinct
-# waves, which matters more than it looks: the floors are pinned to different
-# nodes, so rolling them together would put a rootfs build on every node at once
-# even though no single node is over-subscribed.
+# class Deployments cycle. The group size bounds how many pinned nodes can pull
+# and build a rootfs concurrently.
 {{- range $j, $floor := .Values.bricks.nodeFloors }}
 {{- $class := $floor.class }}
 ---
@@ -145,7 +147,7 @@ kind: Deployment
 metadata:
   name: {{ include "embervm.noded.fullname" $ctx }}-brick-{{ $class }}-{{ $floor.node }}
   annotations:
-    argocd.argoproj.io/sync-wave: {{ add $ctx.Values.bricks.syncWaveBase (len $ctx.Values.bricks.classes) $j | quote }}
+    argocd.argoproj.io/sync-wave: {{ include "embervm.brick.floorWave" (dict "ctx" $ctx "index" $j) | quote }}
   labels:
     {{- include "embervm.brickFloor.labels" (dict "ctx" $ctx "class" $class "node" $floor.node) | nindent 4 }}
 spec:

@@ -23,6 +23,8 @@ specTrace:
 # All other classes are explicitly zero. No autoscale in dev.
 bricks:
   enabled: true
+  # The first grouped dev roll's measured result is recorded on #4897.
+  syncWaveGroupSize: 3
   # ALL ZERO. desiredReplicas renders an UNPINNED brick per class, and nodeFloors
   # renders an ADDITIONAL pinned one: the floor does not pin the desired-replicas
   # brick, it adds a second Deployment beside it.
