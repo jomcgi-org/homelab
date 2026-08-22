@@ -148,7 +148,7 @@ def _capture_turn_diff(checkout_dir, base_sha):
                 % (result.stderr or b"").decode("utf-8", "replace").strip()[:200],
             )
             return None
-        raw = result.stdout
+        raw = result.stdout + _untracked_file_diffs(checkout_dir)
         if len(raw) > MAX_TURN_DIFF_BYTES:
             _emit_turn_diff_outcome(checkout_dir, "diff", "truncated_raw")
             return {"base_sha": base_sha, "zlib_b64": None, "truncated": True}
@@ -165,6 +165,56 @@ def _capture_turn_diff(checkout_dir, base_sha):
     except Exception:
         _emit_turn_diff_outcome(checkout_dir, "diff", "diff_exception")
         return None
+
+
+# Untracked files are capped so a stray build tree or vendored download cannot
+# turn the diff into megabytes of noise; the raw cap above still applies.
+MAX_TURN_DIFF_UNTRACKED_FILES = 200
+
+
+def _untracked_file_diffs(checkout_dir):
+    """Render new, untracked files as new-file hunks, read-only.
+
+    `git diff <base>` only sees tracked paths, so a test file, a go.mod or an
+    answer.json the agent created never reached the stored diff (#5051).
+    `git add -N` would fix that but writes the index as root, which then locks
+    the CLI user out of its own checkout, so this stays read-only:
+    ls-files for the names, then one `git diff --no-index /dev/null <path>`
+    per file, whose output already carries the new-file headers git apply
+    expects. Anything odd (a name that is not a regular file, a git error)
+    is skipped, never raised.
+    """
+    try:
+        listing = subprocess.run(
+            _git_read_argv(checkout_dir, "ls-files", "--others", "--exclude-standard"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+        )
+        if listing.returncode != 0:
+            return b""
+        names = [
+            line
+            for line in listing.stdout.decode("utf-8", "replace").split("\n")
+            if line and os.path.isfile(os.path.join(checkout_dir, line))
+        ]
+        chunks = []
+        for name in names[:MAX_TURN_DIFF_UNTRACKED_FILES]:
+            # --no-index exits 1 when the files differ, which is the normal
+            # case here, so the return code is not an error signal.
+            single = subprocess.run(
+                _git_read_argv(checkout_dir, "diff", "--no-index", "/dev/null", name),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=30,
+            )
+            if single.stdout:
+                chunks.append(single.stdout)
+        return b"".join(chunks)
+    except Exception:
+        return b""
 
 
 def _turn_timing_now():

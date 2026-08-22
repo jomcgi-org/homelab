@@ -1513,6 +1513,38 @@ def test_turn_diff_success_logs_and_round_trips(monkeypatch, tmp_path, capsys):
     assert "checkout_dir=%s" % checkout.resolve() in captured
 
 
+def test_turn_diff_includes_untracked_files_as_new_file_hunks(tmp_path, capsys):
+    """A file the agent created must appear in the stored diff (#5051)."""
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+    git = ["git", "-C", str(checkout)]
+    subprocess.run(git + ["init", "-q"], check=True)
+    subprocess.run(git + ["config", "user.email", "t@example.com"], check=True)
+    subprocess.run(git + ["config", "user.name", "t"], check=True)
+    (checkout / "tracked.txt").write_text("one\n")
+    subprocess.run(git + ["add", "tracked.txt"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "base"], check=True)
+    base_sha = subprocess.run(
+        git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (checkout / "tracked.txt").write_text("one\ntwo\n")
+    (checkout / "answer.json").write_text('{"adr": "x"}\n')
+
+    result = shim._capture_turn_diff(str(checkout), base_sha)
+
+    assert result["truncated"] is False
+    raw = zlib.decompress(base64.b64decode(result["zlib_b64"])).decode()
+    assert "+two" in raw
+    assert "answer.json" in raw
+    assert "new file mode" in raw
+    assert '+{"adr": "x"}' in raw
+    # Read-only: the index must not have gained the new file.
+    status = subprocess.run(
+        git + ["status", "--porcelain"], check=True, capture_output=True, text=True
+    ).stdout
+    assert "?? answer.json" in status
+
+
 def test_turn_diff_logging_failure_does_not_change_capture(monkeypatch, tmp_path):
     checkout = tmp_path / "src"
     base_sha = "a" * 40
@@ -4616,21 +4648,19 @@ def test_turn_base_scopes_safe_directory_to_the_checkout(monkeypatch, tmp_path):
 def test_turn_diff_scopes_safe_directory_to_the_checkout(monkeypatch, tmp_path):
     checkout = tmp_path / "src"
     (checkout / ".git").mkdir(parents=True)
-    seen = {}
+    seen = []
 
     def fake_run(args, **kwargs):
-        seen["args"] = args
+        seen.append(args)
         return subprocess.CompletedProcess(args, 0, b"diff --git a/a b/a\n", b"")
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
 
     assert shim._capture_turn_diff(str(checkout), "b" * 40) is not None
-    assert seen["args"][:3] == [
-        "git",
-        "-c",
-        "safe.directory=%s" % checkout,
-    ]
-    assert "diff" in seen["args"]
+    # Every git read (the diff and the untracked-file listing) is scoped.
+    for args in seen:
+        assert args[:3] == ["git", "-c", "safe.directory=%s" % checkout]
+    assert any("diff" in args for args in seen)
 
 
 def test_turn_base_failure_reason_includes_git_stderr(monkeypatch, tmp_path, capsys):
