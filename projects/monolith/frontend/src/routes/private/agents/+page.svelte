@@ -21,7 +21,7 @@
   import MasterView from "./MasterView.svelte";
   import { nodeStateClass } from "./dag.js";
   import { firstLine, fmtCost } from "./run-format.js";
-  import { partitionRuns } from "./run-history.js";
+  import { partitionRuns, relativeTime } from "./run-history.js";
   import { arrivalSelection, inboxGroups } from "./inbox.js";
   import { crumbTrail, sessionLineage } from "./lineage.js";
   import { setupVisualViewport } from "./visual-viewport.js";
@@ -34,6 +34,7 @@
   import PaneHeader from "./PaneHeader.svelte";
   import SessionWalkthrough from "./SessionWalkthrough.svelte";
   import WalkthroughNarrative from "./WalkthroughNarrative.svelte";
+  import JumpPalette from "./JumpPalette.svelte";
   import {
     defaultSessionView,
     SESSION_VIEW_CONVERSATION,
@@ -95,6 +96,8 @@
   let searchQuery = $state("");
   let searchResults = $state(null);
   let searchLoading = $state(false);
+  let jumpOpen = $state(false);
+  let jumpQuery = $state("");
   let prompt = $state("");
   let composerModelOverride = $state(null);
   let sending = $state(false);
@@ -106,7 +109,6 @@
   let newPromptEl = $state(null);
   let repoControlEl = $state(null);
   let titleEl = $state(null);
-  let searchInputEl = $state(null);
   // ── Period (time-of-day palette) ────────────
   let now = $state(new Date());
   let period = $derived(periodForHour(now.getHours()));
@@ -143,7 +145,6 @@
   let errorMessage = $state(
     data.error ? "Unable to load agent sessions" : null,
   );
-  let searchTimer = null;
   let searchController = null;
   let requestSequence = 0;
   let renderedPending = $state({});
@@ -202,6 +203,9 @@
   );
   const earlierTotal = $derived(standaloneHistoryTotal + terminalRuns.length);
   const visibleSearchResults = $derived(searchResults ?? []);
+  const turnSearchHeading = $derived(
+    `${P.labels.turnSearch}${P.punct.colon} ${P.labels.quoteMark}${searchQuery}${P.labels.quoteMark}`,
+  );
   const hasActiveSessions = $derived(
     sessions.some((session) => isActive(session)) ||
       Number(
@@ -233,29 +237,6 @@
 
   function isActive(session) {
     return session?.status === "running" || Number(session?.pending_count) > 0;
-  }
-
-  function timestamp(value) {
-    if (!value) return "";
-    return /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? value : `${value}Z`;
-  }
-
-  function relativeTime(value) {
-    if (!value) return "never";
-    const then = Date.parse(timestamp(value));
-    if (Number.isNaN(then)) return "unknown";
-    const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
-    if (seconds < 60) return "now";
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h`;
-    const days = Math.floor(hours / 24);
-    if (days === 1) return "yesterday";
-    if (days < 30) return `${days}d`;
-    const months = Math.floor(days / 30);
-    if (months < 12) return `${months}mo`;
-    return `${Math.floor(months / 12)}y`;
   }
 
   function shortId(session) {
@@ -733,9 +714,31 @@
     showNewPanel = true;
   }
 
-  function focusSearch() {
-    if (sidebarCollapsed) toggleSidebar();
-    tick().then(() => searchInputEl?.focus({ preventScroll: true }));
+  function openJump(query = "") {
+    jumpQuery = query;
+    jumpOpen = true;
+  }
+
+  function closeJump() {
+    jumpOpen = false;
+  }
+
+  function toggleJump() {
+    if (jumpOpen) closeJump();
+    else openJump();
+  }
+
+  function openNewSessionFromJump(text) {
+    newSession.prompt = text;
+    openNewPanel();
+  }
+
+  function clearTurnSearch() {
+    searchController?.abort();
+    searchController = null;
+    searchQuery = "";
+    searchResults = null;
+    searchLoading = false;
   }
 
   function toggleSidebar() {
@@ -784,8 +787,8 @@
     return nodeStateClass(node);
   }
 
-  async function runSearch() {
-    const query = searchQuery.trim();
+  async function runSearch(value = searchQuery) {
+    const query = value.trim();
     if (!query) {
       searchController?.abort();
       searchController = null;
@@ -797,6 +800,7 @@
     const controller = new AbortController();
     searchController = controller;
     searchLoading = true;
+    searchResults = [];
     try {
       const response = await fetch(
         `/agents/search?q=${encodeURIComponent(query)}&limit=30`,
@@ -814,6 +818,27 @@
         searchController = null;
         searchLoading = false;
       }
+    }
+  }
+
+  async function searchTurnsFromJump(text) {
+    const query = text.trim();
+    if (sidebarCollapsed) toggleSidebar();
+    searchQuery = query;
+    await runSearch(query);
+  }
+
+  function handleGlobalKeydown(event) {
+    if (event.isComposing) return;
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      toggleJump();
+    } else if (event.key === "Escape" && jumpOpen) {
+      event.preventDefault();
+      closeJump();
+    } else if (event.key === "Escape" && showNewPanel) {
+      event.preventDefault();
+      closeNewPanel();
     }
   }
 
@@ -956,23 +981,8 @@
       },
       MOBILE_MEDIA_QUERY,
     );
-    const handleKeydown = (event) => {
-      if (event.key === "Escape" && !event.isComposing && showNewPanel) {
-        event.preventDefault();
-        closeNewPanel();
-      } else if (
-        (event.metaKey || event.ctrlKey) &&
-        event.key.toLowerCase() === "k" &&
-        !event.isComposing
-      ) {
-        event.preventDefault();
-        focusSearch();
-      }
-    };
-    window.addEventListener("keydown", handleKeydown);
     return () => {
       teardownViewport();
-      window.removeEventListener("keydown", handleKeydown);
     };
   });
 
@@ -1035,13 +1045,6 @@
     }
     sessionView = defaultSessionView(vmState(selectedSession, vms), turns);
     sessionViewInitializedFor = sessionId;
-  });
-
-  $effect(() => {
-    searchQuery;
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(runSearch, 200);
-    return () => clearTimeout(searchTimer);
   });
 
   $effect(() => {
@@ -1197,12 +1200,12 @@
   });
 
   $effect(() => () => {
-    clearTimeout(searchTimer);
     searchController?.abort();
   });
 </script>
 
 <svelte:head><title>{P.labels.pageTitle}</title></svelte:head>
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <main
   bind:this={consoleEl}
@@ -1211,18 +1214,15 @@
 >
   <header class="topbar">
     <div class="wordmark">Agents</div>
-    <label class="top-search">
-      <span class="sr-only">{P.labels.searchLabel}</span>
-      <input
-        bind:this={searchInputEl}
-        bind:value={searchQuery}
-        placeholder={P.labels.searchPlaceholder}
-        autocomplete="off"
-        onclick={() => sidebarCollapsed && toggleSidebar()}
-      />
-      {#if searchLoading}<span class="search-pulse">…</span>{/if}
-      <kbd>⌘K</kbd>
-    </label>
+    <button
+      class="top-search"
+      type="button"
+      aria-haspopup="dialog"
+      onclick={() => openJump()}
+    >
+      <span>{P.labels.searchPlaceholder}</span>
+      <kbd>{P.labels.shortcutCommandK}</kbd>
+    </button>
     <div class="guest-state">
       <span class="awake-dot" aria-hidden="true"></span>
       {awakeGuests}
@@ -1294,9 +1294,14 @@
         <div class="inbox-body">
           {#if searchResults !== null}
             <div class="group">
-              <div class="group-title">
-                <span>{P.labels.searchResults}</span>
-                <span class="group-count">{visibleSearchResults.length}</span>
+              <div class="turn-search-head">
+                <span>{turnSearchHeading}</span>
+                <button
+                  type="button"
+                  aria-label={P.labels.clearTurnSearch}
+                  title={P.labels.clearTurnSearch}
+                  onclick={clearTurnSearch}>{P.labels.clearMark}</button
+                >
               </div>
               <div class="row-list">
                 {#each visibleSearchResults as result (result.session_id + ":" + result.seq)}
@@ -1352,9 +1357,14 @@
                 </div>
               </div>
             {/if}
-            <button class="hist" type="button" onclick={focusSearch}>
+            <button
+              class="hist"
+              type="button"
+              aria-haspopup="dialog"
+              onclick={() => openJump()}
+            >
               <span>{earlierTotal} {P.labels.earlierSessionsAndRuns}</span>
-              <kbd>⌘K</kbd>
+              <kbd>{P.labels.shortcutCommandK}</kbd>
             </button>
           {/if}
         </div>
@@ -1385,12 +1395,26 @@
     </aside>
 
     <section class="detail transcript" aria-label={P.labels.transcriptRegion}>
-      <button
-        class="mobile-back"
-        type="button"
-        aria-label={P.labels.backToSessions}
-        onclick={returnToSessionList}>{P.labels.mobileBack}</button
-      >
+      <div class="mobile-detail-nav">
+        <button
+          class="mobile-back"
+          type="button"
+          aria-label={P.labels.backToSessions}
+          onclick={returnToSessionList}>{P.labels.mobileBack}</button
+        >
+        <button
+          class="mobile-jump"
+          type="button"
+          aria-label={P.labels.jumpOpenLabel}
+          aria-haspopup="dialog"
+          onclick={() => openJump()}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.25"></circle>
+            <path d="m10.25 10.25 3 3"></path>
+          </svg>
+        </button>
+      </div>
       {#if fixture?.walkthrough}
         <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
            component gets its payload inline and never fetches. -->
@@ -1849,6 +1873,36 @@
     </div>
   {/if}
 
+  {#if !mobileTranscript}
+    <button
+      class="jump"
+      type="button"
+      aria-haspopup="dialog"
+      onclick={() => openJump()}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="7" cy="7" r="4.25"></circle>
+        <path d="m10.25 10.25 3 3"></path>
+      </svg>
+      {P.labels.jumpButton}
+    </button>
+  {/if}
+
+  <JumpPalette
+    open={jumpOpen}
+    bind:query={jumpQuery}
+    {sessions}
+    {runs}
+    {terminalRuns}
+    {vms}
+    {inbox}
+    onClose={closeJump}
+    onOpenRun={selectRun}
+    onOpenSession={selectInboxSession}
+    onNewSession={openNewSessionFromJump}
+    onSearchTurns={searchTurnsFromJump}
+  />
+
   {#if errorMessage}<div class="error-banner" role="status">
       {errorMessage}
     </div>{/if}
@@ -1963,7 +2017,6 @@
     font-size: var(--size-body-mono);
   }
   button,
-  input,
   textarea,
   select {
     font: inherit;
@@ -1972,13 +2025,11 @@
     cursor: pointer;
   }
   button,
-  input,
   textarea,
   select {
     border-radius: var(--radius-md);
   }
   button:focus-visible,
-  input:focus-visible,
   textarea:focus-visible,
   select:focus-visible,
   .steps summary:focus-visible {
@@ -2044,7 +2095,6 @@
   .composer textarea {
     padding: 8px 8px;
   }
-  input:focus,
   textarea:focus,
   select:focus {
     border-color: var(--info);
@@ -2052,12 +2102,6 @@
   select {
     appearance: none;
     padding-right: 27px;
-  }
-  .search-pulse {
-    position: absolute;
-    top: 4px;
-    right: 8px;
-    color: var(--muted);
   }
   .session-context {
     color: var(--text-soft);
@@ -2094,32 +2138,32 @@
     font-weight: 600;
   }
   .top-search {
-    position: relative;
     flex: 0 1 320px;
     width: 320px;
     height: 32px;
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    min-width: 0;
+    padding: 0 8px 0 10px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
+    color: var(--muted);
     background: var(--panel-bg);
+    font-size: 13px;
+    text-align: left;
   }
-  .top-search:focus-within {
+  .top-search:hover {
+    background: var(--hover);
+  }
+  .top-search:focus-visible {
     border-color: var(--info);
   }
-  .top-search input {
+  .top-search span {
     min-width: 0;
-    width: 100%;
-    height: 30px;
-    padding: 0 46px 0 10px;
-    border: 0;
-    color: var(--text);
-    background: transparent;
-    font-size: 13px;
-  }
-  .top-search input::placeholder {
-    color: var(--muted);
-    opacity: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   kbd {
     border: 0;
@@ -2129,11 +2173,7 @@
     white-space: nowrap;
   }
   .top-search kbd {
-    position: absolute;
-    right: 8px;
-  }
-  .top-search .search-pulse {
-    right: 35px;
+    margin-left: 8px;
   }
   .guest-state {
     margin-left: auto;
@@ -2258,6 +2298,36 @@
   .group-count {
     font-family: var(--font-mono);
     font-weight: 600;
+  }
+  .turn-search-head {
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 4px 0 12px;
+    color: var(--muted);
+    font-size: var(--size-meta);
+  }
+  .turn-search-head span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .turn-search-head button {
+    width: 36px;
+    height: 36px;
+    flex: 0 0 36px;
+    padding: 0;
+    border: 0;
+    color: var(--muted);
+    background: transparent;
+    font-size: 18px;
+  }
+  .turn-search-head button:hover {
+    color: var(--text);
+    background: var(--hover);
   }
   .attention-group .group-title {
     color: var(--attn-text);
@@ -2837,7 +2907,8 @@
     box-shadow: var(--panel-shadow);
   }
   .new-panel-scrim,
-  .mobile-back {
+  .mobile-detail-nav,
+  .jump {
     display: none;
   }
   .new-panel form {
@@ -2952,13 +3023,60 @@
     .console .inbox .inbox-expanded {
       display: flex;
     }
+    .mobile-detail-nav {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .mobile-back,
+    .mobile-jump {
+      min-height: 44px;
+      border: 0;
+      background: transparent;
+    }
     .mobile-back {
-      display: block;
       min-height: 44px;
       padding: 0 8px;
-      border: 0;
       color: var(--info);
-      background: transparent;
+    }
+    .mobile-jump {
+      width: 44px;
+      flex: 0 0 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      color: var(--muted);
+    }
+    .mobile-jump svg,
+    .jump svg {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+    }
+    .jump {
+      position: fixed;
+      z-index: 3;
+      left: 50%;
+      bottom: 40px;
+      height: 48px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 20px;
+      transform: translateX(-50%);
+      border: 1px solid var(--ink);
+      border-radius: var(--radius-pill);
+      color: var(--ink-text);
+      background: var(--ink);
+      box-shadow: var(--panel-shadow);
+      font-size: 14px;
+      font-weight: 600;
     }
     .transcript-head {
       padding: 12px 16px;

@@ -16,6 +16,7 @@ const SURFACES = [
   "PaneHeader.svelte",
   "SessionWalkthrough.svelte",
   "WalkthroughNarrative.svelte",
+  "JumpPalette.svelte",
 ];
 
 function allValues(section) {
