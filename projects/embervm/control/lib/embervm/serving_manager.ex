@@ -397,7 +397,7 @@ defmodule Embervm.ServingManager do
                   # node-name alias: serving snapshots are per-instance ON DISK
                   # (PR-2.5), so restoring onto an arbitrary co-located instance while
                   # the boot runs on another leaves the boot's local disk empty.
-                  _ = restore_bundle(state, dial_id, node_id, workload, instance.snapshot_ref)
+                  _ = restore_bundle(state, dial_id, node_id, instance)
                   run_relight(state, instance, node_id, dial_id, req)
                 end)
 
@@ -1457,10 +1457,17 @@ defmodule Embervm.ServingManager do
   # kept only for the VENDOR stamp (RestoreVendor resolves the node's CPU vendor via
   # NodeCapacity.fetch, which keys on the node name; an instance_id string would not
   # resolve, and the vendor is identical across a node's instances anyway).
-  defp restore_bundle(state, dial_id, node_id, workload, snapshot_ref) do
+  defp restore_bundle(state, dial_id, node_id, instance) do
+    workload = instance.workload
+    snapshot_ref = instance.snapshot_ref
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SERVING, workload: workload, ref: snapshot_ref}
+    ctx = %{
+      principal: wake_principal(state, workload),
+      lineage: instance.instance_id,
+      generation: Map.get(instance, :generation, 0) || 0
+    }
 
-    case safe_restore_artifact(state, dial_id, node_id, ref) do
+    case safe_restore_artifact(state, dial_id, node_id, ref, ctx) do
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_SERVING, snapshot_ref, resp)
         :ok
@@ -1479,11 +1486,13 @@ defmodule Embervm.ServingManager do
   # Dial the restore on `dial_id` (the relight's instance, Step 4) but stamp the
   # vendor off `node_id` (the node-name anchor RestoreVendor can resolve). Transport-
   # death invalidation is keyed on `dial_id` (the channel we actually dialled).
-  defp safe_restore_artifact(state, dial_id, node_id, %ArtifactRef{} = ref) do
+  defp safe_restore_artifact(state, dial_id, node_id, %ArtifactRef{} = ref, ctx) do
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
     req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
+    brick = restore_brick(state.capacity_table, dial_id, node_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+    with {:ok, req} <- Embervm.RestoreCapability.stamp(req, brick, ctx),
+         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       # The `artifact_restore` span (Task 11): a child span around the
       # RestoreArtifact RPC (the restore-on-miss read path). Identity up front,
       # bytes-moved/skipped stamped from the response.
@@ -1499,6 +1508,22 @@ defmodule Embervm.ServingManager do
         stamp_restore_span(result)
         result
       end
+    end
+  end
+
+  defp restore_brick(table, dial_id, node_id) do
+    case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do
+      nil when dial_id == node_id ->
+        case NodeCapacity.fetch(table, node_id) do
+          {:ok, brick} -> brick
+          :error -> %{node_id: node_id, pod_uid: ""}
+        end
+
+      nil ->
+        %{node_id: node_id, pod_uid: ""}
+
+      brick ->
+        brick
     end
   end
 

@@ -14,6 +14,7 @@ defmodule Embervm.SessionManagerTest do
   use ExUnit.Case, async: false
 
   alias Embervm.{NodeCapacity, SessionManager, SessionStore, WorkloadCatalog}
+  alias Embervm.KeyService.Envelope
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, UsageStats}
 
@@ -42,6 +43,25 @@ defmodule Embervm.SessionManagerTest do
           {:ok, 1}
       end
     end
+  end
+
+  defmodule CapabilityS3 do
+    def get(agent, _key) do
+      Agent.get_and_update(agent, fn state ->
+        {state.reply, %{state | calls: state.calls + 1}}
+      end)
+    end
+  end
+
+  defmodule CapabilityKeys do
+    def current_epoch(agent, _principal), do: Agent.get(agent, &{:ok, &1.epoch})
+
+    def set_epoch(agent, _principal, epoch, _reason) do
+      Agent.update(agent, &%{&1 | epoch: epoch})
+      {:ok, epoch}
+    end
+
+    def unwrap(agent, _envelope), do: Agent.get(agent, & &1.unwrap)
   end
 
   # -- harness ---------------------------------------------------------------
@@ -160,6 +180,7 @@ defmodule Embervm.SessionManagerTest do
   defp put_session_workload(ctx, wl, opts \\ []) do
     NodeCapacity.put(ctx.cap_table, "node-4", %{
       node_id: "node-4",
+      pod_uid: "pod-node-4",
       configured_id: "node-4",
       workloads: %{
         wl => %{
@@ -1032,6 +1053,96 @@ defmodule Embervm.SessionManagerTest do
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :running
+  end
+
+  test "encrypted workspace restore carries a capability scoped by the manager" do
+    parent = self()
+
+    saved_env =
+      for key <- [
+            :artifact_encryption,
+            :artifact_store_client,
+            :artifact_key_service,
+            :noded_bearer_token
+          ],
+          into: %{},
+          do: {key, Application.get_env(:embervm, key)}
+
+    envelope =
+      Envelope.encode(%Envelope{
+        principal: "p1",
+        epoch: 0,
+        nonce: :binary.copy(<<1>>, 12),
+        tag: :binary.copy(<<2>>, 16),
+        wrapped_key: :binary.copy(<<3>>, 32)
+      })
+
+    meta = :json.encode(%{envelope: Base.encode64(envelope)}) |> IO.iodata_to_binary()
+    {:ok, s3} = Agent.start_link(fn -> %{reply: {:ok, meta}, calls: 0} end)
+    {:ok, keys} = Agent.start_link(fn -> %{epoch: 0, unwrap: {:ok, :binary.copy(<<4>>, 32)}} end)
+
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :artifact_store_client, {CapabilityS3, s3})
+    Application.put_env(:embervm, :artifact_key_service, {CapabilityKeys, keys})
+    Application.put_env(:embervm, :noded_bearer_token, "manager-shared-bearer")
+
+    on_exit(fn ->
+      Enum.each(saved_env, fn
+        {key, nil} -> Application.delete_env(:embervm, key)
+        {key, value} -> Application.put_env(:embervm, key, value)
+      end)
+    end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-capability-restored"),
+        channel_fun: fake_channel_fun(),
+        restore_artifact_fun: fn _ch, req ->
+          send(parent, {:restore_request, req})
+          {:ok, %{}}
+        end
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    assert {:ok, %{status_code: 200}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
+
+    assert_receive {:restore_request, %{capability: capability}}, 1_000
+    assert is_binary(capability) and capability != ""
+  end
+
+  test "workspace restore leaves capability empty while the gate is off" do
+    parent = self()
+    previous = Application.get_env(:embervm, :artifact_encryption)
+    Application.put_env(:embervm, :artifact_encryption, false)
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:embervm, :artifact_encryption)
+      else
+        Application.put_env(:embervm, :artifact_encryption, previous)
+      end
+    end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-capability-off"),
+        channel_fun: fake_channel_fun(),
+        restore_artifact_fun: fn _ch, req ->
+          send(parent, {:restore_request, req})
+          {:ok, %{}}
+        end
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    assert {:ok, %{status_code: 200}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wake"})
+
+    assert_receive {:restore_request, %{capability: ""}}, 1_000
   end
 
   # -- restore_lineage: cross-generation create (#4306 slice 3) -------------

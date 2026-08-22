@@ -20,6 +20,7 @@ defmodule Embervm.LogFormatter do
     :task_id,
     :workload,
     :principal,
+    :ref,
     :node_id,
     :reason,
     :attempt,

@@ -20,7 +20,12 @@ defmodule Embervm.ApplicationTest do
   setup do
     # Snapshot and restore the env vars these tests toggle, so they never leak.
     saved =
-      for k <- ~w(EMBERVM_NODE_ADDRESS EMBERVM_NODE_ID EMBERVM_OPLOG_DSN) do
+      for k <- [
+            "EMBERVM_NODE_ADDRESS",
+            "EMBERVM_NODE_ID",
+            "EMBERVM_OPLOG_DSN",
+            "EMBERVM_ARTIFACT_ENCRYPTION"
+          ] do
         {k, System.get_env(k)}
       end
 
@@ -54,6 +59,18 @@ defmodule Embervm.ApplicationTest do
   test "configured_nodes/0 seeds EMPTY when neither override nor service is configured" do
     # No discovery, no override: an idle control plane, empty node set, no Finch.
     assert App.configured_nodes() == []
+  end
+
+  test "artifact encryption is off by default and accepts the standard true spellings" do
+    assert App.artifact_encryption_enabled() == false
+
+    for enabled <- ["1", "true", "TRUE", "True"] do
+      System.put_env("EMBERVM_ARTIFACT_ENCRYPTION", enabled)
+      assert App.artifact_encryption_enabled() == true
+    end
+
+    System.put_env("EMBERVM_ARTIFACT_ENCRYPTION", "0")
+    assert App.artifact_encryption_enabled() == false
   end
 
   # op_log_mod/0 selection (PR-4, #18/#27): EMBERVM_OPLOG_DSN unset or empty

@@ -779,7 +779,7 @@ defmodule Embervm.StatefulManager do
                   # node-name alias: PR-2.5 made banked bundles per-instance ON DISK,
                   # so restoring onto an arbitrary co-located instance while the boot
                   # runs on another leaves the boot's local disk empty (cold-fails).
-                  _ = restore_bundle(state, dial_id, node_id, workload, snapshot_ref)
+                  _ = restore_bundle(state, dial_id, node_id, instance, snapshot_ref)
                   run_relight(state, instance, node_id, dial_id, req)
                 end)
 
@@ -2612,10 +2612,17 @@ defmodule Embervm.StatefulManager do
   # VENDOR stamp: RestoreVendor resolves the node's CPU vendor via NodeCapacity.fetch,
   # which keys on the node name (an instance_id string would not resolve); the vendor
   # is identical across a node's instances, so this is correct.
-  defp restore_bundle(state, dial_id, node_id, workload, snapshot_ref) do
+  defp restore_bundle(state, dial_id, node_id, instance, snapshot_ref) do
+    workload = instance.workload
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_STATEFUL, workload: workload, ref: snapshot_ref}
+    generation = Map.get(instance, :snapshot_generation) || Map.get(instance, :generation, 0) || 0
+    ctx = %{
+      principal: wake_principal(workload),
+      lineage: instance.instance_id,
+      generation: generation
+    }
 
-    case safe_restore_artifact(state, dial_id, node_id, ref) do
+    case safe_restore_artifact(state, dial_id, node_id, ref, ctx) do
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_STATEFUL, snapshot_ref, resp)
         :ok
@@ -2636,10 +2643,15 @@ defmodule Embervm.StatefulManager do
   # (vol.img, gen) pair, then record :artifact_restored. Best-effort, same as
   # restore_bundle: a failure degrades to a plain cold boot (which the daemon fails
   # closed on for a truly-absent volume).
-  defp restore_volume(state, dial_id, node_id, workload, _volume) do
+  defp restore_volume(state, dial_id, node_id, workload, volume) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload, ref: workload}
+    ctx = %{
+      principal: wake_principal(workload),
+      lineage: workload,
+      generation: Map.get(volume, :generation, 0) || 0
+    }
 
-    case safe_restore_artifact(state, dial_id, node_id, ref) do
+    case safe_restore_artifact(state, dial_id, node_id, ref, ctx) do
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_VOLUME, workload, resp)
         :ok
@@ -2657,11 +2669,13 @@ defmodule Embervm.StatefulManager do
   # Dial the restore on `dial_id` (the boot's instance, Step 4) but stamp the vendor
   # off `node_id` (the node-name anchor RestoreVendor can resolve). Invalidation on a
   # dead transport is also keyed on `dial_id` (the channel we actually dialled).
-  defp safe_restore_artifact(state, dial_id, node_id, %ArtifactRef{} = ref) do
+  defp safe_restore_artifact(state, dial_id, node_id, %ArtifactRef{} = ref, ctx) do
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
     req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
+    brick = restore_brick(state.capacity_table, dial_id, node_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+    with {:ok, req} <- Embervm.RestoreCapability.stamp(req, brick, ctx),
+         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       # The `artifact_restore` span (Task 11): a child span around the
       # RestoreArtifact RPC (the restore-on-miss read path). Carries the artifact
       # identity up front and stamps bytes-moved/skipped from the response, so the
@@ -2678,6 +2692,22 @@ defmodule Embervm.StatefulManager do
         stamp_restore_span(result)
         result
       end
+    end
+  end
+
+  defp restore_brick(table, dial_id, node_id) do
+    case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do
+      nil when dial_id == node_id ->
+        case NodeCapacity.fetch(table, node_id) do
+          {:ok, brick} -> brick
+          :error -> %{node_id: node_id, pod_uid: ""}
+        end
+
+      nil ->
+        %{node_id: node_id, pod_uid: ""}
+
+      brick ->
+        brick
     end
   end
 

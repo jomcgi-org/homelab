@@ -52,6 +52,12 @@ defmodule Embervm.Application do
     # Like configured_nodes/0, this is pure environment wiring and stays Finch-free.
     Application.put_env(:embervm, :noded_bearer_token, trimmed_env("EMBERVM_NODED_BEARER_TOKEN"))
 
+    # Principal-artifact envelope encryption is one control-plane gate shared by
+    # wrap and restore capability minting. It defaults off and performs no store
+    # I/O while off. The store client reuses the warmth GC's S3 configuration.
+    Application.put_env(:embervm, :artifact_encryption, artifact_encryption_enabled())
+    Application.put_env(:embervm, :artifact_store_client, artifact_store_client())
+
     # Composite-group (R5) capacity from the chart env into app-env BEFORE the
     # supervisor starts, so Embervm.WorkloadWatcher (reads them at init) sees an
     # operator's override of compositeTcpPortRange / maxGroupSize. Absent or
@@ -775,6 +781,23 @@ defmodule Embervm.Application do
       "" -> "embervm"
       bucket -> bucket
     end
+  end
+
+  @doc false
+  def artifact_encryption_enabled do
+    case trimmed_env("EMBERVM_ARTIFACT_ENCRYPTION") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  defp artifact_store_client do
+    Embervm.S3Client.new(
+      trimmed_env("EMBERVM_STORE_ENDPOINT"),
+      store_bucket(),
+      access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
+      secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY")
+    )
   end
 
   # The destructive gate for the S3-direct warmth GC, from EMBERVM_WARMTH_S3_GC.

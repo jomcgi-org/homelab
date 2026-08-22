@@ -435,7 +435,18 @@ defmodule Embervm.SessionManager do
 
         state = %{state | create_next_ref: ref + 1}
         {state, worker} =
-          spawn_create_worker(state, ref, node_id, dial_id, workload, snapshot_ref, entry, lineage_id, restore_lineage)
+          spawn_create_worker(
+            state,
+            ref,
+            node_id,
+            dial_id,
+            workload,
+            snapshot_ref,
+            entry,
+            lineage_id,
+            restore_lineage,
+            principal
+          )
 
         {:noreply, put_in(state.create_workers[ref], worker)}
 
@@ -738,7 +749,18 @@ defmodule Embervm.SessionManager do
     end)
   end
 
-  defp spawn_create_worker(state, ref, node_id, dial_id, workload, snapshot_ref, entry, lineage_id, restore_lineage) do
+  defp spawn_create_worker(
+         state,
+         ref,
+         node_id,
+         dial_id,
+         workload,
+         snapshot_ref,
+         entry,
+         lineage_id,
+         restore_lineage,
+         principal
+       ) do
     owner = self()
     timeout_ref = Process.send_after(owner, {:create_timeout, ref}, @create_worker_timeout_ms)
 
@@ -753,7 +775,16 @@ defmodule Embervm.SessionManager do
               end
 
             _ ->
-              restore_then_prime(state, node_id, workload, snapshot_ref, entry, restore_lineage, dial_id)
+              restore_then_prime(
+                state,
+                node_id,
+                workload,
+                snapshot_ref,
+                entry,
+                restore_lineage,
+                dial_id,
+                principal
+              )
           end
         rescue
           exception -> {:error, {:create_worker_crashed, exception}}
@@ -797,14 +828,24 @@ defmodule Embervm.SessionManager do
   # and falls back to placed_dial_id (always a real, dialable instance)
   # whenever dial_for_session_volume did not actually find an owning
   # instance.
-  defp restore_then_prime(state, node_id, workload, snapshot_ref, entry, restore_lineage, placed_dial_id) do
+  defp restore_then_prime(
+         state,
+         node_id,
+         workload,
+         snapshot_ref,
+         entry,
+         restore_lineage,
+         placed_dial_id,
+         principal
+       ) do
     dial_id =
       case Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, restore_lineage) do
         ^node_id -> placed_dial_id
         resolved -> resolved
       end
 
-    with {:ok, restored} <- restore_session_workspace(state, dial_id, workload, restore_lineage),
+    with {:ok, restored} <-
+           restore_session_workspace(state, dial_id, workload, restore_lineage, principal, 0),
          {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, restore_lineage) do
       {:ok, vm_id, restored}
     end
@@ -1787,7 +1828,8 @@ defmodule Embervm.SessionManager do
                                "ember.principal" => session.principal,
                                "ember.volume_node_id" => volume_node_id
                              }} do
-              with {:ok, vm_id, dial_id} <- perform_rejoin_prime(state, volume_node_id, session.workload, lineage_id) do
+              with {:ok, vm_id, dial_id} <-
+                     perform_rejoin_prime(state, volume_node_id, session) do
                 # noded's auto-destroy timer covers PrimeAssign after delivery starts.
                 # The CP destroys a successfully primed VM when delivery never starts.
                 {:ok, volume_node_id, vm_id, 0, dial_id}
@@ -1807,7 +1849,10 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp perform_rejoin_prime(state, volume_node_id, workload, lineage_id) do
+  defp perform_rejoin_prime(state, volume_node_id, session) do
+    workload = session.workload
+    lineage_id = session.lineage_id
+
     with {:ok, entry} <- fetch_session_workload(state, workload),
          {:ok, [brick | _]} <- Scheduler.place_with_demand(%Request{
            table: state.capacity_table, node_id: volume_node_id, workload: workload,
@@ -1820,7 +1865,15 @@ defmodule Embervm.SessionManager do
          # Otherwise registration-order dial resolution can select an undersized
          # brick and fail prime with pressure:mem forever (#4379).
          dial_id <- Brick.dial_id(brick),
-         {:ok, _restored} <- restore_session_workspace(state, dial_id, workload, lineage_id),
+         {:ok, _restored} <-
+           restore_session_workspace(
+             state,
+             dial_id,
+             workload,
+             lineage_id,
+             session.principal,
+             Map.get(session, :generation, 0) || 0
+           ),
          snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
          {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
       {:ok, vm_id, dial_id}
@@ -1836,10 +1889,23 @@ defmodule Embervm.SessionManager do
   # actual hit, {:ok, false} on a tolerated store miss (#4306 slice 3 needs to
   # tell these apart to report `restored` on a create; a rejoin's one caller,
   # perform_rejoin_prime, only cares that it is `:ok`).
-  defp restore_session_workspace(state, node_id, workload, lineage_id) do
+  defp restore_session_workspace(
+         state,
+         node_id,
+         workload,
+         lineage_id,
+         principal,
+         generation
+       ) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION_WORKSPACE, workload: workload, ref: lineage_id}
 
-    case safe_restore_artifact(state, node_id, node_id, ref) do
+    ctx = %{
+      principal: principal,
+      lineage: lineage_id,
+      generation: generation
+    }
+
+    case safe_restore_artifact(state, node_id, node_id, ref, ctx) do
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_SESSION_WORKSPACE, lineage_id, resp)
         {:ok, true}
@@ -1959,7 +2025,13 @@ defmodule Embervm.SessionManager do
               # leaves the relight's local disk empty. On a true local miss no
               # instance reports the snapshot, so this is a mem-eligible pick that both
               # the restore and the relight agree on.
-              case restore_bundle(state, session.node_id, restore_dial_id, session.workload, restore_ref) do
+              case restore_bundle(
+                     state,
+                     session.node_id,
+                     restore_dial_id,
+                     session,
+                     restore_ref
+                   ) do
                 :ok -> {:ok, restore_dial_id}
                 _ -> :none
               end
@@ -2085,10 +2157,16 @@ defmodule Embervm.SessionManager do
   # caller falls through to node_for_relight's existing check, which the daemon (or
   # the placement layer) degrades to snapshot_lost exactly as it would without this
   # feature (fail-open warmth). Idempotent on the daemon side.
-  defp restore_bundle(state, node_id, dial_id, workload, snapshot_ref) do
+  defp restore_bundle(state, node_id, dial_id, session, snapshot_ref) do
+    workload = session.workload
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: workload, ref: snapshot_ref}
+    ctx = %{
+      principal: session.principal,
+      lineage: session.lineage_id,
+      generation: Map.get(session, :generation, 0) || 0
+    }
 
-    case safe_restore_artifact(state, node_id, dial_id, ref) do
+    case safe_restore_artifact(state, node_id, dial_id, ref, ctx) do
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_SESSION, snapshot_ref, resp)
         :ok
@@ -2104,15 +2182,17 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp safe_restore_artifact(state, node_id, dial_id, %ArtifactRef{} = ref) do
+  defp safe_restore_artifact(state, node_id, dial_id, %ArtifactRef{} = ref, ctx) do
     req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
     # Stamp the vendor from the NODE (a node-scoped fact shared across its instances),
     # but DIAL the specific owning/target instance (dial_id): the restore must land on
     # the same co-located instance the relight then dials (PR-B0b), mirroring
     # ServingManager.safe_restore_artifact.
     req = Embervm.RestoreVendor.stamp(state.capacity_table, node_id, req)
+    brick = restore_brick(state.capacity_table, dial_id, node_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+    with {:ok, req} <- Embervm.RestoreCapability.stamp(req, brick, ctx),
+         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       # The `artifact_restore` span (Task 11): a child span around the
       # RestoreArtifact RPC (the restore-on-miss read path). Identity up front,
       # bytes-moved/skipped stamped from the response.
@@ -2136,6 +2216,22 @@ defmodule Embervm.SessionManager do
         stamp_restore_span(result)
         result
       end
+    end
+  end
+
+  defp restore_brick(table, dial_id, node_id) do
+    case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do
+      nil when dial_id == node_id ->
+        case NodeCapacity.fetch(table, node_id) do
+          {:ok, brick} -> brick
+          :error -> %{node_id: node_id, pod_uid: ""}
+        end
+
+      nil ->
+        %{node_id: node_id, pod_uid: ""}
+
+      brick ->
+        brick
     end
   end
 

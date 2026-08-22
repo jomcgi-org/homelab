@@ -68,7 +68,7 @@ compare against.
 | Brick autoscale | **Built** at rung `up`; **Planned** scale-down | Full ladder remains |
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
 | Transport auth CP-to-noded | **Built** (bearer + policy) | mTLS/SPIFFE remains the upgrade path |
-| Encryption at rest | **Planned** | Per-principal mutable artifacts (#4691); Account-scoped immutable rootfs chunks (ADR 028, #4182); custodian **Built** (#4976) |
+| Encryption at rest | **Built** | Per-principal mutable artifacts (#4691), enabled per environment by values; Account-scoped immutable rootfs chunks remain planned (ADR 028, #4182) |
 | Cells / multi-cell | **Planned** | No cell seams exist in code yet (#4753); one control plane today |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
 | Website snapshotter (task guest) | **Built** | Headless Chromium screenshot over MCP (ADR embervm/035), #4994 |
@@ -627,15 +627,21 @@ vendor-mismatched restore loudly. Volume data is fully portable. Legacy
 artifacts cut before stamping existed are grandfathered: restorable on their
 home node forever, never distributed.
 
-**Principal artifact envelope encryption** is **Built in noded, inert until the
-control plane arms it** (#4691). Each principal artifact file is zstd-encoded,
+**Principal artifact envelope encryption** is **Built, inert until enabled per
+environment** (#4691). Each principal artifact file is zstd-encoded,
 then streamed through chunk-framed AES-256-GCM with a per-file nonce; `meta.json`
 holds the opaque control-plane envelope while SHA-256 remains over plaintext.
 Restore accepts legacy plaintext unconditionally. Enveloped restores require a
 request-field capability carrying the data key and an HMAC-authenticated tuple
 scoped to the principal, lineage, brick, workload, ref, kind, and generation.
-The reader and validator ship unconditionally; separate writer and enforcement
-flags remain false for the two-phase rollout.
+The control plane exposes a node-authenticated wrap endpoint and unwraps the
+stored envelope only while minting a five-minute capability for the exact target
+brick. The first principal use establishes epoch 1, and any malformed or
+below-floor envelope suppresses the restore so the existing cold-boot fallback
+runs. The rollout order is deliberate: configure `kekRoot`, enable
+`EMBERVM_ARTIFACT_ENCRYPTION`, enable `store.encrypt`, then enable
+`requireRestoreCapability`. Each step is controlled by environment values and
+all flags remain false by default.
 
 **Decided direction:**
 
@@ -827,7 +833,7 @@ exposure is per-principal encryption at rest (#4691).
 | Worker state fully reset between actors (18, 27, 30) | **Built**: Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no mutable VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, placement is CP-owned, never guest-chosen, and each VM sees an immutable rootfs plus private scratch. ADR 028's Planned physical chunk sharing cannot expose another manifest or writable filesystem. |
 | Credentials never inside the sandbox by default (28, 29) | **Built**: class 1 derivable short-lived credentials may enter PLATFORM-TRUSTED guest classes only and are revoked at bank; the brick-local egress proxy holds other real credentials and injects them only at the sidecar hop, only for hosts in that secret's `egressTo`. UNTRUSTED workload guests never receive any credential class. Revocation at the validator is the control, and RAM scrubbing is rejected as a mechanism (section 9). **Planned**: per-principal grants at the credential broker and request-scoped GitHub tool mediation replacing host-keyed injection. |
 | Quotas and rate limits on creation and spend (9, 33) | **Built** as enforcement machinery, model-checked (`quota.tla`): admission fails closed, a configured quota of 0 is a hard stop at submit, and metering rides the operation (invariant 4). The per-principal daily budget is deliberately unset in the reference deployment (`deploy/values.yaml`), so spend is bounded by admission caps and concurrency, not by a per-principal quota, until a budget is set. |
-| Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Built**: the object store gateway enforces SigV4 and the `embervm` identity alone may write the ember buckets (#4708), so an anonymous or foreign-keyed caller cannot write, substitute, or delete an artifact. **Planned**: per-principal envelope encryption of mutable warmth, digest-verified manifests, and restore authorized by the tuple (principal, lineage, brick, workload, generation, lease) (#4691). Until then the vendor stamp still defends against accidents rather than against a caller holding the ember identity. |
+| Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Built**: the object store gateway enforces SigV4 and the `embervm` identity alone may write the ember buckets (#4708). Per-principal envelope encryption and restore authorization bind mutable warmth to the tuple (principal, lineage, brick, workload, generation, lease) (#4691), gated off by default for environment rollout. Digest-verified manifests remain planned. |
 
 ### Attacks from clients and the internal network
 
@@ -843,9 +849,9 @@ exposure is per-principal encryption at rest (#4691).
 
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
-| Node storage access scoped to actors scheduled on it (36, 37) | **Built** for access: the gateway enforces SigV4 and only the `embervm` identity reaches the ember buckets (#4708). **Planned**: a brick receives a short-lived decryption capability for exactly the tuple it is waking (#4691), so a compromised brick or a bulk bucket copy yields nothing readable beyond its own current assignments; until then every brick shares the one ember identity. |
+| Node storage access scoped to actors scheduled on it (36, 37) | **Built**: the gateway enforces SigV4 and only the `embervm` identity reaches the ember buckets (#4708). For encrypted mutable warmth, a brick receives a five-minute decryption capability for exactly the tuple it is waking (#4691); the feature is gated off by default for environment rollout. |
 | Node API access scoped to its own actors (38) | **Built**: node reports are authoritative only for instances anchored to that node, wake grants are gated on the volume's anchor (section 4), and the bound token's TokenReview pod-uid and node-name claims must match the claimed (node, pod uid). A brick can register only itself. |
-| Granular admin access and envelope encryption at rest (39, 40) | **Planned** for principal warmth (#4691), with two KEK custody modes: platform-managed (**Decided direction**: per-principal KEKs derived per epoch from a single root held by the control plane's key service, so the deployment carries one standing key secret regardless of principal count, revocation is a minimum-accepted-epoch floor, and keys and ciphertext never sit in the same component), or customer-managed in the principal's own KMS with wrap/unwrap grants only, so key material never enters the platform and revocation is the customer's unilateral act. Immutable private rootfs chunks use Account-scoped convergent encryption with per-manifest principal authorization (ADR 028, #4182); this does not widen mutable artifact encryption. The op-log deliberately shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
+| Granular admin access and envelope encryption at rest (39, 40) | **Built** for platform-managed principal warmth (#4691): per-principal KEKs derive per epoch from a single root held by the control plane key service, revocation is a minimum-accepted-epoch floor, and keys and ciphertext never sit in the same component. Customer-managed KMS and immutable private rootfs chunk encryption remain planned (ADR 028, #4182). The op-log deliberately shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
 | Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). The journal is prefix-compacted past 30 days; older audit lives only in the observability stack. |
 | Containment of a detected-bad actor (43) | **Built** for one lever: principal cutoff as an admission action, stop minting tokens, 402 at the edge. The volume quarantine is a data-integrity guard against generation divergence, not an adversary control; no brick- or principal-level quarantine primitive exists, and an automatic containment policy is not decided. |
 

@@ -963,6 +963,13 @@ baseRetention:
 warmthRetention:
   sweepEnabled: ""
 
+# Control-plane half of principal-artifact envelope encryption (#4691). False
+# keeps both the node-only wrap endpoint and restore capability minting inert.
+# Roll out in order: KEK root, this gate, noded.store.encrypt, then
+# noded.store.requireRestoreCapability.
+artifactEncryption:
+  enabled: false
+
 # S3-direct warmth GC (task #39, control-plane env): reclaims orphaned warmth
 # prefixes the reaper cannot reach (the pre-sidecar backlog whose workload
 # binding was lost) by listing the bucket directly. Every sweep computes, logs,
