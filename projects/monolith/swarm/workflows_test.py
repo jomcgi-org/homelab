@@ -182,6 +182,9 @@ def test_no_commit_retries(monkeypatch):
 
 def test_pinned_attempt_bound_survives_config_change(monkeypatch):
     monkeypatch.setenv("SWARM_MAX_ATTEMPTS", "2")
+    # This test is about the attempt bound, not the pause: keep escalation
+    # terminal so the expected plan and the run path stay deterministic.
+    monkeypatch.setenv("SWARM_DECISION_TIMEOUT_SECONDS", "0")
     attributes = []
     sessions = iter([101, 102])
     heads = iter([None, None, None, None])
