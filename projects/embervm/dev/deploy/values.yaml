@@ -50,6 +50,14 @@ bricks:
 # Warmth GC and base retention operate on S3; separate buckets prevent
 # production GC from deleting dev artifacts. The store endpoint and bucket are
 # rendered into noded's config for S3 warmth export/restore.
+# Platform KEK root (ADR embervm/036, #4976): dev derives per-principal KEKs
+# from the embervm-kek-root item. The secretKeyRef is optional, so until the
+# item exists the custodian is inert and nothing below encrypts.
+kekRoot:
+  enabled: true
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/embervm-kek-root"
+
 noded:
   # The wildcard DaemonSet, off. See the scratchPrep note below for why this
   # matters: it selects homelab.io/firecracker=true, which all four nodes carry

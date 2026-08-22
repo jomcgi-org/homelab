@@ -179,6 +179,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "embervm.kekRootSecretName" . }}
                   key: {{ .Values.kekRoot.key }}
+                  # Optional on purpose: a root that has not been provisioned
+                  # yet leaves the custodian inert (every derive returns
+                  # {:error, :no_root}) rather than blocking the control plane
+                  # from starting. Encryption is its own flag.
+                  optional: true
             {{- end }}
             {{- if and .Values.runtimePython .Values.runtimePython.guestImage .Values.runtimePython.guestImage.repository }}
             # R1 zip lane (ADR embervm/002): the zip-lane runtime name -> pinned
