@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { formatAge, nextStatus } from "./vm-stream-status.js";
+import { nextStatus, streamAge } from "./vm-stream-status.js";
 
 const initial = () => ({ mode: "connecting", lastUpdateAt: null, error: null });
 
@@ -150,17 +150,17 @@ describe("VM stream status", () => {
   });
 });
 
-describe("formatAge", () => {
+describe("streamAge", () => {
   test.each([
-    [0, "just now"],
-    [59_000, "just now"],
-    [60_000, "1m ago"],
-    [59 * 60_000, "59m ago"],
-    [60 * 60_000, "1h ago"],
-    [23 * 60 * 60_000, "23h ago"],
-    [24 * 60 * 60_000, "1d ago"],
-    [48 * 60 * 60_000, "2d ago"],
+    [0, "0s"],
+    [59_000, "59s"],
+    [60_000, "1m"],
+    [59 * 60_000, "59m"],
+    [60 * 60_000, "1h"],
+    [23 * 60 * 60_000, "23h"],
+    [24 * 60 * 60_000, "1d"],
+    [48 * 60 * 60_000, "2d"],
   ])("formats %i milliseconds as %s", (milliseconds, expected) => {
-    expect(formatAge(milliseconds)).toBe(expected);
+    expect(streamAge(milliseconds)).toBe(expected);
   });
 });

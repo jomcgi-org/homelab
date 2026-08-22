@@ -25,7 +25,7 @@
   import { arrivalSelection, inboxGroups } from "./inbox.js";
   import { crumbTrail, sessionLineage } from "./lineage.js";
   import { setupVisualViewport } from "./visual-viewport.js";
-  import { nextStatus } from "./vm-stream-status.js";
+  import { nextStatus, streamAge } from "./vm-stream-status.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import {
     workspaceRecoveryMessage,
@@ -256,15 +256,6 @@
     const months = Math.floor(days / 30);
     if (months < 12) return `${months}mo`;
     return `${Math.floor(months / 12)}y`;
-  }
-
-  function streamAge(milliseconds) {
-    const seconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
   }
 
   function shortId(session) {
@@ -701,6 +692,13 @@
     navigateTo(sessionTransition($page.url.searchParams, id));
   }
 
+  // An inbox session is standalone: drop any selected run so the crumbs do
+  // not claim it belongs to that run. RunView's callback keeps selectSession.
+  function selectInboxSession(id) {
+    if (id == null) return;
+    navigateTo(sessionTransition(clearSelection($page.url.searchParams), id));
+  }
+
   function isMobileViewport() {
     return (
       typeof window !== "undefined" &&
@@ -772,7 +770,7 @@
           (node.state === "blocked" &&
             (node.blocked_on == null || node.blocked_on?.kind === "human"))),
     );
-    return pushGate ? "Approve push" : "Needs you";
+    return pushGate ? P.labels.approvePush : P.labels.needsYou;
   }
 
   function shapeStateClass(run, node) {
@@ -937,10 +935,15 @@
       ) {
         return;
       }
+      // A phone lands on the inbox itself; desktop replaces (never pushes)
+      // so the first Back press still leaves the console.
+      if (isMobileViewport()) return;
       const groups = inboxGroups(runs, sessions, vms);
       const selection = arrivalSelection(groups.needsYou, groups.running);
-      if (selection?.kind === "run") selectRun(selection.id);
-      else if (selection?.kind === "session") selectSession(selection.id);
+      if (selection?.kind === "run")
+        replaceWith(runSearchTransition($page.url.searchParams, selection.id));
+      else if (selection?.kind === "session")
+        replaceWith(sessionTransition($page.url.searchParams, selection.id));
     });
     const teardownViewport = setupVisualViewport(
       window,
@@ -989,6 +992,7 @@
     detail = null;
     runDetail = null;
     renderedPending = {};
+    searchResults = null;
     composerModelOverride = null;
 
     if (runId != null) loadRunDetail(runId, runRequestSequence);
@@ -1212,7 +1216,7 @@
       <input
         bind:this={searchInputEl}
         bind:value={searchQuery}
-        placeholder="Jump to a session, or search turns"
+        placeholder={P.labels.searchPlaceholder}
         autocomplete="off"
         onclick={() => sidebarCollapsed && toggleSidebar()}
       />
@@ -1221,7 +1225,8 @@
     </label>
     <div class="guest-state">
       <span class="awake-dot" aria-hidden="true"></span>
-      {awakeGuests} guests awake
+      {awakeGuests}
+      {P.labels.guestsAwake}
     </div>
     <button
       class="new-button"
@@ -1237,18 +1242,14 @@
   </header>
 
   <div class="shell">
-    <aside
-      class:folded={sidebarCollapsed}
-      class="inbox"
-      aria-label={P.labels.sessionsRegion}
-    >
+    <aside class="inbox" aria-label={P.labels.sessionsRegion}>
       <div class="fold-rail">
         <button
           class="fold-button"
           type="button"
-          aria-label="Expand inbox"
+          aria-label={P.labels.expandInbox}
           aria-expanded="false"
-          title="Expand inbox"
+          title={P.labels.expandInbox}
           onclick={toggleSidebar}
         >
           <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -1259,13 +1260,13 @@
         <button
           class="rail-badge attention"
           type="button"
-          title={`${inbox.needsYou.length} need you`}
+          aria-label={`${inbox.needsYou.length} ${P.labels.needsYouExpandInbox}`}
           onclick={toggleSidebar}>{inbox.needsYou.length}</button
         >
         <button
           class="rail-badge running"
           type="button"
-          title={`${inbox.running.length} running`}
+          aria-label={`${inbox.running.length} ${P.labels.runningExpandInbox}`}
           onclick={toggleSidebar}
         >
           <span class="awake-dot" aria-hidden="true"></span>
@@ -1275,13 +1276,13 @@
 
       <div class="inbox-expanded">
         <div class="inbox-head">
-          <h1>Inbox</h1>
+          <h1>{P.labels.inbox}</h1>
           <button
             class="fold-button"
             type="button"
-            aria-label="Collapse inbox"
+            aria-label={P.labels.collapseInbox}
             aria-expanded="true"
-            title="Collapse inbox"
+            title={P.labels.collapseInbox}
             onclick={toggleSidebar}
           >
             <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -1328,7 +1329,7 @@
             {#if inbox.needsYou.length}
               <div class="group attention-group">
                 <div class="group-title">
-                  <span>Needs you</span>
+                  <span>{P.labels.needsYou}</span>
                   <span class="group-count">{inbox.needsYou.length}</span>
                 </div>
                 <div class="row-list">
@@ -1341,7 +1342,7 @@
             {#if inbox.running.length}
               <div class="group">
                 <div class="group-title">
-                  <span>Running</span>
+                  <span>{P.labels.runningGroup}</span>
                   <span class="group-count">{inbox.running.length}</span>
                 </div>
                 <div class="row-list">
@@ -1352,7 +1353,7 @@
               </div>
             {/if}
             <button class="hist" type="button" onclick={focusSearch}>
-              <span>{earlierTotal} earlier sessions</span>
+              <span>{earlierTotal} {P.labels.earlierSessionsAndRuns}</span>
               <kbd>⌘K</kbd>
             </button>
           {/if}
@@ -1360,23 +1361,24 @@
 
         <div
           class={`inbox-foot mono ${vmStreamStatus.mode}`}
-          title={vmStreamStatus.error ?? "VM stream state"}
+          title={vmStreamStatus.error ?? P.labels.vmStreamState}
         >
           <span class="vm-stream-dot" aria-hidden="true"></span>
+          {#if vmStreamStatus.error}<span class="sr-only"
+              >: {vmStreamStatus.error}</span
+            >{/if}
           {#if vmStreamStatus.mode === "streaming"}
-            vm stream live · {awakeGuests} guests awake
+            {P.labels.vmStreamLive} · {awakeGuests} {P.labels.guestsAwake}
           {:else if vmStreamStatus.mode === "polling"}
-            vm stream polling{#if vmStreamStatus.lastUpdateAt != null}
-              · updated {streamAge(
-                vmStreamNow - vmStreamStatus.lastUpdateAt,
-              )}{/if}
+            {P.labels.vmStreamPolling}{#if vmStreamStatus.lastUpdateAt != null}
+              · {P.labels.updated}
+              {streamAge(vmStreamNow - vmStreamStatus.lastUpdateAt)}{/if}
           {:else if vmStreamStatus.mode === "stalled"}
-            vm stream stalled{#if vmStreamStatus.lastUpdateAt != null}
-              · updated {streamAge(
-                vmStreamNow - vmStreamStatus.lastUpdateAt,
-              )}{/if}
+            {P.labels.vmStreamStalled}{#if vmStreamStatus.lastUpdateAt != null}
+              · {P.labels.updated}
+              {streamAge(vmStreamNow - vmStreamStatus.lastUpdateAt)}{/if}
           {:else}
-            vm stream connecting
+            {P.labels.vmStreamConnecting}
           {/if}
         </div>
       </div>
@@ -1868,7 +1870,7 @@
       ? `${firstLine(entry.title || entry.task?.text)}: ${P.stateWords[entry.state] || entry.state}`
       : `${sessionTitle(entry)}: ${statusLabel(entry)}`}
     onclick={() =>
-      item.kind === "run" ? selectRun(item.id) : selectSession(item.id)}
+      item.kind === "run" ? selectRun(item.id) : selectInboxSession(item.id)}
   >
     {#if item.kind === "run"}
       <span class="run-shape-strip" aria-hidden="true">
@@ -1903,7 +1905,7 @@
     </span>
     {#if attention}
       <span class="ask">
-        {item.kind === "run" ? runAsk(entry) : "Answer"}
+        {item.kind === "run" ? runAsk(entry) : P.labels.answer}
       </span>
     {/if}
     <span class="age mono">{relativeTime(item.activityAt)}</span>
@@ -3018,6 +3020,17 @@
     }
     .session-view-toggle button {
       min-height: 32px;
+    }
+    /* A fold persisted on desktop must not blank the phone column: these
+       outrank the collapsed rules above by source order at equal specificity. */
+    :global(html[data-agents-rail="collapsed"]) .console .inbox {
+      flex-basis: 100%;
+    }
+    :global(html[data-agents-rail="collapsed"]) .console .fold-rail {
+      display: none;
+    }
+    :global(html[data-agents-rail="collapsed"]) .console .inbox-expanded {
+      display: flex;
     }
   }
   .sr-only {
