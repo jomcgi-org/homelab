@@ -47,17 +47,22 @@ not land. Fetch, rebase, and push again.
 This repo allows **rebase merges only**. Squash and merge commits are disabled,
 so always `gh pr merge --rebase` (or `--auto --rebase`).
 
-**Required checks are strict: the branch must be up to date with main.** Any
-other PR merging puts every open PR into `BEHIND`, where auto-merge will not
-fire. Fix it with `gh pr update-branch <number> --rebase` and let CI re-run.
+**Merges go through the GitHub merge queue.** `gh pr merge --auto --rebase`
+("merge when ready") enqueues the PR once it is green and reviewed; the queue
+rebases it onto current main, runs `pr-checks` on the candidate (a push to a
+`gh-readonly-queue/main/pr-<n>-<sha>` branch), and merges. **Never
+`gh pr update-branch` or rebase a PR just because main moved**: the queue does
+that, and a local rebase only changes the head and restarts CI.
 
-This is deliberate, not friction to route around. It is what guarantees a PR was
-tested against **current** main, so a semantic conflict between two PRs that are
-individually green cannot break main. A GitHub merge queue would provide the
-same guarantee without the re-runs, but merge queues need an organisation-owned
-repository and this one is user-owned, so the strict check is the only mechanism
-available. If `mergeStateStatus` is `BEHIND`, update the branch. Never try to
-bypass the strict check.
+`mergeStateStatus: BEHIND` is no longer a blocker; the required check is not
+strict. The queue is what guarantees a PR was tested against **current** main,
+so a semantic conflict between two individually green PRs cannot break main.
+
+Each merge still moves main twice (the merge, then the chart write-back), and
+the queue re-tests the candidates behind it on each move. That is the queue's
+churn, not yours. A red queue run ejects the PR: re-enqueue with the same
+`gh pr merge --auto --rebase` after checking whether the failure was the flaky
+Elixir suite (#4828) or real.
 
 This rationale used to be about chart versions: the re-run let the
 missed-chart-bump guard catch two PRs claiming the same version. That reason is
@@ -73,8 +78,8 @@ walking away:
 1. Poll `gh pr view <number> --json state,mergeStateStatus` until it merges.
 2. Poll the rollout to confirm the fix is actually live.
 
-If auto-merge fails with "Pull request is in clean status", the PR is already
-green: merge directly with `gh pr merge --rebase`.
+`gh pr merge --rebase` without `--auto` also enqueues rather than merging
+directly; there is no bypass and none should be used.
 
 Use background Bash or `Monitor` for CI waits. Sleep-chained polling is blocked.
 
