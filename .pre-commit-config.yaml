@@ -60,9 +60,9 @@ repos:
         pass_filenames: false
         stages: [post-rewrite]
 
-      # Full remote Test (1:1 Workflows). Install with:
+      # Full remote Test (1:1 Workflows), OPT-IN: RUN_CI_TEST=1 git push.
+      # Install with:
       #   pre-commit install --hook-type pre-push
-      # Skip: SKIP_CI_TEST=1 git push
       - id: ci-test
         name: ci test (bb remote, 1:1 Workflows Test)
         entry: bazel/tools/git/pre-push-ci-test.sh

@@ -20,7 +20,9 @@ things you would only learn by breaking them.
   allows rebase merges only. Merges land through the GitHub merge queue
   (`gh pr merge --auto --rebase` enqueues): never rebase a PR because main
   moved, the queue does that. See the `pr-workflow` skill.
-- **`ci` is the feedback loop, not PR CI.** Run it before pushing.
+- **`ci` is the feedback loop, not PR CI.** Run it before pushing. The full
+  remote `ci test` is opt-in at push time (`RUN_CI_TEST=1`): PR CI and the
+  queue candidate both test every change after push.
 - **No em-dashes in anything you write**: site copy, CV content, docs, ADRs,
   commit messages, PR bodies, code comments. Use a comma, colon, parentheses, or
   split the sentence. Existing ones are grandfathered, so do not churn files to
