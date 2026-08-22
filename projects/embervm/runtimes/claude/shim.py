@@ -3447,6 +3447,15 @@ class ProcessManager:
             with self.claude.turn_lock:
                 try:
                     ensure_workspace_volume()
+                    # The volume mount binds the volume's own (initially
+                    # empty) workspace dir over /workspace, which hides the
+                    # src dir the constructor created on the base's tmpfs.
+                    # Every adapter's ready() is isdir(workspace), so
+                    # without this a restored session answers 503 to every
+                    # readiness probe after the first and the prime fails
+                    # with "restored guest not ready" (#5051). The turn
+                    # path has always re-created it; readiness must too.
+                    _ensure_cli_dir(self.claude.workspace)
                     identity = self._workspace_identity(self.claude.workspace)
                     process = getattr(self.claude, "process", None)
                     process_dead = process is not None and process.poll() is not None
