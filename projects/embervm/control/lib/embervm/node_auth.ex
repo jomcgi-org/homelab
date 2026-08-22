@@ -7,17 +7,23 @@ defmodule Embervm.NodeAuth do
   to change if noded authentication evolves.
   """
 
+  @connect_timeout_ms 3_000
+
+  @doc "The maximum time a control-plane dial may spend establishing its TCP connection."
+  @spec connect_timeout_ms() :: pos_integer()
+  def connect_timeout_ms, do: @connect_timeout_ms
+
   @spec connect_opts() :: keyword()
   def connect_opts do
-    case Application.get_env(:embervm, :noded_bearer_token, "") do
-      token when is_binary(token) ->
-        case String.trim(token) do
-          "" -> []
-          trimmed -> [headers: [{"authorization", "Bearer " <> trimmed}]]
-        end
+    [adapter_opts: [transport_opts: [timeout: @connect_timeout_ms]]] ++ auth_opts()
+  end
 
-      _ ->
-        []
+  defp auth_opts do
+    with token when is_binary(token) <- Application.get_env(:embervm, :noded_bearer_token, ""),
+         trimmed when trimmed != "" <- String.trim(token) do
+      [headers: [{"authorization", "Bearer " <> trimmed}]]
+    else
+      _ -> []
     end
   end
 end

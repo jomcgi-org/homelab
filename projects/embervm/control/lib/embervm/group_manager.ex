@@ -1482,12 +1482,13 @@ defmodule Embervm.GroupManager do
     end
   end
 
+  # These lifecycle calls run on the per-group GenServer, so each has a deadline.
   defp default_create_group_network(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.create_group_network(channel, req)
+    Embervm.Node.V1.NodeService.Stub.create_group_network(channel, req, timeout: 15_000)
   end
 
   defp default_delete_group_network(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.delete_group_network(channel, req)
+    Embervm.Node.V1.NodeService.Stub.delete_group_network(channel, req, timeout: 15_000)
   end
 
   # StartGroupMember blocks server-side for the member's whole readiness gate (up
@@ -1510,11 +1511,11 @@ defmodule Embervm.GroupManager do
   end
 
   defp default_stop_group_member(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.stop_group_member(channel, req)
+    Embervm.Node.V1.NodeService.Stub.stop_group_member(channel, req, timeout: 15_000)
   end
 
   defp default_evict_snapshot(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req, timeout: 15_000)
   end
 
   # DESTROY every currently-live member VM of the instance (a partial relight that

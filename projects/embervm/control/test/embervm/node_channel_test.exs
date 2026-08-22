@@ -33,12 +33,16 @@ defmodule Embervm.NodeChannelTest do
   end
 
   defp start(node_id, connect) do
+    start_nodes([%{id: node_id, address: "addr"}], connect)
+  end
+
+  defp start_nodes(nodes, connect, disconnect \\ fn _ -> :ok end) do
     {:ok, pid} =
       NodeChannel.start_link(
         name: nil,
-        nodes: [%{id: node_id, address: "addr"}],
+        nodes: nodes,
         connect_fun: connect,
-        disconnect_fun: fn _ -> :ok end
+        disconnect_fun: disconnect
       )
 
     # start_link/1 links the GenServer to this test process, so #4078 teardown
@@ -59,10 +63,78 @@ defmodule Embervm.NodeChannelTest do
     assert Agent.get(dials, & &1) == 1
   end
 
+  test "a slow dial times out without blocking a concurrent get for another node" do
+    slow_id = node_id()
+    fast_id = node_id()
+    parent = self()
+
+    connect = fn
+      "slow-addr" ->
+        send(parent, :slow_dial_started)
+        Process.sleep(10_000)
+        {:ok, :slow_channel}
+
+      "fast-addr" ->
+        {:ok, :fast_channel}
+    end
+
+    pid =
+      start_nodes(
+        [%{id: slow_id, address: "slow-addr"}, %{id: fast_id, address: "fast-addr"}],
+        connect
+      )
+
+    slow = Task.async(fn -> NodeChannel.get(pid, slow_id) end)
+    assert_receive :slow_dial_started, 500
+
+    started_at = System.monotonic_time(:millisecond)
+    assert {:ok, :fast_channel} = NodeChannel.get(pid, fast_id)
+    assert System.monotonic_time(:millisecond) - started_at < 1_000
+
+    assert {:error, :connect_timeout} = Task.await(slow, 4_000)
+  end
+
+  test "concurrent successful dials cache once and the losing caller disconnects its channel" do
+    nid = node_id()
+    parent = self()
+    {:ok, sequence} = Agent.start_link(fn -> 0 end)
+
+    connect = fn _address ->
+      channel = {:channel, Agent.get_and_update(sequence, fn n -> {n + 1, n + 1} end)}
+      send(parent, {:dial_ready, self(), channel})
+
+      receive do
+        :finish_dial -> {:ok, channel}
+      end
+    end
+
+    disconnect = fn channel -> send(parent, {:disconnected, channel}) end
+    pid = start_nodes([%{id: nid, address: "addr"}], connect, disconnect)
+
+    first = Task.async(fn -> NodeChannel.get(pid, nid) end)
+    second = Task.async(fn -> NodeChannel.get(pid, nid) end)
+
+    assert_receive {:dial_ready, dialer1, channel1}, 500
+    assert_receive {:dial_ready, dialer2, channel2}, 500
+    send(dialer1, :finish_dial)
+    send(dialer2, :finish_dial)
+
+    assert {:ok, cached1} = Task.await(first)
+    assert {:ok, cached2} = Task.await(second)
+    assert cached1 == cached2
+    assert MapSet.new([channel1, channel2]) == MapSet.new([{:channel, 1}, {:channel, 2}])
+    assert_receive {:disconnected, losing_channel}, 500
+    assert losing_channel in [channel1, channel2]
+    assert losing_channel != cached1
+    refute_receive {:disconnected, _}, 50
+  end
+
   test "production dial options include the configured authorization header" do
     Application.put_env(:embervm, :noded_bearer_token, "node-secret")
 
     assert GRPC.Client.Adapters.Mint == NodeChannel.default_connect_opts()[:adapter]
+
+    assert get_in(NodeChannel.default_connect_opts(), [:adapter_opts, :transport_opts, :timeout]) == 3_000
 
     assert NodeChannel.default_connect_opts()[:headers] == [
              {"authorization", "Bearer node-secret"}

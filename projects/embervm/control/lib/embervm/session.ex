@@ -496,7 +496,10 @@ defmodule Embervm.Session do
   end
 
   defp default_destroy(channel, vm_id) do
-    Embervm.Node.V1.NodeService.Stub.destroy(channel, %Embervm.Node.V1.DestroyRequest{vm_id: vm_id})
+    # Failure teardown runs from this session GenServer's completion handler.
+    Embervm.Node.V1.NodeService.Stub.destroy(channel, %Embervm.Node.V1.DestroyRequest{vm_id: vm_id},
+      timeout: 15_000
+    )
   end
 
   # Transport timeout must exceed the application deadline (timeout_ms) the guest is

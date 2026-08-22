@@ -529,6 +529,9 @@ against them.
   NVMe marked stale; a restarting noded with an absent CP serves warm
   workloads from cache. No dependency's brief absence may turn a warm node
   into a dead one.
+- **Bounded node dials**: every node dial carries a 3 s TCP connect timeout,
+  and channel dials run in callers so they never block the `NodeChannel`
+  process (#5124).
 
 **Decided direction:**
 

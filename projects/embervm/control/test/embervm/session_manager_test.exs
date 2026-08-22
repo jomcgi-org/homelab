@@ -1972,6 +1972,73 @@ defmodule Embervm.SessionManagerTest do
     assert confirm_destroy["vars"]["confirmed_by"] == "teardown"
   end
 
+  test "reconcile skips a dead owning instance and confirms destruction by absence" do
+    {:ok, dials} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        channel_fun: fn dial_key ->
+          Agent.update(dials, &[dial_key | &1])
+          {:ok, :ch}
+        end
+      )
+
+    put_session_workload(ctx, "wl-dead-owner")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-dead-owner", "p1")
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+
+    # Model a post-roll reconcile snapshot: the stale aggregate still identifies
+    # the VM's old owner, but that exact instance key is absent. A fresh sibling on
+    # the node reports authoritatively, so absence may complete destruction.
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+
+    NodeCapacity.put(ctx.cap_table, "stale-node-4", %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/dead-pod",
+      workloads: %{},
+      session_vms: [
+        %{session_id: created.session_id, vm_id: session.vm_id, workload: "wl-dead-owner"}
+      ],
+      live_vms: 1,
+      max_live_vms: 8,
+      draining: false,
+      updated_at: 4_000_000
+    })
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "live-pod"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/live-pod",
+      workloads: %{},
+      session_vms: [],
+      live_vms: 0,
+      max_live_vms: 8,
+      draining: false,
+      updated_at: 5_000_000
+    })
+
+    {:ok, _} =
+      SessionStore.transition(
+        ctx.store,
+        created.session_id,
+        :begin_destroy,
+        :session_destroying,
+        %{reason: :destroyed},
+        %{}
+      )
+
+    Agent.update(dials, fn _ -> [] end)
+
+    log = ExUnit.CaptureLog.capture_log(fn -> assert :ok = SessionManager.reconcile(ctx.mgr) end)
+
+    assert Agent.get(dials, & &1) == []
+    assert log =~ "session redrive skipped dead instance"
+    assert log =~ "node-4/dead-pod"
+    assert {:ok, %{state: :destroyed}} = SessionStore.get(ctx.store, created.session_id)
+  end
+
   test "gated: a session stuck in destroying alarms ONCE across reconciles, not every tick" do
     # Unconfirming teardown so the session stays destroying across both reconciles.
     # store_clock: fn -> 0 end sets updated_at before the manager's fixed 5_000_000

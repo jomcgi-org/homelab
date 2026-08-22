@@ -615,11 +615,12 @@ defmodule Embervm.WarmthReaper do
   # kept so a test channel_fun that returns a per-call channel can be torn down.
   defp release_channel(_state, _channel), do: :ok
 
+  # Sweep RPCs execute on this GenServer and must not hold it indefinitely.
   defp default_evict_snapshot(channel, req) do
-    NodeService.Stub.evict_snapshot(channel, req)
+    NodeService.Stub.evict_snapshot(channel, req, timeout: 15_000)
   end
 
   defp default_evict_artifact(channel, req) do
-    NodeService.Stub.evict_artifact(channel, req)
+    NodeService.Stub.evict_artifact(channel, req, timeout: 15_000)
   end
 end

@@ -727,7 +727,8 @@ defmodule Embervm.GroupWakeManager do
   end
 
   defp default_stop_group_member(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.stop_group_member(channel, req)
+    # Reconcile teardown runs on this GenServer, so bound the node call.
+    Embervm.Node.V1.NodeService.Stub.stop_group_member(channel, req, timeout: 15_000)
   end
 
   # Spawn (or reuse) the GroupManager child for the banked instance and drive its

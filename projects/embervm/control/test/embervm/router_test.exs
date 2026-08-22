@@ -119,6 +119,21 @@ defmodule Embervm.RouterTest do
     def destroy(_srv, _id), do: {:error, :not_found}
   end
 
+  defmodule TimeoutSessionManager do
+    def create(server, _workload, _principal, _restore_lineage) do
+      timeout = Application.fetch_env!(:embervm, :session_create_call_timeout_ms)
+      GenServer.call(server, :create, timeout)
+    end
+  end
+
+  defmodule NeverReplySessionManager do
+    use GenServer
+
+    def start_link(_opts), do: GenServer.start_link(__MODULE__, nil)
+    def init(state), do: {:ok, state}
+    def handle_call(:create, _from, state), do: {:noreply, state}
+  end
+
   defmodule FakeSessionStore do
     # s-live's token is "sess-token-live"; any other token is unauthorized.
     def verify_token(_srv, "s-live", "sess-token-live"), do: {:ok, %{session_id: "s-live"}}
@@ -303,6 +318,8 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :quota)
       Application.delete_env(:embervm, :usage_admins)
       Application.delete_env(:embervm, :session_manager)
+      Application.delete_env(:embervm, :session_manager_server)
+      Application.delete_env(:embervm, :session_create_call_timeout_ms)
       Application.delete_env(:embervm, :session_store_mod)
       Application.delete_env(:embervm, :session_store)
       Application.delete_env(:embervm, :serving_manager_mod)
@@ -926,6 +943,18 @@ defmodule Embervm.RouterTest do
     assert body["lineage_id"] == "s-live"
     assert body["session_token"] == "sess-token-live"
     assert body["state"] == "running"
+  end
+
+  test "POST .../sessions returns retryable 503 when the SessionManager call times out" do
+    manager = start_supervised!(NeverReplySessionManager)
+    Application.put_env(:embervm, :session_manager, TimeoutSessionManager)
+    Application.put_env(:embervm, :session_manager_server, manager)
+    Application.put_env(:embervm, :session_create_call_timeout_ms, 25)
+
+    resp = req(:post, "/v1/workloads/wl-timeout/sessions", auth("good"))
+
+    assert resp.status == 503
+    assert json(resp.body) == %{"error" => "control plane busy", "retryable" => true}
   end
 
   test "session create requires management auth (401 without a token)" do

@@ -1327,20 +1327,21 @@ defmodule Embervm.GroupSweeper do
     Embervm.GroupManager.Supervisor.bank_group(workload, instance_id)
   end
 
+  # Sweep RPCs execute on this GenServer and must not hold it indefinitely.
   defp default_stop_group_member(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.stop_group_member(channel, req)
+    Embervm.Node.V1.NodeService.Stub.stop_group_member(channel, req, timeout: 15_000)
   end
 
   defp default_delete_group_network(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.delete_group_network(channel, req)
+    Embervm.Node.V1.NodeService.Stub.delete_group_network(channel, req, timeout: 15_000)
   end
 
   defp default_evict_snapshot(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req, timeout: 15_000)
   end
 
   defp default_evict_artifact(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req, timeout: 15_000)
   end
 
   # Production scrape: identical to StatefulSweeper's (GET /stats?format=json over the

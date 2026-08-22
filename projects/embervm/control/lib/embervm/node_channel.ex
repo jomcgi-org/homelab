@@ -30,9 +30,11 @@ defmodule Embervm.NodeChannel do
   that sees a TRANSPORT error on an RPC calls `invalidate/2`, which drops the dead
   channel so the next `get/1` re-dials. Invalidation is identity-guarded: it only
   clears the cache if the failing channel is still the current one, so a worker
-  racing a fresh reconnect cannot tear down the newly dialed channel. Dials are
-  serialized through this GenServer, so a thundering herd of first-dispatch workers
-  triggers exactly one connect (the rest read the freshly cached channel).
+  racing a fresh reconnect cannot tear down the newly dialed channel. The GenServer
+  only resolves addresses and serializes cache writes. The caller performs the
+  potentially slow dial, so one dead address cannot block unrelated nodes. Concurrent
+  misses may dial in parallel; the first cached channel wins and losing callers
+  disconnect their redundant channels.
 
   Registry note (artifact-decoupling Phase 2): the daemon boots with an EMPTY
   workload registry and the control plane PUSHES it over SyncRegistry on connect
@@ -63,7 +65,7 @@ defmodule Embervm.NodeChannel do
   @spec get(GenServer.server(), String.t()) :: {:ok, term()} | {:error, term()}
   def get(server \\ __MODULE__, node_id) do
     case :persistent_term.get(pt_key(node_id), :undefined) do
-      :undefined -> GenServer.call(server, {:dial, node_id})
+      :undefined -> resolve_and_dial(server, node_id)
       channel -> {:ok, channel}
     end
   end
@@ -156,12 +158,40 @@ defmodule Embervm.NodeChannel do
 
   @impl true
   def handle_call({:dial, node_id}, _from, state) do
-    # Re-check the cache inside the serialized call: a herd of first-dispatch
-    # workers all miss persistent_term and land here; the first dials, the rest
-    # must see the now-cached channel rather than each opening another.
+    # Re-check the cache inside the serialized call. A concurrent caller may have
+    # cached a channel after this caller missed the persistent_term fast path.
     case :persistent_term.get(pt_key(node_id), :undefined) do
-      :undefined -> {:reply, do_dial(state, node_id), state}
+      :undefined ->
+        case Map.fetch(state.node_addr, node_id) do
+          {:ok, address} -> {:reply, {:dial, address}, state}
+          :error -> {:reply, {:error, :unknown_node}, state}
+        end
+
       channel -> {:reply, {:ok, channel}, state}
+    end
+  end
+
+  def handle_call(:dial_funs, _from, state) do
+    {:reply, {state.connect_fun, state.disconnect_fun}, state}
+  end
+
+  def handle_call({:cache, node_id, {address, channel}}, _from, state) do
+    case :persistent_term.get(pt_key(node_id), :undefined) do
+      :undefined ->
+        case Map.fetch(state.node_addr, node_id) do
+          {:ok, ^address} ->
+            :persistent_term.put(pt_key(node_id), channel)
+            {:reply, {:ok, channel}, state}
+
+          {:ok, _new_address} ->
+            {:reply, {:error, :address_changed}, state}
+
+          :error ->
+            {:reply, {:error, :unknown_node}, state}
+        end
+
+      cached ->
+        {:reply, {:ok, cached}, state}
     end
   end
 
@@ -248,27 +278,79 @@ defmodule Embervm.NodeChannel do
 
   # -- internals -------------------------------------------------------------
 
-  defp do_dial(state, node_id) do
-    case Map.get(state.node_addr, node_id) do
-      nil ->
-        {:error, :unknown_node}
+  defp resolve_and_dial(server, node_id) do
+    case GenServer.call(server, {:dial, node_id}) do
+      {:dial, address} ->
+        {connect_fun, disconnect_fun} = GenServer.call(server, :dial_funs)
+        dial_and_cache(server, node_id, address, connect_fun, disconnect_fun)
 
-      address ->
-        case state.connect_fun.(address) do
-          {:ok, channel} ->
-            :persistent_term.put(pt_key(node_id), channel)
-            {:ok, channel}
-
-          {:error, reason} ->
-            Logger.warning("embervm node channel: dial to #{node_id} (#{address}) failed: #{inspect(reason)}")
-            {:error, reason}
-        end
+      reply ->
+        reply
     end
   end
 
+  defp dial_and_cache(server, node_id, address, connect_fun, disconnect_fun) do
+    task =
+      Task.async(fn ->
+        try do
+          {:ok, connect_fun.(address)}
+        rescue
+          error -> {:error, error}
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+      end)
+
+    result =
+      case Task.yield(task, Embervm.NodeAuth.connect_timeout_ms()) do
+        {:ok, result} ->
+          result
+
+        nil ->
+          _ = Task.shutdown(task, :brutal_kill)
+          {:error, :connect_timeout}
+      end
+
+    case result do
+      {:ok, {:ok, channel}} ->
+        case GenServer.call(server, {:cache, node_id, {address, channel}}) do
+          {:ok, ^channel} ->
+            {:ok, channel}
+
+          {:ok, cached} ->
+            safe_disconnect_fun(disconnect_fun, channel)
+            {:ok, cached}
+
+          {:error, :address_changed} ->
+            safe_disconnect_fun(disconnect_fun, channel)
+            resolve_and_dial(server, node_id)
+
+          {:error, reason} ->
+            safe_disconnect_fun(disconnect_fun, channel)
+            {:error, reason}
+        end
+
+      {:ok, {:error, reason}} ->
+        log_dial_failure(node_id, address, reason)
+        {:error, reason}
+
+      {:error, reason} ->
+        log_dial_failure(node_id, address, reason)
+        {:error, reason}
+    end
+  end
+
+  defp log_dial_failure(node_id, address, reason) do
+    Logger.warning("embervm node channel: dial to #{node_id} (#{address}) failed: #{inspect(reason)}")
+  end
+
   defp safe_disconnect(state, channel) do
+    safe_disconnect_fun(state.disconnect_fun, channel)
+  end
+
+  defp safe_disconnect_fun(disconnect_fun, channel) do
     try do
-      state.disconnect_fun.(channel)
+      disconnect_fun.(channel)
     rescue
       _ -> :ok
     catch
