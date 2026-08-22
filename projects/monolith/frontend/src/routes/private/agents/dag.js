@@ -14,6 +14,26 @@ export function computeRanks(nodes) {
   return groups;
 }
 
+export function layoutEdges(ranks) {
+  return ranks.slice(0, -1).map((rank) => {
+    const strong = rank.every((node) =>
+      ["done", "passed"].includes(node.state),
+    );
+    return { dim: !strong, strong };
+  });
+}
+
+export function defaultSelectedKey(nodes) {
+  const attention = nodes.find(
+    (node) => node.state === "escalated" || node.blocked_on?.kind === "human",
+  );
+  if (attention) return attention.key;
+  const running = nodes.find((node) => node.state === "running");
+  if (running) return running.key;
+  const done = nodes.filter((node) => node.state === "done").at(-1);
+  return done?.key ?? nodes[0]?.key ?? null;
+}
+
 export function nodeIconKey(node) {
   if (node.state === "blocked")
     return node.blocked_on?.kind === "human" ? "blocked_human" : "blocked_dep";

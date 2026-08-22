@@ -724,3 +724,474 @@
 /* Master view container. Inherits from .runview. The stale-tier treatment
    lives in MasterView.svelte's scoped block, which applies the filter and
    opacity directly to .activity-row, .att-row and .queue-line. */
+
+/* Shared session and run header controls. */
+.pill {
+  height: 24px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  color: var(--text-soft);
+  background: var(--page-bg);
+  font: 11.5px var(--font-mono);
+  white-space: nowrap;
+}
+.pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: var(--ok);
+}
+.seg {
+  height: 28px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-bg);
+}
+.seg button {
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-soft);
+  background: transparent;
+  font-size: 12.5px;
+}
+.seg button + button {
+  border-left: 1px solid var(--line);
+}
+.seg button:hover {
+  background: var(--hover);
+}
+.seg button.selected {
+  color: var(--ink-text);
+  background: var(--ink);
+}
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Run detail is a full pane, while MasterView retains the compact card. */
+.runview:not(.master-view) {
+  min-width: 0;
+  padding: 0 0 12px;
+  border: 0;
+  border-radius: 0;
+  overflow-x: hidden;
+}
+.run-head {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px 0 24px;
+  border-bottom: 1px solid var(--line);
+}
+.run-title {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.facts {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 32px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.fact-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-soft);
+}
+.fact-state .ic {
+  width: 16px;
+  height: 16px;
+}
+.fact-state.attention {
+  color: var(--attn-text);
+  font-weight: 600;
+}
+.branch-fact {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--muted);
+  font: 12.5px var(--font-mono);
+  text-decoration: none;
+  text-overflow: ellipsis;
+}
+.branch-fact:hover {
+  color: var(--text);
+}
+.branch-fact svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.mono-fact {
+  font-family: var(--font-mono);
+}
+.fact-stale {
+  margin-left: auto;
+}
+.runview:not(.master-view) > .conflict,
+.runview:not(.master-view) > .banner,
+.runview:not(.master-view) > .obs-line,
+.runview:not(.master-view) > .rv-task-details {
+  margin-right: 32px;
+  margin-left: 32px;
+}
+.runview:not(.master-view) > .conflict {
+  margin-top: 6px;
+  color: var(--attn-text);
+  font-size: 12.5px;
+}
+.runview:not(.master-view) > .disposition {
+  margin: 14px 32px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.runview:not(.master-view) > .disposition.human-attention {
+  border-color: var(--line);
+  background: var(--attn-soft);
+}
+.dag {
+  display: flex;
+  align-items: stretch;
+  margin: 0;
+  padding: 28px 32px 24px;
+  border: 0;
+  overflow-x: auto;
+}
+.rank {
+  width: 186px;
+  display: flex;
+  flex: 0 0 186px;
+  flex-direction: column;
+  gap: 12px;
+}
+.rank .stage-head {
+  margin: -19px 0 -4px;
+  font-size: 10.5px;
+}
+.edge {
+  height: auto;
+  display: flex;
+  flex: 0 0 28px;
+  align-items: center;
+  margin: 0;
+  border: 0;
+  color: var(--line-strong);
+}
+.edge::before {
+  height: 1px;
+  flex: 1;
+  background: currentColor;
+  content: "";
+}
+.edge::after {
+  width: 5px;
+  height: 5px;
+  margin-left: -5px;
+  transform: rotate(45deg);
+  border-top: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  content: "";
+}
+.edge.dim {
+  color: var(--line);
+}
+.edge.strong {
+  color: var(--line-strong);
+}
+.node {
+  width: 186px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--panel-bg);
+  text-align: left;
+}
+.node:hover {
+  border-color: var(--line-strong);
+}
+.node:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+.node.sel {
+  border-color: var(--text);
+  box-shadow: 0 0 0 1px var(--text);
+}
+.node.attn {
+  background: var(--attn-soft);
+}
+.nh {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.nh .ic {
+  width: 16px;
+  height: 16px;
+}
+.nm {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font: 11.5px var(--font-mono);
+}
+.nm > :last-child {
+  text-align: right;
+}
+.node .pips {
+  min-height: 4px;
+  display: flex;
+  gap: 4px;
+}
+.node .pip {
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+}
+.detail-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 32px;
+  margin: 0 32px;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+.node-detail {
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.node-detail h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.node-detail pre,
+.run-log pre {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--code-bg);
+}
+.node-detail .log-entry,
+.node-detail .decision,
+.node-detail .verdict-box,
+.node-detail .evidence,
+.node-detail .node-note,
+.node-detail .testimony,
+.node-detail .node-deviations {
+  margin-top: 10px;
+}
+.decide {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.decide p {
+  margin: 0 0 4px;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.runview .btn {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--text-soft);
+  background: transparent;
+  font-size: 13px;
+  text-align: center;
+}
+.runview .btn.primary {
+  border-color: var(--ink);
+  color: var(--ink-text);
+  background: var(--ink);
+}
+.runview .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.srow {
+  width: 100%;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-soft);
+  background: transparent;
+  text-align: left;
+  font-size: 12.5px;
+}
+.srow:hover:not(:disabled) {
+  background: var(--hover);
+}
+.srow:disabled {
+  cursor: default;
+}
+.srow-meta {
+  margin-left: auto;
+  color: var(--muted);
+  font: 11.5px var(--font-mono);
+}
+.sessions {
+  margin: 0 32px;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+.sessions h2 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font: 11.5px var(--font-mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.log-detail {
+  display: block;
+}
+.flat-log-entry {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.flat-log-entry:last-child {
+  border-bottom: 0;
+}
+.flat-log-meta {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font: 11.5px var(--font-mono);
+}
+.runview:not(.master-view) > .rv-foot {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 32px;
+  padding: 12px 0 0;
+}
+
+@media (max-width: 760px) {
+  .run-head {
+    height: 52px;
+    padding: 0 8px 0 12px;
+  }
+  .facts {
+    padding: 16px 16px 0;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    white-space: normal;
+  }
+  .fact-stale {
+    width: 100%;
+    margin-left: 0;
+  }
+  .runview:not(.master-view) > .conflict,
+  .runview:not(.master-view) > .banner,
+  .runview:not(.master-view) > .obs-line,
+  .runview:not(.master-view) > .rv-task-details,
+  .runview:not(.master-view) > .disposition {
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+  .dag.staged {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 24px 16px;
+    overflow: visible;
+  }
+  .rank {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+  .rank .stage-head {
+    margin: 0 0 4px;
+  }
+  .node {
+    width: 100%;
+  }
+  .edge {
+    width: 1px;
+    height: 16px;
+    flex: 0 0 16px;
+    margin-left: 16px;
+  }
+  .edge::before {
+    width: 1px;
+    height: auto;
+    align-self: stretch;
+    flex: 0 0 1px;
+  }
+  .edge::after {
+    display: none;
+  }
+  .detail-block {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    margin: 0 16px;
+  }
+  .sessions,
+  .runview:not(.master-view) > .rv-foot {
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+  .srow-meta {
+    max-width: 48%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
