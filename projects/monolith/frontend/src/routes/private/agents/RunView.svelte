@@ -46,6 +46,10 @@
   const selectedNode = $derived(
     run?.nodes?.find((node) => node.key === selectedKey) ?? null,
   );
+  const hasAside = $derived(
+    selectedNode?.blocked_on?.kind === "human" ||
+      Boolean(selectedNode?.attempts?.length),
+  );
   const needsHuman = $derived(
     run?.nodes?.some(
       (node) => node.state === "escalated" || node.blocked_on?.kind === "human",
@@ -76,9 +80,17 @@
   );
   const logEntries = $derived(buildLogEntries(run));
 
+  // Every run reuses the same node keys (implement, push_gate, review), so a
+  // key surviving the switch is not evidence the selection still applies:
+  // recompute the default whenever the run itself changes.
+  let selectedRunId = $state(null);
   $effect(() => {
     const nodes = run?.nodes ?? [];
-    if (!nodes.some((node) => node.key === selectedKey)) {
+    if (
+      run?.workflow_id !== selectedRunId ||
+      !nodes.some((node) => node.key === selectedKey)
+    ) {
+      selectedRunId = run?.workflow_id ?? null;
       selectedKey = defaultSelectedKey(nodes);
     }
   });
@@ -128,7 +140,7 @@
   function detailPill(node) {
     const attempt = node?.attempts?.at(-1);
     return attempt
-      ? `${node.label} ${P.labels.attempt} ${attempt.n}`
+      ? `${P.labels.attempt} ${attempt.n}`
       : P.nodeStates[node?.state] || node?.state;
   }
 
@@ -170,7 +182,11 @@
         });
       }
       if (node.verdict) {
-        entries.push({ kind: "verdict", node, at: value.completed_at });
+        entries.push({
+          kind: "verdict",
+          node,
+          at: value.completed_at ?? value.updated_at,
+        });
       }
       if (node.evidence) {
         entries.push({ kind: "evidence", node, at: value.updated_at });
@@ -301,6 +317,9 @@
       {#if view.engine_tier !== "live"}
         <span class="fact-stale">{engineStale(view.snapshot_age_seconds)}</span>
       {/if}
+      {#if run.cancelled_by}
+        <span>{P.labels.cancelledBy} {run.cancelled_by.actor}</span>
+      {/if}
     </div>
 
     {#if claim.unconfirmed}
@@ -378,6 +397,12 @@
               class:attn={node.state === "escalated" || isHumanGate(node)}
               class:sel={node.key === selectedKey}
               class="node"
+              aria-label={joinMeta(
+                node.label,
+                P.nodeStates[node.state] || node.state,
+                nodeOwner(node),
+                nodeTiming(node),
+              )}
               aria-pressed={node.key === selectedKey}
               onclick={() => (selectedKey = node.key)}
             >
@@ -406,49 +431,57 @@
     </div>
 
     {#if runView === "plan" && selectedNode}
-      <section class="detail-block">
+      <section class:without-aside={!hasAside} class="detail-block">
         <div class="node-detail">
           <h2>
             {selectedNode.label}
             <span class="pill">{detailPill(selectedNode)}</span>
           </h2>
           {@render nodeDetail(selectedNode)}
-          {#if fallbackDeviations.length}
-            <div class="node-deviations" data-register="fact">
-              {#each fallbackDeviations as deviation}
-                <div class="fact-deviation">
-                  <span class="dev-chip"
-                    >{P.deviationCodes[deviation.code] ?? deviation.code}</span
-                  >
-                  <span>{deviation.text}</span>
-                </div>
-              {/each}
-            </div>
-          {/if}
         </div>
-        <aside class="decide">
-          {#if isHumanGate(selectedNode)}
-            <p>{P.labels.decisionConsequence}</p>
-            <!-- #3842: the engine has no run-detail decision endpoint yet. -->
-            <button
-              class="btn primary"
-              type="button"
-              disabled
-              title={P.labels.decisionsInSession}>{P.labels.approve}</button
-            >
-            <button
-              class="btn"
-              type="button"
-              disabled
-              title={P.labels.decisionsInSession}>{P.labels.deny}</button
-            >
-          {:else}
-            {#each selectedNode.attempts ?? [] as attempt}
-              {@render sessionRow(selectedNode, attempt)}
-            {/each}
-          {/if}
-        </aside>
+        {#if hasAside}
+          <aside class="decide">
+            {#if isHumanGate(selectedNode)}
+              <p>{P.labels.decisionConsequence}</p>
+              <!-- No run-detail decision endpoint exists yet; #4781 tracks the run as a mutable artifact. -->
+              <button
+                class="btn primary"
+                type="button"
+                aria-disabled="true"
+                onclick={(event) => event.preventDefault()}
+                >{P.labels.approve}</button
+              >
+              <button
+                class="btn"
+                type="button"
+                aria-disabled="true"
+                onclick={(event) => event.preventDefault()}
+                >{P.labels.deny}</button
+              >
+              <p class="decision-note">{P.labels.decisionsInSession}</p>
+            {:else}
+              {#each selectedNode.attempts ?? [] as attempt}
+                {@render sessionRow(selectedNode, attempt)}
+              {/each}
+            {/if}
+          </aside>
+        {/if}
       </section>
+      {#if fallbackDeviations.length}
+        <section class="run-deviations" data-register="fact">
+          <h2>{P.labels.deviations}</h2>
+          <div class="node-deviations">
+            {#each fallbackDeviations as deviation}
+              <div class="fact-deviation">
+                <span class="dev-chip"
+                  >{P.deviationCodes[deviation.code] ?? deviation.code}</span
+                >
+                <span>{deviation.text}</span>
+              </div>
+            {/each}
+          </div>
+        </section>
+      {/if}
     {:else if runView === "log"}
       <section class="detail-block log-detail">
         <div class="run-log">
@@ -485,8 +518,8 @@
   <button
     class="srow"
     type="button"
-    disabled={!attempt.session_id}
-    onclick={() => onSelectSession(attempt.session_id)}
+    aria-disabled={!attempt.session_id}
+    onclick={() => attempt.session_id && onSelectSession(attempt.session_id)}
   >
     <span
       class={`dot ${attempt.state === "running" ? "running" : attempt.state === "failed" ? "warn" : ""}`}
