@@ -9,20 +9,9 @@
   let {
     master,
     activity = [],
-    newSession = { prompt: "", model: "", repo: "", branch: "" },
-    repos = [],
-    branches = [],
-    repoLoading = false,
-    branchLoading = false,
-    creating = false,
-    modelPicker,
-    onChangeSession = () => {},
-    onLoadBranches = () => {},
-    onCreateTask = () => {},
     onSelectRun = () => {},
     onSelectSession = () => {},
     relativeTime = () => "unknown",
-    onStartRun = () => {},
     view = { engine_tier: "live", snapshot_age_seconds: 0 },
   } = $props();
 
@@ -73,10 +62,6 @@
           item.value?.local_session_id ||
           P.labels.session;
   }
-
-  function submit() {
-    onCreateTask();
-  }
 </script>
 
 <div
@@ -108,88 +93,6 @@
           </button>{/each}
       </div>{:else}<div class="m-quiet">{P.labels.nothingNeedsYou}</div>{/if}
   {/if}
-
-  <!-- The launcher is not gated on engine_tier. Starting a session does
-       not involve the swarm engine at all, so an unreachable run engine
-       must not remove the ability to start work. Only run-specific parts
-       below are conditional. -->
-  <section class="launcher" aria-label={P.labels.launcherLabel}>
-    <div class="launcher-head">
-      <span class="col-label">{P.labels.launcherHeading}</span>
-    </div>
-    <form
-      onsubmit={(event) => {
-        event.preventDefault();
-        submit();
-      }}
-    >
-      <textarea
-        rows="4"
-        value={newSession.prompt}
-        placeholder={P.labels.launcherPromptPlaceholder}
-        aria-label={P.labels.task}
-        oninput={(event) =>
-          onChangeSession("prompt", event.currentTarget.value)}
-        onkeydown={(event) => {
-          if (
-            (event.metaKey || event.ctrlKey) &&
-            event.key === "Enter" &&
-            !event.isComposing
-          ) {
-            event.preventDefault();
-            submit();
-          }
-        }}></textarea>
-      <div class="launcher-fields">
-        <div class="field">
-          <span class="field-label">{P.labels.modelWord}</span
-          >{@render modelPicker(newSession.model, (value) =>
-            onChangeSession("model", value),
-          )}
-        </div>
-        <label
-          >{P.labels.repoWord}<select
-            class="mono"
-            value={newSession.repo}
-            disabled={repoLoading}
-            onchange={(event) => {
-              const value = event.currentTarget.value;
-              onChangeSession("repo", value);
-              onChangeSession("branch", "");
-              onLoadBranches(value);
-            }}
-          >
-            {#if repoLoading}<option value="">{P.labels.loadingRepos}</option
-              >{:else}<option value="">{P.labels.scratchWorkspace}</option
-              >{#each repos as repo}<option value={repo.id}>{repo.id}</option
-                >{/each}{/if}
-          </select></label
-        >
-        <label
-          >{P.labels.branchWord}<select
-            class="mono"
-            value={newSession.branch}
-            disabled={!newSession.repo || branchLoading}
-            onchange={(event) =>
-              onChangeSession("branch", event.currentTarget.value)}
-          >
-            {#if branchLoading}<option value=""
-                >{P.labels.loadingBranches}</option
-              >{:else if branches.length === 0}<option value="main">main</option
-              >{:else}{#each branches as branch}<option value={branch.name}
-                  >{branch.name}</option
-                >{/each}{/if}
-          </select></label
-        >
-      </div>
-      <button
-        class="launcher-submit"
-        type="submit"
-        disabled={creating || !newSession.prompt.trim()}
-        >{creating ? P.labels.creating : P.labels.submitTask}</button
-      >
-    </form>
-  </section>
 
   {#if view.engine_tier !== "absent"}
     {#each master.queues as queue}<div class="queue-line">
@@ -235,9 +138,9 @@
               )}</span
             >
             <span class="activity-cost">{fmtCost(item.cost) || "$0.00"}</span>
-          </button>{/each}<a class="activity-more" href="?"
-          >{P.labels.viewMoreInSidebar}</a
-        >{:else}<div class="m-quiet">{P.labels.noRecentActivity}</div>{/if}
+          </button>{/each}{:else}<div class="m-quiet">
+          {P.labels.noRecentActivity}
+        </div>{/if}
       <div class="activity-footer">
         {P.labels.last7Days}
         {P.punct.dot}
@@ -267,9 +170,7 @@
 </div>
 
 <style>
-  .m-row,
   .att-row,
-  .launcher-submit,
   .activity-row {
     color: inherit;
     background: transparent;
@@ -278,63 +179,8 @@
     font: inherit;
     cursor: pointer;
   }
-  .m-row,
   .att-row {
     width: 100%;
-  }
-  .launcher {
-    margin-top: 16px;
-  }
-  .launcher-head,
-  .launcher-fields {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-  .launcher-head {
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
-  .launcher textarea,
-  .launcher select,
-  .launcher input {
-    box-sizing: border-box;
-    width: 100%;
-    color: var(--text);
-    background: var(--panel-bg);
-    border: 1px solid var(--line-strong);
-    padding: 8px;
-  }
-  .launcher textarea {
-    resize: vertical;
-  }
-  .launcher-fields {
-    align-items: end;
-    margin-top: 8px;
-  }
-  .launcher-fields > label,
-  .launcher-fields > .field {
-    min-width: 120px;
-    flex: 1;
-  }
-  .field-label,
-  .launcher-fields label {
-    display: grid;
-    gap: 4px;
-    font-size: var(--size-meta);
-  }
-  .launcher-submit {
-    margin-top: 10px;
-    padding: 8px 12px;
-    color: var(--ink-text);
-    background: var(--ink);
-    border: 1px solid var(--ink);
-    text-align: center;
-  }
-  .launcher-submit:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
   .recent-activity {
     margin-top: 18px;
@@ -357,23 +203,12 @@
   .activity-model,
   .activity-time,
   .activity-cost,
-  .activity-footer,
-  .activity-more {
+  .activity-footer {
     color: var(--text-soft);
     font: var(--size-meta) var(--font-mono);
   }
-  .activity-more {
-    display: inline-block;
-    margin-top: 8px;
-    color: var(--info);
-  }
   .activity-footer {
     margin-top: 12px;
-  }
-  .m-empty {
-    display: flex;
-    align-items: center;
-    gap: 10px;
   }
   .tier-stale .activity-row,
   .tier-stale .att-row,
@@ -390,10 +225,6 @@
     }
     .activity-cost {
       grid-column: 2;
-    }
-    .launcher-fields > label,
-    .launcher-fields > .field {
-      min-width: 100%;
     }
   }
 </style>

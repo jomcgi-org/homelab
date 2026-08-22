@@ -19,13 +19,13 @@
   import "./run-view.css";
   import RunView from "./RunView.svelte";
   import MasterView from "./MasterView.svelte";
-  import StateIcon from "./StateIcon.svelte";
-  import { nodeIconKey, nodeStateClass } from "./dag.js";
-  import { firstLine, fmtCost, joinMeta } from "./run-format.js";
-  import { partitionRuns, recentRuns, runActivityAt } from "./run-history.js";
+  import { nodeStateClass } from "./dag.js";
+  import { firstLine, fmtCost } from "./run-format.js";
+  import { partitionRuns } from "./run-history.js";
+  import { arrivalSelection, inboxGroups } from "./inbox.js";
   import { crumbTrail, sessionLineage } from "./lineage.js";
   import { setupVisualViewport } from "./visual-viewport.js";
-  import { formatAge, nextStatus } from "./vm-stream-status.js";
+  import { nextStatus } from "./vm-stream-status.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import {
     workspaceRecoveryMessage,
@@ -48,11 +48,6 @@
 
   const MODELS = ["opus", "fable", "sonnet", "luna", "terra", "sol", "qwen"];
   const DEV_MODELS = ["qwen"];
-  // Sidebar RECENT is a 24-hour navigation convenience. MasterView's activity
-  // summary intentionally uses a separate seven-day window.
-  const RECENT_HISTORY_MS = 24 * 60 * 60 * 1000;
-  const ATTENTION_MS = 60 * 60 * 1000;
-
   // Retry logic for initial run load before concluding engine is absent.
   // A transient network failure on first load should not blank the page.
   const RUNS_LOAD_MAX_ATTEMPTS = 3;
@@ -84,7 +79,6 @@
   let sessions = $state(data.sessions ?? []);
   let availableModels = $state(MODELS);
   let runs = $state([]);
-  let showTerminalHistory = $state(false);
   let terminalRuns = $state([]);
   let runMaster = $state({ runs: [], queues: [] });
   let masterView = $state({
@@ -112,6 +106,7 @@
   let newPromptEl = $state(null);
   let repoControlEl = $state(null);
   let titleEl = $state(null);
+  let searchInputEl = $state(null);
   // ── Period (time-of-day palette) ────────────
   let now = $state(new Date());
   let period = $derived(periodForHour(now.getHours()));
@@ -133,7 +128,6 @@
 
   let focusSessionId = null;
   let previousSessionId = null;
-  let showAllHistory = $state(false);
   let repos = $state([]);
   let branches = $state([]);
   let repoLoading = $state(false);
@@ -178,15 +172,6 @@
     composerModelOverride ?? selectedSession?.model ?? "",
   );
   const eligibleWalkthroughTurns = $derived(walkthroughTurns(detail?.turns));
-  const hasRuns = $derived(runs.length > 0);
-  const runNeedsAttention = $derived(runs.filter((run) => run.needs).length);
-  const runSpend = $derived(
-    runs.reduce((total, run) => total + Number(run.cost_usd || 0), 0),
-  );
-  const activeSessions = $derived(
-    sessions.filter((session) => isActive(session)).sort(compareSessions),
-  );
-
   // Runs and sessions are two collections, not one list with runs bolted on.
   // A session a run spawned is a detail of that run, reachable through it,
   // never a peer of a session you started yourself. Previously a run appeared
@@ -194,24 +179,9 @@
   // at top level alongside standalone sessions.
   const isStandalone = (session) =>
     session?.workflow_id == null || session.workflow_id === "";
-  const standaloneActive = $derived(activeSessions.filter(isStandalone));
-  // Runs needing a human sort first; the engine's order holds within each half.
-  const sidebarRuns = $derived(
-    [...runs].sort(
-      (a, b) => Number(Boolean(b.needs)) - Number(Boolean(a.needs)),
-    ),
-  );
-  const recentTerminalRuns = $derived(recentRuns(terminalRuns));
-  const visibleTerminalRuns = $derived(
-    showTerminalHistory ? terminalRuns : recentTerminalRuns,
-  );
-  const historySessions = $derived(
-    sessions.filter((session) => !isActive(session)).sort(compareSessions),
-  );
-  const recentHistorySessions = $derived(
-    historySessions.filter(
-      (session) => Date.now() - lastActiveAt(session) < RECENT_HISTORY_MS,
-    ),
+  const inbox = $derived(inboxGroups(runs, sessions, vms));
+  const awakeGuests = $derived(
+    Object.values(vms).filter((vm) => vm?.state === "awake").length,
   );
   const masterActivity = $derived([
     ...runs.map((run) => ({ kind: "run", value: run, cost: run.cost_usd })),
@@ -226,15 +196,11 @@
       cost: session.total_cost_usd,
     })),
   ]);
-  const visibleHistorySessions = $derived(
-    showAllHistory ? historySessions : recentHistorySessions,
-  );
-  const standaloneHistory = $derived(
-    visibleHistorySessions.filter(isStandalone),
-  );
   const standaloneHistoryTotal = $derived(
-    historySessions.filter(isStandalone).length,
+    sessions.filter((session) => isStandalone(session) && !isActive(session))
+      .length,
   );
+  const earlierTotal = $derived(standaloneHistoryTotal + terminalRuns.length);
   const visibleSearchResults = $derived(searchResults ?? []);
   const hasActiveSessions = $derived(
     sessions.some((session) => isActive(session)) ||
@@ -269,21 +235,6 @@
     return session?.status === "running" || Number(session?.pending_count) > 0;
   }
 
-  function compareSessions(a, b) {
-    const aTime = Date.parse(timestamp(a?.last_turn_at ?? a?.created_at));
-    const bTime = Date.parse(timestamp(b?.last_turn_at ?? b?.created_at));
-    return (
-      (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime)
-    );
-  }
-
-  function lastActiveAt(session) {
-    const at = Date.parse(
-      timestamp(session?.last_turn_at ?? session?.created_at),
-    );
-    return Number.isNaN(at) ? 0 : at;
-  }
-
   function timestamp(value) {
     if (!value) return "";
     return /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? value : `${value}Z`;
@@ -307,6 +258,15 @@
     return `${Math.floor(months / 12)}y`;
   }
 
+  function streamAge(milliseconds) {
+    const seconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+  }
+
   function shortId(session) {
     return String(session?.local_session_id || session?.id || "session").slice(
       0,
@@ -328,17 +288,6 @@
       return session.workspace;
     }
     return "scratch workspace";
-  }
-
-  function sidebarDot(session) {
-    const cls = statusClass(session);
-    if (cls === "running" || cls === "working" || cls === "needs_input") {
-      return cls;
-    }
-    if (cls === "warn" && Date.now() - lastActiveAt(session) < ATTENTION_MS) {
-      return "warn";
-    }
-    return "idle";
   }
 
   function cost(value) {
@@ -786,6 +735,11 @@
     showNewPanel = true;
   }
 
+  function focusSearch() {
+    if (sidebarCollapsed) toggleSidebar();
+    tick().then(() => searchInputEl?.focus({ preventScroll: true }));
+  }
+
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
     if (sidebarCollapsed) {
@@ -807,6 +761,29 @@
     } catch (e) {
       // localStorage blocked; keep the in-memory preference
     }
+  }
+
+  function runAsk(run) {
+    const pushGate = [...(run?.shape ?? []), ...(run?.nodes ?? [])].find(
+      (node) =>
+        (node.kind === "gate" || node.key === "push_gate") &&
+        (node.key === "push_gate" || /push/i.test(node.label ?? "")) &&
+        (node.state === "escalated" ||
+          (node.state === "blocked" &&
+            (node.blocked_on == null || node.blocked_on?.kind === "human"))),
+    );
+    return pushGate ? "Approve push" : "Needs you";
+  }
+
+  function shapeStateClass(run, node) {
+    if (
+      run?.needs?.kind === "human" &&
+      node.state === "blocked" &&
+      run.current?.state === "blocked"
+    ) {
+      return "g-blocked-h";
+    }
+    return nodeStateClass(node);
   }
 
   async function runSearch() {
@@ -952,7 +929,19 @@
   });
 
   onMount(() => {
-    loadRuns();
+    loadRuns().then(() => {
+      if (
+        fixture ||
+        $page.url.searchParams.has("run") ||
+        $page.url.searchParams.has("session")
+      ) {
+        return;
+      }
+      const groups = inboxGroups(runs, sessions, vms);
+      const selection = arrivalSelection(groups.needsYou, groups.running);
+      if (selection?.kind === "run") selectRun(selection.id);
+      else if (selection?.kind === "session") selectSession(selection.id);
+    });
     const teardownViewport = setupVisualViewport(
       window,
       consoleEl,
@@ -968,6 +957,13 @@
       if (event.key === "Escape" && !event.isComposing && showNewPanel) {
         event.preventDefault();
         closeNewPanel();
+      } else if (
+        (event.metaKey || event.ctrlKey) &&
+        event.key.toLowerCase() === "k" &&
+        !event.isComposing
+      ) {
+        event.preventDefault();
+        focusSearch();
       }
     };
     window.addEventListener("keydown", handleKeydown);
@@ -993,7 +989,6 @@
     detail = null;
     runDetail = null;
     renderedPending = {};
-    searchResults = null;
     composerModelOverride = null;
 
     if (runId != null) loadRunDetail(runId, runRequestSequence);
@@ -1207,306 +1202,427 @@
 
 <main
   bind:this={consoleEl}
-  class:sidebar-collapsed={sidebarCollapsed}
   class:mobile-transcript={mobileTranscript}
   class="console"
 >
-  <aside class="sidebar" aria-label={P.labels.sessionsRegion}>
-    <div class="side-head">
-      <div class="side-head-left">
-        <div class="eyebrow">{P.labels.sessionsEyebrow}</div>
-        <button
-          class="collapse-button"
-          type="button"
-          aria-label={sidebarCollapsed
-            ? "Expand session sidebar"
-            : "Collapse session sidebar"}
-          aria-expanded={!sidebarCollapsed}
-          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          onclick={toggleSidebar}>{sidebarCollapsed ? "→" : "←"}</button
-        >
-      </div>
-      <button
-        class="new-button"
-        type="button"
-        bind:this={newButtonEl}
-        onclick={() => (showNewPanel ? closeNewPanel() : openNewPanel())}
-        >+ new</button
-      >
-    </div>
-
-    <label class="search-label">
+  <header class="topbar">
+    <div class="wordmark">Agents</div>
+    <label class="top-search">
       <span class="sr-only">{P.labels.searchLabel}</span>
       <input
+        bind:this={searchInputEl}
         bind:value={searchQuery}
-        placeholder={P.labels.searchPlaceholder}
+        placeholder="Jump to a session, or search turns"
         autocomplete="off"
+        onclick={() => sidebarCollapsed && toggleSidebar()}
       />
       {#if searchLoading}<span class="search-pulse">…</span>{/if}
+      <kbd>⌘K</kbd>
     </label>
-
-    {#if searchResults !== null}
-      <div class="group-title">{P.labels.searchResults}</div>
-      <div class="session-list">
-        {#each visibleSearchResults as result (result.session_id + ":" + result.seq)}
-          <button
-            class="search-result"
-            type="button"
-            onclick={() => selectSession(result.session_id)}
-          >
-            <span class="snippet">{result.snippet}</span>
-            <span class="result-meta mono"
-              >{String(result.local_session_id || result.workspace || "").slice(
-                0,
-                8,
-              )} · turn {result.seq} · {relativeTime(result.created_at)}</span
-            >
-          </button>
-        {:else}<div class="empty">{P.labels.noMatchingTurns}</div>{/each}
-      </div>
-    {:else}
-      <!-- The heading is the affordance for the swarm home: clicking it
-           clears the selection. There is no aggregate pseudo-row, which is
-           what made a run appear twice. -->
-      <div class="group-title">
-        <button class="section-link" type="button" onclick={selectRuns}
-          >{P.labels.runsWord}</button
-        ><span
-          >{#if runNeedsAttention}<span class="needs-tag"
-              >{runNeedsAttention} {P.labels.needsYou}</span
-            >{:else}{sidebarRuns.length}{/if}</span
-        >
-      </div>
-      <div class="session-list runs-list">
-        {#each sidebarRuns as run (run.workflow_id)}
-          {@render runRow(run)}
-        {:else}<div class="empty">{P.labels.noneYet}</div>{/each}
-      </div>
-      <div class="group-title history-title">
-        {P.labels.earlierRuns} <span>{terminalRuns.length}</span>
-      </div>
-      <div class="session-list runs-list">
-        {#each visibleTerminalRuns as run (run.workflow_id)}
-          {@render terminalRunRow(run)}
-        {:else}<div class="empty">{P.labels.noEarlierRuns}</div>{/each}
-      </div>
-      {#if terminalRuns.length > visibleTerminalRuns.length}
-        <button
-          class="history-toggle"
-          type="button"
-          onclick={() => (showTerminalHistory = !showTerminalHistory)}
-          >{showTerminalHistory
-            ? P.labels.showRecentOnly
-            : `${P.labels.showAll} (${terminalRuns.length})`}</button
-        >
-      {/if}
-      {#if standaloneActive.length}
-        <div class="group-title">
-          Active <span>{standaloneActive.length}</span>
-        </div>
-        <div class="session-list">
-          {#each standaloneActive as session (session.id)}
-            {@render sessionRow(session)}
-          {/each}
-        </div>
-      {/if}
-      <div class="group-title history-title">
-        {P.labels.sessionsSection}
-      </div>
-      <div class="session-list">
-        {#each standaloneHistory as session (session.id)}
-          {@render sessionRow(session)}
-        {:else}<div class="empty">
-            {standaloneActive.length
-              ? P.labels.noRecentSessions
-              : P.labels.noSessionsYet}
-          </div>{/each}
-      </div>
-      {#if standaloneHistoryTotal > standaloneHistory.length}
-        <button
-          class="history-toggle"
-          type="button"
-          onclick={() => (showAllHistory = !showAllHistory)}
-          >{showAllHistory
-            ? "show recent only"
-            : `show all (${standaloneHistoryTotal})`}</button
-        >
-      {/if}
-    {/if}
-  </aside>
-
-  <section class="transcript" aria-label={P.labels.transcriptRegion}>
+    <div class="guest-state">
+      <span class="awake-dot" aria-hidden="true"></span>
+      {awakeGuests} guests awake
+    </div>
     <button
-      class="mobile-back"
+      class="new-button"
       type="button"
-      aria-label={P.labels.backToSessions}
-      onclick={returnToSessionList}>{P.labels.mobileBack}</button
+      bind:this={newButtonEl}
+      onclick={() => (showNewPanel ? closeNewPanel() : openNewPanel())}
     >
-    {#if fixture?.walkthrough}
-      <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
-           component gets its payload inline and never fetches. -->
-      <div class="walkthrough-page">
-        <div class="walkthrough-inner">
-          <h2>{P.labels.walkSummary}</h2>
-          <WalkthroughNarrative
-            turnSeq={fixture.walkthrough.turnSeq}
-            fixture={fixture.walkthrough}
-          />
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 3v10M3 8h10"></path>
+      </svg>
+      New
+    </button>
+  </header>
+
+  <div class="shell">
+    <aside
+      class:folded={sidebarCollapsed}
+      class="inbox"
+      aria-label={P.labels.sessionsRegion}
+    >
+      <div class="fold-rail">
+        <button
+          class="fold-button"
+          type="button"
+          aria-label="Expand inbox"
+          aria-expanded="false"
+          title="Expand inbox"
+          onclick={toggleSidebar}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="m6 3 5 5-5 5"></path>
+          </svg>
+        </button>
+        <span class="rail-hairline"></span>
+        <button
+          class="rail-badge attention"
+          type="button"
+          title={`${inbox.needsYou.length} need you`}
+          onclick={toggleSidebar}>{inbox.needsYou.length}</button
+        >
+        <button
+          class="rail-badge running"
+          type="button"
+          title={`${inbox.running.length} running`}
+          onclick={toggleSidebar}
+        >
+          <span class="awake-dot" aria-hidden="true"></span>
+          {inbox.running.length}
+        </button>
+      </div>
+
+      <div class="inbox-expanded">
+        <div class="inbox-head">
+          <h1>Inbox</h1>
+          <button
+            class="fold-button"
+            type="button"
+            aria-label="Collapse inbox"
+            aria-expanded="true"
+            title="Collapse inbox"
+            onclick={toggleSidebar}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="m10 3-5 5 5 5"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="inbox-body">
+          {#if searchResults !== null}
+            <div class="group">
+              <div class="group-title">
+                <span>{P.labels.searchResults}</span>
+                <span class="group-count">{visibleSearchResults.length}</span>
+              </div>
+              <div class="row-list">
+                {#each visibleSearchResults as result (result.session_id + ":" + result.seq)}
+                  <button
+                    class:chosen={String(selectedId) ===
+                      String(result.session_id)}
+                    class="row search-result"
+                    type="button"
+                    onclick={() => selectSession(result.session_id)}
+                  >
+                    <span class="dot idle" aria-hidden="true"></span>
+                    <span class="main">
+                      <span class="row-title">{result.snippet}</span>
+                      <span class="row-sub mono"
+                        >{String(
+                          result.local_session_id || result.workspace || "",
+                        ).slice(0, 8)} · turn {result.seq}</span
+                      >
+                    </span>
+                    <span class="age mono"
+                      >{relativeTime(result.created_at)}</span
+                    >
+                  </button>
+                {:else}<div class="empty">
+                    {P.labels.noMatchingTurns}
+                  </div>{/each}
+              </div>
+            </div>
+          {:else}
+            {#if inbox.needsYou.length}
+              <div class="group attention-group">
+                <div class="group-title">
+                  <span>Needs you</span>
+                  <span class="group-count">{inbox.needsYou.length}</span>
+                </div>
+                <div class="row-list">
+                  {#each inbox.needsYou as item (`${item.kind}:${item.id}`)}
+                    {@render inboxRow(item, true)}
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if inbox.running.length}
+              <div class="group">
+                <div class="group-title">
+                  <span>Running</span>
+                  <span class="group-count">{inbox.running.length}</span>
+                </div>
+                <div class="row-list">
+                  {#each inbox.running as item (`${item.kind}:${item.id}`)}
+                    {@render inboxRow(item, false)}
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            <button class="hist" type="button" onclick={focusSearch}>
+              <span>{earlierTotal} earlier sessions</span>
+              <kbd>⌘K</kbd>
+            </button>
+          {/if}
+        </div>
+
+        <div
+          class={`inbox-foot mono ${vmStreamStatus.mode}`}
+          title={vmStreamStatus.error ?? "VM stream state"}
+        >
+          <span class="vm-stream-dot" aria-hidden="true"></span>
+          {#if vmStreamStatus.mode === "streaming"}
+            vm stream live · {awakeGuests} guests awake
+          {:else if vmStreamStatus.mode === "polling"}
+            vm stream polling{#if vmStreamStatus.lastUpdateAt != null}
+              · updated {streamAge(
+                vmStreamNow - vmStreamStatus.lastUpdateAt,
+              )}{/if}
+          {:else if vmStreamStatus.mode === "stalled"}
+            vm stream stalled{#if vmStreamStatus.lastUpdateAt != null}
+              · updated {streamAge(
+                vmStreamNow - vmStreamStatus.lastUpdateAt,
+              )}{/if}
+          {:else}
+            vm stream connecting
+          {/if}
         </div>
       </div>
-    {:else if fixture && !fixture.home}
-      <RunView
-        run={fixture.run}
-        view={fixture.view}
-        sessions={fixture.sessions}
-        onSelectSession={selectSession}
-        onCrumb={paneCrumb}
-      />
-    {:else if selectedId && selectedSession}
-      <header class="transcript-head">
-        <PaneHeader
-          kind={P.labels.session}
-          crumbs={sessionCrumbs}
+    </aside>
+
+    <section class="detail transcript" aria-label={P.labels.transcriptRegion}>
+      <button
+        class="mobile-back"
+        type="button"
+        aria-label={P.labels.backToSessions}
+        onclick={returnToSessionList}>{P.labels.mobileBack}</button
+      >
+      {#if fixture?.walkthrough}
+        <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
+           component gets its payload inline and never fetches. -->
+        <div class="walkthrough-page">
+          <div class="walkthrough-inner">
+            <h2>{P.labels.walkSummary}</h2>
+            <WalkthroughNarrative
+              turnSeq={fixture.walkthrough.turnSeq}
+              fixture={fixture.walkthrough}
+            />
+          </div>
+        </div>
+      {:else if fixture && !fixture.home}
+        <RunView
+          run={fixture.run}
+          view={fixture.view}
+          sessions={fixture.sessions}
+          onSelectSession={selectSession}
           onCrumb={paneCrumb}
-        >
-          {#snippet chips()}
-            <span
-              class={`vm-chip vm-${vmState(selectedSession, vms)}`}
-              title={vms[selectedSession.ember_session_id]?.cp_state
-                ? `control plane: ${vms[selectedSession.ember_session_id].cp_state}`
-                : "no live microVM; the next prompt boots fresh"}
-              >vm {vmState(selectedSession, vms)}</span
-            >
-            <span
-              class="session-view-toggle"
-              role="group"
-              aria-label={P.labels.sessionViewLabel}
-            >
-              <button
-                type="button"
-                class:on={sessionView === SESSION_VIEW_CONVERSATION}
-                aria-pressed={sessionView === SESSION_VIEW_CONVERSATION}
-                onclick={() => (sessionView = SESSION_VIEW_CONVERSATION)}
-                >{P.labels.conversationView}</button
+        />
+      {:else if selectedId && selectedSession}
+        <header class="transcript-head">
+          <PaneHeader
+            kind={P.labels.session}
+            crumbs={sessionCrumbs}
+            onCrumb={paneCrumb}
+          >
+            {#snippet chips()}
+              <span
+                class={`vm-chip vm-${vmState(selectedSession, vms)}`}
+                title={vms[selectedSession.ember_session_id]?.cp_state
+                  ? `control plane: ${vms[selectedSession.ember_session_id].cp_state}`
+                  : "no live microVM; the next prompt boots fresh"}
+                >vm {vmState(selectedSession, vms)}</span
               >
-              <button
-                type="button"
-                class:on={sessionView === SESSION_VIEW_WALKTHROUGH}
-                aria-pressed={sessionView === SESSION_VIEW_WALKTHROUGH}
-                onclick={() => (sessionView = SESSION_VIEW_WALKTHROUGH)}
-                >{P.labels.walkthroughView}</button
+              <span
+                class="session-view-toggle"
+                role="group"
+                aria-label={P.labels.sessionViewLabel}
               >
-            </span>
-            <span
-              class={`vm-stream-state ${vmStreamStatus.mode}`}
-              title={vmStreamStatus.mode === "connecting"
-                ? "VM state stream connecting"
-                : vmStreamStatus.mode === "streaming"
-                  ? "VM state stream connected"
-                  : vmStreamStatus.mode === "polling"
-                    ? `VM state fallback polling${vmStreamStatus.lastUpdateAt != null ? `, updated ${formatAge(vmStreamNow - vmStreamStatus.lastUpdateAt)}` : ""}`
-                    : `VM state updates stalled${vmStreamStatus.error ? `: ${vmStreamStatus.error}` : ""}`}
-            >
-              <span class="vm-stream-dot" aria-hidden="true"></span>
-              {#if vmStreamStatus.mode === "polling" || vmStreamStatus.mode === "stalled"}
-                <span aria-hidden="true">{vmStreamStatus.mode}</span>
-              {/if}
-              {#if (vmStreamStatus.mode === "polling" || vmStreamStatus.mode === "stalled") && vmStreamStatus.lastUpdateAt != null}
-                <span class="vm-stream-age" aria-hidden="true"
-                  >updated {formatAge(
-                    vmStreamNow - vmStreamStatus.lastUpdateAt,
-                  )}</span
+                <button
+                  type="button"
+                  class:on={sessionView === SESSION_VIEW_CONVERSATION}
+                  aria-pressed={sessionView === SESSION_VIEW_CONVERSATION}
+                  onclick={() => (sessionView = SESSION_VIEW_CONVERSATION)}
+                  >{P.labels.conversationView}</button
+                >
+                <button
+                  type="button"
+                  class:on={sessionView === SESSION_VIEW_WALKTHROUGH}
+                  aria-pressed={sessionView === SESSION_VIEW_WALKTHROUGH}
+                  onclick={() => (sessionView = SESSION_VIEW_WALKTHROUGH)}
+                  >{P.labels.walkthroughView}</button
+                >
+              </span>
+              {#if statusClass(selectedSession) !== "completed"}
+                <span class={`session-state ${statusClass(selectedSession)}`}
+                  >{statusLabel(selectedSession)}</span
                 >
               {/if}
-              <span class="sr-only">
-                {#if vmStreamStatus.mode === "connecting"}
-                  VM state connecting...
-                {:else if vmStreamStatus.mode === "streaming"}
-                  VM state stream connected
-                {:else if vmStreamStatus.mode === "polling"}
-                  VM state fallback polling{#if vmStreamStatus.lastUpdateAt != null},
-                    updated {formatAge(
-                      vmStreamNow - vmStreamStatus.lastUpdateAt,
-                    )}{/if}
-                {:else}
-                  VM state updates stalled{#if vmStreamStatus.error}: {vmStreamStatus.error}{/if}
-                {/if}
-              </span>
-            </span>
-            {#if statusClass(selectedSession) !== "completed"}
-              <span class={`session-state ${statusClass(selectedSession)}`}
-                >{statusLabel(selectedSession)}</span
-              >
-            {/if}
-            <!-- One right-hand group whether or not the session came from a
+              <!-- One right-hand group whether or not the session came from a
                  run. Pushing only the back link would leave destroy sitting
                  against the state chip on a standalone session, so the
                  button a mis-click destroys a VM with moves under the
                  cursor depending on how you arrived. -->
-            <span class="push head-right">
-              {#if selectedRunId}
-                <button class="back-to-run" type="button" onclick={returnToRun}
-                  >{P.labels.backToRun}</button
+              <span class="push head-right">
+                {#if selectedRunId}
+                  <button
+                    class="back-to-run"
+                    type="button"
+                    onclick={returnToRun}>{P.labels.backToRun}</button
+                  >
+                {/if}
+                <button
+                  class="destroy-button"
+                  type="button"
+                  onclick={destroySession}>{P.labels.destroy}</button
                 >
-              {/if}
-              <button
-                class="destroy-button"
-                type="button"
-                onclick={destroySession}>{P.labels.destroy}</button
-              >
-            </span>
-          {/snippet}
-        </PaneHeader>
-        <h1
-          class="session-title"
-          title={headerTitle}
-          tabindex="-1"
-          bind:this={titleEl}
-        >
-          {headerTitle}
-        </h1>
-        <div class="session-context mono">
-          {formatRepoContext(selectedSession)} · {selectedSession.model ||
-            "luna"} · {shortId(selectedSession)}
-        </div>
-      </header>
-      {#if sessionView === SESSION_VIEW_CONVERSATION}
-        <div class="turns" bind:this={turnsEl}>
-          <div class="turns-inner">
-            {#each detail?.turns ?? [] as turn (turn.seq)}
-              <!-- {@const} has to be an immediate child of the block, not of the
+              </span>
+            {/snippet}
+          </PaneHeader>
+          <h1
+            class="session-title"
+            title={headerTitle}
+            tabindex="-1"
+            bind:this={titleEl}
+          >
+            {headerTitle}
+          </h1>
+          <div class="session-context mono">
+            {formatRepoContext(selectedSession)} · {selectedSession.model ||
+              "luna"} · {shortId(selectedSession)}
+          </div>
+        </header>
+        {#if sessionView === SESSION_VIEW_CONVERSATION}
+          <div class="turns" bind:this={turnsEl}>
+            <div class="turns-inner">
+              {#each detail?.turns ?? [] as turn (turn.seq)}
+                <!-- {@const} has to be an immediate child of the block, not of the
                  element inside it, so this sits above <article> rather than
                  next to the markup that reads it. -->
-              {@const hasIntent =
-                turn.prompt_intent !== null && turn.prompt_intent !== undefined}
-              <article class="turn">
-                <div class="prompt">
-                  <span class="role">you</span>
-                  {#if hasIntent}
-                    <div class="prompt-text intent-prompt">
-                      <span class="intent-label">{P.labels.promptIntent}</span>
-                      <div>{turn.prompt_intent}</div>
-                    </div>
-                    {#if turnProtocol(turn)}
-                      <details class="prompt-protocol">
-                        <summary>{P.labels.viewProtocol}</summary>
-                        <pre>{turnProtocol(turn)}</pre>
-                      </details>
+                {@const hasIntent =
+                  turn.prompt_intent !== null &&
+                  turn.prompt_intent !== undefined}
+                <article class="turn">
+                  <div class="prompt">
+                    <span class="role">you</span>
+                    {#if hasIntent}
+                      <div class="prompt-text intent-prompt">
+                        <span class="intent-label">{P.labels.promptIntent}</span
+                        >
+                        <div>{turn.prompt_intent}</div>
+                      </div>
+                      {#if turnProtocol(turn)}
+                        <details class="prompt-protocol">
+                          <summary>{P.labels.viewProtocol}</summary>
+                          <pre>{turnProtocol(turn)}</pre>
+                        </details>
+                      {/if}
+                    {:else}
+                      <div class="prompt-text">{turn.prompt}</div>
                     {/if}
-                  {:else}
-                    <div class="prompt-text">{turn.prompt}</div>
+                  </div>
+                  {#if turn.usage?.activities?.length}
+                    <details class="steps">
+                      <summary
+                        >{turn.usage.activities.length}
+                        {turn.usage.activities.length === 1
+                          ? "step"
+                          : "steps"}</summary
+                      >
+                      <ol class="step-list">
+                        {#each turn.usage.activities as activity}
+                          <li>
+                            <span class="step-verb"
+                              >{activityParts(activity).verb}</span
+                            >
+                            <span class="step-detail"
+                              >{activityParts(activity).detail}</span
+                            >
+                          </li>
+                        {/each}
+                      </ol>
+                    </details>
                   {/if}
-                </div>
-                {#if turn.usage?.activities?.length}
-                  <details class="steps">
-                    <summary
-                      >{turn.usage.activities.length}
-                      {turn.usage.activities.length === 1
-                        ? "step"
-                        : "steps"}</summary
+                  {#if turnFailed(turn)}
+                    <pre class="turn-error">{resultWithoutTrailer(turn) ||
+                        "The turn failed without output."}</pre>
+                  {:else if turn.result_text}
+                    <div class="result-md">
+                      {@html renderAgentMarkdown(resultWithoutTrailer(turn))}
+                    </div>
+                  {/if}
+                  {#if selectedSession.repo}
+                    <SessionWalkthrough
+                      sessionId={selectedSession.id}
+                      turnSeq={turn.seq}
+                      model={turn.model || selectedSession.model || "luna"}
+                    />
+                  {/if}
+                  <div class="turn-meta mono">
+                    <span>{turn.model || selectedSession.model || "luna"}</span>
+                    <span>{relativeTime(turn.created_at)}</span>
+                    {#if cost(turn.cost_usd)}<span>{cost(turn.cost_usd)}</span
+                      >{/if}
+                    {#if turn.stop_reason && turn.stop_reason !== "end_turn"}
+                      <span>{turn.stop_reason}</span>
+                    {/if}
+                    {#if turnFailed(turn)}<span class="badge-failed"
+                        >{P.labels.turnFailed}</span
+                      >{/if}
+                  </div>
+                </article>
+                {@const degradedCause = workspaceRecoveryMessage(turn)}
+                {#if degradedCause}
+                  <div
+                    class="turn-degraded"
+                    title={P.workspaceRecoveryCauses[degradedCause]}
+                  >
+                    {P.labels.workspaceRecovery}
+                  </div>
+                {/if}
+              {/each}
+
+              {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
+                {@const partial = renderedPending[entry.seq]}
+                {@const state = liveStateLabel(entry, index)}
+                <article class="turn live">
+                  <div class="prompt">
+                    <span class="role">you</span>
+                    <div class="prompt-text">{entry.prompt}</div>
+                  </div>
+                  <div
+                    class={`live-line ${state === "working" ? "" : "quiet"}`}
+                  >
+                    <span class="live-dot" aria-hidden="true"></span>
+                    {#if state === "working"}
+                      {#if partial?.partial_activities?.length}
+                        <span class="live-latest"
+                          >{activityLine(
+                            partial.partial_activities[
+                              partial.partial_activities.length - 1
+                            ],
+                          )}</span
+                        >
+                      {:else if partial?.partial_text}
+                        <span class="live-latest">{P.labels.working}</span>
+                      {:else if vmRunning(selectedSession, vms)}
+                        <!-- Claimed, VM confirmed running, no output yet: the
+                         CLI is spinning up / the model has the prompt. -->
+                        <span class="live-latest">{P.labels.startingAgent}</span
+                        >
+                      {:else}
+                        <!-- Claimed but the control plane does not report the
+                         guest running yet: park rejoin or cold boot. -->
+                        <span class="live-latest">{P.labels.wakingVm}</span>
+                      {/if}
+                    {:else if state === "starting"}
+                      <span class="live-latest">{P.labels.startingUp}</span>
+                    {:else}
+                      <span class="live-latest">{P.labels.waitingForTurn}</span>
+                    {/if}
+                  </div>
+                  {#if partial?.partial_activities?.length > 1}
+                    <ol
+                      class="step-list live-steps"
+                      aria-label="Agent activity"
                     >
-                    <ol class="step-list">
-                      {#each turn.usage.activities as activity}
+                      {#if partial.partial_activities.length > 6}
+                        <li class="step-earlier">
+                          … {partial.partial_activities.length - 6} earlier steps
+                        </li>
+                      {/if}
+                      {#each partial.partial_activities.slice(-6) as activity}
                         <li>
                           <span class="step-verb"
                             >{activityParts(activity).verb}</span
@@ -1517,224 +1633,118 @@
                         </li>
                       {/each}
                     </ol>
-                  </details>
-                {/if}
-                {#if turnFailed(turn)}
-                  <pre class="turn-error">{resultWithoutTrailer(turn) ||
-                      "The turn failed without output."}</pre>
-                {:else if turn.result_text}
-                  <div class="result-md">
-                    {@html renderAgentMarkdown(resultWithoutTrailer(turn))}
-                  </div>
-                {/if}
-                {#if selectedSession.repo}
-                  <SessionWalkthrough
-                    sessionId={selectedSession.id}
-                    turnSeq={turn.seq}
-                    model={turn.model || selectedSession.model || "luna"}
-                  />
-                {/if}
-                <div class="turn-meta mono">
-                  <span>{turn.model || selectedSession.model || "luna"}</span>
-                  <span>{relativeTime(turn.created_at)}</span>
-                  {#if cost(turn.cost_usd)}<span>{cost(turn.cost_usd)}</span
-                    >{/if}
-                  {#if turn.stop_reason && turn.stop_reason !== "end_turn"}
-                    <span>{turn.stop_reason}</span>
                   {/if}
-                  {#if turnFailed(turn)}<span class="badge-failed"
-                      >{P.labels.turnFailed}</span
-                    >{/if}
-                </div>
-              </article>
-              {@const degradedCause = workspaceRecoveryMessage(turn)}
-              {#if degradedCause}
-                <div
-                  class="turn-degraded"
-                  title={P.workspaceRecoveryCauses[degradedCause]}
-                >
-                  {P.labels.workspaceRecovery}
+                  {#if partial?.partial_text}
+                    <div class="result-md">
+                      {@html renderAgentMarkdown(partial.partial_text)}
+                    </div>
+                  {/if}
+                </article>
+              {/each}
+
+              {#if !(detail?.turns ?? []).length && !(detail?.pending_queue ?? []).length}
+                <div class="empty transcript-empty">
+                  {detail
+                    ? "No turns yet. Send a prompt below."
+                    : P.labels.loadingSession}
                 </div>
               {/if}
-            {/each}
-
-            {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
-              {@const partial = renderedPending[entry.seq]}
-              {@const state = liveStateLabel(entry, index)}
-              <article class="turn live">
-                <div class="prompt">
-                  <span class="role">you</span>
-                  <div class="prompt-text">{entry.prompt}</div>
+            </div>
+          </div>
+        {:else}
+          <div class="walkthrough-page">
+            <div class="walkthrough-inner">
+              <h2>{P.labels.walkSummary}</h2>
+              {#each eligibleWalkthroughTurns as turn (turn.seq)}
+                <WalkthroughNarrative
+                  sessionId={selectedSession.id}
+                  turnSeq={turn.seq}
+                  walkthroughTurnCount={eligibleWalkthroughTurns.length}
+                />
+              {:else}
+                <div class="empty walkthrough-empty">
+                  {P.labels.walkthroughUnavailableForSession}
                 </div>
-                <div class={`live-line ${state === "working" ? "" : "quiet"}`}>
-                  <span class="live-dot" aria-hidden="true"></span>
-                  {#if state === "working"}
-                    {#if partial?.partial_activities?.length}
-                      <span class="live-latest"
-                        >{activityLine(
-                          partial.partial_activities[
-                            partial.partial_activities.length - 1
-                          ],
-                        )}</span
-                      >
-                    {:else if partial?.partial_text}
-                      <span class="live-latest">{P.labels.working}</span>
-                    {:else if vmRunning(selectedSession, vms)}
-                      <!-- Claimed, VM confirmed running, no output yet: the
-                         CLI is spinning up / the model has the prompt. -->
-                      <span class="live-latest">{P.labels.startingAgent}</span>
-                    {:else}
-                      <!-- Claimed but the control plane does not report the
-                         guest running yet: park rejoin or cold boot. -->
-                      <span class="live-latest">{P.labels.wakingVm}</span>
-                    {/if}
-                  {:else if state === "starting"}
-                    <span class="live-latest">{P.labels.startingUp}</span>
-                  {:else}
-                    <span class="live-latest">{P.labels.waitingForTurn}</span>
-                  {/if}
-                </div>
-                {#if partial?.partial_activities?.length > 1}
-                  <ol class="step-list live-steps" aria-label="Agent activity">
-                    {#if partial.partial_activities.length > 6}
-                      <li class="step-earlier">
-                        … {partial.partial_activities.length - 6} earlier steps
-                      </li>
-                    {/if}
-                    {#each partial.partial_activities.slice(-6) as activity}
-                      <li>
-                        <span class="step-verb"
-                          >{activityParts(activity).verb}</span
-                        >
-                        <span class="step-detail"
-                          >{activityParts(activity).detail}</span
-                        >
-                      </li>
-                    {/each}
-                  </ol>
-                {/if}
-                {#if partial?.partial_text}
-                  <div class="result-md">
-                    {@html renderAgentMarkdown(partial.partial_text)}
-                  </div>
-                {/if}
-              </article>
-            {/each}
+              {/each}
+            </div>
+          </div>
+        {/if}
 
-            {#if !(detail?.turns ?? []).length && !(detail?.pending_queue ?? []).length}
-              <div class="empty transcript-empty">
-                {detail
-                  ? "No turns yet. Send a prompt below."
-                  : P.labels.loadingSession}
-              </div>
-            {/if}
+        <form
+          class="composer"
+          onsubmit={(event) => {
+            event.preventDefault();
+            sendPrompt();
+          }}
+        >
+          <div class="composer-inner">
+            <textarea
+              bind:value={prompt}
+              placeholder="send a prompt to this session (⌘⏎ to send)"
+              rows="3"
+              onkeydown={(e) => {
+                if (
+                  (e.metaKey || e.ctrlKey) &&
+                  e.key === "Enter" &&
+                  !e.isComposing &&
+                  !sending &&
+                  prompt.trim()
+                ) {
+                  e.preventDefault();
+                  sendPrompt();
+                }
+              }}></textarea>
+            <div class="composer-actions">
+              {@render modelPicker(composerModel, (model) => {
+                composerModelOverride = model;
+              })}
+              <button
+                class="send-button"
+                type="submit"
+                disabled={sending || !prompt.trim()}
+                >{sending ? P.labels.sending : P.labels.send}</button
+              >
+            </div>
           </div>
-        </div>
-      {:else}
-        <div class="walkthrough-page">
-          <div class="walkthrough-inner">
-            <h2>{P.labels.walkSummary}</h2>
-            {#each eligibleWalkthroughTurns as turn (turn.seq)}
-              <WalkthroughNarrative
-                sessionId={selectedSession.id}
-                turnSeq={turn.seq}
-                walkthroughTurnCount={eligibleWalkthroughTurns.length}
-              />
-            {:else}
-              <div class="empty walkthrough-empty">
-                {P.labels.walkthroughUnavailableForSession}
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/if}
-
-      <form
-        class="composer"
-        onsubmit={(event) => {
-          event.preventDefault();
-          sendPrompt();
-        }}
-      >
-        <div class="composer-inner">
-          <textarea
-            bind:value={prompt}
-            placeholder="send a prompt to this session (⌘⏎ to send)"
-            rows="3"
-            onkeydown={(e) => {
-              if (
-                (e.metaKey || e.ctrlKey) &&
-                e.key === "Enter" &&
-                !e.isComposing &&
-                !sending &&
-                prompt.trim()
-              ) {
-                e.preventDefault();
-                sendPrompt();
-              }
-            }}></textarea>
-          <div class="composer-actions">
-            {@render modelPicker(composerModel, (model) => {
-              composerModelOverride = model;
-            })}
-            <button
-              class="send-button"
-              type="submit"
-              disabled={sending || !prompt.trim()}
-              >{sending ? P.labels.sending : P.labels.send}</button
-            >
-          </div>
-        </div>
-      </form>
-    {:else if selectedId}
-      <!-- ?session= for a row absent from the server-rendered list. Without
+        </form>
+      {:else if selectedId}
+        <!-- ?session= for a row absent from the server-rendered list. Without
            this branch the pane falls through to the master view and swaps
            once loadDetail resolves. -->
-      <div class="loading-session">
-        <PaneHeader kind={P.labels.session} />
-        <div class="empty blank-state">{P.labels.loadingSession}</div>
-      </div>
-    {:else if selectedRunId}
-      {#if runDetail?.run}
-        <RunView
-          run={runDetail.run}
-          view={runDetail.view}
-          sessions={runDetail.sessions}
-          onSelectSession={selectSession}
-          onCancel={() => cancelRun(selectedRunId)}
-          onCrumb={paneCrumb}
-        />
-        <!-- loadRunDetail's catch leaves runDetail set with run: null and the
+        <div class="loading-session">
+          <PaneHeader kind={P.labels.session} />
+          <div class="empty blank-state">{P.labels.loadingSession}</div>
+        </div>
+      {:else if selectedRunId}
+        {#if runDetail?.run}
+          <RunView
+            run={runDetail.run}
+            view={runDetail.view}
+            sessions={runDetail.sessions}
+            onSelectSession={selectSession}
+            onCancel={() => cancelRun(selectedRunId)}
+            onCrumb={paneCrumb}
+          />
+          <!-- loadRunDetail's catch leaves runDetail set with run: null and the
              tier marked absent. Without this branch that state is
              indistinguishable from the pre-fetch one, so a ?run= naming a run
              that does not resolve sits on "Loading run…" forever and reads as
              broken navigation rather than a missing run. -->
-      {:else if runDetail?.view?.engine_tier === "absent"}
-        <div class="empty blank-state">{P.labels.absentNotice}</div>
-      {:else}<div class="empty blank-state">{P.labels.loadingRun}</div>{/if}
-    {:else}
-      <MasterView
-        master={fixture?.home ? fixture.master : runMaster}
-        activity={fixture?.home ? fixture.activity : masterActivity}
-        sessions={fixture?.home ? fixture.sessions : sessions}
-        {newSession}
-        {repos}
-        {branches}
-        {repoLoading}
-        {branchLoading}
-        {modelPicker}
-        onChangeSession={(field, value) => (newSession[field] = value)}
-        onLoadBranches={loadBranches}
-        {creating}
-        onCreateTask={createTask}
-        onSelectRun={selectRun}
-        onSelectSession={selectSession}
-        {relativeTime}
-        onStartRun={openNewPanel}
-        view={fixture?.home ? fixture.view : masterView}
-      />
-    {/if}
-  </section>
+        {:else if runDetail?.view?.engine_tier === "absent"}
+          <div class="empty blank-state">{P.labels.absentNotice}</div>
+        {:else}<div class="empty blank-state">{P.labels.loadingRun}</div>{/if}
+      {:else}
+        <MasterView
+          master={fixture?.home ? fixture.master : runMaster}
+          activity={fixture?.home ? fixture.activity : masterActivity}
+          onSelectRun={selectRun}
+          onSelectSession={selectSession}
+          {relativeTime}
+          view={fixture?.home ? fixture.view : masterView}
+        />
+      {/if}
+    </section>
+  </div>
 
   {#if showNewPanel}
     <button
@@ -1743,7 +1753,7 @@
       aria-label="Close new session panel"
       onclick={closeNewPanel}
     ></button>
-    <section class="new-panel" role="dialog" aria-label={P.labels.submitTask}>
+    <div class="new-panel" role="dialog" aria-label={P.labels.submitTask}>
       <div class="eyebrow">{P.labels.submitTask}</div>
       <form
         onsubmit={(event) => {
@@ -1834,7 +1844,7 @@
           >
         </div>
       </form>
-    </section>
+    </div>
   {/if}
 
   {#if errorMessage}<div class="error-banner" role="status">
@@ -1842,104 +1852,66 @@
     </div>{/if}
 </main>
 
-{#snippet sessionRow(session)}
+{#snippet inboxRow(item, attention)}
+  {@const entry = item.value}
   <button
-    class:chosen={String(selectedId) === String(session.id)}
-    class="session-row"
-    id={`agent-session-${String(session.id)}`}
+    class:chosen={item.kind === "run"
+      ? String(selectedRunId) === String(item.id)
+      : String(selectedId) === String(item.id)}
+    class:attn={attention}
+    class="row"
+    id={item.kind === "session"
+      ? `agent-session-${String(item.id)}`
+      : undefined}
     type="button"
-    aria-label={`${sessionTitle(session)}: ${statusLabel(session)}`}
-    onclick={() => selectSession(session)}
+    aria-label={item.kind === "run"
+      ? `${firstLine(entry.title || entry.task?.text)}: ${P.stateWords[entry.state] || entry.state}`
+      : `${sessionTitle(entry)}: ${statusLabel(entry)}`}
+    onclick={() =>
+      item.kind === "run" ? selectRun(item.id) : selectSession(item.id)}
   >
-    <span class={`dot ${sidebarDot(session)}`} title={statusLabel(session)}
-    ></span>
-    <span class="row-main"
-      ><span class="session-name">{sessionTitle(session)}</span><span
-        class="row-sub mono"
-      >
-        {session.model || "luna"}
-        {#if session.repo}· {(session.repo.split("/")[1] || session.repo) +
-            "@" +
-            (session.branch || "main")}{/if}
-        · {relativeTime(session.last_turn_at || session.created_at)}
-      </span></span
-    >
-    {#if cost(session.total_cost_usd)}
-      <span class="row-cost mono">{cost(session.total_cost_usd)}</span>
+    {#if item.kind === "run"}
+      <span class="run-shape-strip" aria-hidden="true">
+        {#each entry.shape?.length ? entry.shape : [{ key: "run", kind: "work", state: entry.state }] as node, index (`${node.key}:${index}`)}
+          <span
+            class:gate={node.kind === "gate"}
+            class={`shape-node ${shapeStateClass(entry, node)}`}
+          ></span>
+        {/each}
+      </span>
+    {:else}
+      <span class={`dot ${statusClass(entry)}`} title={statusLabel(entry)}
+      ></span>
     {/if}
-  </button>
-{/snippet}
-
-{#snippet terminalRunRow(run)}
-  <button
-    class="group-header group-main run-entry run-row"
-    class:chosen={String(selectedRunId) === String(run.workflow_id)}
-    type="button"
-    title={run.workflow_id}
-    onclick={() => selectRun(run.workflow_id)}
-  >
-    <StateIcon
-      icon={nodeIconKey({ state: run.state })}
-      class={nodeStateClass({ state: run.state })}
-    />
-    <span class="group-run-title">{firstLine(run.title)}</span>
-    <span class="group-run-meta mono"
-      >{joinMeta(
-        P.stateWords[run.state] || run.state,
-        fmtCost(run.cost_usd),
-        relativeTime(runActivityAt(run)),
-      )}</span
-    >
-  </button>
-{/snippet}
-
-{#snippet runRow(run)}
-  <button
-    class="group-header group-main run-entry run-row"
-    class:chosen={String(selectedRunId) === String(run.workflow_id)}
-    type="button"
-    title={run.workflow_id}
-    onclick={() => selectRun(run.workflow_id)}
-  >
-    <!-- The shape strip is the run's state at a glance and the only thing
-         that has to stay legible at 44px, which is what the collapsed rail
-         renders. -->
-    <span class="ic-strip run-shape-strip" aria-hidden="true">
-      {#each run.shape ?? [] as node (node.key)}
-        <StateIcon icon={nodeIconKey(node)} class={nodeStateClass(node)} />
-      {/each}
+    <span class="main">
+      <span class="row-title">
+        {item.kind === "run"
+          ? firstLine(entry.title || entry.task?.text) || entry.workflow_id
+          : sessionTitle(entry)}
+      </span>
+      <span class="row-sub mono">
+        {#if item.kind === "run"}
+          run · {P.stateWords[entry.state] || entry.state} · {fmtCost(
+            entry.cost_usd,
+          ) || "$0.00"}
+        {:else}
+          {entry.model || "luna"} · {entry.repo
+            ? `${entry.repo}@${entry.branch || "main"}`
+            : "no repo"}
+        {/if}
+      </span>
     </span>
-    <span class="group-run-title">{firstLine(run.title)}</span>
-    <span class="group-run-meta mono"
-      >{joinMeta(
-        P.stateWords[run.state] || run.state,
-        fmtCost(run.cost_usd),
-      )}</span
-    >
-    {#if run.needs}<span class="needs-tag">{P.labels.needsYou}</span>{/if}
+    {#if attention}
+      <span class="ask">
+        {item.kind === "run" ? runAsk(entry) : "Answer"}
+      </span>
+    {/if}
+    <span class="age mono">{relativeTime(item.activityAt)}</span>
   </button>
 {/snippet}
 
 {#snippet modelPicker(current, choose)}
-  <div class="model-chips" role="group" aria-label="Model">
-    <button
-      type="button"
-      class="chip"
-      class:on={!current}
-      aria-pressed={!current}
-      onclick={() => choose("")}>{P.labels.defaultWord}</button
-    >
-    {#each availableModels as model}
-      <button
-        type="button"
-        class="chip"
-        class:on={current === model}
-        aria-pressed={current === model}
-        onclick={() => choose(model)}>{model}</button
-      >
-    {/each}
-  </div>
-  <label class="model-select-label">
+  <label class="model-picker">
     <span class="sr-only">Model</span>
     <select
       class="mono"
@@ -1967,8 +1939,8 @@
 
   .console {
     height: var(--console-h, 100dvh);
-    display: grid;
-    grid-template-columns: 300px minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
     background: var(--page-bg);
     color: var(--text);
     font-family: var(--font-ui);
@@ -1981,7 +1953,6 @@
   }
   .console .mono,
   .console pre,
-  .console input.mono,
   .console select.mono {
     font-family: var(--font-mono);
   }
@@ -2002,28 +1973,16 @@
   input,
   textarea,
   select {
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
   }
   button:focus-visible,
   input:focus-visible,
   textarea:focus-visible,
   select:focus-visible,
   .steps summary:focus-visible {
-    outline: 4px solid var(--info);
-    outline-offset: 4px;
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
   }
-  .sidebar {
-    min-height: 0;
-    border-right: 4px solid var(--line);
-    padding: 16px 12px;
-    overflow: auto;
-  }
-  .side-head-left {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .side-head,
   .composer-actions,
   .new-actions {
     display: flex;
@@ -2037,31 +1996,25 @@
     color: var(--muted);
     font-size: var(--size-meta);
     line-height: 1.2;
-    letter-spacing: 0.13em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
   }
-  .collapse-button,
   .new-button,
   .destroy-button,
   .quiet-button,
   .send-button {
-    height: 30px;
+    height: 32px;
     padding: 0 12px;
-    border: 4px solid var(--line-strong);
-    font-size: var(--size-meta);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    font-size: 13px;
     line-height: 1;
   }
-  .collapse-button,
   .new-button,
   .destroy-button,
   .quiet-button {
     color: var(--text);
     background: var(--panel-bg);
-  }
-  .collapse-button {
-    width: 30px;
-    padding: 0;
-    background: transparent;
   }
   .destroy-button:hover {
     color: var(--err);
@@ -2069,40 +2022,19 @@
     background: var(--err-bg);
   }
   .new-button:hover,
-  .quiet-button:hover,
-  .collapse-button:hover,
-  .session-row:hover,
-  .search-result:hover,
-  .group-header:hover {
+  .quiet-button:hover {
     background: var(--hover);
   }
-  .session-row.chosen {
-    background: var(--panel-bg);
-    border-color: var(--line);
-  }
-  .run-row.chosen {
-    background: var(--panel-bg);
-    border-color: var(--line);
-  }
-  .search-label {
-    position: relative;
-    display: block;
-    margin: 16px 0 12px;
-  }
-  .search-label input,
-  .new-panel input,
   .new-panel textarea,
   .composer textarea,
   select {
     width: 100%;
     color: var(--text);
     background: var(--panel-bg);
-    border: 4px solid var(--line-strong);
+    border: 1px solid var(--line-strong);
     padding: 0 8px;
     outline: none;
   }
-  .search-label input,
-  .new-panel input,
   select {
     height: 30px;
   }
@@ -2117,9 +2049,6 @@
   }
   select {
     appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m2.5 4.5 3.5 3 3.5-3' fill='none' stroke='%2363605a' stroke-width='1.25'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 8px center;
     padding-right: 27px;
   }
   .search-pulse {
@@ -2128,166 +2057,6 @@
     right: 8px;
     color: var(--muted);
   }
-  .group-title {
-    display: flex;
-    justify-content: space-between;
-    margin: 12px 4px 8px;
-  }
-  /* The runs heading is a button (clicking it clears the selection and
-     returns to the swarm home) sitting beside the plain-text sessions
-     heading. Without this reset it kept the UA button chrome, a bordered
-     lowercase pill, and the two collection headings read as different
-     kinds of thing. Every other button in this console carries an explicit
-     reset for the same reason; see .session-row. Inherit rather than
-     restate the .group-title type so the two headings cannot drift apart. */
-  .section-link {
-    padding: 0;
-    border: 0;
-    background: none;
-    color: inherit;
-    font: inherit;
-    letter-spacing: inherit;
-    text-transform: inherit;
-    text-align: left;
-  }
-  .section-link:hover {
-    color: var(--text);
-  }
-  .section-link:focus-visible {
-    outline: none;
-    text-decoration: underline;
-    text-underline-offset: 4px;
-  }
-  .history-title {
-    margin-top: 16px;
-  }
-  .history-toggle {
-    margin: 8px 4px;
-    padding: 4px 0;
-    border: 0;
-    background: none;
-    color: var(--info);
-    font-size: var(--size-meta);
-  }
-  .session-list {
-    min-height: 0;
-    display: grid;
-    gap: 4px;
-  }
-  .session-group {
-    min-width: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-  .group-header {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    border: 4px solid transparent;
-    color: var(--muted);
-    background: transparent;
-    text-align: left;
-    font-size: var(--size-meta);
-    white-space: nowrap;
-  }
-  .group-main {
-    width: 100%;
-  }
-  .group-chevron {
-    width: auto;
-    padding-right: 8px;
-    padding-left: 8px;
-  }
-  .group-id,
-  .group-summary {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .run-shape-strip {
-    width: auto;
-    height: 1.05em;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    overflow: hidden;
-  }
-  .group-run-title {
-    min-width: 0;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text);
-  }
-  .group-run-meta {
-    flex: 0 0 auto;
-    color: var(--text-soft);
-    text-align: right;
-  }
-  .group-id {
-    flex: 0 0 auto;
-  }
-  .group-summary {
-    min-width: 0;
-    flex: 1;
-  }
-  .group-toggle {
-    flex: 0 0 auto;
-  }
-  .group-members {
-    grid-column: 1 / -1;
-    padding-left: 8px;
-  }
-  .session-row,
-  .search-result {
-    width: 100%;
-    text-align: left;
-    color: inherit;
-    background: transparent;
-    border: 4px solid transparent;
-    padding: 8px 8px;
-    display: flex;
-    gap: 8px;
-    align-items: flex-start;
-    min-width: 0;
-  }
-  .dot {
-    flex: 0 0 8px;
-    width: 8px;
-    height: 8px;
-    border-radius: var(--radius-circle);
-    background: var(--dot-idle);
-    margin-top: 8px;
-  }
-  .dot.running,
-  .dot.working {
-    background: var(--ok);
-  }
-  .dot.warn {
-    background: var(--attn);
-  }
-  .dot.needs_input {
-    background: var(--info);
-  }
-  .row-main {
-    min-width: 0;
-    flex: 1;
-    display: grid;
-    gap: 4px;
-  }
-  .session-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text);
-    font-size: var(--size-detail);
-  }
-  .row-sub,
-  .row-cost,
-  .result-meta,
   .session-context {
     color: var(--text-soft);
     font-size: var(--size-meta);
@@ -2307,24 +2076,382 @@
     color: var(--text);
     text-decoration: underline;
   }
-  .row-cost {
+  .topbar {
+    flex: 0 0 52px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 12px 0 20px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-bg);
+  }
+  .wordmark {
+    flex: 0 0 auto;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .top-search {
+    position: relative;
+    flex: 0 1 320px;
+    width: 320px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--panel-bg);
+  }
+  .top-search:focus-within {
+    border-color: var(--info);
+  }
+  .top-search input {
+    min-width: 0;
+    width: 100%;
+    height: 30px;
+    padding: 0 46px 0 10px;
+    border: 0;
+    color: var(--text);
+    background: transparent;
+    font-size: 13px;
+  }
+  .top-search input::placeholder {
+    color: var(--muted);
+    opacity: 1;
+  }
+  kbd {
+    border: 0;
+    color: var(--muted);
+    background: transparent;
+    font: 11.5px var(--font-mono);
     white-space: nowrap;
-    margin-top: 4px;
   }
-  .search-result {
-    display: grid;
-    gap: 4px;
+  .top-search kbd {
+    position: absolute;
+    right: 8px;
   }
-  .snippet {
-    color: var(--text-soft);
-    font-size: var(--size-detail);
-    line-height: 1.35;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
+  .top-search .search-pulse {
+    right: 35px;
+  }
+  .guest-state {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .awake-dot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 6px;
+    border-radius: var(--radius-circle);
+    background: var(--ok);
+  }
+  .new-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--ink-text);
+    background: var(--ink);
+    border-color: var(--ink);
+    font-weight: 500;
+  }
+  .new-button svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+  }
+  .new-button:hover {
+    color: var(--ink-text);
+    background: var(--ink);
+  }
+  .shell {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .inbox {
+    flex: 0 0 440px;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
+    border-right: 1px solid var(--line);
+    background: var(--page-bg);
+  }
+  .inbox-expanded {
+    min-height: 0;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  .inbox-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 8px 0 20px;
+  }
+  .inbox-head h1 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .fold-button {
+    width: 36px;
+    height: 36px;
+    flex: 0 0 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-md);
+    color: var(--muted);
+    background: transparent;
+  }
+  .fold-button:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .fold-button svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .fold-rail {
+    display: none;
+  }
+  .inbox-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 4px 8px 12px;
+  }
+  .group {
+    margin-top: 12px;
+  }
+  .group-title {
+    display: flex;
+    justify-content: space-between;
+    margin: 0;
+    padding: 0 12px 6px;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .group-count {
+    font-family: var(--font-mono);
+    font-weight: 600;
+  }
+  .attention-group .group-title {
+    color: var(--attn-text);
+  }
+  .row-list {
+    display: grid;
+    gap: 2px;
+  }
+  .row,
+  .row.search-result {
+    width: 100%;
+    min-height: 52px;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: inherit;
+    background: transparent;
+    text-align: left;
+  }
+  .row:hover,
+  .row.search-result:hover {
+    background: var(--hover);
+  }
+  .row.chosen {
+    border-color: var(--line);
+    background: var(--panel-bg);
+  }
+  .row.attn {
+    border-color: var(--attn-soft);
+    background: var(--attn-soft);
+  }
+  .row.attn.chosen {
+    border-color: var(--line-strong);
+    background: var(--attn-soft);
+  }
+  .row .dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    margin: 0;
+    border-radius: var(--radius-circle);
+    background: var(--dot-idle);
+  }
+  .dot.idle,
+  .dot.completed {
+    background: var(--dot-idle);
+  }
+  .dot.running,
+  .dot.working {
+    background: var(--ok);
+  }
+  .dot.needs_input {
+    background: var(--attn);
+  }
+  .dot.warn {
+    background: var(--err);
+  }
+  .run-shape-strip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .shape-node {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 7px;
+    border-radius: 2px;
+    background: currentColor;
+  }
+  .shape-node.gate {
+    transform: rotate(45deg) scale(0.85);
+  }
+  .main {
+    min-width: 0;
+    flex: 1;
+    display: grid;
+    gap: 3px;
+  }
+  .row-title,
+  .row-sub {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row-title {
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .row-sub {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .ask {
+    flex: 0 0 auto;
+    color: var(--attn-text);
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .age {
+    flex: 0 0 44px;
+    width: 44px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: right;
+    white-space: nowrap;
+  }
+  .hist {
+    width: 100%;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: var(--radius-md);
+    color: var(--muted);
+    background: transparent;
+    font-size: 12px;
+    text-align: left;
+  }
+  .hist:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .inbox-foot {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px 14px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+  .inbox-foot.streaming .vm-stream-dot {
+    background: var(--ok);
+  }
+  .inbox-foot.polling .vm-stream-dot {
+    background: var(--dot-idle);
+  }
+  .inbox-foot.stalled {
+    color: var(--attn-text);
+  }
+  .inbox-foot.stalled .vm-stream-dot {
+    background: var(--attn);
+  }
+  .rail-hairline {
+    width: 24px;
+    height: 1px;
+    background: var(--line);
+  }
+  .rail-badge {
+    width: 40px;
+    height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    color: var(--text-soft);
+    background: transparent;
+    font: 600 13px var(--font-mono);
+  }
+  .rail-badge:hover {
+    background: var(--hover);
+  }
+  .rail-badge.attention {
+    color: var(--attn-text);
+    background: var(--attn-soft);
+  }
+  .model-picker {
+    display: block;
+    flex: 1;
+  }
+  .model-picker select {
+    height: 28px;
+    border-radius: var(--radius-md);
+    color: var(--text);
+    background: transparent;
+    font-size: 12.5px;
+  }
+  .model-picker select:hover {
+    background: var(--hover);
   }
   .transcript {
+    flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -2335,7 +2462,7 @@
   .transcript-head {
     display: block;
     padding: 12px 28px;
-    border-bottom: 4px solid var(--line);
+    border-bottom: 1px solid var(--line);
   }
   .head-right {
     display: flex;
@@ -2382,8 +2509,8 @@
     background: var(--ok-soft);
   }
   .vm-chip.vm-asleep {
-    color: var(--info);
-    background: var(--info-soft);
+    color: var(--dot-idle);
+    background: var(--hover);
   }
   .session-view-toggle {
     display: inline-flex;
@@ -2411,43 +2538,19 @@
     background: var(--ink);
     color: var(--ink-text);
   }
-  .vm-stream-state {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: var(--size-meta);
-    white-space: nowrap;
-  }
   .vm-stream-dot {
     width: 6px;
     height: 6px;
     border-radius: var(--radius-circle);
     background: var(--dot-idle);
   }
-  .vm-stream-state.polling {
-    color: var(--text-soft);
-  }
-  .vm-stream-state.polling .vm-stream-dot {
-    background: var(--attn);
-  }
-  .vm-stream-state.stalled {
-    color: var(--err);
-  }
-  .vm-stream-state.stalled .vm-stream-dot {
-    background: var(--err);
-  }
-  .vm-stream-age {
-    color: inherit;
-  }
   .session-state.warn {
-    color: var(--attn-text);
-    background: var(--attn-soft);
+    color: var(--err);
+    background: var(--err-bg);
   }
   .session-state.needs_input {
-    color: var(--info);
-    background: var(--info-soft);
+    color: var(--attn-text);
+    background: var(--attn-soft);
   }
   .session-state.running,
   .session-state.working {
@@ -2480,7 +2583,7 @@
     margin: 0;
     color: var(--text);
     font: 700 var(--size-body) var(--font-mono);
-    letter-spacing: 0.13em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
   }
   .walkthrough-empty {
@@ -2488,7 +2591,7 @@
   }
   .turn {
     padding: 16px 0 12px;
-    border-top: 4px solid var(--line);
+    border-top: 1px solid var(--line);
   }
   .turn:first-child {
     border-top: 0;
@@ -2498,7 +2601,7 @@
     gap: 8px;
     align-items: baseline;
     background: var(--page-bg);
-    border: 4px solid var(--line);
+    border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     padding: 8px 12px;
   }
@@ -2513,7 +2616,7 @@
     color: var(--muted);
     font-size: var(--size-meta);
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.04em;
     flex: 0 0 auto;
   }
   .steps {
@@ -2534,7 +2637,7 @@
   .step-list {
     margin: 8px 0 0;
     padding: 0 0 0 12px;
-    border-left: 4px solid var(--line);
+    border-left: 1px solid var(--line);
     list-style: none;
     display: grid;
     gap: 4px;
@@ -2625,7 +2728,7 @@
   }
   .result-md :global(pre) {
     background: var(--code-bg);
-    border: 4px solid var(--line);
+    border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     padding: 8px 12px;
     overflow-x: auto;
@@ -2639,7 +2742,7 @@
     color: var(--info);
   }
   .result-md :global(blockquote) {
-    border-left: 4px solid var(--line-strong);
+    border-left: 1px solid var(--line-strong);
     margin: 8px 0;
     padding: 4px 12px;
     color: var(--muted);
@@ -2650,7 +2753,7 @@
   }
   .result-md :global(th),
   .result-md :global(td) {
-    border: 4px solid var(--line);
+    border: 1px solid var(--line);
     padding: 4px 8px;
     text-align: left;
   }
@@ -2658,7 +2761,7 @@
     margin: 8px 0 0;
     padding: 8px 12px;
     background: var(--err-bg);
-    border: 4px solid var(--err-line);
+    border: 1px solid var(--err-line);
     border-radius: var(--radius-lg);
     color: var(--err);
     white-space: pre-wrap;
@@ -2674,7 +2777,7 @@
     margin: 8px 0 0;
     padding: 8px 12px;
     background: var(--attn-soft);
-    border: 4px solid var(--attn);
+    border: 1px solid var(--attn);
     border-radius: var(--radius-lg);
     color: var(--attn-text);
     font-size: var(--size-meta);
@@ -2692,7 +2795,7 @@
     font-weight: 600;
   }
   .composer {
-    border-top: 4px solid var(--line);
+    border-top: 1px solid var(--line);
     padding: 12px 28px 16px;
   }
   .composer-inner {
@@ -2707,28 +2810,6 @@
   }
   .composer-actions {
     align-items: flex-start;
-  }
-  .model-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .chip {
-    font-family: var(--font-mono);
-    font-size: var(--size-meta);
-    padding: 4px 8px;
-    border: 4px solid var(--line-strong);
-    border-radius: var(--radius-pill);
-    background: var(--panel-bg);
-    color: var(--text);
-  }
-  .chip:hover {
-    background: var(--hover);
-  }
-  .chip.on {
-    background: var(--ink);
-    border-color: var(--ink);
-    color: var(--ink-text);
   }
   .send-button {
     color: var(--ink-text);
@@ -2749,13 +2830,12 @@
     height: 100dvh;
     overflow: auto;
     background: var(--panel-bg);
-    border-left: 4px solid var(--line-strong);
+    border-left: 1px solid var(--line-strong);
     padding: 20px;
-    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.07);
+    box-shadow: var(--panel-shadow);
   }
   .new-panel-scrim,
-  .mobile-back,
-  .model-select-label {
+  .mobile-back {
     display: none;
   }
   .new-panel form {
@@ -2770,7 +2850,7 @@
     color: var(--muted);
     font-size: var(--size-meta);
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.04em;
   }
   .new-panel textarea {
     resize: vertical;
@@ -2808,7 +2888,7 @@
     bottom: 16px;
     max-width: 420px;
     padding: 8px 12px;
-    border: 4px solid var(--err-line);
+    border: 1px solid var(--err-line);
     border-radius: var(--radius-lg);
     color: var(--err);
     background: var(--err-bg);
@@ -2820,80 +2900,20 @@
       animation: pulse 1.2s ease-in-out infinite;
     }
   }
-  .sidebar-collapsed {
-    grid-template-columns: 44px minmax(0, 1fr);
+  /* The html attribute is the only folded-state selector. The static shell
+     sets it before hydration, and the button updates the same attribute. */
+  :global(html[data-agents-rail="collapsed"]) .console .inbox {
+    flex-basis: 56px;
   }
-  :global(html[data-agents-rail="collapsed"]) .console {
-    grid-template-columns: 44px minmax(0, 1fr);
-  }
-  .sidebar-collapsed .sidebar {
-    padding: 12px 8px;
-  }
-  :global(html[data-agents-rail="collapsed"]) .console .sidebar {
-    padding: 12px 8px;
-  }
-  .sidebar-collapsed .side-head {
-    justify-content: center;
-  }
-  :global(html[data-agents-rail="collapsed"]) .console .side-head {
-    justify-content: center;
-  }
-  /* The rail declares what it shows instead of listing what to remove.
-     Subtraction is why "…633" appeared stacked above bare dots: the hide list
-     named the elements that existed when it was written, so a row gaining a
-     title or a short id later leaked into 44px as a truncated fragment. A run
-     is its shape strip, a session is its dot, and anything else inside a row
-     is hidden by construction, including things not yet invented. */
-  .sidebar-collapsed .session-list button > *:not(.run-shape-strip):not(.dot) {
+  :global(html[data-agents-rail="collapsed"]) .console .inbox-expanded {
     display: none;
   }
-  .sidebar-collapsed .eyebrow,
-  .sidebar-collapsed .new-button,
-  .sidebar-collapsed .search-label,
-  .sidebar-collapsed .group-title,
-  .sidebar-collapsed .history-toggle,
-  .sidebar-collapsed .row-main,
-  .sidebar-collapsed .row-cost,
-  .sidebar-collapsed .search-result,
-  .sidebar-collapsed .empty {
-    display: none;
-  }
-  /* Same rule for the pre-hydration rail the static shell stamps on <html>,
-     so the collapsed state does not flash a different shape before hydration. */
-  :global(html[data-agents-rail="collapsed"])
-    .console
-    .session-list
-    button
-    > *:not(.run-shape-strip):not(.dot) {
-    display: none;
-  }
-  :global(html[data-agents-rail="collapsed"]) .console .eyebrow,
-  :global(html[data-agents-rail="collapsed"]) .console .new-button,
-  :global(html[data-agents-rail="collapsed"]) .console .search-label,
-  :global(html[data-agents-rail="collapsed"]) .console .group-title,
-  :global(html[data-agents-rail="collapsed"]) .console .history-toggle,
-  :global(html[data-agents-rail="collapsed"]) .console .row-main,
-  :global(html[data-agents-rail="collapsed"]) .console .row-cost,
-  :global(html[data-agents-rail="collapsed"]) .console .search-result,
-  :global(html[data-agents-rail="collapsed"]) .console .empty {
-    display: none;
-  }
-  .sidebar-collapsed .session-list {
-    gap: 8px;
-  }
-  .sidebar-collapsed .session-row {
-    justify-content: center;
-    padding: 8px 0;
-  }
-  :global(html[data-agents-rail="collapsed"]) .console .session-list {
-    gap: 8px;
-  }
-  :global(html[data-agents-rail="collapsed"]) .console .session-row {
-    justify-content: center;
-    padding: 8px 0;
-  }
-  .sidebar-collapsed .dot {
-    margin-top: 4px;
+  :global(html[data-agents-rail="collapsed"]) .console .fold-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding-top: 8px;
   }
   @keyframes pulse {
     50% {
@@ -2902,18 +2922,33 @@
   }
   /* Matches MOBILE_MEDIA_QUERY at the top of this file */
   @media (max-width: 760px) {
-    .console {
-      grid-template-columns: 1fr;
+    .topbar {
+      gap: 8px;
+      padding: 0 8px;
     }
-    .sidebar {
+    .top-search {
+      flex: 1;
+      width: auto;
+    }
+    .guest-state {
+      display: none;
+    }
+    .console .shell .inbox {
+      flex: 0 0 100%;
       border-right: 0;
-      border-bottom: 0;
     }
-    .console.mobile-transcript .sidebar {
+    .console.mobile-transcript .inbox {
       display: none;
     }
-    .console:not(.mobile-transcript) .transcript {
+    .console:not(.mobile-transcript) .detail {
       display: none;
+    }
+    .fold-button,
+    .console .inbox .fold-rail {
+      display: none;
+    }
+    .console .inbox .inbox-expanded {
+      display: flex;
     }
     .mobile-back {
       display: block;
@@ -2949,48 +2984,30 @@
       max-height: 85dvh;
       overflow: auto;
       border-left: 0;
-      border-top: 4px solid var(--line-strong);
+      border-top: 1px solid var(--line-strong);
       border-radius: 8px 8px 0 0;
     }
-    .model-chips {
-      display: none;
-    }
-    .model-select-label {
-      display: block;
-      flex: 1;
-    }
-    .model-select-label select {
+    .model-picker select {
       min-height: 44px;
     }
-    .collapse-button,
     .new-button,
     .destroy-button,
     .quiet-button,
     .send-button {
       min-height: 44px;
     }
-    .collapse-button {
-      min-width: 44px;
-    }
     .steps summary {
       min-height: 44px;
       display: inline-flex;
       align-items: center;
     }
-    .session-row {
-      min-height: 56px;
+    .row,
+    .row.search-result {
+      min-height: 60px;
     }
-    .search-label input,
     .new-panel select,
-    .history-toggle,
-    .search-result {
+    .hist {
       min-height: 44px;
-    }
-    .sidebar-collapsed {
-      grid-template-columns: 1fr;
-    }
-    .sidebar-collapsed .sidebar {
-      border-bottom: 0;
     }
     .transcript-head,
     .turns,
@@ -3005,8 +3022,8 @@
   }
   .sr-only {
     position: absolute;
-    width: 4px;
-    height: 4px;
+    width: 1px;
+    height: 1px;
     overflow: hidden;
     clip: rect(0, 0, 0, 0);
   }

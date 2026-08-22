@@ -23,11 +23,18 @@ export function nodeIconKey(node) {
   return (
     {
       done: "done",
+      completed: "done",
       running: "running",
+      working: "running",
+      reviewing: "running",
       queued: "queued",
       future: "future",
       escalated: "escalated",
+      needs_input: "escalated",
+      stranded: "escalated",
+      changes_requested: "escalated",
       failed: "failed",
+      warn: "failed",
       cancelled: "cancelled",
       waiting: "gate",
       refused: "gate",
