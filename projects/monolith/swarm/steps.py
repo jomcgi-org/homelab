@@ -1,9 +1,28 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 
 import httpx
 from dbos import DBOS
+
+
+def _decision_payload(row, observed_at=None) -> dict:
+    return {
+        "id": row.id,
+        "workflow_id": row.workflow_id,
+        "node_key": row.node_key,
+        "kind": row.kind,
+        "options": row.options,
+        "note": row.note,
+        "requested_at": row.requested_at.isoformat(),
+        "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+        "decision": row.decision,
+        "decision_note": row.decision_note,
+        "actor_subject": row.actor_subject,
+        "actor_authority": row.actor_authority,
+        "observed_at": (observed_at or datetime.now(timezone.utc)).isoformat(),
+    }
 
 
 @DBOS.step()
@@ -23,8 +42,69 @@ def pin_plan(budget_usd: float | None = None, model: str | None = None) -> dict:
         "implementer_model": model or config.implementer_model(),
         "reviewer_model": config.reviewer_model(),
         "turn_timeout_seconds": config.turn_timeout_seconds(),
+        "decision_timeout_seconds": config.decision_timeout_seconds(),
         "budget_usd": budget_usd,
     }
+
+
+@DBOS.step()
+def open_decision(
+    workflow_id: str,
+    node_key: str,
+    kind: str,
+    options: list[str],
+    note: str | None,
+) -> dict:
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from swarm import store
+
+    with Session(get_engine()) as session:
+        row = store.open_decision(session, workflow_id, node_key, kind, options, note)
+        return _decision_payload(row, datetime.now(timezone.utc))
+
+
+@DBOS.step()
+def get_open_decision(workflow_id: str, node_key: str) -> dict | None:
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from swarm import store
+
+    with Session(get_engine()) as session:
+        row = store.get_open_decision(session, workflow_id, node_key)
+        if row is None:
+            return None
+        return _decision_payload(row, datetime.now(timezone.utc))
+
+
+@DBOS.step()
+def get_decision(decision_id: int) -> dict | None:
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from swarm.models import SwarmDecision
+
+    with Session(get_engine()) as session:
+        row = session.get(SwarmDecision, decision_id)
+        if row is None:
+            return None
+        return _decision_payload(row, datetime.now(timezone.utc))
+
+
+@DBOS.step()
+def expire_decision(workflow_id: str, node_key: str) -> dict | None:
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from swarm import store
+
+    with Session(get_engine()) as session:
+        row = store.expire_decision(session, workflow_id, node_key)
+        if row is None:
+            return None
+        return _decision_payload(row, datetime.now(timezone.utc))
 
 
 @DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)

@@ -27,5 +27,9 @@ def turn_timeout_seconds() -> int:
     return int(os.environ.get("SWARM_TURN_TIMEOUT_SECONDS", "1800"))
 
 
+def decision_timeout_seconds() -> int:
+    return int(os.environ.get("SWARM_DECISION_TIMEOUT_SECONDS", "86400"))
+
+
 def codex_concurrency() -> int:
     return int(os.environ.get("SWARM_CODEX_CONCURRENCY", "2"))

@@ -28,6 +28,7 @@ def test_pin_plan_resolves_config_once(monkeypatch):
     monkeypatch.setenv("SWARM_IMPLEMENTER_MODEL", "implementer")
     monkeypatch.setenv("SWARM_REVIEWER_MODEL", "reviewer")
     monkeypatch.setenv("SWARM_TURN_TIMEOUT_SECONDS", "42")
+    monkeypatch.setenv("SWARM_DECISION_TIMEOUT_SECONDS", "84")
 
     assert steps.pin_plan.__wrapped__(2.0) == {
         "version": 1,
@@ -36,6 +37,7 @@ def test_pin_plan_resolves_config_once(monkeypatch):
         "implementer_model": "implementer",
         "reviewer_model": "reviewer",
         "turn_timeout_seconds": 42,
+        "decision_timeout_seconds": 84,
         "budget_usd": 2.0,
     }
 
