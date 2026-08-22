@@ -6,6 +6,7 @@ import datetime
 import io
 import json
 import os
+import shutil
 import signal
 import socket
 import sys
@@ -1741,6 +1742,61 @@ def test_takeover_remediation_closes_stranded_process_without_respawn(
     # Mount-only remediation (#4393): the stranded process is closed and the
     # respawn is left to the turn path's lazy spawn.
     assert manager.claude.process is None
+    assert manager.ready()
+
+
+def test_remediation_recreates_cli_workspace_hidden_by_volume_mount(
+    tmp_path, monkeypatch
+):
+    """A restored guest must stay ready once the volume mount hides src.
+
+    ensure_workspace_volume bind-mounts the volume's empty workspace dir over
+    /workspace, so the src dir the base created on tmpfs vanishes. Readiness
+    is isdir(src) for every adapter, so remediation has to put it back or the
+    prime polls 503 until its deadline (#5051).
+    """
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path)
+    manager._prewarm_clis = ()
+    manager._prewarm_complete = True
+    manager.fatal_error = None
+    manager._remediation_lock = threading.Lock()
+    manager._remediation_attempts = 0
+    manager._remediation_thread = None
+    src = tmp_path / "src"
+    src.mkdir()
+
+    class Adapter:
+        workspace = str(src)
+
+        def __init__(self):
+            self.process = None
+            self.session_id = None
+            self.turn_lock = threading.Lock()
+            self._process_workspace_identity = None
+
+        def ready(self):
+            return os.path.isdir(self.workspace)
+
+        def _close_process(self, **_kwargs):
+            self.process = None
+
+    manager.claude = Adapter()
+    manager.codex = manager.claude
+    manager.pi = manager.claude
+    manager._workspace_identity = lambda _path: (1, 1)
+
+    def fake_mount():
+        # The bind mount replaces /workspace with an empty volume dir.
+        shutil.rmtree(src)
+
+    monkeypatch.setattr(shim, "ensure_workspace_volume", fake_mount)
+    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
+    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
+
+    assert manager.ready()
+    manager._remediation_thread.join(timeout=1)
+    assert src.is_dir()
     assert manager.ready()
 
 
