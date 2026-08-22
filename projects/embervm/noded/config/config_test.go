@@ -368,6 +368,12 @@ func TestLoadDefaults(t *testing.T) {
 	if c.RequireBlessing {
 		t.Error("RequireBlessing should default false so a rollout can land the control-plane side first")
 	}
+	if c.StoreEncrypt {
+		t.Error("StoreEncrypt should default false for the two-phase rollout")
+	}
+	if c.RequireRestoreCapability {
+		t.Error("RequireRestoreCapability should default false for the two-phase rollout")
+	}
 }
 
 func TestLoadDiffBankingOverride(t *testing.T) {
@@ -396,6 +402,21 @@ func TestLoadRequireBlessingOverride(t *testing.T) {
 	}
 	if !c.RequireBlessing {
 		t.Error("RequireBlessing should be true when EMBERVM_NODED_REQUIRE_BLESSING=true")
+	}
+}
+
+func TestLoadArtifactEncryptionOverrides(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_STORE_ENCRYPT", "true")
+	t.Setenv("EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY", "true")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.StoreEncrypt {
+		t.Error("StoreEncrypt should parse EMBERVM_NODED_STORE_ENCRYPT=true")
+	}
+	if !c.RequireRestoreCapability {
+		t.Error("RequireRestoreCapability should parse EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY=true")
 	}
 }
 

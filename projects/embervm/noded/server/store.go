@@ -30,14 +30,12 @@ import (
 // ExportArtifact/RestoreArtifact refusing FAILED_PRECONDITION and every export a
 // no-op, and NodeStatus.store_reachable false.
 //
-// Method shapes mirror *store.Store exactly. errNotPresent is the sentinel a
-// Restore/Present returns for an absent store copy; the handlers map it to
-// FAILED_PRECONDITION. A store package cannot be imported for its sentinel here
-// (the fake would then need it too), so the seam declares the sentinel it cares
-// about via a small predicate the store satisfies.
+// Method shapes mirror *store.Store exactly. The store package is imported for
+// export options and the key-required sentinel; the fake mirrors those narrow
+// contracts without performing object-store I/O.
 type artifactStore interface {
-	Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string) (bytesMoved int64, skipped bool, err error)
-	Restore(ctx context.Context, prefix, localDir string) (bytesMoved int64, generation uint64, err error)
+	Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string, options ...store.ExportOptions) (bytesMoved int64, skipped bool, err error)
+	Restore(ctx context.Context, prefix, localDir string, key []byte) (bytesMoved int64, generation uint64, err error)
 	DeleteArtifact(ctx context.Context, prefix string) error
 	Present(ctx context.Context, prefix string) (present bool, generation uint64, cpuVendor, cpuTemplate string, err error)
 	Reachable(ctx context.Context) bool
@@ -45,13 +43,10 @@ type artifactStore interface {
 	// retention). Delimited, so the response tracks the ref count rather than the
 	// file count; truncated reports that the store held more than limit.
 	ListRefs(ctx context.Context, prefix string, limit int) (refs []string, truncated bool, err error)
-	// ArtifactInfo reads an artifact's completeness marker and returns the fields
-	// ListArtifacts reports that Present does not surface (created-at, total
-	// size), plus the vendor stamp so a caller can verify an object really
-	// belongs to the vendor prefix it was listed under. Returned flat rather than
-	// as a store.Meta so this seam keeps NOT importing the store package, per the
-	// note above.
-	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, err error)
+	// ArtifactInfo reads an artifact's completeness marker once and returns the
+	// fields list and restore consume, including generation and opaque envelope.
+	// It stays flat so callers depend only on the fields they consume.
+	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, generation uint64, envelope []byte, err error)
 }
 
 // artifactKindStr maps an ArtifactKind to its lowercase store-key segment (Fork
@@ -77,6 +72,19 @@ func artifactKindStr(kind nodev1.ArtifactKind) string {
 		return "session-workspace"
 	default:
 		return ""
+	}
+}
+
+func isPrincipalKind(kind nodev1.ArtifactKind) bool {
+	switch kind {
+	case nodev1.ArtifactKind_ARTIFACT_KIND_SESSION,
+		nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+		nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL,
+		nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME,
+		nodev1.ArtifactKind_ARTIFACT_KIND_GROUP_SET:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -525,7 +533,7 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 		return &nodev1.ExportArtifactResponse{BytesMoved: 0, Skipped: false, Generation: 0}, nil
 	}
 	generation := s.artifactGeneration(ref)
-	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate)
+	moved, skipped, err := s.exportWithKeys(ctx, ref, prefix, localDir, files, generation)
 	// A refused export is an ANOMALY, not a transport failure: this node holds an
 	// older copy than the store does. Returning Unavailable would make the control
 	// plane retry it on every reconcile forever, so ack it as skipped and say so
@@ -588,22 +596,10 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	// loss, exactly the failure mode this rule exists to prevent. A present
 	// stamp that matches this node's own sku, or that the node cannot judge
 	// (its own vendor/template undetected), also passes.
-	present, gen, stampedVendor, stampedTemplate, perr := s.store.Present(ctx, prefix)
+	present, _, _, stampedVendor, stampedTemplate, gen, envelope, perr := s.store.ArtifactInfo(ctx, prefix)
 	if perr == nil && present {
 		if mismatch, got, want := cpuSkuMismatch(stampedVendor, stampedTemplate, s.cfg.CpuVendor, s.cfg.CpuTemplate); mismatch {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: cpu_sku mismatch on restore: artifact stamped %q != node %q", got, want)
-		}
-	}
-	// Idempotency: if the artifact is already present locally with a checksum
-	// matching the store's marker, the restore is a no-op (the store Export's own
-	// same-checksum compare is the authority; re-check presence cheaply first).
-	if local, err := enumerateArtifactFiles(localDir); err == nil && len(local) > 0 {
-		if perr == nil && present {
-			// A local copy exists; treat as already-restored (skipped). The
-			// content-level equality lives in Export's checksum compare on the next
-			// export; a restore's job is to make local non-empty, which it is.
-			s.reregisterRestored(ref)
-			return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen}, nil
 		}
 	}
 	// A genuine download is needed. The store copy must be present to attempt it:
@@ -623,16 +619,33 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: not present in store", prefix)
 	}
 
+	var dataKey []byte
+	if len(envelope) > 0 {
+		dataKey, err = s.restoreDataKey(req.GetCapability(), ref, gen)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Idempotency: if the artifact is already present locally with a checksum
+	// matching the store's marker, the restore is a no-op. Enveloped artifacts
+	// have already passed capability validation above, so a local copy cannot
+	// bypass the same authorization required for a download.
+	if local, err := enumerateArtifactFiles(localDir); err == nil && len(local) > 0 {
+		s.reregisterRestored(ref)
+		return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen}, nil
+	}
+
 	// BASE: fast-ACK and download asynchronously (multi-GB; must not hold the RPC).
 	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
-		s.enqueueRestore(ref, prefix, localDir)
+		s.enqueueRestore(ref, prefix, localDir, req.GetCapability())
 		return &nodev1.RestoreArtifactResponse{Accepted: true}, nil
 	}
 
 	// Every other (small) kind restores inline: the download is quick enough that
 	// the idle-flow-reap risk does not apply, and the caller's existing inline
 	// restore-on-miss semantics are unchanged.
-	moved, generation, err := s.store.Restore(ctx, prefix, localDir)
+	moved, generation, err := s.store.Restore(ctx, prefix, localDir, dataKey)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "noded: restore artifact %q download failed: %v", prefix, err)
 	}
@@ -640,6 +653,39 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	s.exported.mark(prefix, generation)
 	s.signalChange()
 	return &nodev1.RestoreArtifactResponse{BytesMoved: uint64(moved), Generation: generation}, nil
+}
+
+func (s *Server) restoreDataKey(raw []byte, ref *nodev1.ArtifactRef, generation uint64) ([]byte, error) {
+	want := capabilityScope{
+		Node:       s.cfg.Node,
+		PodUID:     s.cfg.PodUID,
+		Workload:   ref.GetWorkload(),
+		Ref:        ref.GetRef(),
+		Kind:       artifactKindStr(ref.GetKind()),
+		Generation: generation,
+	}
+	key, err := parseAndVerifyCapability(raw, []byte(s.cfg.BearerToken), time.Now(), want)
+	if err == nil {
+		return key, nil
+	}
+	if s.cfg.RequireRestoreCapability {
+		return nil, status.Errorf(codes.PermissionDenied, "noded: restore capability check failed: %v", err)
+	}
+	s.logger.Warn("noded: restore capability check failed while enforcement is inert",
+		"artifact", artifactPrefix(ref, s.cfg.CpuVendor), "detail", err)
+	return nil, status.Errorf(codes.FailedPrecondition, "noded: %v: restore capability check failed: %v", store.ErrKeyRequired, err)
+}
+
+func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, prefix, localDir string, files []string, generation uint64) (int64, bool, error) {
+	var options []store.ExportOptions
+	if s.cfg.StoreEncrypt && isPrincipalKind(ref.GetKind()) {
+		options = append(options, store.ExportOptions{
+			Kind:     artifactKindStr(ref.GetKind()),
+			Workload: ref.GetWorkload(),
+			Ref:      ref.GetRef(),
+		})
+	}
+	return s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate, options...)
 }
 
 // resolveRestorePrefix composes the store prefix a restore reads from. It
@@ -800,7 +846,7 @@ func (s *Server) ListArtifacts(ctx context.Context, req *nodev1.ListArtifactsReq
 
 	entries := make([]*nodev1.ListArtifactsEntry, 0, len(refs))
 	for _, r := range refs {
-		present, createdAt, size, v, tmpl, ierr := s.store.ArtifactInfo(ctx, prefix+"/"+r)
+		present, createdAt, size, v, tmpl, _, _, ierr := s.store.ArtifactInfo(ctx, prefix+"/"+r)
 		if ierr != nil || !present {
 			continue
 		}
@@ -1184,7 +1230,7 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 		s.completeRetirement(job.ref)
 		return
 	}
-	_, skipped, err := s.store.Export(ctx, job.key, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate)
+	_, skipped, err := s.exportWithKeys(ctx, job.ref, job.key, localDir, files, generation)
 	// Not a transport failure and NOT retryable: retrying cannot make our older
 	// copy newer. Only BASE rides this queue today (generation 0, so the fence
 	// cannot fire), but handling it here keeps the log honest if another kind is
@@ -1393,9 +1439,10 @@ const restoreQueueDepth = 64
 // so the worker needs no further resolution. Keyed (in the dedupe set) by prefix
 // so a re-triggered restore of an in-flight base is dropped.
 type restoreJob struct {
-	ref      *nodev1.ArtifactRef
-	prefix   string // resolved store prefix, the dedupe key
-	localDir string
+	ref        *nodev1.ArtifactRef
+	prefix     string // resolved store prefix, the dedupe key
+	localDir   string
+	capability []byte
 }
 
 // enqueueRestore schedules a BASE download for async write-back. It is
@@ -1406,7 +1453,7 @@ type restoreJob struct {
 // second concurrent download of the same prefix (the node's queue is the real
 // dedupe guard for the CP's retriggers). It no-ops when the store is disabled or
 // the queue is not started.
-func (s *Server) enqueueRestore(ref *nodev1.ArtifactRef, prefix, localDir string) {
+func (s *Server) enqueueRestore(ref *nodev1.ArtifactRef, prefix, localDir string, capability []byte) {
 	if s.store == nil || s.restoreCh == nil || prefix == "" {
 		return
 	}
@@ -1419,7 +1466,7 @@ func (s *Server) enqueueRestore(ref *nodev1.ArtifactRef, prefix, localDir string
 	s.restoreDedupeMu.Unlock()
 
 	select {
-	case s.restoreCh <- restoreJob{ref: ref, prefix: prefix, localDir: localDir}:
+	case s.restoreCh <- restoreJob{ref: ref, prefix: prefix, localDir: localDir, capability: append([]byte(nil), capability...)}:
 	default:
 		// Queue full: drop and un-mark so a later CP re-trigger can re-enqueue. The
 		// base simply does not appear READY; the CP re-triggers or rebuilds.
@@ -1464,7 +1511,21 @@ func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
 		s.restoreDedupeMu.Unlock()
 	}()
 
-	moved, generation, err := s.store.Restore(ctx, job.prefix, job.localDir)
+	var dataKey []byte
+	_, _, _, _, _, storedGeneration, envelope, envelopeErr := s.store.ArtifactInfo(ctx, job.prefix)
+	if envelopeErr != nil {
+		s.logger.Warn("noded: async base restore failed reading artifact metadata", "artifact", job.prefix, "err", envelopeErr)
+		return
+	}
+	if len(envelope) > 0 {
+		var err error
+		dataKey, err = s.restoreDataKey(job.capability, job.ref, storedGeneration)
+		if err != nil {
+			s.logger.Warn("noded: async base restore capability refused", "artifact", job.prefix, "err", err)
+			return
+		}
+	}
+	moved, generation, err := s.store.Restore(ctx, job.prefix, job.localDir, dataKey)
 	if err != nil {
 		s.logger.Warn("noded: async base restore failed (CP will re-trigger or rebuild)", "artifact", job.prefix, "err", err)
 		return

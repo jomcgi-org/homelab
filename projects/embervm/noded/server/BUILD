@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "activator.go",
         "budget.go",
+        "capability.go",
+        "datakeys.go",
         "group.go",
         "group_activator.go",
         "group_member.go",
@@ -45,6 +47,8 @@ go_test(
     srcs = [
         "activator_test.go",
         "budget_test.go",
+        "capability_test.go",
+        "datakeys_test.go",
         "drain_test.go",
         "egress_test.go",
         "evict_local_test.go",

@@ -627,6 +627,16 @@ vendor-mismatched restore loudly. Volume data is fully portable. Legacy
 artifacts cut before stamping existed are grandfathered: restorable on their
 home node forever, never distributed.
 
+**Principal artifact envelope encryption** is **Built in noded, inert until the
+control plane arms it** (#4691). Each principal artifact file is zstd-encoded,
+then streamed through chunk-framed AES-256-GCM with a per-file nonce; `meta.json`
+holds the opaque control-plane envelope while SHA-256 remains over plaintext.
+Restore accepts legacy plaintext unconditionally. Enveloped restores require a
+request-field capability carrying the data key and an HMAC-authenticated tuple
+scoped to the principal, lineage, brick, workload, ref, kind, and generation.
+The reader and validator ship unconditionally; separate writer and enforcement
+flags remain false for the two-phase rollout.
+
 **Decided direction:**
 
 - **Local disk is authoritative**: local node NVMe relight needs no network.

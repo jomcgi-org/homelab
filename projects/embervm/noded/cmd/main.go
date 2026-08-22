@@ -163,11 +163,19 @@ func run(logger *slog.Logger) error {
 	// returns nil for an empty endpoint (the store is disabled), so the Options
 	// field is left unset in that case to keep the server's typed-nil guards clean
 	// (a nil interface, not an interface holding a nil pointer).
+	storeOpts := []store.Option{
+		store.WithCredentials(cfg.StoreAccessKeyID, cfg.StoreSecretAccessKey),
+	}
+	if cfg.StoreEncrypt && cfg.ControlPlaneURL != "" {
+		storeOpts = append(storeOpts, store.WithDataKeys(server.NewCPDataKeyProvider(cfg.ControlPlaneURL, cfg.ControlPlaneTokenPath)))
+	} else if cfg.StoreEncrypt {
+		logger.Warn("object store encryption armed without a control-plane URL; exports remain unencrypted because no data-key provider is configured")
+	}
 	artStore := store.New(
 		cfg.StoreEndpoint,
 		cfg.StoreBucket,
 		cfg.StoreCompress,
-		store.WithCredentials(cfg.StoreAccessKeyID, cfg.StoreSecretAccessKey),
+		storeOpts...,
 	)
 	if cfg.StoreEndpoint == "" {
 		logger.Warn("object store DISABLED: EMBERVM_NODED_STORE_ENDPOINT unset; banked state stays local-only (no off-node durability, no restore-on-miss)")

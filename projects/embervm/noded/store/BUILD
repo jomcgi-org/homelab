@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "store",
     srcs = [
+        "aead.go",
         "sigv4.go",
         "store.go",
     ],
@@ -17,6 +18,7 @@ go_library(
 go_test(
     name = "store_test",
     srcs = [
+        "aead_test.go",
         "restore_sparse_linux_test.go",
         "sigv4_test.go",
         "store_test.go",

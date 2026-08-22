@@ -403,6 +403,11 @@ type Config struct {
 	// daemon in the fleet can read compressed objects. Env
 	// EMBERVM_NODED_STORE_COMPRESS. Default false.
 	StoreCompress bool
+	// StoreEncrypt enables envelope encryption of newly exported principal
+	// artifacts. This is a two-phase rollout: the reader ships everywhere with
+	// the writer OFF, then the writer is armed only after every daemon can read
+	// encrypted objects. Env EMBERVM_NODED_STORE_ENCRYPT. Default false.
+	StoreEncrypt bool
 
 	// RequireBlessing rejects any writable stateful attach (FRESH/RELIGHT/COLD)
 	// carrying blessed_generation == 0 with FAILED_PRECONDITION, once the
@@ -412,6 +417,12 @@ type Config struct {
 	// version so a mixed CP/noded state cannot outlive the roll. Env
 	// EMBERVM_NODED_REQUIRE_BLESSING.
 	RequireBlessing bool
+	// RequireRestoreCapability refuses an enveloped artifact restore unless its
+	// request carries a valid, tuple-scoped capability. This is a two-phase
+	// rollout: validation ships everywhere with enforcement OFF, then enforcement
+	// is armed only after the control plane mints capabilities. Env
+	// EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY. Default false.
+	RequireRestoreCapability bool
 }
 
 // Load resolves configuration from the environment, applying defaults for all
@@ -481,10 +492,12 @@ func Load() (Config, error) {
 		StoreEndpoint:        os.Getenv("EMBERVM_NODED_STORE_ENDPOINT"),
 		StoreBucket:          getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
 		StoreCompress:        boolDefault("EMBERVM_NODED_STORE_COMPRESS", false),
+		StoreEncrypt:         boolDefault("EMBERVM_NODED_STORE_ENCRYPT", false),
 		StoreAccessKeyID:     os.Getenv("EMBERVM_NODED_STORE_ACCESS_KEY_ID"),
 		StoreSecretAccessKey: os.Getenv("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY"),
 
-		RequireBlessing: boolDefault("EMBERVM_NODED_REQUIRE_BLESSING", false),
+		RequireBlessing:          boolDefault("EMBERVM_NODED_REQUIRE_BLESSING", false),
+		RequireRestoreCapability: boolDefault("EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY", false),
 	}
 	if c.AdmissionModel != "observed" && c.AdmissionModel != "reserved" {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_ADMISSION_MODEL must be observed or reserved, got %q", c.AdmissionModel)

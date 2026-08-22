@@ -28,7 +28,7 @@ func TestRestorePunchesHoles(t *testing.T) {
 	}
 
 	dstDir := t.TempDir()
-	if _, _, err := s.Restore(context.Background(), prefix, dstDir); err != nil {
+	if _, _, err := s.Restore(context.Background(), prefix, dstDir, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	dst := filepath.Join(dstDir, "memfile")
