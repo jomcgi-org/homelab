@@ -18,11 +18,16 @@
   import "./agents-theme.css";
   import "./run-view.css";
   import RunView from "./RunView.svelte";
-  import MasterView from "./MasterView.svelte";
+  import Launcher from "./Launcher.svelte";
   import { nodeStateClass } from "./dag.js";
   import { firstLine, fmtCost } from "./run-format.js";
   import { clockTime, partitionRuns, relativeTime } from "./run-history.js";
-  import { arrivalSelection, inboxGroups } from "./inbox.js";
+  import {
+    arrivalSelection,
+    inboxGroups,
+    railState,
+    recentSummary,
+  } from "./inbox.js";
   import { crumbTrail, sessionLineage } from "./lineage.js";
   import { setupVisualViewport } from "./visual-viewport.js";
   import { nextStatus, streamAge } from "./vm-stream-status.js";
@@ -69,26 +74,22 @@
   const mobileTranscript = $derived(
     isMobileViewport() && (selectedId != null || selectedRunId != null),
   );
-  let sidebarCollapsed = $state(false);
+  let manualRail = $state(null);
   if (typeof window !== "undefined") {
     try {
-      sidebarCollapsed =
-        window.localStorage.getItem("agents-sidebar-collapsed") === "true";
+      const storedRail = window.localStorage.getItem(
+        "agents-sidebar-collapsed",
+      );
+      manualRail =
+        storedRail === "folded" || storedRail === "open" ? storedRail : null;
     } catch (e) {
-      // localStorage blocked; continue with expanded
+      // localStorage blocked; continue with automatic rail state
     }
   }
   let sessions = $state(data.sessions ?? []);
   let availableModels = $state(MODELS);
   let runs = $state([]);
   let terminalRuns = $state([]);
-  let runMaster = $state({ runs: [], queues: [] });
-  let masterView = $state({
-    engine_tier: "live",
-    snapshot_age_seconds: 0,
-  });
-  let masterSnapshotFetchedAt = 0;
-  let masterHasSnapshot = false;
   let runDetail = $state(null);
   let runRequestSequence = 0;
   let detail = $state(null);
@@ -182,22 +183,34 @@
   const isStandalone = (session) =>
     session?.workflow_id == null || session.workflow_id === "";
   const inbox = $derived(inboxGroups(runs, sessions, vms));
+  const inboxEmpty = $derived(
+    inbox.needsYou.length === 0 && inbox.running.length === 0,
+  );
+  const railMode = $derived(
+    railState({
+      needsYou: inbox.needsYou.length,
+      running: inbox.running.length,
+      manual: manualRail,
+    }),
+  );
   const awakeGuests = $derived(
     Object.values(vms).filter((vm) => vm?.state === "awake").length,
   );
-  const masterActivity = $derived([
-    ...runs.map((run) => ({ kind: "run", value: run, cost: run.cost_usd })),
-    ...terminalRuns.map((run) => ({
-      kind: "run",
-      value: run,
-      cost: run.cost_usd,
-    })),
-    ...sessions.filter(isStandalone).map((session) => ({
-      kind: "session",
-      value: session,
-      cost: session.total_cost_usd,
-    })),
-  ]);
+  const launcherSessions = $derived(
+    fixture?.home ? (fixture.sessions ?? []) : sessions,
+  );
+  const launcherRuns = $derived(
+    fixture?.home
+      ? (fixture.master?.runs ?? []).filter((run) => run.completed_at)
+      : terminalRuns,
+  );
+  const launcherRecent = $derived(
+    recentSummary(
+      launcherSessions,
+      launcherRuns,
+      fixture?.home && fixture.view?.now ? Date.parse(fixture.view.now) : now,
+    ),
+  );
   const standaloneHistoryTotal = $derived(
     sessions.filter((session) => isStandalone(session) && !isActive(session))
       .length,
@@ -418,7 +431,6 @@
 
   async function loadRuns() {
     if (fixture) return;
-    let lastError;
     for (let attempt = 0; attempt < RUNS_LOAD_MAX_ATTEMPTS; attempt++) {
       try {
         const responses = await Promise.all([
@@ -431,19 +443,15 @@
         const [activeBody, terminalBody] = await Promise.all(
           responses.map((response) => response.json()),
         );
-        runMaster = activeBody.master ?? activeBody;
-        const activePartition = partitionRuns(runMaster.runs ?? []);
+        const activeMaster = activeBody.master ?? activeBody;
+        const activePartition = partitionRuns(activeMaster.runs ?? []);
         const terminalPartition = partitionRuns(
           (terminalBody.master ?? terminalBody).runs ?? [],
         );
         runs = activePartition.inFlight;
         terminalRuns = terminalPartition.terminal;
-        masterSnapshotFetchedAt = Date.now();
-        masterHasSnapshot = true;
-        masterView = { engine_tier: "live", snapshot_age_seconds: 0 };
         return;
-      } catch (error) {
-        lastError = error;
+      } catch {
         if (attempt < RUNS_LOAD_MAX_ATTEMPTS - 1) {
           await new Promise((resolve) =>
             setTimeout(resolve, RUNS_LOAD_BACKOFF_MS),
@@ -451,16 +459,6 @@
         }
       }
     }
-    // Retries exhausted: degrade gracefully
-    masterView = masterHasSnapshot
-      ? {
-          engine_tier: "stale",
-          snapshot_age_seconds: Math.max(
-            1,
-            Math.floor((Date.now() - masterSnapshotFetchedAt) / 1000),
-          ),
-        }
-      : { engine_tier: "absent", snapshot_age_seconds: 0 };
   }
 
   async function loadRunDetail(id, sequence = runRequestSequence) {
@@ -728,20 +726,8 @@
   }
 
   function toggleSidebar() {
-    sidebarCollapsed = !sidebarCollapsed;
-    if (sidebarCollapsed) clearTurnSearch();
-    try {
-      document.documentElement.setAttribute(
-        "data-agents-rail",
-        sidebarCollapsed ? "collapsed" : "expanded",
-      );
-      localStorage.setItem(
-        "agents-sidebar-collapsed",
-        String(sidebarCollapsed),
-      );
-    } catch (e) {
-      // localStorage blocked; keep the in-memory preference
-    }
+    manualRail = railMode === "folded" ? "open" : "folded";
+    if (manualRail === "folded") clearTurnSearch();
   }
 
   function runAsk(run) {
@@ -806,7 +792,7 @@
 
   async function searchTurnsFromJump(text) {
     const query = text.trim();
-    if (sidebarCollapsed) toggleSidebar();
+    if (railMode === "folded") toggleSidebar();
     if (mobileTranscript) returnToSessionList();
     searchQuery = query;
     await runSearch(query);
@@ -880,11 +866,12 @@
         needsInputState = true;
         pendingTaskId = body.task_id;
         creating = false;
+        if (!showNewPanel) showNewPanel = true;
         await tick();
         repoControlEl?.focus({ preventScroll: true });
         return;
       }
-      closeNewPanel();
+      if (showNewPanel) closeNewPanel();
       newSession = { prompt: "", model: "", repo: "", branch: "" };
       branches = [];
       needsInputState = false;
@@ -932,7 +919,9 @@
   }
 
   $effect(() => {
-    if (showNewPanel) tick().then(() => newPromptEl?.focus());
+    if (showNewPanel && !needsInputState) {
+      tick().then(() => newPromptEl?.focus());
+    }
   });
 
   onMount(() => {
@@ -1070,11 +1059,6 @@
         await loadRunDetail(selectedRunId, runRequestSequence);
       if (selectedId != null)
         await loadDetail(selectedId, requestSequence, true);
-      // Self-heal: if the run engine is degraded, poll to recover.
-      // Only poll when not live to avoid extra requests during normal operation.
-      if (masterView.engine_tier !== "live") {
-        await loadRuns();
-      }
     }, pollInterval);
     return () => clearInterval(interval);
   });
@@ -1186,6 +1170,30 @@
   $effect(() => () => {
     searchController?.abort();
   });
+
+  let previousInboxEmpty = null;
+  $effect(() => {
+    const empty = inboxEmpty;
+    if (previousInboxEmpty !== null && previousInboxEmpty !== empty) {
+      manualRail = null;
+    }
+    previousInboxEmpty = empty;
+  });
+
+  $effect(() => {
+    const manual = manualRail;
+    try {
+      if (manual == null) {
+        document.documentElement.removeAttribute("data-agents-rail");
+        localStorage.removeItem("agents-sidebar-collapsed");
+      } else {
+        document.documentElement.setAttribute("data-agents-rail", manual);
+        localStorage.setItem("agents-sidebar-collapsed", manual);
+      }
+    } catch (e) {
+      // localStorage blocked; keep the in-memory preference
+    }
+  });
 </script>
 
 <svelte:head><title>{P.labels.pageTitle}</title></svelte:head>
@@ -1194,6 +1202,7 @@
 <main
   bind:this={consoleEl}
   class:mobile-transcript={mobileTranscript}
+  class:rail-folded={railMode === "folded"}
   class="console"
 >
   <header class="topbar">
@@ -1201,14 +1210,20 @@
     <button
       class="top-search"
       type="button"
+      aria-label={P.labels.jumpOpenLabel}
       aria-haspopup="dialog"
       onclick={() => openJump()}
     >
-      <span>{P.labels.searchPlaceholder}</span>
-      <kbd>{P.labels.shortcutCommandK}</kbd>
+      <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="7" cy="7" r="4.25"></circle>
+        <path d="m10.25 10.25 3 3"></path>
+      </svg>
+      <span class="search-label">{P.labels.searchPlaceholder}</span>
+      <kbd class="kbd">{P.labels.shortcutCommandK}</kbd>
     </button>
     <div class="guest-state">
-      <span class="awake-dot" aria-hidden="true"></span>
+      <span class:idle={awakeGuests === 0} class="awake-dot" aria-hidden="true"
+      ></span>
       {awakeGuests}
       {P.labels.guestsAwake}
     </div>
@@ -1242,12 +1257,15 @@
         </button>
         <span class="rail-hairline"></span>
         <button
-          class="rail-badge attention"
+          class:attention={inbox.needsYou.length > 0}
+          class:idle={inboxEmpty}
+          class="rail-badge"
           type="button"
           aria-label={`${inbox.needsYou.length} ${P.labels.needsYouExpandInbox}`}
           onclick={toggleSidebar}>{inbox.needsYou.length}</button
         >
         <button
+          class:idle={inboxEmpty}
           class="rail-badge running"
           type="button"
           aria-label={`${inbox.running.length} ${P.labels.runningExpandInbox}`}
@@ -1276,6 +1294,24 @@
         </div>
 
         <div class="inbox-body">
+          {#if (!fixture || fixture.home) && !selectedId && !selectedRunId && inboxEmpty && searchResults === null}
+            <div class="mobile-home">
+              <Launcher
+                bind:session={newSession}
+                models={availableModels}
+                {repos}
+                {repoLoading}
+                {branchLoading}
+                {creating}
+                summary={launcherRecent}
+                onLoadBranches={loadBranches}
+                onSubmit={createTask}
+                onOpenRun={selectRun}
+                onOpenSession={selectInboxSession}
+                onOpenJump={() => openJump()}
+              />
+            </div>
+          {/if}
           {#if searchResults !== null}
             <div class="group">
               <div class="turn-search-head">
@@ -1353,7 +1389,7 @@
               onclick={() => openJump()}
             >
               <span>{earlierTotal} {P.labels.earlierSessionsAndRuns}</span>
-              <kbd>{P.labels.shortcutCommandK}</kbd>
+              <kbd class="kbd">{P.labels.shortcutCommandK}</kbd>
             </button>
           {/if}
         </div>
@@ -1793,7 +1829,7 @@
         </form>
       {:else if selectedId}
         <!-- ?session= for a row absent from the server-rendered list. Without
-           this branch the pane falls through to the master view and swaps
+           this branch the pane falls through to the launcher and swaps
            once loadDetail resolves. -->
         <div class="loading-session">
           <PaneHeader kind={P.labels.session} />
@@ -1818,13 +1854,19 @@
           <div class="empty blank-state">{P.labels.absentNotice}</div>
         {:else}<div class="empty blank-state">{P.labels.loadingRun}</div>{/if}
       {:else}
-        <MasterView
-          master={fixture?.home ? fixture.master : runMaster}
-          activity={fixture?.home ? fixture.activity : masterActivity}
-          onSelectRun={selectRun}
-          onSelectSession={selectSession}
-          {relativeTime}
-          view={fixture?.home ? fixture.view : masterView}
+        <Launcher
+          bind:session={newSession}
+          models={availableModels}
+          {repos}
+          {repoLoading}
+          {branchLoading}
+          {creating}
+          summary={launcherRecent}
+          onLoadBranches={loadBranches}
+          onSubmit={createTask}
+          onOpenRun={selectRun}
+          onOpenSession={selectInboxSession}
+          onOpenJump={() => openJump()}
         />
       {/if}
     </section>
@@ -1929,21 +1971,6 @@
         </div>
       </form>
     </div>
-  {/if}
-
-  {#if !mobileTranscript && !showNewPanel}
-    <button
-      class="jump"
-      type="button"
-      aria-haspopup="dialog"
-      onclick={() => openJump()}
-    >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <circle cx="7" cy="7" r="4.25"></circle>
-        <path d="m10.25 10.25 3 3"></path>
-      </svg>
-      {P.labels.jumpButton}
-    </button>
   {/if}
 
   <JumpPalette
@@ -2193,6 +2220,9 @@
     font-size: 13px;
     text-align: left;
   }
+  .search-icon {
+    display: none;
+  }
   .top-search:hover {
     background: var(--hover);
   }
@@ -2230,6 +2260,9 @@
     flex: 0 0 6px;
     border-radius: var(--radius-circle);
     background: var(--ok);
+  }
+  .awake-dot.idle {
+    background: var(--dot-idle);
   }
   .new-button {
     display: inline-flex;
@@ -2319,6 +2352,9 @@
     min-height: 0;
     overflow: auto;
     padding: 4px 8px 12px;
+  }
+  .mobile-home {
+    display: none;
   }
   .group {
     margin-top: 12px;
@@ -2516,17 +2552,15 @@
     color: var(--muted);
     font-size: 11.5px;
   }
-  .inbox-foot.streaming .vm-stream-dot {
-    background: var(--ok);
-  }
+  .inbox-foot.streaming .vm-stream-dot,
   .inbox-foot.polling .vm-stream-dot {
-    background: var(--dot-idle);
+    background: var(--muted);
   }
   .inbox-foot.stalled {
     color: var(--attn-text);
   }
   .inbox-foot.stalled .vm-stream-dot {
-    background: var(--attn);
+    background: var(--attn-text);
   }
   .rail-hairline {
     width: 24px;
@@ -2553,6 +2587,12 @@
   .rail-badge.attention {
     color: var(--attn-text);
     background: var(--attn-soft);
+  }
+  .rail-badge.idle {
+    color: var(--dot-idle);
+  }
+  .rail-badge.idle .awake-dot {
+    background: var(--line);
   }
   .model-picker {
     display: block;
@@ -2616,7 +2656,7 @@
     width: 6px;
     height: 6px;
     border-radius: var(--radius-circle);
-    background: var(--dot-idle);
+    background: var(--muted);
   }
   .turns {
     flex: 1;
@@ -2989,8 +3029,7 @@
   .new-panel-scrim,
   .mobile-detail-nav,
   .mobile-back,
-  .mobile-jump,
-  .jump {
+  .mobile-jump {
     display: none;
   }
   .new-panel form {
@@ -3055,15 +3094,18 @@
       animation: pulse 1.2s ease-in-out infinite;
     }
   }
-  /* The html attribute is the only folded-state selector. The static shell
-     sets it before hydration, and the button updates the same attribute. */
-  :global(html[data-agents-rail="collapsed"]) .console .inbox {
+  /* The static shell applies a manual fold before hydration. The component
+     class also covers the automatic empty-inbox state. */
+  :global(html[data-agents-rail="folded"]) .console .inbox,
+  .console.rail-folded .inbox {
     flex-basis: 56px;
   }
-  :global(html[data-agents-rail="collapsed"]) .console .inbox-expanded {
+  :global(html[data-agents-rail="folded"]) .console .inbox-expanded,
+  .console.rail-folded .inbox-expanded {
     display: none;
   }
-  :global(html[data-agents-rail="collapsed"]) .console .fold-rail {
+  :global(html[data-agents-rail="folded"]) .console .fold-rail,
+  .console.rail-folded .fold-rail {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -3077,18 +3119,31 @@
   }
   /* Matches MOBILE_MEDIA_QUERY at the top of this file */
   @media (max-width: 760px) {
-    /* The floating Jump pill sits in the bottom 88px; keep the last inbox
-       row (the earlier-sessions link) above it. */
-    .inbox-body {
-      padding-bottom: 104px;
-    }
     .topbar {
       gap: 8px;
       padding: 0 8px;
     }
     .top-search {
-      flex: 1;
-      width: auto;
+      width: 44px;
+      height: 44px;
+      flex: 0 0 44px;
+      justify-content: center;
+      margin-left: auto;
+      padding: 0;
+      border: 0;
+    }
+    .search-icon {
+      width: 16px;
+      height: 16px;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+    }
+    .search-label,
+    .kbd {
+      display: none;
     }
     .guest-state {
       display: none;
@@ -3109,6 +3164,9 @@
     }
     .console .inbox .inbox-expanded {
       display: flex;
+    }
+    .mobile-home {
+      display: block;
     }
     .mobile-detail-nav {
       min-height: 44px;
@@ -3141,34 +3199,13 @@
       color: var(--muted);
     }
     .mobile-back svg,
-    .mobile-jump svg,
-    .jump svg {
+    .mobile-jump svg {
       width: 16px;
       height: 16px;
       fill: none;
       stroke: currentColor;
       stroke-width: 1.5;
       stroke-linecap: round;
-    }
-    .jump {
-      position: fixed;
-      z-index: 3;
-      left: 50%;
-      bottom: 40px;
-      height: 48px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      padding: 0 20px;
-      transform: translateX(-50%);
-      border: 1px solid var(--ink);
-      border-radius: var(--radius-pill);
-      color: var(--ink-text);
-      background: var(--ink);
-      box-shadow: var(--panel-shadow);
-      font-size: 14px;
-      font-weight: 600;
     }
     .transcript-head {
       flex-basis: 56px;
@@ -3291,15 +3328,18 @@
       flex-basis: 44px;
       border-radius: 6px;
     }
-    /* A fold persisted on desktop must not blank the phone column: these
-       outrank the collapsed rules above by source order at equal specificity. */
-    :global(html[data-agents-rail="collapsed"]) .console .inbox {
+    /* A desktop fold must not blank the phone column. These outrank the fold
+       rules above by source order at equal specificity. */
+    :global(html[data-agents-rail="folded"]) .console .inbox,
+    .console.rail-folded .inbox {
       flex-basis: 100%;
     }
-    :global(html[data-agents-rail="collapsed"]) .console .fold-rail {
+    :global(html[data-agents-rail="folded"]) .console .fold-rail,
+    .console.rail-folded .fold-rail {
       display: none;
     }
-    :global(html[data-agents-rail="collapsed"]) .console .inbox-expanded {
+    :global(html[data-agents-rail="folded"]) .console .inbox-expanded,
+    .console.rail-folded .inbox-expanded {
       display: flex;
     }
   }

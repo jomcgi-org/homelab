@@ -253,9 +253,18 @@
     </div>
 
     <div class="jump-footer">
-      <span><kbd>{P.labels.shortcutMove}</kbd> {P.labels.jumpMove}</span>
-      <span><kbd>{P.labels.shortcutEnter}</kbd> {P.labels.jumpOpen}</span>
-      <span><kbd>{P.labels.shortcutNewTab}</kbd> {P.labels.jumpNewTab}</span>
+      <span
+        ><kbd class="kbd">{P.labels.shortcutMove}</kbd>
+        {P.labels.jumpMove}</span
+      >
+      <span
+        ><kbd class="kbd">{P.labels.shortcutEnter}</kbd>
+        {P.labels.jumpOpen}</span
+      >
+      <span
+        ><kbd class="kbd">{P.labels.shortcutNewTab}</kbd>
+        {P.labels.jumpNewTab}</span
+      >
     </div>
   </div>
 {/if}
@@ -532,6 +541,9 @@
       gap: 10px;
       overflow-x: auto;
       white-space: nowrap;
+    }
+    .jump-footer .kbd {
+      display: none;
     }
   }
 </style>
