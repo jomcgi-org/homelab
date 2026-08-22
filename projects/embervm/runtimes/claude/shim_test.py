@@ -4318,10 +4318,13 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
 
     models_path = tmp_path / "workspace" / ".pi" / "agent" / "models.json"
     models = json.loads(models_path.read_text())
-    model_dict = models["providers"]["openai-completions"]["models"][0]
+    provider = models["providers"]["openai-completions"]
+    model_dict = provider["models"][0]
 
+    assert provider["compat"]["thinkingFormat"] == "qwen-chat-template"
     assert model_dict["contextWindow"] == shim.PI_CONTEXT_WINDOW
     assert model_dict["maxTokens"] == shim.PI_MAX_OUTPUT_TOKENS
+    assert model_dict["reasoning"] is True
 
     manager._close_process()
 
@@ -4354,6 +4357,17 @@ def test_pi_settings_json_compaction_reserve_exceeds_max_output(tmp_path, monkey
     ), "Compaction reserve too small: full response may not fit when compaction fires"
 
 
+def test_pi_default_thinking_level_is_valid():
+    """The configured default must be one of pi's ThinkingLevel strings."""
+    assert shim.PI_DEFAULT_THINKING_LEVEL in {
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+    }
+
+
 def test_pi_settings_json_keep_recent_smaller_than_usable_window(tmp_path, monkeypatch):
     """keepRecentTokens must be less than the usable window after compaction."""
     usable_after_reserve = shim.PI_CONTEXT_WINDOW - shim.PI_COMPACTION_RESERVE_TOKENS
@@ -4377,6 +4391,7 @@ def test_pi_settings_json_is_written_with_compaction_block(tmp_path, monkeypatch
         settings["compaction"]["keepRecentTokens"]
         == shim.PI_COMPACTION_KEEP_RECENT_TOKENS
     )
+    assert settings["defaultThinkingLevel"] == shim.PI_DEFAULT_THINKING_LEVEL
 
     manager._close_process()
 
@@ -4414,6 +4429,7 @@ def test_pi_settings_json_corrupt_file_does_not_break_spawn(tmp_path, monkeypatc
 
     settings = json.loads(settings_path.read_text())
     assert "compaction" in settings, "Corrupt file was not replaced with fresh content"
+    assert settings["defaultThinkingLevel"] == shim.PI_DEFAULT_THINKING_LEVEL
 
     manager._close_process()
 
