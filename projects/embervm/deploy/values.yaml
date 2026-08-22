@@ -138,8 +138,13 @@ noded:
   # run it since 0.25.1. Flipped in production on its own, ahead of the bearer
   # token, so a missed port shows up as a readiness or serving failure with one
   # cause to revert.
+  # DISABLED 2026-08-22 15:10 after one hour live: the policy omits the
+  # stateful (5400-5409) and composite (5410-5419) activator ranges noded
+  # binds by default, so serving-envoy's wake to noded:5401 was dropped and
+  # demo-postgres could not relight (/health 503). Re-enable once the chart
+  # policy carries those ranges (#4693 follow-up).
   networkPolicy:
-    enabled: true
+    enabled: false
   # Static bearer token on noded's gRPC surface (#4693). One chart value renders
   # the same Secret into the control plane and every brick, so enforcement and
   # client attachment flip in this one chart version. The operator renders the
