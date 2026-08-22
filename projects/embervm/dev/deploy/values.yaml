@@ -61,6 +61,12 @@ noded:
 
   store:
     bucket: embervm-dev
+    # SigV4 credentials (#4708): same identity as production, the policy grants
+    # it both buckets.
+    credentials:
+      enabled: true
+      onepassword:
+        itemPath: "vaults/k8s-homelab/items/embervm-store"
 
 # nvmeRoot lives UNDER node-4's NVMe mount so it inherits that capacity bound,
 # production's shared node-4 NVMe scratch. Scratch is shared metal; the split
