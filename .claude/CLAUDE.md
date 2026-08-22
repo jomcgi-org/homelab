@@ -17,7 +17,9 @@ things you would only learn by breaking them.
   `projects/<service>/deploy/values.yaml`, commit, push, and ArgoCD syncs within
   5 to 10 seconds.
 - **Never commit to main.** Worktree, branch, PR, rebase-merge, and this repo
-  allows rebase merges only. See the `pr-workflow` skill.
+  allows rebase merges only. Merges land through the GitHub merge queue
+  (`gh pr merge --auto --rebase` enqueues): never rebase a PR because main
+  moved, the queue does that. See the `pr-workflow` skill.
 - **`ci` is the feedback loop, not PR CI.** Run it before pushing.
 - **No em-dashes in anything you write**: site copy, CV content, docs, ADRs,
   commit messages, PR bodies, code comments. Use a comma, colon, parentheses, or

@@ -256,9 +256,20 @@ actions:
               # fresh pr-checks; this one is finished either way.
               echo "Auto-committing formatting fixes..."
               current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+              # A merge-queue candidate lives on a read-only ref, so the push
+              # below would be rejected with an opaque error. Drift here means
+              # the PR's own pr-checks run never committed it (or main moved
+              # under it); say so and fail, which ejects the PR from the queue.
+              case "${GIT_BRANCH:-$current_branch}" in
+                gh-readonly-queue/*)
+                  echo "Format drift on merge-queue candidate ${GIT_BRANCH:-$current_branch}; commit it on the PR branch and re-enqueue."
+                  git diff --stat
+                  exit 1
+                  ;;
+              esac
               git config user.name "ci-format-bot"
               git config user.email "ci-format-bot@users.noreply.github.com"
-              git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi/homelab.git"
+              git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi-org/homelab.git"
               git add -u
               git commit -m "style: auto-format"
               git push origin HEAD:"$current_branch"
@@ -389,7 +400,7 @@ actions:
           # the guarantee for every push, not just this one.
           #
           # pr-checks does exactly this for the ci-format-bot commit.
-          git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi/homelab.git"
+          git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi-org/homelab.git"
           ./bazel/helm/write-back-versions.sh .chart-version-records
 
           # ---- 3. formatting must already be correct ----------------------
