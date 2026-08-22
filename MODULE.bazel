@@ -319,6 +319,31 @@ python.toolchain(
     python_version = "3.13",
 )
 
+# Use the `install_only_stripped` python-build-standalone tarballs instead of
+# rules_python's hardcoded `install_only` (versions.bzl INSTALL_ONLY in 1.7.0
+# has no switch). The unstripped build carries a 248 MB libpython3.13.so and a
+# 115 MB interpreter (staged three times, as python, python3 and python3.13),
+# 625 MB of toolchain in EVERY py_test's runfiles tree. Measured on the
+# 250 GB `CI test //...` invocation e4e74dd6 (2026-08-22): 393 remote test
+# executions each materialised a 1.54 GB input tree, 625 MB of it this
+# toolchain. Stripped is about a fifth of that. Same release (20251014), same
+# Python 3.13.9; checksums from that release's SHA256SUMS. Keep all four
+# platforms on the same flavour so a local run and CI agree.
+[
+    python.single_version_platform_override(
+        platform = platform,
+        python_version = "3.13.9",
+        sha256 = sha256,
+        urls = ["https://github.com/astral-sh/python-build-standalone/releases/download/20251014/cpython-3.13.9+20251014-{}-install_only_stripped.tar.gz".format(platform)],
+    )
+    for platform, sha256 in [
+        ("x86_64-unknown-linux-gnu", "c0ccda275948c79996e46993c2c5476ff5cca606dee530f1dea712179131b348"),
+        ("aarch64-unknown-linux-gnu", "baa3d107d17e4328448e30c3c9c83cca0eb41ca7a37c10982e14d46a5c3db07d"),
+        ("aarch64-apple-darwin", "52721745b0fa3196e4d0381fa5c06dda1d54343b90d49d90c3bba52d1171bd98"),
+        ("x86_64-apple-darwin", "7c33b153a69c6255e6f2659cf39738f316b03969d6230d7bc47c73b7fde9a0d4"),
+    ]
+]
+
 pip.parse(
     hub_name = "pip",
     python_version = "3.13",
