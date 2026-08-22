@@ -20,7 +20,7 @@ describe("/docs load", () => {
         kind: "readme",
         title: "EmberVM",
         order: 0,
-        content: `# EmberVM\n\n**${"a".repeat(220)}**\n\nSecond paragraph.`,
+        content: `# EmberVM\n\n${"alpha ".repeat(40)}omega\n\nSecond paragraph.`,
       },
       {
         path: "projects/embervm/ARCHITECTURE.md",
@@ -36,7 +36,9 @@ describe("/docs load", () => {
     const cards = buildProjectCards(manifest);
 
     expect(cards).toHaveLength(1);
-    expect(cards[0].excerpt).toHaveLength(200);
+    expect(cards[0].excerpt).toBe(`${"alpha ".repeat(32)}alpha…`);
+    expect(cards[0].excerpt.endsWith("…")).toBe(true);
+    expect(cards[0].excerpt).not.toContain("omega");
     expect(
       cards[0].tabs.map((tab) => [tab.kind, tab.slug, tab.disabled]),
     ).toEqual([

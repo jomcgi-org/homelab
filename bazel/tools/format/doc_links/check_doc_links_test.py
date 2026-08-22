@@ -67,13 +67,13 @@ def test_generated_manifests_are_skipped():
     assert c.check_file(path, f"{GONE}", _exists(set())) == []
 
 
-def test_example_allowlist_is_skipped():
-    path = "projects/monolith/knowledge/tools/gen_docs_manifest.py"
-    assert not c.should_scan(path)
-
-
 def test_ordinary_source_is_scanned():
-    for path in ("projects/x/main.go", "projects/x/BUILD", "docs/runbooks/a.md"):
+    for path in (
+        "projects/x/main.go",
+        "projects/x/BUILD",
+        "docs/runbooks/a.md",
+        "projects/monolith/knowledge/tools/gen_docs_manifest.py",
+    ):
         assert c.should_scan(path), path
 
 

@@ -12,17 +12,9 @@ import {
 } from "$lib/server/docs.js";
 import { DOCS_CACHE_CONTROL } from "$lib/cache-headers.js";
 
-// Built once per server process: slug -> entry lookup and the repo-path -> slug
-// index used to rewrite intra-doc links.
-const bySlug = new Map(manifest.map((e) => [e.slug, e]));
-const pathIndex = buildPathIndex(manifest);
-const projectByName = new Map(
-  buildSidebar(manifest).map((project) => [project.project, project]),
-);
-
 export function load({ params, setHeaders }) {
   const slug = (params.slug || "").replace(/\/+$/, "");
-  const entry = bySlug.get(slug);
+  const entry = manifest.find((e) => e.slug === slug);
   if (!entry) throw error(404, "Documentation page not found");
 
   // The page owns the visible H1 so its project tabs can sit directly below
@@ -30,10 +22,14 @@ export function load({ params, setHeaders }) {
   // duplicate heading while preserving every other section and link.
   const bodyEntry = {
     ...entry,
-    content: entry.content.replace(/^#\s+.+?\s*$(?:\r?\n)?/m, ""),
+    // Only the document-leading H1 (blank lines before it allowed). An H1
+    // inside a leading code fence, or after any other line, stays in the body.
+    content: entry.content.replace(/^(?:\r?\n)*#\s+[^\r\n]+(?:\r?\n)?/, ""),
   };
-  const { html, toc } = renderDoc(bodyEntry, pathIndex);
-  const project = projectByName.get(entry.project);
+  const { html, toc } = renderDoc(bodyEntry, buildPathIndex(manifest));
+  const project = buildSidebar(manifest).find(
+    (p) => p.project === entry.project,
+  );
 
   setHeaders({
     "cache-control": DOCS_CACHE_CONTROL,
