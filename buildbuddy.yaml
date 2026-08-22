@@ -274,6 +274,13 @@ actions:
               git commit -m "style: auto-format"
               git push origin HEAD:"$current_branch"
               echo "Pushed to $current_branch; the new head runs the full pipeline."
+              # Fail THIS run. It reports on the OLD head, and with a merge
+              # queue a green status on the old head lets auto-merge enqueue
+              # it before the push above is seen, merging WITHOUT the
+              # formatting commit (#5089 merged that way and left main
+              # drifted, failing every queue candidate after it). Red on the
+              # superseded head is cosmetic; the new head runs green.
+              exit 1
             fi
           fi
 
