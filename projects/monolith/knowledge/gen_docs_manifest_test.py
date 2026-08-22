@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from knowledge.tools.gen_docs_manifest import (
+    check_public_content,
     build_manifest,
     derive_title,
     iter_doc_paths,
@@ -169,3 +170,16 @@ def test_manifest_json_round_trips(tmp_path: Path):
     _track(tmp_path, rel_path)
     entries = _tracked_manifest(tmp_path)
     assert json.loads(json.dumps(entries)) == entries
+
+
+def test_check_public_content_rejects_internal_markers():
+    import pytest
+
+    for body in (
+        "see http://gw.mcp.svc.cluster.local:80/mcp",
+        "token from op://vault/item/field",
+        "create vaults/k8s-homelab/items/thing first",
+    ):
+        with pytest.raises(SystemExit):
+            check_public_content("projects/x/README.md", body)
+    check_public_content("projects/x/README.md", "# fine\n\nplain prose\n")
