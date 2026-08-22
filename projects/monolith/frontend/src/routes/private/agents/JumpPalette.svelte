@@ -17,6 +17,7 @@
     onOpenSession,
     onNewSession,
     onSearchTurns,
+    onOpenVoice = () => {},
   } = $props();
 
   let panelEl = $state(null);
@@ -119,7 +120,8 @@
       return;
     }
     onClose();
-    if (item.kind === "new") onNewSession(query.trim());
+    if (item.kind === "voice") onOpenVoice();
+    else if (item.kind === "new") onNewSession(query.trim());
     else onSearchTurns(query.trim());
   }
 
@@ -287,6 +289,10 @@
         <svg viewBox="0 0 16 16">
           <path d="M8 3v10M3 8h10"></path>
         </svg>
+      {:else if item.kind === "voice"}
+        <span class="voice-mark" aria-hidden="true">
+          <i></i><i></i><i></i><i></i>
+        </span>
       {:else}
         <svg viewBox="0 0 16 16">
           <circle cx="7" cy="7" r="4.25"></circle>
@@ -444,6 +450,30 @@
   }
   .jump-mark .dot.warn {
     background: var(--err);
+  }
+  .voice-mark {
+    height: 14px;
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    color: var(--info);
+  }
+  .voice-mark i {
+    width: 2px;
+    border-radius: 1px;
+    background: currentColor;
+  }
+  .voice-mark i:nth-child(1) {
+    height: 6px;
+  }
+  .voice-mark i:nth-child(2) {
+    height: 14px;
+  }
+  .voice-mark i:nth-child(3) {
+    height: 9px;
+  }
+  .voice-mark i:nth-child(4) {
+    height: 12px;
   }
   .run-shape-strip {
     display: inline-flex;

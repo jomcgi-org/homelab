@@ -1,10 +1,15 @@
 import { describe, expect, test } from "vitest";
 import {
   applyLedgerRows,
+  answerCard,
   askKey,
+  cardPhase,
   dismissCard,
   emptyStage,
+  renderSummoningCall,
+  renderWireCall,
   surfaceKey,
+  togglePinned,
 } from "./stage.js";
 
 function row(overrides = {}) {
@@ -26,22 +31,23 @@ describe("companion stage reducer", () => {
     const stage = applyLedgerRows(emptyStage(), [
       row({ id: 1, payload: { surface: "run", ref: "wf-1", focus: "review" } }),
     ]);
-    expect(stage.cards).toEqual([
-      {
-        key: surfaceKey("run", "wf-1"),
-        kind: "surface",
-        surface: "run",
-        ref: "wf-1",
-        focus: "review",
-        question: null,
-        options: null,
-        rowId: 1,
-        call: "show",
-      },
-    ]);
+    expect(stage.cards).toHaveLength(1);
+    expect(stage.cards[0]).toMatchObject({
+      key: surfaceKey("run", "wf-1"),
+      kind: "surface",
+      surface: "run",
+      ref: "wf-1",
+      focus: "review",
+      question: null,
+      options: null,
+      rowId: 1,
+      call: "show",
+      pinned: false,
+      answered: false,
+    });
   });
 
-  test("repeat show replaces the same key in place and does not duplicate", () => {
+  test("repeat show moves the refreshed card to the front without duplication", () => {
     const first = applyLedgerRows(emptyStage(), [
       row({
         id: 1,
@@ -90,8 +96,8 @@ describe("companion stage reducer", () => {
       row({ id: 4, call: "dismiss", payload: { surface: "run" } }),
     ]);
     expect(stage.cards.map((card) => card.key)).toEqual([
-      surfaceKey("walkthrough", "turn:7"),
       askKey(3),
+      surfaceKey("walkthrough", "turn:7"),
     ]);
   });
 
@@ -130,10 +136,10 @@ describe("companion stage reducer", () => {
       row({ id: 3, payload: { surface: "run", ref: "wf-1", focus: "review" } }),
     ]);
     expect(reshown.cards.map((card) => card.key)).toEqual([
-      surfaceKey("transcript", "512"),
       surfaceKey("run", "wf-1"),
+      surfaceKey("transcript", "512"),
     ]);
-    expect(reshown.cards[1]).toMatchObject({
+    expect(reshown.cards[0]).toMatchObject({
       rowId: 3,
       focus: "review",
       call: "show",
@@ -161,8 +167,8 @@ describe("companion stage reducer", () => {
       row({ id: 1, payload: { surface: "run", ref: "wf-1" } }),
     ]);
     expect(stage.cards.map((card) => card.key)).toEqual([
-      surfaceKey("run", "wf-1"),
       surfaceKey("walkthrough", "turn:7"),
+      surfaceKey("run", "wf-1"),
     ]);
   });
 
@@ -202,7 +208,7 @@ describe("companion stage reducer", () => {
         payload: { question: "Retry?", options: ["Yes"], ref: "review:2" },
       }),
     ]);
-    expect(stage.cards.map((card) => card.key)).toEqual([askKey(1), askKey(2)]);
+    expect(stage.cards.map((card) => card.key)).toEqual([askKey(2), askKey(1)]);
   });
 
   test("two gates about the same ref coexist rather than clobbering", () => {
@@ -226,10 +232,10 @@ describe("companion stage reducer", () => {
         },
       }),
     ]);
-    expect(stage.cards.map((card) => card.key)).toEqual([askKey(1), askKey(2)]);
+    expect(stage.cards.map((card) => card.key)).toEqual([askKey(2), askKey(1)]);
     expect(stage.cards.map((card) => card.question)).toEqual([
-      "Merge?",
       "The suite is red, still merge?",
+      "Merge?",
     ]);
   });
 
@@ -252,5 +258,86 @@ describe("companion stage reducer", () => {
     ]);
     expect(reraised.cards.map((card) => card.key)).toEqual([askKey(2)]);
     expect(reraised.cards[0].question).toBe("Merge now?");
+  });
+
+  test("card phases decay after later exchanges", () => {
+    const card = { rowId: 1, kind: "surface", pinned: false };
+    expect(cardPhase(card, [row({ id: 1 })])).toBe("front");
+    expect(cardPhase(card, [row({ id: 2, call: "ask" })])).toBe("receded");
+    expect(
+      cardPhase(card, [
+        row({ id: 2, call: "show" }),
+        row({ id: 3, call: "ask" }),
+      ]),
+    ).toBe("gone");
+  });
+
+  test("pinned cards are exempt from decay and model dismiss", () => {
+    const shown = applyLedgerRows(emptyStage(), [
+      row({ id: 1, payload: { surface: "run", ref: "wf-1" } }),
+    ]);
+    const pinned = togglePinned(shown, surfaceKey("run", "wf-1"));
+    expect(
+      cardPhase(pinned.cards[0], [
+        row({ id: 2, call: "show" }),
+        row({ id: 3, call: "ask" }),
+      ]),
+    ).toBe("front");
+    const dismissed = applyLedgerRows(pinned, [
+      row({ id: 4, call: "dismiss", payload: {} }),
+    ]);
+    expect(dismissed.cards).toHaveLength(1);
+  });
+
+  test("tool cards skip the receded phase", () => {
+    const tool = { rowId: 1, kind: "tool", pinned: false };
+    expect(cardPhase(tool, [row({ id: 2, call: "show" })])).toBe("front");
+    expect(
+      cardPhase(tool, [
+        row({ id: 2, call: "show" }),
+        row({ id: 3, call: "ask" }),
+      ]),
+    ).toBe("gone");
+  });
+
+  test("answering an ask marks only that card answered", () => {
+    const stage = applyLedgerRows(emptyStage(), [
+      row({
+        id: 1,
+        call: "ask",
+        payload: { question: "Ship?", options: ["Yes"], ref: "run-1" },
+      }),
+      row({
+        id: 2,
+        call: "ask",
+        payload: { question: "Retry?", options: ["No"], ref: "run-2" },
+      }),
+    ]);
+    const answered = answerCard(stage, askKey(1));
+    expect(answered.cards.map((card) => card.answered)).toEqual([false, true]);
+  });
+
+  test("renders exact card badges and wire calls", () => {
+    const attach = row({
+      id: 1,
+      call: "attach",
+      session_id: 213,
+      payload: {},
+    });
+    const show = row({
+      id: 2,
+      payload: { surface: "run", ref: "run-84", focus: "push_gate" },
+    });
+    const ask = row({
+      id: 3,
+      call: "ask",
+      payload: { ref: "run-84", options: ["approve", "send back"] },
+    });
+    expect(renderSummoningCall(show)).toBe(
+      "show(run, run-84, focus=push_gate)",
+    );
+    expect(renderSummoningCall(ask)).toBe("ask(run-84)");
+    expect(renderWireCall(ask)).toBe("ask(run-84, [approve, send back])");
+    expect(renderWireCall(attach)).toBe("attach(213)");
   });
 });

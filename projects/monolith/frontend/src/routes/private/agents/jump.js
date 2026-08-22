@@ -164,6 +164,12 @@ export function jumpActions(query) {
   if (!text) {
     return [
       {
+        kind: "voice",
+        id: "action-voice",
+        title: P.labels.openVoiceCompanion,
+        hint: "",
+      },
+      {
         kind: "new",
         id: "action-new",
         title: P.labels.jumpNewSession,
@@ -172,6 +178,12 @@ export function jumpActions(query) {
     ];
   }
   return [
+    {
+      kind: "voice",
+      id: "action-voice",
+      title: P.labels.openVoiceCompanion,
+      hint: "",
+    },
     {
       kind: "new",
       id: "action-new",

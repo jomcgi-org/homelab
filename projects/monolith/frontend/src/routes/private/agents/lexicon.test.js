@@ -18,6 +18,9 @@ const SURFACES = [
   "SessionWalkthrough.svelte",
   "WalkthroughNarrative.svelte",
   "JumpPalette.svelte",
+  "Turns.svelte",
+  "VoiceAskCard.svelte",
+  "VoiceCompanion.svelte",
 ];
 
 function allValues(section) {

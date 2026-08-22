@@ -5,6 +5,7 @@ import {
   parseUrlState,
   selectRun,
   selectSession,
+  setVoiceMode,
   withSearch,
 } from "./url-state.js";
 
@@ -17,6 +18,7 @@ describe("agent URL state", () => {
     ).toEqual({
       runId: "wf-123",
       sessionId: null,
+      mode: null,
     });
   });
 
@@ -66,6 +68,21 @@ describe("agent URL state", () => {
     ).toEqual({
       runId: "wf-parent",
       sessionId,
+      mode: null,
     });
+  });
+
+  test("voice mode round-trips and leaving preserves selection", () => {
+    const entered = setVoiceMode("run=wf-123", true);
+    expect(parseUrlState(entered)).toEqual({
+      runId: "wf-123",
+      sessionId: null,
+      mode: "voice",
+    });
+    expect(setVoiceMode(entered, false)).toBe("run=wf-123");
+  });
+
+  test("ignores unknown modes", () => {
+    expect(parseUrlState("mode=quiet").mode).toBeNull();
   });
 });

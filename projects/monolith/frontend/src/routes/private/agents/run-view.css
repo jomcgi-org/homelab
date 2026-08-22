@@ -13,6 +13,12 @@
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+.runview.compact {
+  padding: 0;
+}
+.runview.compact .dag {
+  padding: 16px;
+}
 .crumbs {
   margin-bottom: 8px;
   overflow: hidden;
@@ -947,5 +953,38 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Voice cards keep the run's compact DAG as a horizontal strip. */
+  .runview.compact .dag.staged {
+    flex-direction: row;
+    gap: 0;
+    padding: 16px;
+    overflow-x: auto;
+  }
+  .runview.compact .rank {
+    width: 186px;
+    flex: 0 0 186px;
+  }
+  .runview.compact .rank .stage-head {
+    margin: -11px 0 -4px;
+  }
+  .runview.compact .node {
+    width: 186px;
+  }
+  .runview.compact .edge {
+    width: auto;
+    height: auto;
+    flex: 0 0 28px;
+    margin-left: 0;
+  }
+  .runview.compact .edge::before {
+    width: auto;
+    height: 1px;
+    align-self: auto;
+    flex: 1;
+  }
+  .runview.compact .edge::after {
+    display: block;
   }
 }
