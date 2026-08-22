@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { capacityPips, computeRanks, nodeIconKey } from "./dag.js";
+import {
+  capacityPips,
+  computeRanks,
+  nodeIconKey,
+  nodeStateClass,
+} from "./dag.js";
 
 const chain = [
   { key: "a", deps: [] },
@@ -26,12 +31,41 @@ describe("run DAG helpers", () => {
         .map((node) => node.key),
     ).toEqual(["slice-1", "slice-2", "slice-3"]));
   test("blocked icon silhouettes distinguish human and dependency", () => {
-    expect(
-      nodeIconKey({ state: "blocked", blocked_on: { kind: "human" } }),
-    ).toBe("blocked_human");
-    expect(
-      nodeIconKey({ state: "blocked", blocked_on: { kind: "dependency" } }),
-    ).toBe("blocked_dep");
+    const human = { state: "blocked", blocked_on: { kind: "human" } };
+    const dependency = {
+      state: "blocked",
+      blocked_on: { kind: "dependency" },
+    };
+    expect([nodeIconKey(human), nodeStateClass(human)]).toEqual([
+      "blocked_human",
+      "g-blocked-h",
+    ]);
+    expect([nodeIconKey(dependency), nodeStateClass(dependency)]).toEqual([
+      "blocked_dep",
+      "g-blocked-d",
+    ]);
+  });
+  test.each([
+    ["done", "done", "g-done"],
+    ["completed", "done", "g-done"],
+    ["running", "running", "g-running pulse"],
+    ["working", "running", "g-running pulse"],
+    ["reviewing", "running", "g-running pulse"],
+    ["queued", "queued", "g-queued"],
+    ["future", "future", "g-future"],
+    ["escalated", "escalated", "g-escalated"],
+    ["needs_input", "escalated", "g-blocked-h"],
+    ["stranded", "escalated", "g-blocked-h"],
+    ["changes_requested", "escalated", "g-blocked-h"],
+    ["failed", "failed", "g-failed"],
+    ["warn", "failed", "g-failed"],
+    ["cancelled", "cancelled", "g-cancelled"],
+    ["waiting", "gate", "g-waiting"],
+    ["refused", "gate", "g-refused"],
+  ])("%s maps to the %s icon and %s class", (state, iconKey, stateClass) => {
+    const node = { state };
+    expect(nodeIconKey(node)).toBe(iconKey);
+    expect(nodeStateClass(node)).toBe(stateClass);
   });
   test("expansion nodes use the expansion icon", () =>
     expect(nodeIconKey({ kind: "expansion", state: "future" })).toBe(

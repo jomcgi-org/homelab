@@ -45,6 +45,16 @@ export function nodeIconKey(node) {
 export function nodeStateClass(node) {
   if (node.state === "blocked")
     return node.blocked_on?.kind === "human" ? "g-blocked-h" : "g-blocked-d";
+  const aliasClass = {
+    completed: "g-done",
+    working: "g-running pulse",
+    reviewing: "g-running pulse",
+    needs_input: "g-blocked-h",
+    stranded: "g-blocked-h",
+    changes_requested: "g-blocked-h",
+    warn: "g-failed",
+  }[node.state];
+  if (aliasClass) return aliasClass;
   return `g-${node.state}${node.state === "running" ? " pulse" : ""}`;
 }
 

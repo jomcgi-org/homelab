@@ -60,10 +60,11 @@ export function nextStatus(prev, event) {
   }
 }
 
-export function formatAge(milliseconds) {
-  const elapsed = Math.max(0, Number(milliseconds) || 0);
-  if (elapsed < 60_000) return "just now";
-  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
-  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
-  return `${Math.floor(elapsed / 86_400_000)}d ago`;
+export function streamAge(milliseconds) {
+  const seconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
