@@ -1440,7 +1440,8 @@ defmodule Embervm.ServingManager do
   defp stop_serving_destroy_confirmed(_state, _instance), do: false
 
   defp default_stop_serving(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.stop_serving(channel, req)
+    # Reconcile teardown runs on this GenServer, so bound the node call.
+    Embervm.Node.V1.NodeService.Stub.stop_serving(channel, req, timeout: 15_000)
   end
 
   # -- restore-on-miss RPC (R6, Task 8) ---------------------------------------

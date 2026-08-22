@@ -1214,12 +1214,13 @@ defmodule Embervm.ServingSweeper do
     Embervm.WakeInstance.dial_for_serving_bundle(state.capacity_table, node_id, snapshot_ref)
   end
 
+  # Sweep RPCs execute on this GenServer and must not hold it indefinitely.
   defp default_stop_serving(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.stop_serving(channel, req)
+    Embervm.Node.V1.NodeService.Stub.stop_serving(channel, req, timeout: 15_000)
   end
 
   defp default_evict_artifact(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req, timeout: 15_000)
   end
 
   # Production scrape: GET /stats?format=json over the shared Finch pool, parse the

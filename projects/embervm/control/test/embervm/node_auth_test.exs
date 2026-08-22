@@ -18,14 +18,20 @@ defmodule Embervm.NodeAuthTest do
 
   test "empty token attaches no connection header" do
     Application.put_env(:embervm, :noded_bearer_token, "  ")
-    assert NodeAuth.connect_opts() == []
+    assert NodeAuth.connect_opts() == [adapter_opts: [transport_opts: [timeout: 3_000]]]
   end
 
   test "configured token attaches a bearer authorization header" do
     Application.put_env(:embervm, :noded_bearer_token, "  node-secret\n")
 
     assert NodeAuth.connect_opts() == [
+             adapter_opts: [transport_opts: [timeout: 3_000]],
              headers: [{"authorization", "Bearer node-secret"}]
            ]
+  end
+
+  test "connect options bound Mint's TCP connection establishment" do
+    assert get_in(NodeAuth.connect_opts(), [:adapter_opts, :transport_opts, :timeout]) == 3_000
+    assert NodeAuth.connect_timeout_ms() == 3_000
   end
 end

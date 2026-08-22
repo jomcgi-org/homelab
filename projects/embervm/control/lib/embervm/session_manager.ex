@@ -356,6 +356,9 @@ defmodule Embervm.SessionManager do
       # Ids already alarmed for being stuck in destroying, so the error logs once
       # per stuck id rather than every reconcile tick (pruned as ids terminalize).
       destroying_alarmed: MapSet.new(),
+      # Ids already warned when redrive resolved their VM to a dead instance. This
+      # is separate from the stuck alarm so neither warning suppresses the other.
+      destroying_dead_instance_warned: MapSet.new(),
       # Session ids whose adoption transition was not applicable, with the state
       # that produced the warning. A state change makes the warning eligible again.
       logged_unapplicable: MapSet.new(),
@@ -2519,7 +2522,12 @@ defmodule Embervm.SessionManager do
     # Prune the alarmed set to sessions still destroying: a terminalized id must not
     # leak (unbounded growth) and a future re-destroy of the same id should re-alarm.
     still = MapSet.new(destroying, & &1.session_id)
-    state = %{state | destroying_alarmed: MapSet.intersection(state.destroying_alarmed, still)}
+
+    state = %{
+      state
+      | destroying_alarmed: MapSet.intersection(state.destroying_alarmed, still),
+        destroying_dead_instance_warned: MapSet.intersection(state.destroying_dead_instance_warned, still)
+    }
 
     Enum.reduce(destroying, state, fn session, acc ->
       acc = maybe_alarm_destroying(acc, session, now)
@@ -2575,13 +2583,21 @@ defmodule Embervm.SessionManager do
       # lingering process first (a same-CP retry after a failed RPC), then re-issue
       # the Destroy; a CP-crash re-drive has no process, so this is a no-op there.
       Map.has_key?(live_vms, sid) ->
-        emit_redrive_intent.()
-        confirmed = stop_session_process(state, sid, session)
+        dial_key = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, session.node_id, session.vm_id)
 
-        if confirmed do
-          record_session_destroyed(state, session, "teardown")
+        if node_reporting?(state, dial_key) do
+          emit_redrive_intent.()
+          confirmed = stop_session_process(state, sid, session)
+
+          if confirmed do
+            record_session_destroyed(state, session, "teardown")
+          else
+            state
+          end
         else
           state
+          |> maybe_warn_dead_destroy_instance(session, dial_key)
+          |> confirm_destroying_by_absence(session, emit_redrive_intent)
         end
 
       # Owner no longer reports the VM but IS reporting (its absence is authoritative):
@@ -2594,6 +2610,33 @@ defmodule Embervm.SessionManager do
       # a transient absence of the whole node's facts.
       true ->
         state
+    end
+  end
+
+  defp maybe_warn_dead_destroy_instance(state, session, instance_id) do
+    if MapSet.member?(state.destroying_dead_instance_warned, session.session_id) do
+      state
+    else
+      Logger.warning("embervm session redrive skipped dead instance #{instance_id}",
+        session_id: session.session_id,
+        workload: session.workload,
+        instance_id: instance_id
+      )
+
+      %{
+        state
+        | destroying_dead_instance_warned:
+            MapSet.put(state.destroying_dead_instance_warned, session.session_id)
+      }
+    end
+  end
+
+  defp confirm_destroying_by_absence(state, session, emit_redrive_intent) do
+    if node_reporting?(state, session.node_id) do
+      emit_redrive_intent.()
+      record_session_destroyed(state, session, "absence")
+    else
+      state
     end
   end
 
@@ -2942,7 +2985,13 @@ defmodule Embervm.SessionManager do
   end
 
   defp node_reporting?(state, node_id) when is_binary(node_id) do
-    match?({:ok, _}, NodeCapacity.fetch(state.capacity_table, node_id))
+    key =
+      case String.split(node_id, "/", parts: 2) do
+        [node, pod_uid] when node != "" and pod_uid != "" -> {node, pod_uid}
+        _ -> node_id
+      end
+
+    match?({:ok, _}, NodeCapacity.fetch(state.capacity_table, key))
   end
 
   defp node_reporting?(_state, _node_id), do: false
@@ -3606,7 +3655,11 @@ defmodule Embervm.SessionManager do
 
         destroy_fun =
           Keyword.get(opts, :destroy_fun, fn ch, id ->
-            Embervm.Node.V1.NodeService.Stub.destroy(ch, %Embervm.Node.V1.DestroyRequest{vm_id: id})
+            # Reconcile runs this on the SessionManager process, so a wedged node
+            # RPC must release the GenServer within a bounded interval.
+            Embervm.Node.V1.NodeService.Stub.destroy(ch, %Embervm.Node.V1.DestroyRequest{vm_id: id},
+              timeout: 15_000
+            )
           end)
 
         try do
@@ -3673,15 +3726,16 @@ defmodule Embervm.SessionManager do
   end
 
   defp default_bank(channel, %BankRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.bank(channel, req)
+    # Lifecycle calls can be reached from reconcile and sweep callbacks.
+    Embervm.Node.V1.NodeService.Stub.bank(channel, req, timeout: 15_000)
   end
 
   defp default_relight(channel, %RelightRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.relight(channel, req)
+    Embervm.Node.V1.NodeService.Stub.relight(channel, req, timeout: 15_000)
   end
 
   defp default_evict(channel, %EvictSnapshotRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req, timeout: 15_000)
   end
 
   defp default_restore_artifact(channel, %RestoreArtifactRequest{} = req) do
@@ -3689,19 +3743,19 @@ defmodule Embervm.SessionManager do
   end
 
   defp default_archive_volume(channel, %ArchiveVolumeRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.archive_volume(channel, req)
+    Embervm.Node.V1.NodeService.Stub.archive_volume(channel, req, timeout: 15_000)
   end
 
   defp default_retire_volume(channel, %RetireVolumeRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.retire_volume(channel, req)
+    Embervm.Node.V1.NodeService.Stub.retire_volume(channel, req, timeout: 15_000)
   end
 
   defp default_evict_artifact(channel, %EvictArtifactRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req, timeout: 15_000)
   end
 
   defp default_delete_session_volume(channel, %DeleteVolumeRequest{} = req) do
-    Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req)
+    Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req, timeout: 15_000)
   end
 
   defp delete_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})

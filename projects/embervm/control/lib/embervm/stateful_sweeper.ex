@@ -1971,20 +1971,21 @@ defmodule Embervm.StatefulSweeper do
     end
   end
 
+  # Sweep RPCs execute on this GenServer and must not hold it indefinitely.
   defp default_stop_stateful(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.stop_stateful(channel, req)
+    Embervm.Node.V1.NodeService.Stub.stop_stateful(channel, req, timeout: 15_000)
   end
 
   defp default_evict_snapshot(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req)
+    Embervm.Node.V1.NodeService.Stub.evict_snapshot(channel, req, timeout: 15_000)
   end
 
   defp default_evict_artifact(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req, timeout: 15_000)
   end
 
   defp default_resolve_stateful(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.resolve_stateful(channel, req)
+    Embervm.Node.V1.NodeService.Stub.resolve_stateful(channel, req, timeout: 15_000)
   end
 
   # Production scrape: GET /stats?format=json over the shared Finch pool, parse

@@ -2818,11 +2818,12 @@ defmodule Embervm.StatefulManager do
   end
 
   defp default_stop_stateful(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.stop_stateful(channel, req)
+    # Destroy and reconcile run on this GenServer, so bound lifecycle RPCs.
+    Embervm.Node.V1.NodeService.Stub.stop_stateful(channel, req, timeout: 15_000)
   end
 
   defp default_delete_volume(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req)
+    Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req, timeout: 15_000)
   end
 
   defp default_restore_artifact(channel, req) do
@@ -2830,7 +2831,7 @@ defmodule Embervm.StatefulManager do
   end
 
   defp default_evict_artifact(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req)
+    Embervm.Node.V1.NodeService.Stub.evict_artifact(channel, req, timeout: 15_000)
   end
 
   # -- misc --------------------------------------------------------------------

@@ -961,7 +961,17 @@ defmodule Embervm.Router do
 
     # Cold-boot persistence creates legitimately take tens of seconds; the
     # SessionManager call must not cut the claim/prime RPC at the old 5-second limit.
-    case session_manager().create(session_manager_server(), workload, principal, restore_lineage) do
+    result =
+      try do
+        session_manager().create(session_manager_server(), workload, principal, restore_lineage)
+      catch
+        :exit, {:timeout, _} -> :control_plane_busy
+      end
+
+    case result do
+      :control_plane_busy ->
+        send_json(conn, 503, %{error: "control plane busy", retryable: true})
+
       {:ok, created} ->
         send_json(conn, 201, %{
           session_id: created.session_id,
