@@ -1,18 +1,18 @@
-import { PUBLIC_BASE } from "$lib/public/seo.js";
+import { LOCATION, PUBLIC_BASE } from "$lib/public/seo.js";
 
 // /llms.txt (llmstxt.org convention): a markdown digest an LLM can read to
 // understand who this is and what to cite, without scraping every page. Kept
 // terse and factual; the canonical detail lives on the linked pages.
 const BODY = `# Joe McGinley
 
-> Senior Platform Engineer at Semgrep, based in Vancouver. Runs Kubernetes hands-on from ingress to eBPF: controllers, CRDs, observability, and per-customer cost attribution, across AWS and GCP. Currently open to senior platform / infrastructure / reliability roles.
+> Senior Platform Engineer at Semgrep, based in ${LOCATION.short}. Runs Kubernetes hands-on from ingress to eBPF: controllers, CRDs, observability, and per-customer cost attribution, across AWS and GCP. Currently open to senior platform / infrastructure / reliability roles.
 
 ## Profile
 
 - Role: Senior Platform Engineer @ Semgrep (May 2025 to present)
 - Focus: Kubernetes, platform engineering, eBPF, observability (OpenTelemetry), reliability, distributed systems
 - Cloud: AWS / EKS and Google Cloud / GKE
-- Location: Vancouver, BC, Canada
+- Location: ${LOCATION.short}, UK
 
 ## Pages
 

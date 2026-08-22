@@ -106,7 +106,7 @@
           <li>
             Bazel builds every image, ArgoCD ships the repo. <a
               class="more"
-              href="/docs/contributing">the pipeline &rarr;</a
+              href="/docs">the pipeline &rarr;</a
             >
           </li>
         </ul>

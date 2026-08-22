@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { Sticker, Marquee, Footer, Seo } from "$lib/public/components";
+  import { LOCATION } from "$lib/public/seo.js";
   import HomepageRack from "./HomepageRack.svelte";
 
   let { data } = $props();
@@ -216,7 +217,7 @@
           >A LITTLE ABOUT ME</Sticker
         >
         <p class="bio-sub">
-          I'm Joe, from Scotland, living in Vancouver.<br />
+          I'm Joe, in {LOCATION.short}.<br />
           Monorepo enthusiast. Care<em>mad</em> about developer experience.
         </p>
       </div>
