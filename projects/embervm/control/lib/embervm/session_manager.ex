@@ -88,7 +88,8 @@ defmodule Embervm.SessionManager do
   # lever; excess relights get 429 WITHOUT touching the node.
   @default_wake_max 30
   @default_wake_window_ms 60_000
-  @create_worker_timeout_ms 200_000
+  @create_worker_timeout_ms 130_000
+  @reconcile_destroy_timeout_ms 15_000
 
   # Three consecutive bank failures fail the session and destroy its VM: a session
   # that cannot bank must not squat live capacity forever.
@@ -122,6 +123,9 @@ defmodule Embervm.SessionManager do
   def create(server \\ __MODULE__, workload, principal) do
     create(server, workload, principal, nil)
   end
+
+  @doc false
+  def create_worker_timeout_ms, do: @create_worker_timeout_ms
 
   @doc """
   Like `create/3`, but `restore_lineage` (nilable, empty treated as absent)
@@ -3349,32 +3353,39 @@ defmodule Embervm.SessionManager do
     # Dial the instance holding this banked session bundle on disk (session_snapshots),
     # not the node-name alias (co-location safe, PR-B0b). Fail-open to node_id.
     dial_key = Embervm.WakeInstance.dial_for_session_bundle(state.capacity_table, node_id, snapshot_ref)
+    channel_fun = state.channel_fun
+    evict_fun = state.evict_fun
+    evict_artifact_fun = state.evict_artifact_fun
 
     # A lifecycle span (Task 9): reclaiming a snapshot bundle from node disk. Root
     # span (eviction is sweep/adoption-driven, no caller trace).
-    Tracer.with_span "embervm.session.evict",
-                     %{attributes: %{"ember.node_id" => node_id}} do
-      with {:ok, channel} <- state.channel_fun.(dial_key) do
-        req = %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: snapshot_ref}
+    spawn(fn ->
+      Tracer.with_span "embervm.session.evict",
+                       %{attributes: %{"ember.node_id" => node_id}} do
+        with {:ok, channel} <- channel_fun.(dial_key) do
+          req = %EvictSnapshotRequest{trace: %Trace{}, snapshot_ref: snapshot_ref}
 
-        try do
-          state.evict_fun.(channel, req)
-        rescue
-          _ -> :error
-        catch
-          _, _ -> :error
+          try do
+            evict_fun.(channel, req)
+          rescue
+            _ -> :error
+          catch
+            _, _ -> :error
+          end
         end
+
+        # R6, Task 9: drop the store copy of the SESSION bundle alongside the local
+        # EvictSnapshot, on every eviction trigger (banked TTL, disk pressure,
+        # destroy, expiry, orphan sweep) since they all funnel through here. Sessions
+        # carry no volume/generation, so no pairing guard applies (unlike the
+        # stateful class's volume-generation guard). Dial the SAME owning instance.
+        _ = evict_remote_bundle(channel_fun, evict_artifact_fun, dial_key, workload, snapshot_ref)
+
+        :ok
       end
+    end)
 
-      # R6, Task 9: drop the store copy of the SESSION bundle alongside the local
-      # EvictSnapshot, on every eviction trigger (banked TTL, disk pressure,
-      # destroy, expiry, orphan sweep) since they all funnel through here. Sessions
-      # carry no volume/generation, so no pairing guard applies (unlike the
-      # stateful class's volume-generation guard). Dial the SAME owning instance.
-      _ = evict_remote_bundle(state, dial_key, workload, snapshot_ref)
-
-      :ok
-    end
+    :ok
   end
 
   defp evict_snapshot_on_node(_state, _node_id, _ref, _reported, _workload), do: :ok
@@ -3385,15 +3396,15 @@ defmodule Embervm.SessionManager do
   # the remote-orphan reconcile). Idempotent on the daemon; an already-absent store
   # copy is a no-op. A missing/unknown workload (should not happen; every eviction
   # site carries one) skips the remote call rather than issuing a malformed ref.
-  defp evict_remote_bundle(state, node_id, workload, snapshot_ref)
+  defp evict_remote_bundle(channel_fun, evict_artifact_fun, node_id, workload, snapshot_ref)
        when is_binary(node_id) and is_binary(workload) and workload != "" and is_binary(snapshot_ref) and
               snapshot_ref != "" do
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: workload, ref: snapshot_ref}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, channel} <- safe_channel(channel_fun, node_id) do
       try do
-        state.evict_artifact_fun.(channel, req)
+        evict_artifact_fun.(channel, req)
       rescue
         _ -> :error
       catch
@@ -3404,7 +3415,7 @@ defmodule Embervm.SessionManager do
     :ok
   end
 
-  defp evict_remote_bundle(_state, _node_id, _workload, _snapshot_ref), do: :ok
+  defp evict_remote_bundle(_channel_fun, _evict_artifact_fun, _node_id, _workload, _snapshot_ref), do: :ok
 
   # -- shared fail path ------------------------------------------------------
 
@@ -3658,7 +3669,7 @@ defmodule Embervm.SessionManager do
             # Reconcile runs this on the SessionManager process, so a wedged node
             # RPC must release the GenServer within a bounded interval.
             Embervm.Node.V1.NodeService.Stub.destroy(ch, %Embervm.Node.V1.DestroyRequest{vm_id: id},
-              timeout: 15_000
+              timeout: @reconcile_destroy_timeout_ms
             )
           end)
 
