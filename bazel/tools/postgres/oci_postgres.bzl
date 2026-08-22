@@ -300,6 +300,7 @@ def _resolve_lib_closure(rctx, staging_dir, arch_lib_src):
             if not target.startswith(prefix):
                 continue
             rel = target[len(prefix):]
+
             # Keep each hop of the symlink chain; `cp -a` copies links as links.
             for _ in range(8):
                 needed[rel] = True
