@@ -6,7 +6,7 @@ load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_load", "oci_push")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 
-def go_image(name, binary, base = "@distroless_base", repository = None, extra_tars = [], visibility = ["//bazel/images:__pkg__"], multi_platform = True):
+def go_image(name, binary, base = "@distroless_base", repository = None, extra_tars = [], visibility = ["//bazel/images:__pkg__"], multi_platform = False):
     """Create a multi-platform Go OCI image from a Go binary.
 
     Args:
@@ -20,7 +20,9 @@ def go_image(name, binary, base = "@distroless_base", repository = None, extra_t
                    cross-compiled. Defaults to [].
         visibility: Visibility of the generated .push target. Defaults to ["//bazel/images:__pkg__"]
                    to allow access from the auto-generated //images:push_all multirun.
-        multi_platform: Build for both amd64 and arm64. Defaults to True.
+        multi_platform: Build for both amd64 and arm64. Defaults to False: every
+            node is amd64 and no chart pins an arch, so the arm64 half had no
+            consumer and doubled every layer tar and image action on each change.
 
     Creates:
         :{name} - The oci_image target (or oci_image_index for multi-platform)
@@ -121,6 +123,7 @@ def go_image(name, binary, base = "@distroless_base", repository = None, extra_t
             }),
         )
         if extra_tars:
+            # An oci_image, so rules_oci declares `:{name}.digest` itself.
             oci_image(
                 name = name,
                 base = name + "_bin_platform",
@@ -130,6 +133,18 @@ def go_image(name, binary, base = "@distroless_base", repository = None, extra_t
             native.alias(
                 name = name,
                 actual = name + "_bin_platform",
+            )
+
+            # See py3_image.bzl: an alias has no `.digest` output, and the
+            # digest helm pins must come from the same transition the push
+            # target consumes.
+            platform_transition_filegroup(
+                name = name + ".digest",
+                srcs = [name + "_bin.digest"],
+                target_platform = select({
+                    "@platforms//cpu:arm64": "@rules_go//go/toolchain:linux_arm64",
+                    "@platforms//cpu:x86_64": "@rules_go//go/toolchain:linux_amd64",
+                }),
             )
         native.alias(
             name = name + "_platform",
