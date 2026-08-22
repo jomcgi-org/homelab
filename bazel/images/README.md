@@ -41,8 +41,11 @@ PR branches (`pr-checks`) prove the images build and publish nothing:
 
 ```
 bazel build //bazel/images:push_all --config=ci
-bazel run //bazel/images:push_charts --config=ci --stamp
 ```
+
+(`push_charts --stamp` used to follow on PR branches. It is main-only now:
+the PR side of the guard is retired and flipping `--stamp` discarded the
+analysis cache the next run needed.)
 
 main (`deploy`) publishes through `bazel/images/push/push-changed.sh`, which
 builds the same way, reads each image's content digest from

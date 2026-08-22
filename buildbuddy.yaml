@@ -180,10 +180,17 @@ actions:
           # before any command executes, which was 3.5 TB/week (PR #4586).
           bazel build //bazel/images:push_all --config=ci
 
-          # Charts only. Off main push.sh.tpl publishes nothing, so this exists
-          # to run bazel/helm/check-missed-bump.sh, the pre-merge guard that
-          # stops a chart whose images changed from merging un-bumped.
-          bazel run //bazel/images:push_charts --config=ci --stamp
+          # No `bazel run //bazel/images:push_charts --config=ci --stamp` here
+          # any more. On a PR branch push.sh.tpl retires the missed-bump guard
+          # (ADR platform/009: PRs carry no version) and pushes an ephemeral
+          # 0.0.0-dev chart nothing consumes, so the step proved nothing that
+          # `bazel build push_all` above does not. What it DID do was flip
+          # --stamp, which discards the whole analysis cache (see .bazelrc),
+          # and the snapshot is saved in that state: every later run re-loaded
+          # ~3000 packages / ~75k targets, about 2 of a warm run's 5.8 minutes
+          # (candidate a97c763d, 2026-08-22). main's deploy still runs
+          # push_charts through push-changed.sh, with --stamp, where the guard
+          # is the digest authority.
 
           # After the build, which is where the workspace is fattest.
           echo "DISK pr-checks after build:"; df -h /
