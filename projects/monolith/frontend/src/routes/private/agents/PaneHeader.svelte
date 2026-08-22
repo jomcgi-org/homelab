@@ -1,6 +1,10 @@
 <script>
-  import { onDestroy as onComponentDestroy } from "svelte";
+  import { onDestroy as onComponentDestroy, tick } from "svelte";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
+  import {
+    SESSION_VIEW_CONVERSATION,
+    SESSION_VIEW_WALKTHROUGH,
+  } from "./session-view.js";
 
   let {
     kind,
@@ -11,7 +15,7 @@
     sessionRow = false,
     selectedRun = false,
     sessionId = "",
-    sessionView = "conversation",
+    sessionView = SESSION_VIEW_CONVERSATION,
     onBackToRun = () => {},
     onChangeView = () => {},
     onDestroy = () => {},
@@ -20,6 +24,7 @@
   let menuOpen = $state(false);
   let destroyArmed = $state(false);
   let copied = $state(false);
+  let activeMenuItem = $state("copy");
   let menuEl = $state(null);
   let menuButtonEl = $state(null);
   let copiedTimer;
@@ -31,27 +36,84 @@
     if (returnFocus) menuButtonEl?.focus({ preventScroll: true });
   }
 
+  function menuItems() {
+    return [...(menuEl?.querySelectorAll('[role="menuitem"]') ?? [])].filter(
+      (item) =>
+        !item.disabled &&
+        !item.hidden &&
+        (!item.classList.contains("mobile-view-item") ||
+          (window.matchMedia?.("(max-width: 760px)").matches ??
+            window.innerWidth <= 760)),
+    );
+  }
+
+  function focusMenuItem(item) {
+    if (!item) return;
+    activeMenuItem = item.dataset.menuItem;
+    for (const menuItem of menuEl.querySelectorAll('[role="menuitem"]')) {
+      menuItem.tabIndex = menuItem === item ? 0 : -1;
+    }
+    item.focus({ preventScroll: true });
+  }
+
+  async function openMenu() {
+    menuOpen = true;
+    await tick();
+    focusMenuItem(menuItems()[0]);
+  }
+
   function toggleMenu() {
     if (menuOpen) closeMenu();
-    else menuOpen = true;
+    else void openMenu();
   }
 
   function handleKeydown(event) {
-    if (event.key !== "Escape" || !menuOpen) return;
+    if (!menuOpen) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu();
+      return;
+    }
+    if (event.key === "Tab") {
+      queueMicrotask(() => closeMenu(false));
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      return;
+    }
+
+    const items = menuItems();
+    if (!items.length) return;
     event.preventDefault();
-    closeMenu();
+    const current = items.indexOf(document.activeElement);
+    let next = 0;
+    if (event.key === "End") next = items.length - 1;
+    else if (event.key === "ArrowDown") next = (current + 1) % items.length;
+    else if (event.key === "ArrowUp") {
+      next = (current - 1 + items.length) % items.length;
+    }
+    focusMenuItem(items[next]);
   }
 
   function handleDocumentClick(event) {
     if (!menuOpen || menuEl?.contains(event.target)) return;
-    closeMenu();
+    // The click already moved focus (into the composer, a turn); do not
+    // yank it back to the trigger. Escape still returns focus.
+    closeMenu(false);
   }
 
-  function copyId() {
-    navigator.clipboard?.writeText(sessionId);
-    copied = true;
+  async function copyId() {
+    destroyArmed = false;
+    copied = false;
     clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => (copied = false), 1200);
+    if (!navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(sessionId);
+      copied = true;
+      copiedTimer = setTimeout(() => (copied = false), 1200);
+    } catch {
+      copied = false;
+    }
   }
 
   function confirmDestroy() {
@@ -64,13 +126,17 @@
   }
 
   function chooseAlternateView() {
+    destroyArmed = false;
     onChangeView(
-      sessionView === "conversation" ? "walkthrough" : "conversation",
+      sessionView === SESSION_VIEW_CONVERSATION
+        ? SESSION_VIEW_WALKTHROUGH
+        : SESSION_VIEW_CONVERSATION,
     );
     closeMenu();
   }
 
   function backToRun() {
+    destroyArmed = false;
     onBackToRun();
     closeMenu();
   }
@@ -121,19 +187,33 @@
       {#if menuOpen}
         <div class="session-menu-popover" role="menu">
           {#if selectedRun}
-            <button type="button" role="menuitem" onclick={backToRun}
-              >{P.labels.headerBackToRun}</button
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="back"
+              tabindex={activeMenuItem === "back" ? 0 : -1}
+              onfocus={() => (activeMenuItem = "back")}
+              onclick={backToRun}>{P.labels.headerBackToRun}</button
             >
           {/if}
-          <button type="button" role="menuitem" onclick={copyId}
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="copy"
+            tabindex={activeMenuItem === "copy" ? 0 : -1}
+            onfocus={() => (activeMenuItem = "copy")}
+            onclick={copyId}
             >{copied ? P.labels.copied : P.labels.headerCopyId}</button
           >
           <button
             class="mobile-view-item"
             type="button"
             role="menuitem"
+            data-menu-item="view"
+            tabindex={activeMenuItem === "view" ? 0 : -1}
+            onfocus={() => (activeMenuItem = "view")}
             onclick={chooseAlternateView}
-            >{sessionView === "conversation"
+            >{sessionView === SESSION_VIEW_CONVERSATION
               ? P.labels.walkthroughView
               : P.labels.conversationView}</button
           >
@@ -141,6 +221,9 @@
             class="destroy-item"
             type="button"
             role="menuitem"
+            data-menu-item="destroy"
+            tabindex={activeMenuItem === "destroy" ? 0 : -1}
+            onfocus={() => (activeMenuItem = "destroy")}
             onclick={confirmDestroy}
             >{destroyArmed
               ? P.labels.destroyConfirmMenu

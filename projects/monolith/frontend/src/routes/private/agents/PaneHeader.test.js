@@ -28,6 +28,18 @@ async function click(element) {
   await tick();
 }
 
+async function keydown(key) {
+  const event = new KeyboardEvent("keydown", {
+    key,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  await tick();
+  await Promise.resolve();
+  return event;
+}
+
 function menuButton(target) {
   return target.querySelector(`[aria-label="${P.labels.sessionMenu}"]`);
 }
@@ -45,6 +57,7 @@ describe("session header menu", () => {
     const onDestroy = vi.fn();
     const target = await render({ onDestroy });
 
+    expect(target.textContent).not.toContain(P.labels.headerDestroySession);
     await click(menuButton(target));
     const destroy = [...target.querySelectorAll('[role="menuitem"]')].find(
       (item) => item.textContent === P.labels.headerDestroySession,
@@ -58,21 +71,84 @@ describe("session header menu", () => {
     expect(onDestroy).toHaveBeenCalledTimes(1);
   });
 
+  test("focuses the first enabled item when opened", async () => {
+    const target = await render({ selectedRun: true });
+
+    await click(menuButton(target));
+
+    const items = [...target.querySelectorAll('[role="menuitem"]')];
+    expect(document.activeElement.textContent).toBe(P.labels.headerBackToRun);
+    expect(document.activeElement.tabIndex).toBe(0);
+    expect(items.filter((item) => item.tabIndex === 0)).toHaveLength(1);
+  });
+
+  test("ArrowDown wraps from the last enabled item", async () => {
+    const target = await render();
+    await click(menuButton(target));
+
+    await keydown("End");
+    expect(document.activeElement.textContent).toBe(
+      P.labels.headerDestroySession,
+    );
+
+    await keydown("ArrowDown");
+    expect(document.activeElement.textContent).toBe(P.labels.headerCopyId);
+  });
+
+  test("Home and End jump to the first and last enabled items", async () => {
+    const target = await render();
+    await click(menuButton(target));
+
+    await keydown("End");
+    expect(document.activeElement.textContent).toBe(
+      P.labels.headerDestroySession,
+    );
+
+    await keydown("Home");
+    expect(document.activeElement.textContent).toBe(P.labels.headerCopyId);
+  });
+
+  test("Tab closes the menu without preventing focus navigation", async () => {
+    const target = await render();
+    await click(menuButton(target));
+
+    const event = await keydown("Tab");
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(target.querySelector('[role="menu"]')).toBe(null);
+  });
+
+  test("Copy id disarms Destroy", async () => {
+    const onDestroy = vi.fn();
+    const target = await render({ onDestroy });
+    await click(menuButton(target));
+    const destroy = [...target.querySelectorAll('[role="menuitem"]')].find(
+      (item) => item.textContent === P.labels.headerDestroySession,
+    );
+    await click(destroy);
+
+    const copy = [...target.querySelectorAll('[role="menuitem"]')].find(
+      (item) => item.textContent === P.labels.headerCopyId,
+    );
+    await click(copy);
+
+    expect(destroy.textContent).toBe(P.labels.headerDestroySession);
+    await click(destroy);
+    expect(onDestroy).not.toHaveBeenCalled();
+  });
+
   test("Escape closes the menu and returns focus", async () => {
     const target = await render();
     const trigger = menuButton(target);
     await click(trigger);
 
-    window.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-    );
-    await tick();
+    await keydown("Escape");
 
     expect(target.querySelector('[role="menu"]')).toBe(null);
     expect(document.activeElement).toBe(trigger);
   });
 
-  test("an outside click closes, returns focus, and resets confirmation", async () => {
+  test("an outside click closes, keeps focus where it went, and resets confirmation", async () => {
     const target = await render();
     const trigger = menuButton(target);
     await click(trigger);
@@ -83,10 +159,11 @@ describe("session header menu", () => {
 
     const outside = document.createElement("button");
     document.body.append(outside);
+    outside.focus();
     await click(outside);
 
     expect(target.querySelector('[role="menu"]')).toBe(null);
-    expect(document.activeElement).toBe(trigger);
+    expect(document.activeElement).toBe(outside);
 
     await click(trigger);
     expect(target.textContent).toContain(P.labels.headerDestroySession);

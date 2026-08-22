@@ -32,13 +32,10 @@ describe("run history", () => {
   });
 
   it("formats a timestamp as local 24 hour clock time", () => {
-    const value = "2026-08-22T14:02:00Z";
-    const local = new Date(value);
-    const expected = `${String(local.getHours()).padStart(2, "0")}:${String(
-      local.getMinutes(),
-    ).padStart(2, "0")}`;
-
-    expect(clockTime(value)).toBe(expected);
+    // Local-time constructors make the expectation timezone independent
+    // without recomputing it the way the implementation does.
+    expect(clockTime(new Date(2026, 7, 22, 14, 2).toISOString())).toBe("14:02");
+    expect(clockTime(new Date(2026, 7, 22, 9, 5).toISOString())).toBe("09:05");
     expect(clockTime("not-a-time")).toBe("");
     expect(clockTime(null)).toBe("");
   });

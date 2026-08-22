@@ -298,36 +298,6 @@
     return { verb: kind || "step", detail: compactInput(activity.input) };
   }
 
-  function activityDurationMs(activity) {
-    if (!activity || typeof activity !== "object") return null;
-    const milliseconds = Number(
-      activity.duration_ms ?? activity.elapsed_ms ?? activity.duration,
-    );
-    if (Number.isFinite(milliseconds) && milliseconds >= 0) {
-      return milliseconds;
-    }
-    const seconds = Number(activity.duration_seconds);
-    return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
-  }
-
-  function durationLabel(milliseconds) {
-    if (!Number.isFinite(milliseconds)) return "";
-    return `${Math.max(1, Math.round(milliseconds / 1000))}${P.units.s}`;
-  }
-
-  function activityDurationLabel(activity) {
-    return durationLabel(activityDurationMs(activity));
-  }
-
-  function activitiesDurationLabel(activities) {
-    const durations = (activities ?? [])
-      .map(activityDurationMs)
-      .filter((value) => value !== null);
-    return durations.length
-      ? durationLabel(durations.reduce((sum, value) => sum + value, 0))
-      : "";
-  }
-
   function stepCountLabel(count) {
     return count === 1 ? P.labels.stepWord : P.labels.stepsWord;
   }
@@ -1500,7 +1470,7 @@
               </span>
             </h1>
             <span
-              class={`pill vm-${vmState(selectedSession, vms)}`}
+              class="pill"
               title={vms[selectedSession.ember_session_id]?.cp_state
                 ? P.labels.controlPlaneState.replace(
                     "{state}",
@@ -1592,6 +1562,7 @@
                         <div class="prompt-text">{turn.prompt}</div>
                       {/if}
                     </div>
+                    <!-- AgentTurn persists no completion time, so the response reuses the prompt's created_at (transport duration_ms is not stored). -->
                     <div class="meta response-meta mono">
                       <span
                         >{turn.model || selectedSession.model || "luna"}</span
@@ -1615,10 +1586,7 @@
                           </svg>
                           {turn.usage.activities.length}
                           {stepCountLabel(turn.usage.activities.length)}
-                          {#if activitiesDurationLabel(turn.usage.activities)}
-                            {P.punct.dot}
-                            {activitiesDurationLabel(turn.usage.activities)}
-                          {/if}
+                          <!-- No per-step duration reaches the client yet (shim emits type and target only). -->
                         </summary>
                         <ol class="step-list">
                           {#each turn.usage.activities as activity}
@@ -1628,9 +1596,6 @@
                               >
                               <span class="step-detail"
                                 >{activityParts(activity).detail}</span
-                              >
-                              <span class="step-duration"
-                                >{activityDurationLabel(activity)}</span
                               >
                             </li>
                           {/each}
@@ -1680,34 +1645,38 @@
                     >
                     <span>{clockTime(entry.created_at)}</span>
                   </div>
-                  <details class="steps live-steps-chip">
-                    <summary>
-                      <svg viewBox="0 0 12 12" aria-hidden="true">
-                        <path d="m4.25 2.5 3.5 3.5-3.5 3.5"></path>
-                      </svg>
-                      {partial?.partial_activities?.length ?? 0}
-                      {stepCountLabel(partial?.partial_activities?.length ?? 0)}
-                      {P.punct.dot}
-                      {P.labels.runningStep}
-                    </summary>
-                    {#if partial?.partial_activities?.length}
-                      <ol class="step-list" aria-label={P.labels.agentActivity}>
-                        {#each partial.partial_activities as activity}
-                          <li>
-                            <span class="step-verb"
-                              >{activityParts(activity).verb}</span
-                            >
-                            <span class="step-detail"
-                              >{activityParts(activity).detail}</span
-                            >
-                            <span class="step-duration"
-                              >{activityDurationLabel(activity)}</span
-                            >
-                          </li>
-                        {/each}
-                      </ol>
-                    {/if}
-                  </details>
+                  {#if state === "working"}
+                    <details class="steps">
+                      <summary>
+                        <svg viewBox="0 0 12 12" aria-hidden="true">
+                          <path d="m4.25 2.5 3.5 3.5-3.5 3.5"></path>
+                        </svg>
+                        {partial?.partial_activities?.length ?? 0}
+                        {stepCountLabel(
+                          partial?.partial_activities?.length ?? 0,
+                        )}
+                        {P.punct.dot}
+                        {P.labels.runningStep}
+                      </summary>
+                      {#if partial?.partial_activities?.length}
+                        <ol
+                          class="step-list"
+                          aria-label={P.labels.agentActivity}
+                        >
+                          {#each partial.partial_activities as activity}
+                            <li>
+                              <span class="step-verb"
+                                >{activityParts(activity).verb}</span
+                              >
+                              <span class="step-detail"
+                                >{activityParts(activity).detail}</span
+                              >
+                            </li>
+                          {/each}
+                        </ol>
+                      {/if}
+                    </details>
+                  {/if}
                   <div
                     class={`live-line ${state === "working" ? "" : "quiet"}`}
                   >
@@ -2822,20 +2791,18 @@
   .step-list li {
     min-width: 0;
     display: grid;
-    grid-template-columns: 72px minmax(0, 1fr) auto;
+    grid-template-columns: 72px minmax(0, 1fr);
     gap: 8px;
     color: var(--text-soft);
     font: 12.5px var(--font-mono);
   }
   .step-verb {
-    color: var(--muted);
+    color: var(--text);
+    font-weight: 600;
   }
   .step-detail {
-    color: var(--text-soft);
-    overflow-wrap: anywhere;
-  }
-  .step-duration {
     color: var(--muted);
+    overflow-wrap: anywhere;
   }
   .live-line {
     display: flex;
@@ -2855,7 +2822,8 @@
     width: 6px;
     height: 6px;
     border-radius: var(--radius-circle);
-    background: var(--ok);
+    /* currentColor: .live-line is --ok only while working; .quiet is --muted. */
+    background: currentColor;
   }
   .live-latest {
     overflow: hidden;
@@ -2948,7 +2916,7 @@
      palette and 3.91:1 at night, both under the 4.5:1 AA floor for body
      text. --attn-text is the role token for text on this fill, at 6.01:1
      and 7.34:1. The border keeps --attn, where the 3:1 UI-boundary floor
-     applies. Same pairing as .session-state.warn. */
+     applies. Same pairing as .state-pill.warn. */
   .turn-degraded {
     margin: 8px 0 0;
     padding: 8px 12px;
@@ -2970,7 +2938,7 @@
   .box {
     max-width: 720px;
     margin: 0 auto;
-    overflow: hidden;
+    /* No overflow clip: it would cut the focus rings of the controls inside. */
     border: 1px solid var(--line-strong);
     border-radius: 6px;
     background: var(--panel-bg);
@@ -3352,14 +3320,16 @@
       margin-left: 4px;
     }
     .model-picker.composer-model select {
-      min-height: 28px;
+      min-height: 44px;
+    }
+    .steps summary {
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
     }
     .composer-hint {
-      grid-column: 1;
-      grid-row: 2;
-      align-self: center;
-      justify-self: end;
-      margin-left: 0;
+      /* A phone has no ⌘↵. */
+      display: none;
     }
     .composer-submit {
       grid-column: 2;
