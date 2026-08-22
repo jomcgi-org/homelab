@@ -209,6 +209,8 @@ test off `monolith_backend` onto a `pkg_*` library saved exactly one package.
 | `d6b4041c6` | collapsed four actions into `pr-checks` + `deploy` | **split result.** `pr-checks` 7.8 -> 1.5 GB per push, 5x. `deploy` 7.8 -> 12.9 GB per push, a regression: it is a fourth workspace, the largest, and main-only |
 | (2026-08-11) | main pushes only images whose digest is not already published | pending; re-measure after 2026-08-16 |
 | this PR | gave each monolith `pkg_*` library only the wheels it imports | mean pip closure 37 -> 21, libraries carrying 10+ heavy wheels 25/25 -> 0/25; byte effect pending, re-measure after 2026-08-19 |
+| #5102, #5104, #5105, #5110 (2026-08-22) | pre-push `ci test` opt-in; no `push_charts --stamp` on PRs (analysis cache survives); amd64-only images; manifest as own layer; PR runs test affected targets only | wall: warm pr-checks run ~5.8 min -> measure; bytes pending, re-measure after 2026-08-29 |
+| #5116, #5118 (2026-08-22) | stripped CPython toolchain; postgres_test real closure | test input tree 1.54 GB -> ~0.65 GB, the dominant byte lever; re-measure after 2026-08-29 |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
