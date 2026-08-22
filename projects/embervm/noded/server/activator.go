@@ -124,6 +124,14 @@ func (a *activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR embervm/037: a silenced brick wakes nothing new. Splice-through above
+	// still serves an already-live VM; only the boot path stops here.
+	if err := a.server.refuseIfSilenced("activator serving wake"); err != nil {
+		a.server.logger.Warn("activator: refusing serving wake", "workload", workload, "err", err)
+		http.Error(w, status.Convert(err).Message(), http.StatusServiceUnavailable)
+		return
+	}
+
 	body, err := readActivatorBody(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)

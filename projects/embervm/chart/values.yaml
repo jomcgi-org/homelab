@@ -1113,6 +1113,13 @@ noded:
   # Relight. Keep task and park-only workloads outside the diff path.
   diffBankingWorkloads: sandbox-session
 
+  # Brick silence timeout (ADR embervm/037, #5073), in seconds. Empty or 0
+  # disables; 21600 (~6h) arms the ADR 037 bound: a brick with no dial-home or
+  # WatchNode activity past it refuses new node-local work while its live VMs
+  # keep running. Measured from last contact with Go monotonic time, so
+  # control-plane rolls never trip it.
+  silenceTimeoutSeconds: ""
+
   # Per-brick warmth ownership claim. Each brick refreshes i/<segment>/.alive
   # every intervalSeconds, and startup GC reaps a foreign claim only after
   # staleAfterSeconds. reapUnclaimed is the #4962 transition guard for warmth

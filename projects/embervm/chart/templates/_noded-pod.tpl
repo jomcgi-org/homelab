@@ -199,6 +199,12 @@ containers:
         value: {{ $ctx.Values.noded.diffBanking | quote }}
       - name: EMBERVM_NODED_DIFF_BANKING_WORKLOADS
         value: {{ $ctx.Values.noded.diffBankingWorkloads | quote }}
+      # Brick silence timeout (ADR embervm/037, #5073), seconds. Rendered only
+      # when armed: empty or 0 keeps the daemon-side gate off.
+      {{- if $ctx.Values.noded.silenceTimeoutSeconds }}
+      - name: EMBERVM_NODED_SILENCE_TIMEOUT_SECONDS
+        value: {{ $ctx.Values.noded.silenceTimeoutSeconds | quote }}
+      {{- end }}
       # Brick warmth liveness claim (#4962). The daemon parses durations with Go
       # duration syntax. Only the exact string "1" enables unclaimed reaping;
       # "0" keeps the rollout transition guard off by default.

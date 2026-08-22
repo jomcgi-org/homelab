@@ -318,6 +318,15 @@ type Config struct {
 	// jittered re-POST), so a control-plane restart re-adopts it promptly and a
 	// re-pointed pod IP propagates. Default 30s. Env EMBERVM_NODED_REGISTER_INTERVAL.
 	RegisterInterval time.Duration
+	// SilenceTimeoutSeconds arms ADR embervm/037's brick silence bound: a brick
+	// with no successful control-plane contact (a 2xx dial-home POST or a
+	// WatchNode send) for longer than this refuses NEW node-local work
+	// (activator wakes and the blessing-lease self-advance in attachGeneration)
+	// with FAILED_PRECONDITION while live VMs keep running and nothing is
+	// banked or destroyed. Zero (the default) disables the gate. Contact age is
+	// measured with Go monotonic time, so NTP skew and control-plane rolls
+	// never trip it. Env EMBERVM_NODED_SILENCE_TIMEOUT_SECONDS.
+	SilenceTimeoutSeconds int
 
 	// TapPrealloc is the number of serving taps EnsureNetwork pre-creates at brick
 	// boot (ADR embervm/014 decision 4), left down until AllocateTap draws one:
@@ -607,6 +616,13 @@ func Load() (Config, error) {
 	}
 	if c.WarmthStaleAfter <= c.WarmthHeartbeatInterval {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_WARMTH_STALE_AFTER must be greater than EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL (%s <= %s)", c.WarmthStaleAfter, c.WarmthHeartbeatInterval)
+	}
+	if v := os.Getenv("EMBERVM_NODED_SILENCE_TIMEOUT_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return Config{}, fmt.Errorf("invalid EMBERVM_NODED_SILENCE_TIMEOUT_SECONDS %q", v)
+		}
+		c.SilenceTimeoutSeconds = n
 	}
 	if v := os.Getenv("EMBERVM_NODED_ARCHIVE_MAX_BYTES"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)

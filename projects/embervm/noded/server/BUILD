@@ -61,6 +61,7 @@ go_test(
         "rootfs_gc_test.go",
         "server_test.go",
         "serving_test.go",
+        "silence_test.go",
         "stateful_activator_test.go",
         "stateful_test.go",
         "store_test.go",
