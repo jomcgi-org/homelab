@@ -21,7 +21,7 @@
   import MasterView from "./MasterView.svelte";
   import { nodeStateClass } from "./dag.js";
   import { firstLine, fmtCost } from "./run-format.js";
-  import { partitionRuns, relativeTime } from "./run-history.js";
+  import { clockTime, partitionRuns, relativeTime } from "./run-history.js";
   import { arrivalSelection, inboxGroups } from "./inbox.js";
   import { crumbTrail, sessionLineage } from "./lineage.js";
   import { setupVisualViewport } from "./visual-viewport.js";
@@ -241,11 +241,7 @@
   }
 
   function formatRepoContext(session) {
-    if (session?.repo) return `${session.repo} @ ${session.branch || "main"}`;
-    if (session?.workspace && session.workspace !== "<guest>") {
-      return session.workspace;
-    }
-    return "scratch workspace";
+    return session?.repo ? `${session.repo}@${session.branch || "main"}` : "";
   }
 
   function cost(value) {
@@ -300,6 +296,40 @@
       };
     }
     return { verb: kind || "step", detail: compactInput(activity.input) };
+  }
+
+  function activityDurationMs(activity) {
+    if (!activity || typeof activity !== "object") return null;
+    const milliseconds = Number(
+      activity.duration_ms ?? activity.elapsed_ms ?? activity.duration,
+    );
+    if (Number.isFinite(milliseconds) && milliseconds >= 0) {
+      return milliseconds;
+    }
+    const seconds = Number(activity.duration_seconds);
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
+  }
+
+  function durationLabel(milliseconds) {
+    if (!Number.isFinite(milliseconds)) return "";
+    return `${Math.max(1, Math.round(milliseconds / 1000))}${P.units.s}`;
+  }
+
+  function activityDurationLabel(activity) {
+    return durationLabel(activityDurationMs(activity));
+  }
+
+  function activitiesDurationLabel(activities) {
+    const durations = (activities ?? [])
+      .map(activityDurationMs)
+      .filter((value) => value !== null);
+    return durations.length
+      ? durationLabel(durations.reduce((sum, value) => sum + value, 0))
+      : "";
+  }
+
+  function stepCountLabel(count) {
+    return count === 1 ? P.labels.stepWord : P.labels.stepsWord;
   }
 
   function compactInput(input) {
@@ -902,7 +932,7 @@
     }
   }
   async function destroySession() {
-    if (!selectedId || !window.confirm(P.labels.destroyConfirm)) return;
+    if (!selectedId) return;
     try {
       const response = await fetch(
         `/agents/session/${encodeURIComponent(selectedId)}`,
@@ -1384,26 +1414,32 @@
     </aside>
 
     <section class="detail transcript" aria-label={P.labels.transcriptRegion}>
-      <div class="mobile-detail-nav">
-        <button
-          class="mobile-back"
-          type="button"
-          aria-label={P.labels.backToSessions}
-          onclick={returnToSessionList}>{P.labels.mobileBack}</button
-        >
-        <button
-          class="mobile-jump"
-          type="button"
-          aria-label={P.labels.jumpOpenLabel}
-          aria-haspopup="dialog"
-          onclick={() => openJump()}
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <circle cx="7" cy="7" r="4.25"></circle>
-            <path d="m10.25 10.25 3 3"></path>
-          </svg>
-        </button>
-      </div>
+      {#if !(selectedId && selectedSession)}
+        <div class="mobile-detail-nav">
+          <button
+            class="mobile-back"
+            type="button"
+            aria-label={P.labels.backToSessions}
+            onclick={returnToSessionList}
+          >
+            <svg viewBox="0 0 18 18" aria-hidden="true">
+              <path d="m11 4-5 5 5 5"></path>
+            </svg>
+          </button>
+          <button
+            class="mobile-jump"
+            type="button"
+            aria-label={P.labels.jumpOpenLabel}
+            aria-haspopup="dialog"
+            onclick={() => openJump()}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.25"></circle>
+              <path d="m10.25 10.25 3 3"></path>
+            </svg>
+          </button>
+        </div>
+      {/if}
       {#if fixture?.walkthrough}
         <!-- Walkthrough visual states are reviewed via ?fixture=walk-*; the
            component gets its payload inline and never fetches. -->
@@ -1426,77 +1462,100 @@
         />
       {:else if selectedId && selectedSession}
         <header class="transcript-head">
+          <button
+            class="mobile-back"
+            type="button"
+            aria-label={P.labels.backToSessions}
+            onclick={returnToSessionList}
+          >
+            <svg viewBox="0 0 18 18" aria-hidden="true">
+              <path d="m11 4-5 5 5 5"></path>
+            </svg>
+          </button>
           <PaneHeader
-            kind={P.labels.session}
+            sessionRow
             crumbs={sessionCrumbs}
             onCrumb={paneCrumb}
+            selectedRun={Boolean(selectedRunId)}
+            sessionId={selectedSession.local_session_id}
+            {sessionView}
+            onBackToRun={returnToRun}
+            onChangeView={(view) => (sessionView = view)}
+            onDestroy={destroySession}
           >
-            {#snippet chips()}
-              <span
-                class={`vm-chip vm-${vmState(selectedSession, vms)}`}
-                title={vms[selectedSession.ember_session_id]?.cp_state
-                  ? `control plane: ${vms[selectedSession.ember_session_id].cp_state}`
-                  : "no live microVM; the next prompt boots fresh"}
-                >vm {vmState(selectedSession, vms)}</span
-              >
-              <span
-                class="session-view-toggle"
-                role="group"
-                aria-label={P.labels.sessionViewLabel}
-              >
-                <button
-                  type="button"
-                  class:on={sessionView === SESSION_VIEW_CONVERSATION}
-                  aria-pressed={sessionView === SESSION_VIEW_CONVERSATION}
-                  onclick={() => (sessionView = SESSION_VIEW_CONVERSATION)}
-                  >{P.labels.conversationView}</button
-                >
-                <button
-                  type="button"
-                  class:on={sessionView === SESSION_VIEW_WALKTHROUGH}
-                  aria-pressed={sessionView === SESSION_VIEW_WALKTHROUGH}
-                  onclick={() => (sessionView = SESSION_VIEW_WALKTHROUGH)}
-                  >{P.labels.walkthroughView}</button
-                >
-              </span>
-              {#if statusClass(selectedSession) !== "completed"}
-                <span class={`session-state ${statusClass(selectedSession)}`}
-                  >{statusLabel(selectedSession)}</span
-                >
-              {/if}
-              <!-- One right-hand group whether or not the session came from a
-                 run. Pushing only the back link would leave destroy sitting
-                 against the state chip on a standalone session, so the
-                 button a mis-click destroys a VM with moves under the
-                 cursor depending on how you arrived. -->
-              <span class="push head-right">
-                {#if selectedRunId}
-                  <button
-                    class="back-to-run"
-                    type="button"
-                    onclick={returnToRun}>{P.labels.backToRun}</button
-                  >
+            <h1
+              class="session-title"
+              title={headerTitle}
+              tabindex="-1"
+              bind:this={titleEl}
+            >
+              <span class="session-title-text">{headerTitle}</span>
+              <span class="session-mobile-meta mono">
+                {statusLabel(selectedSession)}
+                {P.punct.dot}
+                {selectedSession.model ||
+                  "luna"}{#if formatRepoContext(selectedSession)}
+                  {P.punct.dot} {formatRepoContext(selectedSession)}
                 {/if}
-                <button
-                  class="destroy-button"
-                  type="button"
-                  onclick={destroySession}>{P.labels.destroy}</button
-                >
               </span>
-            {/snippet}
+            </h1>
+            <span
+              class={`pill vm-${vmState(selectedSession, vms)}`}
+              title={vms[selectedSession.ember_session_id]?.cp_state
+                ? P.labels.controlPlaneState.replace(
+                    "{state}",
+                    vms[selectedSession.ember_session_id].cp_state,
+                  )
+                : P.labels.noLiveVm}
+            >
+              {#if vmState(selectedSession, vms) === "awake"}
+                <span class="pill-dot" aria-hidden="true"></span>
+              {/if}
+              {P.labels.vmWord}
+              {vmState(selectedSession, vms)}
+            </span>
+            <span class="pill">{selectedSession.model || "luna"}</span>
+            {#if formatRepoContext(selectedSession)}
+              <span class="pill">{formatRepoContext(selectedSession)}</span>
+            {/if}
+            {#if ["needs_input", "warn"].includes(statusClass(selectedSession))}
+              <span class={`pill state-pill ${statusClass(selectedSession)}`}
+                >{statusLabel(selectedSession)}</span
+              >
+            {/if}
+            <span
+              class="seg"
+              role="group"
+              aria-label={P.labels.sessionViewLabel}
+            >
+              <button
+                type="button"
+                class:selected={sessionView === SESSION_VIEW_CONVERSATION}
+                aria-pressed={sessionView === SESSION_VIEW_CONVERSATION}
+                onclick={() => (sessionView = SESSION_VIEW_CONVERSATION)}
+                >{P.labels.conversationView}</button
+              >
+              <button
+                type="button"
+                class:selected={sessionView === SESSION_VIEW_WALKTHROUGH}
+                aria-pressed={sessionView === SESSION_VIEW_WALKTHROUGH}
+                onclick={() => (sessionView = SESSION_VIEW_WALKTHROUGH)}
+                >{P.labels.walkthroughView}</button
+              >
+            </span>
           </PaneHeader>
-          <h1
-            class="session-title"
-            title={headerTitle}
-            tabindex="-1"
-            bind:this={titleEl}
+          <button
+            class="mobile-jump"
+            type="button"
+            aria-label={P.labels.jumpOpenLabel}
+            aria-haspopup="dialog"
+            onclick={() => openJump()}
           >
-            {headerTitle}
-          </h1>
-          <div class="session-context mono">
-            {formatRepoContext(selectedSession)} · {selectedSession.model ||
-              "luna"} · {shortId(selectedSession)}
-          </div>
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.25"></circle>
+              <path d="m10.25 10.25 3 3"></path>
+            </svg>
+          </button>
         </header>
         {#if sessionView === SESSION_VIEW_CONVERSATION}
           <div class="turns" bind:this={turnsEl}>
@@ -1508,35 +1567,132 @@
                 {@const hasIntent =
                   turn.prompt_intent !== null &&
                   turn.prompt_intent !== undefined}
-                <article class="turn">
-                  <div class="prompt">
-                    <span class="role">you</span>
-                    {#if hasIntent}
-                      <div class="prompt-text intent-prompt">
-                        <span class="intent-label">{P.labels.promptIntent}</span
-                        >
-                        <div>{turn.prompt_intent}</div>
-                      </div>
-                      {#if turnProtocol(turn)}
-                        <details class="prompt-protocol">
-                          <summary>{P.labels.viewProtocol}</summary>
-                          <pre>{turnProtocol(turn)}</pre>
-                        </details>
+                {@const degradedCause = workspaceRecoveryMessage(turn)}
+                <div class="turn-group">
+                  <article class="turn">
+                    <div class="meta prompt-meta mono">
+                      <span class="meta-role">{P.labels.youRole}</span>
+                      <span>{clockTime(turn.created_at)}</span>
+                    </div>
+                    <div class="prompt">
+                      {#if hasIntent}
+                        <div class="prompt-text intent-prompt">
+                          <span class="intent-label"
+                            >{P.labels.promptIntent}</span
+                          >
+                          <div>{turn.prompt_intent}</div>
+                        </div>
+                        {#if turnProtocol(turn)}
+                          <details class="prompt-protocol">
+                            <summary>{P.labels.viewProtocol}</summary>
+                            <pre>{turnProtocol(turn)}</pre>
+                          </details>
+                        {/if}
+                      {:else}
+                        <div class="prompt-text">{turn.prompt}</div>
                       {/if}
-                    {:else}
-                      <div class="prompt-text">{turn.prompt}</div>
-                    {/if}
-                  </div>
-                  {#if turn.usage?.activities?.length}
-                    <details class="steps">
-                      <summary
-                        >{turn.usage.activities.length}
-                        {turn.usage.activities.length === 1
-                          ? "step"
-                          : "steps"}</summary
+                    </div>
+                    <div class="meta response-meta mono">
+                      <span
+                        >{turn.model || selectedSession.model || "luna"}</span
                       >
-                      <ol class="step-list">
-                        {#each turn.usage.activities as activity}
+                      <span>{clockTime(turn.created_at)}</span>
+                      {#if cost(turn.cost_usd)}
+                        <span>{P.punct.dot} {cost(turn.cost_usd)}</span>
+                      {/if}
+                      {#if turn.stop_reason && !CLEAN_TERMINAL_REASONS.has(turn.stop_reason)}
+                        <span class="meta-trailing">{turn.stop_reason}</span>
+                      {/if}
+                      {#if turnFailed(turn)}
+                        <span class="badge-failed">{P.labels.turnFailed}</span>
+                      {/if}
+                    </div>
+                    {#if turn.usage?.activities?.length}
+                      <details class="steps">
+                        <summary>
+                          <svg viewBox="0 0 12 12" aria-hidden="true">
+                            <path d="m4.25 2.5 3.5 3.5-3.5 3.5"></path>
+                          </svg>
+                          {turn.usage.activities.length}
+                          {stepCountLabel(turn.usage.activities.length)}
+                          {#if activitiesDurationLabel(turn.usage.activities)}
+                            {P.punct.dot}
+                            {activitiesDurationLabel(turn.usage.activities)}
+                          {/if}
+                        </summary>
+                        <ol class="step-list">
+                          {#each turn.usage.activities as activity}
+                            <li>
+                              <span class="step-verb"
+                                >{activityParts(activity).verb}</span
+                              >
+                              <span class="step-detail"
+                                >{activityParts(activity).detail}</span
+                              >
+                              <span class="step-duration"
+                                >{activityDurationLabel(activity)}</span
+                              >
+                            </li>
+                          {/each}
+                        </ol>
+                      </details>
+                    {/if}
+                    {#if turnFailed(turn)}
+                      <pre class="turn-error">{resultWithoutTrailer(turn) ||
+                          P.labels.turnFailedWithoutOutput}</pre>
+                    {:else if turn.result_text}
+                      <div class="result-md">
+                        {@html renderAgentMarkdown(resultWithoutTrailer(turn))}
+                      </div>
+                    {/if}
+                    {#if selectedSession.repo}
+                      <SessionWalkthrough
+                        sessionId={selectedSession.id}
+                        turnSeq={turn.seq}
+                        model={turn.model || selectedSession.model || "luna"}
+                      />
+                    {/if}
+                  </article>
+                  {#if degradedCause}
+                    <div
+                      class="turn-degraded"
+                      title={P.workspaceRecoveryCauses[degradedCause]}
+                    >
+                      {P.labels.workspaceRecovery}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+
+              {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
+                {@const partial = renderedPending[entry.seq]}
+                {@const state = liveStateLabel(entry, index)}
+                <article class="turn live">
+                  <div class="meta prompt-meta mono">
+                    <span class="meta-role">{P.labels.youRole}</span>
+                    <span>{clockTime(entry.created_at)}</span>
+                  </div>
+                  <div class="prompt">
+                    <div class="prompt-text">{entry.prompt}</div>
+                  </div>
+                  <div class="meta response-meta mono">
+                    <span>{entry.model || selectedSession.model || "luna"}</span
+                    >
+                    <span>{clockTime(entry.created_at)}</span>
+                  </div>
+                  <details class="steps live-steps-chip">
+                    <summary>
+                      <svg viewBox="0 0 12 12" aria-hidden="true">
+                        <path d="m4.25 2.5 3.5 3.5-3.5 3.5"></path>
+                      </svg>
+                      {partial?.partial_activities?.length ?? 0}
+                      {stepCountLabel(partial?.partial_activities?.length ?? 0)}
+                      {P.punct.dot}
+                      {P.labels.runningStep}
+                    </summary>
+                    {#if partial?.partial_activities?.length}
+                      <ol class="step-list" aria-label={P.labels.agentActivity}>
+                        {#each partial.partial_activities as activity}
                           <li>
                             <span class="step-verb"
                               >{activityParts(activity).verb}</span
@@ -1544,58 +1700,14 @@
                             <span class="step-detail"
                               >{activityParts(activity).detail}</span
                             >
+                            <span class="step-duration"
+                              >{activityDurationLabel(activity)}</span
+                            >
                           </li>
                         {/each}
                       </ol>
-                    </details>
-                  {/if}
-                  {#if turnFailed(turn)}
-                    <pre class="turn-error">{resultWithoutTrailer(turn) ||
-                        "The turn failed without output."}</pre>
-                  {:else if turn.result_text}
-                    <div class="result-md">
-                      {@html renderAgentMarkdown(resultWithoutTrailer(turn))}
-                    </div>
-                  {/if}
-                  {#if selectedSession.repo}
-                    <SessionWalkthrough
-                      sessionId={selectedSession.id}
-                      turnSeq={turn.seq}
-                      model={turn.model || selectedSession.model || "luna"}
-                    />
-                  {/if}
-                  <div class="turn-meta mono">
-                    <span>{turn.model || selectedSession.model || "luna"}</span>
-                    <span>{relativeTime(turn.created_at)}</span>
-                    {#if cost(turn.cost_usd)}<span>{cost(turn.cost_usd)}</span
-                      >{/if}
-                    {#if turn.stop_reason && turn.stop_reason !== "end_turn"}
-                      <span>{turn.stop_reason}</span>
                     {/if}
-                    {#if turnFailed(turn)}<span class="badge-failed"
-                        >{P.labels.turnFailed}</span
-                      >{/if}
-                  </div>
-                </article>
-                {@const degradedCause = workspaceRecoveryMessage(turn)}
-                {#if degradedCause}
-                  <div
-                    class="turn-degraded"
-                    title={P.workspaceRecoveryCauses[degradedCause]}
-                  >
-                    {P.labels.workspaceRecovery}
-                  </div>
-                {/if}
-              {/each}
-
-              {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
-                {@const partial = renderedPending[entry.seq]}
-                {@const state = liveStateLabel(entry, index)}
-                <article class="turn live">
-                  <div class="prompt">
-                    <span class="role">you</span>
-                    <div class="prompt-text">{entry.prompt}</div>
-                  </div>
+                  </details>
                   <div
                     class={`live-line ${state === "working" ? "" : "quiet"}`}
                   >
@@ -1627,28 +1739,6 @@
                       <span class="live-latest">{P.labels.waitingForTurn}</span>
                     {/if}
                   </div>
-                  {#if partial?.partial_activities?.length > 1}
-                    <ol
-                      class="step-list live-steps"
-                      aria-label="Agent activity"
-                    >
-                      {#if partial.partial_activities.length > 6}
-                        <li class="step-earlier">
-                          … {partial.partial_activities.length - 6} earlier steps
-                        </li>
-                      {/if}
-                      {#each partial.partial_activities.slice(-6) as activity}
-                        <li>
-                          <span class="step-verb"
-                            >{activityParts(activity).verb}</span
-                          >
-                          <span class="step-detail"
-                            >{activityParts(activity).detail}</span
-                          >
-                        </li>
-                      {/each}
-                    </ol>
-                  {/if}
                   {#if partial?.partial_text}
                     <div class="result-md">
                       {@html renderAgentMarkdown(partial.partial_text)}
@@ -1659,9 +1749,7 @@
 
               {#if !(detail?.turns ?? []).length && !(detail?.pending_queue ?? []).length}
                 <div class="empty transcript-empty">
-                  {detail
-                    ? "No turns yet. Send a prompt below."
-                    : P.labels.loadingSession}
+                  {detail ? P.labels.noTurnsYet : P.labels.loadingSession}
                 </div>
               {/if}
             </div>
@@ -1692,10 +1780,13 @@
             sendPrompt();
           }}
         >
-          <div class="composer-inner">
+          <div class="box">
             <textarea
               bind:value={prompt}
-              placeholder="send a prompt to this session (⌘⏎ to send)"
+              placeholder={P.labels.replyTo.replace(
+                "{model}",
+                composerModel || selectedSession.model || "luna",
+              )}
               rows="3"
               onkeydown={(e) => {
                 if (
@@ -1709,16 +1800,25 @@
                   sendPrompt();
                 }
               }}></textarea>
-            <div class="composer-actions">
-              {@render modelPicker(composerModel, (model) => {
-                composerModelOverride = model;
-              })}
+            <div class="bar">
+              {@render modelPicker(
+                composerModel,
+                (model) => {
+                  composerModelOverride = model;
+                },
+                true,
+              )}
+              <span class="composer-hint mono">{P.labels.sendHint}</span>
               <button
-                class="send-button"
+                class="composer-submit"
                 type="submit"
+                aria-label={sending ? P.labels.sending : P.labels.sendPrompt}
                 disabled={sending || !prompt.trim()}
-                >{sending ? P.labels.sending : P.labels.send}</button
               >
+                <svg viewBox="0 0 18 18" aria-hidden="true">
+                  <path d="M9 14V4m0 0L5 8m4-4 4 4"></path>
+                </svg>
+              </button>
             </div>
           </div>
         </form>
@@ -1852,7 +1952,7 @@
           <button type="button" class="quiet-button" onclick={closeNewPanel}
             >{P.labels.cancelWord}</button
           ><button
-            class="send-button"
+            class="primary-button"
             type="submit"
             disabled={creating || !newSession.prompt.trim()}
             >{creating ? P.labels.creating : P.labels.submitTask}</button
@@ -1954,12 +2054,12 @@
   </button>
 {/snippet}
 
-{#snippet modelPicker(current, choose)}
-  <label class="model-picker">
-    <span class="sr-only">Model</span>
+{#snippet modelPicker(current, choose, composer = false)}
+  <label class:composer-model={composer} class="model-picker">
+    <span class="sr-only">{P.labels.modelPicker}</span>
     <select
       class="mono"
-      aria-label="Model"
+      aria-label={P.labels.modelPicker}
       value={current}
       onchange={(event) => choose(event.currentTarget.value)}
     >
@@ -2024,7 +2124,6 @@
     outline: 2px solid var(--info);
     outline-offset: 2px;
   }
-  .composer-actions,
   .new-actions {
     display: flex;
     align-items: center;
@@ -2041,9 +2140,8 @@
     text-transform: uppercase;
   }
   .new-button,
-  .destroy-button,
   .quiet-button,
-  .send-button {
+  .primary-button {
     height: 32px;
     padding: 0 12px;
     border: 1px solid var(--line-strong);
@@ -2052,15 +2150,9 @@
     line-height: 1;
   }
   .new-button,
-  .destroy-button,
   .quiet-button {
     color: var(--text);
     background: var(--panel-bg);
-  }
-  .destroy-button:hover {
-    color: var(--err);
-    border-color: var(--err-line);
-    background: var(--err-bg);
   }
   .new-button:hover,
   .quiet-button:hover {
@@ -2091,24 +2183,15 @@
     appearance: none;
     padding-right: 27px;
   }
-  .session-context {
-    color: var(--text-soft);
-    font-size: var(--size-meta);
+  .primary-button {
+    color: var(--ink-text);
+    background: var(--ink);
+    border-color: var(--ink);
+    font-weight: 600;
   }
-  .back-to-run {
-    display: inline-block;
-    margin-bottom: 4px;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--muted);
-    font: inherit;
-    font-size: var(--size-meta);
-    cursor: pointer;
-  }
-  .back-to-run:hover {
-    color: var(--text);
-    text-decoration: underline;
+  .primary-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
   }
   .topbar {
     flex: 0 0 52px;
@@ -2526,81 +2609,85 @@
     background: var(--panel-bg);
   }
   .transcript-head {
-    display: block;
-    padding: 12px 28px;
-    border-bottom: 1px solid var(--line);
-  }
-  .head-right {
+    flex: 0 0 52px;
+    height: 52px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 12px;
+    padding: 0 20px 0 24px;
+    border-bottom: 1px solid var(--line);
   }
   .session-title {
+    min-width: 0;
     margin: 0;
-    font-size: var(--size-title);
-    font-weight: 600;
     overflow: hidden;
+    font-size: 15px;
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .session-title-text {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .session-mobile-meta {
+    display: none;
   }
   .session-title:focus:not(:focus-visible) {
     outline: none;
   }
-  .session-context {
-    margin-top: 4px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .session-state {
-    border-radius: var(--radius-pill);
-    padding: 4px 8px;
-    font-size: var(--size-meta);
-    text-transform: lowercase;
-    white-space: nowrap;
-  }
-  /* Soft tinted fills matching the session-state pills: state reads from
-     color, not from a hard outline. */
-  .vm-chip {
-    border-radius: var(--radius-pill);
-    padding: 4px 8px;
-    font-family: var(--font-mono);
-    font-size: var(--size-meta);
-    color: var(--muted);
-    background: var(--hover);
-    white-space: nowrap;
-  }
-  .vm-chip.vm-awake {
-    color: var(--ok);
-    background: var(--ok-soft);
-  }
-  .vm-chip.vm-asleep {
-    color: var(--dot-idle);
-    background: var(--hover);
-  }
-  .session-view-toggle {
+  .pill {
+    height: 24px;
     display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    padding: 0 9px;
+    border-radius: var(--radius-pill);
+    color: var(--text-soft);
+    background: var(--page-bg);
+    font: 11.5px var(--font-mono);
+    white-space: nowrap;
+  }
+  .pill-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-circle);
+    background: var(--ok);
+  }
+  .state-pill.needs_input {
+    color: var(--attn-text);
+  }
+  .state-pill.warn {
+    color: var(--err);
+  }
+  .seg {
+    height: 28px;
+    display: inline-flex;
+    flex: 0 0 auto;
+    margin-left: auto;
     overflow: hidden;
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    border-radius: 4px;
     background: var(--panel-bg);
   }
-  .session-view-toggle button {
-    min-height: 24px;
-    padding: 3px 8px;
+  .seg button {
+    height: 26px;
+    padding: 0 9px;
     border: 0;
     border-radius: 0;
     background: transparent;
     color: var(--text-soft);
-    font: var(--size-meta) var(--font-mono);
+    font-size: 12.5px;
   }
-  .session-view-toggle button + button {
-    border-left: 1px solid var(--line-strong);
+  .seg button + button {
+    border-left: 1px solid var(--line);
   }
-  .session-view-toggle button:hover {
+  .seg button:hover {
     background: var(--hover);
   }
-  .session-view-toggle button.on {
+  .seg button.selected {
     background: var(--ink);
     color: var(--ink-text);
   }
@@ -2610,27 +2697,17 @@
     border-radius: var(--radius-circle);
     background: var(--dot-idle);
   }
-  .session-state.warn {
-    color: var(--err);
-    background: var(--err-bg);
-  }
-  .session-state.needs_input {
-    color: var(--attn-text);
-    background: var(--attn-soft);
-  }
-  .session-state.running,
-  .session-state.working {
-    color: var(--ok);
-    background: var(--ok-soft);
-  }
   .turns {
     flex: 1;
-    padding: 8px 28px 20px;
+    padding: 24px 28px 20px;
     overflow: auto;
   }
   .turns-inner {
-    max-width: 860px;
+    max-width: 720px;
     margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
   }
   .walkthrough-page {
     flex: 1;
@@ -2656,80 +2733,109 @@
     margin-top: 24px;
   }
   .turn {
-    padding: 16px 0 12px;
-    border-top: 1px solid var(--line);
+    padding: 0;
   }
-  .turn:first-child {
-    border-top: 0;
+  .meta {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+  .meta-role {
+    color: var(--text-soft);
+    font: 600 12px var(--font-ui);
+  }
+  .prompt-meta {
+    margin-bottom: 6px;
+  }
+  .response-meta {
+    margin-top: 12px;
+  }
+  .meta-trailing,
+  .badge-failed {
+    margin-left: auto;
+  }
+  .meta-trailing + .badge-failed {
+    margin-left: 0;
   }
   .prompt {
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    background: var(--page-bg);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    padding: 8px 12px;
+    padding: 12px 14px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--code-bg);
+    font-size: 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
   }
   .prompt-text {
     color: var(--text);
-    font-weight: 500;
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
     min-width: 0;
-  }
-  .role {
-    color: var(--muted);
-    font-size: var(--size-meta);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    flex: 0 0 auto;
   }
   .steps {
     margin: 8px 0 0;
   }
   .steps summary {
+    height: 28px;
+    width: fit-content;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 9px 0 7px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    color: var(--text-soft);
+    font: 12px var(--font-mono);
+    list-style: none;
     cursor: pointer;
     user-select: none;
-    width: fit-content;
-    color: var(--muted);
-    font-size: var(--size-meta);
-    font-family: var(--font-mono);
-    border-radius: var(--radius-md);
+  }
+  .steps summary::-webkit-details-marker {
+    display: none;
+  }
+  .steps summary svg {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 120ms ease;
+  }
+  .steps[open] summary svg {
+    transform: rotate(90deg);
   }
   .steps summary:hover {
     color: var(--text);
   }
   .step-list {
-    margin: 8px 0 0;
+    margin: 8px 0 0 6px;
     padding: 0 0 0 12px;
-    border-left: 1px solid var(--line);
+    border-left: 2px solid var(--line);
     list-style: none;
     display: grid;
     gap: 4px;
   }
   .step-list li {
     min-width: 0;
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) auto;
+    gap: 8px;
+    color: var(--text-soft);
+    font: 12.5px var(--font-mono);
   }
   .step-verb {
-    color: var(--text);
-    font-weight: 600;
-    font-family: var(--font-mono);
-    font-size: var(--size-meta);
+    color: var(--muted);
   }
   .step-detail {
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: var(--size-meta);
+    color: var(--text-soft);
     overflow-wrap: anywhere;
   }
-  .step-earlier {
+  .step-duration {
     color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: var(--size-meta);
-  }
-  .live-steps {
-    margin-top: 8px;
   }
   .live-line {
     display: flex;
@@ -2745,11 +2851,11 @@
     color: var(--muted);
   }
   .live-dot {
-    flex: 0 0 8px;
-    width: 8px;
-    height: 8px;
+    flex: 0 0 6px;
+    width: 6px;
+    height: 6px;
     border-radius: var(--radius-circle);
-    background: currentColor;
+    background: var(--ok);
   }
   .live-latest {
     overflow: hidden;
@@ -2759,6 +2865,7 @@
   .result-md {
     margin-top: 8px;
     color: var(--text-soft);
+    font-size: 14px;
     line-height: 1.6;
     overflow-wrap: anywhere;
   }
@@ -2787,18 +2894,20 @@
   }
   .result-md :global(code) {
     font-family: var(--font-mono);
-    font-size: var(--size-body-mono);
+    font-size: 12.5px;
     background: var(--code-bg);
-    border-radius: var(--radius-sm);
-    padding: 4px 4px;
+    border-radius: 3px;
+    padding: 2px 4px;
   }
   .result-md :global(pre) {
     background: var(--code-bg);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    padding: 8px 12px;
+    border: 0;
+    border-radius: 6px;
+    padding: 12px 14px;
     overflow-x: auto;
     margin: 8px 0;
+    font-size: 12.5px;
+    line-height: 1.55;
   }
   .result-md :global(pre code) {
     background: none;
@@ -2825,14 +2934,15 @@
   }
   .turn-error {
     margin: 8px 0 0;
-    padding: 8px 12px;
+    padding: 12px 14px;
     background: var(--err-bg);
     border: 1px solid var(--err-line);
-    border-radius: var(--radius-lg);
+    border-radius: 6px;
     color: var(--err);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    line-height: 1.5;
+    font-size: 12.5px;
+    line-height: 1.55;
   }
   /* --attn-text, not --attn: --attn on --attn-soft is 4.09:1 in the day
      palette and 3.91:1 at night, both under the 4.5:1 AA floor for body
@@ -2849,13 +2959,6 @@
     font-size: var(--size-meta);
     line-height: 1.5;
   }
-  .turn-meta {
-    display: flex;
-    gap: 12px;
-    margin-top: 8px;
-    color: var(--text-soft);
-    font-size: var(--size-meta);
-  }
   .badge-failed {
     color: var(--err);
     font-weight: 600;
@@ -2864,26 +2967,89 @@
     border-top: 1px solid var(--line);
     padding: 12px 28px 16px;
   }
-  .composer-inner {
-    max-width: 860px;
+  .box {
+    max-width: 720px;
     margin: 0 auto;
-    display: grid;
+    overflow: hidden;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    background: var(--panel-bg);
+  }
+  .box:focus-within {
+    border-color: var(--info);
+    outline: 2px solid var(--info);
+    outline-offset: 1px;
+  }
+  .composer .box textarea {
+    min-height: 64px;
+    resize: none;
+    padding: 12px 14px 6px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    font-size: 14px;
+    line-height: 1.5;
+    outline: none;
+  }
+  .bar {
+    display: flex;
+    align-items: center;
     gap: 8px;
+    padding: 4px 8px 8px 10px;
   }
-  .composer textarea {
-    resize: vertical;
-    min-height: 70px;
+  .model-picker.composer-model {
+    position: relative;
+    flex: 0 0 auto;
   }
-  .composer-actions {
-    align-items: flex-start;
+  .model-picker.composer-model::after {
+    position: absolute;
+    top: 50%;
+    right: 7px;
+    color: var(--muted);
+    content: "▾";
+    font: 12px var(--font-mono);
+    pointer-events: none;
+    transform: translateY(-55%);
   }
-  .send-button {
+  .model-picker.composer-model select {
+    width: auto;
+    min-width: 62px;
+    height: 28px;
+    padding: 0 24px 0 7px;
+    border: 0;
+    color: var(--text-soft);
+    background: transparent;
+    font: 12px var(--font-mono);
+  }
+  .composer-hint {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+  .composer-submit {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    flex: 0 0 32px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--ink);
+    border-radius: 4px;
     color: var(--ink-text);
     background: var(--ink);
-    border-color: var(--ink);
-    font-weight: 600;
   }
-  .send-button:disabled {
+  .composer-submit svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .composer-submit:disabled {
     cursor: not-allowed;
     opacity: 0.45;
   }
@@ -2902,6 +3068,8 @@
   }
   .new-panel-scrim,
   .mobile-detail-nav,
+  .mobile-back,
+  .mobile-jump,
   .jump {
     display: none;
   }
@@ -3035,9 +3203,13 @@
       background: transparent;
     }
     .mobile-back {
-      min-height: 44px;
-      padding: 0 8px;
-      color: var(--info);
+      width: 44px;
+      flex: 0 0 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      color: var(--muted);
     }
     .mobile-jump {
       width: 44px;
@@ -3048,6 +3220,7 @@
       padding: 0;
       color: var(--muted);
     }
+    .mobile-back svg,
     .mobile-jump svg,
     .jump svg {
       width: 16px;
@@ -3078,7 +3251,29 @@
       font-weight: 600;
     }
     .transcript-head {
-      padding: 12px 16px;
+      flex-basis: 56px;
+      height: 56px;
+      gap: 0;
+      padding: 0 4px 0 0;
+    }
+    .session-title {
+      flex: 1;
+      font-size: 15px;
+      line-height: 1.15;
+    }
+    .session-mobile-meta {
+      display: block;
+      margin-top: 3px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 400;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pill,
+    .seg {
+      display: none;
     }
     .new-panel-scrim {
       display: block;
@@ -3106,19 +3301,13 @@
       border-top: 1px solid var(--line-strong);
       border-radius: 8px 8px 0 0;
     }
-    .model-picker select {
+    .new-panel .model-picker select {
       min-height: 44px;
     }
     .new-button,
-    .destroy-button,
     .quiet-button,
-    .send-button {
+    .primary-button {
       min-height: 44px;
-    }
-    .steps summary {
-      min-height: 44px;
-      display: inline-flex;
-      align-items: center;
     }
     .row,
     .row.search-result {
@@ -3128,15 +3317,57 @@
     .hist {
       min-height: 44px;
     }
-    .transcript-head,
     .turns,
-    .walkthrough-page,
-    .composer {
+    .walkthrough-page {
       padding-left: 16px;
       padding-right: 16px;
     }
-    .session-view-toggle button {
-      min-height: 32px;
+    .composer {
+      padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 34px));
+    }
+    .box {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 44px;
+      grid-template-rows: 44px 34px;
+      column-gap: 8px;
+      align-items: stretch;
+    }
+    .composer .box textarea {
+      grid-column: 1;
+      grid-row: 1;
+      width: 100%;
+      min-height: 44px;
+      height: 44px;
+      padding: 10px 12px;
+      font-size: 15px;
+    }
+    .bar {
+      display: contents;
+    }
+    .model-picker.composer-model {
+      grid-column: 1;
+      grid-row: 2;
+      align-self: center;
+      justify-self: start;
+      margin-left: 4px;
+    }
+    .model-picker.composer-model select {
+      min-height: 28px;
+    }
+    .composer-hint {
+      grid-column: 1;
+      grid-row: 2;
+      align-self: center;
+      justify-self: end;
+      margin-left: 0;
+    }
+    .composer-submit {
+      grid-column: 2;
+      grid-row: 1;
+      width: 44px;
+      height: 44px;
+      flex-basis: 44px;
+      border-radius: 6px;
     }
     /* A fold persisted on desktop must not blank the phone column: these
        outrank the collapsed rules above by source order at equal specificity. */

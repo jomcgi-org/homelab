@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isInFlight, partitionRuns, recentRuns } from "./run-history.js";
+import {
+  clockTime,
+  isInFlight,
+  partitionRuns,
+  recentRuns,
+} from "./run-history.js";
 
 describe("run history", () => {
   it("partitions by the DBOS status field", () => {
@@ -24,5 +29,17 @@ describe("run history", () => {
     const old = { completed_at: "2026-08-12T11:59:59Z" };
 
     expect(recentRuns([recent, old], now)).toEqual([recent]);
+  });
+
+  it("formats a timestamp as local 24 hour clock time", () => {
+    const value = "2026-08-22T14:02:00Z";
+    const local = new Date(value);
+    const expected = `${String(local.getHours()).padStart(2, "0")}:${String(
+      local.getMinutes(),
+    ).padStart(2, "0")}`;
+
+    expect(clockTime(value)).toBe(expected);
+    expect(clockTime("not-a-time")).toBe("");
+    expect(clockTime(null)).toBe("");
   });
 });

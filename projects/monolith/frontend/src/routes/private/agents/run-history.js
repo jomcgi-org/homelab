@@ -43,6 +43,15 @@ export function relativeTime(value, now = Date.now()) {
   return `${Math.floor(months / 12)}${RUN_LEXICON.units.y}`;
 }
 
+export function clockTime(value) {
+  if (!value) return "";
+  const date = new Date(timestamp(value));
+  if (Number.isNaN(date.getTime())) return "";
+  return `${String(date.getHours()).padStart(2, "0")}:${String(
+    date.getMinutes(),
+  ).padStart(2, "0")}`;
+}
+
 export function recentRuns(
   runs,
   now = Date.now(),
