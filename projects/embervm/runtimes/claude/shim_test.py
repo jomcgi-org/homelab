@@ -327,6 +327,8 @@ for line in sys.stdin:
     elif command == "set_model":
         state["model"] = {"id": request["modelId"]}
         response(command, data=state["model"])
+    elif command == "set_thinking_level":
+        response(command, data={"level": request["level"]})
     elif command == "switch_session":
         if os.environ.get("FAKE_PI_SWITCH") == "failed":
             response(command, success=False)
@@ -478,6 +480,37 @@ def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
     assert record["session_id"] == "pi-session"
     assert "input_tokens" in record["usage"]
     assert record["activities"] == [{"type": "bash", "command": "echo pi"}]
+    manager._close_process()
+
+
+def test_resolve_thinking_level():
+    assert shim._resolve_thinking_level(None) == shim.PI_DEFAULT_THINKING_LEVEL
+    assert shim._resolve_thinking_level(True) == "high"
+    assert shim._resolve_thinking_level(False) == "off"
+    assert shim._resolve_thinking_level("medium") == "medium"
+    assert shim._resolve_thinking_level("bogus") == shim.PI_DEFAULT_THINKING_LEVEL
+
+
+@pytest.mark.parametrize(
+    ("thinking", "expected"),
+    [("high", "high"), (None, shim.PI_DEFAULT_THINKING_LEVEL)],
+)
+def test_pi_turn_sets_thinking_level_before_prompt(
+    tmp_path, monkeypatch, thinking, expected
+):
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="qwen", thinking=thinking)
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
+    ]
+    commands = [request["type"] for request in requests]
+    thinking_index = commands.index("set_thinking_level")
+    assert requests[thinking_index] == {
+        "type": "set_thinking_level",
+        "level": expected,
+    }
+    assert thinking_index < commands.index("prompt")
     manager._close_process()
 
 
@@ -2563,6 +2596,12 @@ def test_system_prompt_validation_and_forwarding():
     assert post({"message": "hello"}, manager) == [(200, {"result": "ok"})]
     assert manager.calls[0][1] == {}
 
+    manager = _Manager()
+    assert post({"message": "hello", "thinking": "high"}, manager) == [
+        (200, {"result": "ok"})
+    ]
+    assert manager.calls[0][1] == {"thinking": "high"}
+
     for token in ("", 123):
         manager = _Manager()
         responses = post({"message": "hello", "system_prompt": token}, manager)
@@ -2578,9 +2617,22 @@ def test_system_prompt_validation_and_forwarding():
         ]
         assert manager.calls == []
 
+    manager = _Manager()
+    responses = post({"message": "hello", "thinking": "bogus"}, manager)
+    assert responses == [
+        (
+            400,
+            {
+                "error": "thinking must be a bool or one of %s"
+                % (shim.PI_THINKING_LEVELS,)
+            },
+        )
+    ]
+    assert manager.calls == []
 
-def test_progress_token_forwarded_to_claude_adapter(monkeypatch):
-    """ProcessManager.turn forwards progress_token only when supplied."""
+
+def test_process_manager_forwards_adapter_specific_turn_options(monkeypatch):
+    """ProcessManager.turn forwards options only to adapters that accept them."""
     manager = _new_process_manager()
     manager._hydration_error = None
     manager._hydration_status = None
@@ -2611,6 +2663,16 @@ def test_progress_token_forwarded_to_claude_adapter(monkeypatch):
     manager.turn("msg", session_id="s1", model=None)
     assert len(calls) == 1
     assert "progress_token" not in calls[0][1]
+
+    calls.clear()
+    manager.turn("msg", session_id="s1", model="qwen", thinking="high")
+    assert len(calls) == 1
+    assert calls[0][1].get("thinking") == "high"
+
+    calls.clear()
+    manager.turn("msg", session_id="s1", model=None, thinking="high")
+    assert len(calls) == 1
+    assert "thinking" not in calls[0][1]
 
 
 def test_throttle_allows_push_after_0_2_seconds(monkeypatch):
