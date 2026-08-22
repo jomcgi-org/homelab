@@ -175,6 +175,33 @@ def test_renders_are_non_empty(renders):
     )
 
 
+def test_dev_brick_controller_and_warmth_gc_envs_render(renders):
+    def control_plane_env(rendered: str) -> dict[str, str]:
+        deployments = [
+            doc
+            for kind, _, doc in _docs(rendered)
+            if kind == "Deployment"
+            and re.search(r"^\s+- name: control-plane\s*$", doc, re.M)
+        ]
+        assert len(deployments) == 1, (
+            f"expected one control-plane Deployment, found {len(deployments)}"
+        )
+        return dict(
+            re.findall(
+                r'^\s+- name: (EMBERVM_[A-Z0-9_]+)\s*\n\s+value: "([^"]*)"\s*$',
+                deployments[0],
+                re.M,
+            )
+        )
+
+    prod_env = control_plane_env(renders["prod"])
+    dev_env = control_plane_env(renders["dev"])
+
+    assert "EMBERVM_BRICK_AUTOSCALE_MODE" in prod_env
+    assert dev_env.get("EMBERVM_BRICK_AUTOSCALE_MODE") == "observe"
+    assert dev_env.get("EMBERVM_WARMTH_S3_GC_EXPECTED_NODES") == "node-4"
+
+
 def test_noded_bearer_secret_flips_control_plane_and_bricks_together():
     chart = _chart_dir()
     enabled = _render(
