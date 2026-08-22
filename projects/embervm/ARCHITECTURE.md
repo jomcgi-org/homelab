@@ -68,7 +68,7 @@ compare against.
 | Brick autoscale | **Built** at rung `up`; **Planned** scale-down | Full ladder remains |
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
 | Transport auth CP-to-noded | **Built** (bearer + policy) | mTLS/SPIFFE remains the upgrade path |
-| Encryption at rest | **Planned** | Per-principal mutable artifacts (#4691); Account-scoped immutable rootfs chunks (ADR 028, #4182) |
+| Encryption at rest | **Planned** | Per-principal mutable artifacts (#4691); Account-scoped immutable rootfs chunks (ADR 028, #4182); custodian **Built** (#4976) |
 | Cells / multi-cell | **Planned** | No cell seams exist in code yet (#4753); one control plane today |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
 | Website snapshotter (task guest) | **Built** | Headless Chromium screenshot over MCP (ADR embervm/035), #4994 |
@@ -667,6 +667,12 @@ cross the isolation boundary), and shared platform definitions (such as the
 sandbox-session and scan-fleet templates) owned by a reserved `platform`
 principal with an explicit broad instantiation grant, the widest and
 most-reviewed grant in the system. Neither exists in code today.
+
+`Embervm.KeyService` is the platform key custodian from ADR embervm/036. It
+derives per-principal, per-epoch KEKs on demand from one root and stores only
+the current epoch and minimum accepted epoch, whose floor is the revocation
+fact. It starts inert when no root is configured. No artifact is encrypted yet;
+the first consumer remains tracked by #4691.
 
 **Decided direction:**
 

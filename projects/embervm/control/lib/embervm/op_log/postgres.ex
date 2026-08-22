@@ -229,6 +229,16 @@ defmodule Embervm.OpLog.Postgres do
       updated_at BIGINT NOT NULL
     )
     """,
+    # Key custodian projection (ADR embervm/036): no key material is stored,
+    # only the current derivation epoch and the minimum epoch still accepted.
+    """
+    CREATE TABLE IF NOT EXISTS key_epochs (
+      principal TEXT PRIMARY KEY,
+      current_epoch BIGINT NOT NULL,
+      min_epoch BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS blessing_lease (
       workload TEXT NOT NULL,
@@ -345,6 +355,11 @@ defmodule Embervm.OpLog.Postgres do
   @impl Embervm.OpLog
   def load_volume_blessing(server \\ __MODULE__) do
     GenServer.call(server, :load_volume_blessing)
+  end
+
+  @impl Embervm.OpLog
+  def load_key_epochs(server \\ __MODULE__) do
+    GenServer.call(server, :load_key_epochs)
   end
 
   @impl Embervm.OpLog
@@ -495,6 +510,10 @@ defmodule Embervm.OpLog.Postgres do
     {:reply, do_load_volume_blessing(state.conn), state}
   end
 
+  def handle_call(:load_key_epochs, _from, state) do
+    {:reply, do_load_key_epochs(state.conn), state}
+  end
+
   def handle_call(:load_blessing_leases, _from, state) do
     {:reply, do_load_blessing_leases(state.conn), state}
   end
@@ -580,6 +599,91 @@ defmodule Embervm.OpLog.Postgres do
       {:ok, seq}
     end
   end
+
+  # Keep this list next to project/3. It is the explicit projection dispatch
+  # surface, including the audit-only clause, and is compared with SQLite by a
+  # database-free parity test.
+  @projected_kinds [
+    :submitted,
+    :assigned,
+    :started,
+    :succeeded,
+    :failed,
+    :retried,
+    :dead_lettered,
+    :redrive,
+    :denied,
+    :base_built,
+    :primed,
+    :vm_destroyed,
+    :quota_enforced,
+    :drain,
+    :session_created,
+    :session_invoked,
+    :session_banked,
+    :session_parked,
+    :session_parking,
+    :session_relit,
+    :session_rejoined,
+    :session_expired,
+    :session_evicted,
+    :session_destroying,
+    :session_destroyed,
+    :session_failed,
+    :serving_started,
+    :serving_published,
+    :serving_unpublished,
+    :serving_banked,
+    :serving_relit,
+    :serving_evicted,
+    :serving_destroying,
+    :serving_destroyed,
+    :serving_failed,
+    :serving_stats,
+    :volume_created,
+    :volume_deleted,
+    :stateful_started,
+    :stateful_published,
+    :stateful_unpublished,
+    :stateful_banked,
+    :stateful_relit,
+    :stateful_cold_booted,
+    :stateful_evicted,
+    :stateful_destroying,
+    :stateful_destroyed,
+    :stateful_failed,
+    :stateful_stats,
+    :generation_blessed,
+    :blessing_lease_granted,
+    :checkpoint_dispatched,
+    :checkpoint_resolved,
+    :group_created,
+    :group_net_created,
+    :group_net_deleted,
+    :group_member_started,
+    :group_running,
+    :group_published,
+    :group_unpublished,
+    :group_banked,
+    :group_relit,
+    :group_fresh_booted,
+    :group_set_evicted,
+    :group_degraded,
+    :group_destroying,
+    :group_destroyed,
+    :group_failed,
+    :group_stats,
+    :node_drain_started,
+    :node_drain_finished,
+    :key_epoch_set,
+    :key_min_epoch_raised,
+    :artifact_exported,
+    :artifact_restored,
+    :artifact_evicted_remote
+  ]
+
+  @doc false
+  def projected_kinds, do: @projected_kinds
 
   # Write-through projection: applies the effect of one op onto the mutable
   # tasks/results tables, mirroring Embervm.OpLog.SQLite.project/3 exactly
@@ -906,6 +1010,17 @@ defmodule Embervm.OpLog.Postgres do
   defp project(conn, %Op{kind: :serving_evicted} = op, _seq),
     do: terminate_serving(conn, op, "evicted")
 
+  defp project(conn, %Op{kind: :serving_destroying} = op, _seq) do
+    exec(
+      conn,
+      "UPDATE serving_instances SET state='destroying', updated_at=$1 WHERE instance_id=$2",
+      [
+        op.ts,
+        op.serving_instance_id
+      ]
+    )
+  end
+
   defp project(conn, %Op{kind: :serving_destroyed} = op, _seq),
     do: terminate_serving(conn, op, "destroyed")
 
@@ -964,6 +1079,38 @@ defmodule Embervm.OpLog.Postgres do
       op.ts,
       op.ts
     ])
+  end
+
+  defp project(conn, %Op{kind: :key_epoch_set} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    INSERT INTO key_epochs (principal, current_epoch, min_epoch, updated_at)
+    VALUES ($1, $2, 0, $3)
+    ON CONFLICT(principal) DO UPDATE SET
+      current_epoch = excluded.current_epoch,
+      updated_at = excluded.updated_at
+    """
+
+    exec(conn, sql, [
+      Map.fetch!(payload, :principal),
+      Map.fetch!(payload, :epoch),
+      op.ts
+    ])
+  end
+
+  defp project(conn, %Op{kind: :key_min_epoch_raised} = op, _seq) do
+    payload = op.payload
+
+    exec(
+      conn,
+      "UPDATE key_epochs SET min_epoch=$1, updated_at=$2 WHERE principal=$3",
+      [
+        Map.fetch!(payload, :min_epoch),
+        op.ts,
+        Map.fetch!(payload, :principal)
+      ]
+    )
   end
 
   defp project(conn, %Op{kind: :blessing_lease_granted} = op, _seq) do
@@ -1080,6 +1227,17 @@ defmodule Embervm.OpLog.Postgres do
 
   defp project(conn, %Op{kind: :stateful_evicted} = op, _seq),
     do: terminate_stateful(conn, op, "evicted")
+
+  defp project(conn, %Op{kind: :stateful_destroying} = op, _seq) do
+    exec(
+      conn,
+      "UPDATE stateful_instances SET state='destroying', updated_at=$1 WHERE instance_id=$2",
+      [
+        op.ts,
+        op.stateful_instance_id
+      ]
+    )
+  end
 
   defp project(conn, %Op{kind: :stateful_destroyed} = op, _seq),
     do: terminate_stateful(conn, op, "destroyed")
@@ -1201,6 +1359,17 @@ defmodule Embervm.OpLog.Postgres do
         member -> set_member_health(conn, op.group_instance_id, member, false, op.ts)
       end
     end
+  end
+
+  defp project(conn, %Op{kind: :group_destroying} = op, _seq) do
+    exec(
+      conn,
+      "UPDATE group_instances SET state='destroying', updated_at=$1 WHERE instance_id=$2",
+      [
+        op.ts,
+        op.group_instance_id
+      ]
+    )
   end
 
   defp project(conn, %Op{kind: :group_destroyed} = op, _seq),
@@ -1859,6 +2028,26 @@ defmodule Embervm.OpLog.Postgres do
              workload: workload,
              blessed_generation: blessed_generation,
              created_at: created_at,
+             updated_at: updated_at
+           }
+         end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_load_key_epochs(conn) do
+    sql = "SELECT principal, current_epoch, min_epoch, updated_at FROM key_epochs"
+
+    case Postgrex.query(conn, sql, []) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [principal, current_epoch, min_epoch, updated_at] ->
+           %{
+             principal: principal,
+             current_epoch: current_epoch,
+             min_epoch: min_epoch,
              updated_at: updated_at
            }
          end)}

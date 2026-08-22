@@ -247,6 +247,11 @@ defmodule Embervm.OpLog do
     # projection table (like :drain), the log itself is the audit record.
     :node_drain_started,
     :node_drain_finished,
+    # Key custodian facts (ADR embervm/036): per-principal KEKs are derived and
+    # never stored. These two facts are the complete durable key state. Epoch 0
+    # is valid before the first row; the minimum epoch is the revocation floor.
+    :key_epoch_set,
+    :key_min_epoch_raised,
     # Continuity: off-node artifact durability (R6, ADR embervm/009). Audit-only
     # kinds recording an artifact moving between node disk and the object store:
     # artifact_exported when a bank commit's write-back completes, artifact_restored
@@ -305,6 +310,9 @@ defmodule Embervm.OpLog do
   # StatefulStore.get_volume/2's nil-means-no-volume-yet contract). A
   # projection read, never the raw ops log.
   @callback load_volume_blessing(server()) :: {:ok, [map()]} | {:error, term()}
+  # Loads every principal's current KEK epoch and minimum accepted epoch from
+  # the durable key_epochs projection (ADR embervm/036).
+  @callback load_key_epochs(server()) :: {:ok, [map()]} | {:error, term()}
   @callback load_blessing_leases(server()) :: {:ok, [map()]} | {:error, term()}
   # Loads every in-flight checkpoint-dispatch row from the durable
   # `checkpoint_dispatch` projection (R7, ADR embervm/017): the per-workload

@@ -2,6 +2,7 @@ defmodule Embervm.OpLogPayloadsTest do
   use ExUnit.Case, async: true
 
   alias Embervm.OpLog.SQLite
+  alias Embervm.KeyService
   alias Embervm.PrimedOp
   alias Embervm.SessionStore
   alias Embervm.TaskStore
@@ -191,6 +192,35 @@ defmodule Embervm.OpLogPayloadsTest do
 
     assert MapSet.new(Map.keys(task.payload)) == MapSet.new(Map.keys(session.payload))
     assert MapSet.new(Map.keys(task.payload)) == MapSet.new([:lane, :workload, :vm_id, :node_id])
+  end
+
+  test "key custodian payloads use the documented string keys", %{path: path} do
+    {:ok, op_log} = SQLite.start_link(path: path, name: nil)
+
+    {:ok, service} =
+      KeyService.start_link(
+        name: nil,
+        root: :binary.copy(<<0>>, 32),
+        op_log: op_log,
+        op_log_mod: SQLite,
+        tenant: "test",
+        clock: fn -> 1_000 end
+      )
+
+    assert {:ok, 2} = KeyService.set_epoch(service, "principal-1", 2, "rotate")
+    assert {:ok, 1} = KeyService.raise_min_epoch(service, "principal-1", 1, "revoke")
+
+    epoch_set = read_kind(op_log, :key_epoch_set)
+    assert Map.keys(epoch_set.payload) |> Enum.sort() == ~w(epoch principal reason)
+    assert epoch_set.payload["principal"] == "principal-1"
+    assert epoch_set.payload["epoch"] == 2
+    assert epoch_set.payload["reason"] == "rotate"
+
+    floor_raised = read_kind(op_log, :key_min_epoch_raised)
+    assert Map.keys(floor_raised.payload) |> Enum.sort() == ~w(min_epoch principal reason)
+    assert floor_raised.payload["principal"] == "principal-1"
+    assert floor_raised.payload["min_epoch"] == 1
+    assert floor_raised.payload["reason"] == "revoke"
   end
 
   # ts is taken inside the builder on purpose (see Embervm.PrimedOp), because

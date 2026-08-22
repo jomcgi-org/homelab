@@ -325,6 +325,16 @@ defmodule Embervm.OpLog.SQLite do
       updated_at INTEGER NOT NULL
     )
     """,
+    # Key custodian projection (ADR embervm/036): no key material is stored,
+    # only the current derivation epoch and the minimum epoch still accepted.
+    """
+    CREATE TABLE IF NOT EXISTS key_epochs (
+      principal TEXT PRIMARY KEY,
+      current_epoch INTEGER NOT NULL,
+      min_epoch INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS blessing_lease (
       workload TEXT NOT NULL,
@@ -484,6 +494,11 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def load_key_epochs(server \\ __MODULE__) do
+    GenServer.call(server, :load_key_epochs)
+  end
+
+  @impl Embervm.OpLog
   def load_blessing_leases(server \\ __MODULE__) do
     GenServer.call(server, :load_blessing_leases)
   end
@@ -612,6 +627,10 @@ defmodule Embervm.OpLog.SQLite do
     {:reply, do_load_volume_blessing(state.conn), state}
   end
 
+  def handle_call(:load_key_epochs, _from, state) do
+    {:reply, do_load_key_epochs(state.conn), state}
+  end
+
   def handle_call(:load_blessing_leases, _from, state) do
     {:reply, do_load_blessing_leases(state.conn), state}
   end
@@ -710,6 +729,91 @@ defmodule Embervm.OpLog.SQLite do
       {:ok, seq}
     end
   end
+
+  # Keep this list next to project/3. It is the explicit projection dispatch
+  # surface, including the audit-only clause, and is compared with Postgres by
+  # a database-free parity test.
+  @projected_kinds [
+    :submitted,
+    :assigned,
+    :started,
+    :succeeded,
+    :failed,
+    :retried,
+    :dead_lettered,
+    :redrive,
+    :denied,
+    :base_built,
+    :primed,
+    :vm_destroyed,
+    :quota_enforced,
+    :drain,
+    :session_created,
+    :session_invoked,
+    :session_banked,
+    :session_parked,
+    :session_parking,
+    :session_relit,
+    :session_rejoined,
+    :session_expired,
+    :session_evicted,
+    :session_destroying,
+    :session_destroyed,
+    :session_failed,
+    :serving_started,
+    :serving_published,
+    :serving_unpublished,
+    :serving_banked,
+    :serving_relit,
+    :serving_evicted,
+    :serving_destroying,
+    :serving_destroyed,
+    :serving_failed,
+    :serving_stats,
+    :volume_created,
+    :volume_deleted,
+    :stateful_started,
+    :stateful_published,
+    :stateful_unpublished,
+    :stateful_banked,
+    :stateful_relit,
+    :stateful_cold_booted,
+    :stateful_evicted,
+    :stateful_destroying,
+    :stateful_destroyed,
+    :stateful_failed,
+    :stateful_stats,
+    :generation_blessed,
+    :blessing_lease_granted,
+    :checkpoint_dispatched,
+    :checkpoint_resolved,
+    :group_created,
+    :group_net_created,
+    :group_net_deleted,
+    :group_member_started,
+    :group_running,
+    :group_published,
+    :group_unpublished,
+    :group_banked,
+    :group_relit,
+    :group_fresh_booted,
+    :group_set_evicted,
+    :group_degraded,
+    :group_destroying,
+    :group_destroyed,
+    :group_failed,
+    :group_stats,
+    :node_drain_started,
+    :node_drain_finished,
+    :key_epoch_set,
+    :key_min_epoch_raised,
+    :artifact_exported,
+    :artifact_restored,
+    :artifact_evicted_remote
+  ]
+
+  @doc false
+  def projected_kinds, do: @projected_kinds
 
   # Write-through projection: applies the effect of one op onto the mutable
   # tasks/results tables. Kinds not listed here are audit-only (ops row
@@ -1269,6 +1373,49 @@ defmodule Embervm.OpLog.SQLite do
              Map.get(payload, :generation),
              op.ts,
              op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # The custodian's current epoch is an upsert because epoch 0 has no row. A new
+  # row starts with floor 0; later epoch changes preserve the existing floor.
+  defp project(conn, %Op{kind: :key_epoch_set} = op, _seq) do
+    payload = op.payload
+
+    sql = """
+    INSERT INTO key_epochs (principal, current_epoch, min_epoch, updated_at)
+    VALUES (?, ?, 0, ?)
+    ON CONFLICT(principal) DO UPDATE SET
+      current_epoch = excluded.current_epoch,
+      updated_at = excluded.updated_at
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.fetch!(payload, :principal),
+             Map.fetch!(payload, :epoch),
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  defp project(conn, %Op{kind: :key_min_epoch_raised} = op, _seq) do
+    payload = op.payload
+    sql = "UPDATE key_epochs SET min_epoch=?, updated_at=? WHERE principal=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             Map.fetch!(payload, :min_epoch),
+             op.ts,
+             Map.fetch!(payload, :principal)
            ]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
@@ -2573,6 +2720,33 @@ defmodule Embervm.OpLog.SQLite do
       rows = collect_volume_blessing(conn, stmt, [])
       :ok = Sqlite3.release(conn, stmt)
       {:ok, rows}
+    end
+  end
+
+  defp do_load_key_epochs(conn) do
+    sql = "SELECT principal, current_epoch, min_epoch, updated_at FROM key_epochs"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      rows = collect_key_epochs(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      {:ok, rows}
+    end
+  end
+
+  defp collect_key_epochs(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, [principal, current_epoch, min_epoch, updated_at]} ->
+        row = %{
+          principal: principal,
+          current_epoch: current_epoch,
+          min_epoch: min_epoch,
+          updated_at: updated_at
+        }
+
+        collect_key_epochs(conn, stmt, [row | acc])
+
+      :done ->
+        Enum.reverse(acc)
     end
   end
 
