@@ -106,6 +106,14 @@ func (a *groupActivator) handle(ctx context.Context, conn net.Conn, listenPort u
 		return
 	}
 
+	// ADR embervm/037: splice-through above still serves a live entry member;
+	// a silenced brick starts no group set.
+	if err := a.server.refuseIfSilenced("group member start"); err != nil {
+		a.server.logger.Warn("group activator: refusing member start", "workload", reg.Workload, "err", err)
+		_ = conn.Close()
+		return
+	}
+
 	flight, leader, ok := a.join(reg.Workload)
 	if !ok {
 		a.server.logger.Warn("group activator: wake rejected by local limit", "workload", reg.Workload)

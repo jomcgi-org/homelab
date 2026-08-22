@@ -143,6 +143,16 @@ func (a *statefulActivator) handle(ctx context.Context, conn net.Conn, listenPor
 		}
 	}
 
+	// ADR embervm/037: splice-through above still serves an already-live VM;
+	// a silenced brick starts nothing new. The waitForInFlight timeout path
+	// above may still forward to the configured control-plane address (that is
+	// not node-local authority; the dial fails harmlessly when partitioned).
+	if err := a.server.refuseIfSilenced("stateful activator wake"); err != nil {
+		a.server.logger.Warn("stateful activator: refusing wake", "workload", reg.Workload, "err", err)
+		_ = conn.Close()
+		return
+	}
+
 	flight, leader, ok := a.join(reg.Workload)
 	if !ok {
 		a.server.logger.Warn("stateful activator: wake rejected by local limit", "workload", reg.Workload)

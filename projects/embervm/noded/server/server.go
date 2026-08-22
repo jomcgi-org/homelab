@@ -273,6 +273,14 @@ type Server struct {
 	draining            bool
 	drainDeadlineUnixMs int64
 
+	// lastContact is the instant of the last successful control-plane contact
+	// (a 2xx dial-home POST or a WatchNode send), the clock behind the ADR
+	// embervm/037 brick silence gate (see silenced/refuseIfSilenced). Stored as
+	// a time.Time carrying Go's monotonic reading so the age comparison is
+	// immune to NTP steps; zero means never contacted.
+	contactMu   sync.Mutex
+	lastContact time.Time
+
 	// activeBuilds tracks in-flight BuildBase work so a drain can finish-or-abort
 	// it inside the budget (artifact-decoupling Phase 0). Each entry's cancel tears
 	// its build context down: runBuild's deferred Release + RemoveBundle destroy the
@@ -581,6 +589,49 @@ func (s *Server) refuseIfStale(what string) error {
 		return status.Errorf(codes.FailedPrecondition, "noded: registry stale, awaiting live sync (refusing %s)", what)
 	}
 	return nil
+}
+
+// noteContact records one successful control-plane contact. time.Now embeds a
+// monotonic reading, so silenced's time.Since age check never reads the wall
+// clock and an NTP step cannot arm or disarm the gate.
+func (s *Server) noteContact() {
+	s.contactMu.Lock()
+	s.lastContact = time.Now()
+	s.contactMu.Unlock()
+}
+
+// silenced reports whether ADR embervm/037's silence bound has elapsed: no
+// control-plane contact for longer than SilenceTimeoutSeconds. A zero timeout
+// disables the gate. Never contacted (a fresh boot whose dial-home has not yet
+// succeeded) counts as silent once armed, so a booted-and-partitioned brick
+// cannot admit new work indefinitely.
+func (s *Server) silenced() bool {
+	timeout := time.Duration(s.cfg.SilenceTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		return false
+	}
+	s.contactMu.Lock()
+	last := s.lastContact
+	s.contactMu.Unlock()
+	return last.IsZero() || time.Since(last) > timeout
+}
+
+// refuseIfSilenced rejects NEW node-local work from a silenced brick (ADR
+// embervm/037): it only refuses admission and never destroys, banks, or drains
+// anything; live VMs keep running. Mirrors refuseIfStale's shape and code.
+func (s *Server) refuseIfSilenced(what string) error {
+	if !s.silenced() {
+		return nil
+	}
+	return status.Errorf(codes.FailedPrecondition, "noded: brick silent past silence timeout, refusing %s", what)
+}
+
+// setLastContactForTest pins the contact instant so tests can age past the
+// silence bound without sleeping.
+func (s *Server) setLastContactForTest(t time.Time) {
+	s.contactMu.Lock()
+	s.lastContact = t
+	s.contactMu.Unlock()
 }
 
 // hasPrimedForWorkload reports whether the task pool already holds at least one
@@ -1742,7 +1793,13 @@ func (s *Server) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerStrea
 		if id := req.GetNodeId(); id != "" {
 			ns.NodeId = id
 		}
-		return stream.Send(ns)
+		if err := stream.Send(ns); err != nil {
+			return err
+		}
+		// Every successful NodeStatus send is control-plane contact (ADR
+		// embervm/037): refresh the silence clock alongside the dial-home POST.
+		s.noteContact()
+		return nil
 	}
 	if err := send(); err != nil {
 		return err

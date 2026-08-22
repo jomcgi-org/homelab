@@ -189,6 +189,10 @@ noded:
   # this, startup GC only ever removes a claim older than staleAfterSeconds.
   warmthHeartbeat:
     reapUnclaimed: true
+  # ARMED: brick silence timeout, ~6h (ADR embervm/037, #5073). A brick with no
+  # dial-home or WatchNode contact past this bound refuses new node-local work;
+  # live VMs keep running. Rollback: set back to "".
+  silenceTimeoutSeconds: "21600"
   # WILDCARD DAEMONSET DEPRECATED (bricks-only migration). The per-node wildcard
   # noded DaemonSet is retired: node capacity is now provided entirely by the
   # size-class brick Deployments the BrickController autoscales (bricks.autoscale

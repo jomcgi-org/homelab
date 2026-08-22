@@ -198,6 +198,9 @@ func (s *Server) register(ctx context.Context, doer httpDoer, bootID string) err
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("control plane rejected registration: status %d", resp.StatusCode)
 	}
+	// A 2xx POST is control-plane contact (ADR embervm/037): refresh the
+	// silence clock. A failed or rejected POST leaves it stale.
+	s.noteContact()
 	return nil
 }
 

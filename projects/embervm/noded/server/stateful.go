@@ -111,6 +111,12 @@ func (s *Server) attachGeneration(workload string, blessedGeneration uint64, act
 		return gen, nil
 	}
 	if activatorOrigin {
+		// ADR embervm/037: node-local self-advancement of a generation is new
+		// work and stops while the brick is silenced. The control-plane-issued
+		// blessed_generation path above is deliberately NOT gated.
+		if err := s.refuseIfSilenced(fmt.Sprintf("blessing-lease self-advance for %q", workload)); err != nil {
+			return 0, err
+		}
 		generations, err := s.volumes.ConsumeGenerationFromLease(workload, 1)
 		if err != nil {
 			s.logger.Error("noded: blessing lease read or persist failed; falling back to unblessable self-bump", "workload", workload, "err", err)
@@ -651,6 +657,9 @@ func (s *Server) recordAbortGeneration(workload string, blessedGeneration uint64
 // CHECKPOINT is left unresolved for statefulResolveTimeout, noded aborts it
 // itself (resume, discard temp) so a dead control plane cannot pin a paused VM.
 // It claims the resolve first, so it no-ops if the control plane already resolved.
+// Deliberately NOT gated by the ADR embervm/037 silence timeout: resuming an
+// already-live paused VM is recovery of live work, the same posture as the
+// activators' splice-through-while-silenced, not new work.
 func (s *Server) autoAbortCheckpoint(vmID, token string) {
 	e, ok := s.statefulVMs.claimResolve(vmID, token)
 	if !ok {

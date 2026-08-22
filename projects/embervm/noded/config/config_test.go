@@ -88,6 +88,45 @@ func TestLoadCpuVendorEnvOverride(t *testing.T) {
 	}
 }
 
+func TestLoadSilenceTimeoutSeconds(t *testing.T) {
+	const key = "EMBERVM_NODED_SILENCE_TIMEOUT_SECONDS"
+	for _, tc := range []struct {
+		name    string
+		value   *string
+		want    int
+		wantErr bool
+	}{
+		{name: "unset disables", want: 0},
+		{name: "zero disables", value: stringPtr("0"), want: 0},
+		{name: "armed", value: stringPtr("21600"), want: 21600},
+		{name: "garbage", value: stringPtr("six-hours"), wantErr: true},
+		{name: "negative", value: stringPtr("-1"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.value == nil {
+				if err := os.Unsetenv(key); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				t.Setenv(key, *tc.value)
+			}
+			c, err := Load()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), key) {
+					t.Fatalf("Load error = %v, want an invalid %s error", err, key)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.SilenceTimeoutSeconds != tc.want {
+				t.Errorf("SilenceTimeoutSeconds = %d, want %d", c.SilenceTimeoutSeconds, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadWarmRestoreWithVolumeEnv(t *testing.T) {
 	const key = "EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME"
 	for _, tc := range []struct {

@@ -96,6 +96,9 @@ noded:
   # Node capacity. Dev runs one tiny brick, so use the smaller default.
   maxLiveVMs: 8
 
+  # ARMED: brick silence timeout, ~6h (ADR embervm/037, #5073). Rollback: "".
+  silenceTimeoutSeconds: "21600"
+
   # Disable warmth restore in dev. The machines are small and sessions are ephemeral.
   warmRestoreWithVolumeClasses: []
 
