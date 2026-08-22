@@ -82,12 +82,12 @@ defmodule Embervm.K8s do
 
   @doc """
   Submits `token` to the Kubernetes `TokenReview` API and returns the
-  authenticated ServiceAccount username. This is the raw reviewer `Embervm.Auth`
-  wraps with caching + singleflight; it does NO caching itself and applies NO
-  allow-list (that is the Auth layer's job). Requires `create` on
+  authenticated identity, including any bound pod claims. This is the raw
+  reviewer `Embervm.Auth` wraps with caching + singleflight; it does NO caching
+  itself and applies NO allow-list (that is the Auth layer's job). Requires `create` on
   `tokenreviews.authentication.k8s.io` (granted in the chart RBAC).
   """
-  @spec review_token(String.t()) :: {:ok, String.t()} | {:error, term()}
+  @spec review_token(String.t()) :: {:ok, Embervm.Auth.Identity.t()} | {:error, term()}
   def review_token(token) do
     body =
       :json.encode(%{
@@ -456,26 +456,55 @@ defmodule Embervm.K8s do
     end
   end
 
+  @doc false
+  @spec parse_review(integer(), binary()) :: {:ok, Embervm.Auth.Identity.t()} | {:error, term()}
   # TokenReview create returns 201 (some clusters 200); anything else is an
   # API-server error we surface without trusting the token.
-  defp parse_review(status, body) when status in [200, 201] do
+  def parse_review(status, body) when status in [200, 201] do
     decoded = :json.decode(body)
     review_status = Map.get(decoded, "status", %{})
 
     if Map.get(review_status, "authenticated", false) do
-      username = get_in(review_status, ["user", "username"])
+      user =
+        case Map.get(review_status, "user") do
+          %{} = user -> user
+          _ -> %{}
+        end
+
+      username = Map.get(user, "username")
 
       case username do
         nil -> {:error, :no_username}
-        name -> {:ok, name}
+
+        name ->
+          extra =
+            case Map.get(user, "extra") do
+              %{} = extra -> extra
+              _ -> %{}
+            end
+
+          {:ok,
+           %Embervm.Auth.Identity{
+             username: name,
+             pod_uid: first_extra(extra, "authentication.kubernetes.io/pod-uid"),
+             pod_name: first_extra(extra, "authentication.kubernetes.io/pod-name"),
+             node_name: first_extra(extra, "authentication.kubernetes.io/node-name")
+           }}
       end
     else
       {:error, :unauthenticated}
     end
   end
 
-  defp parse_review(status, _body) do
+  def parse_review(status, _body) do
     {:error, {:apiserver_status, status}}
+  end
+
+  defp first_extra(extra, key) do
+    case Map.get(extra, key) do
+      [value | _] when is_binary(value) -> value
+      _ -> nil
+    end
   end
 
   # Shared request plumbing for every API-server call: re-read the SA token

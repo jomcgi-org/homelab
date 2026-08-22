@@ -10,10 +10,12 @@ defmodule Embervm.AuthTest do
   use ExUnit.Case, async: true
 
   alias Embervm.Auth
+  alias Embervm.Auth.Identity
 
   # A reviewer whose call count is observable, so "how many times did the network
-  # review actually run" is directly assertable. `map` is token -> {:ok, user} |
-  # {:error, reason}; `delay_ms` optionally stalls each call to widen races.
+  # review actually run" is directly assertable. `map` is token ->
+  # {:ok, %Identity{}} | {:error, reason}; `delay_ms` optionally stalls each call
+  # to widen races.
   defp counting_reviewer(map, delay_ms \\ 0) do
     {:ok, counter} = Agent.start_link(fn -> 0 end)
 
@@ -36,9 +38,15 @@ defmodule Embervm.AuthTest do
     pid
   end
 
+  defp identity(username, opts \\ []) do
+    struct!(Identity, Keyword.put(opts, :username, username))
+  end
+
   test "authenticates an allow-listed principal and caches it (one review for two calls)" do
     {reviewer, counter} =
-      counting_reviewer(%{"tok" => {:ok, "system:serviceaccount:embervm:embervm"}})
+      counting_reviewer(%{
+        "tok" => {:ok, identity("system:serviceaccount:embervm:embervm")}
+      })
 
     auth = start_auth(reviewer)
 
@@ -48,7 +56,11 @@ defmodule Embervm.AuthTest do
   end
 
   test "authenticated-but-not-allow-listed is forbidden and not cached" do
-    {reviewer, counter} = counting_reviewer(%{"tok" => {:ok, "system:serviceaccount:other:sa"}})
+    {reviewer, counter} =
+      counting_reviewer(%{
+        "tok" => {:ok, identity("system:serviceaccount:other:sa")}
+      })
+
     auth = start_auth(reviewer)
 
     assert {:error, {:forbidden, "system:serviceaccount:other:sa"}} = Auth.authenticate(auth, "tok")
@@ -68,7 +80,10 @@ defmodule Embervm.AuthTest do
 
   test "concurrent misses for the same token collapse to a single review (singleflight)" do
     {reviewer, counter} =
-      counting_reviewer(%{"tok" => {:ok, "system:serviceaccount:embervm:embervm"}}, 50)
+      counting_reviewer(
+        %{"tok" => {:ok, identity("system:serviceaccount:embervm:embervm")}},
+        50
+      )
 
     auth = start_auth(reviewer)
 
@@ -86,8 +101,8 @@ defmodule Embervm.AuthTest do
     {reviewer, _counter} =
       counting_reviewer(
         %{
-          "slow" => {:ok, "system:serviceaccount:embervm:embervm"},
-          "fast" => {:ok, "system:serviceaccount:embervm:embervm"}
+          "slow" => {:ok, identity("system:serviceaccount:embervm:embervm")},
+          "fast" => {:ok, identity("system:serviceaccount:embervm:embervm")}
         },
         200
       )
@@ -108,7 +123,9 @@ defmodule Embervm.AuthTest do
 
   test "cache entries expire after the TTL" do
     {reviewer, counter} =
-      counting_reviewer(%{"tok" => {:ok, "system:serviceaccount:embervm:embervm"}})
+      counting_reviewer(%{
+        "tok" => {:ok, identity("system:serviceaccount:embervm:embervm")}
+      })
 
     {:ok, clock} = Agent.start_link(fn -> 0 end)
     clock_fun = fn -> Agent.get(clock, & &1) end
@@ -126,5 +143,21 @@ defmodule Embervm.AuthTest do
     Agent.update(clock, fn _ -> 1_001 end)
     assert {:ok, _} = Auth.authenticate(auth, "tok")
     assert Agent.get(counter, & &1) == 2
+  end
+
+  test "identity and username APIs share one cached review" do
+    reviewed =
+      identity("system:serviceaccount:embervm:embervm",
+        pod_uid: "pod-uid-1",
+        pod_name: "embervm-brick-1",
+        node_name: "node-4"
+      )
+
+    {reviewer, counter} = counting_reviewer(%{"tok" => {:ok, reviewed}})
+    auth = start_auth(reviewer)
+
+    assert {:ok, ^reviewed} = Auth.authenticate_identity(auth, "tok")
+    assert {:ok, "system:serviceaccount:embervm:embervm"} = Auth.authenticate(auth, "tok")
+    assert Agent.get(counter, & &1) == 1
   end
 end
