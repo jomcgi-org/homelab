@@ -154,6 +154,19 @@ type Config struct {
 	// this is empty, so a Config built directly (tests) without deriving it keeps
 	// the flat layout.
 	WarmthRoot string
+	// WarmthHeartbeatInterval controls how often a brick refreshes the .alive
+	// claim in its per-instance warmth directory. Default 30s. Env
+	// EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL.
+	WarmthHeartbeatInterval time.Duration
+	// WarmthStaleAfter is the minimum age of a foreign brick's .alive claim
+	// before startup GC may reap its warmth. It must be greater than
+	// WarmthHeartbeatInterval. Default 600s. Env
+	// EMBERVM_NODED_WARMTH_STALE_AFTER.
+	WarmthStaleAfter time.Duration
+	// ReapUnclaimedWarmth permits startup GC to remove foreign warmth that has
+	// no .alive claim. Only the exact env value "1" enables this transition
+	// guard; every other value is false. Env EMBERVM_NODED_REAP_UNCLAIMED_WARMTH.
+	ReapUnclaimedWarmth bool
 	// BinPath is the firecracker binary (baked into the image at /opt/fc).
 	BinPath string
 	// KernelImagePath is the guest kernel (baked at /opt/fc), shared by every VM.
@@ -411,24 +424,27 @@ func Load() (Config, error) {
 		MaxLiveVMs:       atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
 		DaemonReserveMib: atoiDefault("EMBERVM_NODED_DAEMON_RESERVE_MIB", 512),
 		// Default 512 MiB memory reject floor; zero means use this fallback.
-		MemRejectFloorMib:   atoiDefault("EMBERVM_NODED_MEM_REJECT_FLOOR_MIB", 512),
-		AdmissionModel:      getenvDefault("EMBERVM_NODED_ADMISSION_MODEL", "observed"),
-		VMOverheadMib:       atoiDefault("EMBERVM_NODED_VM_OVERHEAD_MIB", 0),
-		SnapshotRoot:        os.Getenv("EMBERVM_NODED_SNAPSHOT_ROOT"),
-		BinPath:             getenvDefault("EMBERVM_NODED_FIRECRACKER_BIN", "/opt/fc/firecracker"),
-		KernelImagePath:     getenvDefault("EMBERVM_NODED_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
-		KernelBootArgs:      os.Getenv("EMBERVM_NODED_KERNEL_BOOT_ARGS"),
-		HarnessInit:         getenvDefault("EMBERVM_NODED_HARNESS_INIT", "/usr/local/bin/fc-shim-init"),
-		CanonicalVsockDir:   getenvDefault("EMBERVM_NODED_CANONICAL_VSOCK_DIR", "/disks/nvme-02/embervm-noded-vsock"),
-		GuestOomScoreAdj:    atoiDefault("EMBERVM_NODED_GUEST_OOM_SCORE_ADJ", 1000),
-		BootReadyTimeout:    60 * time.Second,
-		RestoreReadyTimeout: 2 * time.Second,
-		DrainTimeout:        110 * time.Second,
-		EgressSidecarAddr:   getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
-		EgressEnabled:       boolDefault("EMBERVM_NODED_EGRESS_ENABLED", false),
-		EgressWorkloads:     csvDefault("EMBERVM_NODED_EGRESS_WORKLOADS"),
-		ArchiveFetchTimeout: 60 * time.Second,
-		ArchiveMaxBytes:     512 << 20,
+		MemRejectFloorMib:       atoiDefault("EMBERVM_NODED_MEM_REJECT_FLOOR_MIB", 512),
+		AdmissionModel:          getenvDefault("EMBERVM_NODED_ADMISSION_MODEL", "observed"),
+		VMOverheadMib:           atoiDefault("EMBERVM_NODED_VM_OVERHEAD_MIB", 0),
+		SnapshotRoot:            os.Getenv("EMBERVM_NODED_SNAPSHOT_ROOT"),
+		WarmthHeartbeatInterval: 30 * time.Second,
+		WarmthStaleAfter:        600 * time.Second,
+		ReapUnclaimedWarmth:     os.Getenv("EMBERVM_NODED_REAP_UNCLAIMED_WARMTH") == "1",
+		BinPath:                 getenvDefault("EMBERVM_NODED_FIRECRACKER_BIN", "/opt/fc/firecracker"),
+		KernelImagePath:         getenvDefault("EMBERVM_NODED_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
+		KernelBootArgs:          os.Getenv("EMBERVM_NODED_KERNEL_BOOT_ARGS"),
+		HarnessInit:             getenvDefault("EMBERVM_NODED_HARNESS_INIT", "/usr/local/bin/fc-shim-init"),
+		CanonicalVsockDir:       getenvDefault("EMBERVM_NODED_CANONICAL_VSOCK_DIR", "/disks/nvme-02/embervm-noded-vsock"),
+		GuestOomScoreAdj:        atoiDefault("EMBERVM_NODED_GUEST_OOM_SCORE_ADJ", 1000),
+		BootReadyTimeout:        60 * time.Second,
+		RestoreReadyTimeout:     2 * time.Second,
+		DrainTimeout:            110 * time.Second,
+		EgressSidecarAddr:       getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
+		EgressEnabled:           boolDefault("EMBERVM_NODED_EGRESS_ENABLED", false),
+		EgressWorkloads:         csvDefault("EMBERVM_NODED_EGRESS_WORKLOADS"),
+		ArchiveFetchTimeout:     60 * time.Second,
+		ArchiveMaxBytes:         512 << 20,
 
 		PodIP: os.Getenv("EMBERVM_NODED_POD_IP"),
 		// Dial-home registration (R0 PR-2): the daemon advertises its identity to
@@ -554,6 +570,18 @@ func Load() (Config, error) {
 	if err := parseDuration("EMBERVM_NODED_REGISTER_INTERVAL", &c.RegisterInterval); err != nil {
 		return Config{}, err
 	}
+	if err := parseDuration("EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", &c.WarmthHeartbeatInterval); err != nil {
+		return Config{}, err
+	}
+	if err := parseDuration("EMBERVM_NODED_WARMTH_STALE_AFTER", &c.WarmthStaleAfter); err != nil {
+		return Config{}, err
+	}
+	if c.WarmthHeartbeatInterval <= 0 {
+		return Config{}, fmt.Errorf("EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL must be greater than zero, got %s", c.WarmthHeartbeatInterval)
+	}
+	if c.WarmthStaleAfter <= c.WarmthHeartbeatInterval {
+		return Config{}, fmt.Errorf("EMBERVM_NODED_WARMTH_STALE_AFTER must be greater than EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL (%s <= %s)", c.WarmthStaleAfter, c.WarmthHeartbeatInterval)
+	}
 	if v := os.Getenv("EMBERVM_NODED_ARCHIVE_MAX_BYTES"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
@@ -598,11 +626,61 @@ func parsePortRange(raw string) ([2]uint32, error) {
 	return [2]uint32{uint32(lo), uint32(hi)}, nil
 }
 
-// PruneStaleInstanceWarmth removes per-instance (brick) warmth directories under
-// SnapshotRoot/i/ that do NOT belong to this daemon's own pod UID, reclaiming the
-// regenerable snapshot state left behind by evicted or rolled-out co-located
-// bricks (nothing GCs dead-instance warmth today, so orphan dirs accumulate).
-// It is deliberately narrow and fail-soft:
+// InstanceWarmthPruneResult reports the outcome of a startup warmth GC pass.
+type InstanceWarmthPruneResult struct {
+	Removed          []string
+	SkippedLive      []string
+	SkippedUnclaimed []string
+}
+
+// WriteInstanceHeartbeat atomically writes this brick's ownership claim at
+// SnapshotRoot/i/<ownSegment>/.alive. The file contains the full pod UID and the
+// supplied RFC3339 timestamp, while its mtime is the liveness authority used by
+// PruneStaleInstanceWarmth. It is a no-op for a non-brick configuration.
+func WriteInstanceHeartbeat(c Config, now time.Time) error {
+	if c.SnapshotRoot == "" || c.SizeClass == "" || c.PodUID == "" {
+		return nil
+	}
+
+	segmentDir := filepath.Join(c.SnapshotRoot, InstanceWarmthSubdir, instanceSegment(c.PodUID))
+	if err := os.MkdirAll(segmentDir, 0o750); err != nil {
+		return fmt.Errorf("create instance warmth directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(segmentDir, ".alive.tmp-")
+	if err != nil {
+		return fmt.Errorf("create temporary instance heartbeat: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	contents := c.PodUID + "\n" + now.UTC().Format(time.RFC3339) + "\n"
+	if _, err := tmp.WriteString(contents); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temporary instance heartbeat: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary instance heartbeat: %w", err)
+	}
+	alivePath := filepath.Join(segmentDir, ".alive")
+	if err := os.Rename(tmpPath, alivePath); err != nil {
+		return fmt.Errorf("publish instance heartbeat: %w", err)
+	}
+	// Rename preserves the temporary file's mtime rather than setting it to now.
+	// Pin the published file to the caller's clock so pruning and tests use the
+	// same liveness instant.
+	if err := os.Chtimes(alivePath, now, now); err != nil {
+		return fmt.Errorf("set instance heartbeat mtime: %w", err)
+	}
+	return nil
+}
+
+// PruneStaleInstanceWarmth removes only foreign per-instance warmth directories
+// under SnapshotRoot/i/ whose .alive claim is older than WarmthStaleAfter. A
+// fresh claim is a live sibling and is never touched. A directory with no claim
+// is skipped unless ReapUnclaimedWarmth is enabled, which is the guarded
+// transition path for warmth created by pre-heartbeat daemons.
+//
+// The sweep is deliberately narrow and fail-soft:
 //
 //   - It ONLY touches SnapshotRoot/i/<segment> entries. It never removes bases/
 //     (node-shared rootfs snapshots), the VolumeRoot (durable data, a separate
@@ -611,14 +689,16 @@ func parsePortRange(raw string) ([2]uint32, error) {
 //     both set): the legacy DaemonSet's warmth is flat at SnapshotRoot with no
 //     i/ subtree to sweep, so there is nothing (and nothing safe) to prune.
 //   - A missing i/ directory, an unreadable entry, or a failed removal is logged
-//     via removeErr (if non-nil) and skipped, never fatal: warmth is regenerable,
-//     so a boot must not block on a GC hiccup.
+//     via removeErr (if non-nil) and skipped, never fatal: a GC hiccup must not
+//     block boot, and preserving extra warmth is the safe failure mode.
 //
-// It returns the list of segments it removed (for logging/tests). removeErr, when
-// non-nil, is called once per entry that could not be removed.
-func PruneStaleInstanceWarmth(c Config, removeErr func(segment string, err error)) []string {
+// It returns removed, live, and unclaimed segment lists for logging and tests.
+// removeErr, when non-nil, is called once per entry that could not be inspected
+// or removed.
+func PruneStaleInstanceWarmth(c Config, now time.Time, removeErr func(segment string, err error)) InstanceWarmthPruneResult {
+	var result InstanceWarmthPruneResult
 	if c.SnapshotRoot == "" || c.SizeClass == "" || c.PodUID == "" {
-		return nil
+		return result
 	}
 	instancesDir := filepath.Join(c.SnapshotRoot, InstanceWarmthSubdir)
 	entries, err := os.ReadDir(instancesDir)
@@ -629,23 +709,39 @@ func PruneStaleInstanceWarmth(c Config, removeErr func(segment string, err error
 		if !os.IsNotExist(err) && removeErr != nil {
 			removeErr("", err)
 		}
-		return nil
+		return result
 	}
 	ownSegment := instanceSegment(c.PodUID)
-	var removed []string
 	for _, e := range entries {
 		if e.Name() == ownSegment {
 			continue // never reap our own live warmth
 		}
-		if err := os.RemoveAll(filepath.Join(instancesDir, e.Name())); err != nil {
+		segmentPath := filepath.Join(instancesDir, e.Name())
+		aliveInfo, err := os.Stat(filepath.Join(segmentPath, ".alive"))
+		if err != nil {
+			if !os.IsNotExist(err) {
+				if removeErr != nil {
+					removeErr(e.Name(), fmt.Errorf("inspect heartbeat: %w", err))
+				}
+				continue
+			}
+			if !c.ReapUnclaimedWarmth {
+				result.SkippedUnclaimed = append(result.SkippedUnclaimed, e.Name())
+				continue
+			}
+		} else if now.Sub(aliveInfo.ModTime()) <= c.WarmthStaleAfter {
+			result.SkippedLive = append(result.SkippedLive, e.Name())
+			continue
+		}
+		if err := os.RemoveAll(segmentPath); err != nil {
 			if removeErr != nil {
 				removeErr(e.Name(), err)
 			}
 			continue
 		}
-		removed = append(removed, e.Name())
+		result.Removed = append(result.Removed, e.Name())
 	}
-	return removed
+	return result
 }
 
 // InstanceWarmthSubdir is the single-letter parent directory under SnapshotRoot

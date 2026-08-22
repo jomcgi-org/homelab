@@ -1093,6 +1093,18 @@ noded:
   # Relight. Keep task and park-only workloads outside the diff path.
   diffBankingWorkloads: sandbox-session
 
+  # Per-brick warmth ownership claim. Each brick refreshes i/<segment>/.alive
+  # every intervalSeconds, and startup GC reaps a foreign claim only after
+  # staleAfterSeconds. reapUnclaimed is the #4962 transition guard for warmth
+  # written before heartbeat support. Keep it false until every fleet brick
+  # heartbeats, then flip it in the follow-up values PR. The 2026-08-15 incident
+  # showed that path ownership alone lets one restarting brick reap a live
+  # sibling's only relight path.
+  warmthHeartbeat:
+    intervalSeconds: 30
+    staleAfterSeconds: 600
+    reapUnclaimed: false
+
   # Serving tap pre-provisioning (ADR embervm/014 decision 4): the number of serving
   # taps EnsureNetwork pre-creates at brick boot, left down until AllocateTap draws
   # one, so instance boot skips netlink create/attach work. Zero (the default)

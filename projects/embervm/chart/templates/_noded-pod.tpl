@@ -199,6 +199,15 @@ containers:
         value: {{ $ctx.Values.noded.diffBanking | quote }}
       - name: EMBERVM_NODED_DIFF_BANKING_WORKLOADS
         value: {{ $ctx.Values.noded.diffBankingWorkloads | quote }}
+      # Brick warmth liveness claim (#4962). The daemon parses durations with Go
+      # duration syntax. Only the exact string "1" enables unclaimed reaping;
+      # "0" keeps the rollout transition guard off by default.
+      - name: EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL
+        value: "{{ $ctx.Values.noded.warmthHeartbeat.intervalSeconds }}s"
+      - name: EMBERVM_NODED_WARMTH_STALE_AFTER
+        value: "{{ $ctx.Values.noded.warmthHeartbeat.staleAfterSeconds }}s"
+      - name: EMBERVM_NODED_REAP_UNCLAIMED_WARMTH
+        value: {{ ternary "1" "0" $ctx.Values.noded.warmthHeartbeat.reapUnclaimed | quote }}
       - name: EMBERVM_NODED_DAEMON_RESERVE_MIB
         value: {{ $ctx.Values.bricks.daemonReserveMib | default 512 | quote }}
       # Serving tap pre-provisioning (ADR embervm/014 decision 4). Zero (default)

@@ -264,6 +264,8 @@ func TestLoadDefaults(t *testing.T) {
 		"EMBERVM_NODED_MAX_LIVE_VMS", "EMBERVM_NODED_IMAGES", "EMBERVM_NODED_IMAGES_FILE",
 		"EMBERVM_NODED_BOOT_READY_TIMEOUT", "EMBERVM_NODED_RESTORE_READY_TIMEOUT",
 		"EMBERVM_NODED_DRAIN_TIMEOUT", "EMBERVM_NODED_DIFF_BANKING", "EMBERVM_NODED_DIFF_BANKING_WORKLOADS",
+		"EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", "EMBERVM_NODED_WARMTH_STALE_AFTER",
+		"EMBERVM_NODED_REAP_UNCLAIMED_WARMTH",
 	} {
 		t.Setenv(k, "")
 	}
@@ -283,6 +285,15 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.DiffBanking {
 		t.Error("DiffBanking should default false")
+	}
+	if c.WarmthHeartbeatInterval != 30*time.Second {
+		t.Errorf("WarmthHeartbeatInterval = %s, want 30s", c.WarmthHeartbeatInterval)
+	}
+	if c.WarmthStaleAfter != 10*time.Minute {
+		t.Errorf("WarmthStaleAfter = %s, want 10m", c.WarmthStaleAfter)
+	}
+	if c.ReapUnclaimedWarmth {
+		t.Error("ReapUnclaimedWarmth should default false")
 	}
 	if c.BinPath != "/opt/fc/firecracker" {
 		t.Errorf("BinPath = %q, want /opt/fc/firecracker", c.BinPath)
@@ -569,42 +580,125 @@ func TestWorstCaseSocketPathUnderSunLen(t *testing.T) {
 	t.Logf("worst-case brick socket path is %d bytes: %q", len(worst), worst)
 }
 
-// TestPruneStaleInstanceWarmth proves the startup GC reaps orphan per-instance
-// warmth (other pods' i/<seg> dirs) while never touching our own segment, bases/,
-// or anything outside i/; and that it is a no-op for the legacy DaemonSet.
+// TestPruneStaleInstanceWarmth proves startup GC uses checked liveness claims,
+// never a foreign path pattern alone, to decide which brick warmth to reap.
 func TestPruneStaleInstanceWarmth(t *testing.T) {
 	const ownUID = "a1b2c3d4-e5f6-4788-9abc-def012345678"
 	ownSeg := instanceSegment(ownUID)
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 
-	t.Run("brick reaps other segments, keeps own and bases", func(t *testing.T) {
+	setup := func(t *testing.T) (string, Config) {
+		t.Helper()
 		root := t.TempDir()
-		instancesDir := filepath.Join(root, InstanceWarmthSubdir)
-		mkdir := func(p string) {
-			if err := os.MkdirAll(p, 0o750); err != nil {
-				t.Fatal(err)
-			}
+		c := Config{
+			SnapshotRoot:     root,
+			SizeClass:        "8gi",
+			PodUID:           ownUID,
+			WarmthStaleAfter: 10 * time.Minute,
 		}
-		mkdir(filepath.Join(instancesDir, ownSeg))
-		mkdir(filepath.Join(instancesDir, "deadbeef0000")) // orphan
-		mkdir(filepath.Join(instancesDir, "cafef00d1111")) // orphan
-		basesDir := filepath.Join(root, "bases", "somekey")
-		mkdir(basesDir)
+		return root, c
+	}
+	mkdirSegment := func(t *testing.T, root, segment string) string {
+		t.Helper()
+		path := filepath.Join(root, InstanceWarmthSubdir, segment)
+		if err := os.MkdirAll(path, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	writeAlive := func(t *testing.T, segmentPath string, heartbeat time.Time) {
+		t.Helper()
+		path := filepath.Join(segmentPath, ".alive")
+		if err := os.WriteFile(path, []byte("foreign-pod-uid\n"+heartbeat.Format(time.RFC3339)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, heartbeat, heartbeat); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-		c := Config{SnapshotRoot: root, SizeClass: "8gi", PodUID: ownUID}
-		removed := PruneStaleInstanceWarmth(c, func(seg string, err error) {
+	t.Run("fresh sibling is live", func(t *testing.T) {
+		root, c := setup(t)
+		segment := "49c0376d0900"
+		segmentPath := mkdirSegment(t, root, segment)
+		writeAlive(t, segmentPath, now.Add(-time.Minute))
+
+		result := PruneStaleInstanceWarmth(c, now, func(seg string, err error) {
 			t.Errorf("unexpected removeErr(%q, %v)", seg, err)
 		})
-		if len(removed) != 2 {
-			t.Errorf("removed = %v, want 2 orphans", removed)
+		if len(result.SkippedLive) != 1 || result.SkippedLive[0] != segment {
+			t.Errorf("SkippedLive = %v, want [%s]", result.SkippedLive, segment)
 		}
-		if _, err := os.Stat(filepath.Join(instancesDir, ownSeg)); err != nil {
+		if len(result.Removed) != 0 {
+			t.Errorf("Removed = %v, want none", result.Removed)
+		}
+		if _, err := os.Stat(segmentPath); err != nil {
+			t.Errorf("fresh sibling warmth must survive: %v", err)
+		}
+	})
+
+	t.Run("stale sibling is removed", func(t *testing.T) {
+		root, c := setup(t)
+		segment := "deadbeef0000"
+		segmentPath := mkdirSegment(t, root, segment)
+		writeAlive(t, segmentPath, now.Add(-11*time.Minute))
+
+		result := PruneStaleInstanceWarmth(c, now, nil)
+		if len(result.Removed) != 1 || result.Removed[0] != segment {
+			t.Errorf("Removed = %v, want [%s]", result.Removed, segment)
+		}
+		if _, err := os.Stat(segmentPath); !os.IsNotExist(err) {
+			t.Errorf("stale sibling warmth should be gone, stat err = %v", err)
+		}
+	})
+
+	t.Run("unclaimed sibling is skipped by default", func(t *testing.T) {
+		root, c := setup(t)
+		segment := "cafef00d1111"
+		segmentPath := mkdirSegment(t, root, segment)
+
+		result := PruneStaleInstanceWarmth(c, now, nil)
+		if len(result.SkippedUnclaimed) != 1 || result.SkippedUnclaimed[0] != segment {
+			t.Errorf("SkippedUnclaimed = %v, want [%s]", result.SkippedUnclaimed, segment)
+		}
+		if _, err := os.Stat(segmentPath); err != nil {
+			t.Errorf("unclaimed warmth must survive while guard is off: %v", err)
+		}
+	})
+
+	t.Run("unclaimed sibling is removed when enabled", func(t *testing.T) {
+		root, c := setup(t)
+		c.ReapUnclaimedWarmth = true
+		segment := "cafef00d1111"
+		segmentPath := mkdirSegment(t, root, segment)
+
+		result := PruneStaleInstanceWarmth(c, now, nil)
+		if len(result.Removed) != 1 || result.Removed[0] != segment {
+			t.Errorf("Removed = %v, want [%s]", result.Removed, segment)
+		}
+		if _, err := os.Stat(segmentPath); !os.IsNotExist(err) {
+			t.Errorf("enabled guard should reap unclaimed warmth, stat err = %v", err)
+		}
+	})
+
+	t.Run("own stale claim and shared bases are never touched", func(t *testing.T) {
+		root, c := setup(t)
+		ownPath := mkdirSegment(t, root, ownSeg)
+		writeAlive(t, ownPath, now.Add(-24*time.Hour))
+		basesDir := filepath.Join(root, "bases", "somekey")
+		if err := os.MkdirAll(basesDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		result := PruneStaleInstanceWarmth(c, now, nil)
+		if len(result.Removed) != 0 {
+			t.Errorf("Removed = %v, want none", result.Removed)
+		}
+		if _, err := os.Stat(ownPath); err != nil {
 			t.Errorf("own segment must survive GC: %v", err)
 		}
 		if _, err := os.Stat(basesDir); err != nil {
-			t.Errorf("bases/ must NEVER be touched by GC: %v", err)
-		}
-		if _, err := os.Stat(filepath.Join(instancesDir, "deadbeef0000")); !os.IsNotExist(err) {
-			t.Errorf("orphan segment should be gone, stat err = %v", err)
+			t.Errorf("bases/ must never be touched by GC: %v", err)
 		}
 	})
 
@@ -615,8 +709,8 @@ func TestPruneStaleInstanceWarmth(t *testing.T) {
 			t.Fatal(err)
 		}
 		c := Config{SnapshotRoot: root, SizeClass: "", PodUID: ownUID}
-		if removed := PruneStaleInstanceWarmth(c, nil); removed != nil {
-			t.Errorf("legacy DS GC removed %v, want nil", removed)
+		if result := PruneStaleInstanceWarmth(c, now, nil); len(result.Removed) != 0 {
+			t.Errorf("legacy DS GC removed %v, want none", result.Removed)
 		}
 		if _, err := os.Stat(filepath.Join(root, InstanceWarmthSubdir, "deadbeef0000")); err != nil {
 			t.Errorf("non-brick must not touch i/: %v", err)
@@ -624,12 +718,87 @@ func TestPruneStaleInstanceWarmth(t *testing.T) {
 	})
 
 	t.Run("missing i/ dir is not an error", func(t *testing.T) {
-		root := t.TempDir()
-		c := Config{SnapshotRoot: root, SizeClass: "8gi", PodUID: ownUID}
-		if removed := PruneStaleInstanceWarmth(c, func(seg string, err error) {
+		_, c := setup(t)
+		result := PruneStaleInstanceWarmth(c, now, func(seg string, err error) {
 			t.Errorf("unexpected removeErr(%q, %v) for missing dir", seg, err)
-		}); removed != nil {
-			t.Errorf("removed = %v, want nil for missing i/", removed)
+		})
+		if len(result.Removed) != 0 || len(result.SkippedLive) != 0 || len(result.SkippedUnclaimed) != 0 {
+			t.Errorf("result = %+v, want empty for missing i/", result)
 		}
 	})
+}
+
+func TestWriteInstanceHeartbeat(t *testing.T) {
+	root := t.TempDir()
+	c := Config{
+		SnapshotRoot: root,
+		SizeClass:    "8gi",
+		PodUID:       "a1b2c3d4-e5f6-4788-9abc-def012345678",
+	}
+	first := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	second := first.Add(30 * time.Second)
+	path := filepath.Join(root, InstanceWarmthSubdir, instanceSegment(c.PodUID), ".alive")
+
+	if err := WriteInstanceHeartbeat(c, first); err != nil {
+		t.Fatal(err)
+	}
+	firstInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("heartbeat was not created: %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContents := c.PodUID + "\n" + first.Format(time.RFC3339) + "\n"
+	if string(contents) != wantContents {
+		t.Errorf("heartbeat contents = %q, want %q", contents, wantContents)
+	}
+
+	if err := WriteInstanceHeartbeat(c, second); err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !secondInfo.ModTime().After(firstInfo.ModTime()) {
+		t.Errorf("second mtime = %s, want after %s", secondInfo.ModTime(), firstInfo.ModTime())
+	}
+}
+
+func TestLoadRejectsWarmthStaleAfterAtOrBelowHeartbeatInterval(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", "30s")
+	t.Setenv("EMBERVM_NODED_WARMTH_STALE_AFTER", "30s")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load should reject warmth staleAfter <= heartbeat interval")
+	}
+}
+
+func TestLoadWarmthHeartbeatConfig(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", "45s")
+	t.Setenv("EMBERVM_NODED_WARMTH_STALE_AFTER", "15m")
+	t.Setenv("EMBERVM_NODED_REAP_UNCLAIMED_WARMTH", "1")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.WarmthHeartbeatInterval != 45*time.Second {
+		t.Errorf("WarmthHeartbeatInterval = %s, want 45s", c.WarmthHeartbeatInterval)
+	}
+	if c.WarmthStaleAfter != 15*time.Minute {
+		t.Errorf("WarmthStaleAfter = %s, want 15m", c.WarmthStaleAfter)
+	}
+	if !c.ReapUnclaimedWarmth {
+		t.Error("ReapUnclaimedWarmth = false, want true for exact value 1")
+	}
+
+	t.Setenv("EMBERVM_NODED_REAP_UNCLAIMED_WARMTH", "true")
+	c, err = Load()
+	if err != nil {
+		t.Fatalf("Load with non-1 transition guard: %v", err)
+	}
+	if c.ReapUnclaimedWarmth {
+		t.Error("ReapUnclaimedWarmth = true for value true, want exact-value-1 parsing")
+	}
 }

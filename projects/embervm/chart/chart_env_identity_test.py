@@ -402,6 +402,32 @@ def test_noded_bucket_path_configuration(renders):
     )
 
 
+def test_brick_renders_default_warmth_heartbeat_env(renders):
+    """Brick Deployments claim warmth with safe transition defaults."""
+    brick_deployments = [
+        doc
+        for kind, _, doc in _docs(renders["prod"])
+        if kind == "Deployment" and "app.kubernetes.io/component: noded-brick" in doc
+    ]
+    assert brick_deployments, "production rendered no brick Deployment; test is inert"
+
+    expected = {
+        "EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL": "30s",
+        "EMBERVM_NODED_WARMTH_STALE_AFTER": "600s",
+        "EMBERVM_NODED_REAP_UNCLAIMED_WARMTH": "0",
+    }
+    for deployment in brick_deployments:
+        for name, value in expected.items():
+            rendered_env = re.search(
+                rf"name:\s*{name}\s+value:\s*\"([^\"]+)\"", deployment
+            )
+            assert rendered_env, f"brick Deployment is missing {name}"
+            assert rendered_env.group(1) == value, (
+                f"brick Deployment renders {name}={rendered_env.group(1)!r}, "
+                f"want {value!r}"
+            )
+
+
 def test_dev_hostpaths_are_under_production_scratch_never_beside_it(renders):
     """Dev's hostPaths must be UNDER production's, not siblings of it.
 
