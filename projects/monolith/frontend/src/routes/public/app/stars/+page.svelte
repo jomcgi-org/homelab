@@ -4,7 +4,7 @@
 
   let { data } = $props();
   const description =
-    "Find ideal stargazing locations in Scotland by light pollution and viewing windows.";
+    "Scotland's dark-sky sites ranked by forecast clear, dark hours.";
 </script>
 
 <svelte:head>
@@ -16,7 +16,7 @@
 </svelte:head>
 
 <h1 class="sr-only">Dark-sky stargazing map, Scotland viewing windows</h1>
-<p>{description}</p>
+<p class="sr-only">{description}</p>
 
 {#if browser}
   <StarsApp {data} />

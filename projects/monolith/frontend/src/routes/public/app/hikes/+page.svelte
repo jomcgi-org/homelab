@@ -14,7 +14,10 @@
 </svelte:head>
 
 <h1 class="sr-only">Hike planner, Scotland walks by weather window</h1>
-<p>Filter Scottish hill walks by distance, weather, and viewing location.</p>
+<p class="sr-only">
+  Scottish hill walks filtered by duration, distance, and ascent, with the days
+  the weather allows.
+</p>
 
 {#if browser}
   <HikesApp {data} />
