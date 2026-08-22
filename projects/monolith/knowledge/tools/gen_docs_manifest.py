@@ -120,6 +120,25 @@ def iter_doc_paths(root: Path) -> list[str]:
     return [path for path in _DOC_BY_PATH if path in tracked]
 
 
+# Content that must never reach the public site. The allowlist is by path, so
+# a doc that is correctly public can still paste an internal identifier into
+# itself; this is the only content check and it fails the generator loudly.
+_INTERNAL_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("in-cluster service hostname", re.compile(r"\.svc\.cluster\.local")),
+    ("1Password op:// reference", re.compile(r"op://")),
+    ("1Password vault item path", re.compile(r"vaults/[\w-]+/items/")),
+)
+
+
+def check_public_content(rel_path: str, content: str) -> None:
+    """Raise if a public doc contains an internal-only identifier."""
+    for label, pattern in _INTERNAL_MARKERS:
+        match = pattern.search(content)
+        if match:
+            line = content.count("\n", 0, match.start()) + 1
+            raise SystemExit(f"{rel_path}:{line}: public doc contains {label}")
+
+
 def build_manifest(root: Path, paths: list[str]) -> list[dict]:
     """Build manifest entries in stable project then document-kind order."""
     public_paths = [path for path in paths if _should_index(path)]
@@ -137,6 +156,7 @@ def build_manifest(root: Path, paths: list[str]) -> list[dict]:
             continue
         # Strip NUL bytes so the body is JSON-safe and storable.
         content = source.read_text(encoding="utf-8").replace("\x00", "")
+        check_public_content(rel_path, content)
         project, kind = _DOC_BY_PATH[rel_path]
         entries.append(
             {
