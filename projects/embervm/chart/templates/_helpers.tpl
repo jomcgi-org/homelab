@@ -98,6 +98,38 @@ app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
 {{- end -}}
 
 {{/*
+ArgoCD rollout wave for a size-class brick Deployment. Classes are grouped in
+list order, with at most bricks.syncWaveGroupSize Deployments sharing a wave.
+Input: (dict "ctx" $ "index" $i).
+*/}}
+{{- define "embervm.brick.classWave" -}}
+{{- $groupSize := int .ctx.Values.bricks.syncWaveGroupSize -}}
+{{- if lt $groupSize 1 -}}
+{{- fail "bricks.syncWaveGroupSize must be greater than zero" -}}
+{{- end -}}
+{{- add (int .ctx.Values.bricks.syncWaveBase) (div (int .index) $groupSize) -}}
+{{- end -}}
+
+{{/*
+ArgoCD rollout wave for a per-node floor brick Deployment. Floors start after
+all class groups, then use the same group size. The explicit empty-list guard
+keeps the integer ceiling at zero when there are no classes.
+Input: (dict "ctx" $ "index" $j).
+*/}}
+{{- define "embervm.brick.floorWave" -}}
+{{- $groupSize := int .ctx.Values.bricks.syncWaveGroupSize -}}
+{{- if lt $groupSize 1 -}}
+{{- fail "bricks.syncWaveGroupSize must be greater than zero" -}}
+{{- end -}}
+{{- $classCount := len .ctx.Values.bricks.classes -}}
+{{- $classGroupCount := 0 -}}
+{{- if gt $classCount 0 -}}
+{{- $classGroupCount = add (div (sub $classCount 1) $groupSize) 1 -}}
+{{- end -}}
+{{- add (int .ctx.Values.bricks.syncWaveBase) $classGroupCount (div (int .index) $groupSize) -}}
+{{- end -}}
+
+{{/*
 Per-node brick FLOOR labels (brick-capacity PR-3). A floor Deployment is still
 "a brick of this class" (same component + size-class labels as the class-wide
 Deployment, on purpose: it is the same kind of pod), but it MUST NOT share the

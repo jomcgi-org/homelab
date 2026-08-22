@@ -212,6 +212,8 @@ scratchPrep:
 # flip after this small brick verifies against the decision-log checklist.
 bricks:
   enabled: true
+  # The first grouped production roll's measured result is recorded on #4897.
+  syncWaveGroupSize: 3
   desiredReplicas:
     2gi: 1
     # Re-canary step 2 (large): the 16gi brick, added after the 2gi brick verified
