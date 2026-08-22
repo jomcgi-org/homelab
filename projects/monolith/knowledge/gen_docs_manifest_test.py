@@ -46,6 +46,14 @@ def test_should_index_allowlist():
     assert not _should_index(
         "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json"
     )
+    assert not _should_index("projects/platform/authentik/README.md")
+    assert not _should_index(
+        "docs/decisions/security/004-public-read-only-service-isolation.md"
+    )
+    assert not _should_index("docs/decisions/chat/003-trust-safety-safeguards.md")
+    assert not _should_index("docs/decisions/docs/001-static-docs-site.md")
+    assert not _should_index("projects/embervm/runtimes/k3s/drill/README.md")
+    assert not _should_index("projects/monolith/claude_routines/README.md")
 
 
 def test_make_slug():
