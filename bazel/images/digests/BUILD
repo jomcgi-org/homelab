@@ -19,6 +19,7 @@ oci_digest_manifest(
         "//projects/embervm/runtimes/k3s/k3s-agent:image.info": "//projects/embervm/runtimes/k3s/k3s-agent:image.push",
         "//projects/embervm/runtimes/k3s/k3s-server:image.info": "//projects/embervm/runtimes/k3s/k3s-server:image.push",
         "//projects/embervm/runtimes/pi:image.info": "//projects/embervm/runtimes/pi:image.push",
+        "//projects/embervm/runtimes/ping:image.info": "//projects/embervm/runtimes/ping:image.push",
         "//projects/embervm/runtimes/postgres:image.info": "//projects/embervm/runtimes/postgres:image.push",
         "//projects/embervm/runtimes/python:image.info": "//projects/embervm/runtimes/python:image.push",
         "//projects/embervm/runtimes/shotter:image.info": "//projects/embervm/runtimes/shotter:image.push",
