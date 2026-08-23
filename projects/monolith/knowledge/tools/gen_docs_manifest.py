@@ -29,6 +29,9 @@ from pathlib import Path
 try:  # imported as knowledge.tools.* by tests, run as a bare script by CI
     from knowledge.tools.public_content import check_public_content
 except ImportError:  # pragma: no cover - script invocation
+    # py_venv_binary executes the main without adding its source directory to
+    # sys.path, even though public_content.py is present beside it in runfiles.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from public_content import check_public_content
 
 PUBLIC_PROJECTS = (
