@@ -188,19 +188,20 @@ defmodule Embervm.Session do
 
       {:error, reason} ->
         # A daemon transport/timeout/suspect failure: the session is failed and its
-        # VM destroyed. Reply the error to this caller, drain the rest as :failed,
-        # and stop (a failed session has no process).
-        GenServer.reply(from, {:error, reason})
-        fail_and_stop(state, reason)
+        # VM destroyed. Mirror the success branch: append session_failed BEFORE
+        # replying (#4644, durable-before-observed), so a caller told {:error, _}
+        # can read :failed straight back. Then reply, destroy the VM best-effort
+        # off the caller's critical path, drain the rest as :failed, and stop (a
+        # failed session has no process).
+        fail_and_stop(state, reason, from)
     end
   end
 
   # A worker died without reporting (it always sends {:invoke_done, ...}): treat as
-  # a transport failure, same as a reported error.
+  # a transport failure, same as a reported error (same durable-before-reply order).
   def handle_info({:DOWN, ref, :process, pid, down_reason}, %{worker: {pid, ref, from}} = state) do
     state = %{state | worker: nil}
-    GenServer.reply(from, {:error, {:worker_down, down_reason}})
-    fail_and_stop(state, {:worker_down, down_reason})
+    fail_and_stop(state, {:worker_down, down_reason}, from)
   end
 
   # The idle-bank timer fired. ASK the manager to bank ONLY if still quiescent (no
@@ -438,18 +439,32 @@ defmodule Embervm.Session do
     _, _ -> :error
   end
 
-  # Fail the session (destroy the VM, append session_failed), drain queued callers
-  # as :failed, and stop this process. Called on any daemon-level invoke failure.
-  defp fail_and_stop(state, reason) do
+  # Fail the session: append session_failed, reply {:error, reason} to the in-flight
+  # caller, destroy the VM, drain queued callers as :failed, and stop this process.
+  # Called on any daemon-level invoke failure.
+  #
+  # Ordering (#4644): the transition is awaited BEFORE the reply so the caller never
+  # observes a failure the op-log has not accounted (invariant 7, the same order
+  # record_invoke/reply uses on success). destroy_vm runs AFTER the reply: it is a
+  # gRPC call to a daemon that just failed, so it must not sit on the caller's error
+  # path, and its result was always discarded anyway (a failed destroy already left
+  # "row :failed, VM alive", which the orphan sweep reconciles, invariant 5).
+  #
+  # The armed rejoin_failure_fun branch is deliberately NOT reordered: it does not
+  # fail the session, it hands the outcome to the manager by message (which parks
+  # the session, see SessionManager handle_info({:rejoin_assign_failed, ...})), and
+  # a synchronous call back into the manager from this process could deadlock
+  # against a manager that is itself calling this session. The park is therefore
+  # observed-before-durable by design, and nothing reads :failed from it.
+  defp fail_and_stop(state, reason, from) do
     if is_function(state.rejoin_failure_fun, 1) do
       failure_fun = state.rejoin_failure_fun
       state = disarm_rejoin_failure(state)
+      GenServer.reply(from, {:error, reason})
       _ = failure_fun.(reason)
       drain_queue_as_failed(state)
       {:stop, :normal, %{state | queue: :queue.new()}}
     else
-      _ = destroy_vm(state)
-
       _ =
         Embervm.SessionStore.transition(
           state.session_store,
@@ -460,6 +475,8 @@ defmodule Embervm.Session do
           %{}
         )
 
+      GenServer.reply(from, {:error, reason})
+      _ = destroy_vm(state)
       drain_queue_as_failed(state)
       {:stop, :normal, %{state | queue: :queue.new()}}
     end
