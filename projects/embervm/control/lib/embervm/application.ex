@@ -72,6 +72,14 @@ defmodule Embervm.Application do
     # Application.get_env default (60s) fires.
     put_workload_resync_config()
 
+    # The S3 warmth GC session age floor (#4336): the same
+    # EMBERVM_WARMTH_S3_GC_SESSION_TTL_MS the GC reads, mirrored into app-env so
+    # Embervm.WorkloadWatcher can reject a session workload whose
+    # bankedTtlSeconds would outlive it. Absent or malformed is left UNSET, so
+    # the watcher falls back to Embervm.S3WarmthGc.default_ttl_ms(:session),
+    # exactly what the GC itself falls back to.
+    put_session_gc_ttl_config()
+
     # Brick capacity (PR-3): the per-size-class desired replica counts + the brick
     # Deployment name prefix from the chart env into app-env BEFORE the supervisor
     # starts, so Embervm.BrickController reads them at init. Absent env (bricks
@@ -1455,6 +1463,19 @@ defmodule Embervm.Application do
     case workload_resync_interval_ms_env() do
       nil -> :ok
       ms -> Application.put_env(:embervm, :workload_resync_interval_ms, ms)
+    end
+  end
+
+  defp put_session_gc_ttl_config do
+    case trimmed_env("EMBERVM_WARMTH_S3_GC_SESSION_TTL_MS") do
+      "" ->
+        :ok
+
+      raw ->
+        case Integer.parse(raw) do
+          {ms, ""} when ms > 0 -> Application.put_env(:embervm, :warmth_s3_gc_session_ttl_ms, ms)
+          _ -> :ok
+        end
     end
   end
 

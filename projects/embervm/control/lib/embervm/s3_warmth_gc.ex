@@ -96,6 +96,15 @@ defmodule Embervm.S3WarmthGc do
     group: 7 * 24 * 60 * 60 * 1000
   }
 
+  @doc """
+  The compile-time age floor for one prefix kind, in ms. Public so the
+  WorkloadWatcher can bound a session workload's bankedTtlSeconds against the
+  session/ floor without duplicating the constant (#4336): a banked snapshot
+  gets no CP-expiry hold, so the GC reaps it on this floor alone.
+  """
+  @spec default_ttl_ms(atom()) :: pos_integer()
+  def default_ttl_ms(kind), do: Map.fetch!(@default_ttls, kind)
+
   # Fleet-freshness window: ~2 noded status-report intervals (30s each). A node
   # present in NodeCapacity but not updated within this window aborts the sweep.
   @freshness_window_ms 120_000

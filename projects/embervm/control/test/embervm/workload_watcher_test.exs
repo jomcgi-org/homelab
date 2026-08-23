@@ -325,6 +325,63 @@ defmodule Embervm.WorkloadWatcherTest do
     assert Process.alive?(watcher)
   end
 
+  # #4336: a banked session's S3 snapshot gets no CP-expiry hold in the warmth
+  # GC, and both sweepers act at age >= TTL, so bankedTtlSeconds at or above the
+  # GC session TTL can be reaped first. The watcher rejects the CR at admission.
+  test "session class: bankedTtlSeconds above the GC session TTL is Ready=False/SessionBankedTtlExceedsGc" do
+    table = unique_table()
+    agent = start_recorder()
+    # GC floor 7d (the S3WarmthGc default); 8d banked TTL must be rejected.
+    cr = session_cr(%{"spec" => %{"session" => %{"bankedTtlSeconds" => 8 * 24 * 3600}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "sandbox-session") == :error
+
+    assert {_ns, "sandbox-session", status_map} = ready_status(recorded_calls(agent), "sandbox-session")
+
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "SessionBankedTtlExceedsGc", "message" => message}] =
+             status_map["conditions"]
+
+    assert message =~ "bankedTtlSeconds 691200 meets or exceeds"
+    assert message =~ "604800s"
+    assert Process.alive?(watcher)
+  end
+
+  test "session class: bankedTtlSeconds equal to the GC session TTL is rejected to avoid a boundary race" do
+    table = unique_table()
+    agent = start_recorder()
+    cr = session_cr(%{"spec" => %{"session" => %{"bankedTtlSeconds" => 7 * 24 * 3600}}})
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "sandbox-session") == :error
+
+    assert {_ns, "sandbox-session", status_map} = ready_status(recorded_calls(agent), "sandbox-session")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "SessionBankedTtlExceedsGc"}] = status_map["conditions"]
+  end
+
+  test "session class: the GC session TTL bound follows the configured floor, not the compile-time default" do
+    table = unique_table()
+    agent = start_recorder()
+    # An operator lowering warmthS3Gc.sessionTtlMs to 1h makes the 6h default
+    # (bankedTtlSeconds omitted -> maxLifetimeSeconds 21600) over the bound.
+    cr = session_cr()
+    lister = fn -> {:ok, [cr]} end
+    watcher = start_watcher(lister, recording_status_writer(agent), table, session_gc_ttl_ms: 3_600_000)
+
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert WorkloadCatalog.fetch(table, "sandbox-session") == :error
+
+    assert {_ns, "sandbox-session", status_map} = ready_status(recorded_calls(agent), "sandbox-session")
+    assert [%{"type" => "Ready", "status" => "False", "reason" => "SessionBankedTtlExceedsGc"}] = status_map["conditions"]
+  end
+
   test "task class carrying a spec.session block is Ready=False/SessionSpecUnexpected" do
     table = unique_table()
     agent = start_recorder()

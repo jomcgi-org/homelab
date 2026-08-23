@@ -209,6 +209,20 @@ defmodule Embervm.WorkloadWatcher do
       Keyword.get(opts, :max_group_size) ||
         Application.get_env(:embervm, :max_group_size, @default_max_group_size)
 
+    # The S3 warmth GC's session/ age floor (#4336): a start_link opt (tests) or
+    # the app-env key Embervm.Application populates from
+    # EMBERVM_WARMTH_S3_GC_SESSION_TTL_MS, falling back to the GC's own
+    # compile-time default so the two always agree. A session workload whose
+    # bankedTtlSeconds meets or exceeds it is condition-rejected in
+    # validate_session/3.
+    session_gc_ttl_ms =
+      Keyword.get(opts, :session_gc_ttl_ms) ||
+        Application.get_env(
+          :embervm,
+          :warmth_s3_gc_session_ttl_ms,
+          Embervm.S3WarmthGc.default_ttl_ms(:session)
+        )
+
     # The periodic BaseBuilder resync cadence: a start_link opt (tests) or the
     # app-env key Embervm.Application populates from
     # EMBERVM_WORKLOAD_RESYNC_INTERVAL_MS, falling back to the compile-time
@@ -224,6 +238,7 @@ defmodule Embervm.WorkloadWatcher do
       stateful_listen_range: stateful_listen_range,
       composite_listen_range: composite_listen_range,
       max_group_size: max_group_size,
+      session_gc_ttl_ms: session_gc_ttl_ms,
       lister: lister,
       watcher_fun: watcher_fun,
       status_writer: status_writer,
@@ -757,7 +772,7 @@ defmodule Embervm.WorkloadWatcher do
     with {:ok, class} <- validate_class(spec),
          :ok <- validate_source(spec),
          {:ok, floor, cap} <- validate_concurrency(spec, class),
-         {:ok, session_cfg} <- validate_session(spec, class),
+         {:ok, session_cfg} <- validate_session(state, spec, class),
          {:ok, serving_cfg} <- validate_serving(state, name, spec, class, cap),
          {:ok, stateful_cfg} <- validate_stateful(state, name, spec, class),
          {:ok, group_cfg} <- validate_group(state, name, spec, class) do
@@ -788,20 +803,39 @@ defmodule Embervm.WorkloadWatcher do
     invoke_queue_cap: 4
   }
 
-  defp validate_session(spec, class) when class in ["task", "serving", "stateful", "composite"] do
+  defp validate_session(_state, spec, class) when class in ["task", "serving", "stateful", "composite"] do
     case Map.get(spec, "session") do
       nil -> {:ok, nil}
       _ -> {:error, "SessionSpecUnexpected", "spec.session is only valid for class session, not #{class}"}
     end
   end
 
-  defp validate_session(spec, "session") do
+  defp validate_session(state, spec, "session") do
     case Map.get(spec, "session") do
       s when is_map(s) ->
-        {:ok, parse_session(s)}
+        validate_banked_ttl(state, parse_session(s))
 
       _ ->
         {:error, "SessionSpecMissing", "class session requires a spec.session block"}
+    end
+  end
+
+  # bankedTtlSeconds must stay below the S3 warmth GC's session/ age floor
+  # (#4336). A banked session's snapshot gets no CP-expiry hold in the GC (only
+  # parked rows do), and both sweepers act at age >= TTL, so an equal or longer
+  # TTL lets the GC race session expiry. Rejecting the CR here is the fail-fast:
+  # the relationship is enforced at admission rather than discovered as
+  # snapshot_lost at relight time.
+  defp validate_banked_ttl(state, %{banked_ttl_seconds: banked} = cfg) do
+    gc_ttl_ms = state.session_gc_ttl_ms
+
+    if is_integer(banked) and banked * 1000 >= gc_ttl_ms do
+      {:error, "SessionBankedTtlExceedsGc",
+       "spec.session.bankedTtlSeconds #{banked} meets or exceeds the S3 warmth GC session TTL " <>
+         "(#{div(gc_ttl_ms, 1000)}s, EMBERVM_WARMTH_S3_GC_SESSION_TTL_MS / warmthS3Gc.sessionTtlMs): " <>
+         "both sweepers act at age >= TTL, so S3 can reap the snapshot before session expiry"}
+    else
+      {:ok, cfg}
     end
   end
 
