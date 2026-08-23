@@ -4,7 +4,10 @@ const { manifest } = vi.hoisted(() => ({ manifest: [] }));
 
 vi.mock("$lib/public/docs/docs-manifest.json", () => ({ default: manifest }));
 
-import { DOCS_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  DOCS_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 import { load } from "./+page.server.js";
 
 function embervmReadme(content) {
@@ -55,7 +58,7 @@ describe("/docs/[...slug] load", () => {
     expect(result.html).toContain("Hello from the readme.");
     expect(result.html).toContain('<h2 id="section">');
     expect(setHeaders).toHaveBeenCalledWith({
-      "cache-control": DOCS_CACHE_CONTROL,
+      ...cloudflareCacheHeaders(DOCS_CACHE_CONTROL),
       etag: '"testbuild-docs-embervm"',
     });
   });
