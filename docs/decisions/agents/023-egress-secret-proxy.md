@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-06-27
-**Builds on:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (the microVM substrate whose snapshot bundle is exactly what we must keep secrets out of, and whose vsock contract already reserves the egress port this uses), [021 - Discord-Triggered AgentWorkflow](021-discord-triggered-agentworkflow-fast-model.md) (the hosted-model egress whose "repo context and API key leave the cluster" caveat this tightens), [004 - Autonomous Agents](004-autonomous-agents.md) (the 1Password injection pattern this reuses for the values)
+**Builds on:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (the microVM substrate whose snapshot bundle is exactly what we must keep secrets out of, and whose vsock contract already reserves the egress port this uses), [021 - Discord-Triggered AgentWorkflow](021-discord-triggered-agentworkflow-fast-model.md) (the hosted-model egress whose "repo context and API key leave the cluster" caveat this tightens), 004 - Autonomous Agents (the 1Password injection pattern this reuses for the values)
 
 ---
 
@@ -154,7 +154,7 @@ An operator reconciles the CRD into independently-scaled proxy Deployments + Ser
 | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | [Kloak (getkloak.io)](https://getkloak.io/)                                                         | The placeholder-on-egress idea; the eBPF mechanism we adapt away from                 |
 | [ADR 022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) | The substrate, the snapshot bundle we keep secrets out of, the vsock 1025 egress port |
-| [ADR 004 - Autonomous Agents](004-autonomous-agents.md)                                             | The 1Password injection pattern reused for provisioning values                        |
+| ADR 004 - Autonomous Agents                                             | The 1Password injection pattern reused for provisioning values                        |
 | `projects/agent_platform/vsockproto/proto.go`                                                       | The vsock contract (`EgressPort = 1025`, `KindAssign`) this builds on                 |
 | `docs/security.md`                                                                                  | Security baseline                                                                     |
 

@@ -17,8 +17,8 @@ each with evidence tied to specific episodes.
 
 This runbook owns the human-reviewed code levers; the directive
 autopilot (`chat/autopilot_job.py`, ADR chat/001) owns the autonomous,
-self-validating directive levers in the background. Design rationale:
-`docs/decisions/chat/001-improve-ambient-loop.md`.
+self-validating directive levers in the background. Current state:
+`projects/monolith/ARCHITECTURE.md`, section 5.
 
 ## 1. Unit of analysis: the ambient activation episode
 

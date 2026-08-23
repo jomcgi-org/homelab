@@ -94,7 +94,7 @@ The configuration surface adopters actually program against, all living in the C
 
 - **Invocation semantics**: sync and async invoke; per-workload retry policy, dead-letter queue, failure destinations. Delivery is at-least-once in v1 with caller-supplied idempotency keys; exactly-once deduplication is recorded as a revisit if duplicate-execution cost matters at scale. Results are part of the durable contract: v1 persists them retrievable by task id with a retention TTL (durable tasks are only half true if the answer evaporates); a richer query surface waits on scale and supportability needs.
 - **Concurrency floor and cap**: a pre-warmed floor (provisioned-concurrency analog on the warm-pool machinery of [agents/028](../agents/028-elastic-agent-microvm-capacity-and-reclaim.md)): a primed pool of live pristine VMs for the task class, banked instances for session and serving classes; and a hard cap (reserved-concurrency analog). On finite capacity these matter more, not less, than on clouds that pretend capacity is infinite. Caps, quotas, and fair queues apply per tenant and per principal within a tenant (a user, an API key).
-- **Triggers** via an adapter seam: cron plus one queue adapter in v1 (NATS, per [agents/016](../agents/016-nats-canonical-event-stream.md)); Broadway makes further adapters cheap.
+- **Triggers** via an adapter seam: cron plus one queue adapter in v1 (NATS, per agents/016); Broadway makes further adapters cheap.
 - **Lifecycle knobs**: idle policy (when to bank), user-tunable max lifetime (which also bounds version drift, see roadmap R2), snapshot TTL.
 - **Per-session endpoint tokens**: short-lived, minted at create/resume; who may hit a session's endpoint is a distinct auth surface from the management API.
 - **Config and secrets**: MMDS dynamic workload env ([agents/046](../agents/046-mmds-dynamic-workload-env.md)) and brokered egress ([agents/023](../agents/023-egress-secret-proxy.md)).
@@ -203,7 +203,7 @@ The through-line: EmberVM owns the **soft state and coordination logic** in one 
 
 ## Alternatives Considered
 
-- **Temporal (see [agents/015](../agents/015-temporal-orchestration-substrate.md), Deprecated)**: durable execution, battle-tested, polyglot SDKs. We previously adopted Temporal and physically removed it (2026-06-14); the run-a-heavy-stateful-system tax was paid once and refunded. Rejected as the primary because it does not consolidate queue + fairness + backpressure + progress into one operable unit and is not a microVM fleet manager. Recorded as the fallback if durable multi-step DAG semantics come to dominate.
+- **Temporal (see agents/015, Deprecated)**: durable execution, battle-tested, polyglot SDKs. We previously adopted Temporal and physically removed it (2026-06-14); the run-a-heavy-stateful-system tax was paid once and refunded. Rejected as the primary because it does not consolidate queue + fairness + backpressure + progress into one operable unit and is not a microVM fleet manager. Recorded as the fallback if durable multi-step DAG semantics come to dominate.
 - **Bare queue + pull-based workers (NATS/SQS + KEDA/Karpenter)**: simplest, inherently HA via the queue. Rejected as the core because pull discards placement and locality (banked snapshots, warm git mirrors, per-tenant fairness and preemption) and taxes every dispatch with a broker hop. Kept as the **overflow / durability lane** behind the control plane.
 - **Go control plane (controller-runtime)**: fits the existing toolchain and the largest contributor pool, and could consolidate the same mechanics. Rejected as primary on fit (supervision, preemptive scheduling, parked processes, distribution) and distinctiveness; recorded as the fallback if BEAM's ecosystem or toolchain cost proves too high. The node daemon does stay Go (see Languages).
 - **Argo Workflows (the incumbent)**: every workload is a K8s object, so etcd, the controller, and pod churn cap throughput. Rejected: wrong state store for high-churn, short-lived work.
@@ -252,8 +252,8 @@ The control plane's management API is authenticated and authorized (the TokenRev
 | [agents/031](../agents/031-cluster-node-control-data-plane-split.md)        | The control/data-plane split principle this applies                                  |
 | [agents/022](../agents/022-firecracker-snapshot-restore-controller.md)      | Snapshot-restore mechanics behind pristine bases and banking                         |
 | [agents/028](../agents/028-elastic-agent-microvm-capacity-and-reclaim.md)   | Warm-pool sizing and reclaim; the concurrency-floor machinery                        |
-| [agents/015](../agents/015-temporal-orchestration-substrate.md)             | Temporal, previously adopted and removed; the recorded DAG fallback                  |
-| [agents/016](../agents/016-nats-canonical-event-stream.md)                  | Candidate for the overflow lane and the v1 queue trigger adapter                     |
+| agents/015             | Temporal, previously adopted and removed; the recorded DAG fallback                  |
+| agents/016                  | Candidate for the overflow lane and the v1 queue trigger adapter                     |
 | [agents/041](../agents/041-hot-git-mirror-agent-workspaces.md)              | Warm-mirror locality; the pattern behind snapshot residency and OCI caches           |
 | [agents/023](../agents/023-egress-secret-proxy.md)                          | Brokered egress for workloads that opt out of zero-egress                            |
 | [agents/046](../agents/046-mmds-dynamic-workload-env.md)                    | MMDS dynamic env: the per-workload config/secrets injection story                    |

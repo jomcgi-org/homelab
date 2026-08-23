@@ -4,7 +4,7 @@
 **Status:** Draft
 **Created:** 2026-06-28
 **Superseded in part:** [030 - fc-invoke](030-fc-invoke-configurable-firecracker-surface.md) keeps this ADR's goose-agnostic-substrate principle but folds the reusable orchestration into a new `fc-invoke` daemon, renames the home to `projects/firecracker/`, makes `semgrep` a peer workload, and drops the `discord` directory (decision 4).
-**Builds on:** [019 - Substrate Executor + AgentWorkflow](019-substrate-executor-agentworkflow.md) (the `Substrate` seam and its "harness is a separate seam, `Exec` runs an opaque process" principle), [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (the `fc-agentd` controller this ADR re-bins), [024 - Discord Agent, Hosted-Model Tiers, and Live Artifacts](024-discord-agent-hosted-model-tiers-and-artifacts.md) (the consumer this ADR renames off the `goosecracker` label)
+**Builds on:** [019 - Substrate Executor + AgentWorkflow](019-substrate-executor-agentworkflow.md) (the `Substrate` seam and its "harness is a separate seam, `Exec` runs an opaque process" principle), [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (the `fc-agentd` controller this ADR re-bins), 024 - Discord Agent, Hosted-Model Tiers, and Live Artifacts (the consumer this ADR renames off the `goosecracker` label)
 
 ---
 
@@ -120,6 +120,6 @@ These are settled during execution, not gates on the decision.
 | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | [019 - Substrate Executor + AgentWorkflow](019-substrate-executor-agentworkflow.md)                                  | The `Substrate` seam and the "harness is a separate seam, `Exec` is opaque" principle this ADR enforces |
 | [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md)                      | The `fc-agentd` controller that becomes `firecracker-substrate`                                         |
-| [024 - Discord Agent, Hosted-Model Tiers, and Live Artifacts](024-discord-agent-hosted-model-tiers-and-artifacts.md) | The consumer renamed to `discord-agent`; its Task 1 tier env is re-homed into `goosecracker`            |
-| [010 - Recipe-Driven Agent Registry](010-recipe-driven-agent-registry.md)                                            | Goose recipes as agent definitions; a `goosecracker`-layer concern                                      |
+| 024 - Discord Agent, Hosted-Model Tiers, and Live Artifacts | The consumer renamed to `discord-agent`; its Task 1 tier env is re-homed into `goosecracker`            |
+| 010 - Recipe-Driven Agent Registry                                            | Goose recipes as agent definitions; a `goosecracker`-layer concern                                      |
 | `projects/agent_platform/README.md`                                                                                  | The current (fused) layout this ADR splits                                                              |

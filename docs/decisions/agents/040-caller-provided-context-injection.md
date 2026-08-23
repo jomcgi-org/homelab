@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-07-03
-**Builds on:** [041 - Hot Git Mirror for goosecracker Agent Workspaces](041-hot-git-mirror-agent-workspaces.md) (the guest-hydration model this adds a third input to), [030 - fc-invoke Configurable Firecracker Surface](030-fc-invoke-configurable-firecracker-surface.md) (the opaque payload the new field rides in), [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) (places bundle assembly in the `goosecracker`/chat layer, not the substrate), [035 - Discord Multiplayer Agent UX](035-discord-multiplayer-agent-ux.md) (the thread-scoped per-turn loop the bundle is rebuilt inside)
+**Builds on:** [041 - Hot Git Mirror for goosecracker Agent Workspaces](041-hot-git-mirror-agent-workspaces.md) (the guest-hydration model this adds a third input to), [030 - fc-invoke Configurable Firecracker Surface](030-fc-invoke-configurable-firecracker-surface.md) (the opaque payload the new field rides in), [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) (places bundle assembly in the `goosecracker`/chat layer, not the substrate), 035 - Discord Multiplayer Agent UX (the thread-scoped per-turn loop the bundle is rebuilt inside)
 
 ---
 
@@ -121,6 +121,6 @@ Baseline in `docs/security.md`. The injected bundle is user data (chat messages)
 | [ADR 041 - Hot Git Mirror](041-hot-git-mirror-agent-workspaces.md)               | The guest-hydration model this adds a third input to; the repo-agnostic-substrate precedent. |
 | [ADR 030 - fc-invoke Surface](030-fc-invoke-configurable-firecracker-surface.md) | The opaque payload the new field rides in; daemon stays stateless.                           |
 | [ADR 025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) | Places bundle assembly in the goosecracker/chat layer, not the substrate.                    |
-| [ADR 035 - Discord Multiplayer Agent UX](035-discord-multiplayer-agent-ux.md)    | The thread-scoped per-turn loop the bundle is rebuilt inside.                                |
+| ADR 035 - Discord Multiplayer Agent UX    | The thread-scoped per-turn loop the bundle is rebuilt inside.                                |
 | `projects/monolith/goosecracker/runner.py`                                       | `run_and_deliver` per-turn loop; `_run_one_turn` payload build beside `sessions.load`.       |
 | `projects/firecracker/goosecracker/guest-init/internal/handler/handler.go`       | `AgentRequest` struct and the task-file/sessionDb unpack the new field mirrors.              |

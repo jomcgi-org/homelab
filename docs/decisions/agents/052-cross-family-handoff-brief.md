@@ -212,8 +212,8 @@ matching the containment ADR 036 established for the orchestrator tier.
 
 | Resource                                                             | Relevance                                                                       |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| [ADR 036](036-orchestrator-brief-compiler-tier.md)                   | Prior art for a cheap model compiling a brief, and for stable-prefix assembly    |
+| ADR 036                   | Prior art for a cheap model compiling a brief, and for stable-prefix assembly    |
 | [ADR 048](048-codex-oauth-token-broker.md)                           | Codex broker login gate, the failure mode the deterministic fallback exists for  |
-| [ADR 049](049-turn-granular-poll-shaped-agent-ui.md)                 | The `/agents` UI where a handoff surfaces to the user                            |
+| ADR 049                 | The `/agents` UI where a handoff surfaces to the user                            |
 | [ADR 051](051-guest-pushed-mid-turn-progress.md)                     | Mid-turn progress path that rolling per-turn compaction would have to reconcile  |
 | [Issue #4350](https://github.com/jomcgi/homelab/issues/4350)         | Outstanding implementation work for this decision                                |

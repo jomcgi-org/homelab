@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-06-29
-**Builds on:** [023 - Egress Secret Proxy](023-egress-secret-proxy.md) (the placeholder-swap that injects a credential at the egress hop, never in-guest), [024 - Discord Agent, Hosted-Model Tiers, and Artifacts](024-discord-agent-hosted-model-tiers-and-artifacts.md) (the coding tier that today receives a single `gh` token placeholder), [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) (goosecracker as the per-thread config surface that decides what a guest is granted)
+**Builds on:** [023 - Egress Secret Proxy](023-egress-secret-proxy.md) (the placeholder-swap that injects a credential at the egress hop, never in-guest), 024 - Discord Agent, Hosted-Model Tiers, and Artifacts (the coding tier that today receives a single `gh` token placeholder), [025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md) (goosecracker as the per-thread config surface that decides what a guest is granted)
 
 ---
 
@@ -141,7 +141,7 @@ Baseline `docs/security.md`. Role-specific posture:
 | Resource                                                                                                        | Relevance                                                               |
 | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | [ADR 023 - Egress Secret Proxy](023-egress-secret-proxy.md)                                                     | The placeholder-swap mechanism that injects each role token at egress.  |
-| [ADR 024 - Discord Agent, Hosted-Model Tiers, Artifacts](024-discord-agent-hosted-model-tiers-and-artifacts.md) | The single `gh` token coding tier this ADR splits into two role tokens. |
+| ADR 024 - Discord Agent, Hosted-Model Tiers, Artifacts | The single `gh` token coding tier this ADR splits into two role tokens. |
 | [ADR 025 - Three-Layer Agent Stack](025-three-layer-agent-stack-goosecracker.md)                                | goosecracker as the per-thread config surface that selects the role.    |
 | [GitHub: About code owners](https://docs.github.com/articles/about-code-owners)                                 | Confirms only users/teams/emails are eligible owners (not App bots).    |
 | [GitHub: About protected branches](https://docs.github.com/articles/about-protected-branches)                   | Required status checks as the merge gate the reviewer controls.         |

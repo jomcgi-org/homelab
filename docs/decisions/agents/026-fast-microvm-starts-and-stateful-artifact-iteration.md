@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Accepted
 **Created:** 2026-06-29
-**Builds on:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (the `fc-agentd` substrate, the `RootfsProvisioner` interface, the reconcile loop), [024 - Discord Agent, Hosted-Model Tiers, and Isolated Live Artifacts](024-discord-agent-hosted-model-tiers-and-artifacts.md) (the goosecracker artifact tier and the `ARTIFACT_ID = Discord thread` identity), [023 - Egress Secret Proxy](023-egress-secret-proxy.md) (the per-tier credential model the artifact tier rides)
+**Builds on:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (the `fc-agentd` substrate, the `RootfsProvisioner` interface, the reconcile loop), 024 - Discord Agent, Hosted-Model Tiers, and Isolated Live Artifacts (the goosecracker artifact tier and the `ARTIFACT_ID = Discord thread` identity), [023 - Egress Secret Proxy](023-egress-secret-proxy.md) (the per-tier credential model the artifact tier rides)
 
 ---
 
