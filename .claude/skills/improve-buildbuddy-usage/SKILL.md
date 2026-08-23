@@ -176,6 +176,31 @@ Root cause found the same day: all 25 `pkg_*` py_library targets in
 The per-domain source split had been done, the wheel list had not, so moving a
 test off `monolith_backend` onto a `pkg_*` library saved exactly one package.
 
+**Superseded 2026-08-22: the wheels were never the bulk of the tree.** Walking
+the actual input tree of a 1.08 GB test action (invocation `e4e74dd6`, 250 GB,
+393 test executions after a cache-eviction gap on 08-19) with
+`GetTreeDirectorySizes` gave 1.54 GB total, of which the hermetic CPython
+toolchain was **625 MB** (unstripped `libpython3.13.so` 248 MB, interpreter
+115 MB staged three times) and `@postgres_test` was **535 MB** (the whole
+Debian lib dir: libLLVM x2, perl, z3, bitcode). Every wheel together in this
+tree was under 400 MB. Fixed by #5116 (stripped `install_only_stripped`
+tarballs, toolchain 160 MB) and #5118 (ld-linux-resolved closure, no JIT
+provider, postgres 137 MB): the BDD test tree is ~0.67 GB now. The remaining
+wheels are the app's honest closure (BDD tests import `app.main`), so the
+`bdd_test` macro's hardwired `:monolith_backend` is not a lever either.
+
+How to measure a tree: `GetExecution` for the invocation gives each action's
+`actionDigest`; download the Action blob via
+`/file/download?bytestream_url=bytestream://remote.buildbuddy.io/blobs/<hash>/<size>&invocation_id=...`
+(API key header), read `input_root_digest` (field 2), then
+`rpc/BuildBuddyService/GetTreeDirectorySizes` with `root_digest` returns
+per-directory totals keyed by digest; walk Directory protos top-down and only
+descend into subtrees over a threshold.
+
+A commit that touches nothing near a test can still re-execute every test:
+check `trend` for a multi-day gap (cache eviction) before hunting for an
+invalidating input.
+
 ## Refuted, do not retry
 
 - **`--remote_local_fallback` is not the cause of the tail.** A 299 GB
