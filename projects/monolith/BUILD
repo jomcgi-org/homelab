@@ -277,20 +277,12 @@ py_venv_binary(
 py_venv_binary(
     name = "gen_docs_manifest",
     main = "knowledge/tools/gen_docs_manifest.py",
-    srcs = [
-        "knowledge/tools/gen_docs_manifest.py",
-        "knowledge/tools/public_content.py",
-    ],
     visibility = ["//:__subpackages__"],
 )
 
 py_venv_binary(
     name = "gen_posts_manifest",
     main = "knowledge/tools/gen_posts_manifest.py",
-    srcs = [
-        "knowledge/tools/gen_posts_manifest.py",
-        "knowledge/tools/public_content.py",
-    ],
     visibility = ["//:__subpackages__"],
 )
 
