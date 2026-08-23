@@ -233,6 +233,7 @@ def test_compose_master_needs_fires_for_open_human_decision():
     assert result["runs"][0]["needs"] == {
         "kind": "human",
         "reason": "waiting on your decision",
+        "decision_kind": "review_escalation",
     }
 
 

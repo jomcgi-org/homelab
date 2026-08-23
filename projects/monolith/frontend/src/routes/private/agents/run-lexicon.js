@@ -69,6 +69,7 @@ export const RUN_LEXICON = {
     decisionNotePlaceholder: "Optional note",
     decidedWord: "decided",
     byWord: "by",
+    decisionWindowExpired: "the decision window expired",
     decisionUnavailable: "Run decision is unavailable",
     cancelledBy: "cancelled by",
     verdict: "verdict",

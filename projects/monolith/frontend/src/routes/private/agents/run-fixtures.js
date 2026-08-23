@@ -605,7 +605,7 @@ const gated = run("gated", "blocked", {
   disposition: {
     state: "gated",
     reason: "the branch is ready for your decision",
-    next: "choose one of: approve, send_back, retry",
+    next: "choose one of: approve, send_back",
   },
   nodes: [
     node("implement", "implement", "done", {
@@ -620,7 +620,7 @@ const gated = run("gated", "blocked", {
         note: "Approve this branch for push?",
         since: "2026-08-10T22:55:00Z",
         decision_id: 5129,
-        options: ["approve", "send_back", "retry"],
+        options: ["approve", "send_back"],
         decision_kind: "push_gate",
       },
     }),

@@ -45,7 +45,7 @@
   let decisionNote = $state("");
   let decisionInFlight = $state(false);
   let submittedDecision = $state(null);
-  let observedRun = null;
+  let observedWorkflowId = null;
 
   const active = $derived(
     run?.dbos_status === "PENDING" || run?.dbos_status === "ENQUEUED",
@@ -118,9 +118,9 @@
   });
 
   $effect(() => {
-    const currentRun = run;
-    if (currentRun !== observedRun) {
-      observedRun = currentRun;
+    const workflowId = run?.workflow_id ?? null;
+    if (workflowId !== observedWorkflowId) {
+      observedWorkflowId = workflowId;
       decisionNote = "";
       decisionInFlight = false;
       submittedDecision = null;
@@ -199,8 +199,14 @@
   }
 
   function decisionRecordLine(record) {
+    if (record.decision === "expired") {
+      return joinMeta(
+        P.labels.decisionWindowExpired,
+        clockTime(record.decided_at),
+      );
+    }
     return joinMeta(
-      `${P.labels.decidedWord} ${record.decision} ${P.labels.byWord} ${record.actor_subject}`,
+      `${P.labels.decidedWord} ${decisionOptionLabel(record.decision)} ${P.labels.byWord} ${record.actor_subject}`,
       clockTime(record.decided_at),
     );
   }
@@ -223,6 +229,13 @@
 
   async function decideNode(node, option) {
     if (decisionInFlight || submittedDecision) return;
+    if (run.workflow_id.startsWith("fixture-")) {
+      submittedDecision = {
+        decision: option,
+        actor_subject: P.labels.youWord,
+      };
+      return;
+    }
     decisionInFlight = true;
     onError(null);
     try {
@@ -540,7 +553,7 @@
                 {/if}
               </div>
             {:else if showsEscalation}
-              <!-- Escalation is terminal in the engine today (swarm/workflows.py _escalated); #4781 tracks escalation as a pause with a decision endpoint. Until then the honest affordance is the session. -->
+              <!-- Runs that predate the decision row escalate terminally (ADR agents/060 decision 3); for them the session is the only affordance. -->
               <div class="decide">
                 <p>{P.labels.escalationTerminal}</p>
                 {#if escalatedSessionId != null}
@@ -699,8 +712,10 @@
   {#if node.decision_record}
     <div class="decision-record" data-register="fact">
       <div>{decisionRecordLine(node.decision_record)}</div>
-      {#if node.decision_record.note}
-        <div class="decision-record-note">{node.decision_record.note}</div>
+      {#if node.decision_record.decision_note}
+        <div class="decision-record-note">
+          {node.decision_record.decision_note}
+        </div>
       {/if}
     </div>
   {/if}

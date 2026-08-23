@@ -673,7 +673,11 @@ def compose_master(
             current["state"] == "blocked"
             and (current.get("blocked_on") or {}).get("kind") == "human"
         ):
-            needs = {"kind": "human", "reason": "waiting on your decision"}
+            needs = {
+                "kind": "human",
+                "reason": "waiting on your decision",
+                "decision_kind": current["blocked_on"].get("decision_kind"),
+            }
         runs.append(
             {
                 "workflow_id": wf_id,

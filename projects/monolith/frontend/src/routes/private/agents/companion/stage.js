@@ -21,7 +21,7 @@ export function askKey(rowId) {
 export function askWorkflowId(card) {
   if (card?.kind !== "ask" || card.ref == null || card.ref === "") return null;
   const ref = String(card.ref);
-  return ref.startsWith("run-") ? ref.slice(4) : ref;
+  return ref.startsWith("run-") ? ref.slice(4) : null;
 }
 
 export function decisionTargetForAsk(card, runDetails = {}) {
@@ -34,7 +34,7 @@ export function decisionTargetForAsk(card, runDetails = {}) {
       (candidate) => String(candidate?.run?.workflow_id) === String(workflowId),
     );
   const nodeKey =
-    card?.payload?.focus ?? card?.payload?.node_key ?? card?.focus;
+    card?.payload?.node_key ?? card?.payload?.focus ?? card?.focus;
   const node = detail?.run?.nodes?.find(
     (candidate) => String(candidate.key) === String(nodeKey),
   );
@@ -232,7 +232,7 @@ function applyAsk(stage, row, payload) {
       kind: "ask",
       surface: null,
       ref: String(ref),
-      focus: payload.focus ?? payload.node_key ?? null,
+      focus: payload.node_key ?? payload.focus ?? null,
       question: payload.question == null ? "" : String(payload.question),
       options: Array.isArray(payload.options)
         ? payload.options.map(String)

@@ -102,11 +102,9 @@ describe("inbox groups", () => {
     expect(
       runAsk(
         run("run-gated", "2026-08-21T12:00:00Z", {
-          current: {
-            blocked_on: {
-              kind: "human",
-              decision_kind: decisionKind,
-            },
+          needs: {
+            kind: "human",
+            decision_kind: decisionKind,
           },
         }),
       ),

@@ -282,13 +282,18 @@ def test_each_accepted_call_writes_one_row_with_caller_principal(session, call):
 def test_ask_payload_is_recorded_and_returns_immediately(session):
     _open_companion()
 
-    result = asyncio.run(mcp.monolith_voice_ui_ask("Choose", ["A", "B"], "question:1"))
+    result = asyncio.run(
+        mcp.monolith_voice_ui_ask(
+            "Choose", ["A", "B"], "run-wf-1", node_key="push_gate"
+        )
+    )
 
     assert result == {"accepted": True, "companion_open": True}
     assert _ledger_rows(session)[0].payload == {
         "question": "Choose",
         "options": ["A", "B"],
-        "ref": "question:1",
+        "ref": "run-wf-1",
+        "node_key": "push_gate",
     }
 
 

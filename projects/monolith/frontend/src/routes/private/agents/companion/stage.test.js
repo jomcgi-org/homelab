@@ -29,7 +29,7 @@ function row(overrides = {}) {
 }
 
 describe("companion stage reducer", () => {
-  test("resolves prefixed and bare ask refs to an open run decision", () => {
+  test("resolves the tool ask payload to an open run decision", () => {
     const details = {
       "wf-1": {
         run: {
@@ -55,7 +55,7 @@ describe("companion stage reducer", () => {
       nodeKey: "push_gate",
       options: ["approve"],
     });
-    expect(askWorkflowId({ ...card, ref: "wf-1" })).toBe("wf-1");
+    expect(askWorkflowId({ ...card, ref: "wf-1" })).toBeNull();
   });
 
   test("show adds a surface card keyed by surface and ref", () => {

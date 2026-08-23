@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { createClassComponent } from "svelte/legacy";
 import RunView from "./RunView.svelte";
 import { clockTime } from "./run-history.js";
 
@@ -139,6 +140,76 @@ describe("run decision block", () => {
     );
   });
 
+  test("keeps fixture decisions local to the design surface", async () => {
+    global.fetch = vi.fn();
+    const run = gatedRun();
+    run.workflow_id = "fixture-gated";
+    const target = await render({ run });
+
+    target.querySelector(".decide .btn").click();
+    await tick();
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(target.querySelector(".decision-submitted")?.textContent).toContain(
+      "decided Approve and push by you",
+    );
+  });
+
+  test("keeps local decision state across polls and resets it for a new run", async () => {
+    global.fetch = vi.fn(() => new Promise(() => {}));
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = createClassComponent({
+      component: RunView,
+      target,
+      props: {
+        run: gatedRun(),
+        view: {
+          engine_tier: "live",
+          now: "2026-08-22T11:30:00Z",
+          snapshot_age_seconds: 0,
+        },
+      },
+    });
+
+    try {
+      const note = target.querySelector(".decide .note");
+      note.value = "keep this note";
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+      target.querySelector(".decide .btn").click();
+      await tick();
+
+      component.$set({
+        run: { ...gatedRun(), updated_at: "2026-08-22T11:32:00Z" },
+      });
+      await tick();
+
+      expect(target.querySelector(".decide .note").value).toBe(
+        "keep this note",
+      );
+      expect(
+        [...target.querySelectorAll(".decide .btn")].every(
+          (button) => button.disabled,
+        ),
+      ).toBe(true);
+
+      component.$set({
+        run: { ...gatedRun(), workflow_id: "wf/fresh" },
+      });
+      await tick();
+
+      expect(target.querySelector(".decide .note").value).toBe("");
+      expect(
+        [...target.querySelectorAll(".decide .btn")].every(
+          (button) => !button.disabled,
+        ),
+      ).toBe(true);
+    } finally {
+      component.$destroy();
+      target.remove();
+    }
+  });
+
   test("renders the durable decision record and its human note", async () => {
     const run = gatedRun();
     const decidedAt = "2026-08-22T11:30:00Z";
@@ -154,7 +225,7 @@ describe("run decision block", () => {
         node_key: "push_gate",
         kind: "push_gate",
         decision: "approve",
-        note: "ship after lunch",
+        decision_note: "ship after lunch",
         actor_subject: "joe",
         decided_at: decidedAt,
         decision_id: 9,
@@ -165,10 +236,41 @@ describe("run decision block", () => {
     const target = await render({ run });
 
     expect(target.querySelector(".decision-record")?.textContent).toContain(
-      `decided approve by joe · ${clockTime(decidedAt)}`,
+      `decided Approve and push by joe · ${clockTime(decidedAt)}`,
     );
     expect(target.querySelector(".decision-record-note")?.textContent).toBe(
       "ship after lunch",
+    );
+  });
+
+  test("renders an expired decision window without a missing actor", async () => {
+    const run = gatedRun();
+    run.state = "escalated";
+    run.dbos_status = "SUCCESS";
+    run.disposition = null;
+    run.nodes[0] = {
+      ...run.nodes[0],
+      state: "escalated",
+      blocked_on: null,
+      decision_record: {
+        node_key: "push_gate",
+        kind: "push_gate",
+        decision: "expired",
+        decision_note: null,
+        actor_subject: null,
+        decided_at: "2026-08-22T11:30:00Z",
+        decision_id: 9,
+        ask: "Approve this branch for push?",
+      },
+    };
+
+    const target = await render({ run });
+
+    expect(target.querySelector(".decision-record")?.textContent).toContain(
+      "the decision window expired",
+    );
+    expect(target.querySelector(".decision-record")?.textContent).not.toContain(
+      "decided expired by",
     );
   });
 });
