@@ -68,6 +68,11 @@ kekRoot:
     itemPath: "vaults/k8s-homelab/items/embervm-kek-root"
 
 noded:
+  # Step 3 of the #4691 rollout (2026-08-23): an enveloped artifact restores
+  # only with a valid control-plane capability. Dev's first banked session
+  # exported with aes-256-gcm-v1 files and a 168-byte envelope; this flip rolls
+  # the brick, so the next relight must restore from S3 through a capability.
+  requireRestoreCapability: true
   # The wildcard DaemonSet, off. See the scratchPrep note below for why this
   # matters: it selects homelab.io/firecracker=true, which all four nodes carry
   # including the three etcd masters.
