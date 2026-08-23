@@ -2794,10 +2794,11 @@ class PiProcess:
             # explicitly trusted and loaded on every Pi spawn.
             "--extension",
             PI_WEB_RESEARCH_EXTENSION,
-            "--tools",
-            # Keep CLI validation limited to Pi's built-ins. The trusted
-            # extension activates its registered tools at session_start.
-            "read,bash,edit,write",
+            # Do not pass --tools here. Pi treats it as a complete allowlist,
+            # not a built-in-tool selector, so naming only read/bash/edit/write
+            # prevents this extension from activating web_search and web_fetch.
+            # With no allowlist Pi enables those same four built-ins by default
+            # and permits explicitly loaded extension tools to join them.
             "--session-dir",
             os.path.join(pi_home, "sessions"),
         ]
