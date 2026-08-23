@@ -358,35 +358,28 @@ CODEX_SUBSCRIPTION_BASE_URL_ENV = "CODEX_SUBSCRIPTION_BASE_URL"
 DEFAULT_CODEX_SUBSCRIPTION_BASE_URL = "http://chatgpt.com/backend-api/"
 CODEX_DUMMY_ACCOUNT_ID = "guest-subscription-account"
 PI_MODELS = {
-    # Must match the vLLM --served-model-name (projects/inference/deploy/
+    # Must match the inference server's public model id (projects/inference/deploy/
     # values.yaml); a wrong name 404s at the provider ("The model does not
     # exist"), proven live in #4252.
     "qwen": "qwen3.6-27b",
 }
 DEFAULT_PI_MODEL = "qwen"
 
-# PI context configuration. This constant is deliberately set BELOW vLLM's
-# --max-model-len (projects/inference/deploy/values.yaml) because pi's
-# clampMaxTokensToContext computes available output tokens by subtracting a
-# fixed CONTEXT_SAFETY_TOKENS margin, and pi's estimateContextTokens uses a
-# chars/4 heuristic rather than a tokenizer. The gap between PI_CONTEXT_WINDOW
-# and the real vLLM limit absorbs estimate error. Measured in prod on
-# 2026-08-07, a turn carrying two 50 KiB repetitive-ASCII tool results
-# undercounted by 4097 tokens against pi's fixed 4096 margin, failing with a
-# 400 error by one token. Setting PI_CONTEXT_WINDOW to 30000 converts the fixed
-# 4096 margin into an effective margin of (32768 - 30000) + 4096 = 6864 tokens,
-# approximately 1.7x the observed worst-case undercount. This gap also lowers
-# the compaction trigger from 22528 to 19760 tokens, providing more mid-run
-# runway before the window fills. This matters because pi does not check
-# compaction between tool iterations. Do NOT "correct" this value upward to
-# match vLLM's --max-model-len; the gap is the point.
-PI_CONTEXT_WINDOW = 30000
-# MINIMUM required gap between PI_CONTEXT_WINDOW and vLLM's real
-# --max-model-len, enforced by pi_context_window_sync_test. It is a floor, not
-# the actual gap: today the real gap is 32768 - 30000 = 2768. Lowering this
-# constant weakens the guard, so treat a test failure against it as a signal to
-# lower PI_CONTEXT_WINDOW rather than to lower this floor.
-PI_CONTEXT_WINDOW_HEADROOM = 2048
+# Pi gets a 120K per-session budget from NInfer's shared 262144-token KV pool.
+# NInfer has two generation lanes, so two full Pi contexts consume 245760
+# tokens and leave 16384 tokens of shared headroom. A lone direct API request
+# can still use the server's full 262144-token maxContext because the server
+# does not statically partition its page pool.
+#
+# The shared gap also absorbs pi's context-estimation error. Pi uses a chars/4
+# heuristic for trailing messages rather than the model tokenizer. Measured in
+# prod on 2026-08-07, two 50 KiB repetitive-ASCII tool results undercounted by
+# 4097 tokens. Pi also subtracts its fixed 4096-token safety margin inside each
+# advertised window. Keep this value and PI_CONTEXT_WINDOW_HEADROOM aligned
+# with ninfer.kvCapacity and ninfer.maxConcurrency; the cross-file sync test
+# enforces the relationship.
+PI_CONTEXT_WINDOW = 122880
+PI_CONTEXT_WINDOW_HEADROOM = 16384
 # pi's hardcoded safety margin in clampMaxTokensToContext.
 PI_CONTEXT_SAFETY_TOKENS = 4096
 # Maximum output tokens pi will attempt to generate. This caps reply length to
@@ -404,7 +397,8 @@ PI_CONTEXT_SAFETY_TOKENS = 4096
 # the turn with agent_end and no assistant text, and the shim raised
 # "pi turn produced no output" (3 of 5 graded long reps in the #5051
 # baseline). model-bench runs the same model at 16384 and passes 6/7 hard
-# tasks; 12288 keeps the compaction reserve just over half the window.
+# tasks; 12288 still fits alongside pi's fixed safety margin in the compaction
+# reserve.
 PI_MAX_OUTPUT_TOKENS = 12288
 
 # Thinking level for the pi lane. "off" makes pi send
@@ -441,12 +435,10 @@ def _resolve_thinking_level(value):
 # reserve mid-execution can still produce short replies.
 PI_COMPACTION_RESERVE_TOKENS = 16896
 
-# Tokens to keep after compaction. pi's default keepRecentTokens (20000)
-# exceeds the usable budget after pi's default 16384 reserve (32768 - 16384 =
-# 16384), so post-compaction context would land straight back above the
-# threshold. This value must be less than
-# (PI_CONTEXT_WINDOW - PI_COMPACTION_RESERVE_TOKENS) so compaction actually
-# helps when it fires.
+# Tokens to keep after compaction. Keeping 8000 recent tokens preserves the
+# latest tool exchange while leaving ample runway below the 105984-token
+# compaction trigger. This value must remain less than PI_CONTEXT_WINDOW minus
+# PI_COMPACTION_RESERVE_TOKENS so compaction actually helps when it fires.
 PI_COMPACTION_KEEP_RECENT_TOKENS = 8000
 PI_WEB_RESEARCH_EXTENSION = "/usr/share/ember-pi/extensions/web-research.ts"
 MAX_REQUEST_BODY_BYTES = 1 << 20
