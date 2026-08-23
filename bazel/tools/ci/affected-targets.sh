@@ -179,7 +179,11 @@ for file in "${changed_files[@]}"; do
 			package_root="$dir"
 			break
 		fi
-		dir="${dir%/*}"
+		if [[ "$dir" == */* ]]; then
+			dir="${dir%/*}"
+		else
+			dir="."
+		fi
 	done
 
 	# Check the repo root

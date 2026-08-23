@@ -303,7 +303,22 @@ check_outside() {
 	[[ -z "$(cat "$1")" ]] && pass "file_outside_pkg" || fail "file_outside_pkg" "expected empty"
 }
 
-# Test 10: No changes
+# Test 10: File under a top-level directory outside any package
+setup_dotdir_outside() {
+	mkdir -p .claude/skills p
+	echo "" >p/BUILD
+	echo "x" >.claude/skills/SKILL.md
+	git add .
+	git commit -q -m "base"
+	git branch origin/main
+	echo "y" >.claude/skills/SKILL.md
+}
+
+check_dotdir_outside() {
+	[[ -z "$(cat "$1")" ]] && pass "dotdir_outside_pkg" || fail "dotdir_outside_pkg" "expected empty"
+}
+
+# Test 11: No changes
 setup_no_change() {
 	mkdir -p p
 	echo "" >p/BUILD
@@ -368,6 +383,7 @@ BAZEL_RDEPS_OUTPUT="$venv_fixture" run_test "venv" "setup_venv"
 run_test "py_map" "setup_py_map"
 run_test "nested" "setup_nested"
 run_test "outside" "setup_outside"
+run_test "dotdir_outside" "setup_dotdir_outside"
 run_test "no_change" "setup_no_change"
 
 echo "--- $PASS passed, $FAIL failed ---"
