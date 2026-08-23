@@ -1166,8 +1166,14 @@ swarm:
   # .../decision or agent_run_decide (ADR agents/060); 0 makes escalation
   # terminal as before.
   decisionTimeoutSeconds: 86400
-  # Each gated run holds a DBOS worker thread while it waits (#4781 tracks
-  # sizing the pool or moving the wait off-thread).
+  # Each gated run holds one idle DBOS executor thread while it waits: sync
+  # DBOS.sleep is time.sleep on the workflow's thread (dbos 2.29.0). The pool
+  # is unbounded (no runtimeConfig, so max_workers=sys.maxsize) and parent run
+  # workflows are started off-queue, so gated runs hold no codex queue slot and
+  # cannot starve dispatch; the real cost is one thread plus ~12k recorded
+  # sleep/poll step rows per fully timed-out day. Do NOT bound this with
+  # runtimeConfig.max_executor_threads: gated runs would occupy every slot and
+  # stall all workflows, recovery included.
   # Concurrent Codex dispatches. Three concurrent dispatches have been killed
   # before, so this stays at 2 until there is evidence it can go higher.
   codexConcurrency: 2
