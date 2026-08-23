@@ -616,7 +616,8 @@ multiarch_http_archive(
 # is version-locked) and nothing rebuilds them automatically: the base
 # signature has no hypervisor input, so any version change here MUST move
 # hypervisorEpoch in projects/embervm/chart/values.yaml in the same PR, which
-# re-keys every workload base via initEnv. Banked session and stateful memory
+# re-keys every workload base via initEnv. //projects/embervm/chart:chart_hypervisor_epoch_test
+# fails CI if the two drift (#4409). Banked session and stateful memory
 # snapshots are not covered by that knob and fail over cold at rollout.
 kata_firecracker_archive = use_repo_rule("//bazel/tools/http:kata_firecracker_archive.bzl", "kata_firecracker_archive")
 
