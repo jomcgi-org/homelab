@@ -1,4 +1,7 @@
-import { PAGE_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  PAGE_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 
 // No URL fallback: API_BASE is injected via values.yaml in prod; a localhost
 // fallback would silently route to the wrong backend if the env var were missing
@@ -19,7 +22,7 @@ async function _fetchJson(fetchFn, path) {
 
 export async function load({ fetch, setHeaders }) {
   const stats = await _fetchJson(fetch, "/api/home/observability/stats");
-  setHeaders({ "cache-control": PAGE_CACHE_CONTROL });
+  setHeaders(cloudflareCacheHeaders(PAGE_CACHE_CONTROL));
   return {
     stats,
   };

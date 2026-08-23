@@ -4,6 +4,7 @@ import { error } from "@sveltejs/kit";
 // depth as ships/hikes (routes/public/app/stars), hence four ../ segments to
 // reach src/lib/. Mirrors hikes/+page.server.js.
 import {
+  cloudflareCacheHeaders,
   STARS_SITES_CACHE_CONTROL,
   versionedEtag,
 } from "../../../../lib/cache-headers.js";
@@ -46,7 +47,7 @@ export async function load({ fetch, setHeaders }) {
     throw error(503, "stars sites unavailable");
   }
 
-  const headers = { "cache-control": STARS_SITES_CACHE_CONTROL };
+  const headers = cloudflareCacheHeaders(STARS_SITES_CACHE_CONTROL);
   const etag = versionedEtag(res.headers?.get?.("etag"));
   if (etag) headers.etag = etag;
   const lastModified = res.headers?.get?.("last-modified");

@@ -1,5 +1,8 @@
 import { error, json } from "@sveltejs/kit";
-import { HIKES_WALKS_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  HIKES_WALKS_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
@@ -18,6 +21,6 @@ export async function GET({ params, fetch }) {
   }
 
   return json(await res.json(), {
-    headers: { "cache-control": HIKES_WALKS_CACHE_CONTROL },
+    headers: cloudflareCacheHeaders(HIKES_WALKS_CACHE_CONTROL),
   });
 }

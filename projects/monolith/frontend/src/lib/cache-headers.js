@@ -22,6 +22,33 @@ export function versionedEtag(dataEtag) {
   return `"${version}-${inner}"`;
 }
 
+// Cloudflare treats s-maxage as proxy-revalidate, so a response that combines
+// s-maxage with stale-while-revalidate or stale-if-error cannot actually be
+// served stale. Keep the browser policy in Cache-Control and give Cloudflare a
+// higher-precedence, CDN-only policy where the shared TTL is expressed as
+// max-age instead. The hostname Cache Rule still decides which responses are
+// eligible for storage.
+export function cloudflareCacheHeaders(cacheControl) {
+  const directives = cacheControl.split(",").map((part) => part.trim());
+  const sharedTtl = directives.find((part) => part.startsWith("s-maxage="));
+  if (!sharedTtl) {
+    throw new Error("Cloudflare cache policy requires s-maxage");
+  }
+
+  const cloudflareDirectives = directives
+    .filter((part) => !part.startsWith("max-age="))
+    .map((part) =>
+      part.startsWith("s-maxage=")
+        ? part.replace("s-maxage=", "max-age=")
+        : part,
+    );
+
+  return {
+    "cache-control": cacheControl,
+    "cloudflare-cdn-cache-control": cloudflareDirectives.join(", "),
+  };
+}
+
 // 60s fresh · 24h SWR (background refresh) · 1y SIE (cluster-down resilience)
 export const PAGE_CACHE_CONTROL = `public, s-maxage=60, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 

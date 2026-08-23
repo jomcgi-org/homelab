@@ -1,6 +1,9 @@
 import { error } from "@sveltejs/kit";
 import { version } from "$app/environment";
-import { DOCS_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  DOCS_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 // Server-only imports: the manifest and markdown renderer do not reach the client.
 import manifest from "$lib/public/posts/posts-manifest.json";
 import { buildPathIndex, renderDoc } from "$lib/server/docs.js";
@@ -14,7 +17,7 @@ export function load({ params, setHeaders }) {
 
   const { html } = renderDoc(entry, emptyPathIndex);
   setHeaders({
-    "cache-control": DOCS_CACHE_CONTROL,
+    ...cloudflareCacheHeaders(DOCS_CACHE_CONTROL),
     etag: `"${version}-posts-${entry.slug}"`,
   });
 

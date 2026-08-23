@@ -1,5 +1,8 @@
 import { error } from "@sveltejs/kit";
-import { GRIMOIRE_READ_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  GRIMOIRE_READ_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
@@ -30,12 +33,12 @@ export async function GET({ params, url, fetch }) {
   return new Response(res.body, {
     status: res.status,
     headers: {
+      ...cloudflareCacheHeaders(GRIMOIRE_READ_CACHE_CONTROL),
       "content-type": res.headers.get("content-type") ?? "application/json",
       // The corpus is a read-only, near-static book library, so it takes an
       // aggressive 1 h edge cache (CDN offload that keeps a share-driven spike
       // off the origin). max-age=0 keeps the browser revalidating so new
       // coverage lands within the hour. See GRIMOIRE_READ_CACHE_CONTROL.
-      "cache-control": GRIMOIRE_READ_CACHE_CONTROL,
     },
   });
 }

@@ -4,6 +4,7 @@ import { error } from "@sveltejs/kit";
 // depth as ships (routes/public/app/hikes), hence four ../ segments to reach
 // src/lib/. Mirrors ships/+page.server.js.
 import {
+  cloudflareCacheHeaders,
   HIKES_WALKS_CACHE_CONTROL,
   versionedEtag,
 } from "../../../../lib/cache-headers.js";
@@ -23,7 +24,7 @@ export async function load({ fetch, setHeaders }) {
     throw error(503, "hikes walks unavailable");
   }
 
-  const headers = { "cache-control": HIKES_WALKS_CACHE_CONTROL };
+  const headers = cloudflareCacheHeaders(HIKES_WALKS_CACHE_CONTROL);
   const etag = versionedEtag(res.headers?.get?.("etag"));
   if (etag) headers.etag = etag;
   const lastModified = res.headers?.get?.("last-modified");

@@ -5,6 +5,7 @@ import { error } from "@sveltejs/kit";
 // reach src/lib/. Mirrors hikes/+page.server.js.
 import {
   CAMPSITES_SNAPSHOT_CACHE_CONTROL,
+  cloudflareCacheHeaders,
   versionedEtag,
 } from "../../../../lib/cache-headers.js";
 
@@ -22,7 +23,7 @@ export async function load({ fetch, setHeaders }) {
     throw error(503, "campsites data unavailable");
   }
 
-  const headers = { "cache-control": CAMPSITES_SNAPSHOT_CACHE_CONTROL };
+  const headers = cloudflareCacheHeaders(CAMPSITES_SNAPSHOT_CACHE_CONTROL);
   const etag = versionedEtag(res.headers?.get?.("etag"));
   if (etag) headers.etag = etag;
   const lastModified = res.headers?.get?.("last-modified");

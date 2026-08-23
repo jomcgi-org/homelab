@@ -10,7 +10,10 @@ import {
   getMeta,
   renderDoc,
 } from "$lib/server/docs.js";
-import { DOCS_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  DOCS_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 
 export function load({ params, setHeaders }) {
   const slug = (params.slug || "").replace(/\/+$/, "");
@@ -32,7 +35,7 @@ export function load({ params, setHeaders }) {
   );
 
   setHeaders({
-    "cache-control": DOCS_CACHE_CONTROL,
+    ...cloudflareCacheHeaders(DOCS_CACHE_CONTROL),
     // Build-versioned ETag: the doc HTML is a function of (content x build), and
     // content is baked into the build, so the version alone is a sound validator.
     etag: `"${version}-docs-${slug}"`,

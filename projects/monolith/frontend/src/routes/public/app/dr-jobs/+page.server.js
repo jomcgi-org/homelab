@@ -4,6 +4,7 @@ import { error } from "@sveltejs/kit";
 // depth as hikes (routes/public/app/dr-jobs), hence four ../ segments to reach
 // src/lib/. Mirrors hikes/+page.server.js.
 import {
+  cloudflareCacheHeaders,
   DR_JOBS_LISTINGS_CACHE_CONTROL,
   versionedEtag,
 } from "../../../../lib/cache-headers.js";
@@ -23,7 +24,7 @@ export async function load({ fetch, setHeaders }) {
     throw error(503, "dr-jobs listings unavailable");
   }
 
-  const headers = { "cache-control": DR_JOBS_LISTINGS_CACHE_CONTROL };
+  const headers = cloudflareCacheHeaders(DR_JOBS_LISTINGS_CACHE_CONTROL);
   const etag = versionedEtag(res.headers?.get?.("etag"));
   if (etag) headers.etag = etag;
   setHeaders(headers);

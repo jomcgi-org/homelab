@@ -4,6 +4,7 @@ import { error } from "@sveltejs/kit";
 // as ships (routes/public/app/trips), hence four ../ segments to reach src/lib/.
 // Mirrors ships/+page.server.js.
 import {
+  cloudflareCacheHeaders,
   TRIPS_CACHE_CONTROL,
   versionedEtag,
 } from "../../../../lib/cache-headers.js";
@@ -29,7 +30,7 @@ export async function load({ fetch, setHeaders }) {
     throw error(503, "trips index unavailable");
   }
 
-  const headers = { "cache-control": TRIPS_CACHE_CONTROL };
+  const headers = cloudflareCacheHeaders(TRIPS_CACHE_CONTROL);
   const etag = versionedEtag(res.headers?.get?.("etag"));
   if (etag) headers.etag = etag;
   setHeaders(headers);
