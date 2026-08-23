@@ -48,12 +48,11 @@ ninfer:
   # Longest single prompt the server admits, in tokens. 262144 is the model's
   # native window and what the fork serves with E8 KV on this card.
   maxContext: 262144
-  # KV page pool. "auto" sizes it to the VRAM left after weights, vision and
-  # the CUDA graph allowance, and the server refuses to start on a deficit
-  # rather than OOMing later. Pin a number here once a bench has measured
-  # steady-state nvidia-smi; interpolate between measured points, never
-  # extrapolate (the llama.cpp ctxSize history in git is the cautionary tale).
-  kvCapacity: "auto"
+  # KV page pool, pinned to the full native context. Automatic sizing reserves
+  # an additional 1 GiB of headroom and rejects this 24 GB card before startup.
+  # The explicit 262K reservation fits with about 405 MiB of planned slack.
+  # Keep this at least maxContext, as required by ninfer-serve.
+  kvCapacity: 262144
   # E8 lattice 4-bit keys and values. int8 is the higher-precision option at
   # ~168K max context on 24 GB; the fork measured identical MTP acceptance and
   # a 5.7% decode tax for rk4v4-e8, with exact retrieval through 260K.
