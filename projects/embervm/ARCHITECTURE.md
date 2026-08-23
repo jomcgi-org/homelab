@@ -73,6 +73,14 @@ compare against.
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
 | Website snapshotter (task guest) | **Built** | Headless Chromium screenshot over MCP (ADR embervm/035), #4994 |
 
+**Why.** The original single-node RPC path had no durable task record, ownership,
+managed retry, cross-node placement, or fairness (ADR embervm/001). Argo
+Workflows was rejected because per-job Kubernetes objects move high-churn state
+into etcd and add pod startup to every short task; a bare pull queue was rejected
+because it discards placement and snapshot locality. A BEAM control plane over a
+Firecracker data plane was chosen with an accepted Elixir toolchain cost and a
+smaller contributor ecosystem (ADR embervm/001).
+
 ---
 
 ## 2. System overview
@@ -239,6 +247,15 @@ sequenceDiagram
 The platform contract is in section 11; the security posture summary is in
 section 10.
 
+**Why.** Per-dispatch metering and placement made control-plane work grow with
+the number of sandboxes, while session endpoints in xDS would make configuration
+grow with session count (ADR embervm/020). Keeping central filter, score, and bind
+placement at dispatch rate was rejected as a scheduler throughput ceiling, and a
+global session directory was rejected because it adds a lookup to every request.
+The control plane now owns fleet facts and precomputed assignment while bricks
+own runtime facts, accepting reconcile-time metering gaps and bounded stale-state
+risk during partitions (ADR embervm/014, ADR embervm/018, ADR embervm/020).
+
 ---
 
 ## 3. Workload classes
@@ -269,6 +286,15 @@ are fetched and unpacked inside the disposable guest).
 - **Composition**: multi-component apps
   become independent Workloads wired by bindings rather than composite
   groups.
+
+**Why.** Classes originally bundled persistence policy, leaving no class for a
+filesystem-backed workload without a memory snapshot (ADR embervm/027). A new
+class for each persistence shape was rejected because persistence is orthogonal
+to class scheduling and network semantics; composite groups were rejected as the
+default application graph because joint lifecycle and private networking couple
+otherwise independent components (ADR embervm/022, ADR embervm/027). Declared
+persistence properties and mediated bindings carry the added schema and migration
+cost while composite remains available for multi-kernel groups.
 
 ---
 
@@ -400,6 +426,16 @@ receiving node.
 The S3 artifact GC uses an 8-hour TTL for stateful warmth and 7-day TTLs for
 session memory, serving snapshots, session workspaces, and group sets.
 
+**Why.** A control-plane restart during an interruptible bank could leave a
+benign generation advance indistinguishable from an unauthorized one, forcing
+quarantine (ADR embervm/017). A live-volume timer snapshot was rejected because
+blocks can be captured inconsistently, and keeping wake only in the control-plane
+pod was rejected because a control-plane roll could black-hole cold wakes (ADR
+embervm/018, ADR embervm/025). Durable checkpoint provenance and a node-local
+activator preserve the fail-closed generation rule, accepting a narrow quarantine
+window when provenance was never recorded and best-effort metering during a
+control-plane gap.
+
 ---
 
 ## 5. The invariants
@@ -483,6 +519,16 @@ against them.
     mechanics. The scalar details are carried by the storage and
     control-plane sections.
 
+**Why.** Worker runtime state changed faster than synchronous durable writes
+could support, while stale reports could otherwise resurrect destroyed VMs or
+regress a generation (ADR embervm/014). Writing every transition before the
+worker acts was rejected because it keeps Postgres on boot and wake paths;
+vocabulary-only conformance was also insufficient because a modeled action can
+exist in an enum and never be emitted (ADR embervm/034). Worker-authoritative
+runtime state, forward-only reconciliation, and model-checked invariants accept
+late durable records while keeping enforcement fail-closed and warmth
+discardable (ADR embervm/006, ADR embervm/014).
+
 ---
 
 ## 6. Control plane internals
@@ -543,6 +589,16 @@ against them.
 - **Resource model**: `memMib` is the only declared dial, CPU is derived
   from it, and GB-seconds is the accounting unit.
 
+**Why.** The original journal retained request payloads without a bound, and a
+full durable volume would stop submissions because lifecycle writes fail closed
+(ADR embervm/002). A larger unbounded volume was rejected because it delays the
+same outage; central placement and metering on every dispatch were rejected as
+control-plane throughput ceilings (ADR embervm/002, ADR embervm/020). Projections,
+prefix compaction, group commit, and forecast-time assignment keep durable work
+off dispatch. Separating payloads from journal facts adds a second write and an
+orphan-reclamation path, an accepted consequence of shorter payload retention
+and principal-scoped erasure (ADR embervm/019).
+
 ---
 
 ## 7. Capacity, bricks, and Kubernetes
@@ -589,6 +645,15 @@ rung `up` on the `observe -> up -> full` ladder: denial-driven scale-up
 acts, clamped to the chart's maxReplicas. **Planned**: promoting to `full`
 adds drain-aware scale-down. The current brick mix is deployment state and
 lives in the fleet section.
+
+**Why.** Per-invocation pods and Kubernetes objects made pod churn and etcd the
+ceiling for short work, yet bypassing Kubernetes meant its autoscaler could no
+longer observe Firecracker demand (ADR embervm/001, ADR embervm/005). A pod per
+VM was rejected for restoring that churn, while whole-node daemons were rejected
+because they make capacity changes too coarse for mixed workload lanes (ADR
+embervm/013, ADR embervm/016). Fixed-size bricks expose schedulable capacity to
+Kubernetes and keep VM placement inside EmberVM, accepting bin-fragmentation and
+drain coordination as explicit costs.
 
 ---
 
@@ -677,6 +742,19 @@ blessing-lease self-advance) once silence exceeds the bound; live VMs keep
 running and warmth stays intact, and blessing-lease exhaustion remains the
 generation-count complement for quiet lineages.
 
+**Why.** ADR embervm/011 chose replicated block storage to avoid whole-volume
+exports, then ADR embervm/025 superseded it for stateful storage because the CSI
+path added another placement owner and imposed the same replication cost on
+every workload; the reasoning against whole-file write amplification still
+holds. Timer-driven copies of live volumes were rejected as crash-inconsistent,
+and network demand-loading of root filesystems was rejected because an object
+store outage could stall a running guest (ADR embervm/025, ADR embervm/028).
+Authoritative local volumes, bank-time archives, and eager local chunk hydration
+accept an archive-interval loss window and slower restore after node loss. Mutable
+warmth is encrypted per principal because storage ACLs alone expose process
+memory to a compromised storage reader, accepting that loss of the platform root
+forces cold boot (ADR embervm/033, ADR embervm/036).
+
 ---
 
 ## 9. Identity, tenancy, security
@@ -756,6 +834,16 @@ identity-provider group and backed by a per-group fine-grained PAT, so what a
 guest can reach is a fixed tool set rather than an API surface. The egress
 broker keeps the credentials that genuinely need host-keyed injection, the
 model providers among them.
+
+**Why.** The original Kubernetes identity string conflated the credential holder,
+the isolation principal, and permission to use management actions, leaving object
+ownership checks unsafe for additional users (ADR embervm/032). TokenReview-only
+identity was rejected because it has no browser or device flow, while per-request
+identity-provider introspection was rejected because it adds a network dependency
+to every request. Provider-neutral actors, explicit principals, local token
+verification, and object-level authorization accept expiry-bounded revocation and
+loss of new login during an identity-provider outage (ADR embervm/024, ADR
+embervm/032).
 
 ---
 
@@ -861,6 +949,15 @@ exposure is per-principal encryption at rest (#4691).
 | Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). The journal is prefix-compacted past 30 days; older audit lives only in the observability stack. |
 | Containment of a detected-bad actor (43) | **Built** for one lever: principal cutoff as an admission action, stop minting tokens, 402 at the edge. The volume quarantine is a data-integrity guard against generation divergence, not an adversary control; no brick- or principal-level quarantine primitive exists, and an automatic containment policy is not decided. |
 
+**Why.** Runtime isolation did not protect banked memory from a compromised brick,
+storage reader, or insider with object-store access (ADR embervm/033). A
+self-authored threat list was rejected because it could be shaped around existing
+choices, and storage ACLs alone were rejected because they authorize more than a
+specific principal, lineage, and generation. The external conformance frame and
+per-principal envelope encryption make those gaps explicit, accepting restore
+latency, key-count growth, and cold boot when a key is unavailable (ADR
+embervm/033, ADR embervm/036).
+
 ---
 
 ## 11. Deployment shape
@@ -921,6 +1018,15 @@ shared Postgres) is in [deploy/README.md](deploy/README.md).
 | Brick silence timeout | 21600s armed | **Built** | asserted; the divergence bound for the ownership-arbitration design (ADR 037) |
 | Wake-grant gap budget | k=4 (default cadence class) | **Decided direction** | the Fork B grant; Fork A activator self-advance is what is Built |
 | Definitions target | 100k+ | **Planned** | provisional; owner-set goal, not measured demand |
+
+**Why.** Per-workload Helm templates fail as an authoring surface well before a
+large informer relist makes etcd a recurring hazard (ADR embervm/026). A larger
+etcd with one CR per workload was rejected because it leaves the earlier authoring
+failure, and a pod or Service per execution was rejected because it restores the
+object churn EmberVM was created to remove (ADR embervm/001, ADR embervm/026).
+Kubernetes therefore owns low-churn definitions and brick scheduling while the
+standalone chart owns the execution plane, accepting KVM-capable nodes, local
+scratch, and an external durable store as the minimum deployment contract.
 
 ---
 

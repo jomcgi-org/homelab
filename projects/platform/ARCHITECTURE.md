@@ -33,6 +33,14 @@ All converge on the same Envoy instance. The ingress library (`cf-ingress-librar
 
 (see: `projects/platform/cloudflare-gateway/`, `projects/platform/cf-ingress-library/`, ADR networking/001, ADR networking/002)
 
+**Why.** The former operator reimplemented routing primitives while production
+still used a separate static tunnel configuration, so Envoy Gateway took over
+in-cluster routing and the operator scope narrowed to edge lifecycle (ADR
+networking/001). Per-service hostnames were rejected because every service added
+manual DNS and optional SSO configuration; audience tiers make private exposure
+the default and public exposure explicit (ADR networking/002). The shared gateway
+accepts path-conflict risk and makes route-overlap checks part of CI.
+
 ---
 
 ## 2. Network and CNI
@@ -49,6 +57,15 @@ Cilium replaced Linkerd's sidecar mesh (ADR platform/012). It runs as the cluste
 Future (ADR networking/003): L7 (HTTP/gRPC) policy, which would gate L7 metrics in Hubble. Infrastructure is ready; `CiliumNetworkPolicy` with Envoy rules not yet deployed.
 
 (see: `projects/platform/cilium/values.yaml`, ADR platform/012, ADR networking/003)
+
+**Why.** Linkerd sidecars prevented ordinary network policy in meshed namespaces,
+kept Jobs alive, and added a container and hop to every pod (ADR platform/012).
+Keeping Linkerd over Cilium was rejected because it preserves the policy blind
+spot and doubles data-plane complexity; enabling every Cilium capability in one
+cutover was rejected because default-deny and L7 proxying carry separate blast
+radii (ADR platform/012, ADR networking/003). Cilium therefore replaces the mesh
+incrementally, accepting label-derived authorization in place of per-connection
+workload identity and added latency only on selected L7 surfaces.
 
 ---
 
@@ -67,6 +84,17 @@ For all other services: ArgoCD deploys from the git-written `targetRevision` on 
 **Kargo patches on the live Applications**, so "what version is production on" is a `kubectl` question. The root `canada` Application carries an `ignoreDifferences` entry per promoted Application plus `RespectIgnoreDifferences=true`; without the sync option a sync stamps the git value back, and the symptom is a promotion that holds for hours and then silently reverts. The CI write-back still maintains production's copy in git on purpose. It is the revert lever: dropping the `ignoreDifferences` entry hands production back to a correct value with nothing to reconstruct. Dev's file is frozen at its bootstrap floor and drifts further with every publish, by design.
 
 (see: `projects/home-cluster/kustomization.yaml`, `projects/platform/kargo/README.md`, ADR platform/009, ADR platform/011, ADR platform/014)
+
+**Why.** Branch-side chart bumps caused duplicate versions, merge conflicts, and
+merged changes that never deployed when a bump was lost (ADR platform/009, ADR
+platform/011). Floating OCI revisions were rejected because ArgoCD cannot follow
+OCI semver ranges, while a production-only Kargo stage was rejected because it
+adds a controller without a validation stage. Post-merge idempotent publishing
+and monotonic write-back remove PR contention, and Kargo promotion accepts live
+Application state as the deployed version plus a soak gate that proves readiness
+only (ADR platform/009). ADR platform/014's custom merge reconciler was
+superseded by the native queue; its reasoning about concurrent branches becoming
+stale after every merge still holds.
 
 ---
 
@@ -94,6 +122,14 @@ EmberVM uses SeaweedFS to archive task results, session state, and banked snapsh
 
 (see: `projects/platform/atlas-operator/`)
 
+**Why.** Imperative bucket Jobs had no teardown, separate lifecycle setup, and no
+per-application credentials, leaving derived data behind after its application
+was removed (ADR platform/007). Application self-provisioning was rejected because
+it remains invisible to GitOps and still has no deletion path; Crossplane was
+rejected as too much infrastructure for bucket provisioning alone. COSI was
+chosen for declarative ownership and reclaim policy, accepting beta APIs and a
+community driver; the decision remains accepted and undeployed.
+
 ---
 
 ## 5. Scheduling and capacity
@@ -108,6 +144,14 @@ EmberVM uses SeaweedFS to archive task results, session state, and banked snapsh
 
 (see: `projects/platform/priority-classes/`, ADR platform/010, `projects/platform/node-traffic-shaper/`, `projects/platform/keda/`, `projects/platform/nvidia-gpu-operator/`)
 
+**Why.** Measured memory peaks left little safe request headroom to trim, while
+rare peaks occurred at different times and held capacity idle between them (ADR
+platform/010). Guaranteed request-equals-limit sizing was rejected because it
+prevented the Firecracker tier from fitting, and BestEffort sizing was rejected
+because critical workloads would lose their reserved floor. Burstable requests
+plus priority classes accept an occasional OOM bet and designate reconstructible
+guest work as the first victim when peaks coincide.
+
 ---
 
 ## 6. Observability
@@ -121,6 +165,14 @@ Kyverno auto-injects OTel environment variables into workload pods outside syste
 **Internal observability guidance** lives in `docs/observability.md` (not published externally).
 
 (see: `projects/platform/signoz/`, `projects/platform/opentelemetry-operator/`, `projects/platform/signoz-addons/`, `projects/platform/signoz-dashboards-library/`, `docs/observability.md`)
+
+**Why.** Network-policy drops could silently black-hole traffic, while Cilium L7
+metrics do not exist until an L7 policy redirects that surface through Envoy
+(ADR networking/003). Enabling HTTP observation cluster-wide was rejected because
+it adds an Envoy hop to every flow, and the Hubble UI was rejected as the primary
+view because it cannot feed the existing incident-alert path. Per-surface L7
+policy and SigNoz ingestion accept proxy latency only where method and path
+enforcement justify it.
 
 ---
 
@@ -145,6 +197,16 @@ Non-root execution and dropped capabilities come from each chart's own `security
 
 (see: `projects/platform/cert-manager/`, `projects/platform/authentik/`, `projects/platform/`)
 
+**Why.** The sidecar mesh blocked native network policy and carried recurring
+lifecycle failures, so Cilium consolidated CNI, encryption, and label-based
+policy in one node data plane (ADR platform/012). Running both meshes was rejected
+because it retains the original failure modes, and immediate Cilium mutual
+authentication was deferred because its newer identity feature was outside the
+cluster threat requirement. For application identity, Kubernetes-only
+TokenReview was rejected because it lacks browser SSO, device flow, and human
+lifecycle; provider-neutral local token verification accepts expiry-bounded
+revocation and identity-provider outages for new login (ADR embervm/032).
+
 ---
 
 ## 8. Maintenance automation
@@ -162,6 +224,15 @@ Non-root execution and dropped capabilities come from each chart's own `security
 **seaweedfs-node4** and **seaweedfs-node4b** are additional SeaweedFS volume server instances pinned to the GPU node, handling overflow storage.
 
 (see: `projects/platform/renovate/`, `projects/platform/renovate/README.md`, `projects/platform/coredns/`, `projects/platform/seaweedfs-node4/`, `projects/platform/seaweedfs-node4b/`)
+
+**Why.** Dependency and lock regeneration must run on Linux with pinned tooling,
+survive a workstation being offline, and leave a reviewable pull request rather
+than mutating the cluster directly. Argo CronWorkflows were chosen over
+in-process loops and local cron because the existing controller already owns
+cadence, deadlines, concurrency, and history. Daily Renovate retries are kept
+separate from the Monday review window, while the weekly apko job amortizes a
+more expensive whole-repository lock refresh. This accepts Argo as an operational
+dependency and keeps its write credentials scoped through 1Password.
 
 ---
 
