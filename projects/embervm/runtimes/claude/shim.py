@@ -47,6 +47,38 @@ MAX_TURN_DIFF_BYTES = 5 * 1024 * 1024
 MAX_TURN_DIFF_COMPRESSED_BYTES = 1024 * 1024
 
 
+def egress_proxy_env():
+    """Proxy variables for a CLI child, deliberately in BOTH letter cases.
+
+    curl reads ``http_proxy`` in LOWERCASE ONLY. Uppercase ``HTTP_PROXY`` is
+    ignored on purpose, because a CGI environment can forge it from a request's
+    Proxy: header, and curl has refused to honour it since that class of bug.
+    Every other variable here (``HTTPS_PROXY``, ``NO_PROXY``) is read in either
+    case.
+
+    That asymmetry is not cosmetic inside a guest. A session guest boots with NO
+    NIC at all, so a request that misses the proxy has no route and no resolver:
+    it dies as "Could not resolve host", which reads like a broken service rather
+    than a bypassed lane. Pi's web_search hit exactly this against the in-cluster
+    SearXNG endpoint (an http:// URL) while its web_fetch over https:// worked,
+    because only the https lane was ever pointed at the forwarder.
+
+    So set both cases once, here, and let every adapter share it. A tool that
+    shells out to curl is the normal case in these guests, not the exception.
+    """
+    egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
+    proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
+    no_proxy = "127.0.0.1,localhost"
+    return {
+        "HTTPS_PROXY": proxy_url,
+        "HTTP_PROXY": proxy_url,
+        "NO_PROXY": no_proxy,
+        "https_proxy": proxy_url,
+        "http_proxy": proxy_url,
+        "no_proxy": no_proxy,
+    }
+
+
 def _emit_turn_diff_outcome(checkout_dir, phase, outcome):
     """Emit one best-effort diagnostic for a turn diff capture outcome."""
     try:
@@ -1591,16 +1623,8 @@ class ClaudeProcess:
         if session_id:
             command.extend(["--resume", session_id])
         command.extend(["--append-system-prompt", compose_system_prompt(system_prompt)])
-        egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
-        proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
         child_env = os.environ.copy()
-        child_env.update(
-            {
-                "HTTPS_PROXY": proxy_url,
-                "HTTP_PROXY": proxy_url,
-                "NO_PROXY": "127.0.0.1,localhost",
-            }
-        )
+        child_env.update(egress_proxy_env())
         process = subprocess.Popen(
             command,
             cwd=spawn_workspace,
@@ -2092,8 +2116,6 @@ class CodexProcess:
             return os.path.isdir(self.workspace)
 
     def _child_env(self):
-        egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
-        proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
         # The CLI state dir must live under the WORKSPACE, not $HOME: the guest's
         # $HOME is on the read-only rootfs and the codex CLI refuses to start when
         # CODEX_HOME does not exist (observed live as a 422 on every codex turn).
@@ -2108,14 +2130,8 @@ class CodexProcess:
         # key is not part of ChatGPT subscription mode and must not confuse
         # the CLI or the egress sidecar.
         child_env.pop("OPENAI_API_KEY", None)
-        child_env.update(
-            {
-                "CODEX_HOME": codex_home,
-                "HTTPS_PROXY": proxy_url,
-                "HTTP_PROXY": proxy_url,
-                "NO_PROXY": "127.0.0.1,localhost",
-            }
-        )
+        child_env.update(egress_proxy_env())
+        child_env["CODEX_HOME"] = codex_home
         return child_env
 
     @staticmethod
@@ -2678,8 +2694,6 @@ class PiProcess:
             return os.path.isdir(self.workspace)
 
     def _child_env(self):
-        egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
-        proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
         # Same constraint as the codex adapter: $HOME is read-only rootfs in the
         # guest, so pi's state dir lives under the writable workspace, which is
         # also where session files must sit to survive bank/relight.
@@ -2687,15 +2701,9 @@ class PiProcess:
         _ensure_cli_dir(pi_home)
         _ensure_cli_dir(os.path.join(pi_home, "agent"))
         child_env = os.environ.copy()
-        child_env.update(
-            {
-                "PI_HOME": pi_home,
-                "PI_CODING_AGENT_DIR": os.path.join(pi_home, "agent"),
-                "HTTPS_PROXY": proxy_url,
-                "HTTP_PROXY": proxy_url,
-                "NO_PROXY": "127.0.0.1,localhost",
-            }
-        )
+        child_env.update(egress_proxy_env())
+        child_env["PI_HOME"] = pi_home
+        child_env["PI_CODING_AGENT_DIR"] = os.path.join(pi_home, "agent")
         return child_env
 
     def _write_model_config(self, pi_home):

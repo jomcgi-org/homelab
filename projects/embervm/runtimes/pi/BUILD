@@ -16,9 +16,15 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # fork, and forking one would be a second copy of 3700 lines policed by nothing.
 
 # First-class web research tools for Pi. The extension deliberately uses curl
-# through pi.exec rather than runtime fetch(): curl honors the HTTP_PROXY,
-# HTTPS_PROXY and CA variables installed by the shared shim, so every request
-# stays inside EmberVM's brokered egress policy.
+# through pi.exec rather than runtime fetch(), so every request stays inside
+# EmberVM's brokered egress policy.
+#
+# Note which variable curl actually reads. For an http:// URL it honors
+# lowercase http_proxy ONLY, ignoring uppercase HTTP_PROXY on purpose (a CGI
+# environment can forge that one from a Proxy: header). The shared shim exports
+# both cases for exactly this reason, and the extension also passes --proxy
+# explicitly, because a guest has no NIC and a request that misses the lane
+# fails as an unresolvable host rather than as a routing error.
 tar(
     name = "web_research_extension_tar",
     srcs = ["web-research.ts"],

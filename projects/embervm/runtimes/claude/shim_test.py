@@ -42,7 +42,17 @@ egress_env_path = os.environ.get("FAKE_EGRESS_ENV")
 if egress_env_path:
     with open(egress_env_path, "w") as stream:
         json.dump(
-            {key: os.environ.get(key) for key in ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")},
+            {
+                key: os.environ.get(key)
+                for key in (
+                    "HTTPS_PROXY",
+                    "HTTP_PROXY",
+                    "NO_PROXY",
+                    "https_proxy",
+                    "http_proxy",
+                    "no_proxy",
+                )
+            },
             stream,
         )
 api_key = os.environ.get("FAKE_API_KEY", "none")
@@ -3215,8 +3225,36 @@ def test_spawn_sets_egress_proxy_environment(tmp_path, monkeypatch):
         "HTTPS_PROXY": "http://127.0.0.1:1042",
         "HTTP_PROXY": "http://127.0.0.1:1042",
         "NO_PROXY": "127.0.0.1,localhost",
+        # Lowercase is not redundant. curl honours http_proxy in lowercase ONLY,
+        # so a guest tool that curls an http:// URL with just HTTP_PROXY set
+        # bypasses the egress lane and dies resolving the host in a guest that
+        # has no NIC. See shim.egress_proxy_env.
+        "https_proxy": "http://127.0.0.1:1042",
+        "http_proxy": "http://127.0.0.1:1042",
+        "no_proxy": "127.0.0.1,localhost",
     }
     manager._close_process(kill=True)
+
+
+@pytest.mark.parametrize("manager_factory", (_codex_manager, _pi_manager))
+def test_cli_child_env_points_plain_http_at_the_egress_lane(
+    manager_factory, tmp_path, monkeypatch
+):
+    """Every adapter's children must reach the lane over http:// as well as https://.
+
+    Pi's web_search queries the in-cluster SearXNG endpoint over plain HTTP with
+    curl, which reads only the lowercase name. With uppercase alone the request
+    left the proxy behind, found no resolver in a NIC-less guest, and surfaced as
+    a SearXNG outage rather than a routing gap.
+    """
+    monkeypatch.setenv(shim.EGRESS_PORT_ENV, "1042")
+    child_env = manager_factory(tmp_path, monkeypatch)._child_env()
+    assert child_env["http_proxy"] == "http://127.0.0.1:1042"
+    assert child_env["https_proxy"] == "http://127.0.0.1:1042"
+    assert child_env["no_proxy"] == "127.0.0.1,localhost"
+    assert child_env["HTTP_PROXY"] == child_env["http_proxy"]
+    assert child_env["HTTPS_PROXY"] == child_env["https_proxy"]
+    assert child_env["NO_PROXY"] == child_env["no_proxy"]
 
 
 def test_egress_forwarder_opens_one_vsock_connection_per_accept(monkeypatch):
