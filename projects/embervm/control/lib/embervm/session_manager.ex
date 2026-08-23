@@ -3472,9 +3472,13 @@ defmodule Embervm.SessionManager do
   #
   # Two orderings, selected by EMBERVM_NODE_CONFIRMED_DESTROY (ADR embervm/014
   # decision 5):
-  #   * off (default): record destroying first, then tear the VM down
-  #     asynchronously. A banked session (no VM) is evicted synchronously.
-  #   * on, live VM: record the destroying intent, run the node-confirmed teardown
+  # For a live session the destroying intent is written by the CALLER
+  # (handle_call({:destroy, _})) before the continue that lands here, in both
+  # orderings and regardless of the gate:
+  #   * off (default): tear the VM down, then record destroyed whether or not the
+  #     node confirmed. A banked session (no VM) is evicted synchronously with no
+  #     intent op.
+  #   * on, live VM: run the node-confirmed teardown
   #     RPC, and record session_destroyed ONLY when the node confirms teardown. An
   #     unconfirmed teardown (RPC failure or teardown_confirmed=false) leaves the
   #     session in destroying for the reconcile loop to re-drive.
@@ -3552,10 +3556,20 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # Gate-on path for a live-VM session: destroying intent -> node-confirmed teardown
-  # -> destroyed only on confirmation. Relight waiters drain immediately (the session
+  # Gate-on path for a live-VM session: (caller-written) destroying intent ->
+  # node-confirmed teardown -> destroyed only on confirmation. Relight waiters drain immediately (the session
   # is going away regardless of how long teardown takes).
   defp destroy_live_node_confirmed(state, session, _resumed) do
+    # 1. Durable destroying intent is already on the log. The only caller is
+    #    handle_continue({:do_destroy_live, _}), which dispatches a :destroying
+    #    row that handle_call({:destroy, _}) transitioned to :session_destroying
+    #    before continuing, and that write happens regardless of
+    #    EMBERVM_NODE_CONFIRMED_DESTROY. This function never writes the
+    #    intent itself (#4804: a second write site here was unreachable and read
+    #    as the primary one). The match makes the precondition loud: a new
+    #    caller that skips the intent crashes here instead of tearing down a VM
+    #    whose destroy a CP restart would forget.
+    :destroying = session.state
     state = drain_relight_waiters(state, session.session_id, {:error, {:gone, "destroyed"}})
 
     # 2. Terminate the process and issue the node-confirmed teardown RPC. A

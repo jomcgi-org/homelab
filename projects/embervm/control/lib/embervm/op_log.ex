@@ -115,9 +115,10 @@ defmodule Embervm.OpLog do
     :session_expired,
     :session_evicted,
     # session_destroying is the durable destroy INTENT (ADR embervm/014 decision 5):
-    # appended BEFORE the node-confirmed teardown RPC, so a CP crash mid-destroy
-    # rebuilds as destroying and re-drives; session_destroyed follows only on node
-    # confirmation. Only written under the EMBERVM_NODE_CONFIRMED_DESTROY gate.
+    # appended by SessionManager BEFORE any teardown, regardless of the
+    # EMBERVM_NODE_CONFIRMED_DESTROY gate, so a CP crash mid-destroy rebuilds as
+    # destroying and re-drives. The gate only decides whether session_destroyed
+    # waits for node confirmation (#4804).
     :session_destroying,
     :session_destroyed,
     :session_failed,
