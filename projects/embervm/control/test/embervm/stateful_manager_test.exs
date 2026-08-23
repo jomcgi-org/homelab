@@ -723,6 +723,49 @@ defmodule Embervm.StatefulManagerTest do
     assert length(live) == 1
   end
 
+  test "a RELIGHT the daemon refuses as FAILED_PRECONDITION (unrestorable snapshot) fails the instance, classifies the error, and the next wake cold-boots (#4408)" do
+    # Regression for #4408: noded answers a RELIGHT whose bundle cannot be restored
+    # (a Firecracker snapshot-format bump, a corrupt bundle) with FAILED_PRECONDITION
+    # and keeps the bundle. Mapping that onto the transient `relight_abort` edge put
+    # the instance straight back to :banked with the SAME doomed snapshot_ref, so
+    # every wake re-relit it forever. It must instead fail the banked instance
+    # (the FSM's documented `relighting -> failed` edge) so the next wake plans a
+    # COLD boot off the durable volume, and the caller must see a classified error.
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+
+    start_fun = fn _ch, req ->
+      Agent.update(calls, &[req.mode | &1])
+
+      case req.mode do
+        :START_STATEFUL_MODE_RELIGHT ->
+          {:error, %GRPC.RPCError{status: 9, message: "noded: relight stateful snapshot \"stateful/stf-doomed\": snapshot version mismatch"}}
+
+        _ ->
+          {:ok, %StartStatefulResponse{vm_id: "vm-cold", ip: "10.88.0.6", port: 5432, generation: 4, was_relight: false}}
+      end
+    end
+
+    ctx = start_stack(start_stateful_fun: start_fun, wake_max: 100)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    seed_banked_with_pair(ctx, "stf-doomed", "node-4", 3, 3)
+    assert StatefulStore.pair_valid?(ctx.store, "wl-a")
+
+    # First wake: the relight is refused. Classified, not a generic wake_failed.
+    assert {:error, {:wake_failed, {:snapshot_unrestorable, msg}}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert msg =~ "snapshot version mismatch"
+
+    # The banked instance is terminal (failed), NOT back in :banked.
+    {:ok, doomed} = StatefulStore.get(ctx.store, "stf-doomed")
+    assert doomed.state == :failed
+
+    # Second wake: no banked candidate remains, so plan_wake goes COLD off the
+    # volume (not a second RELIGHT of the same ref) and the workload serves again.
+    assert {:ok, %{ip: "10.88.0.6", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Enum.reverse(Agent.get(calls, & &1)) == [:START_STATEFUL_MODE_RELIGHT, :START_STATEFUL_MODE_COLD]
+  end
+
   test "a RELIGHT the DAEMON falls back to cold (was_relight=false) evicts the old instance, cold-boots a new one, and does not wedge" do
     # Regression: the control plane plans a relight (pair looks valid from here),
     # marks the banked instance :relighting, but the daemon discovers the pair is
