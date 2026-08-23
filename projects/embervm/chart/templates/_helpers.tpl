@@ -266,3 +266,26 @@ KEK root Secret name (ADR embervm/036). Generated from the release when the
 {{- fail "kekRoot.name is required when kekRoot.enabled is true without kekRoot.onepassword.itemPath" -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Guard (#4336): a session workload's bankedTtlSeconds must stay below the S3
+warmth GC session age floor (warmthS3Gc.sessionTtlMs, default 7 days, the
+control plane's Embervm.S3WarmthGc default). A banked snapshot gets no
+CP-expiry hold in that GC, and both sweepers act at age >= TTL, so an equal or
+longer banked TTL can be reaped underneath the session and relight as
+snapshot_lost. The control plane rejects such a CR at admission
+(Ready=False/SessionBankedTtlExceedsGc); this fails the render first so the
+mistake never reaches the cluster.
+Input: (dict "ctx" $ "workload" "<values key>").
+*/}}
+{{- define "embervm.sessionBankedTtlGuard" -}}
+{{- $wl := index .ctx.Values .workload -}}
+{{- $banked := int64 $wl.session.bankedTtlSeconds -}}
+{{- $gcMs := int64 604800000 -}}
+{{- if .ctx.Values.warmthS3Gc.sessionTtlMs -}}
+{{- $gcMs = int64 .ctx.Values.warmthS3Gc.sessionTtlMs -}}
+{{- end -}}
+{{- if ge (mul $banked 1000) $gcMs -}}
+{{- fail (printf "%s.session.bankedTtlSeconds (%d) meets or exceeds the S3 warmth GC session TTL (warmthS3Gc.sessionTtlMs %d ms, default 604800000): both sweepers act at age >= TTL, so S3 can reap the snapshot before session expiry (#4336)" .workload $banked $gcMs) -}}
+{{- end -}}
+{{- end -}}

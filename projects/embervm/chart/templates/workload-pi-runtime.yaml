@@ -1,4 +1,5 @@
 {{- if .Values.piRuntimeWorkload.enabled }}
+{{- include "embervm.sessionBankedTtlGuard" (dict "ctx" $ "workload" "piRuntimeWorkload") -}}
 # The pi-runtime workload: the small session lane, carrying only the pi CLI.
 #
 # Session class like claude-runtime, and addressed the same way: the monolith

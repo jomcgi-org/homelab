@@ -739,3 +739,35 @@ def test_customer_kms_config_renders_only_from_an_operator_named_secret():
 
     disabled = _render("customer-kms", [chart / "values.yaml"])
     assert "EMBERVM_CUSTOMER_KMS_CONFIG" not in disabled
+
+
+def test_session_banked_ttl_at_or_above_gc_session_ttl_fails_render() -> None:
+    """#4336: reject banked TTLs that race the S3 warmth GC boundary."""
+    ok = _render_with_set(
+        "e",
+        [
+            "piRuntimeWorkload.enabled=true",
+            "piRuntimeWorkload.session.bankedTtlSeconds=604799",
+        ],
+    )
+    assert "bankedTtlSeconds: 604799" in ok
+
+    with pytest.raises(
+        RuntimeError, match="meets or exceeds the S3 warmth GC session TTL"
+    ):
+        _render_with_set(
+            "e",
+            [
+                "piRuntimeWorkload.enabled=true",
+                "piRuntimeWorkload.session.bankedTtlSeconds=604800",
+            ],
+        )
+
+    # The bound follows the configured floor, not only the default.
+    with pytest.raises(
+        RuntimeError, match="claudeRuntimeWorkload.session.bankedTtlSeconds"
+    ):
+        _render_with_set(
+            "e",
+            ["claudeRuntimeWorkload.enabled=true", "warmthS3Gc.sessionTtlMs=1800000"],
+        )

@@ -384,7 +384,10 @@ Resume is one interface with four verbs: cold boot; base-snapshot restore;
 warm (memory) restore; base + workspace hydration. The CP picks the cheapest
 unexpired artifact. Two different windows apply: the same banked session
 is resumable for its warm-bank TTL (an hour in the agent lane, a deploy
-value), after which resume takes the session-expiry 410 path; the durable
+value, and bounded strictly below the warm-bank GC TTL: the chart render and
+the CP's Workload admission both reject a `bankedTtlSeconds` greater than or
+equal to `warmthS3Gc.sessionTtlMs`, because a banked snapshot has no expiry
+hold in that GC), after which resume takes the session-expiry 410 path; the durable
 workspace lineage is adoptable for 7 days, so a new session generation
 inherits the prior workspace rather than starting blank. **Decided
 direction**: capture decouples from bank

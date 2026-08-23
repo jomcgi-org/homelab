@@ -1,4 +1,5 @@
 {{- if .Values.claudeRuntimeWorkload.enabled }}
+{{- include "embervm.sessionBankedTtlGuard" (dict "ctx" $ "workload" "claudeRuntimeWorkload") -}}
 # The claude-runtime workload (issue #4055): voice-drivable Claude Code agent
 # sessions, and the first consumer of the guest egress lane (ADR 023).
 #
