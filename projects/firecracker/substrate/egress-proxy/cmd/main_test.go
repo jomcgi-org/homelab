@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"log/slog"
+	"net"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOriginFormReader(t *testing.T) {
@@ -268,5 +271,95 @@ func TestDefaultListenAddrIsLoopback(t *testing.T) {
 	t.Setenv("EGRESS_LISTEN", "")
 	if got := envOr("EGRESS_LISTEN", defaultListenAddr); got != "127.0.0.1:8888" {
 		t.Fatalf("default listen address = %q, want 127.0.0.1:8888", got)
+	}
+}
+
+func TestHandleBoundsPreamble(t *testing.T) {
+	previousTimeout := handshakeTimeout
+	handshakeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { handshakeTimeout = previousTimeout })
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "oversize preamble without newline", input: strings.Repeat("a", maxPreambleBytes+1)},
+		{name: "slow preamble"},
+		{name: "valid denied internal destination", input: "internal.example:443\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			p := &proxy{
+				lookupIP: func(string) ([]net.IP, error) {
+					return []net.IP{net.ParseIP("127.0.0.1")}, nil
+				},
+				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			go p.handle(server)
+			if tt.input != "" {
+				_, _ = io.WriteString(client, tt.input)
+			}
+
+			done := make(chan error, 1)
+			go func() {
+				var b [1]byte
+				_, err := client.Read(b[:])
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != io.EOF {
+					t.Fatalf("client read error = %v, want EOF", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("handle did not close the connection within the bound")
+			}
+		})
+	}
+}
+
+func TestConnectionCap(t *testing.T) {
+	p := &proxy{conns: make(chan struct{}, 2)}
+	if !p.acquireConn() || !p.acquireConn() {
+		t.Fatal("first two connections should fit under the cap")
+	}
+	if p.acquireConn() {
+		t.Fatal("third connection should be rejected")
+	}
+	if got := p.rejectedConns.Load(); got != 1 {
+		t.Fatalf("rejected connections = %d, want 1", got)
+	}
+	p.releaseConn()
+	if !p.acquireConn() {
+		t.Fatal("connection should be accepted after a release")
+	}
+
+	unlimited := &proxy{}
+	for i := 0; i < 3; i++ {
+		if !unlimited.acquireConn() {
+			t.Fatal("nil connection semaphore should be unlimited")
+		}
+	}
+}
+
+func TestMaxConnsFromEnv(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, tt := range []struct {
+		name, value string
+		want        int
+	}{
+		{name: "unset", want: defaultMaxConns},
+		{name: "valid", value: "8", want: 8},
+		{name: "zero", value: "0", want: defaultMaxConns},
+		{name: "invalid", value: "abc", want: defaultMaxConns},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("EGRESS_MAX_CONNS", tt.value)
+			if got := maxConnsFromEnv(logger); got != tt.want {
+				t.Fatalf("maxConnsFromEnv() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }

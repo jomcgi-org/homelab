@@ -376,6 +376,7 @@ func TestSwapPumpRejectsUnsupportedRequestModes(t *testing.T) {
 		{"connect", "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com\r\n\r\n"},
 		{"connection upgrade", "GET / HTTP/1.1\r\nHost: api.example.com\r\nConnection: Upgrade\r\n\r\n"},
 		{"upgrade header", "GET / HTTP/1.1\r\nHost: api.example.com\r\nUpgrade: websocket\r\n\r\n"},
+		{"credential trailer", "POST / HTTP/1.1\r\nHost: api.example.com\r\nTransfer-Encoding: chunked\r\nTrailer: Authorization\r\n\r\n0\r\nAuthorization: Bearer evil\r\n\r\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			upClient, upOrigin := net.Pipe()
@@ -383,13 +384,178 @@ func TestSwapPumpRejectsUnsupportedRequestModes(t *testing.T) {
 			defer upOrigin.Close()
 			sec := &secretEntry{Header: "Authorization", value: "real"}
 			p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-			p.swapPump(bufio.NewReader(strings.NewReader(tt.request)), io.Discard, upClient, "api.example.com", sec)
+			done := make(chan struct{})
+			go func() {
+				p.swapPump(bufio.NewReader(strings.NewReader(tt.request)), io.Discard, nil, upClient, "api.example.com", sec)
+				close(done)
+			}()
 			_ = upOrigin.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
 			var b [1]byte
 			if n, err := upOrigin.Read(b[:]); n != 0 || err == nil {
 				t.Fatalf("unsupported request was forwarded: n=%d err=%v", n, err)
 			}
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("swapPump did not reject the request promptly")
+			}
 		})
+	}
+}
+
+func TestSwapPumpRejectsOversizeHeaders(t *testing.T) {
+	upClient, upOrigin := net.Pipe()
+	defer upClient.Close()
+	defer upOrigin.Close()
+	request := "GET / HTTP/1.1\r\nHost: api.example.com\r\nX-Large: " + strings.Repeat("a", maxHeaderBytes) + "\r\n\r\n"
+	sec := &secretEntry{Header: "Authorization", value: "real"}
+	p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	p.swapPump(bufio.NewReader(strings.NewReader(request)), io.Discard, nil, upClient, "api.example.com", sec)
+
+	_ = upOrigin.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	var b [1]byte
+	if n, err := upOrigin.Read(b[:]); n != 0 || err == nil {
+		t.Fatalf("oversize request was forwarded: n=%d err=%v", n, err)
+	}
+}
+
+func TestSwapPumpHeaderDeadline(t *testing.T) {
+	previousTimeout := headerTimeout
+	headerTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { headerTimeout = previousTimeout })
+
+	guestClient, guestProxy := net.Pipe()
+	defer guestClient.Close()
+	defer guestProxy.Close()
+	upClient, upOrigin := net.Pipe()
+	defer upClient.Close()
+	defer upOrigin.Close()
+	done := make(chan struct{})
+	go func() {
+		sec := &secretEntry{Header: "Authorization", value: "real"}
+		p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		p.swapPump(bufio.NewReader(guestProxy), io.Discard, guestProxy, upClient, "api.example.com", sec)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("swapPump did not return after the header deadline")
+	}
+}
+
+func TestSwapPumpCanonicalizesHost(t *testing.T) {
+	tests := []struct {
+		name, request string
+		wantForward   bool
+	}{
+		{
+			name:        "origin form host with port and mixed case",
+			request:     "GET /v1 HTTP/1.1\r\nHost: API.EXAMPLE.COM:443\r\nConnection: close\r\n\r\n",
+			wantForward: true,
+		},
+		{
+			name:        "absolute form",
+			request:     "POST http://api.example.com/v1 HTTP/1.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+			wantForward: true,
+		},
+		{
+			name:        "absolute form with matching host header",
+			request:     "POST http://api.example.com/v1 HTTP/1.1\r\nHost: API.EXAMPLE.COM:443\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+			wantForward: true,
+		},
+		{
+			name:        "origin form host with trailing dot",
+			request:     "GET /v1 HTTP/1.1\r\nHost: api.example.com.\r\nConnection: close\r\n\r\n",
+			wantForward: true,
+		},
+		{
+			name:    "origin form mismatched host",
+			request: "GET / HTTP/1.1\r\nHost: evil.example.com\r\nConnection: close\r\n\r\n",
+		},
+		{
+			name:    "absolute form mismatched host",
+			request: "GET http://evil.example.com/ HTTP/1.1\r\nConnection: close\r\n\r\n",
+		},
+		{
+			name:    "absolute form with mismatched host header",
+			request: "GET http://api.example.com/ HTTP/1.1\r\nHost: evil.example.com\r\nConnection: close\r\n\r\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upClient, upOrigin := net.Pipe()
+			defer upClient.Close()
+			defer upOrigin.Close()
+			type result struct {
+				req *http.Request
+				err error
+			}
+			seen := make(chan result, 1)
+			go func() {
+				_ = upOrigin.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+				req, err := http.ReadRequest(bufio.NewReader(upOrigin))
+				seen <- result{req: req, err: err}
+				if err == nil {
+					_, _ = io.WriteString(upOrigin, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+				}
+			}()
+
+			sec := &secretEntry{Header: "Authorization", value: "real"}
+			p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			p.swapPump(bufio.NewReader(strings.NewReader(tt.request)), io.Discard, nil, upClient, "api.example.com", sec)
+			got := <-seen
+			if !tt.wantForward {
+				if got.err == nil {
+					t.Fatalf("mismatched authority was forwarded: Host = %q", got.req.Host)
+				}
+				return
+			}
+			if got.err != nil {
+				t.Fatalf("origin did not receive request: %v", got.err)
+			}
+			if got.req.Host != "api.example.com" {
+				t.Fatalf("forwarded Host = %q, want api.example.com", got.req.Host)
+			}
+		})
+	}
+}
+
+func TestSwapPumpKeepsBodyAttachedAcrossKeepAlive(t *testing.T) {
+	guest := "POST /one HTTP/1.1\r\nHost: api.example.com\r\nContent-Length: 4\r\n\r\nbody" +
+		"GET /two HTTP/1.1\r\nHost: api.example.com\r\nConnection: close\r\n\r\n"
+	upClient, upOrigin := net.Pipe()
+	defer upClient.Close()
+	defer upOrigin.Close()
+	seen := make(chan []string, 1)
+	go func() {
+		upR := bufio.NewReader(upOrigin)
+		var paths []string
+		for i := 0; i < 2; i++ {
+			req, err := http.ReadRequest(upR)
+			if err != nil {
+				seen <- paths
+				return
+			}
+			body, err := io.ReadAll(req.Body)
+			_ = req.Body.Close()
+			if err != nil || (i == 0 && string(body) != "body") {
+				seen <- paths
+				return
+			}
+			paths = append(paths, req.URL.Path)
+			_, _ = io.WriteString(upOrigin, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+		}
+		seen <- paths
+	}()
+
+	sec := &secretEntry{Header: "Authorization", value: "real"}
+	p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	p.swapPump(bufio.NewReader(strings.NewReader(guest)), io.Discard, nil, upClient, "api.example.com", sec)
+	paths := <-seen
+	if len(paths) != 2 || paths[0] != "/one" || paths[1] != "/two" {
+		t.Fatalf("forwarded paths = %v, want [/one /two]", paths)
 	}
 }
 
@@ -429,7 +595,7 @@ func TestSwapPumpRelaysStreamingResponseIncrementally(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-		p.swapPump(bufio.NewReader(strings.NewReader(guest)), &back, upClient, "api.example.com", sec)
+		p.swapPump(bufio.NewReader(strings.NewReader(guest)), &back, nil, upClient, "api.example.com", sec)
 		close(done)
 	}()
 
@@ -674,7 +840,7 @@ func TestSwapPumpInjectsOnThePlaintextLane(t *testing.T) {
 
 	var back bytes.Buffer
 	p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	p.swapPump(bufio.NewReader(strings.NewReader(guest)), &back, upClient, "api.example.com", sec)
+	p.swapPump(bufio.NewReader(strings.NewReader(guest)), &back, nil, upClient, "api.example.com", sec)
 
 	got := <-seen
 	if got == nil {

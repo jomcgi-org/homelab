@@ -15,6 +15,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -30,6 +31,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strings"
@@ -38,6 +40,10 @@ import (
 )
 
 const brokerRefreshMargin = 60 * time.Second
+
+const maxHeaderBytes = 64 << 10
+
+var headerTimeout = 30 * time.Second
 
 type brokerTokenResponse struct {
 	AccessToken string    `json:"access_token"`
@@ -435,7 +441,7 @@ func (p *proxy) swapPlaintext(br *bufio.Reader, client net.Conn, dialAddr, host 
 		_ = netConn.SetNoDelay(true)
 	}
 	defer up.Close()
-	p.swapPump(br, client, up, host, sec)
+	p.swapPump(br, client, client, up, host, sec)
 }
 
 // terminateAndSwap MITMs a TLS connection to a secret-bearing destination: it
@@ -466,7 +472,7 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dialAddr, ho
 	}
 	defer up.Close()
 
-	p.swapPump(bufio.NewReader(guest), guest, up, host, sec)
+	p.swapPump(bufio.NewReader(guest), guest, guest, up, host, sec)
 }
 
 // swapPump relays HTTP requests from an already-plaintext guest stream to up,
@@ -476,18 +482,55 @@ func (p *proxy) terminateAndSwap(br *bufio.Reader, client net.Conn, dialAddr, ho
 // guestR carries the guest's request bytes and guestW takes the responses; they
 // are the same connection, split so the TLS and plaintext lanes can share this.
 // It returns when either side closes, or when a request asks to close.
-func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, host string, sec *secretEntry) {
+func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline interface{ SetReadDeadline(time.Time) error }, up net.Conn, host string, sec *secretEntry) {
 	upR := bufio.NewReader(up)
+	guestStream := &replayReader{source: guestR}
 	for {
-		req, err := http.ReadRequest(guestR)
+		if guestDeadline != nil {
+			if err := guestDeadline.SetReadDeadline(time.Now().Add(headerTimeout)); err != nil {
+				p.logger.Debug("egress swap: set header deadline", "dest", host, "err", err)
+				return
+			}
+		}
+		headerR := bufio.NewReaderSize(guestStream, maxHeaderBytes+1)
+		headerBytes, tooLarge, err := readRequestHeader(headerR)
+		if tooLarge {
+			p.logger.Warn("egress swap: header too large; closing connection", "dest", host, "limit", maxHeaderBytes)
+			return
+		}
+		guestStream.prependBuffered(headerR)
+		var (
+			req      *http.Request
+			requestR *bufio.Reader
+		)
+		if err == nil {
+			guestStream.prepend(headerBytes)
+			requestR = bufio.NewReaderSize(guestStream, maxHeaderBytes+1)
+			req, err = http.ReadRequest(requestR)
+		}
 		if err != nil {
 			if err != io.EOF {
 				p.logger.Debug("egress swap: read request", "dest", host, "err", err)
 			}
 			return
 		}
+		if guestDeadline != nil {
+			if err := guestDeadline.SetReadDeadline(time.Time{}); err != nil {
+				p.logger.Debug("egress swap: clear header deadline", "dest", host, "err", err)
+				return
+			}
+		}
+		if authority := mismatchedAuthority(req, headerBytes, host); authority != "" {
+			p.logger.Warn("egress swap: authority mismatch; request denied", "dest", host, "authority", authority)
+			return
+		}
+		req.Host = host
 		if rejectSwapRequest(req) {
 			p.logger.Warn("egress swap: unsupported request mode; closing connection", "dest", host, "method", req.Method)
+			return
+		}
+		if credentialInTrailer(req, sec) {
+			p.logger.Warn("egress swap: credential trailer denied", "dest", host, "header", sec.Header)
 			return
 		}
 		injected := injectRequest(req, sec)
@@ -507,6 +550,7 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 			p.logger.Warn("egress swap: forward request", "dest", host, "err", err)
 			return
 		}
+		guestStream.prependBuffered(requestR)
 		resp, err := http.ReadResponse(upR, req)
 		// Skip interim responses. Rejecting Expect only stops the guest SOLICITING
 		// a 1xx; a destination can still send 103 Early Hints unasked, and
@@ -536,6 +580,114 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, up net.Conn, ho
 			return
 		}
 	}
+}
+
+func readRequestHeader(guestR *bufio.Reader) ([]byte, bool, error) {
+	capacity := guestR.Size()
+	if capacity > maxHeaderBytes {
+		capacity = maxHeaderBytes
+	}
+	header := make([]byte, 0, capacity)
+	lineBytes := 0
+	for {
+		fragment, err := guestR.ReadSlice('\n')
+		if len(header)+len(fragment) > maxHeaderBytes {
+			return nil, true, nil
+		}
+		header = append(header, fragment...)
+		if err == bufio.ErrBufferFull {
+			lineBytes += len(fragment)
+			continue
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if lineBytes == 0 && (bytes.Equal(fragment, []byte("\r\n")) || bytes.Equal(fragment, []byte("\n"))) {
+			return header, false, nil
+		}
+		lineBytes = 0
+	}
+}
+
+// replayReader lets each bounded-header parse and http.ReadRequest use a fresh
+// bufio.Reader without losing bytes that parser read ahead from the next body or
+// keep-alive request. prependBuffered returns that read-ahead to the single
+// connection stream before the short-lived parser is discarded.
+type replayReader struct {
+	source  io.Reader
+	pending []byte
+}
+
+func (r *replayReader) Read(p []byte) (int, error) {
+	if len(r.pending) > 0 {
+		n := copy(p, r.pending)
+		r.pending = r.pending[n:]
+		return n, nil
+	}
+	return r.source.Read(p)
+}
+
+func (r *replayReader) prepend(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	pending := make([]byte, 0, len(data)+len(r.pending))
+	pending = append(pending, data...)
+	pending = append(pending, r.pending...)
+	r.pending = pending
+}
+
+func (r *replayReader) prependBuffered(br *bufio.Reader) {
+	if br.Buffered() == 0 {
+		return
+	}
+	buffered, _ := br.Peek(br.Buffered())
+	r.prepend(buffered)
+}
+
+func mismatchedAuthority(req *http.Request, rawHeader []byte, policyHost string) string {
+	want := canonicalAuthority(policyHost)
+	authorities := []string{req.Host}
+	if req.URL != nil {
+		authorities = append(authorities, req.URL.Host)
+	}
+	if host := rawHostHeader(rawHeader); host != "" {
+		authorities = append(authorities, host)
+	}
+	for _, authority := range authorities {
+		if authority != "" && canonicalAuthority(authority) != want {
+			return authority
+		}
+	}
+	return ""
+}
+
+func rawHostHeader(rawHeader []byte) string {
+	r := textproto.NewReader(bufio.NewReader(bytes.NewReader(rawHeader)))
+	if _, err := r.ReadLine(); err != nil {
+		return ""
+	}
+	header, err := r.ReadMIMEHeader()
+	if err != nil {
+		return ""
+	}
+	return header.Get("Host")
+}
+
+func canonicalAuthority(authority string) string {
+	if host, _, err := net.SplitHostPort(authority); err == nil {
+		authority = host
+	}
+	return strings.TrimSuffix(strings.ToLower(authority), ".")
+}
+
+func credentialInTrailer(req *http.Request, sec *secretEntry) bool {
+	for key := range req.Trailer {
+		if strings.EqualFold(key, sec.Header) || (sec.ClaimHeader != "" && strings.EqualFold(key, sec.ClaimHeader)) {
+			return true
+		}
+	}
+	return false
 }
 
 // rejectSwapRequest keeps the swap lane strictly request-then-response. Expect
