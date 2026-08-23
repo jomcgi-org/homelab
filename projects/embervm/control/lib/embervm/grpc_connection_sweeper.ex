@@ -219,8 +219,7 @@ defmodule Embervm.GrpcConnectionSweeper do
       |> Enum.filter(&(not is_nil(&1)))
 
     new_state = %{state | strikes: strikes}
-    log_sweep(new_state, reaped)
-    log_pending(new_state, reapable)
+    log_sweep(new_state, reaped, reapable, children, keep_set)
     {reaped, new_state}
   end
 
@@ -404,45 +403,39 @@ defmodule Embervm.GrpcConnectionSweeper do
 
   defp address_in_set?(_addr, _set), do: false
 
-  # Log the sweep results. If gate is off, log a dry-run summary; if gate is
-  # on, log an info line with the count and reasons reaped.
-  defp log_sweep(_state, []), do: :ok
+  # Log the sweep results. Every pass ends with a heartbeat line so "swept and
+  # found nothing" is distinguishable from "never ran" (#4419: the armed
+  # sweeper used to be silent until it killed something). Pids accumulating
+  # strikes are listed in BOTH modes so a kill is visible before it lands.
+  defp log_sweep(state, reaped, reapable, children, keep_set) do
+    prefix = log_prefix(state)
 
-  defp log_sweep(state, reaped) do
-    count = length(reaped)
-
-    if state.sweep_enabled do
-      Logger.info("embervm grpc connection sweeper: reaped #{count} orchestrator(s)")
-
-      Enum.each(reaped, fn {pid, reason} ->
-        Logger.info("  pid #{inspect(pid)}: #{reason}")
+    pending =
+      Enum.filter(reapable, fn {pid, _reason} ->
+        Map.fetch!(state.strikes, pid) < state.strikes_required
       end)
-    else
-      Logger.info("embervm grpc connection sweeper (DRY RUN, gate off): WOULD reap #{count} orchestrator(s)")
 
-      Enum.each(reaped, fn {pid, reason} ->
-        Logger.info("  pid #{inspect(pid)}: #{reason}")
-      end)
+    Logger.info(
+      "#{prefix}: pass complete (children=#{length(children)}, keep_set=#{MapSet.size(keep_set)}, " <>
+        "reaped=#{length(reaped)}, pending=#{length(pending)})"
+    )
+
+    if reaped != [] do
+      verb = if state.sweep_enabled, do: "reaped", else: "WOULD reap"
+      Logger.info("#{prefix}: #{verb} #{length(reaped)} orchestrator(s)")
+      Enum.each(reaped, fn {pid, reason} -> Logger.info("  pid #{inspect(pid)}: #{reason}") end)
+    end
+
+    if pending != [] do
+      Logger.info("#{prefix}: #{length(pending)} orchestrator(s) accumulating strikes")
+      Enum.each(pending, fn {pid, reason} -> Logger.info("  pid #{inspect(pid)}: #{reason}") end)
     end
 
     :ok
   end
 
-  defp log_pending(%{sweep_enabled: true}, _reapable), do: :ok
-
-  defp log_pending(state, reapable) do
-    pending =
-      reapable
-      |> Enum.filter(fn {pid, _reason} -> Map.fetch!(state.strikes, pid) < state.strikes_required end)
-
-    if not Enum.empty?(pending) do
-      Logger.info("embervm grpc connection sweeper (DRY RUN, gate off): #{length(pending)} orchestrator(s) accumulating strikes")
-
-      Enum.each(pending, fn {pid, reason} ->
-        Logger.info("  pid #{inspect(pid)}: #{reason}")
-      end)
-    end
-  end
+  defp log_prefix(%{sweep_enabled: true}), do: "embervm grpc connection sweeper"
+  defp log_prefix(_state), do: "embervm grpc connection sweeper (DRY RUN, gate off)"
 
   defp schedule_sweep(%{sweep_interval_ms: ms}) when ms > 0 do
     Process.send_after(self(), :sweep, ms)
