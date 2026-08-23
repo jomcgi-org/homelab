@@ -56,8 +56,8 @@ for arg in "$@"; do
 		labels="${labels%)}"
 		[[ -n "$labels" ]] && printf '%s\n' $labels
 		exit "${BAZEL_SET_EXIT:-0}"
-	elif [[ "$arg" =~ ^rdeps\( ]]; then
-		# rdeps query: output fixture if provided
+	elif [[ "$arg" == *"rdeps("* ]]; then
+		# Test-universe query: output fixture if provided
 		if [[ -n "${BAZEL_RDEPS_OUTPUT:-}" && -f "${BAZEL_RDEPS_OUTPUT}" ]]; then
 			cat "${BAZEL_RDEPS_OUTPUT}"
 		fi
@@ -193,9 +193,7 @@ check_rdeps_empty3() {
 	[[ "$(cat "$1")" == "//..." ]] && pass "rdeps_exit3_empty_fallback" || fail "rdeps_exit3_empty_fallback" "got '$(cat "$1")'"
 }
 
-# rules_py venv helper targets (<py_test>.venv) come back from rdeps beside the
-# py_test; requesting both at top level is a Bazel action conflict (#5121), so
-# the script must drop them and keep everything else.
+# Keep defensive filtering for rules_py venv helper targets (<py_test>.venv).
 setup_venv() { setup_rdeps_fail; }
 check_venv() {
 	local got
@@ -214,6 +212,22 @@ check_noise() {
 		fail "stderr_not_parsed" "noise leaked: stdout=$(cat "$1")"
 	else
 		pass "stderr_not_parsed"
+	fi
+}
+
+# The affected query must use the global test dependency closure, avoid loading
+# Semgrep engines during traversal, and add all Semgrep tests back conservatively.
+setup_test_universe() { setup_rdeps_fail; }
+check_test_universe() {
+	local query
+	query="$(grep 'let all_tests = ' "$3" || true)"
+	if [[ "$query" == *'tests(//...)'* ]] &&
+		[[ "$query" == *'attr(name, ".*semgrep.*", $all_tests)'* ]] &&
+		[[ "$query" == *'attr(generator_function, "semgrep_.*", $all_tests)'* ]] &&
+		[[ "$query" == *'tests(rdeps(deps($all_tests except $semgrep_tests)'* ]]; then
+		pass "global_test_universe"
+	else
+		fail "global_test_universe" "query='$query'"
 	fi
 }
 
@@ -406,6 +420,7 @@ run_test "lockfile" "setup_lockfile"
 run_test "bzl" "setup_bzl"
 BAZEL_RDEPS_EXIT="3" run_test "rdeps_empty3" "setup_rdeps_empty3"
 run_test "noise" "setup_noise"
+run_test "test_universe" "setup_test_universe"
 venv_fixture="$TMP/rdeps_venv.txt"
 printf '%s\n' "//p:chart_test" "//p:chart_test.venv" "//p:other_lib" >"$venv_fixture"
 BAZEL_RDEPS_OUTPUT="$venv_fixture" run_test "venv" "setup_venv"
