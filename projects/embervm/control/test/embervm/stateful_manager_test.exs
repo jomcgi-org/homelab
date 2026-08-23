@@ -901,6 +901,51 @@ defmodule Embervm.StatefulManagerTest do
     assert instance.vm_id == nil
   end
 
+  test "a bundle heal appends a durable stateful_banked op (adopted) so a rebuild agrees (#4201)" do
+    {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+    ctx = start_stack(clock: fn -> Agent.get(manager_clock, & &1) end)
+    stateful_workload(ctx, "wl-a")
+
+    # A :banking row whose stateful_banked append never landed (the op-log-append-
+    # failure branch of finish_bank_active): ETS says banking, the projection says
+    # serving, and the node reports the bundle the bank DID write. The heal must
+    # record the bank durably, not just in ETS.
+    {:ok, _} = StatefulStore.start(ctx.store, %{instance_id: "stf-durable-heal", tenant: "homelab", principal: "p", workload: "wl-a", node_id: "node-4", vm_id: "vm-gone", generation: 1})
+    {:ok, _} = StatefulStore.publish(ctx.store, "stf-durable-heal", "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, "stf-durable-heal", :bank)
+    stateful_node(ctx, "node-4", stateful_bundles: [%{snapshot_ref: "stateful/rescued", workload: "wl-a", generation: 7, size_bytes: 10, created_at_unix_ms: 1}])
+
+    # Past the bank-ownership bound so the reconcile heals rather than skips.
+    Agent.update(manager_clock, &(&1 + 120_000))
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, instance} = StatefulStore.get(ctx.store, "stf-durable-heal")
+    assert instance.state == :banked
+    assert instance.snapshot_ref == "stateful/rescued"
+
+    # The durable log carries the rescued bank, marked as an adoption.
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    banked = Enum.filter(ops, &(&1.kind == :stateful_banked and &1.stateful_instance_id == "stf-durable-heal"))
+    assert [op] = banked
+    assert op.payload["snapshot_ref"] == "stateful/rescued"
+    assert op.payload["generation"] == 7
+    assert op.payload["size_bytes"] == 10
+    assert op.payload["adopted"] == true
+
+    # Idempotent: a second reconcile with the same node facts appends nothing.
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert length(Enum.filter(ops, &(&1.kind == :stateful_banked and &1.stateful_instance_id == "stf-durable-heal"))) == 1
+
+    # A rebuild from the op-log (the boot path once the brick stops reporting the
+    # bundle) sees the bank.
+    {:ok, rebuilt} = StatefulStore.start_link(name: nil, op_log: ctx.op_log, clock: fn -> 1_000 end)
+    {:ok, row} = StatefulStore.get(rebuilt, "stf-durable-heal")
+    assert row.state == :banked
+    assert row.snapshot_ref == "stateful/rescued"
+    assert row.snapshot_generation == 7
+  end
+
   test "a :banked row with dangling snapshot_ref is repaired from anchor node's new bundle" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a")

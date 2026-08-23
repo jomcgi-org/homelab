@@ -2379,23 +2379,34 @@ defmodule Embervm.StatefulManager do
     state
   end
 
+  # Durable, unlike the other heals (#4201): this is the one adoption path that
+  # synthesizes bundle facts no earlier op recorded (the bank whose
+  # stateful_banked append failed, or a bundle the brick wrote that this CP never
+  # saw land), so the store appends a marked stateful_banked op before it touches
+  # ETS. On append failure the row is left as-is and the next reconcile retries;
+  # memory must not run ahead of the log here.
   defp heal_to_banked_bundle(state, instance, node_id, bundle) do
     snapshot_ref = Map.fetch!(bundle, :snapshot_ref)
 
-    StatefulStore.adopt_state(state.store, instance.instance_id, :banked, %{
-      snapshot_ref: snapshot_ref,
-      snapshot_generation: Map.get(bundle, :generation),
-      snapshot_size_bytes: Map.get(bundle, :size_bytes),
-      generation: Map.get(bundle, :generation),
-      node_id: node_id,
-      vm_id: nil
-    })
+    case StatefulStore.adopt_banked_bundle(state.store, instance.instance_id, node_id, bundle) do
+      {:ok, :unchanged} ->
+        :ok
 
-    Logger.info("embervm stateful adopted (banked, node bundle)",
-      instance_id: instance.instance_id,
-      workload: instance.workload,
-      snapshot_ref: snapshot_ref
-    )
+      {:ok, _instance} ->
+        Logger.info("embervm stateful adopted (banked, node bundle, durable)",
+          instance_id: instance.instance_id,
+          workload: instance.workload,
+          snapshot_ref: snapshot_ref
+        )
+
+      {:error, reason} ->
+        Logger.warning("embervm stateful bundle heal: durable append failed, will retry next reconcile",
+          instance_id: instance.instance_id,
+          workload: instance.workload,
+          snapshot_ref: snapshot_ref,
+          reason: inspect(reason)
+        )
+    end
 
     state
   end

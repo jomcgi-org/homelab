@@ -553,7 +553,10 @@ discardable (ADR embervm/006, ADR embervm/014).
   Long-horizon audit lives in the observability stack.
 - **Adoption**: noded reports `primed_vm_ids`, session VMs,
   checkpoint-pending VMs, and banked artifacts on every `NodeStatus`; the
-  dispatcher and managers reconcile on boot and every sweep. This is the
+  dispatcher and managers reconcile on boot and every sweep. Adoption is
+  ETS-only except the stateful bundle heal, which synthesizes bundle facts
+  no earlier op recorded and so appends a `stateful_banked` op marked
+  `adopted: true` write-through (#4201). This is the
   standing fix for the restart-wedge bug class, and the protocols are
   model-checked: three PlusCal specs in `projects/embervm/specs/`
   (`adoption`, `bank_relight`, `quota`) run under TLC in the build, so a
