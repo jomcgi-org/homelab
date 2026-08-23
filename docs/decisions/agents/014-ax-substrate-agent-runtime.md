@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Deprecated (AX+Substrate not adopted)
 **Created:** 2026-05-22
-**Supersedes:** None (retires the dispatch plumbing of [007-agent-orchestrator](007-agent-orchestrator.md) and the autonomous-loop plumbing of [008-cluster-patrol-loop-resilience](008-cluster-patrol-loop-resilience.md))
+**Supersedes:** None (retires the dispatch plumbing of 007-agent-orchestrator and the autonomous-loop plumbing of 008-cluster-patrol-loop-resilience)
 **Depends on:** [security/003 — gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)
 
 ---
@@ -12,7 +12,7 @@
 
 Two things are happening at once:
 
-1. **Monolith consolidation is in flight** (per [`platform/001-obsidian-vault-monolith-migration`](../platform/001-obsidian-vault-monolith-migration.md) and the shipped `monolith-agent-*` MCP surface from 2026-05-08). Standalone services are folding into the monolith one by one.
+1. **Monolith consolidation is in flight** (per `platform/001-obsidian-vault-monolith-migration` and the shipped `monolith-agent-*` MCP surface from 2026-05-08). Standalone services are folding into the monolith one by one.
 2. **The agent platform we built before that decision is now dead-weight to maintain.** `projects/agent_platform/orchestrator/` is a Go service for NATS JetStream job dispatch (ADR 007). `projects/agent_platform/cluster_agents/` is a second Go service running five autonomous improvement loops — patrol, TestCoverage, ReadmeFreshness, Rules, PRFix — with its own resilience scaffolding (ADR 008). Both are ours to operate, in service of a topology we're consolidating away from.
 
 We want to replace the **plumbing** (Go dispatch service, NATS JetStream wiring, custom retry logic, hand-rolled supervisor loops) without losing the **behaviour** (durable job records, warm pools, resilient autonomous loops, sub-30s sandbox dispatch).
@@ -165,9 +165,9 @@ These are questions to answer during execution, not gates that block the decisio
 | [google/ax](https://github.com/google/ax)                                                                                                                                               | Distributed agent runtime; v0.1.0 May 2026   |
 | [agent-substrate/substrate](https://github.com/agent-substrate/substrate)                                                                                                               | K8s actor multiplexer; v0.0.0                |
 | [security/003 — gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)                                                                                                           | Hard prerequisite                            |
-| [007 — Agent Run Orchestration Service](007-agent-orchestrator.md)                                                                                                                      | Dispatch plumbing retired by this ADR        |
-| [008 — Cluster Patrol Loop Resilience](008-cluster-patrol-loop-resilience.md)                                                                                                           | Autonomous-loop plumbing retired by this ADR |
+| 007 — Agent Run Orchestration Service                                                                                                                      | Dispatch plumbing retired by this ADR        |
+| 008 — Cluster Patrol Loop Resilience                                                                                                           | Autonomous-loop plumbing retired by this ADR |
 | [003 — Context Forge](003-context-forge.md)                                                                                                                                             | MCP gateway, unchanged                       |
-| [platform/001 — Monolith Migration](../platform/001-obsidian-vault-monolith-migration.md)                                                                                               | Strategic direction this ADR rides           |
+| platform/001 — Monolith Migration                                                                                               | Strategic direction this ADR rides           |
 | [projects/agent_platform/README.md](../../../projects/agent_platform/README.md)                                                                                                         | Current topology being replaced              |
 | [Unleashing Autonomous AI Agents (Google blog)](https://opensource.googleblog.com/2025/11/unleashing-autonomous-ai-agents-why-kubernetes-needs-a-new-standard-for-agent-execution.html) | Background on the bet AX/Substrate represent |

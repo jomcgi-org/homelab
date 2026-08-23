@@ -100,6 +100,18 @@ _GENERATED: frozenset[str] = frozenset(
     }
 )
 
+# Applied Atlas migrations are immutable: Atlas records each applied file's
+# hash in its revisions table and refuses to apply a directory whose history
+# changed, and atlas.sum chains every later file's checksum on top. Editing
+# even a comment to repoint an ADR path would therefore break the in-cluster
+# AtlasMigration, so these keep their historical citation; the rollup that
+# deleted the ADR records where it went in the domain's ARCHITECTURE.md.
+_APPLIED_MIGRATIONS: frozenset[str] = frozenset(
+    {
+        "projects/monolith/chart/migrations/20260703070000_grimoire_schema.sql",
+    }
+)
+
 # Binary-ish extensions never worth reading as text.
 _SKIP_SUFFIXES: tuple[str, ...] = (
     ".png",
@@ -120,6 +132,8 @@ _SKIP_SUFFIXES: tuple[str, ...] = (
 def should_scan(rel_path: str) -> bool:
     """True when a tracked path's ADR references should be required to resolve."""
     if rel_path in _GENERATED or rel_path in _EXAMPLE_ALLOWLIST:
+        return False
+    if rel_path in _APPLIED_MIGRATIONS:
         return False
     if rel_path.endswith(_SKIP_SUFFIXES):
         return False

@@ -8,7 +8,7 @@ shared Postgres data plane, with a separately gated friends surface.
 (see: /projects/monolith/app/main_public.py)
 (see: /projects/monolith/deploy/values.yaml)
 
-Current as of ad2a24e2d (2026-08-22)
+Current as of a3c819af8 (2026-08-23)
 
 ## 1. What it is and request paths
 
@@ -300,13 +300,12 @@ note set, and database views repeat the same visibility condition.
 (see: /projects/monolith/knowledge/public_router.py)
 (see: /projects/monolith/chart/migrations/20260617020000_public_api_knowledge_views.sql)
 
-Grimoire implements the typed Postgres hot-tier schema described by Services
-ADR 011 and the Postgres-first delivery sequence from Services ADR 012. The
-shared corpus, typed entity details, embeddings, mentions, relationships,
-campaign state, and knowledge grants all live in Postgres today.
-(see: /docs/decisions/services/011-grimoire-hot-tier-schema.md)
-(see: /docs/decisions/services/012-grimoire-postgres-first-loom-shaped.md)
+Grimoire is Postgres-first: a typed hot-tier schema (a CTI entity spine with
+typed detail tables, jsonb only for irregular display payloads) rather than a
+document store. The shared corpus, typed entity details, embeddings, mentions,
+relationships, campaign state, and knowledge grants all live in Postgres today.
 (see: /projects/monolith/grimoire/models.py)
+(see: /projects/monolith/chart/migrations/20260703070000_grimoire_schema.sql)
 
 Campaign reads centralize the viewer predicate: global entities are visible to
 everyone in the campaign, while non-global entities require a matching grant.
@@ -318,11 +317,10 @@ The Grimoire ingest path converts extracted documents into ordered text and
 image-derived chunks, records section hierarchy and image references, embeds
 chunks, and extracts typed entities and relationships. Post-extraction stat
 verification and alias merging remain accepted design work rather than current
-runtime passes.
+runtime passes (#3912, #3913).
 (see: /projects/monolith/grimoire/marker.py)
 (see: /projects/monolith/grimoire/ingest.py)
 (see: /projects/monolith/grimoire/extract.py)
-(see: /docs/decisions/services/014-grimoire-post-extraction-quality-passes.md)
 
 The general knowledge pipeline separately records research gaps, supports
 chunked note indexing, and feeds gardener and human-review loops.
@@ -493,57 +491,79 @@ The status text below starts with each ADR header. `Accepted, shipped` and
 `Accepted, not shipped` are reconciliation annotations based on the cited
 current code. A `Draft, code exists` row records a header and implementation
 mismatch without silently rewriting the decision record.
+
+Rows with a plain code and no link were harvested into this document by the
+#4667 rollup and deleted; `git log --all --full-history -- docs/decisions/<path>`
+recovers the text. Linked rows are ADRs that another domain (EmberVM, MCP,
+platform) also claims, or Drafts whose execution is still tracked by an open
+issue; they stay until the last claimant rolls up.
 (see: /docs/decisions/index.md)
 
 ### Services
 
 | ADR | Title | Status |
 | --- | --- | --- |
-| [001](../../docs/decisions/services/001-discord-history-backfill.md) | Discord History Backfill | Accepted, shipped (see: /projects/monolith/chat/backfill.py) |
+| `services/001` | Discord History Backfill | Accepted, shipped (see: /projects/monolith/chat/backfill.py) |
 | [002](../../docs/decisions/services/002-discord-chat-automation.md) | Discord Chat Automation & Reactivity | Draft, code exists (see: /projects/monolith/chat/bot.py) |
-| [003](../../docs/decisions/services/003-knowledge-search-overlay.md) | Knowledge Search Overlay | Deprecated (see: /docs/decisions/services/003-knowledge-search-overlay.md) |
-| [004](../../docs/decisions/services/004-dnd-sourcebook-knowledge-integration.md) | D&D Sourcebook Knowledge Graph Integration | Deprecated (see: /docs/decisions/services/004-dnd-sourcebook-knowledge-integration.md) |
-| [005](../../docs/decisions/services/005-repo-docs-knowledge-sync.md) | Repo Markdown Knowledge Graph Sync via OCI Volume | Implemented (see: /projects/monolith/knowledge/repo_docs.py) |
-| [006](../../docs/decisions/services/006-stars-grid-ingest.md) | Stars grid ingest via a dedicated job writing to the monolith DB | Accepted, shipped (see: /projects/monolith/stars/grid_gen) |
-| [007](../../docs/decisions/services/007-stars-quality-model-and-heatmap.md) | Stars quality model and heatmap | Accepted, shipped (see: /projects/monolith/stars/models.py) |
-| [008](../../docs/decisions/services/008-stars-live-historical-heatmaps.md) | Stars live and historical heatmaps via month-bucketed accumulate-at-drop | Superseded in part by 009 (see: /docs/decisions/services/008-stars-live-historical-heatmaps.md) |
-| [009](../../docs/decisions/services/009-stars-climatology-backfill.md) | Stars historical climatology backfill from ERA5 | Accepted, shipped (see: /projects/monolith/stars/router.py) |
-| [010](../../docs/decisions/services/010-fastmonolith-modular-framework.md) | FastMonolith Modular Framework | Accepted, shipped (see: /projects/monolith/framework/core.py) |
-| [011](../../docs/decisions/services/011-grimoire-hot-tier-schema.md) | Grimoire Hot-Tier Schema on Postgres | Accepted, shipped (see: /projects/monolith/grimoire/models.py) |
-| [012](../../docs/decisions/services/012-grimoire-postgres-first-loom-shaped.md) | Grimoire Postgres-First, Loom-Shaped | Accepted, shipped (see: /projects/monolith/grimoire/ingest.py) |
-| [013](../../docs/decisions/services/013-grimoire-knowledge-audiences.md) | Grimoire Knowledge Audiences: Corpus-Derived Character Knowledge as Compiled Grants | Accepted, shipped (see: /projects/monolith/grimoire/visibility.py) |
-| [014](../../docs/decisions/services/014-grimoire-post-extraction-quality-passes.md) | Grimoire post-extraction quality passes (stat verifier, alias merge) | Accepted, not shipped (see: /docs/decisions/services/014-grimoire-post-extraction-quality-passes.md) |
+| `services/003` | Knowledge Search Overlay | Deprecated |
+| `services/004` | D&D Sourcebook Knowledge Graph Integration | Deprecated |
+| `services/005` | Repo Markdown Knowledge Graph Sync via OCI Volume | Implemented (see: /projects/monolith/knowledge/repo_docs.py) |
+| `services/006` | Stars grid ingest via a dedicated job writing to the monolith DB | Accepted, shipped (see: /projects/monolith/stars/grid_gen) |
+| `services/007` | Stars quality model and heatmap | Accepted, shipped (see: /projects/monolith/stars/models.py) |
+| `services/008` | Stars live and historical heatmaps via month-bucketed accumulate-at-drop | Superseded in part by 009 |
+| `services/009` | Stars historical climatology backfill from ERA5 | Accepted, shipped (see: /projects/monolith/stars/router.py) |
+| `services/010` | FastMonolith Modular Framework | Accepted, shipped (see: /projects/monolith/framework/core.py) |
+| `services/011` | Grimoire Hot-Tier Schema on Postgres | Accepted, shipped (see: /projects/monolith/grimoire/models.py) |
+| `services/012` | Grimoire Postgres-First, Loom-Shaped | Accepted, shipped (see: /projects/monolith/grimoire/ingest.py) |
+| `services/013` | Grimoire Knowledge Audiences: Corpus-Derived Character Knowledge as Compiled Grants | Accepted, shipped (see: /projects/monolith/grimoire/visibility.py) |
+| `services/014` | Grimoire post-extraction quality passes (stat verifier, alias merge) | Accepted, not shipped |
 
 ### Chat
 
 | ADR | Title | Status |
 | --- | --- | --- |
-| [001](../../docs/decisions/chat/001-improve-ambient-loop.md) | Ambient Feedback Loop and Directive Autopilot | Accepted, shipped (see: /projects/monolith/chat/ambient_analysis.py) |
-| [002](../../docs/decisions/chat/002-structured-channel-history-query.md) | Structured, Scope-Locked Channel-History Query for the Chat Agent | Accepted, shipped (see: /projects/monolith/chat/channel_data.py) |
-| [003](../../docs/decisions/chat/003-trust-safety-safeguards.md) | Trust & Safety Safeguards (Ledger, Lockout, Shadow Forest) | Accepted, shipped (see: /projects/monolith/chat/safeguards.py) |
+| `chat/001` | Ambient Feedback Loop and Directive Autopilot | Accepted, shipped (see: /projects/monolith/chat/ambient_analysis.py) |
+| `chat/002` | Structured, Scope-Locked Channel-History Query for the Chat Agent | Accepted, shipped (see: /projects/monolith/chat/channel_data.py) |
+| `chat/003` | Trust & Safety Safeguards (Ledger, Lockout, Shadow Forest) | Accepted, shipped (see: /projects/monolith/chat/safeguards.py) |
+
+### Security
+
+| ADR | Title | Status |
+| --- | --- | --- |
+| `security/004` | Public Read-Only Service Isolation | Accepted, shipped: separate pruned binary, `public_reader` on the CNPG standby, ingress and egress policy (see: /projects/monolith-public/chart/values.yaml). Private-tier default-deny egress is still open (#5143) |
+| `security/005` | Public Chat Adversarial Hardening | Implemented: Turnstile, per-session and global admission limits, single-host egress allow (see: /projects/monolith/chat_public/limits.py). Retention and takedown still open (#3899) |
+| [006](../../docs/decisions/security/006-moving-friends-authorization-lane.md) | Crossing (`moving`) on `friends.jomcgi.dev` as a second authentik lane | Accepted, shipped (see: /projects/monolith/chart/templates/httproute-friends.yaml). Shared with the platform rollup (identity lanes split by audience) |
+
+### Platform
+
+| ADR | Title | Status |
+| --- | --- | --- |
+| `platform/001` | Migrate Obsidian Vault into Monolith with TigerFS | Superseded by 006; Obsidian, TigerFS and Qdrant are gone |
+| `platform/006` | Decommission Obsidian, Postgres as the Body of Record | Accepted, shipped: `knowledge.notes.content` in CNPG is the body of record (see: /projects/monolith/chart/migrations/20260408000000_knowledge_schema.sql) |
+| `platform/008` | Monolith Module Boundaries | Accepted, shipped: `<domain>/api.py` is the only cross-domain import seam (see: /projects/monolith/import_boundaries_test.py) |
 
 ### Agents
 
 | ADR | Title | Status | Tracking |
 | --- | --- | --- | --- |
-| [001](../../docs/decisions/agents/001-background-agents.md) | Self-Hosted Autonomous Coding Agents via OpenHands | Superseded by 004 (see: /docs/decisions/agents/001-background-agents.md) |  |
+| `agents/001` | Self-Hosted Autonomous Coding Agents via OpenHands | Superseded by 004 |  |
 | [002](../../docs/decisions/agents/002-openhands-agent-sandbox.md) | Kubernetes-Native OpenHands Sandboxes via agent-sandbox | Superseded by 004 (see: /docs/decisions/agents/002-openhands-agent-sandbox.md) |  |
 | [003](../../docs/decisions/agents/003-context-forge.md) | MCP Context Forge as Agent Tool Gateway | Superseded by 020, deployment remains live (see: /projects/mcp/ARCHITECTURE.md) |  |
-| [004](../../docs/decisions/agents/004-autonomous-agents.md) | Autonomous Coding Agents | Deprecated (see: /docs/decisions/agents/004-autonomous-agents.md) |  |
+| `agents/004` | Autonomous Coding Agents | Deprecated |  |
 | [005](../../docs/decisions/agents/005-role-based-mcp-access.md) | Role-Based MCP Access | Deprecated (see: /docs/decisions/agents/005-role-based-mcp-access.md) |  |
 | [006](../../docs/decisions/agents/006-oidc-auth-mcp-gateway.md) | OIDC Authentication for MCP Gateway | Superseded by 011 (see: /docs/decisions/agents/006-oidc-auth-mcp-gateway.md) |  |
-| [007](../../docs/decisions/agents/007-agent-orchestrator.md) | Agent Run Orchestration Service | Implemented, later execution path evolved (see: /projects/monolith/agent_sessions) |  |
-| [008](../../docs/decisions/agents/008-cluster-patrol-loop-resilience.md) | Cluster Patrol Loop Resilience | Accepted, not shipped in the current monolith (see: /docs/decisions/agents/008-cluster-patrol-loop-resilience.md) |  |
-| [009](../../docs/decisions/agents/009-automated-test-generation.md) | Automated Test Generation Bots | Deprecated (see: /docs/decisions/agents/009-automated-test-generation.md) |  |
-| [010](../../docs/decisions/agents/010-recipe-driven-agent-registry.md) | Recipe-Driven Agent Registry | Deprecated (see: /docs/decisions/agents/010-recipe-driven-agent-registry.md) |  |
+| `agents/007` | Agent Run Orchestration Service | Implemented, later execution path evolved (see: /projects/monolith/agent_sessions) |  |
+| `agents/008` | Cluster Patrol Loop Resilience | Accepted, not shipped in the current monolith |  |
+| `agents/009` | Automated Test Generation Bots | Deprecated |  |
+| `agents/010` | Recipe-Driven Agent Registry | Deprecated |  |
 | [011](../../docs/decisions/agents/011-cloudflare-managed-oauth.md) | Cloudflare Managed OAuth for MCP Gateway | Deprecated (see: /docs/decisions/agents/011-cloudflare-managed-oauth.md) |  |
-| [012](../../docs/decisions/agents/012-knowledge-gardener-model-pipeline.md) | Knowledge Gardener Two-Tier Model Pipeline | Superseded by 013 (see: /docs/decisions/agents/012-knowledge-gardener-model-pipeline.md) |  |
-| [013](../../docs/decisions/agents/013-knowledge-gardener-gemma4-only.md) | Knowledge Gardener Gemma4-Only Pipeline | Deprecated (see: /docs/decisions/agents/013-knowledge-gardener-gemma4-only.md) |  |
+| `agents/012` | Knowledge Gardener Two-Tier Model Pipeline | Superseded by 013 |  |
+| `agents/013` | Knowledge Gardener Gemma4-Only Pipeline | Deprecated |  |
 | [014](../../docs/decisions/agents/014-ax-substrate-agent-runtime.md) | AX + Substrate as the Agent Runtime Substrate | Deprecated (see: /docs/decisions/agents/014-ax-substrate-agent-runtime.md) |  |
-| [015](../../docs/decisions/agents/015-temporal-orchestration-substrate.md) | Temporal as the Orchestration Substrate | Deprecated (see: /docs/decisions/agents/015-temporal-orchestration-substrate.md) |  |
-| [016](../../docs/decisions/agents/016-nats-canonical-event-stream.md) | NATS as the Canonical Event Stream | Accepted, built then retired (see: /projects/monolith/agent_sessions/router.py) |  |
-| [017](../../docs/decisions/agents/017-domain-event-schema.md) | Domain Event Schema and Tombstone Semantics | Accepted, not shipped (see: /docs/decisions/agents/017-domain-event-schema.md) |  |
-| [018](../../docs/decisions/agents/018-event-driven-gardener-trigger.md) | Event-Driven Gardener Triggering via Remote-Trigger Runs | Deprecated (see: /docs/decisions/agents/018-event-driven-gardener-trigger.md) |  |
+| `agents/015` | Temporal as the Orchestration Substrate | Deprecated |  |
+| `agents/016` | NATS as the Canonical Event Stream | Accepted, built then retired (see: /projects/monolith/agent_sessions/router.py) |  |
+| `agents/017` | Domain Event Schema and Tombstone Semantics | Accepted, not shipped |  |
+| `agents/018` | Event-Driven Gardener Triggering via Remote-Trigger Runs | Deprecated |  |
 | [019](../../docs/decisions/agents/019-substrate-executor-agentworkflow.md) | Substrate Executor Interface and AgentWorkflow over Argo | Accepted, not shipped as designed (see: /projects/monolith/swarm/workflows.py) | [argo-workflows#7891](https://github.com/argoproj/argo-workflows/issues/7891) |
 | [020](../../docs/decisions/agents/020-deprecate-context-forge-mcp-gateway.md) | Deprecate Context Forge, Serve MCP Directly from the Monolith | Superseded by 059 (see: /docs/decisions/agents/020-deprecate-context-forge-mcp-gateway.md) |  |
 | [021](../../docs/decisions/agents/021-discord-triggered-agentworkflow-fast-model.md) | Discord-Triggered AgentWorkflow with a Fast Hosted Model and Snapshot/Resume for Smooth Multi-Thread Work | Draft, evolved into agent sessions (see: /projects/monolith/agent_sessions) |  |
@@ -554,27 +574,27 @@ mismatch without silently rewriting the decision record.
 | [026](../../docs/decisions/agents/026-fast-microvm-starts-and-stateful-artifact-iteration.md) | Fast MicroVM Cold Starts and Stateful Artifact Iteration | Accepted, shipped through EmberVM (see: /projects/embervm/ARCHITECTURE.md) |  |
 | [027](../../docs/decisions/agents/027-agent-github-app-roles.md) | Agent GitHub App Roles: Implementer and Reviewer | Draft, not shipped (see: /projects/monolith/deploy/values.yaml) |  |
 | [028](../../docs/decisions/agents/028-elastic-agent-microvm-capacity-and-reclaim.md) | Elastic Agent-MicroVM Capacity and State-Preserving Reclaim | Draft header, shipped through EmberVM (see: /projects/embervm/control/lib/embervm/scheduler) |  |
-| [029](../../docs/decisions/agents/029-discord-bot-feature-acl.md) | Discord Bot Feature ACL (per-server command and repo grants) | Accepted, shipped (see: /projects/monolith/chat/acl.py) |  |
+| `agents/029` | Discord Bot Feature ACL (per-server command and repo grants) | Accepted, shipped (see: /projects/monolith/chat/acl.py) |  |
 | [030](../../docs/decisions/agents/030-fc-invoke-configurable-firecracker-surface.md) | fc-invoke, a Single Configurable Surface for Running Workloads in Firecracker | Draft, evolved into EmberVM (see: /projects/embervm/ARCHITECTURE.md) |  |
 | [031](../../docs/decisions/agents/031-cluster-node-control-data-plane-split.md) | Control-Plane / Data-Plane Split for the Agent Substrate (cluster + node) | Accepted, shipped through EmberVM (see: /projects/embervm/ARCHITECTURE.md) |  |
 | [032](../../docs/decisions/agents/032-warm-bazel-worker-mcp.md) | Warm-Snapshot Bazel Worker as an MCP Tool Surface | Draft, partially shipped as an EmberVM demo (see: /projects/monolith/ember_public/bazel_router.py) |  |
 | [033](../../docs/decisions/agents/033-golden-template-distribution-daemon-pulled-oci.md) | Golden-Template Distribution via Daemon-Pulled OCI Artifacts | Accepted, shipped through EmberVM (see: /projects/embervm/noded/image) |  |
 | [034](../../docs/decisions/agents/034-per-tier-guest-mcp-acl.md) | Per-Tier MCP Tool ACLs for Goosecracker Guests | Draft, not shipped (see: /docs/decisions/agents/034-per-tier-guest-mcp-acl.md) |  |
-| [035](../../docs/decisions/agents/035-discord-multiplayer-agent-ux.md) | Discord Multiplayer Agent UX (Ambient Classifier, Thread Sessions, Live Task Checklist) | Accepted, shipped (see: /projects/monolith/chat/bot.py) |  |
-| [036](../../docs/decisions/agents/036-orchestrator-brief-compiler-tier.md) | Orchestrator Brief-Compiler Tier via OpenRouter | Accepted, shipped (see: /projects/monolith/chat/orchestrator_client.py) |  |
+| `agents/035` | Discord Multiplayer Agent UX (Ambient Classifier, Thread Sessions, Live Task Checklist) | Accepted, shipped (see: /projects/monolith/chat/bot.py) |  |
+| `agents/036` | Orchestrator Brief-Compiler Tier via OpenRouter | Accepted, shipped (see: /projects/monolith/chat/orchestrator_client.py) |  |
 | [037](../../docs/decisions/agents/037-label-driven-firecracker-node-enrollment.md) | Label-Driven Firecracker Node Enrollment | Accepted, shipped through EmberVM (see: /projects/embervm/chart/templates/brick-deployment.yaml) |  |
-| [038](../../docs/decisions/agents/038-autonomous-work-queue-tiered-gating.md) | Autonomous Work Queue with Capability-Tier Routing and Reviewer-Verdict Feedback | Accepted, shipped in bounded form (see: /projects/monolith/swarm) |  |
-| [039](../../docs/decisions/agents/039-whatsapp-channel-gateway.md) | WhatsApp Channel Gateway (whatsmeow) for the Household Agent | Accepted, shipped (see: /projects/monolith/whatsapp) |  |
+| `agents/038` | Autonomous Work Queue with Capability-Tier Routing and Reviewer-Verdict Feedback | Accepted, shipped in bounded form (see: /projects/monolith/swarm) |  |
+| `agents/039` | WhatsApp Channel Gateway (whatsmeow) for the Household Agent | Accepted, shipped (see: /projects/monolith/whatsapp) |  |
 | [040](../../docs/decisions/agents/040-caller-provided-context-injection.md) | Caller-Provided Context Injection for Agent Guests (`/injected-context/`) | Draft, not shipped (see: /projects/monolith/chat/bot_on_message_test.py) |  |
 | [041](../../docs/decisions/agents/041-hot-git-mirror-agent-workspaces.md) | Hot Git Mirror for goosecracker Agent Workspaces | Draft, not shipped (see: /projects/embervm/runtimes/claude/shim.py) |  |
 | [042](../../docs/decisions/agents/042-agent-mcp-v1-followons.md) | Agent MCP v1 Follow-ons and Deferred Self-Improvement Loop | Accepted, partially shipped (see: /projects/monolith/agent/mcp.py) | [#3844](https://github.com/jomcgi-org/homelab/issues/3844) |
-| [043](../../docs/decisions/agents/043-ambient-assistant-parity.md) | Ambient Assistant Parity (Channel-Data Tools, Reminders, Directive Evolution) | Accepted, shipped (see: /projects/monolith/chat/reminders.py) |  |
+| `agents/043` | Ambient Assistant Parity (Channel-Data Tools, Reminders, Directive Evolution) | Accepted, shipped (see: /projects/monolith/chat/reminders.py) |  |
 | [044](../../docs/decisions/agents/044-code-executor-sandbox.md) | Code Executor Sandbox Workload and Self-Describing Guest Runtimes | Accepted, shipped (see: /projects/monolith/sandbox/mcp.py) |  |
 | [045](../../docs/decisions/agents/045-faas-on-fc-invoke-sandbox-runtime.md) | FaaS on the fc-invoke Sandbox Runtime | Accepted, shipped through EmberVM (see: /projects/monolith/faas) |  |
 | [046](../../docs/decisions/agents/046-mmds-dynamic-workload-env.md) | MMDS for Dynamic Per-Workload Guest Env | Accepted, shipped as the EmberVM metadata seam (see: /projects/embervm/noded/fcvm/driver/driver.go) |  |
 | [047](../../docs/decisions/agents/047-per-principal-egress-credential-broker.md) | Per-Principal Egress Credentials and the Broker Identity Envelope | Draft, not shipped (see: /projects/embervm/ARCHITECTURE.md) |  |
 | [048](../../docs/decisions/agents/048-codex-oauth-token-broker.md) | Codex Subscription OAuth, a Single-Owner Token Broker for Guest Turns | Accepted, shipped (see: /projects/embervm/tokenbroker) |  |
-| [049](../../docs/decisions/agents/049-turn-granular-poll-shaped-agent-ui.md) | Turn-Granular, Poll-Shaped Agent Session UI on Durable Postgres, Not a Live Event Stream | Accepted, shipped (see: /projects/monolith/agent_sessions/router.py) |  |
+| `agents/049` | Turn-Granular, Poll-Shaped Agent Session UI on Durable Postgres, Not a Live Event Stream | Accepted, shipped (see: /projects/monolith/agent_sessions/router.py) |  |
 | [050](../../docs/decisions/agents/050-workspace-hydration-from-git-mirror.md) | Workspace Hydration for Agent Sessions from the Hot Git Mirror | Accepted, hydration shipped with direct HTTPS instead of the mirror (see: /projects/embervm/runtimes/claude/shim.py) |  |
 | [051](../../docs/decisions/agents/051-guest-pushed-mid-turn-progress.md) | Mid-Turn Session Progress Pushed by the Guest, Not Polled Through the Control Plane | Accepted, shipped (see: /projects/monolith/agent_sessions/progress_ingest.py) |  |
 | [052](../../docs/decisions/agents/052-cross-family-handoff-brief.md) | Cross-Family Agent Session Handoff via a Luna-Compiled Brief | Accepted, not shipped (see: /docs/decisions/agents/052-cross-family-handoff-brief.md) | [#4350](https://github.com/jomcgi-org/homelab/issues/4350) |
@@ -583,5 +603,5 @@ mismatch without silently rewriting the decision record.
 | [055](../../docs/decisions/agents/055-tool-mediated-github-access.md) | Tool-Mediated GitHub Access for Agent Principals | Superseded by 059 (see: /docs/decisions/agents/055-tool-mediated-github-access.md) |  |
 | [056](../../docs/decisions/agents/056-agent-authored-walkthroughs.md) | Agent-Authored Walkthroughs: the Diff is Fact, the Points are Testimony | Draft, code exists (see: /projects/monolith/frontend/src/routes/private/agents/SessionWalkthrough.svelte) | [#4600](https://github.com/jomcgi-org/homelab/issues/4600), [#4614](https://github.com/jomcgi-org/homelab/issues/4614), [#4625](https://github.com/jomcgi-org/homelab/issues/4625) |
 | [057](../../docs/decisions/agents/057-per-language-sandbox-guests.md) | Per-Language Sandbox Guests and the Retirement of Sessioned Execution | Draft header, shipped (see: /projects/embervm/chart/templates/workload-sandbox-languages.yaml) |  |
-| [058](../../docs/decisions/agents/058-voice-driven-companion-screen.md) | The Voice Companion: a Ledger-First Screen the Conversation Drives, Never Load-Bearing | Accepted, shipped (see: /projects/monolith/agent_sessions/voice.py) |  |
+| `agents/058` | The Voice Companion: a Ledger-First Screen the Conversation Drives, Never Load-Bearing | Accepted, shipped (see: /projects/monolith/agent_sessions/voice.py) |  |
 | [059](../../docs/decisions/agents/059-authentik-federates-monolith-serves-mcp.md) | Authentik Federates MCP Identity; the Monolith Serves MCP Directly | Draft, not shipped (see: /projects/mcp/ARCHITECTURE.md) | [#3832](https://github.com/jomcgi-org/homelab/issues/3832), [#3833](https://github.com/jomcgi-org/homelab/issues/3833) |

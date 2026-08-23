@@ -6,7 +6,7 @@ internal modules. A domain's own internals remain freely importable within the
 domain, and the domain-agnostic ``shared``/``app`` packages are importable
 anywhere.
 
-See docs/decisions/platform/008-monolith-module-boundaries.md.
+See projects/monolith/ARCHITECTURE.md, section 2.
 """
 
 import ast

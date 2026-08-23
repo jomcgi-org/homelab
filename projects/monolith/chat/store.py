@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # metric or group_by value outside these sets is rejected before any SQL is
 # built, and group_by's value is only ever used as a dict lookup into a
 # hard-coded fragment, never interpolated from the caller's string. See
-# docs/decisions/chat/002-structured-channel-history-query.md.
+# projects/monolith/ARCHITECTURE.md, section 5.
 _STATS_METRICS = {"count", "first", "latest"}
 _STATS_GROUP_BY = {
     "author": "user_id",
@@ -412,8 +412,8 @@ class MessageStore:
         to fixed SQL fragments/columns -- an unknown value is rejected with a
         ValueError before any SQL is built, so there is no path for a
         model-supplied identifier to reach the statement. Every filter value is
-        a bound parameter, exactly like lexical_search. See docs/decisions/
-        chat/002-structured-channel-history-query.md.
+        a bound parameter, exactly like lexical_search. See
+        projects/monolith/ARCHITECTURE.md, section 5.
         """
         if metric not in _STATS_METRICS:
             raise ValueError(

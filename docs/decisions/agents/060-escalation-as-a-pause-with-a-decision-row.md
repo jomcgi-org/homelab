@@ -7,9 +7,9 @@
 Recorded-Not-Inferred Data](054-run-view-pinned-plans-epistemic-registers.md)
 (Draft, defined `blocked_on {kind: dependency | human, refs, note}` as a
 first-class node state and assigned it no writer, the gap this ADR closes);
-[049 - Turn-Granular, Poll-Shaped Agent Session UI](049-turn-granular-poll-shaped-agent-ui.md)
+049 - Turn-Granular, Poll-Shaped Agent Session UI
 (Accepted, the poll shape `poll_turn` / `_await_turn` this ADR reuses);
-[058 - The Voice Companion](058-voice-driven-companion-screen.md) (Accepted,
+058 - The Voice Companion (Accepted,
 the `voice_ui_ask` cards this ADR gives a second answer target); [053 - Swarm
 Development, Bounded Conductor Orchestration](053-swarm-orchestration-bounded-conductor.md)
 (Draft, the execution model this run belongs to); issue #4781 (the DAG as a

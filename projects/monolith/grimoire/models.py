@@ -1,8 +1,8 @@
 """SQLModel definitions for the grimoire schema.
 
 Mirrors chart/migrations/20260703070000_grimoire_schema.sql - keep in sync.
-CTI entity spine + typed detail tables per ADR 011
-(docs/decisions/services/011-grimoire-hot-tier-schema.md); jsonb reserved for
+CTI entity spine + typed detail tables per the Grimoire hot-tier schema
+(projects/monolith/ARCHITECTURE.md, section 6); jsonb reserved for
 irregular nested display-only payloads (speed/ability_scores/actions/traits,
 classes, sheet, properties, revealed_details).
 """

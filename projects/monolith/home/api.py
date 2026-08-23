@@ -1,7 +1,7 @@
 """Home domain public API facade.
 
 Cross-domain callers import home functionality through this module only, per the
-module-boundary rule (docs/decisions/platform/008-monolith-module-boundaries.md,
+module-boundary rule (projects/monolith/ARCHITECTURE.md, section 2,
 enforced by import_boundaries_test). Internals stay in home.schedule and friends.
 """
 

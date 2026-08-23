@@ -104,7 +104,7 @@ Baseline per `docs/security.md`. The public read-only isolation invariants from 
 
 | Resource | Relevance |
 | -------- | --------- |
-| [security/004-public-read-only-service-isolation](../security/004-public-read-only-service-isolation.md) | The public/private boundary policy this mechanism implements |
-| [platform/008-monolith-module-boundaries](../platform/008-monolith-module-boundaries.md) | Module-boundary program the monolith packages belong to |
+| security/004-public-read-only-service-isolation | The public/private boundary policy this mechanism implements |
+| platform/008-monolith-module-boundaries | Module-boundary program the monolith packages belong to |
 | [tooling/007-ocaml-build-file-generation-gazelle](007-ocaml-build-file-generation-gazelle.md) | Prior gazelle BUILD-generation decision in this repo |
 | PR #2429 | The `cluster` debug-tools change whose BUILD merge conflict motivated this ADR |

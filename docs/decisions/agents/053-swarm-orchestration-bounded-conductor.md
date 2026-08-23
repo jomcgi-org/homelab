@@ -3,8 +3,8 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-08-09
-**Extends:** [038 - Autonomous Work Queue with Capability-Tier Routing and
-Reviewer-Verdict Feedback](038-autonomous-work-queue-tiered-gating.md)
+**Extends:** 038 - Autonomous Work Queue with Capability-Tier Routing and
+Reviewer-Verdict Feedback
 (Accepted), specifically decision 8, which confined a cheap orchestrator model
 to two seams (Planner, Adjudicator) and never let it hold control flow. This
 ADR is that decision applied to feature-scale work: many interdependent
@@ -355,7 +355,7 @@ structurally cannot merge) and 047 (per-principal egress, once implemented).
 
 | Resource | Relevance |
 | -------- | --------- |
-| [ADR 038 - Autonomous Work Queue with Capability-Tier Routing and Reviewer-Verdict Feedback](038-autonomous-work-queue-tiered-gating.md) | Decision 8 is the seam this ADR extends from one chain to a feature-scale DAG. |
+| ADR 038 - Autonomous Work Queue with Capability-Tier Routing and Reviewer-Verdict Feedback | Decision 8 is the seam this ADR extends from one chain to a feature-scale DAG. |
 | [ADR 027 - Agent GitHub App Roles](027-agent-github-app-roles.md) | The merge gate every delivery in this design routes through; Draft, a hard dependency. |
 | [ADR 047 - Per-Principal Egress Credentials and the Broker Identity Envelope](047-per-principal-egress-credential-broker.md) | The capability broker backing every node's credentials; Draft, revised in parallel. |
 | [GitHub issue #4584](https://github.com/jomcgi/homelab/issues/4584) | Design discussion this ADR records, and the incremental delivery work breakdown this ADR deliberately does not duplicate. |

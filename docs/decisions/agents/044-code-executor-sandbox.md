@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Accepted
 **Created:** 2026-07-05
-**Builds on:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (warm-base restore this rides), [030 - fc-invoke Configurable Firecracker Surface](030-fc-invoke-configurable-firecracker-surface.md) (the workload registry and `/invoke` contract this adds an entry to), [023 - Egress Secret Proxy](023-egress-secret-proxy.md) (the secret model that lets this workload run with zero credentials), [040 - Caller-Provided Context Injection](040-caller-provided-context-injection.md) (removed baked recipes from guest images; motivates the env-readme), [034 - Per-Tier Guest MCP ACL](034-per-tier-guest-mcp-acl.md) (the future path for goose guests to call monolith tools), [043 - Ambient Assistant Parity](043-ambient-assistant-parity.md) (the concierge tool loop this plugs into)
+**Builds on:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (warm-base restore this rides), [030 - fc-invoke Configurable Firecracker Surface](030-fc-invoke-configurable-firecracker-surface.md) (the workload registry and `/invoke` contract this adds an entry to), [023 - Egress Secret Proxy](023-egress-secret-proxy.md) (the secret model that lets this workload run with zero credentials), [040 - Caller-Provided Context Injection](040-caller-provided-context-injection.md) (removed baked recipes from guest images; motivates the env-readme), [034 - Per-Tier Guest MCP ACL](034-per-tier-guest-mcp-acl.md) (the future path for goose guests to call monolith tools), 043 - Ambient Assistant Parity (the concierge tool loop this plugs into)
 
 ---
 
@@ -111,6 +111,6 @@ Baseline per `docs/security.md`; this workload is deliberately the least-privile
 | [ADR 030](030-fc-invoke-configurable-firecracker-surface.md) | The workload registry and `/invoke` contract this consumes |
 | [ADR 022](022-firecracker-snapshot-restore-controller.md) | Warm-base snapshot/restore mechanics and measured latencies |
 | [ADR 040](040-caller-provided-context-injection.md) | Why guest images stopped carrying recipes; the gap the env-readme fills |
-| [ADR security/005](../security/005-public-chat-adversarial-hardening.md) | The "no tools" control that keeps the public tier out of scope |
+| ADR security/005 | The "no tools" control that keeps the public tier out of scope |
 | [projects/monolith/semgrep/mcp.py](../../../projects/monolith/semgrep/mcp.py) | The broker pattern `sandbox/mcp.py` copies |
 | [AWS Lambda / E2B / code interpreter pattern](https://firecracker-microvm.github.io/) | Prior art: microVM-isolated ephemeral code execution |

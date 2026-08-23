@@ -6,7 +6,7 @@
 **Extends:** [054 - The Run View: Pinned Plans, Epistemic Registers, and
 Recorded-Not-Inferred Data](054-run-view-pinned-plans-epistemic-registers.md)
 (Draft, the three-register vocabulary and run-tier surface this composes
-with); [038 - Autonomous Work Queue, Tiered Gating](038-autonomous-work-queue-tiered-gating.md)
+with); 038 - Autonomous Work Queue, Tiered Gating
 (Accepted, decision 1: a session's own account of itself is a claim, and
 routing keys off artifacts instead, the constraint this whole design is
 built to honour)
@@ -362,7 +362,7 @@ or to content that reaches a code path.
 | [Issue #4625](https://github.com/jomcgi/homelab/issues/4625) | The run-view design document (walkthrough sections 12.1-12.8) and its tracking issue; program status records the walkthrough tiers as deliberately deferred pending this ADR |
 | [ADR 054](054-run-view-pinned-plans-epistemic-registers.md) | The three-register vocabulary (fact / belief / testimony) and the run view this ADR's run tier completes rather than duplicates |
 | [ADR 053](053-swarm-orchestration-bounded-conductor.md) | Decision 1: the conductor must never treat an agent's claims as evidence, the constraint behind decision 4 |
-| [ADR 038](038-autonomous-work-queue-tiered-gating.md) | Decision 1: a session's own account of itself is a claim; routing keys off artifacts |
+| ADR 038 | Decision 1: a session's own account of itself is a claim; routing keys off artifacts |
 | `projects/monolith/swarm/policy.py` | `implementer_prompt`, `reviewer_prompt`, `parse_review_verdict`; the existing typed-output pattern this ADR extends |
 | `projects/monolith/agent_sessions/models.py:56,90` | `AgentSession.system_prompt` (the capture seam for non-swarm sessions) and `AgentTurn.commit_sha` (the dead column revived by decision 10) |
 | `projects/monolith/agent_sessions/store.py:521,568` | Both call sites that create a turn passing `commit_sha=None`, the precedent decision 9 and 10 draw on |
