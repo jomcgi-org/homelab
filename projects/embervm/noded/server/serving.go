@@ -66,12 +66,12 @@ func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingReque
 	}
 }
 
-// startServingFresh cold-boots a serving VM from the workload's cold-boot handler
-// artifact WITH a freshly allocated tap NIC and its static IP baked into boot-args,
-// then health-gates over the tap. servingImageRef names a SERVING IMAGE (a built
-// cold-boot handler artifact in the serving-images inventory), NOT a base snapshot to
-// resume (D-R3.4.2, D-R3.11.2): the runtime rootfs is drive 1 and the handler artifact
-// is drive 2, from which the guest imports the handler before serving.
+// startServingFresh cold-boots a serving VM from a built serving image WITH a freshly
+// allocated tap NIC and its static IP baked into boot-args, then health-gates over the
+// tap. servingImageRef names a SERVING IMAGE in the serving-images inventory, NOT a
+// base snapshot to resume (D-R3.4.2, D-R3.11.2): the runtime rootfs is drive 1 and a
+// zip-lane handler artifact is drive 2, from which the guest imports the handler before
+// serving. An image-lane entry has no handler artifact (ADR embervm/038).
 func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServingRequest, servingImageRef, workload string, port uint32, healthPath string, origin nodev1.InstanceOrigin) (*nodev1.StartServingResponse, error) {
 	// A FRESH serving cold boot is new-work placement. A stale registry (boot
 	// cache, no live sync) refuses it; RELIGHT of an existing serving snapshot
@@ -115,10 +115,15 @@ func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServing
 		// daemon probes and publishes: GET http://ip:port{healthPath} (D-R3.11.1).
 		ServingPort: port,
 	}
-	// Attach the handler artifact as the second read-only drive (D-R3.11.2); the guest
-	// imports the handler off it before serving. The exact byte length lets the guest
-	// read only the payload, not the block device's sector padding.
-	h, err := s.servingDriver.ClaimServing(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, simg.handlerPath, simg.sizeBytes)
+	handlerPath := ""
+	var handlerSizeBytes int64
+	if simg.handlerPath != "" {
+		// Attach the zip-lane handler artifact as the second read-only drive
+		// (D-R3.11.2). The exact byte length excludes the device's sector padding.
+		handlerPath = simg.handlerPath
+		handlerSizeBytes = simg.sizeBytes
+	}
+	h, err := s.servingDriver.ClaimServing(ctx, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, handlerPath, handlerSizeBytes)
 	if err != nil {
 		s.servingNet.ReleaseTap(ctx, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot serving vm: %v", err)

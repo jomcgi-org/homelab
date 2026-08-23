@@ -143,8 +143,10 @@ type fakeServingDriver struct {
 	banked             map[string]string // snapshotRef -> pinnedIP
 	handlers           map[string]string // baseKey -> handler artifact path (written)
 	handlerRuntimeRefs map[string]string // baseKey -> runtime image ref sidecar
+	handlerWriteCalls  int
 	servingDir         string
 	failClaim          error
+	failHandlerWrite   error
 	lastClaimNIC       substrate.NICSpec
 	// lastHandlerDiskPath/lastHandlerZipBytes record the handler-disk args the last
 	// ClaimServing carried, so a test can assert the serving cold boot attached the
@@ -189,10 +191,20 @@ func (f *fakeServingDriver) ClaimServing(_ context.Context, _ string, _ string, 
 func (f *fakeServingDriver) WriteServingHandlerArtifact(baseKey, runtimeImageRef string, zip []byte) (string, int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.handlerWriteCalls++
+	if f.failHandlerWrite != nil {
+		return "", 0, f.failHandlerWrite
+	}
 	path := filepath.Join(f.servingDir, "..", "bases", baseKey, "handler.zip")
 	f.handlers[baseKey] = path
 	f.handlerRuntimeRefs[baseKey] = runtimeImageRef
 	return path, int64(len(zip)), nil
+}
+
+func (f *fakeServingDriver) handlerArtifactWriteCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.handlerWriteCalls
 }
 
 // ServingHandlerArtifactPath reports the recorded artifact path for a base key.
@@ -447,6 +459,39 @@ func TestStartServingFresh(t *testing.T) {
 		t.Errorf("live_vms = %d want 1", ns.GetLiveVms())
 	}
 	_ = fsn
+}
+
+func TestStartServingFreshImageLaneOmitsHandlerDrive(t *testing.T) {
+	_, port := healthServer(t, servingHealthPath)
+	s, _, fsd := newServingTestServer(t)
+	s.servingImage = newServingImageRegistry()
+	s.servingImage.add(servingImageEntry{
+		baseKey:         "image-base",
+		workload:        "wl-serve",
+		runtimeImageRef: "img-a",
+	})
+
+	resp, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "image-base"}},
+		Port:       port,
+		HealthPath: servingHealthPath,
+		Trace:      &nodev1.Trace{Workload: "wl-serve"},
+	})
+	if err != nil {
+		t.Fatalf("StartServing(fresh image lane): %v", err)
+	}
+	if resp.GetVmId() == "" {
+		t.Fatal("StartServing(fresh image lane) returned no vm_id")
+	}
+	if fsd.claims != 1 {
+		t.Errorf("ClaimServing calls = %d want 1", fsd.claims)
+	}
+	if fsd.lastHandlerDiskPath != "" {
+		t.Errorf("image-lane handler disk path = %q want empty", fsd.lastHandlerDiskPath)
+	}
+	if fsd.lastHandlerZipBytes != 0 {
+		t.Errorf("image-lane handler zip bytes = %d want 0", fsd.lastHandlerZipBytes)
+	}
 }
 
 // TestStartServingProjectsPodEndpoint proves the D-R3.11.4 projection: with a pod IP
