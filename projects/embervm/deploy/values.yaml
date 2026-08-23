@@ -142,6 +142,16 @@ tracing:
   endpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4317"
   serviceName: embervm-control
 
+# Platform KEK root (ADR embervm/036, #4976), rollout step 1 for #4691.
+# This only gives the control plane access to the existing 1Password item;
+# artifact encryption and noded's writer remain disabled until the root is
+# observed live. The secretKeyRef is optional, so a missing item leaves the
+# custodian inert instead of blocking the control-plane rollout.
+kekRoot:
+  enabled: true
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/embervm-kek-root"
+
 # Node capacity override (cluster-specific; the chart default of 8 is a
 # conservative backstop). node-4 is a ~62Gi box (27% used), and the two platform
 # pools alone (semgrep floor 4 + sandbox floor 4) consume all 8 default slots,
