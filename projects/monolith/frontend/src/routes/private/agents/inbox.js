@@ -1,5 +1,6 @@
 import { isInFlight, runActivityAt } from "./run-history.js";
 import { sessionActivityAt } from "./jump.js";
+import { RUN_LEXICON as P } from "./run-lexicon.js";
 
 function parsedActivity(value) {
   if (!value) return 0;
@@ -35,6 +36,34 @@ function standalone(session) {
   return session?.workflow_id == null || session.workflow_id === "";
 }
 
+export function humanDecision(run) {
+  const candidates = [
+    run,
+    run?.current,
+    run?.current_node,
+    run?.current?.node,
+    ...(run?.shape ?? []),
+    ...(run?.nodes ?? []),
+  ];
+  return (
+    candidates.find((node) => node?.blocked_on?.kind === "human")?.blocked_on ??
+    null
+  );
+}
+
+export function runAsk(run) {
+  const blockedOn = humanDecision(run);
+  if (blockedOn?.decision_kind === "push_gate") return P.labels.approvePush;
+  if (blockedOn?.decision_kind === "review_escalation") return P.labels.decide;
+  if (blockedOn) return P.labels.needsYou;
+  const escalated =
+    run?.state === "escalated" ||
+    [...(run?.shape ?? []), ...(run?.nodes ?? [])].some(
+      (node) => node?.state === "escalated",
+    );
+  return escalated ? P.labels.escalated : P.labels.needsYou;
+}
+
 const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function inboxGroups(runs = [], sessions = [], vms = {}) {
@@ -45,11 +74,19 @@ export function inboxGroups(runs = [], sessions = [], vms = {}) {
 
   return {
     needsYou: [
-      ...runItems.filter((item) => Boolean(item.value.needs)),
+      ...runItems.filter(
+        (item) =>
+          Boolean(item.value.needs) || Boolean(humanDecision(item.value)),
+      ),
       ...sessionItems.filter((item) => item.value.status === "needs_input"),
     ].sort(newestFirst),
     running: [
-      ...runItems.filter((item) => isInFlight(item.value) && !item.value.needs),
+      ...runItems.filter(
+        (item) =>
+          isInFlight(item.value) &&
+          !item.value.needs &&
+          !humanDecision(item.value),
+      ),
       ...sessionItems.filter((item) => item.value.status === "running"),
     ].sort(newestFirst),
   };

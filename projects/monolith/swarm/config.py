@@ -28,7 +28,10 @@ def turn_timeout_seconds() -> int:
 
 
 def decision_timeout_seconds() -> int:
-    return int(os.environ.get("SWARM_DECISION_TIMEOUT_SECONDS", "0"))
+    # Escalations wait this long for a human decision via the console, POST
+    # .../decision or agent_run_decide (ADR agents/060); 0 makes escalation
+    # terminal as before.
+    return int(os.environ.get("SWARM_DECISION_TIMEOUT_SECONDS", "86400"))
 
 
 def codex_concurrency() -> int:

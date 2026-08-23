@@ -24,6 +24,7 @@
   import PaneHeader from "./PaneHeader.svelte";
   import { crumbTrail } from "./lineage.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
+  import { clockTime } from "./run-history.js";
   import { claimStatus } from "./claims.js";
 
   let {
@@ -32,6 +33,7 @@
     sessions = [],
     onSelectSession = () => {},
     onCancel = () => {},
+    onError = () => {},
     onCrumb = () => {},
     onVoice = () => {},
     compact = false,
@@ -40,6 +42,10 @@
 
   let selectedKey = $state(null);
   let runView = $state("plan");
+  let decisionNote = $state("");
+  let decisionInFlight = $state(false);
+  let submittedDecision = $state(null);
+  let observedRun = null;
 
   const active = $derived(
     run?.dbos_status === "PENDING" || run?.dbos_status === "ENQUEUED",
@@ -61,7 +67,9 @@
     escalatedNode?.attempts?.at(-1)?.session_id ?? null,
   );
   const hasAside = $derived(
-    showsEscalation || Boolean(selectedNode?.attempts?.length),
+    showsEscalation ||
+      isHumanGate(selectedNode) ||
+      Boolean(selectedNode?.attempts?.length),
   );
   const isEscalated = $derived(
     run?.state === "escalated" || Boolean(escalatedNode),
@@ -110,6 +118,16 @@
   });
 
   $effect(() => {
+    const currentRun = run;
+    if (currentRun !== observedRun) {
+      observedRun = currentRun;
+      decisionNote = "";
+      decisionInFlight = false;
+      submittedDecision = null;
+    }
+  });
+
+  $effect(() => {
     if (focus && run?.nodes?.some((node) => node.key === focus)) {
       selectedKey = focus;
     }
@@ -119,7 +137,11 @@
   const shortId = (id) => String(id || "").slice(-12);
   const since = (value) => relSeconds(value, view.now);
   const ago = (value) => agoPhrase(since(value));
-  const isHumanGate = (node) => node?.blocked_on?.kind === "human";
+  function isHumanGate(node) {
+    return node?.blocked_on?.kind === "human";
+  }
+  const decisionOptionLabel = (option) =>
+    P.decisionOptionLabels[option] ?? option;
   const deviationsForNode = (nodeKey) =>
     (run?.deviations ?? []).filter(
       (deviation) => deviation.node_key === nodeKey,
@@ -174,6 +196,58 @@
       P.stateWords[attempt.state] || attempt.state,
       fmtCost(attempt.cost_usd),
     );
+  }
+
+  function decisionRecordLine(record) {
+    return joinMeta(
+      `${P.labels.decidedWord} ${record.decision} ${P.labels.byWord} ${record.actor_subject}`,
+      clockTime(record.decided_at),
+    );
+  }
+
+  function submittedDecisionLine(record) {
+    return `${P.labels.decidedWord} ${decisionOptionLabel(record.decision)} ${P.labels.byWord} ${record.actor_subject}`;
+  }
+
+  async function responseDetail(response) {
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === "string") return body.detail;
+      if (body?.detail != null) return JSON.stringify(body.detail);
+      if (typeof body?.error === "string") return body.error;
+    } catch {
+      // The status still selects the console banner's stable fallback.
+    }
+    return P.labels.decisionUnavailable;
+  }
+
+  async function decideNode(node, option) {
+    if (decisionInFlight || submittedDecision) return;
+    decisionInFlight = true;
+    onError(null);
+    try {
+      const response = await fetch(
+        `/agents/runs/${encodeURIComponent(run.workflow_id)}/nodes/${encodeURIComponent(node.key)}/decision`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision: option, note: decisionNote }),
+        },
+      );
+      if (!response.ok) {
+        onError(await responseDetail(response));
+        return;
+      }
+      const result = await response.json();
+      submittedDecision = {
+        decision: result.decision ?? option,
+        actor_subject: result.actor_subject,
+      };
+    } catch {
+      onError(P.labels.decisionUnavailable);
+    } finally {
+      decisionInFlight = false;
+    }
   }
 
   function buildLogEntries(value) {
@@ -317,8 +391,16 @@
     </header>
 
     <div class="facts" data-register="fact">
-      <span class:attention={isEscalated} class="fact-state">
-        {#if isEscalated}
+      <span
+        class:attention={run.disposition?.state === "gated" ||
+          humanAttention ||
+          isEscalated}
+        class="fact-state"
+      >
+        {#if run.disposition?.state === "gated"}
+          <StateIcon icon="blocked_human" class="g-blocked-h" />
+          {P.labels.waitingOnYou}
+        {:else if isEscalated}
           <StateIcon icon="blocked_human" class="g-blocked-h" />
           {P.labels.escalatedToYou}
         {:else}
@@ -360,7 +442,11 @@
     {/if}
 
     {#if run.disposition}
-      <div class:human-attention={humanAttention} class="disposition">
+      <div
+        class:human-attention={humanAttention ||
+          run.disposition.state === "gated"}
+        class="disposition"
+      >
         <div class="disposition-state">
           {P.dispositionStates[run.disposition.state] ?? run.disposition.state}
         </div>
@@ -422,7 +508,38 @@
         </div>
         {#if hasAside}
           <aside class="attempts">
-            {#if showsEscalation}
+            {#if isHumanGate(selectedNode)}
+              <div class="decide">
+                <p>{selectedNode.blocked_on.note}</p>
+                {#if submittedDecision}
+                  <div class="decision-submitted">
+                    {submittedDecisionLine(submittedDecision)}
+                  </div>
+                {:else}
+                  {#each selectedNode.blocked_on.options ?? [] as option, index (option)}
+                    <button
+                      class:primary={index === 0}
+                      class="btn"
+                      type="button"
+                      disabled={decisionInFlight}
+                      onclick={() => decideNode(selectedNode, option)}
+                      >{decisionOptionLabel(option)}</button
+                    >
+                  {/each}
+                  <textarea
+                    class="note"
+                    bind:value={decisionNote}
+                    maxlength="2000"
+                    placeholder={P.labels.decisionNotePlaceholder}></textarea>
+                  <div class="decision-waiting">
+                    {stateFor(
+                      P.labels.waitingWordLower,
+                      relSeconds(selectedNode.blocked_on.since, view.now),
+                    )}
+                  </div>
+                {/if}
+              </div>
+            {:else if showsEscalation}
               <!-- Escalation is terminal in the engine today (swarm/workflows.py _escalated); #4781 tracks escalation as a pause with a decision endpoint. Until then the honest affordance is the session. -->
               <div class="decide">
                 <p>{P.labels.escalationTerminal}</p>
@@ -559,7 +676,7 @@
 {/snippet}
 
 {#snippet nodeDetail(node)}
-  {#if node.blocked_on}
+  {#if node.blocked_on && !isHumanGate(node)}
     <div class="log-entry" data-register="belief">{node.blocked_on.note}</div>
   {/if}
   {#if node.queue}
@@ -578,6 +695,14 @@
   {/if}
   {#if node.evidence}
     {@render evidence(node)}
+  {/if}
+  {#if node.decision_record}
+    <div class="decision-record" data-register="fact">
+      <div>{decisionRecordLine(node.decision_record)}</div>
+      {#if node.decision_record.note}
+        <div class="decision-record-note">{node.decision_record.note}</div>
+      {/if}
+    </div>
   {/if}
   {#if node.note}
     <div class="node-note">{node.note}</div>

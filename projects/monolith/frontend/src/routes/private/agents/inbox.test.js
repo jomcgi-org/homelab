@@ -5,6 +5,7 @@ import {
   jumpTotal,
   railState,
   recentSummary,
+  runAsk,
 } from "./inbox.js";
 
 const run = (id, updatedAt, extra = {}) => ({
@@ -72,6 +73,50 @@ describe("inbox groups", () => {
 
     expect(groups.needsYou.map(({ id }) => id)).toEqual(["run-needs"]);
     expect(groups.running).toEqual([]);
+  });
+
+  test("treats a human decision in the run shape as needs-you without needs", () => {
+    const gated = run("run-gated", "2026-08-21T12:00:00Z", {
+      shape: [
+        {
+          key: "push_gate",
+          state: "blocked",
+          blocked_on: {
+            kind: "human",
+            decision_kind: "push_gate",
+          },
+        },
+      ],
+    });
+
+    const groups = inboxGroups([gated], [], {});
+
+    expect(groups.needsYou.map(({ id }) => id)).toEqual(["run-gated"]);
+    expect(groups.running).toEqual([]);
+  });
+
+  test.each([
+    ["push_gate", "Approve push"],
+    ["review_escalation", "Decide"],
+  ])("uses the %s decision kind for the ask word", (decisionKind, label) => {
+    expect(
+      runAsk(
+        run("run-gated", "2026-08-21T12:00:00Z", {
+          current: {
+            blocked_on: {
+              kind: "human",
+              decision_kind: decisionKind,
+            },
+          },
+        }),
+      ),
+    ).toBe(label);
+  });
+
+  test("keeps historical escalations labelled Escalated", () => {
+    expect(
+      runAsk(run("old", "2026-08-21T12:00:00Z", { state: "escalated" })),
+    ).toBe("Escalated");
   });
 });
 

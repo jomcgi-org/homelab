@@ -18,6 +18,36 @@ export function askKey(rowId) {
   return `ask:${rowId}`;
 }
 
+export function askWorkflowId(card) {
+  if (card?.kind !== "ask" || card.ref == null || card.ref === "") return null;
+  const ref = String(card.ref);
+  return ref.startsWith("run-") ? ref.slice(4) : ref;
+}
+
+export function decisionTargetForAsk(card, runDetails = {}) {
+  const workflowId = askWorkflowId(card);
+  if (!workflowId) return null;
+  const detail =
+    runDetails[workflowId] ??
+    runDetails[String(card.ref)] ??
+    Object.values(runDetails).find(
+      (candidate) => String(candidate?.run?.workflow_id) === String(workflowId),
+    );
+  const nodeKey =
+    card?.payload?.focus ?? card?.payload?.node_key ?? card?.focus;
+  const node = detail?.run?.nodes?.find(
+    (candidate) => String(candidate.key) === String(nodeKey),
+  );
+  if (node?.blocked_on?.kind !== "human") return null;
+  return {
+    workflowId: String(detail.run.workflow_id ?? workflowId),
+    nodeKey: String(node.key),
+    options: Array.isArray(node.blocked_on.options)
+      ? node.blocked_on.options.map(String)
+      : [],
+  };
+}
+
 export function applyLedgerRows(stage, rows) {
   const next = cloneStage(stage);
   const ordered = [...(Array.isArray(rows) ? rows : [])].sort(
@@ -202,7 +232,7 @@ function applyAsk(stage, row, payload) {
       kind: "ask",
       surface: null,
       ref: String(ref),
-      focus: null,
+      focus: payload.focus ?? payload.node_key ?? null,
       question: payload.question == null ? "" : String(payload.question),
       options: Array.isArray(payload.options)
         ? payload.options.map(String)

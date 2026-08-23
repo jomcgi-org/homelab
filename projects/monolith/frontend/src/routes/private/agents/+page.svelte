@@ -24,6 +24,7 @@
   import { partitionRuns, relativeTime } from "./run-history.js";
   import {
     arrivalSelection,
+    runAsk,
     inboxGroups,
     jumpTotal,
     railState,
@@ -41,6 +42,7 @@
   import {
     answerCard,
     applyLedgerRows,
+    askWorkflowId,
     dismissCard,
     emptyStage,
     togglePinned,
@@ -733,15 +735,6 @@
     if (manualRail === "folded") clearTurnSearch();
   }
 
-  function runAsk(run) {
-    const escalated =
-      run?.state === "escalated" ||
-      [...(run?.shape ?? []), ...(run?.nodes ?? [])].some(
-        (node) => node.state === "escalated",
-      );
-    return escalated ? P.labels.escalated : P.labels.needsYou;
-  }
-
   async function runSearch(value = searchQuery) {
     const query = value.trim();
     if (!query) {
@@ -854,6 +847,39 @@
     errorMessage = null;
     try {
       await sendSessionPrompt({ ...message, model: voiceSession?.model });
+    } catch (error) {
+      errorMessage = error.message;
+      throw error;
+    }
+  }
+
+  async function decideVoiceRun({ workflowId, nodeKey, decision, note = "" }) {
+    errorMessage = null;
+    try {
+      const response = await fetch(
+        `/agents/runs/${encodeURIComponent(workflowId)}/nodes/${encodeURIComponent(nodeKey)}/decision`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision, note }),
+        },
+      );
+      if (!response.ok) {
+        let detail = P.labels.decisionUnavailable;
+        try {
+          const body = await response.json();
+          detail =
+            typeof body?.detail === "string"
+              ? body.detail
+              : typeof body?.error === "string"
+                ? body.error
+                : detail;
+        } catch {
+          // Keep the stable fallback when the proxy response is not JSON.
+        }
+        throw new Error(detail);
+      }
+      return await response.json();
     } catch (error) {
       errorMessage = error.message;
       throw error;
@@ -1332,6 +1358,10 @@
       if (card.surface === "run" && !voiceRunDetails[card.ref]) {
         await loadRunDetail(card.ref, runRequestSequence, "voice");
       }
+      const askRunId = askWorkflowId(card);
+      if (askRunId && !voiceRunDetails[askRunId]) {
+        await loadRunDetail(askRunId, runRequestSequence, "voice");
+      }
     }
   }
 
@@ -1708,6 +1738,7 @@
           onPin={pinVoiceCard}
           onDismiss={dismissVoiceCard}
           onSend={sendVoicePrompt}
+          onDecide={decideVoiceRun}
           onAnswered={answerVoiceCard}
         />
       {:else}
@@ -1757,6 +1788,7 @@
             onSelectSession={selectSession}
             onCrumb={paneCrumb}
             onVoice={openVoiceMode}
+            onError={(message) => (errorMessage = message)}
           />
         {:else if selectedId && selectedSession}
           <header class="transcript-head">
@@ -1950,6 +1982,7 @@
               onCancel={() => cancelRun(selectedRunId)}
               onCrumb={paneCrumb}
               onVoice={openVoiceMode}
+              onError={(message) => (errorMessage = message)}
             />
             <!-- loadRunDetail's catch leaves runDetail set with run: null and the
              tier marked absent. Without this branch that state is

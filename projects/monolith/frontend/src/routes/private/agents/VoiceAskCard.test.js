@@ -42,4 +42,45 @@ describe("voice ask card", () => {
       prompt: "approve",
     });
   });
+
+  test("routes an open run decision through the injected decision function", async () => {
+    const target = document.createElement("div");
+    document.body.append(target);
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const onDecide = vi.fn().mockResolvedValue(undefined);
+    const onAnswered = vi.fn();
+    const component = mount(VoiceAskCard, {
+      target,
+      props: {
+        card: {
+          key: "ask:8",
+          question: "Push it?",
+          ref: "run-wf-84",
+          options: ["approve", "send_back"],
+          answered: false,
+        },
+        sessionId: 213,
+        decisionTarget: {
+          workflowId: "wf-84",
+          nodeKey: "push_gate",
+          options: ["approve", "send_back"],
+        },
+        onSend,
+        onDecide,
+        onAnswered,
+      },
+    });
+    mounted.push({ component, target });
+
+    target.querySelector("button").click();
+
+    await vi.waitFor(() => expect(onAnswered).toHaveBeenCalledWith("ask:8"));
+    expect(onDecide).toHaveBeenCalledWith({
+      workflowId: "wf-84",
+      nodeKey: "push_gate",
+      decision: "approve",
+      note: "",
+    });
+    expect(onSend).not.toHaveBeenCalled();
+  });
 });
