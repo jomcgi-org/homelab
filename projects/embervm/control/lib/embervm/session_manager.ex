@@ -2167,10 +2167,14 @@ defmodule Embervm.SessionManager do
   defp restore_bundle(state, node_id, dial_id, session, snapshot_ref) do
     workload = session.workload
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION, workload: workload, ref: snapshot_ref}
+    # generation 0 = any: the session row's generation is its bank counter,
+    # not the artifact's export generation that noded compares against, and
+    # the two diverge after a relight (dev, 2026-08-23). The store's own
+    # generation fence still applies on write.
     ctx = %{
       principal: session.principal,
       lineage: session.lineage_id,
-      generation: Map.get(session, :generation, 0) || 0
+      generation: 0
     }
 
     case safe_restore_artifact(state, node_id, dial_id, ref, ctx) do

@@ -113,7 +113,13 @@ func parseAndVerifyCapability(raw []byte, macKey []byte, now time.Time, want cap
 	if got.Kind != want.Kind {
 		return nil, ErrCapabilityKindMismatch
 	}
-	if got.Generation != want.Generation {
+	// Generation 0 in the capability means "any": the control plane stamps it
+	// when the artifact generation is not the fact it holds (a session row
+	// carries its bank counter, meta.json carries the export generation, and
+	// the two diverge after a relight). The store's own ErrStaleGeneration
+	// fence still governs which generation may be written; the capability's
+	// job is scoping the data key to principal, lineage, brick, workload, ref.
+	if got.Generation != 0 && got.Generation != want.Generation {
 		return nil, ErrCapabilityGenerationMismatch
 	}
 	if want.Principal != "" && got.Principal != want.Principal {
