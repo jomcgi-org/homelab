@@ -251,18 +251,6 @@ web:
     # chart does.
     - name: EMBERVM_URL
       value: "http://embervm-embervm.embervm.svc.cluster.local:8080"
-    # fc-invoke URL for the public semgrep demo (ember_public router,
-    # /api/ember/semgrep). In-cluster service URL literal (NOT a secret, NOT a
-    # code default); semgrep_scan.client raises if unset. The public tier calls
-    # fc-invoke as its own allow-listed SA (system:serviceaccount:monolith-public
-    # :monolith-public), admitted by the fc-invoke daemon's TokenReview gate and
-    # its CiliumNetworkPolicy fromNamespaces list. In-cluster egress is permitted
-    # by this chart's Cilium policy (cluster entity). This chart uses the
-    # homelab-library deployment helper, which does NOT derive FC_INVOKE_URL from
-    # semgrep.fcInvokeUrl the way the monolith chart does, so it is set here as a
-    # literal.
-    - name: FC_INVOKE_URL
-      value: "http://fc-invoke.monolith.svc.cluster.local:8080"
     # Demo-postgres DSN (ember_public router, /api/ember/postgres): the SAME
     # serving Service, port, and password the private monolith chart uses for
     # scratchPostgres.demoListenPort (5401), so both tiers wake the ONE demo
