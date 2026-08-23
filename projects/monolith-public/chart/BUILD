@@ -10,6 +10,14 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
+# Guard (#5142): the destination-scoped egress policies must stay scoped. The
+# test lives in //projects/monolith for the same reason as the HTTPRoute guard.
+filegroup(
+    name = "cilium_scoped_egress_template",
+    srcs = ["templates/cilium-policy-scoped-egress.yaml"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # Guard (ADR 005): the Turnstile *secret* must stay in the backend ("web"); the
 # frontend may reference only the public site-key literal. The test asserting
 # this lives in the Python-native //projects/monolith package and reads this

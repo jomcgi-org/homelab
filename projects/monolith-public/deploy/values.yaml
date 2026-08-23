@@ -74,3 +74,10 @@ ciliumPolicy:
     enabled: true
   egress:
     enabled: true
+    # #5142 step 1: destination-scoped egress policies in AUDIT shape (additive
+    # allows, enforcement unchanged). Flipped here in the same PR as the
+    # template on purpose: the previous chart has no reader for this key, so
+    # the value is inert until the new chart publishes, and nothing misrenders
+    # in between. Read hubble for a day (recipe in the template header) before
+    # the follow-up PR moves to enforcement.
+    scoped: audit
