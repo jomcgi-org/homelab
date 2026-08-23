@@ -40,6 +40,21 @@ bazel_dep(name = "gazelle", version = "0.47.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "rules_oci", version = "2.2.6")
 bazel_dep(name = "rules_apko", version = "1.5.52")
+
+# apk_import upstream fetches each apk as three ranged requests (signature,
+# control, data). Bazel's downloader resumes a dropped transfer by reconnecting
+# with its own `Range: bytes=N-` and merges it with the caller's headers via
+# buildOrThrow(), so on a flaky link the resume itself aborts the fetch with
+# "Multiple entries with same key: Range=[...] and Range=[...]" and the whole
+# run dies in analysis. The patch downloads the apk once with no Range header
+# and cuts the segments out locally, still checking them against the lockfile
+# checksums. Drop it once upstream (rules_apko or Bazel) handles the collision.
+# See #4849.
+single_version_override(
+    module_name = "rules_apko",
+    patch_strip = 1,
+    patches = ["//:bazel/patches/rules_apko_no_range.patch"],
+)
 bazel_dep(name = "rules_multirun", version = "0.13.0")
 bazel_dep(name = "tar.bzl", version = "0.6.0")
 bazel_dep(name = "platforms", version = "1.0.0")

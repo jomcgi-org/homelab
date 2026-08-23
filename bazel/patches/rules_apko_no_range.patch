@@ -1,0 +1,184 @@
+diff -ur a/apko/private/apk.bzl b/apko/private/apk.bzl
+--- a/apko/private/apk.bzl	2026-08-22 18:28:49
++++ b/apko/private/apk.bzl	2026-08-22 18:28:49
+@@ -41,14 +41,6 @@
+         },
+     }
+ 
+-def _download(rctx, url, rng, **kwargs):
+-    return rctx.download(
+-        url = [url],
+-        headers = {"Range": [rng]},
+-        auth = _auth(rctx, url),
+-        **kwargs
+-    )
+-
+ def _apk_import_impl(rctx):
+     repo = util.repo_url(rctx.attr.url, rctx.attr.architecture)
+     repo_escaped = util.url_escape(repo)
+@@ -62,44 +54,37 @@
+     data_output = "{}/{}.dat.tar.gz".format(output, data_sha256)
+     apk_output = "{}/{}/{}-{}.apk".format(repo_escaped, rctx.attr.architecture, rctx.attr.package_name, rctx.attr.version)
+ 
++    # Fetch the whole apk with one plain request and cut the segments out of
++    # it locally, instead of issuing one ranged request per segment as
++    # upstream does. Bazel's downloader resumes an interrupted transfer by
++    # reconnecting with its own open-ended `Range: bytes=N-` header, and it
++    # merges that with the caller's headers via ImmutableMap.buildOrThrow(),
++    # so a caller-supplied Range turns the first dropped connection into
++    # "Multiple entries with same key: Range=[...] and Range=[...]" and the
++    # fetch fails outright (jomcgi-org/homelab#4849). With no Range on the
++    # request the resume path works as designed. The segment checksums from
++    # the lockfile are still enforced, by the split script rather than by
++    # rctx.download(integrity=).
++    rctx.download(
++        url = [rctx.attr.url],
++        output = apk_output,
++        auth = _auth(rctx, rctx.attr.url),
++    )
++
+     # Some apks (notably most wolfi packages) ship without an in-apk
+-    # signature segment; the lockfile encodes that as an empty range. Issuing
+-    # a Range request with an empty value would cause the origin to ignore
+-    # the header and return the full file as the "signature", which then
+-    # gets concatenated with control+data to produce a doubled apk.
++    # signature segment; the lockfile encodes that as an empty range, so
++    # there is no segment to cut out.
+     sig_output = None
++    segments = []
+     if rctx.attr.signature_range:
+         sig_output = "{}/{}.sig.tar.gz".format(output, control_sha256)
+-        _download(
+-            rctx,
+-            url = rctx.attr.url,
+-            rng = rctx.attr.signature_range,
+-            output = sig_output,
+-            # TODO: signatures does not have stable checksums. find a way to fail gracefully.
+-            # integrity = rctx.attr.signature_checksum,
+-        )
+-    _download(
+-        rctx,
+-        url = rctx.attr.url,
+-        rng = rctx.attr.control_range,
+-        output = control_output,
+-        integrity = rctx.attr.control_checksum,
+-    )
+-    _download(
+-        rctx,
+-        url = rctx.attr.url,
+-        rng = rctx.attr.data_range,
+-        output = data_output,
+-        integrity = rctx.attr.data_checksum,
+-    )
+ 
+-    util.concatenate_gzip_segments(
+-        rctx,
+-        output = apk_output,
+-        signature = sig_output,
+-        control = control_output,
+-        data = data_output,
+-    )
++        # TODO: signatures does not have stable checksums. find a way to fail gracefully.
++        segments.append((rctx.attr.signature_range, sig_output, ""))
++    segments.append((rctx.attr.control_range, control_output, rctx.attr.control_checksum))
++    segments.append((rctx.attr.data_range, data_output, rctx.attr.data_checksum))
++
++    util.split_apk_segments(rctx, apk = apk_output, segments = segments)
+     rctx.file("BUILD.bazel", APK_IMPORT_TMPL)
+ 
+ apk_import = repository_rule(
+diff -ur a/apko/private/util.bzl b/apko/private/util.bzl
+--- a/apko/private/util.bzl	2026-08-22 18:28:49
++++ b/apko/private/util.bzl	2026-08-22 18:31:50
+@@ -101,32 +101,75 @@
+         fail("""normalize_sri failed.\nstderr: {}\nstdout: {}""".format(r.stdout, r.stderr))
+     return r.stdout
+ 
+-# TODO: this shouldn't be necessary in the first place. change apko so that it except to find the original apk in the cache
+-def _concatenate_gzip_segments(rctx, output, control, data, signature = None):
+-    """concatenates gzip segments into one gzip file in signature, control, data order
++_SPLIT_SH = """\
++#!/bin/sh
++# usage: split.sh APK (RANGE OUTPUT SRI)...
++# RANGE is an HTTP byte range "bytes=START-END" (inclusive, per RFC 7233).
++# SRI is "sha1-<b64>" or "sha256-<b64>", or empty to skip verification.
++set -eu
++apk=$1
++shift
++while [ $# -gt 0 ]; do
++  range=$1
++  out=$2
++  sri=$3
++  shift 3
++  start=${range#bytes=}
++  end=${start#*-}
++  start=${start%-*}
++  mkdir -p "$(dirname "$out")"
++  tail -c +$((start + 1)) "$apk" | head -c $((end - start + 1)) > "$out"
++  actual_len=$(wc -c < "$out" | tr -d ' ')
++  if [ "$actual_len" -ne $((end - start + 1)) ]; then
++    echo "$out: wanted $((end - start + 1)) bytes from $range but $apk only yielded $actual_len" >&2
++    exit 1
++  fi
++  if [ -n "$sri" ]; then
++    algo=${sri%%-*}
++    want=$(printf '%s' "${sri#*-}" | base64 -d | od -An -v -tx1 | tr -d ' \\n')
++    case $algo in
++      sha1) bits=1 ;;
++      sha256) bits=256 ;;
++      *) echo "$out: unsupported integrity algorithm $algo" >&2; exit 1 ;;
++    esac
++    if command -v "sha${bits}sum" >/dev/null 2>&1; then
++      got=$("sha${bits}sum" "$out" | cut -d' ' -f1)
++    else
++      got=$(shasum -a "$bits" "$out" | cut -d' ' -f1)
++    fi
++    if [ "$got" != "$want" ]; then
++      echo "$out: checksum mismatch, wanted $algo $want but got $got" >&2
++      exit 1
++    fi
++  fi
++done
++"""
+ 
++def _split_apk_segments(rctx, apk, segments):
++    """cuts the signature, control and data gzip segments out of a whole apk
++
++    The apk is the concatenation of those segments, so the cut files are
++    byte-identical to what a ranged download of each would have produced.
++    Each segment is checked against the lockfile checksum when one is given.
++
+     Args:
+         rctx: repository_ctx
+-        output: final output path
+-        control: path to the control segment
+-        data: path to the data segment
+-        signature: path to the signature segment, or None for unsigned apks
++        apk: path to the downloaded apk
++        segments: list of (range, output path, SRI checksum or "") tuples
+     Returns:
+         None
+     """
+-    p = rctx.path("gzip_seg.sh")
+-    rctx.file(p, """out=$1; shift; cat "$@" > "$out" """, executable = True)
+-    args = [p, output]
+-    if signature:
+-        args.append(signature)
+-    args.append(control)
+-    args.append(data)
++    p = rctx.path("split.sh")
++    rctx.file(p, _SPLIT_SH, executable = True)
++    args = [p, apk]
++    for rng, output, sri in segments:
++        args.extend([rng, output, sri])
+     r = rctx.execute(args)
+     if r.return_code != 0:
+-        fail("""concatenate_gzip_segments failed.\nstderr: {}\nstdout: {}""".format(r.stdout, r.stderr))
++        fail("""split_apk_segments failed.\nstderr: {}\nstdout: {}""".format(r.stderr, r.stdout))
+ 
+ util = struct(
+-    concatenate_gzip_segments = _concatenate_gzip_segments,
++    split_apk_segments = _split_apk_segments,
+     normalize_sri = _normalize_sri,
+     parse_lock = _parse_lock,
+     sanitize_string = _sanitize_string,
