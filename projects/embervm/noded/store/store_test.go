@@ -39,6 +39,27 @@ type fakeObjectStore struct {
 	omitETag        bool
 	accessKeyID     string
 	secretAccessKey string
+	// requireContentLength models a strict S3 length rule (issue #4978). Bare
+	// httptest accepts unknown-length request bodies unconditionally, which is
+	// strictly more permissive than any real S3 gateway could be relied on to
+	// be. When true, the handler refuses a PUT that arrived with no declared
+	// Content-Length (r.ContentLength < 0, Transfer-Encoding: chunked) with
+	// 411 Length Required, so tests can hold the client against a backend
+	// stricter than the default.
+	requireContentLength bool
+	// puts records how every PUT arrived on the wire, so tests can pin down
+	// whether the client declared a length or streamed chunked (see
+	// TestCompressedExportStreamsUnknownLengthObjects).
+	puts []putRecord
+}
+
+// putRecord captures one PUT as the server saw it: contentLength mirrors
+// r.ContentLength (-1 when the body arrived chunked with no declared length)
+// and transferEncoding mirrors r.TransferEncoding.
+type putRecord struct {
+	key              string
+	contentLength    int64
+	transferEncoding []string
 }
 
 func newFakeObjectStore(creds ...string) *fakeObjectStore {
@@ -61,12 +82,21 @@ func (f *fakeObjectStore) handler() http.Handler {
 		key := r.URL.Path
 		switch r.Method {
 		case http.MethodPut:
+			if f.requireContentLength && r.ContentLength < 0 {
+				w.WriteHeader(http.StatusLengthRequired)
+				return
+			}
 			if f.failFilePuts && !strings.HasSuffix(key, "/"+metaObject) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			body, _ := io.ReadAll(r.Body)
 			f.mu.Lock()
+			f.puts = append(f.puts, putRecord{
+				key:              key,
+				contentLength:    r.ContentLength,
+				transferEncoding: append([]string(nil), r.TransferEncoding...),
+			})
 			if match := r.Header.Get("If-Match"); match != "" {
 				current, ok := f.objects[key]
 				if f.failCAS || !ok || match != objectETag(current) {
@@ -249,6 +279,15 @@ func (f *fakeObjectStore) getOrderCopy() []string {
 	return out
 }
 
+// putsCopy returns the wire-level record of every PUT in order.
+func (f *fakeObjectStore) putsCopy() []putRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]putRecord, len(f.puts))
+	copy(out, f.puts)
+	return out
+}
+
 // newTestStore stands up a fake object store and returns a Store pointed at it.
 func newTestStore(t *testing.T) (*Store, *fakeObjectStore) {
 	return newTestStoreWithCompression(t, false)
@@ -264,6 +303,16 @@ func newTestStoreWithOptions(t *testing.T, compress bool, opts ...Option) (*Stor
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 	return New(srv.URL, "embervm", compress, opts...), fake
+}
+
+// newStrictTestStore stands up a fake that enforces the strict S3 length rule
+// (411 Length Required on any PUT that arrives without a declared
+// Content-Length) and returns a Store pointed at it. The compress knob is kept
+// so either export path can be exercised against the strict double.
+func newStrictTestStore(t *testing.T, compress bool) (*Store, *fakeObjectStore) {
+	s, fake := newTestStoreWithCompression(t, compress)
+	fake.requireContentLength = true
+	return s, fake
 }
 
 type staticDataKeys struct {
@@ -1125,5 +1174,125 @@ func TestExportUnknownGenerationCannotWin(t *testing.T) {
 	unknown, unknownNames := writeLocalArtifact(t, map[string]string{"vol.img": "unknown-gen"})
 	if _, _, err := s.Export(ctx, prefix, unknown, unknownNames, 0, 2, "", ""); !errors.Is(err, ErrStaleGeneration) {
 		t.Fatalf("Export err = %v, want ErrStaleGeneration for an unknown generation", err)
+	}
+}
+
+// TestStrictGatewayRejectsUnknownLengthPut proves the strict double actually
+// enforces the length rule bare httptest swallows (issue #4978): a PUT whose
+// body arrives with no declared Content-Length is refused with 411 Length
+// Required, and the store surfaces an error naming what went out on the wire,
+// so a gateway that tightens its length handling can never again fail exports
+// with an unattributable status code. SeaweedFS, today's real gateway, accepts
+// unknown-length chunked PUTs from this client (see
+// TestCompressedExportStreamsUnknownLengthObjects for the pinned sources), but
+// that is evidence about one backend version, not a contract; this double is
+// the stricter counterpart the suite was missing.
+func TestStrictGatewayRejectsUnknownLengthPut(t *testing.T) {
+	s, _ := newStrictTestStore(t, false)
+	ctx := context.Background()
+	key := "base/strict/probe"
+	// An opaque (unseekable) reader mirrors what the compressed export path
+	// ships (an io.PipeReader): http.NewRequestWithContext would sniff a
+	// strings.Reader and declare its length, defeating the probe.
+	body := struct{ io.Reader }{strings.NewReader("body-without-declared-length")}
+	err := s.Put(ctx, key, body, -1)
+	if err == nil {
+		t.Fatal("strict gateway accepted an unknown-length PUT; the double is not enforcing the S3 length rule")
+	}
+	if !strings.Contains(err.Error(), "411") {
+		t.Fatalf("unknown-length PUT error = %v, want it to report status 411", err)
+	}
+	if !strings.Contains(err.Error(), "no Content-Length") {
+		t.Fatalf("unknown-length PUT error = %v, want it to name the missing Content-Length", err)
+	}
+	if perr := s.Put(ctx, key, strings.NewReader("declared"), 8); perr != nil {
+		t.Fatalf("known-length PUT rejected by strict gateway: %v", perr)
+	}
+}
+
+// TestKnownLengthExportMeetsStrictGateway proves every KNOWN-size upload path
+// declares Content-Length: a plaintext export (file sizes known from fileMeta,
+// marker size known from json.Marshal) passes the strict double untouched. If
+// this goes red, the `size >= 0` plumbing in Put regressed and every PUT has
+// quietly become chunked, which today's SeaweedFS tolerates but a strict S3
+// implementation would reject.
+func TestKnownLengthExportMeetsStrictGateway(t *testing.T) {
+	s, _ := newStrictTestStore(t, false)
+	ctx := context.Background()
+	srcDir, names := writeLocalArtifact(t, map[string]string{"snapfile": "snap-bytes", "note": "meta-note"})
+	moved, skipped, err := s.Export(ctx, "base/strict/export", srcDir, names, 3, 1, "", "")
+	if err != nil || skipped {
+		t.Fatalf("Export against strict gateway = (moved=%d, skipped=%v, %v), want every PUT to carry a declared Content-Length", moved, skipped, err)
+	}
+}
+
+// TestCompressedExportStreamsUnknownLengthObjects pins the compressed wire
+// format as an explicit, asserted decision instead of an accident of httptest.
+//
+// The compressed path cannot know its encoded size before sending (#4911
+// moved off temp files deliberately), so Export passes putSize=-1 and Put
+// leaves req.ContentLength unset: each object PUT goes out chunked
+// (Transfer-Encoding: chunked) with no Content-Length.
+//
+// What the real gateway does with that (quoted from seaweedfs master, the
+// family the in-cluster gateway tracks):
+//
+//   - PutObjectHandler takes the request body as-is for a plain anonymous
+//     PUT: getRequestDataReader defaults to `dataReader := r.Body` and only
+//     wraps aws-chunked / SigV4-streaming payloads via iam.newChunkedReader
+//     (weed/s3api/s3api_put_object_helper.go,
+//     https://github.com/seaweedfs/seaweedfs/blob/master/weed/s3api/s3api_put_object_helper.go).
+//   - putToFiler then feeds that reader to operation.UploadReaderInChunks,
+//     which auto-chunks whatever arrives regardless of r.ContentLength
+//     (weed/s3api/s3api_object_handlers_put.go,
+//     https://github.com/seaweedfs/seaweedfs/blob/master/weed/s3api/s3api_object_handlers_put.go).
+//
+// Production agrees: 126 successful exports, 0 failures in the 24h after
+// compression was armed (issue #4978). So chunked unknown-length PUT works
+// TODAY, and this test holds that shape still: if it goes red, someone changed
+// the wire format (buffered writes would flip the object PUTs to declared
+// lengths) or broke the meta.json length, and they must re-prove the new shape
+// against the real gateway before merging. TestStrictGatewayRejectsUnknownLen
+// gthPut is the mirror image: the same suite also holds the store against a
+// backend that rejects this shape.
+func TestCompressedExportStreamsUnknownLengthObjects(t *testing.T) {
+	s, fake := newTestStoreWithCompression(t, true)
+	ctx := context.Background()
+	plaintext := bytes.Repeat([]byte{0}, 64<<10)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "memfile"), plaintext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Export(ctx, "base/wire-format", srcDir, []string{"memfile"}, 1, 1, "", ""); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	puts := fake.putsCopy()
+	if len(puts) != 2 {
+		t.Fatalf("PUTs = %d (%v), want 2 (object + meta.json)", len(puts), puts)
+	}
+	var obj, marker *putRecord
+	for i := range puts {
+		switch {
+		case strings.HasSuffix(puts[i].key, "/"+metaObject):
+			marker = &puts[i]
+		default:
+			obj = &puts[i]
+		}
+	}
+	if obj == nil || marker == nil {
+		t.Fatalf("missing object or marker PUT among %v", puts)
+	}
+	if obj.contentLength != -1 {
+		t.Fatalf("compressed object PUT ContentLength = %d, want -1 (chunked, unknown length): the streaming contract changed, re-verify against the gateway before updating this test", obj.contentLength)
+	}
+	if len(obj.transferEncoding) != 1 || obj.transferEncoding[0] != "chunked" {
+		t.Fatalf("compressed object PUT TransferEncoding = %v, want [chunked]", obj.transferEncoding)
+	}
+	if marker.contentLength <= 0 {
+		t.Fatalf("meta.json PUT ContentLength = %d, want the exact byte length", marker.contentLength)
+	}
+	if len(marker.transferEncoding) != 0 {
+		t.Fatalf("meta.json PUT TransferEncoding = %v, want none (exact length declared)", marker.transferEncoding)
 	}
 }

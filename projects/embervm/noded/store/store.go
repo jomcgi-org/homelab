@@ -247,7 +247,14 @@ func (s *Store) url(key string) string {
 
 // Put uploads size bytes read from r to the object key (HTTP PUT). size is sent
 // as Content-Length so the store can size the object without buffering; a
-// negative size lets net/http chunk it. Any non-2xx status is an error.
+// negative size streams the body with Transfer-Encoding: chunked and NO
+// Content-Length. That streaming contract is deliberate (issue #4978): the
+// compressed export path cannot know its encoded size before sending (#4911),
+// and today's SeaweedFS S3 gateway accepts unknown-length PUTs (verified live
+// after compression was armed; see the store_test.go comments quoting the
+// SeaweedFS sources). A strict S3 backend would answer 411 Length Required
+// instead, which is why any failed PUT reports what went out on the wire.
+// Any non-2xx status is an error.
 func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64) error {
 	if s == nil {
 		return ErrNotPresent
@@ -269,7 +276,11 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64) er
 	}
 	defer drainClose(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("store: PUT %q: unexpected status %d", key, resp.StatusCode)
+		wire := fmt.Sprintf("Content-Length: %d", size)
+		if size < 0 {
+			wire = "no Content-Length (chunked transfer encoding)"
+		}
+		return fmt.Errorf("store: PUT %q: unexpected status %d, sent %s", key, resp.StatusCode, wire)
 	}
 	return nil
 }
