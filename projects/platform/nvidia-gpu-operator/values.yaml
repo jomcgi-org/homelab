@@ -9,6 +9,7 @@ gpu-operator:
   # Driver configuration
   driver:
     enabled: true
+    version: "590.48.01"
     # Build drivers from source (pre-compiled not available for all kernels)
     usePrecompiled: false
 
