@@ -1505,9 +1505,6 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
-	if err := s.admitOrReject(0, classMemOnly); err != nil {
-		return nil, err
-	}
 	snapshot, ok := s.sessionSnap.get(ref)
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: unknown session snapshot_ref %q", ref)
@@ -1518,6 +1515,14 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		// path, so use the control plane's adoption trace until the next Bank writes
 		// the identity into the in-memory registry.
 		workload = req.GetTrace().GetWorkload()
+	}
+	// Memory admission charges the workload's declared need, resolved from the
+	// registry exactly as Prime does (#4186). A restore faults the whole banked
+	// memory back in, so asking with need=0 admitted a 4 GiB session onto a brick
+	// with floor-only headroom. The lookup runs after the ref check so an unknown
+	// ref still reports FAILED_PRECONDITION rather than a spurious pressure reject.
+	if err := s.admitOrReject(s.primeNeedMib(workload), classMemOnly); err != nil {
+		return nil, err
 	}
 	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
 	h, err := s.sessionDriver.RestoreSession(ctx, ref, trackDirtyPages)
