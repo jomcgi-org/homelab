@@ -132,7 +132,11 @@ defmodule Embervm.StatefulStore do
   `stateful_relit` / `stateful_cold_booted`) or an adoption reconcile resolves
   them. `adopt_state/3` and `adopt_endpoint/5` force the ETS view from
   authoritative node truth, bypassing the FSM (adoption is idempotent and total
-  over limbo states the FSM cannot bridge) and never appending an op.
+  over limbo states the FSM cannot bridge) and never appending an op. The one
+  exception is `adopt_banked_bundle/4` (#4201): healing a row to `banked` from
+  a node-reported bundle synthesizes bundle facts no earlier op recorded, so it
+  appends a `stateful_banked` op (marked `adopted: true`) write-through before
+  touching ETS; otherwise the durable log would never carry that bank.
   """
 
   use GenServer
@@ -592,6 +596,30 @@ defmodule Embervm.StatefulStore do
   @spec adopt_state(GenServer.server(), String.t(), :serving | :starting | :banked, map()) :: :ok
   def adopt_state(store, instance_id, new_state, updates) when is_map(updates) do
     GenServer.call(store, {:adopt_state, instance_id, new_state, updates})
+  end
+
+  @doc """
+  Adoption of a node-reported bank bundle, DURABLY (#4201). Unlike `adopt_state/4`
+  this path SYNTHESIZES durable-shaped facts (`snapshot_ref` / generation / size)
+  from node inventory rather than re-asserting facts an earlier `stateful_banked`
+  op already recorded (the op-log-append-failure branch of the sweeper's
+  finish_bank leaves the row `:banking` in ETS and `serving` in the projection
+  while the brick holds a real bundle). Healing that ETS-only would leave the
+  durable log permanently missing the bank, so this appends a `stateful_banked`
+  op carrying the bundle facts plus an `adopted: true` provenance marker, and
+  ONLY on `{:ok, seq}` forces the ETS row to `banked` (write-through, exactly like
+  `transition/6`). Bypasses the FSM like every adoption (total over limbo states).
+
+  Idempotent: a no-op (`{:ok, :unchanged}`) when the row is already `:banked` on
+  the same `snapshot_ref`, and for an unknown or terminal instance (never
+  resurrects a terminal row). On append failure ETS is left untouched and the
+  error returned, so the next reconcile retries the durable append rather than
+  healing memory ahead of the log.
+  """
+  @spec adopt_banked_bundle(GenServer.server(), String.t(), String.t(), map()) ::
+          {:ok, map()} | {:ok, :unchanged} | {:error, term()}
+  def adopt_banked_bundle(store \\ __MODULE__, instance_id, node_id, bundle) when is_map(bundle) do
+    GenServer.call(store, {:adopt_banked_bundle, instance_id, node_id, bundle})
   end
 
   @doc """
@@ -1260,6 +1288,51 @@ defmodule Embervm.StatefulStore do
 
       {:error, _} ->
         {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:adopt_banked_bundle, instance_id, node_id, bundle}, _from, state) do
+    snapshot_ref = Map.fetch!(bundle, :snapshot_ref)
+
+    case fetch(state, instance_id) do
+      {:ok, %{state: cur}} when cur in [:evicted, :destroyed, :failed] ->
+        {:reply, {:ok, :unchanged}, state}
+
+      {:ok, %{state: :banked, snapshot_ref: ^snapshot_ref}} ->
+        {:reply, {:ok, :unchanged}, state}
+
+      {:ok, instance} ->
+        generation = Map.get(bundle, :generation)
+        size_bytes = Map.get(bundle, :size_bytes)
+
+        # The same payload shape the sweeper's finish_bank records, plus the
+        # provenance marker: a replaying consumer sees a bank, and can tell it was
+        # reconstructed from node inventory rather than observed at bank time.
+        payload = %{
+          snapshot_ref: snapshot_ref,
+          generation: generation,
+          size_bytes: size_bytes,
+          node_id: node_id,
+          adopted: true
+        }
+
+        updates = %{
+          snapshot_ref: snapshot_ref,
+          snapshot_generation: generation,
+          snapshot_size_bytes: size_bytes,
+          generation: generation,
+          node_id: node_id,
+          vm_id: nil,
+          drain_reason: nil
+        }
+
+        case append_and_update(state, instance, :stateful_banked, :banked, payload, updates) do
+          {:ok, updated, state} -> {:reply, {:ok, updated}, state}
+          {:error, _} = error -> {:reply, error, state}
+        end
+
+      {:error, _} ->
+        {:reply, {:ok, :unchanged}, state}
     end
   end
 
