@@ -42,6 +42,7 @@ log_file="${BAZEL_LOG_FILE:-}"
 if [[ -n "$log_file" ]]; then
 	printf '%s\n' "$@" >> "$log_file"
 fi
+if [[ -n "${BAZEL_SLEEP:-}" ]]; then sleep "$BAZEL_SLEEP"; fi
 # Real bazel chatters on stderr; none of it may be parsed as a label.
 echo "WARNING: fake bazel noise" >&2
 echo "Loading: 0 packages loaded" >&2
@@ -216,6 +217,12 @@ check_noise() {
 	fi
 }
 
+# A wedged bazel query must end in //..., bounded by the timeout
+setup_hang() { setup_rdeps_fail; }
+check_hang() {
+	[[ "$(cat "$1")" == "//..." ]] && grep -q "timed out" "$2" && pass "query_timeout_fallback" || fail "query_timeout_fallback" "stdout='$(cat "$1")' stderr='$(cat "$2")'"
+}
+
 # Test 5: Single set() probe call
 setup_single_probe() {
 	mkdir -p p
@@ -349,6 +356,7 @@ else
 	fail "args_without_head" "log=$(tr '\n' ' ' <"$log") out=$(cat "$out")"
 fi
 
+BAZEL_SLEEP=5 AFFECTED_TARGETS_QUERY_TIMEOUT=1 run_test "hang" "setup_hang"
 run_test "bazel_dir" "setup_bazel_dir"
 run_test "lockfile" "setup_lockfile"
 run_test "bzl" "setup_bzl"
