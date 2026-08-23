@@ -152,6 +152,15 @@ kekRoot:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/embervm-kek-root"
 
+# Principal-artifact envelope encryption (ADR embervm/033, #4691), rollout
+# step 2. The reader and capability validator have already run fleet-wide, and
+# the production KEK root is Ready. Arm the control-plane wrap endpoint and the
+# noded writer together so newly exported mutable artifacts carry an envelope.
+# Restore-capability enforcement stays off until a production bank and relight
+# proves the complete path.
+artifactEncryption:
+  enabled: true
+
 # Node capacity override (cluster-specific; the chart default of 8 is a
 # conservative backstop). node-4 is a ~62Gi box (27% used), and the two platform
 # pools alone (semgrep floor 4 + sandbox floor 4) consume all 8 default slots,
@@ -189,6 +198,10 @@ noded:
   # present, and the gateway starts checking them when s3.enableAuth flips in
   # projects/platform/seaweedfs.
   store:
+    # The reader is already unconditional on every brick. New session,
+    # session-workspace, stateful, volume, and group-set exports are encrypted;
+    # shared immutable bases remain plaintext and deduplicable.
+    encrypt: true
     credentials:
       enabled: true
       onepassword:
