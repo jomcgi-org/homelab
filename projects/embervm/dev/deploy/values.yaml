@@ -68,6 +68,14 @@ kekRoot:
     itemPath: "vaults/k8s-homelab/items/embervm-kek-root"
 
 noded:
+  # Static bearer token on noded's gRPC surface (#4693), the same item prod
+  # uses: one cluster, one secret. Also the HMAC key for restore capabilities
+  # (#4691), so without it the control plane cannot mint one and every
+  # enveloped restore degrades to snapshot_lost (seen 2026-08-23 01:05).
+  bearerTokenSecret:
+    enabled: true
+    onepassword:
+      itemPath: "vaults/k8s-homelab/items/embervm-noded-token"
   # Step 3 of the #4691 rollout (2026-08-23): an enveloped artifact restores
   # only with a valid control-plane capability. Dev's first banked session
   # exported with aes-256-gcm-v1 files and a 168-byte envelope; this flip rolls
