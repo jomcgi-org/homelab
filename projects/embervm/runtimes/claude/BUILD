@@ -127,9 +127,12 @@ apko_image(
         "@codex_cli//:tar_amd64",
         # The pi coding agent, a self-contained ELF from the GitHub release (see
         # pi_coding_agent in MODULE.bazel). It drives Qwen against the in-cluster
-        # vLLM endpoint, chosen over the claude CLI because its 4 tools and
-        # replaceable system prompt fit Qwen's 32k window (#4234).
+        # vLLM endpoint, chosen over the claude CLI because its small tool set
+        # and replaceable system prompt fit Qwen's context window (#4234).
         "@pi_coding_agent//:tar_amd64",
+        # Pi's search and page-fetch tools. This path must exist in both runtime
+        # images because the shared shim can route qwen through either one.
+        "//projects/embervm/runtimes/pi:web_research_extension_tar",
     ],
 )
 

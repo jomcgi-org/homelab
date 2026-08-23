@@ -1,4 +1,5 @@
 # gazelle:ignore
+load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -13,6 +14,21 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # constructs its claude, codex and pi adapters lazily (ProcessManager only
 # spawns the CLI a turn actually selects), so a pi-only image needs no shim
 # fork, and forking one would be a second copy of 3700 lines policed by nothing.
+
+# First-class web research tools for Pi. The extension deliberately uses curl
+# through pi.exec rather than runtime fetch(): curl honors the HTTP_PROXY,
+# HTTPS_PROXY and CA variables installed by the shared shim, so every request
+# stays inside EmberVM's brokered egress policy.
+tar(
+    name = "web_research_extension_tar",
+    srcs = ["web-research.ts"],
+    mtree = [
+        "./usr/share/ember-pi/extensions/web-research.ts type=file content=$(execpath web-research.ts) mode=0644 uid=0 gid=0",
+    ],
+    # The larger claude runtime can still route a qwen turn through the shared
+    # shim, so it must carry the same extension path as the pi-only image.
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
+)
 
 apko_image(
     name = "image",
@@ -33,6 +49,7 @@ apko_image(
         "//projects/embervm/runtimes/claude:shim_tar",
         "//projects/embervm/runtimes/claude:guest_config_tar",
         "//projects/embervm/runtimes/claude:guest_init_tar_amd64",
+        ":web_research_extension_tar",
         # The pi coding agent, a self-contained Bun-compiled ELF from the GitHub
         # release (see pi_coding_agent in MODULE.bazel), plus the theme JSONs and
         # wasm sidecar it loads relative to argv0. The ONLY CLI in this image:
