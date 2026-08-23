@@ -3,7 +3,7 @@
 **Author:** Joe McGinley
 **Status:** Accepted (implemented 2026-07-11; see Amendments)
 **Created:** 2026-06-15
-**Relates to:** [ADR 004: Public Read-Only Service Isolation](../security/004-public-read-only-service-isolation.md), [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)
+**Relates to:** [ADR 004: Public Read-Only Service Isolation](../security/004-public-read-only-service-isolation.md), [ADR 002: Path-Based Ingress Tiers](../../../projects/platform/ARCHITECTURE.md)
 
 ---
 
@@ -199,7 +199,7 @@ this ADR was written:
 | Resource | Relevance |
 | -------- | --------- |
 | [ADR 004: Public Read-Only Service Isolation](../security/004-public-read-only-service-isolation.md) | The public/private security model FastMonolith implements as a framework |
-| [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md) | Public/private tier and hostname scheme the binaries sit behind |
+| [ADR 002: Path-Based Ingress Tiers](../../../projects/platform/ARCHITECTURE.md) | Public/private tier and hostname scheme the binaries sit behind |
 | `projects/monolith/app/main.py` | The composition glue `build_app` extracts and replaces |
 | `projects/monolith/app/mcp_app.py` | The single MCP instance `build_app` takes ownership of |
 | `projects/monolith/shared/scheduler.py` | The SKIP-LOCKED scheduler loop composed per binary |

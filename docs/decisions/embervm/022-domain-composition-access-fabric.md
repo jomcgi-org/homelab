@@ -286,6 +286,6 @@ Baseline per `docs/security.md` and ADR 001's isolation rule: no VM or snapshot 
 | [ADR 009](009-roadmap-extension-continuity-before-tenancy.md) | Continuity before tenancy; facade deferred |
 | [ADR 020](020-admission-control-plane-token-routing-peer-redistribution.md) | Keep CP off the steady-state request path |
 | [agents/023](../agents/023-egress-secret-proxy.md) | Brokered egress, allowlists, placeholder secrets; basis for VM→Service |
-| [platform/012 - Cilium](../platform/012-cilium-replaces-linkerd.md) | Cluster network policy layer; fabric does not replace it |
+| [platform/012 - Cilium](../../../projects/platform/ARCHITECTURE.md) | Cluster network policy layer; fabric does not replace it |
 | [AWS Lambda MicroVMs](https://aws.amazon.com/lambda/lambda-microvms/) | Session-shaped suspend/resume prior art |
 | Scratch-postgres consumer (monolith chart) | Existing Service→VM DSN composition without groups |

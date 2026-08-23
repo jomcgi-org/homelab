@@ -1,5 +1,5 @@
 # Cluster-scoped PriorityClasses for the memory-oversubscription policy.
-# See ADR docs/decisions/platform/010-memory-oversubscription-burstable-priorityclass.md
+# See projects/platform/ARCHITECTURE.md (section 5, scheduling and capacity)
 #
 # Hierarchy (existing classes shown for context):
 #   system-node-critical     2000001000  (k8s)

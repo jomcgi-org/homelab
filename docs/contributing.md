@@ -156,7 +156,7 @@ All changes land by rebase merge; squash and merge commits are disabled.
 Required checks are strict: a branch must be up to date with main before it
 can merge, so every open PR re-runs CI against post-merge main. That re-run
 is what makes chart version collisions between concurrent PRs detectable
-(see [ADR platform/011](decisions/platform/011-idempotent-chart-publish-missed-bump-detection.md)).
+(see [`projects/platform/ARCHITECTURE.md`](../projects/platform/ARCHITECTURE.md)).
 Any PR whose code must deploy bumps its chart version in the same PR; a
 missed bump fails the main-branch image push loudly with the fix command.
 Renovate opens weekly dependency PRs. Patch and minor upgrades may rebase-merge

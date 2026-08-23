@@ -51,7 +51,7 @@ _REL_MD_LINK_RE = re.compile(r"\]\(([^)\s#]+\.md)(?:#[^)]*)?\)")
 _DECISIONS_PREFIX = "docs/decisions/"
 
 # A fenced code block. Links inside one are illustrations, not references:
-# docs/decisions/docs/001-static-docs-site.md demonstrates link rewriting with
+# the (since harvested) static-docs-site ADR demonstrated link rewriting with
 # deliberately unresolvable example paths, and flagging those would be wrong.
 _FENCE_RE = re.compile(r"^\s*(```|~~~)", re.MULTILINE)
 
@@ -86,9 +86,14 @@ _TEST_FILE_SUFFIXES: tuple[str, ...] = (
 
 # Individual non-test files carrying an ADR-shaped path as documentation rather
 # than as a link. Keep this list short and commented: an entry here is a claim
-# that the path is an example, not a reference. Empty: gen_docs_manifest.py no
-# longer documents a stand-in ADR path.
-_EXAMPLE_ALLOWLIST: frozenset[str] = frozenset()
+# that the path is an example, not a reference.
+#
+# The model-bench research task pins a docs/decisions snapshot at a fixed
+# commit and asks the agent to name the ADR file in that snapshot, so its
+# expected answer is a path in history, not a reference to the working tree.
+_EXAMPLE_ALLOWLIST: frozenset[str] = frozenset(
+    {"projects/model-bench/tasks/research-adr-writeback-01/task.yaml"}
+)
 
 # Generated artifacts that embed whole doc bodies, so they inherit every path
 # mentioned inside the prose they bake in. Regenerating is what fixes them.
