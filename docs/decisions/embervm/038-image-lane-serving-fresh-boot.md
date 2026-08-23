@@ -39,9 +39,15 @@ boot boots them without a handler drive.
 1. On a `BuildBase` with `serving: true` and NO archive (the image lane),
    noded registers the built rootfs itself as the inventory entry:
    `{base_key, workload, runtime_image_ref: image_digest, handler_path: "",
-   size_bytes: 0}`. The control plane already stamps `serving:` from the
-   workload class (`projects/embervm/control/lib/embervm/base_builder.ex:1977`),
-   so this requires no control-plane or proto change.
+   size_bytes: 0}`.
+   CORRECTION (2026-08-23, found by the #5180 serving drill): this ADR
+   originally claimed the control plane already stamps `serving:` on every
+   lane, citing `base_builder.ex` line 1977. That stamp lived only in the
+   ZIP-LANE clause; the image-lane clause omitted it, so image-lane builds
+   never reached this path and every wake failed with "no serving image
+   provisioned". Stamping the flag on the image lane is now part of the
+   fix, plus one `EMBER_BASE_EPOCH` bump to force the rebuild that
+   registers the entry.
 2. `startServingFresh` attaches the handler-artifact drive ONLY when the
    selected entry has a `handler_path`. An image-lane entry boots the runtime
    image's own entrypoint (the `harness_init` resolved by image ref), which
