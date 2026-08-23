@@ -1,5 +1,8 @@
 import { error, json } from "@sveltejs/kit";
-import { SHIPS_TRACK_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  SHIPS_TRACK_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
@@ -16,6 +19,6 @@ export async function GET({ params, fetch }) {
   }
 
   return json(await res.json(), {
-    headers: { "cache-control": SHIPS_TRACK_CACHE_CONTROL },
+    headers: cloudflareCacheHeaders(SHIPS_TRACK_CACHE_CONTROL),
   });
 }

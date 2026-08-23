@@ -4,7 +4,10 @@
 // streams image_key straight through unsigned) and signs every image_key into
 // image_url server-side.
 import { error } from "@sveltejs/kit";
-import { GRIMOIRE_READ_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  GRIMOIRE_READ_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 import { apiBase, signReadPage } from "$lib/server/grimoire-read.js";
 
 export async function GET({ params, url, fetch }) {
@@ -33,12 +36,12 @@ export async function GET({ params, url, fetch }) {
   const page = signReadPage(await res.json());
   return new Response(JSON.stringify(page), {
     headers: {
+      ...cloudflareCacheHeaders(GRIMOIRE_READ_CACHE_CONTROL),
       "content-type": "application/json",
       // Edge-cache the reader pages like the api/[...path] proxy: the signed
       // image_url is a deterministic, non-expiring HMAC (grimoire-img.js), so a
       // 1 h page cache never serves a stale signature. See
       // GRIMOIRE_READ_CACHE_CONTROL.
-      "cache-control": GRIMOIRE_READ_CACHE_CONTROL,
     },
   });
 }

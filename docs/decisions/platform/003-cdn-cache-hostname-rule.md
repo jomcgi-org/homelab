@@ -17,6 +17,16 @@ ADR 002 sketched a per-route Cloudflare Cache Rule pattern as part of the "cache
 
 This ADR records the design as actually deployed, fixes the silent-injection trap, and documents the verification protocol.
 
+An outage on 2026-08-23 exposed a fourth constraint. Cloudflare interprets
+`s-maxage` as `proxy-revalidate`, so combining it with
+`stale-while-revalidate` or `stale-if-error` prevents the stale directives from
+taking effect. The edge served fresh immutable assets during tunnel error 1033,
+but the 60-second homepage entry expired and returned 530 instead of serving its
+cached response. The corrected implementation sends the browser policy in
+`Cache-Control` and a higher-precedence Cloudflare policy in
+`Cloudflare-CDN-Cache-Control`. The latter expresses the edge TTL as `max-age`,
+not `s-maxage`, so stale serving remains enabled.
+
 ---
 
 ## Proposal
@@ -27,7 +37,7 @@ A single Cloudflare Cache Rule, scoped by hostname rather than path, paired with
 | ------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | Cache Rule scope                      | Per-path (`/api/.../stats`, `/public/*`)         | Hostname-wide: `http.host wildcard r"public.jomcgi.dev"`                                                                        |
 | Enforcer of "cacheable iff anonymous" | Per-route discipline + per-path CF rule          | Routing topology (`monolith/public/* → public.jomcgi.dev/*`) + hostname CF rule + origin `Cache-Control` discipline             |
-| Edge TTL setting                      | Implicit ("respect origin")                      | Explicit: "Use cache-control header if present, **bypass cache if not**" (so unheadered responses are never cached by accident) |
+| Edge TTL setting                      | Implicit ("respect origin")                      | `Cloudflare-CDN-Cache-Control: max-age=N` plus "Use cache-control header if present, bypass cache if not"                        |
 | Browser Cache TTL                     | Not addressed                                    | Global: **"Respect Existing Headers"** — required to stop CF injecting `max-age` into responses that omit it                    |
 | Tiered Cache                          | Not addressed                                    | **Smart Tiered Caching: ON** (single-origin homelabs benefit disproportionately)                                                |
 | ETag handling                         | Not addressed                                    | **Respect strong ETags: ON** (free 304 revalidation for routes that emit ETags, e.g. `/api/knowledge/graph`)                    |
@@ -43,8 +53,8 @@ Same three nested cache layers ADR 002 described, with the actual settings fille
 
 ```mermaid
 graph LR
-    Origin["FastAPI origin<br/>_CACHE_TTL=60s in-memory<br/>Sets s-maxage, omits max-age"] --> EdgeUpper["CF Tiered Cache<br/>(upper-tier POP)"]
-    EdgeUpper --> EdgeLower["CF edge POP<br/>Honors origin Cache-Control<br/>SWR + SIE + strong ETags"]
+    Origin["FastAPI origin<br/>_CACHE_TTL=60s in-memory<br/>Sets browser + CDN policies"] --> EdgeUpper["CF Tiered Cache<br/>(upper-tier POP)"]
+    EdgeUpper --> EdgeLower["CF edge POP<br/>Honors Cloudflare-CDN-Cache-Control<br/>SWR + SIE + strong ETags"]
     EdgeLower --> Browser["Browser tab<br/>No max-age → re-asks edge<br/>Future: setInterval poll"]
     Browser --> Display["Display tick<br/>Re-renders 'Xm ago' strings"]
 ```
@@ -53,14 +63,14 @@ graph LR
 | -------------------- | ---------------------------- | ----------------------------------------- | ----------------------------------------------- |
 | Backend `_CACHE_TTL` | Origin response              | 60s                                       | `projects/monolith/home/observability/stats.py` |
 | CF upper-tier        | Origin fetch deduplication   | Inherited from edge                       | Smart Tiered Caching (no per-rule TTL)          |
-| CF edge              | Across page loads            | 60s fresh + 24h SWR + 1y SIE              | Origin `Cache-Control` honored by rule          |
+| CF edge              | Across page loads            | 60s fresh + 24h SWR + 1y SIE              | Origin `Cloudflare-CDN-Cache-Control`            |
 | Browser              | Tab's in-memory `data.stats` | None (no `max-age` → always re-asks edge) | "Respect Existing Headers" preserves omission   |
 | Display tick         | Formatted strings (`Xm ago`) | 30s                                       | `+page.svelte` `setInterval`                    |
 
 The structural invariant — **"cacheable iff anonymous"** — now sits in three locks in series:
 
 1. **Routing topology**: only `monolith/public/*` handlers serve `public.jomcgi.dev`. Authenticated/private code paths physically cannot respond on this hostname.
-2. **Origin discipline**: `Cache-Control` is set explicitly on cacheable responses (`projects/monolith/frontend/src/lib/cache-headers.js`); other responses omit the header.
+2. **Origin discipline**: `Cache-Control` and `Cloudflare-CDN-Cache-Control` are set explicitly on cacheable responses (`projects/monolith/frontend/src/lib/cache-headers.js`); other responses omit them.
 3. **CF rule**: hostname filter + "bypass cache if no Cache-Control" means anything that escapes locks 1 and 2 still won't be cached unless origin actively asked for it.
 
 A single lock failing does not cause a leak. All three would have to fail simultaneously.
@@ -76,7 +86,7 @@ A single lock failing does not cause a leak. All three would have to fail simult
 
 ### Phase 2: Edge cache rule (this ADR's primary work)
 
-- [x] Origin emits `Cache-Control: public, s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000` on `/public/*` (`projects/monolith/frontend/src/lib/cache-headers.js:6`, applied at `+page.server.js:221`)
+- [x] Origin emits separate browser and CDN policies. The CDN policy is `Cloudflare-CDN-Cache-Control: public, max-age=60, stale-while-revalidate=86400, stale-if-error=31536000`, with no `s-maxage` to disable stale serving (`projects/monolith/frontend/src/lib/cache-headers.js`)
 - [x] Cloudflare Cache Rule deployed: match `http.host wildcard r"public.jomcgi.dev"`, action "Eligible for cache" + "Use cache-control header if present, bypass cache if not", "Serve stale while revalidating: ON", "Respect strong ETags: ON"
 - [x] Verified `cf-cache-status: HIT` on repeated `/` requests with `age` header incrementing
 - [ ] **Caching → Configuration → Browser Cache TTL: "Respect Existing Headers"** (currently set to 5 days — injecting `max-age=432000` into all responses; verified post-deploy 2026-05-06 via `curl -sI`)
@@ -98,20 +108,20 @@ Run after any change to CF caching configuration or origin `Cache-Control` heade
 
 ```bash
 # Hit 1: cold edge (or recently-warmed) — expect MISS or HIT with low age
-curl -sI https://public.jomcgi.dev/ | grep -i 'cf-cache-status\|age:\|cache-control'
+curl -sI https://jomcgi.dev/ | grep -i 'cf-cache-status\|age:\|cache-control'
 
 # Hit 2: 2s later — expect HIT, age incremented by ~2
-sleep 2 && curl -sI https://public.jomcgi.dev/ | grep -i 'cf-cache-status\|age:\|cache-control'
+sleep 2 && curl -sI https://jomcgi.dev/ | grep -i 'cf-cache-status\|age:\|cache-control'
 
-# Hit 3: past s-maxage=60 — expect HIT (refreshed) or REVALIDATED (304 path)
-sleep 65 && curl -sI https://public.jomcgi.dev/ | grep -i 'cf-cache-status\|age:\|cache-control'
+# Hit 3: past the 60s edge max-age, expect UPDATING, HIT, or REVALIDATED
+sleep 65 && curl -sI https://jomcgi.dev/ | grep -i 'cf-cache-status\|age:\|cache-control'
 ```
 
 Expected, post-fix:
 
-- `cf-cache-status: HIT` (or `REVALIDATED`) on hits 2 and 3
+- `cf-cache-status: HIT`, `UPDATING`, or `REVALIDATED` on hits 2 and 3
 - `age` header present and monotonically incrementing within a window
-- `cache-control` is **exactly** `public, s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000` — no `max-age` directive
+- `cloudflare-cdn-cache-control` uses `max-age=60` and contains no `s-maxage`
 
 If `cache-control` contains `max-age=…`, Browser Cache TTL is overriding origin (see risks table). If `cf-cache-status: DYNAMIC`, the rule isn't matching the request — check the rule is enabled and ordering.
 
@@ -139,7 +149,7 @@ Routing-as-security-boundary is new with this ADR. Worth adding to the security 
 | `Set-Cookie` accidentally added to a `/public/*` response                     | low        | Edge silently bypasses cache                             | Add a test asserting `/public/*` responses have no `Set-Cookie` header                                                                                          |
 | Schema drift introduces a per-user field to a public response                 | low        | Cross-user data leak via shared cache                    | Schema review checklist when modifying any handler under `monolith/public/*`; consider a semgrep rule that flags auth-context-derived fields in public handlers |
 | Client polls more aggressively than `s-maxage`                                | low        | Slightly more edge cache misses, no origin impact        | Document recommended poll interval = 1.5–2× `s-maxage`                                                                                                          |
-| `stale-if-error=31536000` serves year-old data during prolonged origin outage | low        | UI shows fossilized values                               | Cap human-readable `Xm ago` formatting at ~30d → display `>30d` past that                                                                                       |
+| `stale-if-error=31536000` serves year-old data for supported origin 5xx responses | low     | UI shows fossilized values                               | Cap human-readable `Xm ago` formatting at ~30d → display `>30d` past that                                                                                       |
 | CF rule disabled or reordered behind a more permissive rule                   | low        | Reverts to `cf-cache-status: DYNAMIC` everywhere         | Verification protocol catches this immediately; alert on sustained MISS rate                                                                                    |
 
 ---
@@ -158,11 +168,12 @@ Routing-as-security-boundary is new with this ADR. Worth adding to the security 
 | Resource                                                                                                                                    | Relevance                                                                                                                          |
 | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | [ADR 002: CDN-Cached Data Fetching for Monolith Public Routes](002-cdn-cached-data-fetching.md)                                             | Original draft this ADR supersedes — preserves the design history                                                                  |
-| [`projects/monolith/frontend/src/lib/cache-headers.js`](../../../projects/monolith/frontend/src/lib/cache-headers.js)                       | Origin `Cache-Control` constants; deliberately omits `max-age`                                                                     |
+| [`projects/monolith/frontend/src/lib/cache-headers.js`](../../../projects/monolith/frontend/src/lib/cache-headers.js)                       | Builds separate browser and Cloudflare cache policies                                                                               |
 | [`projects/monolith/frontend/src/routes/public/+page.server.js`](../../../projects/monolith/frontend/src/routes/public/+page.server.js)     | Applies `PAGE_CACHE_CONTROL` via `setHeaders`                                                                                      |
 | [`projects/monolith/home/observability/stats.py`](../../../projects/monolith/home/observability/stats.py)                                   | Origin in-memory cache layer (`_CACHE_TTL`) and `cached_at` field — Phase 2 will add edge headers here                             |
 | [ADR networking/001: Cloudflare + Envoy Gateway](../networking/001-cloudflare-envoy-gateway.md)                                             | Ingress topology this rule relies on as a security boundary                                                                        |
 | [Cloudflare: `cf-cache-status` values](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/#cloudflare-cache-responses) | Distinguishes `DYNAMIC` (no rule matched) from `BYPASS` (rule matched but per-response bypass triggered) — important for diagnosis |
 | [Cloudflare: Cache Rules](https://developers.cloudflare.com/cache/how-to/cache-rules/)                                                      | Reference for the rule we deployed                                                                                                 |
+| [Cloudflare: CDN Cache Control](https://developers.cloudflare.com/cache/concepts/cdn-cache-control/)                                       | Cloudflare-only TTL and stale directives                                                                                            |
 | [Cloudflare: Tiered Cache](https://developers.cloudflare.com/cache/how-to/tiered-cache/)                                                    | Why a single-origin homelab benefits disproportionately                                                                            |
 | [MDN: `Cache-Control` directives](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control)                                  | Semantics of `s-maxage`, `stale-while-revalidate`, `stale-if-error`                                                                |

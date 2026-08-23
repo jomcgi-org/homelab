@@ -3,6 +3,7 @@
 // `python3 -m bench report --json-out ...` in projects/model-bench when the billed
 // benchmark is re-run and re-committed, so there is no backend call or DB query.
 import leaderboard from "$lib/public/llm-leaderboard/leaderboard.json";
+import { cloudflareCacheHeaders } from "$lib/cache-headers.js";
 
 // Static snapshot: cache hard at the edge and refresh on the next deploy. A stale
 // copy is fine (and preferable) until the leaderboard JSON is re-committed.
@@ -10,6 +11,6 @@ const CACHE_CONTROL =
   "public, max-age=0, s-maxage=86400, stale-while-revalidate=604800, stale-if-error=604800";
 
 export function load({ setHeaders }) {
-  setHeaders({ "cache-control": CACHE_CONTROL });
+  setHeaders(cloudflareCacheHeaders(CACHE_CONTROL));
   return { leaderboard };
 }
