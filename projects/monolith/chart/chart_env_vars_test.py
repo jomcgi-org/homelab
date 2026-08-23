@@ -185,3 +185,28 @@ def test_env_vars_in_chart(chart_context):
             debug_info += "\nRendered env section (first 1500 chars):\n"
             debug_info += env_section.group(0)[:1500]
         assert False, debug_info
+
+
+def test_migrations_configmap_uses_server_side_apply(chart_context):
+    """The migrations ConfigMap must opt into server-side apply (#5150).
+
+    Every chart/migrations/*.sql file is globbed into one ConfigMap. Under
+    client-side apply, kubectl stores the whole object in the
+    last-applied-configuration annotation, which the apiserver caps at
+    262144 bytes; the live object sat at ~244 KiB on 2026-08-22. Server-side
+    apply does not write that annotation, so the cap stops being a ceiling on
+    migration history. The resource-level sync option keeps every other object
+    on the Application's default apply mode.
+    """
+    rendered = chart_context["rendered"]
+    docs = [
+        d
+        for d in rendered.split("\n---")
+        if "-migrations\n" in d and "kind: ConfigMap" in d
+    ]
+    assert len(docs) == 1, (
+        f"expected exactly one migrations ConfigMap, found {len(docs)}"
+    )
+    assert "argocd.argoproj.io/sync-options: ServerSideApply=true" in docs[0], (
+        "migrations ConfigMap is missing the ServerSideApply=true sync option"
+    )

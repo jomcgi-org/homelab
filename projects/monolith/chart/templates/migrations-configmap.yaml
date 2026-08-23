@@ -4,6 +4,15 @@ metadata:
   name: {{ include "monolith.fullname" . }}-migrations
   labels:
     {{- include "monolith.labels" . | nindent 4 }}
+  annotations:
+    # Every migrations/*.sql file lands in this one object. Client-side apply
+    # copies the whole object into kubectl.kubernetes.io/last-applied-
+    # configuration, which the apiserver caps at 256 KiB; the live annotation
+    # reached ~244 KiB on 2026-08-22 (#5150), two or three migrations short of
+    # every monolith sync failing with `metadata.annotations: Too long`.
+    # Server-side apply never writes that annotation. Scoped to this resource
+    # so the rest of the chart keeps the Application's apply mode.
+    argocd.argoproj.io/sync-options: ServerSideApply=true
 data:
   {{- range $path, $_ := .Files.Glob "migrations/*.sql" }}
   {{ base $path }}: |
