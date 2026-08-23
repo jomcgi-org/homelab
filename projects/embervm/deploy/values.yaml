@@ -505,7 +505,7 @@ warmthS3Gc:
 egress:
   enabled: true
   internal:
-    # TWO deliberate holes in the split-horizon guardrail. Matching is an exact
+    # Deliberate holes in the split-horizon guardrail. Matching is an exact
     # case-insensitive host compare against BOTH the requested host:port and the
     # resolved ip:port, so a name and its address are both accepted and pinning
     # the resolved IP is what defeats SSRF-by-name and DNS rebinding. No
@@ -515,6 +515,8 @@ egress:
     #
     # inference: the pi adapter drives the in-cluster Qwen model on this exact
     # host:port.
+    # monolith-searxng: Pi's image-owned web_search extension queries its JSON
+    # endpoint. web_fetch uses the external lane and adds no internal reach.
     # monolith.monolith.svc.cluster.local:8091
     # Monolith progress-ingest (8091): mid-turn visibility, write-only single route
     # (ADR 051). Port 8091 only; the main API on 8000 stays deny. Token-bearer auth
@@ -547,6 +549,7 @@ egress:
     # treated as settled.
     allowlist:
       - inference.inference.svc.cluster.local:8080
+      - monolith-searxng.monolith.svc.cluster.local:8080
       - monolith.monolith.svc.cluster.local:8091
       - monolith-public-frontend.monolith-public.svc.cluster.local:3000
       - monolith.monolith.svc.cluster.local:3000

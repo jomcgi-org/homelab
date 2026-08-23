@@ -448,6 +448,7 @@ PI_COMPACTION_RESERVE_TOKENS = 16896
 # (PI_CONTEXT_WINDOW - PI_COMPACTION_RESERVE_TOKENS) so compaction actually
 # helps when it fires.
 PI_COMPACTION_KEEP_RECENT_TOKENS = 8000
+PI_WEB_RESEARCH_EXTENSION = "/usr/share/ember-pi/extensions/web-research.ts"
 MAX_REQUEST_BODY_BYTES = 1 << 20
 MAX_TOOL_INPUT_BYTES = 4096
 # Cap on the proxy request head the egress forwarder reads before it knows the
@@ -2797,7 +2798,13 @@ class PiProcess:
             "--no-extensions",
             "--no-skills",
             "--no-prompt-templates",
+            # Discovery remains disabled, while this image-owned extension is
+            # explicitly trusted and loaded on every Pi spawn.
+            "--extension",
+            PI_WEB_RESEARCH_EXTENSION,
             "--tools",
+            # Keep CLI validation limited to Pi's built-ins. The trusted
+            # extension activates its registered tools at session_start.
             "read,bash,edit,write",
             "--session-dir",
             os.path.join(pi_home, "sessions"),

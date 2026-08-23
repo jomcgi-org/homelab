@@ -302,6 +302,7 @@ assert sys.argv[sys.argv.index("--provider") + 1] == "openai-completions"
 assert sys.argv[sys.argv.index("--model") + 1] == "qwen3.6-27b"
 for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
     assert flag in sys.argv
+assert sys.argv[sys.argv.index("--extension") + 1] == "/usr/share/ember-pi/extensions/web-research.ts"
 assert sys.argv[sys.argv.index("--tools") + 1] == "read,bash,edit,write"
 assert "disposable Firecracker microVM" in sys.argv[sys.argv.index("--system-prompt") + 1]
 rpc_path = os.environ.get("FAKE_PI_RPC")
@@ -4350,8 +4351,10 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     ):
         assert flag in argv, "missing %s: Qwen's context budget is unguarded" % flag
 
-    # A small explicit tool set: every tool schema is tokens, and a 27B model
-    # handles four tools better than the claude CLI's twenty six.
+    # Keep CLI validation limited to Pi's built-ins. The explicitly loaded
+    # extension activates its two registered web tools at session_start.
+    assert "--extension" in argv
+    assert argv[argv.index("--extension") + 1] == shim.PI_WEB_RESEARCH_EXTENSION
     assert "--tools" in argv
     assert argv[argv.index("--tools") + 1] == "read,bash,edit,write"
     manager._close_process()
