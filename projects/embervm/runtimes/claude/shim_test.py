@@ -303,7 +303,7 @@ assert sys.argv[sys.argv.index("--model") + 1] == "qwen3.6-27b"
 for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
     assert flag in sys.argv
 assert sys.argv[sys.argv.index("--extension") + 1] == "/usr/share/ember-pi/extensions/web-research.ts"
-assert sys.argv[sys.argv.index("--tools") + 1] == "read,bash,edit,write"
+assert "--tools" not in sys.argv
 assert "disposable Firecracker microVM" in sys.argv[sys.argv.index("--system-prompt") + 1]
 rpc_path = os.environ.get("FAKE_PI_RPC")
 state = {"sessionId": "pi-session", "model": {"id": "qwen3.6-27b"}}
@@ -4351,12 +4351,24 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     ):
         assert flag in argv, "missing %s: Qwen's context budget is unguarded" % flag
 
-    # Keep CLI validation limited to Pi's built-ins. The explicitly loaded
-    # extension activates its two registered web tools at session_start.
+    # Explicitly load the trusted extension while all discovery stays off.
     assert "--extension" in argv
     assert argv[argv.index("--extension") + 1] == shim.PI_WEB_RESEARCH_EXTENSION
-    assert "--tools" in argv
-    assert argv[argv.index("--tools") + 1] == "read,bash,edit,write"
+    manager._close_process()
+
+
+def test_pi_argv_does_not_allowlist_away_extension_tools(tmp_path, monkeypatch):
+    """Pi's built-in allowlist must not block the trusted web extension."""
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="qwen")
+    argv = json.loads((tmp_path / "pi-args.jsonl").read_text().splitlines()[0])
+
+    assert argv[argv.index("--extension") + 1] == shim.PI_WEB_RESEARCH_EXTENSION
+    # Pi treats --tools as a COMPLETE allowlist. The old read,bash,edit,write
+    # value silently prevented web_search and web_fetch from becoming active at
+    # session_start. With no allowlist, Pi keeps those same four default
+    # built-ins and permits the explicitly loaded extension tools to join them.
+    assert "--tools" not in argv
     manager._close_process()
 
 
