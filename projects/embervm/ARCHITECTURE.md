@@ -778,8 +778,11 @@ and an enveloped restore requires a five-minute tuple-scoped brick capability.
 Customer-managed principals instead use a Secret-configured HTTPS KMS oracle:
 the customer service retains the KEK and returns only a plaintext data key plus
 an opaque wrapped key. Disabling the customer key or grant refuses unwrap and
-the normal restore-on-miss path degrades to cold boot. No customer oracle is
-configured in the reference deployment, so the mode is available but inert.
+the normal restore-on-miss path degrades to cold boot. A custody switch declares
+the target `mode` plus the opposite `transition_from`; only that bounded window
+accepts old-custody envelopes, and rewrap changes the envelope without touching
+artifact ciphertext. No customer oracle is configured in the reference
+deployment, so the mode is available but inert.
 
 **Decided direction:**
 

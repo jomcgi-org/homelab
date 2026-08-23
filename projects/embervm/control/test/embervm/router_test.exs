@@ -405,6 +405,16 @@ defmodule Embervm.RouterTest do
     :json.encode(%{kind: kind, workload: workload, ref: ref}) |> IO.iodata_to_binary()
   end
 
+  defp rewrap_body(kind, workload, ref, envelope) do
+    :json.encode(%{
+      kind: kind,
+      workload: workload,
+      ref: ref,
+      envelope: envelope |> Envelope.encode() |> Base.encode64()
+    })
+    |> IO.iodata_to_binary()
+  end
+
   # -- node dial-home registration (R0 PR-2) ---------------------------------
 
   defp reg_body(overrides \\ %{}) do
@@ -535,6 +545,61 @@ defmodule Embervm.RouterTest do
     assert first.status == 200
     assert second.status == 200
     assert json(first.body)["data_key"] == json(second.body)["data_key"]
+  end
+
+  test "POST /v1/artifacts/rewrap moves an envelope only during an explicit transition" do
+    principal = "acct:artifact-owner"
+    old_service = key_service(:binary.copy(<<9>>, 32))
+    data_key = :binary.copy(<<4>>, 32)
+    assert {:ok, old_envelope} = KeyService.wrap(old_service, principal, data_key)
+    :ok = stop_supervised(KeyService)
+
+    customer_kms = %{
+      principal => %{
+        adapter: FakeCustomerKMS,
+        mode: :customer,
+        transition_from: :platform,
+        endpoint: "https://kms.example",
+        key_ref: "alice-key",
+        bearer_token: "grant"
+      }
+    }
+
+    service = key_service(:binary.copy(<<9>>, 32), customer_kms: customer_kms)
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :artifact_key_service, service)
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    Application.put_env(:embervm, :session_store_mod, FakeSessionStore)
+    Application.put_env(:embervm, :session_store, :fake)
+
+    resp =
+      req(
+        :post,
+        "/v1/artifacts/rewrap",
+        auth("good"),
+        rewrap_body("session", "sbx", "snap-owned", old_envelope)
+      )
+
+    assert resp.status == 200
+    body = json(resp.body)
+    assert body["changed"] == true
+    assert {:ok, encoded} = Base.decode64(body["envelope"])
+
+    assert {:ok, %Envelope{version: 2, key_ref: "alice-key"}} =
+             Envelope.decode(encoded)
+
+    wrong_principal = %{old_envelope | principal: "acct:other"}
+
+    refused =
+      req(
+        :post,
+        "/v1/artifacts/rewrap",
+        auth("good"),
+        rewrap_body("session", "sbx", "snap-owned", wrong_principal)
+      )
+
+    assert refused.status == 400
+    assert json(refused.body)["error"] == "principal_mismatch"
   end
 
   test "POST /v1/nodes/register without a token is 401" do

@@ -86,7 +86,11 @@ defmodule Embervm.KeyService do
           {:ok, Envelope.t()} | {:error, term()}
   def wrap(server, principal, data_key, artifact) do
     case customer_kms_config(server, principal) do
-      {:ok, config} -> customer_wrap(config, principal, data_key, artifact)
+      {:ok, config} ->
+        if customer_mode?(config),
+          do: customer_wrap(config, principal, data_key, artifact),
+          else: GenServer.call(server, {:wrap, principal, data_key})
+
       :platform -> GenServer.call(server, {:wrap, principal, data_key})
     end
   end
@@ -96,30 +100,70 @@ defmodule Embervm.KeyService do
           {:ok, binary(), Envelope.t()} | {:error, term()}
   def issue_data_key(server \\ __MODULE__, principal, artifact) do
     case customer_kms_config(server, principal) do
-      {:ok, config} -> customer_issue(config, principal, artifact)
+      {:ok, config} ->
+        if customer_mode?(config),
+          do: customer_issue(config, principal, artifact),
+          else: GenServer.call(server, {:issue_platform_data_key, principal, artifact})
+
       :platform -> GenServer.call(server, {:issue_platform_data_key, principal, artifact})
     end
   end
 
   @spec unwrap(server(), Envelope.t()) ::
           {:ok, binary()} | {:error, term()}
-  def unwrap(server \\ __MODULE__, %Envelope{version: version, principal: principal} = envelope)
+  def unwrap(server \\ __MODULE__, envelope)
+
+  def unwrap(server, %Envelope{version: version, principal: principal} = envelope)
       when version in [1, 3] do
     case customer_kms_config(server, principal) do
-      {:ok, _config} -> {:error, :custody_mismatch}
+      {:ok, config} ->
+        if platform_envelope_allowed?(config),
+          do: GenServer.call(server, {:unwrap, envelope}),
+          else: {:error, :custody_mismatch}
+
       :platform -> GenServer.call(server, {:unwrap, envelope})
     end
   end
 
   def unwrap(server, %Envelope{version: 2, principal: principal} = envelope) do
     case customer_kms_config(server, principal) do
-      {:ok, config} -> customer_unwrap(config, envelope)
+      {:ok, config} ->
+        if customer_envelope_allowed?(config),
+          do: customer_unwrap(config, envelope),
+          else: {:error, :custody_mismatch}
+
       :platform -> {:error, :customer_kms_not_configured}
     end
   end
 
   def unwrap(_server, _envelope) do
     {:error, :auth_failed}
+  end
+
+  @doc "Rewraps one data key to the configured target custody without touching payload bytes."
+  @spec rewrap(server(), String.t(), Envelope.t(), map()) ::
+          {:ok, Envelope.t(), :unchanged | :rewrapped} | {:error, term()}
+  def rewrap(server \\ __MODULE__, principal, envelope, artifact) do
+    with :ok <- validate_principal(principal),
+         :ok <- validate_artifact(artifact),
+         true <- Map.get(envelope, :principal) == principal,
+         :stale <- GenServer.call(server, {:rewrap_status, principal, envelope}),
+         {:ok, data_key} <- unwrap(server, envelope),
+         {:ok, new_envelope} <- wrap(server, principal, data_key, artifact) do
+      emit(:rewrap_progress, %{
+        principal: principal,
+        from: envelope_custody(envelope),
+        to: envelope_custody(new_envelope)
+      })
+
+      {:ok, new_envelope, :rewrapped}
+    else
+      :current -> {:ok, envelope, :unchanged}
+      false -> {:error, :principal_mismatch}
+      {:error, reason} = error ->
+        emit(:rewrap_refused, %{principal: principal, reason: reason})
+        error
+    end
   end
 
   @impl true
@@ -167,7 +211,7 @@ defmodule Embervm.KeyService do
   @impl true
   def handle_call({:derive_kek, principal, epoch}, _from, state) do
     reply =
-      if Map.has_key?(state.customer_kms, principal),
+      if state.customer_kms |> Map.get(principal) |> customer_mode?(),
         do: {:error, :customer_managed},
         else: do_derive(state, principal, epoch)
 
@@ -176,6 +220,11 @@ defmodule Embervm.KeyService do
 
   def handle_call({:customer_kms_config, principal}, _from, state) do
     {:reply, Map.fetch(state.customer_kms, principal), state}
+  end
+
+  def handle_call({:rewrap_status, principal, envelope}, _from, state) do
+    status = if envelope_current?(state, principal, envelope), do: :current, else: :stale
+    {:reply, status, state}
   end
 
   def handle_call({:current_epoch, principal}, _from, state) do
@@ -290,6 +339,39 @@ defmodule Embervm.KeyService do
       :error -> :platform
     end
   end
+
+  defp customer_mode?(nil), do: false
+  defp customer_mode?(config), do: Map.get(config, :mode, :customer) == :customer
+
+  defp platform_envelope_allowed?(config) do
+    not customer_mode?(config) or Map.get(config, :transition_from) == :platform
+  end
+
+  defp customer_envelope_allowed?(config) do
+    customer_mode?(config) or Map.get(config, :transition_from) == :customer
+  end
+
+  defp envelope_current?(state, principal, %Envelope{version: 2, key_ref: key_ref}) do
+    case Map.fetch(state.customer_kms, principal) do
+      {:ok, config} -> customer_mode?(config) and key_ref == config.key_ref
+      :error -> false
+    end
+  end
+
+  defp envelope_current?(state, principal, %Envelope{version: version} = envelope)
+       when version in [1, 3] do
+    config = Map.get(state.customer_kms, principal)
+    {epoch, _min_epoch} = epochs(state.epochs, principal)
+
+    not customer_mode?(config) and envelope.epoch == epoch and
+      envelope_root_generation(envelope) == state.root_generation
+  end
+
+  defp envelope_current?(_state, _principal, _envelope), do: false
+
+  defp envelope_custody(%Envelope{version: 2}), do: :customer
+  defp envelope_custody(%Envelope{version: version}) when version in [1, 3], do: :platform
+  defp envelope_custody(_envelope), do: :unknown
 
   defp customer_issue(config, principal, artifact) do
     with :ok <- validate_principal(principal),

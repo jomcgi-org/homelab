@@ -111,6 +111,10 @@ defmodule Embervm.Router do
     handle_artifact_wrap(conn)
   end
 
+  post "/v1/artifacts/rewrap" do
+    handle_artifact_rewrap(conn)
+  end
+
   post "/v1/tasks/:id/redrive" do
     handle_redrive(conn, id)
   end
@@ -754,6 +758,48 @@ defmodule Embervm.Router do
     end
   end
 
+  defp handle_artifact_rewrap(conn) do
+    if Application.get_env(:embervm, :artifact_encryption, false) do
+      case authorize_node(conn) do
+        {:ok, _identity} -> artifact_rewrap_body(conn)
+        {:error, status, payload} -> send_json(conn, status, payload)
+      end
+    else
+      send_json(conn, 404, %{error: "not found"})
+    end
+  end
+
+  defp artifact_rewrap_body(conn) do
+    principal_resolver = artifact_principal()
+    key_service = artifact_key_service()
+
+    with {:ok, body, conn} <- read_capped_body(conn),
+         {:ok, request, envelope} <- decode_artifact_rewrap(body),
+         {:ok, principal} <-
+           principal_resolver.resolve(request["kind"], request["workload"], request["ref"]),
+         {:ok, new_envelope, status} <-
+           Embervm.KeyService.rewrap(key_service, principal, envelope, request) do
+      send_json(conn, 200, %{
+        changed: status == :rewrapped,
+        envelope: new_envelope |> Embervm.KeyService.Envelope.encode() |> Base.encode64()
+      })
+    else
+      {:error, :unknown_artifact} -> send_json(conn, 404, %{error: "unknown_artifact"})
+
+      {:error, reason}
+      when reason in [:custody_mismatch, :customer_kms_not_configured, :below_floor] ->
+        send_json(conn, 409, %{error: to_string(reason)})
+
+      {:error, :too_large} -> send_json(conn, 413, %{error: "request body too large"})
+
+      {:error, reason}
+      when reason in [:bad_request, :bad_envelope, :principal_mismatch] ->
+        send_json(conn, 400, %{error: to_string(reason)})
+
+      {:error, _reason} -> send_json(conn, 503, %{error: "key_service_unavailable"})
+    end
+  end
+
   defp artifact_wrap_body(conn) do
     principal_resolver = artifact_principal()
     key_service = artifact_key_service()
@@ -792,6 +838,17 @@ defmodule Embervm.Router do
     _ -> {:error, :bad_request}
   catch
     _, _ -> {:error, :bad_request}
+  end
+
+  defp decode_artifact_rewrap(body) do
+    with {:ok, request} <- decode_artifact_wrap(body),
+         encoded when is_binary(encoded) <- Map.get(request, "envelope"),
+         {:ok, bytes} <- Base.decode64(encoded),
+         {:ok, envelope} <- Embervm.KeyService.Envelope.decode(bytes) do
+      {:ok, request, envelope}
+    else
+      _ -> {:error, :bad_envelope}
+    end
   end
 
   defp artifact_key_service,

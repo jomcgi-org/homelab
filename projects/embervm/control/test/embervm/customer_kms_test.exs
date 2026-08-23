@@ -19,6 +19,8 @@ defmodule Embervm.CustomerKMSTest do
             %{
               "acct:alice" => %{
                 adapter: Embervm.CustomerKMS.HTTP,
+                mode: :customer,
+                transition_from: nil,
                 endpoint: "https://kms.example/tenant/alice",
                 key_ref: "key-1",
                 bearer_token: "grant"
@@ -68,5 +70,51 @@ defmodule Embervm.CustomerKMSTest do
       })
 
     assert {:error, :invalid_customer_kms_config} = CustomerKMS.parse_config(raw)
+  end
+
+  test "parses only explicit opposite-mode custody transitions" do
+    for {mode, transition_from, expected} <- [
+          {"customer", "platform", {:customer, :platform}},
+          {"platform", "customer", {:platform, :customer}},
+          {"platform", nil, {:platform, nil}}
+        ] do
+      raw =
+        Jason.encode!(%{
+          principals: %{
+            "acct:alice" => %{
+              mode: mode,
+              transition_from: transition_from,
+              endpoint: "https://kms.example",
+              key_ref: "key-1",
+              bearer_token: "grant"
+            }
+          }
+        })
+
+      assert {:ok, %{"acct:alice" => config}} = CustomerKMS.parse_config(raw)
+      assert {config.mode, config.transition_from} == expected
+    end
+
+    for {mode, transition_from} <- [
+          {"customer", "customer"},
+          {"platform", "platform"},
+          {"unknown", nil},
+          {"customer", "unknown"}
+        ] do
+      raw =
+        Jason.encode!(%{
+          principals: %{
+            "acct:alice" => %{
+              mode: mode,
+              transition_from: transition_from,
+              endpoint: "https://kms.example",
+              key_ref: "key-1",
+              bearer_token: "grant"
+            }
+          }
+        })
+
+      assert {:error, :invalid_custody_transition} = CustomerKMS.parse_config(raw)
+    end
   end
 end
