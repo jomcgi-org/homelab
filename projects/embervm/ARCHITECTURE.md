@@ -670,9 +670,12 @@ The divergence bound is the **brick silence timeout**: a brick that has not
 heard from the control plane for longer than the timeout (~6h, in the
 grant-expiry range, so a CP roll never trips it) stops serving
 everything it holds. Token TTL is a convenience, never the correctness
-parameter. **Planned** (#5073): no stop-serving mechanism implements this
-bound today; the nearest fence is blessing-lease exhaustion, which bounds
-generations, not time.
+parameter. **Built** (ADR 037, #5073): noded tracks last control-plane
+contact from its dial-home Register responses and WatchNode stream activity
+and refuses new node-local work (activator wakes, group wakes,
+blessing-lease self-advance) once silence exceeds the bound; live VMs keep
+running and warmth stays intact, and blessing-lease exhaustion remains the
+generation-count complement for quiet lineages.
 
 ---
 
@@ -915,7 +918,7 @@ shared Postgres) is in [deploy/README.md](deploy/README.md).
 | Active brick utilization target | >90% | **Built** | asserted; too high if shed events become common |
 | Stateful continuity floor | 8h (also the S3 stateful warmth TTL) | **Built** | asserted; validate against rotation cadence |
 | Session lifetime ceiling | 6h (`maxLifetimeSeconds`) | **Built** | asserted; version-convergence bound, not a durability claim |
-| Brick silence timeout | ~6h range | **Decided direction** | asserted; the divergence bound for the ownership-arbitration design |
+| Brick silence timeout | 21600s armed | **Built** | asserted; the divergence bound for the ownership-arbitration design (ADR 037) |
 | Wake-grant gap budget | k=4 (default cadence class) | **Decided direction** | the Fork B grant; Fork A activator self-advance is what is Built |
 | Definitions target | 100k+ | **Planned** | provisional; owner-set goal, not measured demand |
 
