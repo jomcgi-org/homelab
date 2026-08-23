@@ -79,6 +79,7 @@ if [[ $# -gt 0 && "$1" == "--" ]]; then
 fi
 
 # Get changed files relative to the merge base
+echo "affected-targets: diffing $base_ref...$head_ref" >&2
 changed_files=()
 while IFS= read -r file; do
 	[[ -n "$file" ]] && changed_files+=("$file")
@@ -163,6 +164,7 @@ for file in "${changed_files[@]}"; do
 done
 
 # Map changed files to source labels: //package:relative/path or //:relative/path for root
+echo "affected-targets: ${#changed_files[@]} changed file(s), mapping to labels" >&2
 source_labels=()
 outside_count=0
 
@@ -218,8 +220,28 @@ fi
 # the probe still succeeds with exit 0 or 3, but only existing labels appear in output.
 # stdout only: bazel's stderr (WARNING, Loading: ...) flows to OUR stderr
 # unmodified, it must never be parsed as a label.
-probe_output=$("${BAZEL:-bazel}" query "set($(printf '%s ' "${source_labels[@]}"))" --keep_going --output=label "${bazel_args[@]}") || probe_rc=$?
+# Both queries run under a hard timeout. A bazel query that wedges (two
+# docs-only PR runs on 2026-08-22 sat silent until BuildBuddy's 1h limit,
+# with the server unresponsive afterwards) must cost minutes, not the hour,
+# and must end in the full run rather than a green PR with no tests.
+# After a timed-out query the server is usually the thing that is wedged, and
+# the //... fallback would block on it for the rest of the hour. Ask it to
+# stop, briefly; if that hangs too, kill the server JVM so the next command
+# starts a fresh one.
+recover_bazel() {
+	timeout 60 "${BAZEL:-bazel}" shutdown >/dev/null 2>&1 || pkill -9 -f 'A-server.jar' >/dev/null 2>&1 || true
+}
+
+QUERY_TIMEOUT="${AFFECTED_TARGETS_QUERY_TIMEOUT:-600}"
+echo "affected-targets: probing ${#source_labels[@]} label(s) (timeout ${QUERY_TIMEOUT}s)" >&2
+probe_output=$(timeout "$QUERY_TIMEOUT" "${BAZEL:-bazel}" query "set($(printf '%s ' "${source_labels[@]}"))" --keep_going --output=label "${bazel_args[@]}") || probe_rc=$?
 probe_rc=${probe_rc:-0}
+if [[ $probe_rc -eq 124 ]]; then
+	echo "affected-targets: fallback to //... because the label probe timed out after ${QUERY_TIMEOUT}s" >&2
+	recover_bazel
+	echo "//..."
+	exit 0
+fi
 
 # If probe exits with non-0 and non-3, treat as query failure (fallback)
 if [[ $probe_rc -ne 0 && $probe_rc -ne 3 ]]; then
@@ -255,8 +277,15 @@ if [[ ${#valid_labels[@]} -eq 0 ]]; then
 fi
 
 # Query rdeps with all valid labels
-rdeps_output=$("${BAZEL:-bazel}" query "rdeps(//..., set($(printf '%s ' "${valid_labels[@]}" | xargs)))" --keep_going --output=label "${bazel_args[@]}") || rdeps_rc=$?
+echo "affected-targets: rdeps over ${#valid_labels[@]} label(s) (timeout ${QUERY_TIMEOUT}s)" >&2
+rdeps_output=$(timeout "$QUERY_TIMEOUT" "${BAZEL:-bazel}" query "rdeps(//..., set($(printf '%s ' "${valid_labels[@]}" | xargs)))" --keep_going --output=label "${bazel_args[@]}") || rdeps_rc=$?
 rdeps_rc=${rdeps_rc:-0}
+if [[ $rdeps_rc -eq 124 ]]; then
+	echo "affected-targets: fallback to //... because the rdeps query timed out after ${QUERY_TIMEOUT}s" >&2
+	recover_bazel
+	echo "//..."
+	exit 0
+fi
 
 # Fail CLOSED. Anything but a clean exit, or a --keep_going partial result
 # (exit 3) that still produced labels, falls back to //...: an empty list
