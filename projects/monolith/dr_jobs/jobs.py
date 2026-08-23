@@ -25,7 +25,7 @@ import httpx
 from dr_jobs import models
 from dr_jobs.scraper import fetch_vacancies
 
-logger = logging.getLogger("dr_jobs")
+logger = logging.getLogger("monolith.dr_jobs")
 
 # Client-level ceiling; per-request timeouts in scraper.py are tighter.
 SCRAPE_TIMEOUT_SECS = 60.0

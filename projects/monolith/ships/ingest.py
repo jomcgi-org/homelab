@@ -21,7 +21,7 @@ import time
 
 from ships.ais import parse_message
 
-logger = logging.getLogger("ships")
+logger = logging.getLogger("monolith.ships")
 
 # WebSocket reconnection settings (same names/defaults as the old ingest).
 INITIAL_RECONNECT_DELAY = 1.0

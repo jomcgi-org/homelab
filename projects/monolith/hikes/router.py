@@ -38,7 +38,7 @@ from core.db import get_session
 from hikes.models import Walk, WalkHour
 from shared.forecast_freshness import top_of_hour
 
-logger = logging.getLogger("hikes")
+logger = logging.getLogger("monolith.hikes")
 
 router = APIRouter(prefix="/api/hikes", tags=["hikes"])
 

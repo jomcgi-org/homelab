@@ -24,7 +24,7 @@ from sqlmodel import Session, text
 
 from ships.heat import LAT_STEP, LON_STEP, MIN_SPEED_KN, bank_day_sql
 
-logger = logging.getLogger("ships")
+logger = logging.getLogger("monolith.ships")
 
 # Keep position data for this many days. A partition is only dropped once its
 # WHOLE day is older than this window.
