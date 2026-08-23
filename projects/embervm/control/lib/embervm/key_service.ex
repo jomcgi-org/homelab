@@ -1,6 +1,6 @@
 defmodule Embervm.KeyService do
   @moduledoc """
-  Custodian for platform-managed, principal-scoped key-encryption keys.
+  Custodian for platform-managed and customer-managed principal data keys.
 
   KEKs are derived on demand from the configured root and are never stored.
   The only durable per-principal state is the current epoch and the minimum
@@ -8,8 +8,11 @@ defmodule Embervm.KeyService do
   Mutations append their op-log fact before updating the ETS projection, so a
   failed append is never observable as live state.
 
-  With no root configured the server still starts and loads epoch facts, but
-  all cryptographic operations return `{:error, :no_root}`.
+  Customer-managed principals use an HTTPS KMS oracle that retains the KEK and
+  returns only plaintext data keys plus opaque wrapped keys. With no platform
+  root configured the server still starts and loads epoch facts; customer KMS
+  principals remain usable while platform cryptographic operations return
+  `{:error, :no_root}`.
   """
 
   use GenServer
@@ -25,7 +28,7 @@ defmodule Embervm.KeyService do
 
   defmodule State do
     @moduledoc false
-    defstruct [:root, :epochs, :op_log, :op_log_mod, :clock, :tenant]
+    defstruct [:root, :epochs, :op_log, :op_log_mod, :clock, :tenant, :customer_kms]
   end
 
   @type server :: GenServer.server()
@@ -39,7 +42,8 @@ defmodule Embervm.KeyService do
   end
 
   @spec derive_kek(server(), String.t(), non_neg_integer()) ::
-          {:ok, binary()} | {:error, :no_root | :no_principal | :below_floor}
+          {:ok, binary()} |
+            {:error, :no_root | :no_principal | :below_floor | :customer_managed}
   def derive_kek(server \\ __MODULE__, principal, epoch) do
     GenServer.call(server, {:derive_kek, principal, epoch})
   end
@@ -64,13 +68,46 @@ defmodule Embervm.KeyService do
 
   @spec wrap(server(), String.t(), binary()) :: {:ok, Envelope.t()} | {:error, term()}
   def wrap(server \\ __MODULE__, principal, data_key) do
-    GenServer.call(server, {:wrap, principal, data_key})
+    wrap(server, principal, data_key, %{})
+  end
+
+  @spec wrap(server(), String.t(), binary(), map()) ::
+          {:ok, Envelope.t()} | {:error, term()}
+  def wrap(server, principal, data_key, artifact) do
+    case customer_kms_config(server, principal) do
+      {:ok, config} -> customer_wrap(config, principal, data_key, artifact)
+      :platform -> GenServer.call(server, {:wrap, principal, data_key})
+    end
+  end
+
+  @doc "Issues one data key and its envelope for an artifact export."
+  @spec issue_data_key(server(), String.t(), map()) ::
+          {:ok, binary(), Envelope.t()} | {:error, term()}
+  def issue_data_key(server \\ __MODULE__, principal, artifact) do
+    case customer_kms_config(server, principal) do
+      {:ok, config} -> customer_issue(config, principal, artifact)
+      :platform -> GenServer.call(server, {:issue_platform_data_key, principal, artifact})
+    end
   end
 
   @spec unwrap(server(), Envelope.t()) ::
-          {:ok, binary()} | {:error, :below_floor | :no_root | :auth_failed}
-  def unwrap(server \\ __MODULE__, envelope) do
-    GenServer.call(server, {:unwrap, envelope})
+          {:ok, binary()} | {:error, term()}
+  def unwrap(server \\ __MODULE__, %Envelope{version: 1, principal: principal} = envelope) do
+    case customer_kms_config(server, principal) do
+      {:ok, _config} -> {:error, :custody_mismatch}
+      :platform -> GenServer.call(server, {:unwrap, envelope})
+    end
+  end
+
+  def unwrap(server, %Envelope{version: 2, principal: principal} = envelope) do
+    case customer_kms_config(server, principal) do
+      {:ok, config} -> customer_unwrap(config, envelope)
+      :platform -> {:error, :customer_kms_not_configured}
+    end
+  end
+
+  def unwrap(_server, _envelope) do
+    {:error, :auth_failed}
   end
 
   @impl true
@@ -96,7 +133,8 @@ defmodule Embervm.KeyService do
            op_log: op_log,
            op_log_mod: op_log_mod,
            clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end),
-           tenant: Keyword.get(opts, :tenant, "homelab")
+           tenant: Keyword.get(opts, :tenant, "homelab"),
+           customer_kms: Keyword.get(opts, :customer_kms, %{})
          }}
 
       {:error, reason} ->
@@ -106,7 +144,16 @@ defmodule Embervm.KeyService do
 
   @impl true
   def handle_call({:derive_kek, principal, epoch}, _from, state) do
-    {:reply, do_derive(state, principal, epoch), state}
+    reply =
+      if Map.has_key?(state.customer_kms, principal),
+        do: {:error, :customer_managed},
+        else: do_derive(state, principal, epoch)
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:customer_kms_config, principal}, _from, state) do
+    {:reply, Map.fetch(state.customer_kms, principal), state}
   end
 
   def handle_call({:current_epoch, principal}, _from, state) do
@@ -158,21 +205,21 @@ defmodule Embervm.KeyService do
       with :ok <- validate_principal(principal),
            :ok <- validate_data_key(data_key),
            {epoch, _min_epoch} <- epochs(state.epochs, principal),
-           {:ok, kek} <- do_derive(state, principal, epoch) do
-        nonce = :crypto.strong_rand_bytes(@nonce_size)
-        aad = info(principal, epoch)
+           {:ok, envelope} <- wrap_platform(state, principal, epoch, data_key) do
+        {:ok, envelope}
+      end
 
-        {wrapped_key, tag} =
-          :crypto.crypto_one_time_aead(:aes_256_gcm, kek, nonce, data_key, aad, @tag_size, true)
+    {:reply, reply, state}
+  end
 
-        {:ok,
-         %Envelope{
-           principal: principal,
-           epoch: epoch,
-           nonce: nonce,
-           tag: tag,
-           wrapped_key: wrapped_key
-         }}
+  def handle_call({:issue_platform_data_key, principal, artifact}, _from, state) do
+    reply =
+      with :ok <- validate_principal(principal),
+           :ok <- validate_artifact(artifact),
+           {:ok, epoch} <- ensure_first_epoch(state, principal),
+           {:ok, data_key} <- platform_data_key(state, principal, epoch, artifact),
+           {:ok, envelope} <- wrap_platform(state, principal, epoch, data_key) do
+        {:ok, data_key, envelope}
       end
 
     {:reply, reply, state}
@@ -234,6 +281,132 @@ defmodule Embervm.KeyService do
       ts: state.clock.(),
       payload: %{principal: principal, min_epoch: min_epoch, reason: reason}
     })
+  end
+
+  defp customer_kms_config(server, principal) do
+    case GenServer.call(server, {:customer_kms_config, principal}) do
+      {:ok, config} -> {:ok, config}
+      :error -> :platform
+    end
+  end
+
+  defp customer_issue(config, principal, artifact) do
+    with :ok <- validate_principal(principal),
+         :ok <- validate_artifact(artifact),
+         {:ok, data_key, wrapped_key} <- config.adapter.issue(config, principal, artifact),
+         :ok <- validate_data_key(data_key),
+         :ok <- validate_wrapped_key(wrapped_key) do
+      emit(:customer_kms_issue, %{principal: principal, key_ref: config.key_ref})
+
+      {:ok, data_key,
+       %Envelope{
+         version: 2,
+         principal: principal,
+         key_ref: config.key_ref,
+         wrapped_key: wrapped_key
+       }}
+    else
+      {:error, reason} = error ->
+        emit(:customer_kms_refused, %{principal: principal, operation: :issue, reason: reason})
+        error
+    end
+  end
+
+  defp customer_wrap(config, principal, data_key, artifact) do
+    with :ok <- validate_principal(principal),
+         :ok <- validate_data_key(data_key),
+         {:ok, wrapped_key} <- config.adapter.wrap(config, principal, data_key, artifact),
+         :ok <- validate_wrapped_key(wrapped_key) do
+      emit(:customer_kms_wrap, %{principal: principal, key_ref: config.key_ref})
+
+      {:ok,
+       %Envelope{
+         version: 2,
+         principal: principal,
+         key_ref: config.key_ref,
+         wrapped_key: wrapped_key
+       }}
+    else
+      {:error, reason} = error ->
+        emit(:customer_kms_refused, %{principal: principal, operation: :wrap, reason: reason})
+        error
+    end
+  end
+
+  defp customer_unwrap(config, envelope) do
+    with :ok <- validate_customer_envelope(envelope),
+         {:ok, data_key} <-
+           config.adapter.unwrap(
+             config,
+             envelope.principal,
+             envelope.key_ref,
+             envelope.wrapped_key
+           ),
+         :ok <- validate_data_key(data_key) do
+      emit(:customer_kms_unwrap, %{principal: envelope.principal, key_ref: envelope.key_ref})
+      {:ok, data_key}
+    else
+      {:error, reason} = error ->
+        emit(:customer_kms_refused, %{
+          principal: envelope.principal,
+          operation: :unwrap,
+          reason: reason
+        })
+
+        error
+    end
+  end
+
+  defp ensure_first_epoch(state, principal) do
+    case epochs(state.epochs, principal) do
+      {0, min_epoch} ->
+        with {:ok, _seq} <- append_epoch_set(state, principal, 1, "first_use") do
+          true = :ets.insert(state.epochs, {principal, 1, min_epoch})
+          {:ok, 1}
+        end
+
+      {epoch, _min_epoch} ->
+        {:ok, epoch}
+    end
+  end
+
+  defp platform_data_key(state, principal, epoch, artifact) do
+    if artifact_kind(artifact) == "volume" do
+      with {:ok, kek} <- do_derive(state, principal, epoch) do
+        info = "embervm-volume-key-v1" <> artifact_workload(artifact)
+        pseudorandom_key = :crypto.mac(:hmac, :sha256, <<0::256>>, kek)
+        {:ok, :crypto.mac(:hmac, :sha256, pseudorandom_key, info <> <<1>>)}
+      end
+    else
+      {:ok, :crypto.strong_rand_bytes(@kek_size)}
+    end
+  end
+
+  defp wrap_platform(state, principal, epoch, data_key) do
+    with {:ok, kek} <- do_derive(state, principal, epoch) do
+      nonce = :crypto.strong_rand_bytes(@nonce_size)
+      aad = info(principal, epoch)
+
+      {wrapped_key, tag} =
+        :crypto.crypto_one_time_aead(
+          :aes_256_gcm,
+          kek,
+          nonce,
+          data_key,
+          aad,
+          @tag_size,
+          true
+        )
+
+      {:ok,
+       %Envelope{
+         principal: principal,
+         epoch: epoch,
+         nonce: nonce,
+         tag: tag,
+         wrapped_key: wrapped_key
+       }}
+    end
   end
 
   defp do_derive(%State{root: nil}, _principal, _epoch), do: {:error, :no_root}
@@ -305,6 +478,39 @@ defmodule Embervm.KeyService do
 
   defp validate_envelope(_envelope), do: {:error, :bad_envelope}
 
+  defp validate_customer_envelope(%Envelope{
+         version: 2,
+         principal: principal,
+         key_ref: key_ref,
+         wrapped_key: wrapped_key
+       })
+       when is_binary(key_ref) and byte_size(key_ref) > 0 and is_binary(wrapped_key) and
+              byte_size(wrapped_key) > 0 do
+    validate_principal(principal)
+  end
+
+  defp validate_customer_envelope(_envelope), do: {:error, :bad_envelope}
+
+  defp validate_artifact(artifact) when is_map(artifact) do
+    if artifact_kind(artifact) != "" and artifact_workload(artifact) != "",
+      do: :ok,
+      else: {:error, :invalid_artifact}
+  end
+
+  defp validate_artifact(_artifact), do: {:error, :invalid_artifact}
+
+  defp validate_wrapped_key(wrapped_key)
+       when is_binary(wrapped_key) and byte_size(wrapped_key) > 0,
+       do: :ok
+
+  defp validate_wrapped_key(_wrapped_key), do: {:error, :bad_envelope}
+
+  defp artifact_kind(artifact),
+    do: Map.get(artifact, "kind") || Map.get(artifact, :kind) || ""
+
+  defp artifact_workload(artifact),
+    do: Map.get(artifact, "workload") || Map.get(artifact, :workload) || ""
+
   defp require_higher(value, current, _error) when value > current, do: :ok
   defp require_higher(_value, _current, error), do: {:error, error}
 
@@ -326,7 +532,8 @@ defimpl Inspect, for: Embervm.KeyService.State do
       op_log_mod: state.op_log_mod,
       clock: state.clock,
       tenant: state.tenant,
-      root: :redacted
+      root: :redacted,
+      customer_kms: :redacted
     }
 
     concat(["#Embervm.KeyService.State<", to_doc(safe_state, opts), ">"])

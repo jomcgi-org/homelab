@@ -762,9 +762,8 @@ defmodule Embervm.Router do
          {:ok, request} <- decode_artifact_wrap(body),
          {:ok, principal} <-
            principal_resolver.resolve(request["kind"], request["workload"], request["ref"]),
-         {:ok, epoch} <- ensure_artifact_epoch(key_service, principal),
-         {:ok, data_key} <- artifact_data_key(key_service, principal, epoch, request),
-         {:ok, envelope} <- Embervm.KeyService.wrap(key_service, principal, data_key) do
+         {:ok, data_key, envelope} <-
+           Embervm.KeyService.issue_data_key(key_service, principal, request) do
       send_json(conn, 200, %{
         data_key: Base.encode64(data_key),
         envelope: envelope |> Embervm.KeyService.Envelope.encode() |> Base.encode64()
@@ -794,37 +793,6 @@ defmodule Embervm.Router do
   catch
     _, _ -> {:error, :bad_request}
   end
-
-  defp ensure_artifact_epoch(key_service, principal) do
-    case Embervm.KeyService.current_epoch(key_service, principal) do
-      {:ok, 0} ->
-        case Embervm.KeyService.set_epoch(key_service, principal, 1, "first_use") do
-          {:ok, 1} -> {:ok, 1}
-          {:error, :epoch_not_increased} ->
-            Embervm.KeyService.current_epoch(key_service, principal)
-          other -> other
-        end
-
-      {:ok, epoch} -> {:ok, epoch}
-      other -> other
-    end
-  end
-
-  defp artifact_data_key(
-         key_service,
-         principal,
-         epoch,
-         %{"kind" => "volume", "workload" => workload}
-       ) do
-    with {:ok, kek} <- Embervm.KeyService.derive_kek(key_service, principal, epoch) do
-      info = "embervm-volume-key-v1" <> workload
-      pseudorandom_key = :crypto.mac(:hmac, :sha256, <<0::256>>, kek)
-      {:ok, :crypto.mac(:hmac, :sha256, pseudorandom_key, info <> <<1>>)}
-    end
-  end
-
-  defp artifact_data_key(_key_service, _principal, _epoch, _request),
-    do: {:ok, :crypto.strong_rand_bytes(32)}
 
   defp artifact_key_service,
     do: Application.get_env(:embervm, :artifact_key_service, Embervm.KeyService)

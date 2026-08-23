@@ -667,3 +667,25 @@ def test_kek_root_renders_item_and_env_only_when_enabled():
     )
     disabled = _render("kek", [chart / "values.yaml"])
     assert "EMBERVM_KEK_ROOT" not in disabled
+
+
+def test_customer_kms_config_renders_only_from_an_operator_named_secret():
+    chart = _chart_dir()
+    enabled = _render(
+        "customer-kms",
+        [chart / "values.yaml"],
+        ["customerKms.secretName=alice-kms-grant", "customerKms.secretKey=oracle.json"],
+    )
+    control_plane = next(
+        doc
+        for kind, name, doc in _docs(enabled)
+        if kind == "Deployment" and name == "customer-kms-embervm"
+    )
+    assert re.search(
+        r'name:\s*EMBERVM_CUSTOMER_KMS_CONFIG\s+valueFrom:\s+secretKeyRef:\s+name:\s*"?alice-kms-grant"?\s+key:\s*"?oracle\.json"?',
+        control_plane,
+        re.S,
+    )
+
+    disabled = _render("customer-kms", [chart / "values.yaml"])
+    assert "EMBERVM_CUSTOMER_KMS_CONFIG" not in disabled

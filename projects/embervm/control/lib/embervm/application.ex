@@ -79,10 +79,11 @@ defmodule Embervm.Application do
     # (an empty class list, an empty prefix) fire and it reconciles nothing.
     put_brick_config()
 
-    # Keep the decoded KEK root in app env only while constructing and starting
-    # the supervision tree. KeyService copies it into its redacted process state;
-    # the `after` block removes the transient second reference on every outcome.
+    # Keep decoded key-custody configuration in app env only while constructing
+    # and starting the supervision tree. KeyService copies it into its redacted
+    # process state; the `after` block removes the transient second reference.
     Application.put_env(:embervm, :kek_root, kek_root())
+    Application.put_env(:embervm, :customer_kms, customer_kms_config())
 
     children = [
       # The sync-wait waiter registry + park-count ETS owner come FIRST: every
@@ -446,6 +447,7 @@ defmodule Embervm.Application do
       Supervisor.start_link(children, opts)
     after
       Application.delete_env(:embervm, :kek_root)
+      Application.delete_env(:embervm, :customer_kms)
     end
   end
 
@@ -567,6 +569,7 @@ defmodule Embervm.Application do
   defp key_service_opts do
     [
       root: Application.fetch_env!(:embervm, :kek_root),
+      customer_kms: Application.fetch_env!(:embervm, :customer_kms),
       op_log: op_log_mod(),
       op_log_mod: op_log_mod()
     ]
@@ -585,6 +588,13 @@ defmodule Embervm.Application do
           _invalid ->
             raise "invalid EMBERVM_KEK_ROOT: expected base64 decoding to at least 32 bytes"
         end
+    end
+  end
+
+  defp customer_kms_config do
+    case Embervm.CustomerKMS.parse_config(trimmed_env("EMBERVM_CUSTOMER_KMS_CONFIG")) do
+      {:ok, config} -> config
+      {:error, _reason} -> raise "invalid EMBERVM_CUSTOMER_KMS_CONFIG"
     end
   end
 

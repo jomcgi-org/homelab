@@ -43,6 +43,35 @@ defmodule Embervm.KeyServiceTest do
     end
   end
 
+  defmodule FakeCustomerKMS do
+    @behaviour Embervm.CustomerKMS
+
+    def issue(config, principal, artifact) do
+      Agent.get_and_update(config.agent, fn state ->
+        call = {:issue, principal, artifact, config.key_ref}
+        {reply(state, {:ok, state.data_key, state.wrapped_key}), add_call(state, call)}
+      end)
+    end
+
+    def wrap(config, principal, data_key, artifact) do
+      Agent.get_and_update(config.agent, fn state ->
+        call = {:wrap, principal, data_key, artifact, config.key_ref}
+        {reply(state, {:ok, state.wrapped_key}), add_call(state, call)}
+      end)
+    end
+
+    def unwrap(config, principal, key_ref, wrapped_key) do
+      Agent.get_and_update(config.agent, fn state ->
+        call = {:unwrap, principal, key_ref, wrapped_key}
+        {reply(state, {:ok, state.data_key}), add_call(state, call)}
+      end)
+    end
+
+    defp reply(%{reply: reply}, _default) when not is_nil(reply), do: reply
+    defp reply(_state, default), do: default
+    defp add_call(state, call), do: Map.update(state, :calls, [call], &[call | &1])
+  end
+
   defp start_service(opts \\ []) do
     root = Keyword.get(opts, :root, @root)
     {:ok, op_log} = RecordingOpLog.start(Keyword.get(opts, :mode, :ok))
@@ -53,6 +82,7 @@ defmodule Embervm.KeyServiceTest do
         root: root,
         op_log: op_log,
         op_log_mod: RecordingOpLog,
+        customer_kms: Keyword.get(opts, :customer_kms, %{}),
         tenant: "test",
         clock: fn -> 1_000 end
       )
@@ -195,6 +225,90 @@ defmodule Embervm.KeyServiceTest do
     encoded = Envelope.encode(envelope)
     assert {:ok, ^envelope} = Envelope.decode(encoded)
     assert {:error, :bad_envelope} = Envelope.decode("junk")
+  end
+
+  test "customer KMS issues and unwraps a version 2 envelope without a platform root" do
+    data_key = :binary.copy(<<7>>, 32)
+    wrapped_key = "opaque-customer-ciphertext"
+
+    {:ok, kms} =
+      Agent.start_link(fn ->
+        %{data_key: data_key, wrapped_key: wrapped_key, reply: nil, calls: []}
+      end)
+
+    config = %{
+      adapter: FakeCustomerKMS,
+      endpoint: "https://kms.example",
+      key_ref: "alice-key",
+      bearer_token: "secret-grant",
+      agent: kms
+    }
+
+    {service, _op_log} = start_service(root: nil, customer_kms: %{@principal => config})
+    artifact = %{"kind" => "volume", "workload" => "pg", "ref" => "pg"}
+
+    assert {:ok, ^data_key, envelope} =
+             KeyService.issue_data_key(service, @principal, artifact)
+
+    assert %Envelope{
+             version: 2,
+             principal: @principal,
+             key_ref: "alice-key",
+             wrapped_key: ^wrapped_key
+           } = envelope
+
+    encoded = Envelope.encode(envelope)
+    assert {:ok, ^envelope} = Envelope.decode(encoded)
+    assert {:ok, ^data_key} = KeyService.unwrap(service, envelope)
+    assert {:error, :customer_managed} = KeyService.derive_kek(service, @principal, 1)
+
+    calls = Agent.get(kms, & &1.calls)
+    assert Enum.any?(calls, &match?({:issue, @principal, ^artifact, "alice-key"}, &1))
+    assert Enum.any?(calls, &match?({:unwrap, @principal, "alice-key", ^wrapped_key}, &1))
+
+    inspected = service |> :sys.get_state() |> inspect()
+    refute inspected =~ "secret-grant"
+    assert inspected =~ "customer_kms: :redacted"
+  end
+
+  test "customer revocation refuses unwrap and custody modes never fall through" do
+    {platform_service, _op_log} = start_service()
+    assert {:ok, platform_envelope} = KeyService.wrap(platform_service, @principal, @root)
+
+    {:ok, kms} =
+      Agent.start_link(fn ->
+        %{
+          data_key: @root,
+          wrapped_key: "revoked-ciphertext",
+          reply: {:error, :kms_refused},
+          calls: []
+        }
+      end)
+
+    config = %{
+      adapter: FakeCustomerKMS,
+      endpoint: "https://kms.example",
+      key_ref: "revoked-key",
+      bearer_token: "revoked-grant",
+      agent: kms
+    }
+
+    {customer_service, _op_log} =
+      start_service(customer_kms: %{@principal => config})
+
+    customer_envelope = %Envelope{
+      version: 2,
+      principal: @principal,
+      key_ref: "revoked-key",
+      wrapped_key: "revoked-ciphertext"
+    }
+
+    assert {:error, :kms_refused} = KeyService.unwrap(customer_service, customer_envelope)
+    assert {:error, :custody_mismatch} =
+             KeyService.unwrap(customer_service, platform_envelope)
+
+    assert {:error, :customer_kms_not_configured} =
+             KeyService.unwrap(platform_service, customer_envelope)
   end
 
   test "an envelope below a newly raised floor is revoked" do

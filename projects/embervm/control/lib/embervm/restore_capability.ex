@@ -65,7 +65,7 @@ defmodule Embervm.RestoreCapability do
            {:enveloped, envelope_bytes} <- envelope_from_meta(meta),
            {:ok, envelope} <- Envelope.decode(envelope_bytes),
            true <- envelope.principal == principal,
-           :ok <- ensure_first_epoch(key_service, principal),
+           :ok <- ensure_envelope_epoch(key_service, envelope),
            {:ok, data_key} <- unwrap(key_service, envelope) do
         expiry = clock(opts).() + @lease_ms
 
@@ -152,6 +152,11 @@ defmodule Embervm.RestoreCapability do
         other
     end
   end
+
+  defp ensure_envelope_epoch(key_service, %Envelope{version: 1, principal: principal}),
+    do: ensure_first_epoch(key_service, principal)
+
+  defp ensure_envelope_epoch(_key_service, %Envelope{version: 2}), do: :ok
 
   defp current_epoch({module, server}, principal), do: module.current_epoch(server, principal)
   defp current_epoch(server, principal), do: Embervm.KeyService.current_epoch(server, principal)
