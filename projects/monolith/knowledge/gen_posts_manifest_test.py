@@ -179,3 +179,26 @@ def test_entries_sort_newest_first_then_slug(tmp_path: Path):
     entries = build_manifest(tmp_path, paths)
 
     assert [entry["slug"] for entry in entries] == ["alpha", "zebra", "old"]
+
+
+def test_public_post_with_internal_marker_fails(tmp_path: Path):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-leak.md",
+        public_frontmatter(),
+        "Call http://monolith-web.monolith.svc.cluster.local/api\n",
+    )
+
+    with pytest.raises(SystemExit, match=r"docs/posts/2026-01-15-leak.md:1"):
+        build_manifest(tmp_path, [path])
+
+
+def test_draft_post_with_internal_marker_is_skipped(tmp_path: Path):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-draft.md",
+        "title: Draft\ndate: 2026-01-15\nsummary: One sentence.\npublic: false\n",
+        "Call http://monolith-web.monolith.svc.cluster.local/api\n",
+    )
+
+    assert build_manifest(tmp_path, [path]) == []

@@ -26,6 +26,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:  # imported as knowledge.tools.* by tests, run as a bare script by CI
+    from knowledge.tools.public_content import check_public_content
+except ImportError:  # pragma: no cover - script invocation
+    from public_content import check_public_content
+
 PUBLIC_PROJECTS = (
     ("embervm", "projects/embervm"),
     ("monolith", "projects/monolith"),
@@ -118,25 +123,6 @@ def iter_doc_paths(root: Path) -> list[str]:
     """Return tracked public doc paths in project and document-kind order."""
     tracked = _git_ls_files(root)
     return [path for path in _DOC_BY_PATH if path in tracked]
-
-
-# Content that must never reach the public site. The allowlist is by path, so
-# a doc that is correctly public can still paste an internal identifier into
-# itself; this is the only content check and it fails the generator loudly.
-_INTERNAL_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("in-cluster service hostname", re.compile(r"\.svc\.cluster\.local")),
-    ("1Password op:// reference", re.compile(r"op://")),
-    ("1Password vault item path", re.compile(r"vaults/[\w-]+/items/")),
-)
-
-
-def check_public_content(rel_path: str, content: str) -> None:
-    """Raise if a public doc contains an internal-only identifier."""
-    for label, pattern in _INTERNAL_MARKERS:
-        match = pattern.search(content)
-        if match:
-            line = content.count("\n", 0, match.start()) + 1
-            raise SystemExit(f"{rel_path}:{line}: public doc contains {label}")
 
 
 def build_manifest(root: Path, paths: list[str]) -> list[dict]:

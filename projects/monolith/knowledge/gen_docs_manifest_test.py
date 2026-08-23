@@ -172,14 +172,40 @@ def test_manifest_json_round_trips(tmp_path: Path):
     assert json.loads(json.dumps(entries)) == entries
 
 
-def test_check_public_content_rejects_internal_markers():
-    import pytest
-
-    for body in (
+@pytest.mark.parametrize(
+    "body",
+    [
         "see http://gw.mcp.svc.cluster.local:80/mcp",
         "token from op://vault/item/field",
         "create vaults/k8s-homelab/items/thing first",
-    ):
-        with pytest.raises(SystemExit):
-            check_public_content("projects/x/README.md", body)
-    check_public_content("projects/x/README.md", "# fine\n\nplain prose\n")
+        "the pod sits at 10.42.0.17 on the overlay",
+        "curl 172.16.4.9:8080/health",
+        "router at 192.168.1.1",
+        "scratch lives on node-4",
+        "the guest landed on brick-2",
+        "artifacts in s3://artifacts/ambient-evals/",
+        "fetched from ca.egress.internal:80",
+        "export EMBERVM_NODED_BEARER_TOKEN=abc123",
+        "AUTH_ENCRYPTION_SECRET: hunter2",
+    ],
+)
+def test_check_public_content_rejects_internal_markers(body: str):
+    with pytest.raises(SystemExit):
+        check_public_content("projects/x/README.md", body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "# fine\n\nplain prose\n",
+        # Dotted values key path, not a hostname.
+        "egress.internal.allowlist is one global list",
+        # Bare secret env var names are already in the public source tree.
+        "`OPENROUTER_API_KEY` must be set; it syncs `AUTH_ENCRYPTION_SECRET`",
+        # Public address space and version-ish numbers.
+        "reach 8.8.8.8 or 172.32.0.1 from v10.4",
+        "a node-local cache, brick-shaped, node-N",
+    ],
+)
+def test_check_public_content_accepts_public_prose(body: str):
+    check_public_content("projects/x/README.md", body)
