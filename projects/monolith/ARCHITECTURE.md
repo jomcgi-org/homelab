@@ -80,6 +80,15 @@ default-deny egress with a single Turnstile allow.
 (see: /projects/monolith-public/chart/templates/cilium-policy.yaml)
 (see: /projects/monolith-public/deploy/values.yaml)
 
+**Why.** The anonymous SSR surface once shared a pod, backend, database role,
+and full secret set with the private application, so an ingress mistake or
+public-process compromise crossed every boundary at once (ADR security/004).
+A feature-flagged full application and a replica without scoped grants were
+rejected because both retain that escalation path. Separate compositions,
+database identities, and fixed audience routes make private exposure the
+default, accepting another deployment and several policy bindings to operate
+(ADR networking/002, ADR services/010).
+
 ## 2. Modular framework
 
 `framework/core.py` defines the registry contract through `Tier`, `Profile`,
@@ -108,6 +117,15 @@ closure.
 (see: /projects/monolith/framework/core.py)
 (see: /projects/monolith/BUILD)
 (see: /projects/monolith/app/main_public_imports_test.py)
+
+**Why.** Domain boundaries originally existed only by convention, allowing
+internal imports and composition glue to spread while public and private
+entrypoints risked drifting (ADR platform/008, ADR services/010). Independent
+services and databases per domain were rejected as disproportionate, and a
+base-class or dependency-injection framework was rejected because it would
+couple every domain to more machinery. Plain module descriptors, one
+`build_app`, endpoint-shaped `api.py` seams, and an AST boundary test preserve
+one deployable system while making future extraction and review explicit.
 
 ## 3. Data
 
@@ -165,6 +183,16 @@ Postgres volume corruption, but it is not protection against loss of the whole
 cluster because both systems share the cluster failure domain.
 (see: /projects/monolith/deploy/values.yaml)
 (see: /projects/monolith/chart/templates/cnpg-cluster.yaml)
+
+**Why.** Keeping Obsidian and Postgres as writable peers created synchronization,
+conflict, and recovery questions, while a filesystem mount inside every replica
+expanded the serving path and security surface (ADR platform/006). Postgres was
+chosen as the body of record and as Grimoire's hot tier so transactions,
+pgvector, grants, and backups share one operational substrate rather than adding
+a service or datastore per domain (ADR services/011, ADR services/012). Schemas,
+roles, and definer's-rights views provide the isolation; the physical standby is
+accepted for availability and load isolation, not confidentiality (ADR
+security/004).
 
 ## 4. Agents
 
@@ -236,6 +264,16 @@ runtime, and the continuous-delivery probe writer.
 (see: /projects/monolith/swarm/module.py)
 (see: /projects/monolith/cluster/module.py)
 
+**Why.** Terminal-lived runs and process-local queues could not survive a
+restart, support multiple frontends, or provide a queryable history (ADR
+agents/007). Putting every idle or short turn into an Argo Workflow was rejected
+because each run becomes a high-churn etcd object and snapshot-backed sessions
+wait on events rather than run to completion (ADR agents/019, ADR agents/022).
+Leased Postgres rows own ordered turn dispatch, EmberVM owns isolated execution,
+and short DBOS workflows own bounded multi-step recovery. This accepts polling
+and reconciliation latency in exchange for one durable record shared by MCP,
+the browser UI, and swarm orchestration (ADR agents/049, ADR agents/053).
+
 ## 5. Chat
 
 The Discord bot handles direct messages, mentions, replies, ambient engagement,
@@ -273,6 +311,16 @@ is text rather than a multimodal message payload.
 (see: /projects/monolith/grimoire_chat/retrieval.py)
 (see: /projects/monolith/grimoire_chat/router.py)
 (see: /projects/monolith/grimoire_chat/summarizer.py)
+
+**Why.** LLM-only abuse detection was rejected because it charges a model call
+for every message and lets a flood turn the detector into the resource drain;
+hard bans and deletion were rejected because recoverable red-team play is part
+of the friends surface (ADR chat/003). One ledger and one enforcement choke point
+combine cheap deterministic signals, asynchronous semantic judgment, and a
+shadow-first learned model. The design accepts delayed LLM verdicts and tunable
+false positives, with score recovery and pardon providing the correction path.
+Anonymous chat adds Turnstile and bounded admission because its GPU and write
+paths cannot rely on an authenticated principal (ADR security/005).
 
 ## 6. Knowledge and Grimoire
 
@@ -330,6 +378,16 @@ chunked note indexing, and feeds gardener and human-review loops.
 (see: /projects/monolith/knowledge/indexing.py)
 (see: /projects/monolith/knowledge/gardener.py)
 
+**Why.** Postgres replaced the vault as the served-content authority because
+two writable stores made synchronization and conflict policy load-bearing (ADR
+platform/006). Grimoire reused that typed, pgvector-capable hot tier instead of
+adding a standalone service, and compiles audience rules into grants rather than
+growing every read predicate with contextual logic (ADR services/011, ADR
+services/012, ADR services/013). Deterministic maintenance remains in Argo while
+semantic research and gardening run as account-hosted routines, accepting two
+scheduling planes so each owns the retry and credential model suited to its
+work.
+
 ## 7. MCP surface
 
 Context Forge remains the MCP front door and stores the monolith `/mcp` server
@@ -358,6 +416,16 @@ observed on the Claude.ai path.
 The broader gateway architecture, identity limitations, and catalogue refresh
 behavior are documented in [MCP architecture](../mcp/ARCHITECTURE.md).
 (see: /projects/mcp/ARCHITECTURE.md)
+
+**Why.** A federating gateway originally replaced one authentication workaround
+and local proxy per backend, giving remote agents one catalogue and one place for
+tool-level entitlement (ADR agents/003). Per-domain MCP servers were rejected
+because they duplicate deployment and access plumbing, but gateway ACLs cannot
+decide whether a returned domain object belongs to the caller. The caller's
+verifiable identity therefore has to reach the monolith, and ADR agents/059
+chooses a direct monolith endpoint once authentik federation is ready. The live
+gateway is an accepted transition cost, including catalogue refresh and a
+tool-wide failure domain (ADR agents/055, ADR agents/059).
 
 ## 8. Public apps
 
@@ -397,6 +465,16 @@ semantics where their data permits it.
 (see: /projects/monolith/hikes/router.py)
 (see: /projects/monolith/stars/router.py)
 
+**Why.** These data products share the monolith's typed data, composition,
+frontend, and operational controls, so splitting each into a service would add
+deployment boundaries without removing their shared storage dependency (ADR
+services/010). Anonymous reads use explicit origin cache semantics and a
+hostname-scoped CDN rule; per-path rules were rejected once the public hostname
+became the stronger routing boundary (ADR platform/002, ADR platform/003).
+Authenticated or writable features stay on private routes or use narrowly scoped
+public writers, accepting the public route composition as a load-bearing review
+and test boundary (ADR security/004).
+
 ## 9. Observability and health
 
 `/healthz` is process liveness. `/api/health` executes a database query and all
@@ -434,6 +512,16 @@ execution, and red-state overview.
 (see: /projects/monolith/chart/dashboards/cnpg-overview.json)
 (see: /projects/monolith/chart/dashboards/goosecracker-overview.json)
 (see: /projects/monolith/chart/dashboards/monolith-red.json)
+
+**Why.** Process liveness alone stayed green through downstream failures, while
+alert-only maintenance failures could remain unread for days (ADR embervm/031).
+Composite checks therefore classify immediate serving failures as fatal and
+slower debt as advisory, rather than making every degraded dependency trigger a
+rollback. Healthy-only edge caching prevents an old green result from hiding an
+outage, and the public response strips internal details. The private profile
+exports full telemetry to the existing SigNoz path; the public profile accepts
+less in-process detail to keep the anonymous runtime's dependency and credential
+surface smaller (ADR security/004).
 
 ## 10. Delivery
 
@@ -486,6 +574,15 @@ backup target or another owner of production side effects.
 (see: /projects/monolith/deploy/values.yaml)
 (see: /projects/monolith/dev/deploy/values.yaml)
 (see: /projects/monolith/chart/templates/cnpg-dev-refresh-cronworkflow.yaml)
+
+**Why.** Branch-side version bumps made concurrent pull requests collide and
+could leave a merged change unpublished, while floating OCI revisions are not
+supported by ArgoCD's Helm range handling (ADR platform/009, ADR platform/011).
+Post-merge, commit-derived publishing and monotonic write-back remove shared
+version lines from feature branches. Kargo owns live promotion so development
+receives the exact production artifact first, accepting that runtime
+`targetRevision` is cluster state and that the current settling window proves
+deployment readiness rather than application correctness (ADR platform/009).
 
 ## 11. ADR map
 

@@ -28,6 +28,15 @@ modules populate with `@mcp.tool` (`cluster`, `agent`, `agent_sessions`,
 `/mcp` for any domain declaring `mcp_enabled`. It is always mounted when
 enabled, so an empty tool list is a visible symptom rather than a missing route.
 
+**Why.** Separate MCP servers originally required per-service authentication
+workarounds and were unreachable from remote in-cluster agents, so ADR agents/003
+chose one federating gateway. ADR agents/020 later rejected that gateway after
+the deployment fell to one backend and retained a manual catalogue-refresh cost;
+ADR agents/059 superseded 020 after its authentication premise changed, while
+the reasoning against a redundant second gateway still holds. The current
+topology retains the earlier mechanism until that cutover, accepting a gateway
+failure as a tool-wide outage and upstream maturity as an operational risk.
+
 ## Identity decides which tools you see
 
 Entitlement is expressed as **tags on tools**, not as a server or a URL per
@@ -41,6 +50,15 @@ renaming a group in authentik silently stops matching. The names are not ids.
 The ACL is **tool-granular**: it decides whether you may call
 `search_knowledge`, never what `search_knowledge` returns. Per-caller scoping of
 results is a separate concern, and is not live (see Token forwarding).
+
+**Why.** A single unrestricted catalogue gave every caller the same tools and
+could not attribute operations to one agent identity (ADR agents/005). Separate
+servers per role were rejected because they duplicate deployments and
+configuration, while route-only tiering was rejected because callers reaching
+one host and port can still guess another path (ADR agents/034). ADR agents/005
+is deprecated and agents/034 remains draft, but their reasoning for tool-level
+entitlement still explains the current tag and team model; result-level
+authorization remains outside that model.
 
 ## Routing: isolation comes from authorization, not paths
 
@@ -69,6 +87,14 @@ Note that **`MCP_REQUIRE_AUTH` is gateway-wide, not per virtual server**, so it
 cannot be the thing that isolates one hostname from another. That is what makes
 "the server is empty" the actual control here, and it is why the in-cluster
 ClusterIP path is no longer unauthenticated either.
+
+**Why.** Path-shaped tool tiers alone do not form an authorization boundary
+because a caller with network reach can request another tier's path (ADR
+agents/034). Rewriting the resource path was also rejected because OAuth
+protected-resource discovery must describe the same path the client requested
+(ADR agents/059). The deployed design therefore combines an allowlisted route,
+an authorized virtual server, and path transparency, accepting that gateway-wide
+authentication cannot distinguish one virtual server from another.
 
 ## Authentication
 
@@ -122,6 +148,15 @@ kubectl get pod -n mcp -l app.kubernetes.io/name=mcpgateway \
   -o jsonpath='{.items[0].spec.containers[0].env[*].name}'
 ```
 
+**Why.** Static edge service tokens blocked browser OAuth clients, shared one
+credential across sessions, and split enforcement across two authentication
+systems (ADR agents/006). ADR agents/011 superseded 006 by moving OAuth to a
+managed edge service to remove an auxiliary stateful proxy; that mechanism was
+later deprecated when the route moved to direct identity-provider tokens. ADR
+agents/059 now decides that the monolith will verify those tokens directly
+because the current gateway performs a redundant verification on every call,
+accepting a staged cutover and connector-handshake risk.
+
 ## Token forwarding to upstreams, and what is not live yet
 
 The caller's authentik token is forwarded to upstream gateways so the monolith
@@ -171,6 +206,14 @@ live is not what stands in the way. Two things do:
   reads is the caller of that message. A stateful mount would reintroduce the
   pinning silently.
 
+**Why.** Tool-level gateway ACLs cannot decide whether a returned task, session,
+or repository object belongs to the caller, so identity must reach the domain
+that owns that object (ADR agents/055, ADR agents/059). Trusted identity headers
+were rejected because an in-cluster caller could forge them; a verifiable bearer
+keeps the resource server responsible for validation. ADR agents/059 superseded
+055 for GitHub mediation by moving the broker into the monolith, while 055's
+reasoning for tool mediation and bounded credentials still holds.
+
 ## Deployment
 
 **This service deploys from a git path at `targetRevision: HEAD`, not from an
@@ -180,6 +223,13 @@ deep-merges `deploy/values.yaml` on top.
 
 The practical consequence: **merging deploys instantly**, and there is no chart
 version bump in the loop. Nothing waits for a `chart-version-bot` write-back.
+
+**Why.** ADR agents/003 chose a configuration-driven upstream gateway so a new
+tool could be registered through values and reconciled by ArgoCD instead of
+shipping another local proxy or MCP binary. Per-service proxies were rejected
+because authentication workarounds and Bash permissions multiplied with every
+backend. That choice accepts the upstream gateway as a single point of failure
+and keeps its pinned release and configuration portability as the recovery path.
 
 ## Configuration discipline
 
@@ -200,6 +250,14 @@ Kubernetes `env` outranks every `envFrom` source, so `extraEnv` closes both.
 enables SSRF protection with private networks refused, so registering any
 in-cluster MCP server otherwise fails with a masked 422 whose real cause appears
 only in the log as `loc=('body','url') type=value_error`.
+
+**Why.** The gateway was adopted to make backend registration a configuration
+change rather than a custom server build (ADR agents/003). Local proxies for
+each service were rejected because they repeat authentication and error-handling
+work, while unconstrained registered endpoints create an SSRF path into backend
+APIs. The accepted consequence is strict, chart-specific configuration with an
+explicit network allowlist, read-scoped backend credentials, and a pinned
+upstream release (ADR agents/003).
 
 ## Tool catalogue refresh
 
@@ -224,11 +282,25 @@ Context Forge's XSS validator can be dropped silently. Operational proof is
 `last_refresh_at` advancing on the monolith `gateways` row with no Job, plus a
 tool count check for an incomplete catalogue.
 
+**Why.** Context Forge's cached catalogue made new monolith tools invisible until
+a refresh, one of the standing costs used to justify its removal (ADR agents/020).
+Keeping the gateway was rejected once it had one backend and no remaining
+federation value; ADR agents/059 superseded 020 after the gateway became an active
+token verifier, while the stale-catalogue reasoning still holds.
+
 ## State
 
 Postgres via CloudNativePG (`templates/postgres-cnpg.yaml`). Context Forge holds
 its own gateway registrations, team membership, tool catalogue cache and
 `sso_providers` there. Secrets sync from 1Password via `OnePasswordItem`.
+
+**Why.** The original gateway consolidated remote access, authentication
+workarounds, and virtual tool registration in one in-cluster component (ADR
+agents/003). Separate local servers were rejected because remote agents could
+not reach them and every backend needed its own access workaround. Consolidation
+accepts a stateful catalogue and a gateway-wide failure domain, risks ADR
+agents/020 and ADR agents/059 retain as reasons for the planned direct-monolith
+cutover.
 
 ## ADR map
 
