@@ -68,6 +68,11 @@ kekRoot:
     itemPath: "vaults/k8s-homelab/items/embervm-kek-root"
 
 noded:
+  # 31s rather than the chart default 30s: a deliberate brick roll on
+  # 2026-08-23 so a banked session has to restore from S3 through a capability
+  # (the #4691 end-to-end test); harmless to keep.
+  warmthHeartbeat:
+    intervalSeconds: 31
   # Static bearer token on noded's gRPC surface (#4693), the same item prod
   # uses: one cluster, one secret. Also the HMAC key for restore capabilities
   # (#4691), so without it the control plane cannot mint one and every
