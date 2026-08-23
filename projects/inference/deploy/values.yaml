@@ -112,10 +112,10 @@ runtimeClassName: nvidia
 # The Service rename does not roll the pod (the Deployment name is unchanged),
 # so flipping this is a DNS cut, not a model reload.
 benchMode:
-  # ON for the NInfer cutover bench (#5155). Flip back to false to restore the
-  # in-cluster Service DNS name. While true, the monolith's qwen callsites,
-  # monolith-dev and EmberVM pi-runtime sessions all fail at DNS, by design,
-  # and the Service is a LAN NodePort.
+  # Off after the NInfer cutover bench (#5155). The production Service keeps the
+  # stable in-cluster DNS name used by monolith and EmberVM. Turn this on only
+  # for an isolated benchmark session, when an outage for those consumers is
+  # intentional and the unauthenticated LAN NodePort is acceptable.
   #
   # The harness runs on the Mac and reaches the server through a port-forward
   # (bench/cli.py --base-url), so forward to the DEPLOYMENT, whose name does not
@@ -132,7 +132,7 @@ benchMode:
   # That port is UNAUTHENTICATED and open to anything on the LAN while this is
   # true. It is welded to this one flag on purpose, so turning bench mode off
   # closes it and there is no second switch to forget.
-  enabled: true
+  enabled: false
   # Pinned so the benchmarking machine's base URL survives a re-sync. Only read
   # when enabled is true.
   nodePort: 30800
