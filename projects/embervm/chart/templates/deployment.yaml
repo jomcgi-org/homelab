@@ -473,6 +473,17 @@ spec:
             # False by default; see artifactEncryption in values for rollout order.
             - name: EMBERVM_ARTIFACT_ENCRYPTION
               value: {{ ternary "1" "0" .Values.artifactEncryption.enabled | quote }}
+            # Background envelope-only rotation (#4976). Disabled is a true
+            # no-I/O state. When armed, every meta.json write is guarded by the
+            # exact ETag read before rewrap, and the worker never reads payloads.
+            - name: EMBERVM_ENVELOPE_REWRAP_ENABLED
+              value: {{ ternary "1" "0" .Values.envelopeRewrap.enabled | quote }}
+            - name: EMBERVM_ENVELOPE_REWRAP_MAX_ARTIFACTS
+              value: {{ .Values.envelopeRewrap.maxArtifacts | int64 | quote }}
+            - name: EMBERVM_ENVELOPE_REWRAP_CONCURRENCY
+              value: {{ .Values.envelopeRewrap.concurrency | int64 | quote }}
+            - name: EMBERVM_ENVELOPE_REWRAP_INTERVAL_MS
+              value: {{ .Values.envelopeRewrap.intervalMs | int64 | quote }}
             {{- if .Values.noded.store.credentials.enabled }}
             - name: EMBERVM_STORE_ACCESS_KEY_ID
               valueFrom:

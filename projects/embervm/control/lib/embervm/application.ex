@@ -425,6 +425,13 @@ defmodule Embervm.Application do
       # destructive arm is gated OFF by default (EMBERVM_WARMTH_S3_GC), so
       # merging is inert. It holds no durable state.
       {Embervm.S3WarmthGc, s3_warmth_gc_opts()},
+      # The data-key envelope reconciler enumerates complete principal-artifact
+      # markers and rewrites ONLY stale envelopes under an S3 ETag compare-and-
+      # swap. It depends on Finch, KeyService, and the shared store credentials,
+      # all of which are already up. The gate defaults off, so the supervised
+      # process performs no listing or writing until a bounded rotation window
+      # is explicitly armed. It never raises epoch floors or retires roots.
+      {Embervm.EnvelopeRewrapSweeper, envelope_rewrap_sweeper_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -828,6 +835,24 @@ defmodule Embervm.Application do
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end
 
+  # Background artifact-envelope rotation. The endpoint, bucket, and static S3
+  # identity are the same source of truth used by noded and S3WarmthGc. The
+  # worker's own enabled gate is independent of artifact writer enablement: an
+  # operator arms it only during a root, epoch, key-ref, or custody transition.
+  defp envelope_rewrap_sweeper_opts do
+    [
+      enabled: boolean_env("EMBERVM_ENVELOPE_REWRAP_ENABLED"),
+      endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
+      bucket: store_bucket(),
+      access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
+      secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY"),
+      max_artifacts: int_env_or_nil("EMBERVM_ENVELOPE_REWRAP_MAX_ARTIFACTS"),
+      concurrency: int_env_or_nil("EMBERVM_ENVELOPE_REWRAP_CONCURRENCY"),
+      sweep_interval_ms: int_env_or_nil("EMBERVM_ENVELOPE_REWRAP_INTERVAL_MS")
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
   defp warmth_s3_gc_ttls do
     %{
       stateful: int_env_or_nil("EMBERVM_WARMTH_S3_GC_STATEFUL_TTL_MS"),
@@ -1180,6 +1205,13 @@ defmodule Embervm.Application do
     case trimmed_env(name) do
       "" -> nil
       raw -> String.to_integer(raw)
+    end
+  end
+
+  defp boolean_env(name) do
+    case trimmed_env(name) do
+      value when value in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
     end
   end
 

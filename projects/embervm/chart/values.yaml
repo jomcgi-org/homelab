@@ -998,6 +998,17 @@ warmthRetention:
 artifactEncryption:
   enabled: false
 
+# Background data-key envelope rotation (#4976). The worker lists only mutable
+# principal-artifact meta.json markers, never reads payload objects, and replaces
+# metadata only under an ETag compare-and-swap. A clean uncapped sweep is evidence
+# for a separate operator action to raise an epoch floor or retire an old root or
+# custody grant. Disabled is fully inert and performs no store I/O.
+envelopeRewrap:
+  enabled: false
+  maxArtifacts: 100
+  concurrency: 8
+  intervalMs: 3600000
+
 # S3-direct warmth GC (task #39, control-plane env): reclaims orphaned warmth
 # prefixes the reaper cannot reach (the pre-sidecar backlog whose workload
 # binding was lost) by listing the bucket directly. Every sweep computes, logs,

@@ -125,6 +125,50 @@ defmodule Embervm.S3Client do
   end
 
   @doc """
+  GET one object's body and exact opaque ETag. A successful response without an
+  ETag is refused because its body cannot safely anchor a compare-and-swap.
+  """
+  @spec get_with_etag(t(), String.t()) ::
+          {:ok, binary(), String.t()} |
+            {:error, :not_found | :missing_etag} |
+            {:error, term()}
+  def get_with_etag(%__MODULE__{} = client, key) do
+    case request(client, :get, object_url(client, key), "") do
+      {:ok, %{status: 404}} ->
+        {:error, :not_found}
+
+      {:ok, %{status: status, body: body, headers: headers}} when status in 200..299 ->
+        case response_header(headers, "etag") do
+          etag when is_binary(etag) and etag != "" -> {:ok, body, etag}
+          _ -> {:error, :missing_etag}
+        end
+
+      {:ok, %{status: status}} ->
+        {:error, {:unexpected_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Replace `key` only while its ETag still equals `etag`. HTTP 412 is returned as
+  `:precondition_failed` and is never retried: the caller must re-read the newer
+  object before attempting another reconciliation.
+  """
+  @spec put_if_match(t(), String.t(), iodata(), String.t()) ::
+          :ok | {:error, :precondition_failed} | {:error, term()}
+  def put_if_match(%__MODULE__{} = client, key, body, etag)
+      when is_binary(etag) and etag != "" do
+    case request(client, :put, object_url(client, key), body, [{"if-match", etag}]) do
+      {:ok, %{status: status}} when status in [409, 412] -> {:error, :precondition_failed}
+      {:ok, %{status: status}} when status in 200..299 -> :ok
+      {:ok, %{status: status}} -> {:error, {:unexpected_status, status}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   DELETE one fully-qualified object key. Idempotent: a 404 (already gone) is
   success, matching noded's desired-end-state contract. NEVER takes a prefix or
   issues a bucket-wide operation: one call, one key.
@@ -231,34 +275,44 @@ defmodule Embervm.S3Client do
   # One verb with transient-failure retries: transport errors and 5xx retry with
   # exponential backoff; 4xx returns immediately (it will not get better). The
   # response body is always fully read (Finch does this for us).
-  defp request(client, method, url, body), do: request_with_retry(client, method, url, body, 1)
+  defp request(client, method, url, body), do: request(client, method, url, body, [])
 
-  defp request_with_retry(client, method, url, body, attempt) do
+  defp request(client, method, url, body, headers),
+    do: request_with_retry(client, method, url, body, headers, 1)
+
+  defp request_with_retry(client, method, url, body, request_headers, attempt) do
     creds = %{access_key_id: client.access_key_id, secret_access_key: client.secret_access_key}
-    headers = SigV4.sign(method, url, [], SigV4.unsigned_payload(), creds, DateTime.utc_now())
+    headers = SigV4.sign(method, url, request_headers, SigV4.unsigned_payload(), creds, DateTime.utc_now())
     req = Finch.build(method, url, headers, body)
 
     case Finch.request(req, Embervm.Finch, receive_timeout: @receive_timeout) do
       {:ok, %Finch.Response{status: status}} when status >= 500 ->
-        retry_or_fail(client, method, url, body, attempt, {:unexpected_status, status})
+        retry_or_fail(client, method, url, body, request_headers, attempt, {:unexpected_status, status})
 
       {:ok, %Finch.Response{} = resp} ->
-        {:ok, %{status: resp.status, body: resp.body}}
+        {:ok, %{status: resp.status, body: resp.body, headers: resp.headers}}
 
       {:error, reason} ->
-        retry_or_fail(client, method, url, body, attempt, reason)
+        retry_or_fail(client, method, url, body, request_headers, attempt, reason)
     end
   rescue
-    e -> retry_or_fail(client, method, url, body, attempt, {:raised, e})
+    e -> retry_or_fail(client, method, url, body, request_headers, attempt, {:raised, e})
   end
 
-  defp retry_or_fail(client, method, url, body, attempt, reason) do
+  defp retry_or_fail(client, method, url, body, headers, attempt, reason) do
     if attempt < @attempts do
       Process.sleep(@backoff_base_ms * Integer.pow(2, attempt - 1))
-      request_with_retry(client, method, url, body, attempt + 1)
+      request_with_retry(client, method, url, body, headers, attempt + 1)
     else
       Logger.warning("embervm s3 client: #{method} #{url} failed after #{@attempts} attempts: #{inspect(reason)}")
       {:error, reason}
+    end
+  end
+
+  defp response_header(headers, wanted) do
+    case Enum.find(headers, fn {name, _value} -> String.downcase(to_string(name)) == wanted end) do
+      {_name, value} -> value
+      nil -> nil
     end
   end
 end
