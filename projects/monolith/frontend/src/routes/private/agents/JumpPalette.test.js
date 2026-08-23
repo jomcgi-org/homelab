@@ -79,15 +79,12 @@ describe("jump palette keyboard behavior", () => {
       title: "Push a branch",
       state: "blocked",
       updated_at: "2026-08-22T11:00:00Z",
+      needs: { kind: "human", decision_kind: "push_gate" },
       shape: [
         {
           key: "push_gate",
           kind: "gate",
           state: "blocked",
-          blocked_on: {
-            kind: "human",
-            decision_kind: "push_gate",
-          },
         },
       ],
     };

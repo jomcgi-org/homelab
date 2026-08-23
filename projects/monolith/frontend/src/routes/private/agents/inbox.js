@@ -37,6 +37,7 @@ function standalone(session) {
 }
 
 export function humanDecision(run) {
+  if (run?.needs?.kind === "human") return run.needs;
   const candidates = [
     run,
     run?.current,
@@ -53,8 +54,9 @@ export function humanDecision(run) {
 
 export function runAsk(run) {
   const blockedOn = humanDecision(run);
-  if (blockedOn?.decision_kind === "push_gate") return P.labels.approvePush;
-  if (blockedOn?.decision_kind === "review_escalation") return P.labels.decide;
+  const decisionKind = run?.needs?.decision_kind ?? blockedOn?.decision_kind;
+  if (decisionKind === "push_gate") return P.labels.approvePush;
+  if (decisionKind === "review_escalation") return P.labels.decide;
   if (blockedOn) return P.labels.needsYou;
   const escalated =
     run?.state === "escalated" ||

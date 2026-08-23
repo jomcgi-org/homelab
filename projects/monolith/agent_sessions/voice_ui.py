@@ -121,10 +121,16 @@ def ask(
     ref: str,
     principal_subject: str,
     principal_authority: str,
+    node_key: str | None = None,
 ) -> dict:
     return _record_if_open(
         "ask",
-        {"question": question, "options": options, "ref": ref},
+        {
+            "question": question,
+            "options": options,
+            "ref": ref,
+            "node_key": node_key,
+        },
         principal_subject,
         principal_authority,
     )

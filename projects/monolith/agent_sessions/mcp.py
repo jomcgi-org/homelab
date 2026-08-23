@@ -758,11 +758,20 @@ async def monolith_voice_ui_show(
 
 
 @mcp.tool
-async def monolith_voice_ui_ask(question: str, options: list[str], ref: str) -> dict:
-    """Record a companion question and return immediately without awaiting an answer."""
+async def monolith_voice_ui_ask(
+    question: str,
+    options: list[str],
+    ref: str,
+    node_key: str | None = None,
+) -> dict:
+    """Record a companion question and return immediately.
+
+    Pass node_key to target an open run decision; otherwise the answer goes to
+    the attached session.
+    """
     subject, authority = _voice_ui_principal()
     return await asyncio.to_thread(
-        voice_ui.ask, question, options, ref, subject, authority
+        voice_ui.ask, question, options, ref, subject, authority, node_key
     )
 
 

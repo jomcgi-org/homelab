@@ -73,15 +73,12 @@ describe("launcher submit path", () => {
               title: "Push a branch",
               state: "blocked",
               cost_usd: 0,
+              needs: { kind: "human", decision_kind: "push_gate" },
               shape: [
                 {
                   key: "push_gate",
                   kind: "gate",
                   state: "blocked",
-                  blocked_on: {
-                    kind: "human",
-                    decision_kind: "push_gate",
-                  },
                 },
               ],
             },

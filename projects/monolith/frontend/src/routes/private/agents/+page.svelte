@@ -1358,7 +1358,10 @@
       if (card.surface === "run" && !voiceRunDetails[card.ref]) {
         await loadRunDetail(card.ref, runRequestSequence, "voice");
       }
-      const askRunId = askWorkflowId(card);
+      const askRunId =
+        card.kind === "ask" && String(card.ref).startsWith("run-")
+          ? askWorkflowId(card)
+          : null;
       if (askRunId && !voiceRunDetails[askRunId]) {
         await loadRunDetail(askRunId, runRequestSequence, "voice");
       }
