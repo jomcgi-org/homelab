@@ -1886,6 +1886,114 @@ defmodule Embervm.SessionManagerTest do
     assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
   end
 
+  test "stale destroy_done does not clear or stop the live destroy worker" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        destroy_fun: fn _ch, _vm ->
+          send(parent, {:destroy_started, self()})
+
+          receive do
+            :finish_destroy -> {:ok, %{teardown_confirmed: true}}
+          after
+            5_000 -> {:ok, %{teardown_confirmed: false}}
+          end
+        end
+      )
+
+    put_session_workload(ctx, "wl-stale-destroy-done")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-stale-destroy-done", "p1")
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert_receive {:destroy_started, destroy_worker}, 1_000
+
+    live_worker = :sys.get_state(ctx.mgr).destroy_workers[created.session_id]
+    {^destroy_worker, _, _, _, _} = live_worker
+
+    send(ctx.mgr, {:destroy_done, created.session_id, make_ref(), false})
+
+    state = :sys.get_state(ctx.mgr)
+    assert MapSet.member?(state.destroy_inflight, created.session_id)
+    assert state.destroy_workers[created.session_id] == live_worker
+    assert Process.alive?(destroy_worker)
+
+    send(destroy_worker, :finish_destroy)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+  end
+
+  test "destroying session is not resurrected by relight completion" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        relight_fun: fn _channel, _req ->
+          send(parent, {:relight_started, self()})
+
+          receive do
+            :finish_relight -> {:ok, %RelightResponse{vm_id: "vm-raced-relight"}}
+          after
+            5_000 -> {:error, :relight_test_timeout}
+          end
+        end,
+        destroy_fun: fn _ch, _vm ->
+          send(parent, {:destroy_started, self()})
+
+          receive do
+            :finish_destroy -> {:ok, %{teardown_confirmed: true}}
+          after
+            5_000 -> {:ok, %{teardown_confirmed: false}}
+          end
+        end
+      )
+
+    put_session_workload(ctx, "wl-relight-destroy-race")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-relight-destroy-race", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+
+    NodeCapacity.put(
+      ctx.cap_table,
+      "node-4",
+      Map.put(fact, :session_snapshots, [
+        %{session_id: created.session_id, snapshot_ref: banked.snapshot_ref, workload: "wl-relight-destroy-race"}
+      ])
+    )
+
+    invoke_task =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "race"})
+      end)
+
+    assert_receive {:relight_started, relight_worker}, 1_000
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+
+    # A relighting row has no live vm_id, so the destroy worker confirms without
+    # calling destroy_fun. Gate-on drain still replies the parked invoke gone
+    # before any relight completion can resurrect a process.
+    assert {:error, {:gone, "destroyed"}} = Task.await(invoke_task, 1_000)
+
+    send(
+      ctx.mgr,
+      {:relight_done, created.session_id,
+       {:ok, "node-4", "vm-injected-relight", 1, "node-4"}}
+    )
+
+    # :sys.get_state is sent by this same test process after relight_done, so the
+    # manager has handled that completion before these assertions run.
+    _ = :sys.get_state(ctx.mgr)
+    assert Registry.lookup(ctx.registry, created.session_id) == []
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state in [:destroying, :destroyed]
+    refute session.state == :running
+
+    send(relight_worker, :finish_relight)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+  end
+
   test "destroy of an already-terminal session is a no-op success" do
     ctx = start_stack()
     put_session_workload(ctx, "wl-d2")
@@ -2024,6 +2132,10 @@ defmodule Embervm.SessionManagerTest do
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-ncd2", "p1")
 
     assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+
+    assert eventually(fn ->
+             not MapSet.member?(:sys.get_state(ctx.mgr).destroy_inflight, created.session_id)
+           end)
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :destroying
