@@ -50,7 +50,7 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              MODEL=$(find {{ .Values.ninfer.modelVolume.mountPath }} -maxdepth 2 -name '*.ninfer' -type f | sort | head -1)
+              MODEL=$(find {{ .Values.ninfer.modelVolume.mountPath }} -maxdepth 2 -name '*.ninfer' ! -name '._*' -type f | sort | head -1)
               if [ -z "$MODEL" ]; then
                 echo "ERROR: no .ninfer artifact found under {{ .Values.ninfer.modelVolume.mountPath }}" >&2
                 exit 1
