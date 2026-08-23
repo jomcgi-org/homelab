@@ -171,8 +171,8 @@ actions:
           # ---- 1. tests ---------------------------------------------------
           # -future excludes future-feature BDD specs (executable specs for
           # not-yet-built features): those are intentionally red.
-          # The PR run uses affected-targets to query only affected Bazel
-          # targets, making PR feedback cheap. The queue candidate on
+          # The PR run uses affected-targets to query a global test-only
+          # dependency universe, making PR feedback cheap. The queue candidate on
           # gh-readonly-queue/* runs the full //... as the exact gate. This
           # fallback set (BUILD files, dependency locks, bazel/ tooling,
           # deleted files) is handled by affected-targets.sh and triggers
