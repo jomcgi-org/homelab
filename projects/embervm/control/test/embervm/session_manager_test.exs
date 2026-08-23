@@ -1830,6 +1830,74 @@ defmodule Embervm.SessionManagerTest do
     assert session.terminal_reason == "failed"
   end
 
+  # #4644: durable-before-observed (ARCHITECTURE.md invariant 7) on the FAILURE path.
+  # The caller's error reply must not be sent before session_failed is appended, the
+  # same ordering the success branch already honours (record_invoke before reply).
+  # destroy_fun blocks until released so the old reply -> destroy -> transition
+  # ordering deterministically reads :running here, not merely racily.
+  test "invoke failure is durable before the caller is unblocked" do
+    parent = self()
+
+    fail_assign = fn _ch, _req ->
+      {:ok, %SessionAssignResponse{response: nil, usage: nil, suspect: true}}
+    end
+
+    blocking_destroy = fn _ch, vm ->
+      send(parent, {:destroy_started, self(), vm})
+
+      receive do
+        :release_destroy -> :ok
+      end
+
+      {:ok, %{teardown_confirmed: true}}
+    end
+
+    ctx = start_stack(assign_fun: fail_assign, destroy_fun: blocking_destroy)
+    put_session_workload(ctx, "wl-fail-order")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-fail-order", "p1")
+
+    assert {:error, :suspect} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+
+    # No barrier on purpose: the reply itself is the guarantee.
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :failed
+    assert :session_failed in op_kinds_for(ctx, created.session_id)
+
+    # The VM destroy still runs, best-effort, after the caller is unblocked.
+    assert_receive {:destroy_started, destroyer, _vm}, 1_000
+    send(destroyer, :release_destroy)
+  end
+
+  test "a worker that dies without reporting fails the session durably before replying" do
+    parent = self()
+
+    dying_assign = fn _ch, _req -> exit(:worker_boom) end
+
+    blocking_destroy = fn _ch, vm ->
+      send(parent, {:destroy_started, self(), vm})
+
+      receive do
+        :release_destroy -> :ok
+      end
+
+      {:ok, %{teardown_confirmed: true}}
+    end
+
+    ctx = start_stack(assign_fun: dying_assign, destroy_fun: blocking_destroy)
+    put_session_workload(ctx, "wl-down-order")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-down-order", "p1")
+
+    assert {:error, {:worker_down, :worker_boom}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :failed
+    assert :session_failed in op_kinds_for(ctx, created.session_id)
+
+    assert_receive {:destroy_started, destroyer, _vm}, 1_000
+    send(destroyer, :release_destroy)
+  end
+
   # -- destroy ---------------------------------------------------------------
 
   test "destroy from running tears down the process and records session_destroyed" do
