@@ -55,6 +55,7 @@ single_version_override(
     patch_strip = 1,
     patches = ["//:bazel/patches/rules_apko_no_range.patch"],
 )
+
 bazel_dep(name = "rules_multirun", version = "0.13.0")
 bazel_dep(name = "tar.bzl", version = "0.6.0")
 bazel_dep(name = "platforms", version = "1.0.0")
