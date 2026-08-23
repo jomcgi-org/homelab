@@ -5,19 +5,33 @@
     card,
     sessionId,
     onSend = async () => {},
+    decisionTarget = null,
+    onDecide = async () => {},
     onAnswered = () => {},
   } = $props();
 
   let sending = $state(false);
 
   async function choose(option) {
-    if (sending || card.answered || sessionId == null) return;
+    const routesToDecision =
+      decisionTarget?.options?.includes(String(option)) ?? false;
+    if (sending || card.answered || (!routesToDecision && sessionId == null))
+      return;
     sending = true;
     try {
-      await onSend({ session_id: sessionId, prompt: option });
+      if (routesToDecision) {
+        await onDecide({
+          workflowId: decisionTarget.workflowId,
+          nodeKey: decisionTarget.nodeKey,
+          decision: option,
+          note: "",
+        });
+      } else {
+        await onSend({ session_id: sessionId, prompt: option });
+      }
       onAnswered(card.key);
     } catch {
-      // sendSessionPrompt already raised the console's error banner.
+      // The injected route already raised the console's error banner.
     } finally {
       sending = false;
     }
@@ -34,7 +48,10 @@
       <button
         class:primary={index === 0}
         type="button"
-        disabled={sending || card.answered || sessionId == null}
+        disabled={sending ||
+          card.answered ||
+          (sessionId == null &&
+            !decisionTarget?.options?.includes(String(option)))}
         onclick={() => choose(option)}
       >
         <span>{option}</span>

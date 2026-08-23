@@ -60,6 +60,44 @@ afterEach(async () => {
 });
 
 describe("launcher submit path", () => {
+  test("uses the human decision kind as a recent run's ask word", async () => {
+    const target = await render(vi.fn(), {
+      summary: {
+        items: [
+          {
+            kind: "run",
+            id: "wf-1",
+            activityAt: "2026-08-22T11:00:00Z",
+            value: {
+              workflow_id: "wf-1",
+              title: "Push a branch",
+              state: "blocked",
+              cost_usd: 0,
+              shape: [
+                {
+                  key: "push_gate",
+                  kind: "gate",
+                  state: "blocked",
+                  blocked_on: {
+                    kind: "human",
+                    decision_kind: "push_gate",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        count: 1,
+        allCount: 1,
+        sessionCount: 0,
+        runCount: 1,
+        spend: 0,
+      },
+    });
+
+    expect(target.textContent).toContain("Approve push");
+  });
+
   test("form submit and command enter call the provided task creator", async () => {
     const createTask = vi.fn();
     const target = await render(createTask);

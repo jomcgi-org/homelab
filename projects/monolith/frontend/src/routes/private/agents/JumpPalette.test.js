@@ -73,6 +73,42 @@ afterEach(async () => {
 });
 
 describe("jump palette keyboard behavior", () => {
+  test("uses the human decision kind as a needs-you run's ask word", async () => {
+    const gated = {
+      workflow_id: "wf-1",
+      title: "Push a branch",
+      state: "blocked",
+      updated_at: "2026-08-22T11:00:00Z",
+      shape: [
+        {
+          key: "push_gate",
+          kind: "gate",
+          state: "blocked",
+          blocked_on: {
+            kind: "human",
+            decision_kind: "push_gate",
+          },
+        },
+      ],
+    };
+    const target = await render({
+      runs: [gated],
+      inbox: {
+        needsYou: [
+          {
+            kind: "run",
+            id: "wf-1",
+            value: gated,
+            activityAt: gated.updated_at,
+          },
+        ],
+        running: [],
+      },
+    });
+
+    expect(target.textContent).toContain("Approve push");
+  });
+
   test("opens voice companion from Actions", async () => {
     const onOpenVoice = vi.fn();
     const target = await render({ onOpenVoice });

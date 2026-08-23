@@ -12,6 +12,7 @@
     exchangeCount,
     renderSummoningCall,
     renderWireCall,
+    decisionTargetForAsk,
   } from "./companion/stage.js";
 
   let {
@@ -25,6 +26,7 @@
     onPin = () => {},
     onDismiss = () => {},
     onSend = async () => {},
+    onDecide = async () => {},
     onAnswered = () => {},
   } = $props();
 
@@ -164,7 +166,14 @@
             </button>
           </header>
           {#if card.kind === "ask"}
-            <VoiceAskCard {card} sessionId={attachedId} {onSend} {onAnswered} />
+            <VoiceAskCard
+              {card}
+              sessionId={attachedId}
+              {onSend}
+              decisionTarget={decisionTargetForAsk(card, runDetails)}
+              {onDecide}
+              {onAnswered}
+            />
           {:else if card.kind === "tool"}
             <div class="tool-row">{renderSummoningCall(card)}</div>
           {:else if card.surface === "run"}

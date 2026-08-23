@@ -3,6 +3,7 @@
   import { firstLine, fmtCost } from "./run-format.js";
   import { relativeTime } from "./run-history.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
+  import { humanDecision, runAsk } from "./inbox.js";
   import { sessionTitle } from "./jump.js";
   import { statusClass, statusLabel } from "./status.js";
 
@@ -204,7 +205,9 @@
               {#if item.kind === "run"}
                 {P.labels.run}
                 {P.punct.dot}
-                {P.stateWords[entry.state] || entry.state}
+                {entry.needs || humanDecision(entry)
+                  ? runAsk(entry)
+                  : P.stateWords[entry.state] || entry.state}
                 {P.punct.dot}
                 {fmtCost(entry.cost_usd) || P.labels.zeroCost}
               {:else}

@@ -49,6 +49,7 @@ function node(key, label, state, overrides = {}) {
           ? ["implement"]
           : ["push_gate"],
     blocked_on: null,
+    decision_record: null,
     evidence: null,
     ...overrides,
   };
@@ -598,6 +599,35 @@ const humanBlocked = run("human-blocked", "escalated", {
   ],
 });
 
+const gated = run("gated", "blocked", {
+  completed_at: null,
+  needs: { kind: "human", reason: "waiting on your decision" },
+  disposition: {
+    state: "gated",
+    reason: "the branch is ready for your decision",
+    next: "choose one of: approve, send_back, retry",
+  },
+  nodes: [
+    node("implement", "implement", "done", {
+      evidence: {
+        kind: "branch_head",
+        summary: "head 86dcbf41 is ready to push",
+      },
+    }),
+    node("push_gate", "push gate", "blocked", {
+      blocked_on: {
+        kind: "human",
+        note: "Approve this branch for push?",
+        since: "2026-08-10T22:55:00Z",
+        decision_id: 5129,
+        options: ["approve", "send_back", "retry"],
+        decision_kind: "push_gate",
+      },
+    }),
+    node("review", "review", "future"),
+  ],
+});
+
 const failedNoHuman = run("failed-no-human", "failed", {
   dbos_status: "ERROR",
   disposition: {
@@ -797,6 +827,7 @@ export const RUN_FIXTURES = {
   ]),
   wide: entry(wide),
   "human-blocked": entry(humanBlocked),
+  "run-gated": entry(gated),
   "failed-no-human": entry(failedNoHuman),
   "multi-node-deviations": entry(multiNodeDeviations),
   "home-with-activity": homeEntry(

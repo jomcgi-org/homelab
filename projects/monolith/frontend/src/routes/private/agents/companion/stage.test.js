@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
   applyLedgerRows,
+  askWorkflowId,
   answerCard,
   askKey,
   cardPhase,
   dismissCard,
+  decisionTargetForAsk,
   emptyStage,
   renderSummoningCall,
   renderWireCall,
@@ -27,6 +29,35 @@ function row(overrides = {}) {
 }
 
 describe("companion stage reducer", () => {
+  test("resolves prefixed and bare ask refs to an open run decision", () => {
+    const details = {
+      "wf-1": {
+        run: {
+          workflow_id: "wf-1",
+          nodes: [
+            {
+              key: "push_gate",
+              blocked_on: { kind: "human", options: ["approve"] },
+            },
+          ],
+        },
+      },
+    };
+    const card = {
+      kind: "ask",
+      ref: "run-wf-1",
+      payload: { node_key: "push_gate" },
+    };
+
+    expect(askWorkflowId(card)).toBe("wf-1");
+    expect(decisionTargetForAsk(card, details)).toEqual({
+      workflowId: "wf-1",
+      nodeKey: "push_gate",
+      options: ["approve"],
+    });
+    expect(askWorkflowId({ ...card, ref: "wf-1" })).toBe("wf-1");
+  });
+
   test("show adds a surface card keyed by surface and ref", () => {
     const stage = applyLedgerRows(emptyStage(), [
       row({ id: 1, payload: { surface: "run", ref: "wf-1", focus: "review" } }),

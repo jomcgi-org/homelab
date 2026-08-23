@@ -3,6 +3,7 @@
   import { shapeStateClass } from "./dag.js";
   import { jumpActions, jumpMatches } from "./jump.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
+  import { humanDecision, runAsk } from "./inbox.js";
   import { statusClass } from "./status.js";
 
   let {
@@ -94,9 +95,25 @@
     if (item.kind === "session") {
       return sessions.find((session) => String(session.id) === String(item.id));
     }
-    return [...runs, ...terminalRuns].find(
-      (run) => String(run.workflow_id) === String(item.id),
+    return (
+      [...runs, ...terminalRuns].find(
+        (run) => String(run.workflow_id) === String(item.id),
+      ) ??
+      [...(inbox.needsYou ?? []), ...(inbox.running ?? [])].find(
+        (candidate) =>
+          candidate.kind === "run" && String(candidate.id) === String(item.id),
+      )?.value
     );
+  }
+
+  function rowMeta(item, value) {
+    const needsAttention = (inbox.needsYou ?? []).some(
+      (candidate) =>
+        candidate.kind === "run" && String(candidate.id) === String(item.id),
+    );
+    if (item.kind !== "run" || !needsAttention || !item.meta) return item.meta;
+    const ask = humanDecision(value) || value?.needs ? runAsk(value) : null;
+    return ask ? item.meta.replace(P.labels.needsYou, ask) : item.meta;
   }
 
   function openInNewTab(item) {
@@ -310,7 +327,9 @@
         {item.title}
       {/if}
     </span>
-    {#if item.meta}<span class="jump-meta">{item.meta}</span>{/if}
+    {#if rowMeta(item, value)}<span class="jump-meta"
+        >{rowMeta(item, value)}</span
+      >{/if}
     {#if item.hint}<kbd class="jump-hint">{item.hint}</kbd>{/if}
   </button>
 {/snippet}

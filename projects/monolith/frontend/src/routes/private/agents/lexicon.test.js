@@ -32,6 +32,7 @@ const EVERY_VALUE = [
   ...allValues(RUN_LEXICON.stateWords),
   ...allValues(RUN_LEXICON.nodeStates),
   ...allValues(RUN_LEXICON.deviationCodes),
+  ...allValues(RUN_LEXICON.decisionOptionLabels),
 ];
 
 describe("run lexicon", () => {
