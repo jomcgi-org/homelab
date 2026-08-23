@@ -188,6 +188,18 @@ cnpg:
 secret:
   itemPath: "vaults/k8s-homelab/items/context-forge"
 
+# Git-owned half of root-endpoint MCP auth (#5033): which CF team each
+# authentik group lands in. Membership itself is reconciled per request by CF
+# from the token's groups claim. Adding a group here grants it on the next
+# tick; a CF database rebuild self-heals the same way. The sso_providers row
+# stays on scripts/provision-mcp-auth.sh (needs the authentik client id).
+teamMapping:
+  enabled: true
+  teams:
+    - authentikGroup: homelab-admin
+      team: homelab-admin
+      description: Full monolith catalogue. Mapped from the authentik group of the same name.
+
 # ── External access via Cloudflare Managed OAuth (ADR 011) ───────────────
 httpRoute:
   enabled: true

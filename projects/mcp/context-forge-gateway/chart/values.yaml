@@ -87,6 +87,36 @@ secret:
   name: context-forge
   itemPath: ""
 
+# Reconcile the authentik group -> Context Forge team mapping from Git
+# (templates/team-mapping-cronjob.yaml, #5033). Off by default so the chart
+# ships inert; production enables it in deploy/values.yaml with its team list.
+# Membership stays authentik's: CF applies the mapping per request from the
+# token's groups claim. This only keeps the WIRING (team rows and
+# sso_providers.team_mapping) declared here instead of in a hand-run script.
+teamMapping:
+  enabled: false
+  # Every 15 minutes: a new group in values is not urgent, and this never
+  # touches the tool catalogue so it cannot preempt CF's own refresh loop.
+  schedule: "*/15 * * * *"
+  # Cap each run so a hung pod cannot linger.
+  activeDeadlineSeconds: 120
+  # The sso_providers row to write team_mapping onto. Created by
+  # scripts/provision-mcp-auth.sh (needs the authentik client id); the job
+  # fails loudly if it is missing rather than inventing one.
+  providerId: authentik
+  # authentikGroup is matched by NAME against the token's groups claim
+  # (case-insensitively, by CF). team is the CF team, created if absent.
+  teams: []
+  #  - authentikGroup: homelab-admin
+  #    team: homelab-admin
+  #    description: Full monolith catalogue.
+  resources:
+    requests:
+      cpu: 10m
+      memory: 128Mi
+    limits:
+      memory: 128Mi
+
 # NetworkPolicies disabled. Context Forge enforces auth at the application
 # layer instead.
 networkPolicy:
