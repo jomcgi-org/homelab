@@ -5395,7 +5395,6 @@ py_test(
     srcs = ["public_cilium_scoped_egress_guard_test.py"],
     data = ["//projects/monolith-public/chart:cilium_scoped_egress_template"],
     imports = ["."],
-    deps = ["@pip//pytest"],
 )
 
 # Guard: the packaged homelab-library must deploy images by content digest, not
@@ -7426,4 +7425,17 @@ semgrep_target_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":gen_posts_manifest",
+)
+
+semgrep_test(
+    name = "public_cilium_scoped_egress_guard_test_semgrep_test",
+    srcs = ["public_cilium_scoped_egress_guard_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
