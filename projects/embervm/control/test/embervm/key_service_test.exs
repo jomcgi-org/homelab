@@ -253,6 +253,15 @@ defmodule Embervm.KeyServiceTest do
     assert {:ok, ^data_key} = KeyService.unwrap(rotating_service, new_envelope)
     assert {:ok, ^new_envelope} = new_envelope |> Envelope.encode() |> Envelope.decode()
 
+    artifact = %{"kind" => "session", "workload" => "sbx", "ref" => "snap"}
+    assert {:ok, rewrapped, :rewrapped} =
+             KeyService.rewrap(rotating_service, @principal, old_envelope, artifact)
+
+    assert %Envelope{version: 3, root_generation: 2} = rewrapped
+    assert {:ok, ^data_key} = KeyService.unwrap(rotating_service, rewrapped)
+    assert {:ok, ^rewrapped, :unchanged} =
+             KeyService.rewrap(rotating_service, @principal, rewrapped, artifact)
+
     assert {:error, :auth_failed} =
              KeyService.unwrap(rotating_service, %{new_envelope | root_generation: 1})
 
@@ -353,13 +362,87 @@ defmodule Embervm.KeyServiceTest do
              KeyService.unwrap(platform_service, customer_envelope)
   end
 
+  test "explicit custody transitions rewrap both directions without changing the data key" do
+    data_key = :binary.copy(<<11>>, 32)
+    artifact = %{"kind" => "session", "workload" => "sbx", "ref" => "snap"}
+    {platform_service, _op_log} = start_service()
+    assert {:ok, platform_envelope} = KeyService.wrap(platform_service, @principal, data_key)
+
+    {:ok, kms} =
+      Agent.start_link(fn ->
+        %{data_key: data_key, wrapped_key: "customer-ciphertext", reply: nil, calls: []}
+      end)
+
+    to_customer = %{
+      adapter: FakeCustomerKMS,
+      mode: :customer,
+      transition_from: :platform,
+      endpoint: "https://kms.example",
+      key_ref: "alice-key",
+      bearer_token: "grant",
+      agent: kms
+    }
+
+    {customer_transition, _op_log} =
+      start_service(customer_kms: %{@principal => to_customer})
+
+    assert {:ok, customer_envelope, :rewrapped} =
+             KeyService.rewrap(
+               customer_transition,
+               @principal,
+               platform_envelope,
+               artifact
+             )
+
+    assert %Envelope{version: 2, key_ref: "alice-key"} = customer_envelope
+    assert {:ok, ^data_key} = KeyService.unwrap(customer_transition, customer_envelope)
+
+    strict_customer = %{to_customer | transition_from: nil}
+    {customer_complete, _op_log} =
+      start_service(customer_kms: %{@principal => strict_customer})
+
+    assert {:error, :custody_mismatch} =
+             KeyService.unwrap(customer_complete, platform_envelope)
+
+    to_platform = %{to_customer | mode: :platform, transition_from: :customer}
+    {platform_transition, _op_log} =
+      start_service(customer_kms: %{@principal => to_platform})
+
+    assert {:ok, new_platform_envelope, :rewrapped} =
+             KeyService.rewrap(
+               platform_transition,
+               @principal,
+               customer_envelope,
+               artifact
+             )
+
+    assert %Envelope{version: 1} = new_platform_envelope
+    assert {:ok, ^data_key} = KeyService.unwrap(platform_transition, new_platform_envelope)
+
+    platform_without_fallback = %{to_platform | transition_from: nil}
+    {platform_complete, _op_log} =
+      start_service(customer_kms: %{@principal => platform_without_fallback})
+
+    assert {:error, :custody_mismatch} =
+             KeyService.unwrap(platform_complete, customer_envelope)
+
+    assert {:ok, ^data_key} = KeyService.unwrap(platform_service, new_platform_envelope)
+  end
+
   test "an envelope below a newly raised floor is revoked" do
     {service, _op_log} = start_service()
     assert {:ok, envelope} = KeyService.wrap(service, @principal, @root)
     assert {:ok, 1} = KeyService.set_epoch(service, @principal, 1, "rotate")
+
+    artifact = %{"kind" => "session", "workload" => "sbx", "ref" => "snap"}
+    assert {:ok, current_envelope, :rewrapped} =
+             KeyService.rewrap(service, @principal, envelope, artifact)
+
+    assert current_envelope.epoch == 1
     assert {:ok, 1} = KeyService.raise_min_epoch(service, @principal, 1, "revoke")
 
     assert {:error, :below_floor} = KeyService.unwrap(service, envelope)
+    assert {:ok, @root} = KeyService.unwrap(service, current_envelope)
   end
 
   test "telemetry counts derivations, floor raises, and below-floor refusals" do
@@ -396,6 +479,33 @@ defmodule Embervm.KeyServiceTest do
 
     assert_receive {:telemetry, [:embervm, :key_service, :refused_below_floor], %{count: 1},
                     %{epoch: 0, min_epoch: 1}}
+  end
+
+  test "telemetry counts completed envelope rewraps" do
+    handler = "key-service-rewrap-test-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:embervm, :key_service, :rewrap_progress],
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    {service, _op_log} = start_service()
+    assert {:ok, envelope} = KeyService.wrap(service, @principal, @root)
+    assert {:ok, 1} = KeyService.set_epoch(service, @principal, 1, "rotate")
+
+    artifact = %{"kind" => "session", "workload" => "sbx", "ref" => "snap"}
+    assert {:ok, _new_envelope, :rewrapped} =
+             KeyService.rewrap(service, @principal, envelope, artifact)
+
+    assert_receive {:telemetry, [:embervm, :key_service, :rewrap_progress], %{count: 1},
+                    %{from: :platform, to: :platform}}
   end
 
   test "a fresh service recovers epochs and floors from SQLite" do

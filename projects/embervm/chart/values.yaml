@@ -232,9 +232,10 @@ kekRoot:
 
 # Customer-managed KEK custody (ADR embervm/033). The named Secret is supplied
 # by the principal and contains one JSON key (default "config") mapping principal
-# ids to HTTPS KMS oracle endpoints, opaque key references, and wrap/unwrap grant
-# tokens. The KEKs stay in the customer service. Empty is inert and renders no
-# environment variable.
+# ids to a target custody mode, HTTPS KMS oracle endpoints, opaque key
+# references, and wrap/unwrap grant tokens. An optional transition_from names
+# the opposite mode only while old envelopes are rewrapped. The KEKs stay in the
+# customer service. Empty is inert and renders no environment variable.
 customerKms:
   secretName: ""
   secretKey: config
