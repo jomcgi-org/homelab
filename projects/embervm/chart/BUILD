@@ -141,6 +141,27 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
+# Pins the noded CiliumNetworkPolicy's activator ports to the servingEnvoy
+# capacity values: the 2026-08-22 cold-wake drop happened because the stateful
+# and composite TCP ranges were missing from the policy with nothing failing
+# CI. See noded_networkpolicy_test.py and the STPA open question it closes.
+py_test(
+    name = "noded_networkpolicy_test",
+    srcs = ["noded_networkpolicy_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = ["@pip//pytest"],
+)
+
 py_test(
     name = "chart_hypervisor_epoch_test",
     srcs = ["chart_hypervisor_epoch_test.py"],
