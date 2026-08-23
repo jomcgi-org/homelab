@@ -166,7 +166,10 @@ func run(logger *slog.Logger) error {
 	storeOpts := []store.Option{
 		store.WithCredentials(cfg.StoreAccessKeyID, cfg.StoreSecretAccessKey),
 	}
-	if cfg.StoreEncrypt && cfg.ControlPlaneURL != "" {
+	// Install the provider whenever the control plane is reachable. The writer
+	// gate remains in server.exportWithKeys, while lazy envelope rewrap must stay
+	// available during an inert or rolled-back writer phase.
+	if cfg.ControlPlaneURL != "" {
 		storeOpts = append(storeOpts, store.WithDataKeys(server.NewCPDataKeyProvider(cfg.ControlPlaneURL, cfg.ControlPlaneTokenPath)))
 	} else if cfg.StoreEncrypt {
 		logger.Warn("object store encryption armed without a control-plane URL; exports remain unencrypted because no data-key provider is configured")

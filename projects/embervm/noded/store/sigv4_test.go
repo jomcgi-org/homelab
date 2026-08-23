@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,5 +71,17 @@ func TestSignUsesPinnedClock(t *testing.T) {
 	}
 	if got := req.Header.Get("x-amz-date"); got != "20260821T123456Z" {
 		t.Fatalf("x-amz-date = %q", got)
+	}
+}
+
+func TestSignAuthenticatesIfMatch(t *testing.T) {
+	s := New("http://example.test", "embervm", false, WithCredentials("id", "secret"))
+	req, _ := http.NewRequest(http.MethodPut, s.url("session/amd/demo/ref/meta.json"), nil)
+	req.Header.Set("If-Match", `"quoted-etag"`)
+	if err := s.sign(req); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Authorization"); !strings.Contains(got, "SignedHeaders=host;if-match;x-amz-content-sha256;x-amz-date") {
+		t.Fatalf("Authorization does not sign If-Match: %q", got)
 	}
 }

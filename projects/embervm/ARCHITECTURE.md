@@ -717,7 +717,12 @@ markers and rewrites the envelope without reading payload objects. Every
 generation and file manifest overwritten. Only an uncapped sweep with no
 conflicts, refusals, invalid markers, or store errors reports complete; raising
 an epoch floor or retiring a previous root or source-custody grant remains a
-separate operator action.
+separate operator action. Successful access provides a second convergence path:
+an enveloped inline restore, an already-local authenticated restore, or a
+checksum-skipped export schedules the same envelope-only operation in noded.
+That lazy request is detached from access latency, bounded to 15 seconds, and
+uses noded's signed S3 client with the same exact-ETag compare-and-swap. It
+preserves unknown marker fields and never reads an artifact payload object.
 
 **Decided direction:**
 
@@ -792,8 +797,10 @@ accepts old-custody envelopes, and rewrap changes the envelope without touching
 artifact ciphertext. The background reconciler persists that replacement with
 an ETag compare-and-swap, isolates customer KMS calls with bounded concurrency,
 and refuses to claim transition completion after any capped, conflicted, or
-failed pass. No customer oracle is configured in the reference deployment, so
-the mode is available but inert.
+failed pass. Noded also attempts the same CAS asynchronously after successful
+artifact access, so hot artifacts converge promptly while the background pass
+continues to cover cold artifacts. No customer oracle is configured in the
+reference deployment, so the mode is available but inert.
 
 **Decided direction:**
 

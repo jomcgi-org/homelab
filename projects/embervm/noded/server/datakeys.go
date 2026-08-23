@@ -13,7 +13,10 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/store"
 )
 
-const wrapArtifactPath = "/v1/artifacts/wrap"
+const (
+	wrapArtifactPath   = "/v1/artifacts/wrap"
+	rewrapArtifactPath = "/v1/artifacts/rewrap"
+)
 
 type cpDataKeyProvider struct {
 	controlPlaneURL string
@@ -76,4 +79,46 @@ func (p *cpDataKeyProvider) DataKey(ctx context.Context, kind, workload, ref str
 		return nil, nil, fmt.Errorf("artifact wrap response envelope is empty")
 	}
 	return out.DataKey, out.Envelope, nil
+}
+
+// RewrapEnvelope asks the control plane to move one opaque artifact envelope
+// to its current root generation. The data key never enters this response.
+func (p *cpDataKeyProvider) RewrapEnvelope(ctx context.Context, kind, workload, ref string, envelope []byte) ([]byte, bool, error) {
+	body, err := json.Marshal(struct {
+		Kind     string `json:"kind"`
+		Workload string `json:"workload"`
+		Ref      string `json:"ref"`
+		Envelope []byte `json:"envelope"`
+	}{Kind: kind, Workload: workload, Ref: ref, Envelope: envelope})
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal artifact rewrap request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.controlPlaneURL+rewrapArtifactPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, false, fmt.Errorf("build artifact rewrap request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := readControlPlaneToken(p.tokenPath); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := p.doer.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("post artifact rewrap request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		return nil, false, fmt.Errorf("control plane rejected artifact rewrap request: status %d", resp.StatusCode)
+	}
+	var out struct {
+		Changed  bool   `json:"changed"`
+		Envelope []byte `json:"envelope"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+		return nil, false, fmt.Errorf("decode artifact rewrap response: %w", err)
+	}
+	if len(out.Envelope) == 0 {
+		return nil, false, fmt.Errorf("artifact rewrap response envelope is empty")
+	}
+	return out.Envelope, out.Changed, nil
 }

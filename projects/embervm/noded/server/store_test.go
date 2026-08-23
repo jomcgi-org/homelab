@@ -35,12 +35,18 @@ type fakeStore struct {
 	// exportCalls counts Export invocations per prefix (skipped or not).
 	exportCalls  map[string]int
 	dataKeyCalls map[string]int
+	rewrapCh     chan fakeRewrapCall
 	// reachable is what Reachable reports.
 	reachable bool
 	// order records prefixes in export order (for asserting meta-last is N/A here;
 	// we assert on the fact of export, not object ordering, since the fake stores
 	// whole artifacts atomically).
 	order []string
+}
+
+type fakeRewrapCall struct {
+	prefix  string
+	options store.ExportOptions
 }
 
 type fakeArtifact struct {
@@ -59,8 +65,18 @@ func newFakeStore() *fakeStore {
 		arts:         make(map[string]fakeArtifact),
 		exportCalls:  make(map[string]int),
 		dataKeyCalls: make(map[string]int),
+		rewrapCh:     make(chan fakeRewrapCall, 16),
 		reachable:    true,
 	}
+}
+
+func (f *fakeStore) RewrapEnvelope(_ context.Context, prefix string, options store.ExportOptions) (bool, error) {
+	call := fakeRewrapCall{prefix: prefix, options: options}
+	select {
+	case f.rewrapCh <- call:
+	default:
+	}
+	return true, nil
 }
 
 func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string, options ...store.ExportOptions) (int64, bool, error) {
@@ -1604,6 +1620,92 @@ func TestExportPathsApplyPrincipalEncryptionPolicy(t *testing.T) {
 	s.runExportJob(ctx, exportJob{ref: asyncBase, key: asyncBaseKey})
 	if got := fs.keyCalls(asyncBaseKey); got != 0 {
 		t.Fatalf("runExportJob base data-key calls = %d, want 0", got)
+	}
+}
+
+func TestSuccessfulArtifactAccessSchedulesLazyEnvelopeRewrap(t *testing.T) {
+	t.Run("inline encrypted restore", func(t *testing.T) {
+		fs := newFakeStore()
+		s := newStoreTestServer(t, fs)
+		ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "sandbox", Ref: "state-1"}
+		prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+		fs.seedEncryptedArtifact(prefix, map[string]string{"memfile": "state"}, 4, s.cfg.CpuVendor, s.cfg.CpuTemplate)
+
+		_, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+			Artifact:   ref,
+			Vendor:     s.cfg.CpuVendor,
+			Capability: restoreCapabilityForTest(t, s, ref, 4, nil),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertLazyRewrapCall(t, fs, prefix, "stateful", "sandbox", "state-1")
+	})
+
+	t.Run("already local encrypted restore", func(t *testing.T) {
+		fs := newFakeStore()
+		s := newStoreTestServer(t, fs)
+		ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: "sandbox", Ref: "session-1"}
+		prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+		fs.seedEncryptedArtifact(prefix, map[string]string{"memfile": "state"}, 0, s.cfg.CpuVendor, s.cfg.CpuTemplate)
+		writeBundleFiles(t, s.artifactLocalDir(ref), map[string]string{"memfile": "already local"})
+
+		resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+			Artifact:   ref,
+			Vendor:     s.cfg.CpuVendor,
+			Capability: restoreCapabilityForTest(t, s, ref, 0, nil),
+		})
+		if err != nil || !resp.GetSkipped() {
+			t.Fatalf("RestoreArtifact = %#v, %v, want skipped", resp, err)
+		}
+		assertLazyRewrapCall(t, fs, prefix, "session", "sandbox", "session-1")
+	})
+
+	t.Run("idempotent export", func(t *testing.T) {
+		fs := newFakeStore()
+		s := newStoreTestServer(t, fs)
+		ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SERVING, Workload: "api", Ref: "serving-1"}
+		prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+		writeBundleFiles(t, s.artifactLocalDir(ref), map[string]string{"memfile": "same"})
+		if _, err := s.ExportArtifact(context.Background(), &nodev1.ExportArtifactRequest{Artifact: ref}); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := s.ExportArtifact(context.Background(), &nodev1.ExportArtifactRequest{Artifact: ref})
+		if err != nil || !resp.GetSkipped() {
+			t.Fatalf("ExportArtifact = %#v, %v, want skipped", resp, err)
+		}
+		assertLazyRewrapCall(t, fs, prefix, "serving", "api", "serving-1")
+	})
+}
+
+func TestRefusedRestoreDoesNotScheduleLazyEnvelopeRewrap(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	s.cfg.RequireRestoreCapability = true
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "sandbox", Ref: "state-denied"}
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+	fs.seedEncryptedArtifact(prefix, map[string]string{"memfile": "state"}, 2, s.cfg.CpuVendor, s.cfg.CpuTemplate)
+
+	_, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{Artifact: ref, Vendor: s.cfg.CpuVendor})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("RestoreArtifact code = %v, want PermissionDenied", status.Code(err))
+	}
+	select {
+	case call := <-fs.rewrapCh:
+		t.Fatalf("refused restore scheduled rewrap: %#v", call)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func assertLazyRewrapCall(t *testing.T, fs *fakeStore, prefix, kind, workload, ref string) {
+	t.Helper()
+	select {
+	case call := <-fs.rewrapCh:
+		if call.prefix != prefix || call.options.Kind != kind || call.options.Workload != workload || call.options.Ref != ref {
+			t.Fatalf("rewrap call = %#v, want prefix=%q kind=%q workload=%q ref=%q", call, prefix, kind, workload, ref)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for lazy envelope rewrap")
 	}
 }
 
