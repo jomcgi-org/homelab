@@ -3,6 +3,7 @@ import { Type } from "typebox";
 
 const SEARXNG_URL =
   "http://monolith-searxng.monolith.svc.cluster.local:8080/search";
+const NO_PROXY_HOSTS = "127.0.0.1,localhost";
 const USER_AGENT = "EmberVM-Pi-WebResearch/1.0";
 const MAX_DOWNLOAD_BYTES = 1024 * 1024;
 const DEFAULT_PAGE_CHARS = 16000;
@@ -91,6 +92,30 @@ function validateUrl(raw: string): string {
   return parsed.toString();
 }
 
+// The guest has no NIC: every request has to ride the shim's local forwarder,
+// and one that misses it fails as "Could not resolve host" rather than as a
+// routing error. curl reads http_proxy in LOWERCASE ONLY for an http:// URL
+// (uppercase HTTP_PROXY is ignored on purpose, since a CGI environment can
+// forge that one from a Proxy: header), which is how SearXNG looked down from
+// here while web_fetch over https:// worked.
+//
+// The shim exports both cases now (shim.egress_proxy_env). Naming the proxy on
+// the command line as well is not redundancy for its own sake: this extension
+// runs INSIDE pi, where the variable is certain to exist, so the flag does not
+// depend on how pi.exec assembles a child environment.
+function egressProxy(): string {
+  const env =
+    (globalThis as { process?: { env?: Record<string, string | undefined> } })
+      .process?.env ?? {};
+  const candidate =
+    env.http_proxy ??
+    env.HTTP_PROXY ??
+    env.https_proxy ??
+    env.HTTPS_PROXY ??
+    "";
+  return candidate.trim();
+}
+
 function curlArgs(url: string, includeMetadata = false): string[] {
   const args = [
     "--silent",
@@ -112,6 +137,10 @@ function curlArgs(url: string, includeMetadata = false): string[] {
     "--user-agent",
     USER_AGENT,
   ];
+  const proxy = egressProxy();
+  if (proxy) {
+    args.push("--proxy", proxy, "--noproxy", NO_PROXY_HOSTS);
+  }
   if (includeMetadata) {
     args.push(
       "--write-out",
