@@ -251,6 +251,86 @@ describe("leg tag staggering", () => {
   it("handles no tags", () => {
     expect(packLegTags([])).toEqual({ tags: [], staggerCount: 0 });
   });
+
+  it("staggers a long label that clears the start gap but not its own width", () => {
+    // 25% apart clears the fixed 24% fallback, but on a 600px track
+    // "Pack out and leave Vancouver" is wider than 25% of the track.
+    const tags = [
+      {
+        id: "span-move",
+        label: "Pack out and leave Vancouver",
+        starts_on: "2026-10-01",
+        ends_on: "2026-10-10",
+        position: 50,
+      },
+      {
+        id: "span-japan",
+        label: "Japan",
+        starts_on: "2026-10-11",
+        ends_on: "2026-10-25",
+        position: 75,
+      },
+    ];
+
+    expect(packLegTags(tags).staggerCount).toBe(1);
+    expect(packLegTags(tags, { trackWidthPx: 600 }).staggerCount).toBe(2);
+  });
+
+  it("keeps short labels on one row when the track is wide enough", () => {
+    // 8% apart trips the fixed fallback, but on a 1600px track "Japan"
+    // is well under 8% wide.
+    const tags = [
+      {
+        id: "span-japan",
+        label: "Japan",
+        starts_on: "2026-10-11",
+        ends_on: "2026-10-25",
+        position: 50,
+      },
+      {
+        id: "span-uk",
+        label: "UK",
+        starts_on: "2026-10-26",
+        ends_on: "2026-11-02",
+        position: 58,
+      },
+    ];
+
+    expect(packLegTags(tags).staggerCount).toBe(2);
+    expect(packLegTags(tags, { trackWidthPx: 1600 }).staggerCount).toBe(1);
+  });
+
+  it("measures the date line too, so a short label with a long range is not packed tight", () => {
+    const tags = [
+      {
+        id: "a",
+        label: "UK",
+        starts_on: "2026-09-28",
+        ends_on: "2026-11-30",
+        position: 50,
+      },
+      {
+        id: "b",
+        label: "Go",
+        starts_on: "2026-12-01",
+        ends_on: "2026-12-02",
+        position: 54,
+      },
+    ];
+
+    // "28 Sep \u2013 30 Nov" is about 16 mono characters: wider than
+    // 4% of a 1200px track even though "UK" alone would fit.
+    expect(packLegTags(tags, { trackWidthPx: 1200 }).staggerCount).toBe(2);
+  });
+
+  it("ignores a non-positive track width and falls back to the start gap", () => {
+    const tags = [
+      { id: "a", label: "Pack out and leave Vancouver", position: 50 },
+      { id: "b", label: "Japan", position: 75 },
+    ];
+
+    expect(packLegTags(tags, { trackWidthPx: 0 }).staggerCount).toBe(1);
+  });
 });
 
 describe("milestone grouping by date", () => {

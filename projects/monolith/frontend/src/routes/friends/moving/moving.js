@@ -354,12 +354,33 @@ export function packLaneBars(bars) {
   };
 }
 
-// Leg tags carry no known text width (unlike bars, which are sized by
-// date span), so overlap is approximated by how close two tags start,
-// rather than measuring pixels.
+// Leg tags are sized by their text, not their date span, so the packer
+// estimates each tag's width from its label and date line at the plot's
+// type sizes (12.5px bold label, 9.5px mono date) when the caller supplies
+// the track width in pixels. Without one it falls back to a fixed start
+// gap, which is blind to label width (#5017).
 const LEG_TAG_MIN_GAP_PERCENT = 24;
+const LEG_TAG_LABEL_CHAR_PX = 7;
+const LEG_TAG_DATE_CHAR_PX = 5.8;
+const LEG_TAG_CLEARANCE_PX = 14;
 
-export function packLegTags(tags, minGapPercent = LEG_TAG_MIN_GAP_PERCENT) {
+export function estimateLegTagWidthPx(tag) {
+  const label = String(tag.label ?? "");
+  const date =
+    tag.starts_on || tag.ends_on
+      ? formatDateRange(tag.starts_on, tag.ends_on)
+      : "";
+  return (
+    Math.max(
+      label.length * LEG_TAG_LABEL_CHAR_PX,
+      date.length * LEG_TAG_DATE_CHAR_PX,
+    ) + LEG_TAG_CLEARANCE_PX
+  );
+}
+
+export function packLegTags(tags, options = {}) {
+  const { trackWidthPx, minGapPercent = LEG_TAG_MIN_GAP_PERCENT } = options;
+  const measured = Number.isFinite(trackWidthPx) && trackWidthPx > 0;
   const list = tags ?? [];
   const order = list
     .map((_, index) => index)
@@ -373,14 +394,15 @@ export function packLegTags(tags, minGapPercent = LEG_TAG_MIN_GAP_PERCENT) {
 
   for (const index of order) {
     const tag = list[index];
-    let stagger = levelEnds.findIndex(
-      (levelEnd) => tag.position >= levelEnd + minGapPercent,
-    );
+    const end = measured
+      ? tag.position + (estimateLegTagWidthPx(tag) / trackWidthPx) * 100
+      : tag.position + minGapPercent;
+    let stagger = levelEnds.findIndex((levelEnd) => tag.position >= levelEnd);
     if (stagger === -1) {
       stagger = levelEnds.length;
-      levelEnds.push(tag.position);
+      levelEnds.push(end);
     } else {
-      levelEnds[stagger] = tag.position;
+      levelEnds[stagger] = end;
     }
     staggerByIndex[index] = stagger;
   }

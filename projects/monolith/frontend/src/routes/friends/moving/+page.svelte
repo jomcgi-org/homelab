@@ -51,6 +51,7 @@
   let calendarDialog = $state();
   let rolesDialog = $state();
   let plotCard = $state();
+  let plotTrackWidth = $state(0);
   let tooltip = $state(null);
 
   const now = new Date();
@@ -119,6 +120,7 @@
           ),
         }))
         .filter((span) => span.position != null),
+      { trackWidthPx: plotTrackWidth },
     ),
   );
   const plotPadTop = $derived(
@@ -425,7 +427,7 @@
             style:height={`${plotHeight}px`}
             style:--pad-top={`${plotPadTop}px`}
           >
-            <div class="plot-scale">
+            <div class="plot-scale" bind:clientWidth={plotTrackWidth}>
               {#each timeline.months.slice(1) as month (month.value)}
                 <span class="vline" style:left={`${month.position}%`}></span>
               {/each}
