@@ -1,361 +1,106 @@
 fullnameOverride: "inference"
 
-# Which engine serves the LLM. Exactly one runs: node-4 has a single RTX 4090
-# and both deployments request it, so the unselected one is not rendered at all
-# (not scaled to zero) to keep the GPU request honest.
+# The LLM engine is NInfer, via the sm_89 fork at
+# https://github.com/jomcgi/ninfer-4090 (tracks sergiuszm/ninfer-4090). It
+# serves exactly one artifact, Qwen3.8-27B, on node-4's single RTX 4090.
 #
-# "llamacpp" is a deliberate, temporary state. Qwen3.8-27B is a dense 27B whose
-# only Ada-executable quantization today is GGUF: the FP8 build is 28.75 GiB and
-# the NVFP4 build quantizes activations to 4 bits, which needs Blackwell tensor
-# cores that sm_89 does not have. Revert to "vllm" (a one-line change, both
-# blocks below are kept intact) once a weight-only int4 with 16-bit activations
-# ships, in the mould of the Intel AutoRound quant this cluster ran before.
-llm:
-  engine: llamacpp
-
+# This chart used to carry vLLM and llama.cpp behind an llm.engine switch.
+# Both were removed in favour of one engine (issue #5155): NInfer decodes
+# 20-55% faster than llama.cpp on this card with MTP, fits the model's full
+# 262K native context through its E8 4-bit KV, and exposes llama.cpp-shaped
+# /metrics, /slots and per-response timings.ttft_ms. If either old engine is
+# ever needed again, git history before #5155 has the templates and values.
+#
+# Image tags are <VERSION>-<12-char sha> of the fork's rtx4090-port branch,
+# pushed by its GitHub Actions workflow. The package is public on ghcr, so no
+# pull secret is needed for it; imagePullSecret below covers the model images.
 image:
-  vllm:
-    repository: vllm/vllm-openai
-    tag: "v0.19.1"
-    pullPolicy: IfNotPresent
-  # Same repository the embeddings deployment runs, pinned independently: that
-  # one is serving live retrieval traffic on a build known good for it, and
-  # Qwen3.8 support only exists in much newer builds.
-  llamacpp:
-    repository: ghcr.io/ggml-org/llama.cpp
-    tag: "server-cuda-b10423@sha256:a475c08c7c472425e3ebf7f6be9c6cb3a17e82ec28070ddeb22fffe3ca754a94"
-    pullPolicy: IfNotPresent
+  repository: ghcr.io/jomcgi/ninfer-4090
+  tag: "0.6.1-rtx3090-a0d782150c27"
+  pullPolicy: IfNotPresent
 
 imagePullSecret:
   enabled: true
   onepassword:
     itemPath: "vaults/k8s-homelab/items/ghcr-read-permissions"
 
-modelVolume:
-  enabled: true
-  # Qwen3.6-35B-A3B MoE (~3B active) replacing the 27B hybrid (~27B active): at our
-  # batch=1 workload (Discord/summarize) decode is bandwidth-bound on active params,
-  # so this is a large per-call latency win. int4-mixed AutoRound keeps the router/
-  # gate + embeddings at higher precision (better MoE quality) with experts at INT4.
-  # Pushed to ghcr out-of-band via `hf2oci copy Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound
-  # -r ghcr.io/jomcgi/models`, so this references the resolved ghcr ref directly
-  # (matching the prior 27B convention).
-  reference: "ghcr.io/jomcgi/models/qwen/qwen3.6-35b-a3b:intel-qwen3.6-35b-a3b-int4-mixed-autoround"
-  mountPath: "/model-image"
-
 server:
   host: "0.0.0.0"
   port: 8080
-  # Official Qwen3.6 chat template (qwen3_coder <function=...> tool-call format),
-  # shared across the Qwen3.6 family — verified identical for Qwen3.6-35B-A3B.
-  # Required because the AutoRound INT4 quant strips the template from the repo.
-  chatTemplate: |
-    {%- set image_count = namespace(value=0) %}
-    {%- set video_count = namespace(value=0) %}
-    {%- macro render_content(content, do_vision_count, is_system_content=false) %}
-        {%- if content is string %}
-            {{- content }}
-        {%- elif content is iterable and content is not mapping %}
-            {%- for item in content %}
-                {%- if 'image' in item or 'image_url' in item or item.type == 'image' %}
-                    {%- if is_system_content %}
-                        {{- raise_exception('System message cannot contain images.') }}
-                    {%- endif %}
-                    {%- if do_vision_count %}
-                        {%- set image_count.value = image_count.value + 1 %}
-                    {%- endif %}
-                    {%- if add_vision_id %}
-                        {{- 'Picture ' ~ image_count.value ~ ': ' }}
-                    {%- endif %}
-                    {{- '<|vision_start|><|image_pad|><|vision_end|>' }}
-                {%- elif 'video' in item or item.type == 'video' %}
-                    {%- if is_system_content %}
-                        {{- raise_exception('System message cannot contain videos.') }}
-                    {%- endif %}
-                    {%- if do_vision_count %}
-                        {%- set video_count.value = video_count.value + 1 %}
-                    {%- endif %}
-                    {%- if add_vision_id %}
-                        {{- 'Video ' ~ video_count.value ~ ': ' }}
-                    {%- endif %}
-                    {{- '<|vision_start|><|video_pad|><|vision_end|>' }}
-                {%- elif 'text' in item %}
-                    {{- item.text }}
-                {%- else %}
-                    {{- raise_exception('Unexpected item type in content.') }}
-                {%- endif %}
-            {%- endfor %}
-        {%- elif content is none or content is undefined %}
-            {{- '' }}
-        {%- else %}
-            {{- raise_exception('Unexpected content type.') }}
-        {%- endif %}
-    {%- endmacro %}
-    {%- if not messages %}
-        {{- raise_exception('No messages provided.') }}
-    {%- endif %}
-    {%- if tools and tools is iterable and tools is not mapping %}
-        {{- '<|im_start|>system\n' }}
-        {{- "# Tools\n\nYou have access to the following functions:\n\n<tools>" }}
-        {%- for tool in tools %}
-            {{- "\n" }}
-            {{- tool | tojson }}
-        {%- endfor %}
-        {{- "\n</tools>" }}
-        {{- '\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>' }}
-        {%- if messages[0].role == 'system' %}
-            {%- set content = render_content(messages[0].content, false, true)|trim %}
-            {%- if content %}
-                {{- '\n\n' + content }}
-            {%- endif %}
-        {%- endif %}
-        {{- '<|im_end|>\n' }}
-    {%- else %}
-        {%- if messages[0].role == 'system' %}
-            {%- set content = render_content(messages[0].content, false, true)|trim %}
-            {{- '<|im_start|>system\n' + content + '<|im_end|>\n' }}
-        {%- endif %}
-    {%- endif %}
-    {%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}
-    {%- for message in messages[::-1] %}
-        {%- set index = (messages|length - 1) - loop.index0 %}
-        {%- if ns.multi_step_tool and message.role == "user" %}
-            {%- set content = render_content(message.content, false)|trim %}
-            {%- if not(content.startswith('<tool_response>') and content.endswith('</tool_response>')) %}
-                {%- set ns.multi_step_tool = false %}
-                {%- set ns.last_query_index = index %}
-            {%- endif %}
-        {%- endif %}
-    {%- endfor %}
-    {%- if ns.multi_step_tool %}
-        {{- raise_exception('No user query found in messages.') }}
-    {%- endif %}
-    {%- for message in messages %}
-        {%- set content = render_content(message.content, true)|trim %}
-        {%- if message.role == "system" %}
-            {%- if not loop.first %}
-                {{- '<|im_start|>system\n' + content + '<|im_end|>\n' }}
-            {%- endif %}
-        {%- elif message.role == "user" %}
-            {{- '<|im_start|>' + message.role + '\n' + content + '<|im_end|>' + '\n' }}
-        {%- elif message.role == "assistant" %}
-            {%- set reasoning_content = '' %}
-            {%- if message.reasoning_content is string %}
-                {%- set reasoning_content = message.reasoning_content %}
-            {%- else %}
-                {%- if '</think>' in content %}
-                    {%- set reasoning_content = content.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') %}
-                    {%- set content = content.split('</think>')[-1].lstrip('\n') %}
-                {%- endif %}
-            {%- endif %}
-            {%- set reasoning_content = reasoning_content|trim %}
-            {%- if (preserve_thinking is defined and preserve_thinking is true) or (loop.index0 > ns.last_query_index) %}
-                {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content + '\n</think>\n\n' + content }}
-            {%- else %}
-                {{- '<|im_start|>' + message.role + '\n' + content }}
-            {%- endif %}
-            {%- if message.tool_calls and message.tool_calls is iterable and message.tool_calls is not mapping %}
-                {%- for tool_call in message.tool_calls %}
-                    {%- if tool_call.function is defined %}
-                        {%- set tool_call = tool_call.function %}
-                    {%- endif %}
-                    {%- if loop.first %}
-                        {%- if content|trim %}
-                            {{- '\n\n<tool_call>\n<function=' + tool_call.name + '>\n' }}
-                        {%- else %}
-                            {{- '<tool_call>\n<function=' + tool_call.name + '>\n' }}
-                        {%- endif %}
-                    {%- else %}
-                        {{- '\n<tool_call>\n<function=' + tool_call.name + '>\n' }}
-                    {%- endif %}
-                    {%- if tool_call.arguments is defined %}
-                        {%- for args_name, args_value in tool_call.arguments|items %}
-                            {{- '<parameter=' + args_name + '>\n' }}
-                            {%- set args_value = args_value | string if args_value is string else args_value | tojson | safe %}
-                            {{- args_value }}
-                            {{- '\n</parameter>\n' }}
-                        {%- endfor %}
-                    {%- endif %}
-                    {{- '</function>\n</tool_call>' }}
-                {%- endfor %}
-            {%- endif %}
-            {{- '<|im_end|>\n' }}
-        {%- elif message.role == "tool" %}
-            {%- if loop.previtem and loop.previtem.role != "tool" %}
-                {{- '<|im_start|>user' }}
-            {%- endif %}
-            {{- '\n<tool_response>\n' }}
-            {{- content }}
-            {{- '\n</tool_response>' }}
-            {%- if not loop.last and loop.nextitem.role != "tool" %}
-                {{- '<|im_end|>\n' }}
-            {%- elif loop.last %}
-                {{- '<|im_end|>\n' }}
-            {%- endif %}
-        {%- else %}
-            {{- raise_exception('Unexpected message role.') }}
-        {%- endif %}
-    {%- endfor %}
-    {%- if add_generation_prompt %}
-        {{- '<|im_start|>assistant\n' }}
-        {%- if enable_thinking is defined and enable_thinking is false %}
-            {{- '<think>\n\n</think>\n\n' }}
-        {%- else %}
-            {{- '<think>\n' }}
-        {%- endif %}
-    {%- endif %}
 
-vllm:
-  # 32768 (was 49152): 35B-A3B int4-mixed weights are ~21-22GB resident (MoE keeps
-  # all experts loaded; mixed precision adds ~2GB over plain INT4), leaving thin KV
-  # headroom on a 24GB card. If load OOMs, add --enforce-eager (frees ~1-2GB of
-  # CUDA-graph capture) before lowering ctx further; raise back toward 49152 only
-  # after confirming KV headroom in the vLLM startup logs.
-  maxModelLen: 32768
-  gpuMemoryUtilization: 0.95
-  dtype: "auto"
-  quantization: ""
-  tokenizer: ""
-  extraArgs:
-    - "--served-model-name"
-    - "qwen3.6-27b"
-    - "--enable-auto-tool-choice"
-    - "--tool-call-parser"
-    - "qwen3_coder"
-    - "--reasoning-parser"
-    - "qwen3"
-    - "--reasoning-config"
-    - '{"reasoning_start_str": "<think>", "reasoning_end_str": "</think>"}'
-    # Total concurrent decode sequences. Widened 3 -> 8 so the shared vLLM can
-    # batch bulk callers alongside interactive traffic instead of forcing batch
-    # size 1. KV memory is a fixed pool (gpu-memory-utilization below); more
-    # seqs just share it, with graceful preemption on a rare full-context req.
-    # Only read when llm.engine is "vllm". Note the consumer budget has since
-    # been resized for the llama.cpp path (3 slots, grimoire at 3), so on a
-    # revert to vLLM these 8 slots would be undersubscribed rather than
-    # oversubscribed, which is the safe direction.
-    - "--max-num-seqs"
-    - "8"
-    - "--kv-cache-dtype"
-    - "fp8"
-
-# llama.cpp LLM settings. Only read when llm.engine is "llamacpp".
-llamacpp:
+ninfer:
   modelVolume:
     enabled: true
-    # Qwen3.8-27B, unsloth GGUF Q4_K_M plus both mmproj variants, pushed with
-    # `hf2oci copy unsloth/Qwen3.8-27B-GGUF -r ghcr.io/jomcgi/models
-    #  --file Qwen3.8-27B-Q4_K_M --include-mmproj`. As with the vLLM model this
-    # is the resolved ghcr ref, not the hf.co form, so the oci-model-cache
-    # webhook does not gate the pod: the image must exist in ghcr before ArgoCD
-    # syncs or the pod ImagePullBackOffs. Pushed and verified 2026-08-14 at
-    # sha256:5756850ee602b50c2e697d5dcf44c075b4be08caee3ba526cbf73a11dcd45b3b.
-    reference: "ghcr.io/jomcgi/models/qwen/qwen3.8-27b:unsloth-gguf-q4-k-m-mmproj"
+    # neroued/Qwen3.8-27B-NInfer qwen3_8_27b.ninfer (18.2 GB, groupwise-int,
+    # the official artifact the fork benchmarks against), pushed by hand with
+    # `crane append` as a single-layer OCI image because hf2oci only
+    # classifies .safetensors and .gguf. The file sits at
+    # <mountPath>/qwen3.8-27b-ninfer/qwen3_8_27b.ninfer and the container
+    # auto-discovers it. As with every model image here the ref is the
+    # resolved ghcr one, so the oci-model-cache webhook does not gate the pod:
+    # the image must exist (or be imported into node-4's containerd) before
+    # ArgoCD syncs, or the pod ImagePullBackOffs.
+    reference: "ghcr.io/jomcgi/models/qwen/qwen3.8-27b:neroued-ninfer-groupwise"
     mountPath: "/model-image"
-  # 99 = offload every layer. Unlike the embeddings deployment (which is
-  # deliberately n-gpu-layers 0 and holds its weights in host RAM), the whole
-  # model is meant to be resident in VRAM here.
-  nGpuLayers: 99
-  # ctxSize is the TOTAL KV pool, divided across `parallel` slots -- it is NOT
-  # per-sequence like vLLM's --max-model-len. 131072 / 4 = 32768 per slot, which
-  # preserves the 32k window every monolith callsite is written against.
-  #
-  # VRAM COST IS NOT LINEAR IN ctxSize. Do not fit a line to it. Measured on the
-  # 24564 MiB card:
-  #
-  #   (1 slot,  98304)  = 20942 MiB   2026-08-18
-  #   (3 slots, 98304)  = 21590 MiB   2026-08-18
-  #   (4 slots, 131072) = 22562 MiB   2026-08-14
-  #   (1 slot, 163840)  = 23426 MiB   2026-08-18
-  #
-  # The first three fit a line exactly: 18674 MiB fixed + 324 per slot + 648 per
-  # 32768 tokens, predicting the middle point to the megabyte. That fit then
-  # MISSED 163840 by 1188 MiB, because between 98304 and 163840 the real cost is
-  # about 1234 MiB per 32768, roughly double. KV is not the only term that grows
-  # with n_ctx; llama.cpp's attention and compute buffers scale too.
-  #
-  # A HISTORY WORTH NOT REPEATING. This comment previously carried a rule of
-  # thumb of 1.00 GiB per 32k. That was replaced on 2026-08-18 with the 648 MiB
-  # figure above, described as a "35% overestimate", and 163840 was shipped on
-  # the strength of it. It landed at 656 MiB free rather than the predicted
-  # 2326. The discarded rule of thumb was the more accurate of the two in the
-  # range that actually mattered. An exact fit inside a measured range says
-  # nothing about the slope outside it.
-  #
-  # So: INTERPOLATE BETWEEN MEASURED POINTS, never extrapolate past them, and
-  # re-read nvidia-smi after any change rather than trusting the estimate that
-  # motivated it. 131072 at 1 slot is interpolation (~22176, ~2388 free);
-  # anything above 163840 is unexplored and the next step would have to be
-  # measured, not calculated.
-  #
-  # Qwen3.8-27B carries KV on only 16 of its 64 layers (the rest are Gated
-  # DeltaNet linear attention), but head_dim is 256, which is why the per-token
-  # cost is as high as it is despite that.
-  #
-  # Do not raise this without re-reading steady-state VRAM: this is a Recreate
-  # deployment on a single GPU, so an over-committed KV pool is a crash loop
-  # with the previous engine already torn down, not a degraded pod.
-  #
-  # This is the PRODUCTION value. Bench mode overrides it via benchMode.ctxSize
-  # rather than editing this line, so ending the session restores the pool size
-  # along with everything else and there is no second value to forget.
-  ctxSize: 98304
-  parallel: 3
-  # Quantized V cache requires flash attention; leaving this off silently forces
-  # the cache back to f16 and doubles the table above.
-  flashAttn: "on"
-  cacheTypeK: "q8_0"
-  cacheTypeV: "q8_0"
-  threads: 4
-  # Vision projector. chat/vision.py is a live callsite that sends image_url and
-  # hard-fails without this. Auto-discovered from the model image (both BF16 and
-  # F16 ship in it); F16 is preferred, hence the ordering in the template.
-  mmproj: true
-  extraArgs:
-    # Keeps the served model name stable so the 10+ callsites that hardcode the
-    # alias, and the model-bench leaderboard, do not have to change.
-    - "--alias"
-    - "qwen3.6-27b"
-    # --jinja uses the chat template embedded in the GGUF (Qwen3.8's own) and is
-    # what makes tool calls parse into OpenAI-shaped tool_calls. Note the
-    # server.chatTemplate configmap is NOT mounted here on purpose: it holds the
-    # Qwen3.6 template, hand-injected because AutoRound stripped it, and feeding
-    # it to Qwen3.8 would silently produce the wrong prompt format.
-    - "--jinja"
-    # Emits reasoning into the `reasoning_content` field, which is what
-    # summarizer.py and the chat agents already read from vLLM's qwen3
-    # reasoning-parser output.
-    - "--reasoning-format"
-    - "deepseek"
-    - "--metrics"
-    # Qwen3.8 ships an MTP draft head. draft-mtp uses tensors already in the
-    # loaded GGUF when they are present; if the image also contains a sidecar
-    # mtp*.gguf, deployment-llamacpp.yaml passes it as --spec-draft-model.
-    # Default --spec-draft-n-max is 3; set explicitly so a llama.cpp default
-    # change cannot silently drop the window. MTP adds a draft KV cache on top
-    # of the measured 21590 MiB at 3x32k q8_0: re-read nvidia-smi after this
-    # lands rather than extrapolating. Same-card measurements of UD-Q4_K_XL
-    # with draft-mtp fit at 64k/1-slot (20.8 GiB) and died at 144k/1-slot;
-    # 98k/3-slot sits between those, so this is interpolation, not a guess.
-    - "--spec-type"
-    - "draft-mtp"
-    - "--spec-draft-n-max"
-    - "3"
+  # Public model id. Kept at the alias 10+ callsites and the model-bench
+  # leaderboard hardcode, even though the artifact is Qwen3.8.
+  modelId: "qwen3.6-27b"
+  # Longest single prompt the server admits, in tokens. 262144 is the model's
+  # native window and what the fork serves with E8 KV on this card.
+  maxContext: 262144
+  # KV page pool. "auto" sizes it to the VRAM left after weights, vision and
+  # the CUDA graph allowance, and the server refuses to start on a deficit
+  # rather than OOMing later. Pin a number here once a bench has measured
+  # steady-state nvidia-smi; interpolate between measured points, never
+  # extrapolate (the llama.cpp ctxSize history in git is the cautionary tale).
+  kvCapacity: "auto"
+  # E8 lattice 4-bit keys and values. int8 is the higher-precision option at
+  # ~168K max context on 24 GB; the fork measured identical MTP acceptance and
+  # a 5.7% decode tax for rk4v4-e8, with exact retrieval through 260K.
+  kvDtype: "rk4v4-e8"
+  # Generation lanes. 2 is measured on the 4090: the second lane costs ~390 MiB,
+  # the KV pool stays shared so a lone session still gets the full window, and
+  # two sessions decode batched at ~1.5x aggregate. Prefill serializes across
+  # lanes, so a deep cold prefill delays the other lane's first token. This
+  # replaces llama.cpp's 3 slots; monolith ASYNC_SLOT_BUDGET stays at 1.
+  maxConcurrency: 2
+  # Admission queue beyond the lanes, and how long a queued request waits. The
+  # fork's default 30s deadline is too short for agent clients behind a deep
+  # prefill; 10 minutes matches pi's turn budget. On a streaming request the
+  # timeout arrives as an in-band SSE error after HTTP 200.
+  maxPendingRequests: 16
+  pendingTimeoutMs: 600000
+  prefillChunk: 1024
+  # Multi-token prediction with the artifact's own draft head. 3 draft tokens
+  # is the fork's measured sweet spot (81% acceptance on code, ~49% on prose).
+  spec: "mtp"
+  draftTokens: 3
+  lmHeadDraft: true
+  # Vision tower. chat/vision.py is a live callsite that sends image_url and
+  # hard-fails without this. Costs ~1 GiB of the KV headroom.
+  vision: true
+  # Keep closed-turn reasoning out of reconstructed prompts (the Qwen template
+  # default and what llama.cpp did), so multi-turn pi sessions do not pay
+  # context for old thinking. Per-request preserve_thinking still overrides.
+  preserveThinking: false
+  extraArgs: []
 
 runtimeClassName: nvidia
 
 # Benchmark mode. ONE BOOLEAN, flipped on to start a session and off to end it.
 #
-# Enabling it does exactly two things, both in templates/_helpers.tpl:
+# Enabling it does exactly one thing in templates/_helpers.tpl, plus the
+# NodePort in templates/service.yaml:
 #
-#   1. Renames the LLM Service to `inference-bench`, so the hardcoded DNS name
-#      every in-cluster caller uses (`inference.inference.svc.cluster.local`)
-#      stops resolving. The external route follows the rename automatically,
-#      because httproute-private.yaml takes its backendRef from the same
-#      helper. So https://private.jomcgi.dev/llm/v1 keeps working and nothing
-#      else can reach the model.
-#   2. Drops llama.cpp to a single slot, which hands that one slot the whole
-#      98304-token KV pool instead of 32768, at unchanged VRAM.
+#   Renames the LLM Service to `inference-bench`, so the hardcoded DNS name
+#   every in-cluster caller uses (`inference.inference.svc.cluster.local`)
+#   stops resolving. The external route follows the rename automatically,
+#   because httproute-private.yaml takes its backendRef from the same
+#   helper. So https://private.jomcgi.dev/llm/v1 keeps working and nothing
+#   else can reach the model.
+#
+# NInfer needs no slot or KV override: its lanes share one page pool sized by
+# kvCapacity, so a lone bench session already gets the full window.
 #
 # ENABLING THIS IS A DELIBERATE OUTAGE for every in-cluster qwen consumer:
 # the monolith's Discord, summarize, chat, vision and classifier callsites,
@@ -365,22 +110,15 @@ runtimeClassName: nvidia
 # /health carries no qwen, llama or inference dependency (both verified live,
 # 2026-08-18). Embeddings are untouched, so retrieval keeps working.
 #
-# The pod rolls on each flip. strategy is Recreate on a single GPU, so qwen is
-# fully down for the model load, and the startupProbe allows up to 30 minutes.
-#
-# ctxSize is deliberately NOT raised. The largest task in projects/model-bench
-# is ~6k tokens of prompt against max_tokens 16384, so ~22k worst case, and a
-# single slot already gets 98304. Raising it to 131072 would still fit (that is
-# the VRAM footprint previously measured at 4x32k, ~1.9 GiB free) but buys
-# nothing until a long-context task exists. Measured live 2026-08-18: 21590 of
-# 24564 MiB in use, base ~18.5 GiB, KV ~1.00 GiB per 32k at q8_0.
+# The Service rename does not roll the pod (the Deployment name is unchanged),
+# so flipping this is a DNS cut, not a model reload.
 benchMode:
-  # Off. Last session started 2026-08-18; flipping this back restores the
-  # in-cluster Service DNS name and the 3-slot production pool. While true,
-  # the monolith's qwen callsites, monolith-dev and EmberVM pi-runtime sessions
-  # all fail at DNS, by design, and the Service is a LAN NodePort.
+  # ON for the NInfer cutover bench (#5155). Flip back to false to restore the
+  # in-cluster Service DNS name. While true, the monolith's qwen callsites,
+  # monolith-dev and EmberVM pi-runtime sessions all fail at DNS, by design,
+  # and the Service is a LAN NodePort.
   #
-  # The harness runs on the Mac and reaches llama.cpp through a port-forward
+  # The harness runs on the Mac and reaches the server through a port-forward
   # (bench/cli.py --base-url), so forward to the DEPLOYMENT, whose name does not
   # move with this flag, rather than to the Service, whose name does:
   #
@@ -395,26 +133,10 @@ benchMode:
   # That port is UNAUTHENTICATED and open to anything on the LAN while this is
   # true. It is welded to this one flag on purpose, so turning bench mode off
   # closes it and there is no second switch to forget.
-  enabled: false
+  enabled: true
   # Pinned so the benchmarking machine's base URL survives a re-sync. Only read
   # when enabled is true.
   nodePort: 30800
-  # Total KV pool while bench mode is on. With one slot this is the whole window
-  # for a single sequence: 128k, against the model's 262144 training context and
-  # the 32768 per slot that production serves.
-  #
-  # 163840 WAS TRIED FIRST AND BACKED OUT. It runs, but it landed at 23426 of
-  # 24564 MiB with 656 MiB free, against a prediction of 2326 that came from
-  # extrapolating a linear fit past its measured range. 656 MiB leaves no
-  # cushion for an allocation spike, and this is a Recreate deployment on a
-  # single GPU, so an OOM is a crash loop with the previous engine already gone,
-  # not a degraded pod. That is not a thing to leave running unattended.
-  #
-  # 131072 sits BETWEEN two measured points (98304 -> 20942, 163840 -> 23426),
-  # so ~22176 used and ~2388 free is interpolation rather than extrapolation.
-  # Verify against nvidia-smi after any change here; see the llamacpp.ctxSize
-  # comment for why the arithmetic alone has already been wrong once.
-  ctxSize: 131072
 
 # Ingress at https://private.jomcgi.dev/llm/ (llama.cpp web UI) and
 # https://private.jomcgi.dev/llm/v1 (OpenAI client base URL). See
@@ -454,11 +176,12 @@ podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "8080"
 
-# vLLM runs as root and needs writable fs for compiled kernels
+# The NInfer image runs as the homelab non-root uid; nothing in it needs root.
 podSecurityContext:
-  runAsUser: 0
-  runAsGroup: 0
-  fsGroup: 0
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  runAsNonRoot: true
   seccompProfile:
     type: RuntimeDefault
 
@@ -507,8 +230,9 @@ priorityClassName: homelab-critical
 # the real RSS and only forces page-cache reclaim during the rare load, which is
 # harmless (the weights are already in VRAM by then). Trimmed 32 -> 16 to keep the
 # node-4 paper overcommit honest for the agent-microVM tier.
-# CPU request trimmed 4 -> 2: vLLM decode is GPU-bound, 7-day SigNoz peak CPU is
-# ~1715m (avg ~7m), so 2 cores covers peak with headroom.
+# CPU request trimmed 4 -> 2: decode is GPU-bound, 7-day SigNoz peak CPU is
+# ~1715m (avg ~7m), so 2 cores covers peak with headroom. Re-check both after
+# the NInfer cutover; these were measured under vLLM and llama.cpp.
 resources:
   requests:
     cpu: 2
@@ -521,6 +245,14 @@ resources:
 # Embeddings are served by llama.cpp on CPU (no GPU layers).
 embeddings:
   enabled: true
+  # The llama.cpp embeddings image still runs as root, as it did when the LLM
+  # shared this block. Moving it to 65532 is a separate change to verify.
+  podSecurityContext:
+    runAsUser: 0
+    runAsGroup: 0
+    fsGroup: 0
+    seccompProfile:
+      type: RuntimeDefault
   image:
     repository: ghcr.io/ggml-org/llama.cpp
     tag: "server-cuda-b8643@sha256:ee54620034076d53fee9cd6acf8483902becd3d66acf77acc6ecfe5eefddaecb"

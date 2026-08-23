@@ -32,7 +32,7 @@ spec:
         - name: ghcr-imagepull-secret
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- toYaml .Values.embeddings.podSecurityContext | nindent 8 }}
       containers:
         - name: llama-server
           image: "{{ .Values.embeddings.image.repository }}:{{ .Values.embeddings.image.tag }}"

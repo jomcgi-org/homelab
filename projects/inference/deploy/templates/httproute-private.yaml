@@ -1,10 +1,12 @@
 {{- /*
-Browser UI and OpenAI-compatible API for the llama.cpp server:
+OpenAI-compatible API for the NInfer server:
 
-  https://private.jomcgi.dev/llm/      llama.cpp web UI
+  https://private.jomcgi.dev/llm/      server root (NInfer ships no web UI;
+                                       the rule is kept so /metrics, /slots
+                                       and /health stay reachable here)
   https://private.jomcgi.dev/llm/v1    OpenAI client base URL
 
-Model id is whatever llamacpp.extraArgs --alias sets, currently "qwen3.6-27b".
+Model id is ninfer.modelId, currently "qwen3.6-27b".
 
 WHY private.jomcgi.dev AND NOT friends.jomcgi.dev. friends carries the authentik
 lanes, and every one of them runs an Envoy `oidc` block, which answers an
@@ -17,22 +19,18 @@ natively: a Service Auth policy on the Access application admits a request
 carrying CF-Access-Client-Id / CF-Access-Client-Secret, and injects the
 Cf-Access-Jwt-Assertion header the SecurityPolicy below validates.
 
-WHY TWO RULES, NOT ONLY /llm. The UI is a static build whose assets and most
-API calls are relative (./_app/..., ./v1/chat/completions, ./props, ./slots).
-Those resolve under /llm/ after Envoy rewrites the prefix to /. The OpenAI
-surface stays on /llm/v1 with its own rewrite to /v1 so existing clients keep
-the same base URL. Gateway API picks the longest PathPrefix, so /llm/v1 does
-not fall through to the UI rule.
+WHY TWO RULES, NOT ONLY /llm. The rules predate NInfer: the llama.cpp web UI
+was a static build with relative asset and API paths that resolved under
+/llm/ after Envoy rewrote the prefix to /. The OpenAI surface stays on /llm/v1
+with its own rewrite to /v1 so existing clients keep the same base URL.
+Gateway API picks the longest PathPrefix, so /llm/v1 does not fall through to
+the root rule. The root rule and the slash redirect are kept because they are
+harmless and still publish /metrics, /slots and /health under /llm/.
 
-The slash redirect is load-bearing: at /llm with no trailing slash, relative
-./v1/chat/completions would resolve against / and miss this route entirely
-(same trap as longhorn-private-slash-redirect).
-
-WHAT THIS PUBLISHES. Rewriting /llm to / forwards every llama-server path
-under that prefix, including /props (the UI reads it) and /metrics. Both
-remain behind Cloudflare Access on private.jomcgi.dev. Prometheus still
-scrapes the pod IP, not this hostname. Router-only absolute paths in the UI
-bundle (/v1/models, /models/load) are unused on this single-model server.
+WHAT THIS PUBLISHES. Rewriting /llm to / forwards every server path under
+that prefix, including /metrics and /slots (and the Anthropic Messages
+surface at /llm/v1/messages). All of it remains behind Cloudflare Access on
+private.jomcgi.dev. Prometheus still scrapes the pod IP, not this hostname.
 */}}
 {{- if .Values.cfIngress.enabled }}
 apiVersion: gateway.networking.k8s.io/v1

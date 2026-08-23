@@ -27,9 +27,9 @@ def _repo_path(*parts: str) -> Path:
 
 
 def test_pi_context_window_stays_under_inference_config():
-    """PI_CONTEXT_WINDOW must be below vLLM's maxModelLen with minimum headroom.
+    """PI_CONTEXT_WINDOW must be below the served context with minimum headroom.
 
-    PI_CONTEXT_WINDOW is deliberately set below vLLM's --max-model-len to absorb
+    PI_CONTEXT_WINDOW is deliberately set below the server's max context to absorb
     pi's estimate error. The gap converts pi's fixed safety margin into a larger
     effective margin that accounts for the chars/4 estimation heuristic. Measured
     in prod on 2026-08-07, a turn with repetitive-ASCII tool results undercounted
@@ -43,14 +43,17 @@ def test_pi_context_window_stays_under_inference_config():
     with open(values_path) as stream:
         config = yaml.safe_load(stream)
 
-    max_model_len = config.get("vllm", {}).get("maxModelLen")
-    assert max_model_len is not None, "vllm.maxModelLen not found in values.yaml"
+    # The served window is NInfer's --max-context (#5155). PI_CONTEXT_WINDOW is
+    # far below it on purpose: raising pi's window to use the 262K the server
+    # admits is a separate decision about per-turn cost, not a sync fix.
+    max_model_len = config.get("ninfer", {}).get("maxContext")
+    assert max_model_len is not None, "ninfer.maxContext not found in values.yaml"
 
     # (a) PI_CONTEXT_WINDOW must never exceed the model's real capacity
     assert shim.PI_CONTEXT_WINDOW <= max_model_len, (
-        "PI_CONTEXT_WINDOW (%s) exceeds vllm.maxModelLen (%s). "
+        "PI_CONTEXT_WINDOW (%s) exceeds ninfer.maxContext (%s). "
         "Lower PI_CONTEXT_WINDOW in projects/embervm/runtimes/claude/shim.py or "
-        "raise vllm.maxModelLen in projects/inference/deploy/values.yaml."
+        "raise ninfer.maxContext in projects/inference/deploy/values.yaml."
         % (shim.PI_CONTEXT_WINDOW, max_model_len)
     )
 
