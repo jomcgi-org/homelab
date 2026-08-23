@@ -21,6 +21,11 @@ spec:
       readyPath: {{ .Values.pingWorkload.readyPath | quote }}
       initEnv:
         EMBER_HYPERVISOR_EPOCH: {{ .Values.hypervisorEpoch | quote }}
+        # Base-signature re-key only: nothing here reaches the guest (the
+        # ping binary reads no env). Bump to force a rebuild when the noded
+        # build path itself changes, as the image-lane inventory registration
+        # (ADR 038) did.
+        EMBER_BASE_EPOCH: {{ .Values.pingWorkload.baseEpoch | quote }}
   resources:
     vcpus: {{ .Values.pingWorkload.vcpus }}
     memMib: {{ .Values.pingWorkload.memMib }}

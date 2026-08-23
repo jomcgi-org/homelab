@@ -1854,6 +1854,9 @@ pingWorkload:
   idleBankSeconds: 120
   bankedTtlSeconds: 3600
   nodeLocalWake: true
+  # Base-signature re-key for the ping workload (see the template's
+  # EMBER_BASE_EPOCH). Inert to the guest; bumping it forces a rebuild.
+  baseEpoch: "image-lane-1"
   guestImage:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/ping
     tag: latest
