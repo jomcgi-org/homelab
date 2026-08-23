@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Accepted
 **Created:** 2026-08-04
-**Relates to:** [049 - Turn-Granular, Poll-Shaped Agent Session UI on Durable Postgres, Not a Live Event Stream](049-turn-granular-poll-shaped-agent-ui.md) (the poll shape this ADR feeds without reopening), [050 - Workspace Hydration for Agent Sessions from the Hot Git Mirror](050-workspace-hydration-from-git-mirror.md) (the egress-allowlist precedent this ADR's ingest entry follows as the third), [023 - Egress Secret Proxy for Agent Sandboxes](023-egress-secret-proxy.md) and [047 - Per-Principal Egress Credentials and the Broker Identity Envelope](047-per-principal-egress-credential-broker.md) (why the progress token deliberately does not join that broker), [041 - Hot Git Mirror for goosecracker Agent Workspaces](041-hot-git-mirror-agent-workspaces.md) (the hook-not-network-boundary write-authorization pattern this ADR extends to a token)
+**Relates to:** 049 - Turn-Granular, Poll-Shaped Agent Session UI on Durable Postgres, Not a Live Event Stream (the poll shape this ADR feeds without reopening), [050 - Workspace Hydration for Agent Sessions from the Hot Git Mirror](050-workspace-hydration-from-git-mirror.md) (the egress-allowlist precedent this ADR's ingest entry follows as the third), [023 - Egress Secret Proxy for Agent Sandboxes](023-egress-secret-proxy.md) and [047 - Per-Principal Egress Credentials and the Broker Identity Envelope](047-per-principal-egress-credential-broker.md) (why the progress token deliberately does not join that broker), [041 - Hot Git Mirror for goosecracker Agent Workspaces](041-hot-git-mirror-agent-workspaces.md) (the hook-not-network-boundary write-authorization pattern this ADR extends to a token)
 
 ---
 
@@ -153,7 +153,7 @@ sequencing question (Open Question 1) stays open and unchanged by this.
 | `projects/monolith/agent_sessions/store.py` | `create_pending_message`, `persist_turn_from_pending_sync`, `delete_pending_message_sync`: the claim-then-delete lifecycle `partial_text` rides for free |
 | `projects/monolith/agent_sessions/models.py` | `AgentSession` (`ember_session_token`, where the new progress token sits alongside it), `PendingMessage` (where `partial_text` lands) |
 | `projects/monolith/agent_sessions/transport.py:423-434` | The turn payload dict and its Bearer-token delivery pattern, reused to thread the progress token to the guest |
-| [049 - Turn-Granular, Poll-Shaped Agent Session UI](049-turn-granular-poll-shaped-agent-ui.md) | The poll shape and its explicitly deferred mid-turn visibility this ADR fills in |
+| 049 - Turn-Granular, Poll-Shaped Agent Session UI | The poll shape and its explicitly deferred mid-turn visibility this ADR fills in |
 | [050 - Workspace Hydration from the Hot Git Mirror](050-workspace-hydration-from-git-mirror.md) | The egress-allowlist precedent (second entry) this ADR's ingest entry follows as the third; the "hook, not the network boundary" framing extended here |
 | [023 - Egress Secret Proxy for Agent Sandboxes](023-egress-secret-proxy.md), [047 - Per-Principal Egress Credentials and the Broker Identity Envelope](047-per-principal-egress-credential-broker.md) | Why the progress token deliberately stays outside that broker's surface |
 | [041 - Hot Git Mirror for goosecracker Agent Workspaces](041-hot-git-mirror-agent-workspaces.md) | Origin of the pre-receive-hook write-boundary mechanism the "hook, not the network boundary" framing (050) generalizes |

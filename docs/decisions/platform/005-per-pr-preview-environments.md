@@ -3,7 +3,7 @@
 **Author:** Joe McGinley
 **Status:** Draft
 **Created:** 2026-06-12
-**Relates to:** [ADR 001: Obsidian Vault Monolith Migration](001-obsidian-vault-monolith-migration.md), [Networking ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)
+**Relates to:** ADR 001: Obsidian Vault Monolith Migration, [Networking ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)
 
 ---
 

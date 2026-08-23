@@ -49,8 +49,8 @@ rather than needing a new home.
 
 ADR 001 stood up `docs.jomcgi.dev` when the monolith did not serve public web
 pages and there was no repo-markdown ingestion. Both of those premises are gone
-(see [platform/008](../platform/008-monolith-module-boundaries.md),
-[security/004](../security/004-public-read-only-service-isolation.md), and the
+(see platform/008,
+security/004, and the
 `repo_docs` sync). The decision it recorded is no longer the cheapest way to get
 navigable public docs.
 
@@ -166,7 +166,7 @@ are trying to retire. Doing both together is what removes `projects/websites/`.
 ## Security
 
 Reference `docs/security.md` for baseline and
-[security/004](../security/004-public-read-only-service-isolation.md) for the
+security/004 for the
 public read-only tier this route lives behind.
 
 The critical control is that **the public `/docs/*` renderer is not the RAG
@@ -216,9 +216,9 @@ the public docs surface.
 | Resource                                                              | Relevance                                               |
 | --------------------------------------------------------------------- | ------------------------------------------------------- |
 | [001-static-docs-site.md](001-static-docs-site.md)                    | The decision this supersedes                            |
-| [platform/008](../platform/008-monolith-module-boundaries.md)         | Monolith module boundaries that make a docs route cheap |
-| [security/004](../security/004-public-read-only-service-isolation.md) | Public read-only tier the docs route lives behind       |
-| [services/005](../services/005-repo-docs-knowledge-sync.md)           | The repo-docs ingestion the docs route reuses           |
+| platform/008         | Monolith module boundaries that make a docs route cheap |
+| security/004 | Public read-only tier the docs route lives behind       |
+| services/005           | The repo-docs ingestion the docs route reuses           |
 | `projects/monolith/knowledge/repo_docs.py`                            | Existing repo-markdown ingest into Postgres             |
 | `projects/monolith-public/chart/templates/httproute-public.yaml`      | Public hostname routing into the monolith frontend      |
 | `bazel/vitepress/`                                                    | The VitePress rules retired by this decision            |

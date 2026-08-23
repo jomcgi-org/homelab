@@ -1,8 +1,7 @@
 """Grant-overlay visibility predicate and scope projection.
 
-Implements the read predicate from ADR 011
-(docs/decisions/services/011-grimoire-hot-tier-schema.md, "Read predicate"
-section) and the spec's visibility semantics
+Implements the Grimoire read predicate
+(projects/monolith/ARCHITECTURE.md, section 6) and the spec's visibility semantics
 (the pg-first design #3.3). Every read path
 (entity lookup, relationships, vector search) is meant to build its query on
 top of visible_entities_query() and shape its response with project_entity(),

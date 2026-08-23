@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-04-05
-**Relates to:** [001 - Discord History Backfill](001-discord-history-backfill.md)
+**Relates to:** 001 - Discord History Backfill
 
 ---
 

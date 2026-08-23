@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-08-10
-**Extends:** [049 - Turn-Granular, Poll-Shaped Agent Session UI](049-turn-granular-poll-shaped-agent-ui.md)
+**Extends:** 049 - Turn-Granular, Poll-Shaped Agent Session UI
 (Accepted, the session surface this composes with);
 [053 - Swarm Development, Bounded Conductor Orchestration](053-swarm-orchestration-bounded-conductor.md)
 (Draft, the execution model whose state this renders)

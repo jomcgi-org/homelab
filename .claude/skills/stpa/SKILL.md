@@ -48,7 +48,7 @@ unsafe state violates the mission, it is not merely a crash.
 Seeded example (`projects/monolith`): a single-binary personal platform split
 into domains over per-domain Postgres schemas, deployed as a secret-less
 read-only public binary and a privileged private binary (see
-`docs/decisions/services/010-fastmonolith-modular-framework.md`). Reason to exist
+`projects/monolith/ARCHITECTURE.md`, section 2). Reason to exist
 = governed correctness of data access plus the secret-less public boundary.
 Unsafe states violate those.
 ────────────────────────────────────────────────────────

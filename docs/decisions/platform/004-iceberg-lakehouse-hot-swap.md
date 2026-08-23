@@ -4,8 +4,8 @@
 **Status:** Superseded
 **Created:** 2026-05-30
 **Superseded:** 2026-06-14 (lakehouse + Temporal stack decommissioned in PR #2596; the event-sourced serving substrate moved to `loom`)
-**Partially evolves:** [001 — Obsidian Vault Migration into Monolith](001-obsidian-vault-monolith-migration.md) for the notes/KG storage domain
-**Depends on:** [agents/015 — Temporal](../agents/015-temporal-orchestration-substrate.md), [agents/016 — NATS](../agents/016-nats-canonical-event-stream.md), [agents/017 — Event Schema](../agents/017-domain-event-schema.md)
+**Partially evolves:** 001 — Obsidian Vault Migration into Monolith for the notes/KG storage domain
+**Depends on:** agents/015 — Temporal, agents/016 — NATS, agents/017 — Event Schema
 
 ---
 
@@ -13,7 +13,7 @@
 
 This ADR is no longer the destination architecture. The Iceberg/Temporal/Quack lakehouse stack it proposed was decommissioned on 2026-06-14 (`projects/lakehouse` and the `temporal` / `warehouse-bucket` platform apps removed in PR #2596); the event-sourced data platform work continues under `loom` instead.
 
-For the **notes / knowledge-graph storage domain** specifically, the durable body-of-record is now CNPG Postgres (`knowledge.notes.content`) per [ADR 006](006-obsidian-decommission-postgres-interim.md), which is the accepted destination rather than the interim it was originally framed as. The "Eventual (ADR 004)" column in ADR 006's comparison table is withdrawn along with this ADR.
+For the **notes / knowledge-graph storage domain** specifically, the durable body-of-record is now CNPG Postgres (`knowledge.notes.content`) per ADR 006, which is the accepted destination rather than the interim it was originally framed as. The "Eventual (ADR 004)" column in ADR 006's comparison table is withdrawn along with this ADR.
 
 The problem analysis and tier rationale below are retained for historical context.
 
@@ -21,7 +21,7 @@ The problem analysis and tier rationale below are retained for historical contex
 
 ## Problem
 
-[ADR 001](001-obsidian-vault-monolith-migration.md) consolidated note storage into a CNPG Postgres cluster with pgvector. That migration solved standalone-vault scaling problems but left a single Postgres instance carrying four distinct concerns:
+ADR 001 consolidated note storage into a CNPG Postgres cluster with pgvector. That migration solved standalone-vault scaling problems but left a single Postgres instance carrying four distinct concerns:
 
 1. **Durable note content** (append-mostly, historical, large over time)
 2. **Vector indexes** (re-derivable from content + embedding model)
@@ -45,7 +45,7 @@ The knowledge graph is also implicitly coupled to Obsidian's markdown+frontmatte
 Adopt a lakehouse architecture with three storage tiers, each sized to its actual job:
 
 1. **Apache Iceberg on SeaweedFS** as the **durable archive** for the canonical event stream (mirrored from NATS).
-2. **NATS JetStream** as the **canonical source of truth** for events (per [ADR 016](../agents/016-nats-canonical-event-stream.md)).
+2. **NATS JetStream** as the **canonical source of truth** for events (per ADR 016).
 3. **DuckDB + VSS (via Quack remote protocol)** as the **stateless serving layer** for note retrieval + vector search, with **hot-swap from S3** for zero-downtime updates.
 4. **Operational Postgres** (existing CNPG cluster, kept small) for **only** Temporal's state DB. Application state lives in events + Iceberg, queried directly by workflows.
 
@@ -93,7 +93,7 @@ graph TB
 | **Source of truth**         | CNPG Postgres (pgvector + notes tables) | NATS event stream (durable archive in Iceberg on SeaweedFS)                                        |
 | **Vector search**           | pgvector HNSW in primary PG             | DuckDB+VSS HNSW in per-artifact `.duckdb` file, served via Quack                                   |
 | **History**                 | Implicit (latest row only)              | First-class (every event recorded; tombstones for deletion)                                        |
-| **Operational state**       | Mixed with derived data in primary PG   | Isolated to Temporal's state DB (per [ADR 015](../agents/015-temporal-orchestration-substrate.md)) |
+| **Operational state**       | Mixed with derived data in primary PG   | Isolated to Temporal's state DB (per ADR 015) |
 | **Application read models** | Postgres tables                         | None — workflows query Iceberg directly via DuckDB; web app queries Quack                          |
 | **Live workflow queries**   | Postgres point queries (~5ms)           | DuckDB + iceberg extension on S3 (~100ms warm)                                                     |
 | **Web app queries**         | Postgres + Quack OCI artifact           | Quack in-RAM + Cloudflare CDN (~sub-10ms typical)                                                  |
@@ -299,7 +299,7 @@ Why this works:
 
 | Resource                                                                                               | Relevance                                                           |
 | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| [001 — Obsidian Vault Migration into Monolith](001-obsidian-vault-monolith-migration.md)               | The architecture this ADR partially evolves for the notes/KG domain |
+| 001 — Obsidian Vault Migration into Monolith               | The architecture this ADR partially evolves for the notes/KG domain |
 | [Apache Iceberg spec](https://iceberg.apache.org/spec/)                                                | Table format, snapshot semantics, time-travel queries               |
 | [Iceberg file-based catalog](https://iceberg.apache.org/docs/latest/configuration/#catalog-properties) | Simpler catalog choice — no external service to operate             |
 | [SeaweedFS replication modes](https://github.com/seaweedfs/seaweedfs/wiki/Replication)                 | Per-bucket redundancy configuration                                 |
@@ -310,6 +310,6 @@ Why this works:
 | [PyIceberg](https://py.iceberg.apache.org/)                                                            | Candidate writer library for workflow activities                    |
 | [rclone Mega backend](https://rclone.org/mega/)                                                        | Offsite backup transport                                            |
 | [Voyage AI embeddings](https://docs.voyageai.com/)                                                     | Embedding provider; cost driver for re-embedding decisions          |
-| [agents/015 — Temporal](../agents/015-temporal-orchestration-substrate.md)                             | Orchestration substrate that runs the Iceberg/build workflows       |
-| [agents/016 — NATS](../agents/016-nats-canonical-event-stream.md)                                      | Event substrate that feeds the Iceberg writer                       |
-| [agents/017 — Domain Event Schema](../agents/017-domain-event-schema.md)                               | Event envelope schema written to Iceberg                            |
+| agents/015 — Temporal                             | Orchestration substrate that runs the Iceberg/build workflows       |
+| agents/016 — NATS                                      | Event substrate that feeds the Iceberg writer                       |
+| agents/017 — Domain Event Schema                               | Event envelope schema written to Iceberg                            |

@@ -1,7 +1,7 @@
 # RFC: Kubernetes-Native OpenHands Sandboxes via agent-sandbox
 
 **Author:** Joe McGinley
-**Status:** Superseded by [004-autonomous-agents](004-autonomous-agents.md)
+**Status:** Superseded by 004-autonomous-agents
 **Created:** 2026-02-25
 
 ---

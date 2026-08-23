@@ -3,7 +3,7 @@
 **Author:** Joe McGinley
 **Status:** Accepted
 **Created:** 2026-08-15
-**Relates to:** [Security 004: Public Read-Only Service Isolation](004-public-read-only-service-isolation.md)
+**Relates to:** Security 004: Public Read-Only Service Isolation
 
 ---
 
@@ -91,5 +91,5 @@ Builds on the `docs/security.md` baseline and on the preview lane's proven postu
 | `projects/platform/authentik/blueprints/preview-auth.yaml` | Blueprint conventions this app's blueprint follows (scalar `!Env`, pinned `client_id`, slug-derived issuer) |
 | `projects/platform/authentik/blueprints/dev-auth.yaml` | Second precedent for the same blueprint conventions, on a stricter-group lane |
 | `projects/monolith/dev/deploy/values.yaml` | Proven `auth: authentik` precedent this route's mechanism descends from |
-| [Security 004: Public Read-Only Service Isolation](004-public-read-only-service-isolation.md) | The isolation-by-artifact argument this ADR declines to apply, and the trigger condition for revisiting that |
+| Security 004: Public Read-Only Service Isolation | The isolation-by-artifact argument this ADR declines to apply, and the trigger condition for revisiting that |
 | `.impeccable.md` | Scoped, non-converging design systems convention `.moving` follows |
