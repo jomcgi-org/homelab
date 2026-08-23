@@ -2,6 +2,12 @@ load("//bazel/helm:defs.bzl", "helm_chart")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+# This script is mounted from the Helm chart and executed with the image's
+# python3, not as a Bazel binary. Keep it in this package so the test can load
+# it as data without Gazelle creating a nested files/ package and a generated
+# py_venv_binary that has no mandatory main attribute.
+# gazelle:exclude files/reconcile_team_mapping.py
+
 helm_chart(
     name = "chart",
     lint = False,
