@@ -665,8 +665,53 @@ def test_kek_root_renders_item_and_env_only_when_enabled():
         control_plane,
         re.S,
     )
+    assert re.search(
+        r'name:\s*EMBERVM_KEK_ROOT_GENERATION\s+value:\s*"1"',
+        control_plane,
+        re.S,
+    )
     disabled = _render("kek", [chart / "values.yaml"])
     assert "EMBERVM_KEK_ROOT" not in disabled
+
+
+def test_kek_root_rotation_renders_one_explicit_previous_generation():
+    chart = _chart_dir()
+    rendered = _render(
+        "kek-rotate",
+        [chart / "values.yaml"],
+        [
+            "kekRoot.enabled=true",
+            "kekRoot.generation=2",
+            "kekRoot.onepassword.itemPath=vaults/x/items/current",
+            "kekRoot.previous.enabled=true",
+            "kekRoot.previous.generation=1",
+            "kekRoot.previous.onepassword.itemPath=vaults/x/items/previous",
+        ],
+    )
+    items = [doc for kind, _, doc in _docs(rendered) if kind == "OnePasswordItem"]
+    assert any("name: kek-rotate-embervm-kek-root" in doc for doc in items)
+    assert any("name: kek-rotate-embervm-kek-root-previous" in doc for doc in items)
+
+    control_plane = next(
+        doc
+        for kind, name, doc in _docs(rendered)
+        if kind == "Deployment" and name == "kek-rotate-embervm"
+    )
+    assert re.search(
+        r'name:\s*EMBERVM_KEK_ROOT_GENERATION\s+value:\s*"2"',
+        control_plane,
+        re.S,
+    )
+    assert re.search(
+        r"name:\s*EMBERVM_KEK_ROOT_PREVIOUS\s+valueFrom:\s+secretKeyRef:\s+name:\s*kek-rotate-embervm-kek-root-previous\s+key:\s*root",
+        control_plane,
+        re.S,
+    )
+    assert re.search(
+        r'name:\s*EMBERVM_KEK_ROOT_PREVIOUS_GENERATION\s+value:\s*"1"',
+        control_plane,
+        re.S,
+    )
 
 
 def test_customer_kms_config_renders_only_from_an_operator_named_secret():

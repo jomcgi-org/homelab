@@ -216,8 +216,19 @@ kekRoot:
   enabled: false
   name: ""
   key: root
+  generation: 1
   onepassword:
     itemPath: ""
+  # Root rotation retains exactly one old generation until every envelope has
+  # been rewrapped. The previous root is a second item only for that bounded
+  # transition window.
+  previous:
+    enabled: false
+    name: ""
+    key: root
+    generation: 0
+    onepassword:
+      itemPath: ""
 
 # Customer-managed KEK custody (ADR embervm/033). The named Secret is supplied
 # by the principal and contains one JSON key (default "config") mapping principal

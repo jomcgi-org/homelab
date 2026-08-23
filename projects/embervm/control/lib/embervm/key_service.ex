@@ -2,7 +2,8 @@ defmodule Embervm.KeyService do
   @moduledoc """
   Custodian for platform-managed and customer-managed principal data keys.
 
-  KEKs are derived on demand from the configured root and are never stored.
+  KEKs are derived on demand from the configured root generation and are never
+  stored. One previous generation may coexist during root rotation.
   The only durable per-principal state is the current epoch and the minimum
   accepted epoch. Epoch 0 is a valid first epoch for a principal with no row.
   Mutations append their op-log fact before updating the ETS projection, so a
@@ -28,7 +29,17 @@ defmodule Embervm.KeyService do
 
   defmodule State do
     @moduledoc false
-    defstruct [:root, :epochs, :op_log, :op_log_mod, :clock, :tenant, :customer_kms]
+    defstruct [
+      :root,
+      :roots,
+      :root_generation,
+      :epochs,
+      :op_log,
+      :op_log_mod,
+      :clock,
+      :tenant,
+      :customer_kms
+    ]
   end
 
   @type server :: GenServer.server()
@@ -92,7 +103,8 @@ defmodule Embervm.KeyService do
 
   @spec unwrap(server(), Envelope.t()) ::
           {:ok, binary()} | {:error, term()}
-  def unwrap(server \\ __MODULE__, %Envelope{version: 1, principal: principal} = envelope) do
+  def unwrap(server \\ __MODULE__, %Envelope{version: version, principal: principal} = envelope)
+      when version in [1, 3] do
     case customer_kms_config(server, principal) do
       {:ok, _config} -> {:error, :custody_mismatch}
       :platform -> GenServer.call(server, {:unwrap, envelope})
@@ -116,6 +128,14 @@ defmodule Embervm.KeyService do
     op_log = Keyword.get(opts, :op_log, op_log_mod)
     epochs = :ets.new(:key_epochs, [:set, :protected, read_concurrency: true])
 
+    root_generation = Keyword.get(opts, :root_generation, 1)
+    configured_root = Keyword.get(opts, :root)
+
+    roots =
+      Keyword.get_lazy(opts, :roots, fn ->
+        if is_binary(configured_root), do: %{root_generation => configured_root}, else: %{}
+      end)
+
     case op_log_mod.load_key_epochs(op_log) do
       {:ok, rows} ->
         Enum.each(rows, fn row ->
@@ -128,7 +148,9 @@ defmodule Embervm.KeyService do
 
         {:ok,
          %State{
-           root: Keyword.get(opts, :root),
+           root: Map.get(roots, root_generation, configured_root),
+           roots: roots,
+           root_generation: root_generation,
            epochs: epochs,
            op_log: op_log,
            op_log_mod: op_log_mod,
@@ -229,30 +251,9 @@ defmodule Embervm.KeyService do
     {:reply, {:error, :no_root}, state}
   end
 
-  def handle_call({:unwrap, %Envelope{version: 1} = envelope}, _from, state) do
-    reply =
-      with :ok <- validate_envelope(envelope),
-           {:ok, kek} <- do_derive(state, envelope.principal, envelope.epoch) do
-        plaintext =
-          :crypto.crypto_one_time_aead(
-            :aes_256_gcm,
-            kek,
-            envelope.nonce,
-            envelope.wrapped_key,
-            info(envelope.principal, envelope.epoch),
-            envelope.tag,
-            false
-          )
-
-        case plaintext do
-          :error -> {:error, :auth_failed}
-          <<data_key::binary-size(@kek_size)>> -> {:ok, data_key}
-          _other -> {:error, :auth_failed}
-        end
-      else
-        {:error, reason} when reason in [:no_root, :below_floor] -> {:error, reason}
-        _other -> {:error, :auth_failed}
-      end
+  def handle_call({:unwrap, %Envelope{version: version} = envelope}, _from, state)
+      when version in [1, 3] do
+    reply = unwrap_platform(state, envelope)
 
     {:reply, reply, state}
   rescue
@@ -383,9 +384,12 @@ defmodule Embervm.KeyService do
   end
 
   defp wrap_platform(state, principal, epoch, data_key) do
-    with {:ok, kek} <- do_derive(state, principal, epoch) do
+    root_generation = state.root_generation
+
+    with {:ok, kek} <- do_derive_generation(state, principal, epoch, root_generation) do
       nonce = :crypto.strong_rand_bytes(@nonce_size)
-      aad = info(principal, epoch)
+      version = if root_generation == 1, do: 1, else: 3
+      aad = envelope_aad(version, principal, epoch, root_generation)
 
       {wrapped_key, tag} =
         :crypto.crypto_one_time_aead(
@@ -400,8 +404,10 @@ defmodule Embervm.KeyService do
 
       {:ok,
        %Envelope{
+         version: version,
          principal: principal,
          epoch: epoch,
+         root_generation: if(version == 3, do: root_generation),
          nonce: nonce,
          tag: tag,
          wrapped_key: wrapped_key
@@ -409,21 +415,75 @@ defmodule Embervm.KeyService do
     end
   end
 
+  defp unwrap_platform(state, envelope) do
+    root_generation = envelope_root_generation(envelope)
+
+    with :ok <- validate_envelope(envelope),
+         {:ok, kek} <-
+           do_derive_generation(state, envelope.principal, envelope.epoch, root_generation) do
+      plaintext =
+        :crypto.crypto_one_time_aead(
+          :aes_256_gcm,
+          kek,
+          envelope.nonce,
+          envelope.wrapped_key,
+          envelope_aad(envelope.version, envelope.principal, envelope.epoch, root_generation),
+          envelope.tag,
+          false
+        )
+
+      case plaintext do
+        :error -> {:error, :auth_failed}
+        <<data_key::binary-size(@kek_size)>> -> {:ok, data_key}
+        _other -> {:error, :auth_failed}
+      end
+    else
+      {:error, reason}
+      when reason in [:no_root, :below_floor, :root_generation_unavailable] ->
+        {:error, reason}
+
+      _other ->
+        {:error, :auth_failed}
+    end
+  end
+
+  defp envelope_root_generation(%Envelope{version: 1}), do: 1
+  defp envelope_root_generation(%Envelope{version: 3, root_generation: generation}), do: generation
+
+  defp envelope_aad(1, principal, epoch, 1), do: info(principal, epoch)
+
+  defp envelope_aad(3, principal, epoch, root_generation) do
+    <<3, root_generation::unsigned-64, byte_size(principal)::unsigned-32, principal::binary,
+      epoch::unsigned-64>>
+  end
+
   defp do_derive(%State{root: nil}, _principal, _epoch), do: {:error, :no_root}
 
   defp do_derive(state, principal, epoch) do
+    do_derive_generation(state, principal, epoch, state.root_generation)
+  end
+
+  defp do_derive_generation(state, principal, epoch, root_generation) do
     with :ok <- validate_principal(principal),
-         :ok <- validate_epoch(epoch) do
+         :ok <- validate_epoch(epoch),
+         {:ok, root} <- fetch_root(state, root_generation) do
       {_current_epoch, min_epoch} = epochs(state.epochs, principal)
 
       if epoch < min_epoch do
         emit(:refused_below_floor, %{principal: principal, epoch: epoch, min_epoch: min_epoch})
         {:error, :below_floor}
       else
-        kek = hkdf(state.root, info(principal, epoch))
-        emit(:derivation, %{principal: principal, epoch: epoch})
+        kek = hkdf(root, info(principal, epoch))
+        emit(:derivation, %{principal: principal, epoch: epoch, root_generation: root_generation})
         {:ok, kek}
       end
+    end
+  end
+
+  defp fetch_root(state, root_generation) do
+    case Map.fetch(state.roots, root_generation) do
+      {:ok, root} -> {:ok, root}
+      :error -> {:error, :root_generation_unavailable}
     end
   end
 
@@ -464,6 +524,7 @@ defmodule Embervm.KeyService do
   defp validate_data_key(_data_key), do: {:error, :invalid_data_key}
 
   defp validate_envelope(%Envelope{
+         version: 1,
          principal: principal,
          epoch: epoch,
          nonce: nonce,
@@ -471,6 +532,22 @@ defmodule Embervm.KeyService do
          wrapped_key: wrapped_key
        })
        when is_binary(nonce) and byte_size(nonce) == @nonce_size and
+              is_binary(tag) and byte_size(tag) == @tag_size and
+              is_binary(wrapped_key) and byte_size(wrapped_key) == @kek_size do
+    with :ok <- validate_principal(principal), do: validate_epoch(epoch)
+  end
+
+  defp validate_envelope(%Envelope{
+         version: 3,
+         principal: principal,
+         root_generation: root_generation,
+         epoch: epoch,
+         nonce: nonce,
+         tag: tag,
+         wrapped_key: wrapped_key
+       })
+       when is_integer(root_generation) and root_generation > 0 and
+              is_binary(nonce) and byte_size(nonce) == @nonce_size and
               is_binary(tag) and byte_size(tag) == @tag_size and
               is_binary(wrapped_key) and byte_size(wrapped_key) == @kek_size do
     with :ok <- validate_principal(principal), do: validate_epoch(epoch)
@@ -533,6 +610,8 @@ defimpl Inspect, for: Embervm.KeyService.State do
       clock: state.clock,
       tenant: state.tenant,
       root: :redacted,
+      roots: :redacted,
+      root_generation: state.root_generation,
       customer_kms: :redacted
     }
 

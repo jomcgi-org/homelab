@@ -188,6 +188,38 @@ defmodule Embervm.RestoreCapabilityTest do
     assert Agent.get(keys, & &1.epoch) == 0
   end
 
+  test "generated platform envelopes mint capabilities through the platform epoch path", %{
+    s3: s3,
+    keys: keys,
+    req: req,
+    opts: opts
+  } do
+    envelope =
+      Envelope.encode(%Envelope{
+        version: 3,
+        principal: "acct:alice",
+        root_generation: 2,
+        epoch: 0,
+        nonce: :binary.copy(<<1>>, 12),
+        tag: :binary.copy(<<2>>, 16),
+        wrapped_key: :binary.copy(<<3>>, 32)
+      })
+
+    meta = :json.encode(%{envelope: Base.encode64(envelope)}) |> IO.iodata_to_binary()
+    Agent.update(s3, &Map.put(&1, :reply, {:ok, meta}))
+
+    assert {:ok, %{capability: capability}} =
+             RestoreCapability.stamp(
+               req,
+               %{node_id: "node-a", pod_uid: "uid-a"},
+               %{principal: "acct:alice", lineage: "lineage-42", generation: 7},
+               opts
+             )
+
+    assert is_binary(capability) and byte_size(capability) > 0
+    assert Agent.get(keys, & &1.epoch) == 1
+  end
+
   test "an empty bearer refuses capability minting", %{req: req, opts: opts} do
     assert {:error, :no_capability_key} =
              RestoreCapability.stamp(

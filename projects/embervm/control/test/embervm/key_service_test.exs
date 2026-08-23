@@ -74,12 +74,15 @@ defmodule Embervm.KeyServiceTest do
 
   defp start_service(opts \\ []) do
     root = Keyword.get(opts, :root, @root)
+    root_generation = Keyword.get(opts, :root_generation, 1)
     {:ok, op_log} = RecordingOpLog.start(Keyword.get(opts, :mode, :ok))
 
     {:ok, service} =
       KeyService.start_link(
         name: nil,
         root: root,
+        roots: Keyword.get(opts, :roots, if(root, do: %{root_generation => root}, else: %{})),
+        root_generation: root_generation,
         op_log: op_log,
         op_log_mod: RecordingOpLog,
         customer_kms: Keyword.get(opts, :customer_kms, %{}),
@@ -225,6 +228,45 @@ defmodule Embervm.KeyServiceTest do
     encoded = Envelope.encode(envelope)
     assert {:ok, ^envelope} = Envelope.decode(encoded)
     assert {:error, :bad_envelope} = Envelope.decode("junk")
+  end
+
+  test "root rotation emits version 3 and retains generation 1 only while configured" do
+    old_root = :binary.copy(<<1>>, 32)
+    new_root = :binary.copy(<<2>>, 32)
+    data_key = :binary.copy(<<3>>, 32)
+
+    {old_service, _op_log} = start_service(root: old_root, roots: %{1 => old_root})
+    assert {:ok, old_envelope} = KeyService.wrap(old_service, @principal, data_key)
+    assert old_envelope.version == 1
+
+    {rotating_service, _op_log} =
+      start_service(
+        root: new_root,
+        roots: %{1 => old_root, 2 => new_root},
+        root_generation: 2
+      )
+
+    assert {:ok, ^data_key} = KeyService.unwrap(rotating_service, old_envelope)
+    assert {:ok, new_envelope} = KeyService.wrap(rotating_service, @principal, data_key)
+
+    assert %Envelope{version: 3, root_generation: 2} = new_envelope
+    assert {:ok, ^data_key} = KeyService.unwrap(rotating_service, new_envelope)
+    assert {:ok, ^new_envelope} = new_envelope |> Envelope.encode() |> Envelope.decode()
+
+    assert {:error, :auth_failed} =
+             KeyService.unwrap(rotating_service, %{new_envelope | root_generation: 1})
+
+    {retired_service, _op_log} =
+      start_service(root: new_root, roots: %{2 => new_root}, root_generation: 2)
+
+    assert {:error, :root_generation_unavailable} =
+             KeyService.unwrap(retired_service, old_envelope)
+
+    inspected = rotating_service |> :sys.get_state() |> inspect()
+    refute inspected =~ inspect(old_root)
+    refute inspected =~ inspect(new_root)
+    assert inspected =~ "roots: :redacted"
+    assert inspected =~ "root_generation: 2"
   end
 
   test "customer KMS issues and unwraps a version 2 envelope without a platform root" do
