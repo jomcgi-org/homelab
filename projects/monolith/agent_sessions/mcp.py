@@ -766,7 +766,7 @@ async def monolith_voice_ui_ask(
 ) -> dict:
     """Record a companion question and return immediately.
 
-    Pass node_key to target an open run decision; otherwise the answer goes to
+    Pass node_key to target an open run decision. Otherwise the answer goes to
     the attached session.
     """
     subject, authority = _voice_ui_principal()
