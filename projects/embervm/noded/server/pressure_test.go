@@ -210,3 +210,98 @@ func TestUnknownBudgetAdmitsBothModels(t *testing.T) {
 		}
 	}
 }
+
+// TestRelightChargesWorkloadNeed (#4186): Relight used to ask the memory
+// admission question with need=0, so a banked 4 GiB session admitted on a brick
+// with floor-only headroom and then faulted multiple GiB back in. The need is
+// resolved from the registry the same way Prime's is (primeNeedMib), using the
+// banked snapshot's recorded workload, with the request trace as the fallback a
+// post-rescan bundle (no recorded identity) needs. The registry-absent case still
+// degrades to the floor-only gate, exactly as Prime does.
+func TestRelightChargesWorkloadNeed(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		snapWorkload  string
+		traceWorkload string
+		registry      []workloadEntry
+		headroom      uint64
+		wantCode      codes.Code
+	}{
+		{
+			name:         "snapshot workload need above headroom rejects",
+			snapWorkload: "sandbox-session",
+			registry:     []workloadEntry{{Workload: "sandbox-session", MemMib: 4096}},
+			headroom:     2000, // < 4096 + 512 floor
+			wantCode:     codes.ResourceExhausted,
+		},
+		{
+			name:         "snapshot workload need within headroom admits",
+			snapWorkload: "sandbox-session",
+			registry:     []workloadEntry{{Workload: "sandbox-session", MemMib: 4096}},
+			headroom:     8192, // >= 4096 + 512
+			wantCode:     codes.OK,
+		},
+		{
+			name:          "trace workload is the fallback when the bundle has no identity",
+			snapWorkload:  "",
+			traceWorkload: "sandbox-session",
+			registry:      []workloadEntry{{Workload: "sandbox-session", MemMib: 4096}},
+			headroom:      2000,
+			wantCode:      codes.ResourceExhausted,
+		},
+		{
+			name:          "snapshot workload outranks a different trace workload",
+			snapWorkload:  "echo",
+			traceWorkload: "sandbox-session",
+			registry:      []workloadEntry{{Workload: "sandbox-session", MemMib: 4096}, {Workload: "echo", MemMib: 256}},
+			headroom:      2000, // >= 256 + 512, < 4096 + 512
+			wantCode:      codes.OK,
+		},
+		{
+			name:         "registry-absent workload gates on the floor alone",
+			snapWorkload: "sandbox-session",
+			registry:     nil,
+			headroom:     2000, // >= 0 + 512
+			wantCode:     codes.OK,
+		},
+		{
+			name:         "unknown headroom fails open regardless of need",
+			snapWorkload: "sandbox-session",
+			registry:     []workloadEntry{{Workload: "sandbox-session", MemMib: 16384}},
+			headroom:     0,
+			wantCode:     codes.OK,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			drv := &fakeDriver{}
+			client, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
+			srv.registry.sync(tc.registry)
+			srv.memHeadroom = func() uint64 { return tc.headroom }
+
+			drv.mu.Lock()
+			if drv.sessionBundles == nil {
+				drv.sessionBundles = map[string]string{}
+			}
+			drv.sessionBundles["need-ref"] = "state"
+			drv.mu.Unlock()
+			srv.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "need-ref", workload: tc.snapWorkload})
+
+			_, err := client.Relight(context.Background(), &nodev1.RelightRequest{
+				Trace:       &nodev1.Trace{Workload: tc.traceWorkload},
+				SnapshotRef: "need-ref",
+			})
+			if got := status.Code(err); got != tc.wantCode {
+				t.Fatalf("Relight code = %v (%v), want %v", got, err, tc.wantCode)
+			}
+			if tc.wantCode == codes.ResourceExhausted {
+				if !strings.Contains(err.Error(), string(reasonPressureMem)) {
+					t.Fatalf("Relight error %q must carry reason %q", err.Error(), reasonPressureMem)
+				}
+				// Cheap rejection: the snapshot was never restored.
+				if drv.restoreSessions != 0 {
+					t.Fatalf("rejected Relight restored %d sessions, want 0", drv.restoreSessions)
+				}
+			}
+		})
+	}
+}
