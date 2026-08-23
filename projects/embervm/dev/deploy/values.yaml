@@ -283,6 +283,12 @@ tracing:
 auth:
   allowedServiceAccounts:
     - system:serviceaccount:embervm-dev:embervm-dev-embervm
+    - system:serviceaccount:embervm-dev:embervm-dev-embervm-conformance
+
+# The deployed conformance gate is dev-only. Its ServiceAccount is allow-listed
+# above so the runner can exercise the management API with its projected token.
+conformance:
+  enabled: true
 
 usageAdmins:
   - system:serviceaccount:embervm-dev:embervm-dev-embervm

@@ -12,6 +12,7 @@ oci_digest_manifest(
     images = {
         "//bazel/tools/hf2oci:image.info": "//bazel/tools/hf2oci:image.push",
         "//bazel/tools/image:image.info": "//bazel/tools/image:image.push",
+        "//projects/embervm/conformance:image.info": "//projects/embervm/conformance:image.push",
         "//projects/embervm/image:image.info": "//projects/embervm/image:image.push",
         "//projects/embervm/noded/image:image.info": "//projects/embervm/noded/image:image.push",
         "//projects/embervm/runtimes/bazel:image.info": "//projects/embervm/runtimes/bazel:image.push",

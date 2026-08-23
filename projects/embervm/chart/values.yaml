@@ -317,6 +317,34 @@ tokenBroker:
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
 
+# Conformance runner, dev-only. projects/embervm/dev/deploy/values.yaml enables
+# it, and the template refuses to render it in the production namespace.
+conformance:
+  enabled: false
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/conformance
+    tag: null # Injected at build time via helm_images_values
+    digest: null # Injected at build time
+    pullPolicy: IfNotPresent
+  runInterval: 30m
+  readyWait: 15m
+  taskWorkload: sandbox-python
+  sessionWorkload: pi-runtime
+  idleBankSeconds: 20
+  sweepGraceSeconds: 15
+  minPassingInvariants: 4
+  budgets:
+    s1: 60s
+    s2: 120s
+    s3: 60s
+    s4: 10s
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 64Mi
+
 # xDS sidecar (R3, PR-3): a go-control-plane ADS server that runs as a SECOND
 # container in the control-plane pod. The control plane (PR-4) PUTs a desired-state
 # snapshot to it over localhost; it serves CDS/RDS/EDS to the per-node serving
