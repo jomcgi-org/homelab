@@ -618,8 +618,14 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  def handle_info({:destroy_done, session_id, confirmed}, state) do
-    {:noreply, finish_destroy(state, session_id, confirmed)}
+  def handle_info({:destroy_done, session_id, ref, confirmed}, state) do
+    case Map.get(state.destroy_workers, session_id) do
+      {_pid, _monitor_ref, _timer_ref, ^ref, _resumed} ->
+        {:noreply, finish_destroy(state, session_id, confirmed)}
+
+      _ ->
+        {:noreply, state}
+    end
   end
 
   def handle_info({:destroy_timeout, ref}, state) do
@@ -1634,10 +1640,11 @@ defmodule Embervm.SessionManager do
       |> Map.update!(:banking, &Map.delete(&1, session_id))
 
     case SessionStore.get(state.session_store, session_id) do
-      # Destroyed/expired mid-bank: the durable state is already terminal. On a
-      # successful bank the produced snapshot is orphaned and adoption reaps it; drain
-      # any mid-bank parked callers gone. Never resurrect a terminal session.
-      {:ok, %{state: st}} when st in [:expired, :evicted, :destroyed, :failed] ->
+      # Destroying/destroyed/expired mid-bank: teardown or a terminal state already
+      # owns the row. On a successful bank the produced snapshot is orphaned and
+      # adoption reaps it; drain any mid-bank parked callers gone. Never resurrect
+      # the session.
+      {:ok, %{state: st}} when st in [:destroying, :expired, :evicted, :destroyed, :failed] ->
         drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
 
       _ ->
@@ -1703,9 +1710,21 @@ defmodule Embervm.SessionManager do
 
       case SessionStore.get(state.session_store, session_id) do
         {:ok, session} ->
-          fail_session_and_destroy(state, session)
-          # Any mid-bank parked callers: the session is failed now.
-          drain_relight_waiters(state, session_id, {:error, {:gone, "failed"}})
+          destroying? =
+            session.state == :destroying or
+              MapSet.member?(state.destroy_inflight, session_id)
+
+          state =
+            if destroying? do
+              state
+            else
+              fail_session_and_destroy(state, session)
+            end
+
+          # Any mid-bank parked callers: the session is failed now, or its destroy
+          # worker already owns teardown.
+          gone_state = if destroying?, do: "destroying", else: "failed"
+          drain_relight_waiters(state, session_id, {:error, {:gone, gone_state}})
 
         :error ->
           state
@@ -2362,11 +2381,11 @@ defmodule Embervm.SessionManager do
   # and reply the error to parked callers (they may retry, re-relighting).
   defp finish_relight(state, session_id, outcome) do
     case SessionStore.get(state.session_store, session_id) do
-      # The session went terminal mid-relight (a concurrent destroy/expire): the
-      # relight's live VM, if any, is orphaned and adoption/next-sweep reaps it. Drain
-      # any parked callers gone and drop the ledger. Never start a process for a
-      # terminal session.
-      {:ok, %{state: st}} when st in [:expired, :evicted, :destroyed, :failed] ->
+      # The session began teardown or went terminal mid-relight (a concurrent
+      # destroy/expire): the relight's live VM, if any, is orphaned and
+      # adoption/next-sweep reaps it. Drain any parked callers gone and drop the
+      # ledger. Never start a process for a session that is going away.
+      {:ok, %{state: st}} when st in [:destroying, :expired, :evicted, :destroyed, :failed] ->
         drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
 
       _ ->
@@ -3522,15 +3541,21 @@ defmodule Embervm.SessionManager do
               _, _ -> false
             end
 
-          send(owner, {:destroy_done, session_id, confirmed})
+          send(owner, {:destroy_done, session_id, ref, confirmed})
         end)
 
-      %{
+      state = %{
         state
         | destroy_workers:
             Map.put(state.destroy_workers, session_id, {pid, monitor_ref, timeout_ref, ref, resumed}),
           destroy_inflight: MapSet.put(state.destroy_inflight, session_id)
       }
+
+      if state.node_confirmed_destroy do
+        drain_relight_waiters(state, session_id, {:error, {:gone, "destroyed"}})
+      else
+        state
+      end
     end
   end
 
