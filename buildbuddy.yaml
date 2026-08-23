@@ -178,8 +178,8 @@ actions:
           # deleted files) is handled by affected-targets.sh and triggers
           # //... when the graph shape changes.
           #
-          # ci test locally stays 1:1 with the full run on purpose: PRs
-          # iterate fast while the queue candidate is the authoritative test.
+          # Local ci test and PRs both use affected targets. The queue candidate
+          # is the sole authoritative full //... gate.
           if [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
             bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
           else
@@ -653,4 +653,3 @@ actions:
   #         /tmp/buck2 --version
   #         /tmp/buck2 build //buck2/...
   #         /tmp/buck2 test  //buck2/...
-

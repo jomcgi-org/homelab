@@ -124,16 +124,19 @@ Context is the other half of the same budget:
 ci              # lint changed files + selective regen + bb remote Linux test
 ci lint         # format only files changed vs origin/main
 ci regen        # generators only, and only when inputs changed
-ci test         # 1:1 with the buildbuddy.yaml Test action
+ci test         # affected tests on one hosted Linux runner
+ci test -- //...  # explicit full-suite escape hatch
 
 helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml  # NEVER helm install
 ```
 
-`ci test` runs the exact Workflows Test argv through BuildBuddy Remote Bazel, so
-the action cache is shared with PR CI and a green `ci test` makes the PR Test
-check mostly cache-hit. Bare `bazel` / `bazelisk` on the Mac is wrong (no darwin
-workflow executors, wrong platforms); `bb remote` is allowed, `ci` is better.
-Image push stays CI-only on merge to main.
+`ci test` uploads the local committed, staged, unstaged, and untracked diff to
+one hosted Linux runner, resolves affected Bazel targets there, and tests only
+that subset with the PR Test flags. Graph-shape changes conservatively fall back
+to `//...`; the merge queue is the authoritative full-suite gate. Bare `bazel`
+or `bazelisk` on the Mac is wrong (no darwin workflow executors, wrong
+platforms); `bb remote` is allowed, `ci` is better. Image push stays CI-only on
+merge to main.
 
 **BUILD generation is CI-only too.** No gazelle runs locally: the only one that
 could go on a Mac's PATH is aspect-gazelle, a different program that rewrites

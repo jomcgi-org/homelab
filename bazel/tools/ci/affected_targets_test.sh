@@ -318,7 +318,36 @@ check_dotdir_outside() {
 	[[ -z "$(cat "$1")" ]] && pass "dotdir_outside_pkg" || fail "dotdir_outside_pkg" "expected empty"
 }
 
-# Test 11: No changes
+# Test 11: Untracked file inside a package
+setup_untracked() {
+	mkdir -p p
+	echo "" >p/BUILD
+	git add .
+	git commit -q -m "base"
+	git branch origin/main
+	echo "x" >p/new.py
+}
+
+check_untracked() {
+	grep "^set(" "$3" | grep -q "p:new.py" && pass "untracked_file_label" || fail "untracked_file_label" "label missing"
+}
+
+# Test 12: Unstaged deleted file is fallback
+setup_unstaged_deleted() {
+	mkdir -p p
+	echo "" >p/BUILD
+	echo "x" >p/old.py
+	git add .
+	git commit -q -m "base"
+	git branch origin/main
+	rm p/old.py
+}
+
+check_unstaged_deleted() {
+	[[ "$(cat "$1")" == "//..." ]] && pass "unstaged_deleted_fallback" || fail "unstaged_deleted_fallback" "$(cat "$1")"
+}
+
+# Test 13: No changes
 setup_no_change() {
 	mkdir -p p
 	echo "" >p/BUILD
@@ -384,6 +413,8 @@ run_test "py_map" "setup_py_map"
 run_test "nested" "setup_nested"
 run_test "outside" "setup_outside"
 run_test "dotdir_outside" "setup_dotdir_outside"
+run_test "untracked" "setup_untracked"
+run_test "unstaged_deleted" "setup_unstaged_deleted"
 run_test "no_change" "setup_no_change"
 
 echo "--- $PASS passed, $FAIL failed ---"

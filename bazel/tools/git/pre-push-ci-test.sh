@@ -5,10 +5,10 @@
 #
 # Opt-in since the merge queue (2026-08-22). Every push is tested twice after
 # it lands on GitHub anyway (the PR run, then the queue candidate rebased on
-# current main), so a pre-push `bazel test //...` on a hosted worker was a
+# current main), so a pre-push full test on a hosted worker was a
 # third copy: ~7 minutes of wall time and 15 to 19 GB of BuildBuddy download
 # per push, 14.5% of the repo's total. `ci lint` and the generators still run
-# in pre-commit; this hook only gates the full remote test.
+# in pre-commit; this hook only gates the affected remote test.
 #
 # Install: pre-commit install --hook-type pre-push
 set -euo pipefail

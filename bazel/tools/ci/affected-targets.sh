@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Computes Bazel targets affected by a PR diff for faster PR feedback.
+# Computes Bazel targets affected by committed and worktree changes.
 #
 # Usage: affected-targets.sh <base-ref> [<head-ref>] [-- <bazel-query-args>...]
 #   base-ref  : git ref (e.g., origin/main)
@@ -17,7 +17,7 @@
 # Exit: 0 always (unless rdeps query fails, then fallback with exit 0)
 #
 # Algorithm:
-#   1. Collect all changed files (merge-base diff + working tree + staged changes)
+#   1. Collect all changed files (merge-base, working tree, staged, and untracked)
 #   2. Fallback to //... if any file in the graph-mutation set changed:
 #      - BUILD files: BUILD, BUILD.bazel
 #      - Workspace files: WORKSPACE, WORKSPACE.bazel, MODULE.bazel, MODULE.bazel.lock
@@ -42,9 +42,7 @@
 #   - Queue candidates (gh-readonly-queue/* branches) run //... (full gate)
 #   - Main pushes run //... (full snapshot seed for fast PR fallbacks)
 #   - PR branches use this script to run only affected targets (fast feedback)
-#
-# Local ci test runs stay 1:1 with the full test suite by design: PRs iterate
-# fast with cheap feedback while the queue candidate is the authoritative gate.
+#   - Local ci test runs use this script inside one hosted Linux runner
 
 set -euo pipefail
 
@@ -85,7 +83,7 @@ while IFS= read -r file; do
 	[[ -n "$file" ]] && changed_files+=("$file")
 done < <(git diff --name-only --diff-filter=ACMRD "$base_ref...$head_ref" 2>/dev/null || true)
 
-# Include uncommitted changes (working tree + staged)
+# Include uncommitted changes (working tree, staged, and untracked)
 while IFS= read -r file; do
 	[[ -n "$file" ]] && changed_files+=("$file")
 done < <(git diff --name-only 2>/dev/null || true)
@@ -93,6 +91,10 @@ done < <(git diff --name-only 2>/dev/null || true)
 while IFS= read -r file; do
 	[[ -n "$file" ]] && changed_files+=("$file")
 done < <(git diff --cached --name-only 2>/dev/null || true)
+
+while IFS= read -r file; do
+	[[ -n "$file" ]] && changed_files+=("$file")
+done < <(git ls-files --others --exclude-standard 2>/dev/null || true)
 
 # Deduplicate (but only if non-empty to avoid mapfile adding an empty element)
 if [[ ${#changed_files[@]} -gt 0 ]]; then
@@ -105,11 +107,15 @@ if [[ ${#changed_files[@]} -eq 0 ]]; then
 	exit 0
 fi
 
-# Check for deleted files in the diff (three-dot range and cached)
+# Check for deleted files in the diff (three-dot range, working tree, and cached)
 deleted_files=()
 while IFS= read -r file; do
 	[[ -n "$file" ]] && deleted_files+=("$file")
 done < <(git diff --name-only --diff-filter=D "$base_ref...$head_ref" 2>/dev/null || true)
+
+while IFS= read -r file; do
+	[[ -n "$file" ]] && deleted_files+=("$file")
+done < <(git diff --name-only --diff-filter=D 2>/dev/null || true)
 
 while IFS= read -r file; do
 	[[ -n "$file" ]] && deleted_files+=("$file")
