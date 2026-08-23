@@ -153,11 +153,10 @@ kekRoot:
     itemPath: "vaults/k8s-homelab/items/embervm-kek-root"
 
 # Principal-artifact envelope encryption (ADR embervm/033, #4691), rollout
-# step 2. The reader and capability validator have already run fleet-wide, and
-# the production KEK root is Ready. Arm the control-plane wrap endpoint and the
-# noded writer together so newly exported mutable artifacts carry an envelope.
-# Restore-capability enforcement stays off until a production bank and relight
-# proves the complete path.
+# step 2. The reader and capability validator already ran fleet-wide, and the
+# production KEK root is Ready. The writer is armed, and an encrypted stateful
+# bundle plus volume restored from S3 through a replacement brick before
+# capability enforcement was enabled.
 artifactEncryption:
   enabled: true
 
@@ -193,6 +192,10 @@ noded:
     enabled: true
     onepassword:
       itemPath: "vaults/k8s-homelab/items/embervm-noded-token"
+  # Step 3 of the #4691 production rollout: refuse an enveloped artifact unless
+  # the control plane supplies a short-lived capability scoped to the principal,
+  # artifact lineage, target brick, workload, generation, and lease.
+  requireRestoreCapability: true
   # SigV4 credentials for the artifact store (#4708). The embervm identity in
   # the SeaweedFS identities policy; clients sign every request once these are
   # present, and the gateway starts checking them when s3.enableAuth flips in
