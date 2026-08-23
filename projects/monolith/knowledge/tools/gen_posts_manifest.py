@@ -2,8 +2,10 @@
 
 Tracked Markdown files under ``docs/posts`` are considered, except README.md.
 Files with a ``public`` key are parsed and validated, and only those declaring
-the exact gate ``public: true`` are published. The committed manifest contains
-the metadata and post bodies used by the SvelteKit server routes.
+the exact gate ``public: true`` are published, and each published body must
+pass the same internal-marker check as the public docs manifest
+(``public_content.check_public_content``). The committed manifest contains the
+metadata and post bodies used by the SvelteKit server routes.
 """
 
 from __future__ import annotations
@@ -15,6 +17,11 @@ import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+
+try:  # imported as knowledge.tools.* by tests, run as a bare script by CI
+    from knowledge.tools.public_content import check_public_content
+except ImportError:  # pragma: no cover - script invocation
+    from public_content import check_public_content
 
 POSTS_PREFIX = "docs/posts/"
 MANIFEST_REL = "projects/monolith/frontend/src/lib/public/posts/posts-manifest.json"
@@ -166,6 +173,7 @@ def build_manifest(root: Path, paths: list[str]) -> list[dict]:
             _validate_public_post(rel_path, metadata)
         except ValueError as exc:
             raise ValueError(f"{rel_path}: {exc}") from exc
+        check_public_content(rel_path, body)
         slug = make_slug(rel_path)
         previous_path = path_by_slug.get(slug)
         if previous_path is not None:
