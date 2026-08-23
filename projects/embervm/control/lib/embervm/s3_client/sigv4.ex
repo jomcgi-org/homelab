@@ -18,9 +18,14 @@ defmodule Embervm.S3Client.SigV4 do
       |> put_header("x-amz-content-sha256", body_sha)
       |> put_header("x-amz-date", amz_date)
 
+    # Every caller-supplied header must be authenticated. This is especially
+    # load-bearing for conditional writes: if `if-match` were sent but omitted
+    # from SignedHeaders, an intermediary could change the concurrency guard
+    # without invalidating the request signature.
     signed_headers =
-      (["host", "x-amz-content-sha256", "x-amz-date"] ++
-         if(header(headers, "content-type") == "", do: [], else: ["content-type"]))
+      ["host" | Enum.map(headers, fn {name, _value} -> String.downcase(to_string(name)) end)]
+      |> Enum.reject(&(&1 == "authorization"))
+      |> Enum.uniq()
       |> Enum.sort()
 
     canonical = canonical_request(method, url, headers, signed_headers, body_sha)

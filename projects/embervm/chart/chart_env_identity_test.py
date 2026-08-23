@@ -200,6 +200,11 @@ def test_dev_brick_controller_and_warmth_gc_envs_render(renders):
     assert "EMBERVM_BRICK_AUTOSCALE_MODE" in prod_env
     assert dev_env.get("EMBERVM_BRICK_AUTOSCALE_MODE") == "observe"
     assert dev_env.get("EMBERVM_WARMTH_S3_GC_EXPECTED_NODES") == "node-4"
+    assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
+    assert dev_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
+    assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_MAX_ARTIFACTS") == "100"
+    assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_CONCURRENCY") == "8"
+    assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_INTERVAL_MS") == "3600000"
 
 
 def test_noded_bearer_secret_flips_control_plane_and_bricks_together():

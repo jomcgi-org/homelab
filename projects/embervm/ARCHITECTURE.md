@@ -709,7 +709,15 @@ below-floor envelope suppresses the restore so the existing cold-boot fallback
 runs. The rollout order is deliberate: configure `kekRoot`, enable
 `EMBERVM_ARTIFACT_ENCRYPTION`, enable `store.encrypt`, then enable
 `requireRestoreCapability`. Each step is controlled by environment values and
-all flags remain false by default.
+all flags remain false by default. Root, epoch, customer-key, and custody
+transitions use a bounded control-plane sweep that lists only mutable artifact
+markers and rewrites the envelope without reading payload objects. Every
+`meta.json` replacement carries the exact S3 ETag from its preceding GET as an
+`If-Match` guard, so a concurrent newer export wins instead of having its
+generation and file manifest overwritten. Only an uncapped sweep with no
+conflicts, refusals, invalid markers, or store errors reports complete; raising
+an epoch floor or retiring a previous root or source-custody grant remains a
+separate operator action.
 
 **Decided direction:**
 
@@ -781,8 +789,11 @@ an opaque wrapped key. Disabling the customer key or grant refuses unwrap and
 the normal restore-on-miss path degrades to cold boot. A custody switch declares
 the target `mode` plus the opposite `transition_from`; only that bounded window
 accepts old-custody envelopes, and rewrap changes the envelope without touching
-artifact ciphertext. No customer oracle is configured in the reference
-deployment, so the mode is available but inert.
+artifact ciphertext. The background reconciler persists that replacement with
+an ETag compare-and-swap, isolates customer KMS calls with bounded concurrency,
+and refuses to claim transition completion after any capped, conflicted, or
+failed pass. No customer oracle is configured in the reference deployment, so
+the mode is available but inert.
 
 **Decided direction:**
 

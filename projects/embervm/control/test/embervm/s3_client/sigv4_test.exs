@@ -54,4 +54,23 @@ defmodule Embervm.S3Client.SigV4Test do
     [_method, _uri, query | _] = String.split(canonical, "\n")
     assert query == "delimiter=%2F&prefix=a%2Fb"
   end
+
+  test "caller headers are authenticated, including conditional write guards" do
+    now = ~U[2026-08-21 12:34:56Z]
+    url = "http://seaweedfs/embervm/stateful/amd/demo/ref/meta.json"
+    creds = %{access_key_id: "embervm", secret_access_key: "secret"}
+
+    headers =
+      SigV4.sign(
+        :put,
+        url,
+        [{"if-match", "\"opaque-etag\""}],
+        SigV4.unsigned_payload(),
+        creds,
+        now
+      )
+
+    assert headers |> Map.new() |> Map.fetch!("authorization") =~
+             "SignedHeaders=host;if-match;x-amz-content-sha256;x-amz-date"
+  end
 end
