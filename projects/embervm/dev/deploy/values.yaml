@@ -356,6 +356,11 @@ workloads:
   # which is where production's bricks live.
   shotter:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/shotter/rootfs.ext4
+  # The serving-path prover (#5180) RUNS in dev (enabled true): it is the
+  # serving-class soak lane, so its builder path is mandatory under the dev
+  # scratch for the same unbacked-mkfs reason as every entry above.
+  pingWorkload:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/ping/rootfs.ext4
 
 # The serving lane, off. Dev exercises task-class lifecycle for the conformance
 # harness, not serving or stateful workloads.

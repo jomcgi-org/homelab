@@ -1,0 +1,38 @@
+{{- if .Values.pingWorkload.enabled }}
+# Internal serving-path prover. EndpointPublisher publishes the serving host to
+# node Envoy only; there is deliberately no edge HTTPRoute or egress policy.
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: {{ .Values.pingWorkload.name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+spec:
+  class: serving
+  source:
+    image:
+      # Bazel-pinned from the ping guest image's .info provider. This is the
+      # same ref the rootfs builder bakes and node image identity publishes.
+      ref: "{{ .Values.pingWorkload.guestImage.repository }}@{{ .Values.pingWorkload.guestImage.digest }}"
+      port: {{ .Values.pingWorkload.port }}
+      readyPath: {{ .Values.pingWorkload.readyPath | quote }}
+      initEnv:
+        EMBER_HYPERVISOR_EPOCH: {{ .Values.hypervisorEpoch | quote }}
+  resources:
+    vcpus: {{ .Values.pingWorkload.vcpus }}
+    memMib: {{ .Values.pingWorkload.memMib }}
+  concurrency:
+    cap: {{ .Values.pingWorkload.maxInstances }}
+  serving:
+    port: {{ .Values.pingWorkload.port }}
+    healthPath: {{ .Values.pingWorkload.healthPath | quote }}
+    host: {{ .Values.pingWorkload.host | quote }}
+    minInstances: {{ .Values.pingWorkload.minInstances }}
+    maxInstances: {{ .Values.pingWorkload.maxInstances }}
+    idleBankSeconds: {{ .Values.pingWorkload.idleBankSeconds }}
+    bankedTtlSeconds: {{ .Values.pingWorkload.bankedTtlSeconds }}
+    nodeLocalWake: {{ .Values.pingWorkload.nodeLocalWake }}
+{{- end }}
