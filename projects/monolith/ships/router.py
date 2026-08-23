@@ -27,7 +27,7 @@ from ships.heat import LAT_STEP as HEAT_LAT_STEP
 from ships.heat import LON_STEP as HEAT_LON_STEP
 from ships.models import HeatCell, HeatCellHistorical, LatestPosition, Position, Vessel
 
-logger = logging.getLogger("ships")
+logger = logging.getLogger("monolith.ships")
 
 router = APIRouter(prefix="/api/ships", tags=["ships"])
 

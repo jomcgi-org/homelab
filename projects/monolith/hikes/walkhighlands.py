@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, ValidationError
 from timelength import TimeLength
 
-logger = logging.getLogger("hikes")
+logger = logging.getLogger("monolith.hikes")
 
 BASE_URL = "https://www.walkhighlands.co.uk/"
 # Desktop User-Agent carried over from the original scraper.

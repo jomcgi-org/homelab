@@ -25,7 +25,7 @@ from sqlmodel import Session, select
 from core.db import get_session
 from dr_jobs.models import Vacancy
 
-logger = logging.getLogger("dr_jobs")
+logger = logging.getLogger("monolith.dr_jobs")
 
 router = APIRouter(prefix="/api/dr-jobs", tags=["dr_jobs"])
 

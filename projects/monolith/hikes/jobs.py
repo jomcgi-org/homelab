@@ -21,7 +21,7 @@ from hikes.walkhighlands import Walk as ScrapedWalk
 from hikes.walkhighlands import fetch_all_walks
 from shared.forecast_freshness import top_of_hour
 
-logger = logging.getLogger("hikes")
+logger = logging.getLogger("monolith.hikes")
 
 # Generous client-level ceiling; per-request timeouts in the fetch helpers are
 # tighter. An explicit timeout keeps the client from hanging the loop forever.

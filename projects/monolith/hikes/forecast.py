@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-logger = logging.getLogger("hikes")
+logger = logging.getLogger("monolith.hikes")
 
 FORECAST_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
 # met.no requires an identifying User-Agent.

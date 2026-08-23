@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta
 
 from sqlmodel import Session, text
 
-logger = logging.getLogger("ships")
+logger = logging.getLogger("monolith.ships")
 
 # ~500m square cells at Salish Sea latitude (~48N). A degree of longitude is
 # shorter than a degree of latitude there, so the lon step is larger to keep

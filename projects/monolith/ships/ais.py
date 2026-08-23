@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-logger = logging.getLogger("ships")
+logger = logging.getLogger("monolith.ships")
 
 # Deduplication settings (read from env, same names/defaults as the old backend).
 # Skip a position if within this distance (meters) and speed below threshold.

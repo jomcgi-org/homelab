@@ -29,7 +29,7 @@ from datetime import date
 
 import httpx
 
-logger = logging.getLogger("dr_jobs")
+logger = logging.getLogger("monolith.dr_jobs")
 
 BASE_URL = "https://apply.jobs.scot.nhs.uk"
 
