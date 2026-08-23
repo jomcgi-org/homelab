@@ -1,6 +1,6 @@
 # Platform Architecture
 
-The cluster infrastructure: the pieces every service depends on. Current as of 9156d86 (2026-08-22).
+The cluster infrastructure: the pieces every service depends on, plus the repo-level delivery machinery (chart publish, merge queue) that puts them there. Current as of a3c819a (2026-08-22). Unflagged claims are **Built**; anything decided but not shipped says so and names its tracking issue. ADR references in the body are rationale pointers; the ADR map at the end says which ones still exist.
 
 ---
 
@@ -30,6 +30,8 @@ Two ingress tiers route by audience (ADR networking/002), carried as the `ingres
 - **trusted**: a `SecurityPolicy` validates a Cloudflare Access JWT and maps the `email` claim to `X-Auth-Email` (`cf-ingress-library/templates/_security-policy.tpl`). A few routes use an authentik OIDC policy instead of Cloudflare Access
 
 All converge on the same Envoy instance. The ingress library (`cf-ingress-library/`) provides shared `HTTPRoute` templates that services import rather than hand-rolling. Services define their routes in `deploy/values.yaml` and ArgoCD renders them (see `projects/platform/cloudflare-gateway/application.yaml`).
+
+**Edge caching.** Anonymous public pages and data endpoints are cache-eligible at Cloudflare: the origin emits `Cache-Control: public, s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000` and a hostname-scoped Cloudflare cache rule honours it, so `cf-cache-status` on `jomcgi.dev/` reads HIT/EXPIRED rather than DYNAMIC (ADR platform/003, originally scoped to `public.jomcgi.dev`, a hostname that no longer resolves now that the apex is the monolith). The rule lives only in the Cloudflare dashboard, not in this repo; the remaining cache settings, the stats-endpoint cache header and the miss-rate alert are open at #3876. `jomcgi.dev/docs/*` is served by the monolith frontend from repo markdown (`projects/monolith/frontend/src/routes/public/docs/`); there is no separate docs site or Cloudflare Pages project left (ADR docs/002).
 
 (see: `projects/platform/cloudflare-gateway/`, `projects/platform/cf-ingress-library/`, ADR networking/001, ADR networking/002)
 
@@ -66,7 +68,11 @@ For all other services: ArgoCD deploys from the git-written `targetRevision` on 
 
 **Kargo patches on the live Applications**, so "what version is production on" is a `kubectl` question. The root `canada` Application carries an `ignoreDifferences` entry per promoted Application plus `RespectIgnoreDifferences=true`; without the sync option a sync stamps the git value back, and the symptom is a promotion that holds for hours and then silently reverts. The CI write-back still maintains production's copy in git on purpose. It is the revert lever: dropping the `ignoreDifferences` entry hands production back to a correct value with nothing to reconstruct. Dev's file is frozen at its bootstrap floor and drifts further with every publish, by design.
 
-(see: `projects/home-cluster/kustomization.yaml`, `projects/platform/kargo/README.md`, ADR platform/009, ADR platform/011, ADR platform/014)
+**The merge queue is GitHub's native one**, configured on the default-branch ruleset (`lets-not-delete-everything`): rebase merges only, `HEADGREEN` grouping, build up to 3 entries, merge up to 5, and a 3-minute minimum wait. `gh pr merge --auto --rebase` enqueues; nobody rebases a PR because main moved, the queue does. The chart write-back commit lands under an org-admin bypass so it never queues behind itself. The `ready-to-merge` label exists and means "reviewed by the judgment tier", but nothing in the repo consumes it: the stateless DBOS reconciler that would (ADR platform/014) is not implemented (#4915, #4918, #4921, #4922). Publish idempotency and missed-bump detection live in `bazel/helm/chart-version.sh`, `write-back-versions.sh` and `check-missed-bump.sh` (ADR platform/011); the pre-push hook `bazel/tools/hooks/check-chart-version-targetrevision-sync.sh` blocks a PR that touches either line.
+
+**Per-PR preview environments do not exist.** ADR platform/005 (label-gated ApplicationSet previews with copy-on-write CNPG clones) is Draft and unbuilt: no `ApplicationSet` is deployed, and the only second lane is the standing `monolith-dev` and `embervm-dev` Applications promoted first by Kargo. Tracked at #3882 (#3883 to #3887).
+
+(see: `projects/home-cluster/kustomization.yaml`, `projects/platform/kargo/README.md`, `bazel/helm/README.md`, `.claude/skills/pr-workflow/`, ADR platform/009, ADR platform/011, ADR platform/014)
 
 ---
 
@@ -100,7 +106,7 @@ EmberVM uses SeaweedFS to archive task results, session state, and banked snapsh
 
 **Priority classes** rank workloads under memory oversubscription (ADR platform/010). `homelab-critical` (priority 100000) and `homelab-disposable` (priority -1000, `preemptionPolicy: Never`) are live; guest workloads (EmberVM bricks) get the disposable class, so they are the first OOM victim when the node is under pressure. The cluster runs Burstable QoS: memory request==limit (reserved), CPU request-only (allowed to burst).
 
-**Node-traffic-shaper** caps inbound bandwidth on the AI node's uplink with the CAKE qdisc so a model-weight pull cannot starve latency-sensitive control-plane traffic. It is a node-local systemd unit installed by hand, deliberately not a chart: only that node pulls large images. The other three nodes are unshaped.
+**Node-traffic-shaper is inert.** `projects/platform/node-traffic-shaper/` installs a CAKE ingress qdisc on an `ifb0` mirror as a hand-applied systemd unit on the GPU node, and it shapes nothing: Cilium attaches to the uplink with `tcx` (BPF-link TC, kernel 6.8), which runs before legacy tc filters, so the `mirred` redirect never sees a packet (`Sent 0 bytes` after minutes of traffic). `tc qdisc show` cannot see the tcx hook, which is how the install looked live. Where ingress shaping should live instead (router, or Cilium's bandwidth manager in the datapath that actually runs) is undecided at #4171. Treat the directory as a decommission candidate, not a control.
 
 **KEDA** is installed with its CRDs and control plane only. No `ScaledObject` or `ScaledJob` exists in this repo or in the cluster, so nothing autoscales on it today (see: `projects/platform/keda/values.yaml` l.1-5).
 
@@ -137,6 +143,8 @@ Non-root execution and dropped capabilities come from each chart's own `security
 
 (see: `projects/platform/kyverno/`, deployed policies in `templates/`)
 
+**Sandbox runtime.** There is no gVisor `RuntimeClass`: `kubectl get runtimeclass` lists `crun`, `kata-fc`, `lunatic`, `spin`, `slight` and the `nvidia*` handlers, and no chart sets `runtimeClassName: gvisor`. ADR security/003 (runsc for agent sandbox pods) was accepted for a pod-shaped agent runtime that was then replaced: untrusted code runs in EmberVM Firecracker guests (`projects/embervm/ARCHITECTURE.md`, section 10), so the second kernel boundary is the microVM, not a user-space kernel. #3894 remains open as the record; nothing depends on it.
+
 **cert-manager** issues TLS certificates. The Cilium Hubble flow logs use cert-manager-issued mTLS certificates with auto-rotation, rather than Helm-generated certs that never rotate (see: `projects/platform/cilium/values.yaml` l.81-83).
 
 **Authentik** is the in-cluster identity provider. It issues OIDC to the Envoy Gateway `SecurityPolicy` lanes (dev, the MCP preview, moving) and to Kargo's API, and enforces MFA on the accounts that reach them (`projects/platform/authentik/blueprints/`). Declarative config is blueprints applied by the worker; authentik ships no CRDs. Cloudflare Access is a separate gate on the trusted tier, and it also fronts authentik's admin console. Authentik's own credentials live in the `authentik-secrets` and `authentik-pg-app` Secrets, and each application's OIDC client secret arrives as an `OnePasswordItem`.
@@ -157,6 +165,8 @@ Non-root execution and dropped capabilities come from each chart's own `security
 
 **apko lock maintenance** is a second CronWorkflow, weekly on Monday at 01:00. It regenerates every committed `apko.lock.json` on Linux through the pinned `rules_apko` toolchain, runs the committed-artifact generators, and maintains one `renovate/apko-lock-maintenance` PR under rebase auto-merge (see: `projects/platform/renovate/values.yaml` l.31, `README.md`).
 
+**Repo layout** (ADR repo/001): every deployable lives under `projects/<name>/` with its chart and `deploy/` colocated; Bazel rules and tooling live under `bazel/` (`bazel/helm`, `bazel/images`, `bazel/semgrep`, `bazel/tools`), and the loose top-level `rules_*` and `semgrep_rules/` directories the ADR flagged are gone. `projects/home-cluster/kustomization.yaml` is the generated app-of-apps root (`bazel/images/generate-home-cluster.sh`, run by `ci regen`); `projects/operators/` holds the one custom operator (`oci-model-cache`, a `ModelCache` CRD that syncs HuggingFace models into an OCI registry) and the conventions in `best-practices.md` that a new operator follows. Neither is a domain of its own.
+
 **coredns** provides cluster DNS configuration for the K3s nodes.
 
 **seaweedfs-node4** and **seaweedfs-node4b** are additional SeaweedFS volume server instances pinned to the GPU node, handling overflow storage.
@@ -167,7 +177,7 @@ Non-root execution and dropped capabilities come from each chart's own `security
 
 ## ADR map
 
-Rationale only; these ADRs record decisions, not current state. This document carries what shipped.
+Rationale only; these ADRs recorded decisions, not current state. This document carries what shipped. The ADRs listed here were harvested into it and deleted (#4667); their history is in git. platform/001, 006 and 008 are monolith decisions and are harvested by `projects/monolith/ARCHITECTURE.md`.
 
 | Decision | ADR | Status | Notes |
 |---|---|---|---|
@@ -175,7 +185,7 @@ Rationale only; these ADRs record decisions, not current state. This document ca
 | CDN-cached data fetching for public routes | platform/002 | Superseded by 003 | |
 | CDN cache rule scoped to the public hostname | platform/003 | Implemented | Cloudflare-side cache rule; no cluster infrastructure. |
 | Iceberg-on-SeaweedFS lakehouse | platform/004 | Superseded | Lakehouse and Temporal stack decommissioned 2026-06-14 (PR #2596). |
-| Per-PR preview environments for the monolith | platform/005 | Draft, not built | Its data-plane primitives were reused by 009 decision 4. |
+| Per-PR preview environments for the monolith | platform/005 | Draft, not built | Its data-plane primitives were reused by 009 decision 4. Tracked at #3882. |
 | Decommission Obsidian, Postgres as the body of record | platform/006 | Accepted, shipped | |
 | SeaweedFS bucket provisioning via COSI | platform/007 | Accepted, not deployed | No COSI CRDs or `BucketClaim` in the cluster; buckets are hand-created. Tracked at #3888. |
 | Monolith module boundaries | platform/008 | Accepted | Service architecture; harvested by the monolith rollup. |
@@ -183,11 +193,15 @@ Rationale only; these ADRs record decisions, not current state. This document ca
 | Memory oversubscription via Burstable QoS and PriorityClass | platform/010 | Accepted, shipped | `homelab-critical` (100000) and `homelab-disposable` (-1000, `preemptionPolicy: Never`) are live. |
 | Idempotent chart publish with missed-bump detection | platform/011 | Accepted, shipped | |
 | Cilium replaces Linkerd | platform/012 | Accepted, shipped | Cilium is the CNI; Linkerd removed. |
-| Design system contract with distinct themes | platform/013 | Accepted | Design system; harvested elsewhere. |
-| Stateless merge-queue reconciler | platform/014 | Accepted, superseded by the native queue | GitHub's merge queue is now active on the default-branch ruleset (rebase, HEADGREEN). The DBOS reconciler (#4915) is not implemented, and `ready-to-merge` has no consumer in this repo. |
+| Design system contract with distinct themes | platform/013 | Accepted, shipped in part | Contract tokens exist (`projects/design-system/tokens/contract.css`, imported by the monolith frontend root layout); the Svelte primitive layer and the `/design` page are open at #4449. Themes stay distinct by design: `.impeccable.md` is canonical. |
+| Stateless merge-queue reconciler | platform/014 | Accepted, not implemented | GitHub's native merge queue is active on the default-branch ruleset (rebase, HEADGREEN). The DBOS reconciler (#4915) is not implemented, and `ready-to-merge` has no consumer in this repo. |
 | Cloudflare tunnel plus Envoy Gateway | networking/001 | Implemented | |
 | Path-based ingress tiers with automatic DNS | networking/002 | Implemented | Two tiers live, labelled `public` and `trusted`. |
-| Incremental Cilium capability adoption | networking/003 | Accepted, partly shipped | kube-proxy replacement and WireGuard are on. No L7 `CiliumNetworkPolicy` exists, so `hubble_httpv2_requests_total` emits nothing and the `hubble-invoke-http-5xx` alert is inert. |
+| Incremental Cilium capability adoption | networking/003 | Accepted, partly shipped | kube-proxy replacement and WireGuard are on. No L7 `CiliumNetworkPolicy` exists, so `hubble_httpv2_requests_total` emits nothing and the `hubble-invoke-http-5xx` alert is inert. Tracked at #3873 (#3824, #3825, #3875); node encryption at #5146. |
+| Monorepo structure and dotfile housekeeping | repo/001 | Accepted, shipped | Phase 1 (gitignore) and the deferred phase 2 (rules under `bazel/`, `projects/` layout) both landed. |
+| Static docs site (VitePress on Cloudflare Pages) | docs/001 | Superseded by docs/002 | |
+| Retire standalone frontends, docs into the monolith | docs/002 | Accepted, shipped | `projects/websites/`, the Pages path and `rules_vitepress` are gone; docs render at `jomcgi.dev/docs`. |
+| gVisor RuntimeClass for agent sandboxes | security/003 | Accepted, not deployed | No `gvisor` RuntimeClass exists; EmberVM microVMs took the isolation role. #3894 is the record. |
 
 ---
 

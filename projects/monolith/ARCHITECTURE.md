@@ -392,7 +392,7 @@ behavior are documented in [MCP architecture](../mcp/ARCHITECTURE.md).
 Public application responses follow the anonymous cache pattern established by
 the platform CDN decisions, with route handlers declaring cache and ETag
 semantics where their data permits it.
-(see: /docs/decisions/platform/003-cdn-cache-hostname-rule.md)
+(see: /projects/platform/ARCHITECTURE.md, edge caching)
 (see: /projects/platform/ARCHITECTURE.md)
 (see: /projects/monolith/hikes/router.py)
 (see: /projects/monolith/stars/router.py)
@@ -446,7 +446,7 @@ Application uses the OCI chart as one source and a Git source, named through a
 Pull requests do not change the chart version or production target revision.
 After merge, the publishing workflow calculates the next version, publishes
 the chart, and writes the version back on the main branch.
-(see: /docs/decisions/platform/009-post-merge-chart-versioning-kargo-promotion.md)
+(see: /projects/platform/ARCHITECTURE.md, GitOps and delivery)
 (see: /bazel/helm/write-back-versions.sh)
 
 For the monolith that written-back value is not what is deployed. Kargo owns

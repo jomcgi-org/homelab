@@ -162,7 +162,7 @@ implicit deletion:
 
 The cost is disk: tombstones aren't free. Logical deletion is immediate; **physical
 purge happens at the next Iceberg compaction** (monthly base-layer rewrite per
-[platform/004](../decisions/platform/004-iceberg-lakehouse-hot-swap.md)). Urgent
+platform/004, harvested into [`projects/platform/ARCHITECTURE.md`](../../projects/platform/ARCHITECTURE.md)). Urgent
 right-to-be-forgotten deletes can trigger ad-hoc compaction on demand. A tombstone
 event must not itself contain the data being forgotten — reference the `entity_id`
 plus a redacted reason; the original `created`/`updated` events are what get purged.
@@ -237,4 +237,4 @@ for the dispatch/identity model and the cron-sweep that backstops missed events.
 - [ADR 015 — Temporal as the Orchestration Substrate](../decisions/agents/015-temporal-orchestration-substrate.md)
 - [ADR 016 — NATS as the Canonical Event Stream](../decisions/agents/016-nats-canonical-event-stream.md)
 - [ADR 017 — Domain Event Schema and Tombstone Semantics](../decisions/agents/017-domain-event-schema.md)
-- [platform/004 — Iceberg Lakehouse + Hot-Swap Quack Serving](../decisions/platform/004-iceberg-lakehouse-hot-swap.md)
+- platform/004 Iceberg Lakehouse + Hot-Swap Quack Serving (superseded; see [`projects/platform/ARCHITECTURE.md`](../../projects/platform/ARCHITECTURE.md))

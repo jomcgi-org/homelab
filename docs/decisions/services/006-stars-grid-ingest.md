@@ -143,7 +143,7 @@ rules (no raw Kubernetes NetworkPolicies in meshed namespaces).
 
 | Resource                                                  | Relevance                                                     |
 | --------------------------------------------------------- | ------------------------------------------------------------- |
-| `docs/decisions/platform/002-cdn-cached-data-fetching.md` | The read-endpoint caching model the viewport API must fit     |
+| `projects/platform/ARCHITECTURE.md` (edge caching, formerly ADR platform/002) | The read-endpoint caching model the viewport API must fit     |
 | `projects/monolith/stars/seed.py`                         | The curated list this grid supersedes/augments                |
 | `projects/stargazer/backend/`                             | The original geospatial grid computation to lift into the job |
 | Stars-into-monolith design                                | The self-contained stars design this extends                  |

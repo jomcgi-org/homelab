@@ -3,7 +3,7 @@
 **Author:** Joe McGinley
 **Status:** Accepted
 **Created:** 2026-08-04
-**Relates to:** [ADR platform/007](../platform/007-seaweedfs-bucket-provisioning-cosi.md) (the earlier, unrelated instance of the same blind spot: "nothing alerts on object-storage growth"), [ADR embervm/025](025-local-disk-authoritative-s3-archive-interval.md) (the local-disk-authoritative, S3-archive-on-close design whose export failures are Tier 1's first member)
+**Relates to:** [ADR platform/007](../../../projects/platform/ARCHITECTURE.md) (the earlier, unrelated instance of the same blind spot: "nothing alerts on object-storage growth"), [ADR embervm/025](025-local-disk-authoritative-s3-archive-interval.md) (the local-disk-authoritative, S3-archive-on-close design whose export failures are Tier 1's first member)
 
 ---
 
@@ -35,7 +35,7 @@ including dry runs (`s3_warmth_gc.ex:757-776`), on an hourly cadence
 reason, produces no manifest for that cycle, so the newest object under
 `gc-manifests/` stops advancing the moment sweeps start failing, regardless
 of which check aborted them. Nothing consumed that absence as a signal.
-[ADR platform/007](../platform/007-seaweedfs-bucket-provisioning-cosi.md)
+[ADR platform/007](../../../projects/platform/ARCHITECTURE.md)
 had already named this exact class of gap, from a different incident, the
 34 GB Iceberg lakehouse orphan: "nothing alerts on object-storage growth."
 The GC stall is the same blind spot recurring against a second, unrelated
@@ -179,7 +179,7 @@ into a health posture; it adds no new read or write surface.
 | -------- | --------- |
 | GitHub #4317 | The closed incident: SeaweedFS `embervm` collection exhausted, every artifact export 500'd for hours, root cause and impact |
 | GitHub #4338 | Tracking issue for the implementation this ADR's decision requires; related #4334, #4336, #4337 |
-| [ADR platform/007](../platform/007-seaweedfs-bucket-provisioning-cosi.md) | The earlier, unrelated instance of the same blind spot ("nothing alerts on object-storage growth"), from the 34 GB Iceberg orphan |
+| [ADR platform/007](../../../projects/platform/ARCHITECTURE.md) | The earlier, unrelated instance of the same blind spot ("nothing alerts on object-storage growth"), from the 34 GB Iceberg orphan |
 | [ADR embervm/025](025-local-disk-authoritative-s3-archive-interval.md) | Local-disk-authoritative, S3-archive-on-close design whose export failures are Tier 1's first member |
 | [ADR embervm/029](029-parked-sessions-disk-bucket-not-cap.md) | The workload-cap accounting a durability synthetic probe would compete against, cited in Alternatives |
 | `projects/monolith/ember_public/health.py` | The existing synthetic-probe-backed health composite this decision extends |
