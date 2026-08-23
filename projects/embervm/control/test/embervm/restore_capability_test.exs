@@ -159,6 +159,35 @@ defmodule Embervm.RestoreCapabilityTest do
              )
   end
 
+  test "customer KMS revocation refuses the capability and skips platform epochs", %{
+    s3: s3,
+    keys: keys,
+    req: req,
+    opts: opts
+  } do
+    envelope =
+      Envelope.encode(%Envelope{
+        version: 2,
+        principal: "acct:alice",
+        key_ref: "customer-key",
+        wrapped_key: "opaque-ciphertext"
+      })
+
+    meta = :json.encode(%{envelope: Base.encode64(envelope)}) |> IO.iodata_to_binary()
+    Agent.update(s3, &Map.put(&1, :reply, {:ok, meta}))
+    Agent.update(keys, &Map.put(&1, :unwrap, {:error, :kms_refused}))
+
+    assert {:error, :capability_refused} =
+             RestoreCapability.stamp(
+               req,
+               %{node_id: "node-a", pod_uid: "uid-a"},
+               %{principal: "acct:alice", lineage: "lineage-42", generation: 7},
+               opts
+             )
+
+    assert Agent.get(keys, & &1.epoch) == 0
+  end
+
   test "an empty bearer refuses capability minting", %{req: req, opts: opts} do
     assert {:error, :no_capability_key} =
              RestoreCapability.stamp(

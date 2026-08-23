@@ -177,6 +177,19 @@ defmodule Embervm.RouterTest do
     def append(_server, _op), do: {:ok, System.unique_integer([:positive])}
   end
 
+  defmodule FakeCustomerKMS do
+    @behaviour Embervm.CustomerKMS
+
+    def issue(_config, _principal, _artifact),
+      do: {:ok, :binary.copy(<<8>>, 32), "customer-wrapped-key"}
+
+    def wrap(_config, _principal, _data_key, _artifact),
+      do: {:ok, "customer-wrapped-key"}
+
+    def unwrap(_config, _principal, _key_ref, _wrapped_key),
+      do: {:ok, :binary.copy(<<8>>, 32)}
+  end
+
   # A tiny upstream "guest" Plug the activator proxies to: echoes the request path
   # and body, sets a custom content-type (to prove header carry) and a hop-by-hop
   # header (to prove it is stripped), streaming the body in two chunks (to prove the
@@ -377,9 +390,14 @@ defmodule Embervm.RouterTest do
 
   defp json(body), do: :json.decode(body)
 
-  defp key_service(root) do
+  defp key_service(root, opts \\ []) do
     start_supervised!(
-      {KeyService, name: nil, root: root, op_log: :fake, op_log_mod: FakeKeyOpLog}
+      {KeyService,
+       name: nil,
+       root: root,
+       customer_kms: Keyword.get(opts, :customer_kms, %{}),
+       op_log: :fake,
+       op_log_mod: FakeKeyOpLog}
     )
   end
 
@@ -455,6 +473,42 @@ defmodule Embervm.RouterTest do
     assert {:ok, encoded_envelope} = Base.decode64(body["envelope"])
     assert {:ok, %Envelope{principal: "acct:artifact-owner", epoch: 1}} =
              Envelope.decode(encoded_envelope)
+  end
+
+  test "POST /v1/artifacts/wrap uses customer KMS custody for a configured principal" do
+    principal = "acct:artifact-owner"
+
+    customer_kms = %{
+      principal => %{
+        adapter: FakeCustomerKMS,
+        endpoint: "https://kms.example",
+        key_ref: "alice-key",
+        bearer_token: "grant"
+      }
+    }
+
+    service = key_service(nil, customer_kms: customer_kms)
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :artifact_key_service, service)
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    Application.put_env(:embervm, :session_store_mod, FakeSessionStore)
+    Application.put_env(:embervm, :session_store, :fake)
+
+    resp =
+      req(:post, "/v1/artifacts/wrap", auth("good"), wrap_body("session", "sbx", "snap-owned"))
+
+    assert resp.status == 200
+    body = json(resp.body)
+    assert {:ok, :binary.copy(<<8>>, 32)} == Base.decode64(body["data_key"])
+    assert {:ok, encoded_envelope} = Base.decode64(body["envelope"])
+
+    assert {:ok,
+            %Envelope{
+              version: 2,
+              principal: ^principal,
+              key_ref: "alice-key",
+              wrapped_key: "customer-wrapped-key"
+            }} = Envelope.decode(encoded_envelope)
   end
 
   test "POST /v1/artifacts/wrap returns no_root when the custodian has no root" do

@@ -185,6 +185,16 @@ spec:
                   # from starting. Encryption is its own flag.
                   optional: true
             {{- end }}
+            {{- if .Values.customerKms.secretName }}
+            # Customer-managed KEK custody (ADR embervm/033): the Secret holds
+            # only a KMS endpoint, opaque key reference, and wrap/unwrap grant.
+            # The customer KEK never enters this pod.
+            - name: EMBERVM_CUSTOMER_KMS_CONFIG
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.customerKms.secretName | quote }}
+                  key: {{ .Values.customerKms.secretKey | quote }}
+            {{- end }}
             {{- if and .Values.runtimePython .Values.runtimePython.guestImage .Values.runtimePython.guestImage.repository }}
             # R1 zip lane (ADR embervm/002): the zip-lane runtime name -> pinned
             # runtime base image ref, as `runtime=ref` pairs. BaseBuilder resolves
