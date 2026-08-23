@@ -1,0 +1,185 @@
+# Destination-scoped egress for the public tier (#5142, THREAT-MODEL finding 3).
+#
+# cilium-policy.yaml's egress policies grant every public-tier pod
+# `toEntities: [cluster, host, remote-node]`, which is "anything in the cluster":
+# a compromised public pod can dial any pod on any port. These policies replace
+# that with one `toEndpoints` rule per real dependency, on its real port.
+#
+# ROLLOUT IS TWO STEPS, gated by ciliumPolicy.egress.scoped in deploy/values:
+#
+#   "off"      this file renders nothing.
+#   "audit"    these policies render with `enableDefaultDeny.egress: false`, so
+#              they ADD allows and never switch an endpoint to default-deny on
+#              their own. Enforcement is unchanged: the broad policies in
+#              cilium-policy.yaml still carry the deny and the `cluster` allow.
+#              What changes is Hubble's policy correlation: every allowed egress
+#              flow now names every policy that allowed it, so a flow allowed
+#              ONLY by the broad policy is a dependency this file missed.
+#              Read it for a day of public traffic:
+#
+#                hubble observe --from-namespace monolith-public --type policy-verdict -o json \
+#                  | jq -c 'select(.flow.egress_allowed_by != null)
+#                           | select([.flow.egress_allowed_by[].name] | any(endswith("-scoped")) | not)
+#                           | {src: .flow.source.pod_name, dst: .flow.destination, l4: .flow.l4}'
+#
+#              An empty result over the window means the list below is complete.
+#   "enforce"  NOT IN THIS CHART YET. The follow-up PR adds it: the broad
+#              `toEntities: cluster` rules come out of cilium-policy.yaml, the
+#              Turnstile allow moves here, and these policies carry the deny. A
+#              dependency still missing at that point fails as a SILENT DIAL
+#              TIMEOUT, which is why the audit window comes first.
+#
+# Not a true Cilium audit mode: that is an agent-wide flag (policy-audit-mode)
+# that would stop enforcing every policy in the cluster, or an imperative
+# per-endpoint `cilium endpoint config` that GitOps cannot carry. The
+# additive-policy shape above is the one the cluster can express declaratively.
+#
+# Why these destinations (each is an env var on the live pod, or observed in
+# hubble): the backend reads and writes the CNPG cluster directly (monolith-pg-ro
+# and -rw select the instance pods, there is no pooler), calls inference and
+# embeddings, signs and serves S3 objects from SeaweedFS, invokes EmberVM for
+# the public /functions router, and exports OTLP to the SigNoz collector. The
+# frontend calls only the backend and forwards browser traces to the
+# host-networked SigNoz agent, which Cilium classifies as `host` on the same
+# node and `remote-node` elsewhere: that is the ONLY reason those two entities
+# survive, and they are pinned to 4318. imgproxy fetches from SeaweedFS alone.
+# Every pod resolves through kube-dns. The apiserver is absent because the
+# public tier holds no RBAC. FC_INVOKE_URL in chart/values.yaml points at a
+# Service that no longer exists, so it gets no rule.
+#
+# Kept as separate objects rather than extra rules on the existing policies on
+# purpose: Hubble correlates by policy NAME, so the audit only works if the
+# scoped allows live in their own objects.
+
+{{- $mode := .Values.ciliumPolicy.egress.scoped | default "off" }}
+{{- if not (has $mode (list "off" "audit")) }}
+{{- fail (printf "ciliumPolicy.egress.scoped must be off or audit (enforce lands with the follow-up to #5142); got %q" $mode) }}
+{{- end }}
+{{- if and .Values.ciliumPolicy.egress.enabled (eq $mode "audit") }}
+{{- $audit := true }}
+{{- $dns := .Values.ciliumPolicy.egress.scopedTargets.dns }}
+{{- $t := .Values.ciliumPolicy.egress.scopedTargets }}
+{{- if .Values.web.enabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-web-egress-scoped
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-public.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  {{- if $audit }}
+  enableDefaultDeny:
+    egress: false
+  {{- end }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $dns.namespace }}
+            {{- toYaml $dns.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    {{- range $dep := list $t.postgres $t.inference $t.embeddings $t.seaweedfs $t.embervm $t.otelCollector }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $dep.namespace }}
+            {{- toYaml $dep.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $dep.port | quote }}
+              protocol: TCP
+    {{- end }}
+{{- end }}
+{{- if .Values.frontend.enabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-frontend-egress-scoped
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-public.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  {{- if $audit }}
+  enableDefaultDeny:
+    egress: false
+  {{- end }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $dns.namespace }}
+            {{- toYaml $dns.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            {{- include "monolith-public.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: web
+      toPorts:
+        - ports:
+            - port: {{ .Values.web.containerPort | quote }}
+              protocol: TCP
+    # Browser traces via the same-origin /otel proxy go to the SigNoz k8s-infra
+    # agent DaemonSet, which is hostNetwork, so the destination identity is the
+    # node itself rather than a pod. Pinned to the OTLP/HTTP port.
+    - toEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: {{ $t.otelAgentHostPort | quote }}
+              protocol: TCP
+{{- end }}
+{{- if .Values.imgproxy.enabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-imgproxy-egress-scoped
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-public.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: imgproxy
+  {{- if $audit }}
+  enableDefaultDeny:
+    egress: false
+  {{- end }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $dns.namespace }}
+            {{- toYaml $dns.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $t.seaweedfs.namespace }}
+            {{- toYaml $t.seaweedfs.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $t.seaweedfs.port | quote }}
+              protocol: TCP
+{{- end }}
+{{- end }}

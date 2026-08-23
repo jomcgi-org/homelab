@@ -5387,6 +5387,17 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
+# Guard (#5142): the public tier's destination-scoped Cilium egress policies
+# must never regain `toEntities: cluster`. Same cross-package data-dep shape as
+# the HTTPRoute guard above.
+py_test(
+    name = "public_cilium_scoped_egress_guard_test",
+    srcs = ["public_cilium_scoped_egress_guard_test.py"],
+    data = ["//projects/monolith-public/chart:cilium_scoped_egress_template"],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
+
 # Guard: the packaged homelab-library must deploy images by content digest, not
 # by the build-timestamped tag that push-changed.sh frequently never pushes.
 # Reads the packaged tarball (what actually ships) rather than the library

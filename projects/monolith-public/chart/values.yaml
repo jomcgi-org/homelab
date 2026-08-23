@@ -699,6 +699,65 @@ ciliumPolicy:
     enabled: false
   egress:
     enabled: false
+    # Destination-scoped egress rollout (#5142): "off" or "audit". See
+    # templates/cilium-policy-scoped-egress.yaml for what each does and how to
+    # read the audit. Only meaningful while egress.enabled is true.
+    scoped: off
+    # The public tier's real egress destinations, one selector + port each,
+    # rendered as toEndpoints rules by the scoped policies. Selectors mirror the
+    # target Service's own selector (plus the namespace label Cilium needs for a
+    # cross-namespace match), so a rename on the far side shows up here as a
+    # silent dial timeout: re-verify against `kubectl get svc -o jsonpath=
+    # '{.spec.selector}'` when one of these services moves.
+    scopedTargets:
+      dns:
+        namespace: kube-system
+        matchLabels:
+          k8s-app: kube-dns
+      # Both the -ro (replica) and -rw (primary) Services select on the cluster
+      # label; the backend holds both credentials (DATABASE_URL and
+      # PUBLIC_WRITER_DATABASE_URL). There is no pooler.
+      postgres:
+        namespace: monolith
+        matchLabels:
+          cnpg.io/cluster: monolith-pg
+        port: 5432
+      inference:
+        namespace: inference
+        matchLabels:
+          app.kubernetes.io/name: inference
+          app.kubernetes.io/component: inference
+        port: 8080
+      embeddings:
+        namespace: inference
+        matchLabels:
+          app.kubernetes.io/name: inference
+          app.kubernetes.io/component: embeddings
+        port: 8080
+      seaweedfs:
+        namespace: seaweedfs
+        matchLabels:
+          app.kubernetes.io/name: seaweedfs
+          app.kubernetes.io/component: s3
+        port: 8333
+      # EMBERVM_URL: the public /functions/<name> router.
+      embervm:
+        namespace: embervm
+        matchLabels:
+          app.kubernetes.io/name: embervm
+          app.kubernetes.io/instance: embervm
+        port: 8080
+      # OTEL_EXPORTER_OTLP_ENDPOINT (grpc) from the backend.
+      otelCollector:
+        namespace: signoz
+        matchLabels:
+          app.kubernetes.io/name: signoz
+          app.kubernetes.io/component: otel-collector
+        port: 4317
+      # OTEL_COLLECTOR_HTTP_URL from the frontend's /otel proxy reaches the
+      # hostNetwork SigNoz k8s-infra agent, so it is a host/remote-node entity
+      # on this port rather than a pod selector.
+      otelAgentHostPort: 4318
     # Cloudflare's published IP ranges, the toCIDRSet allow for the ONE
     # sanctioned off-cluster egress from the backend "web" pod: Turnstile
     # siteverify (challenges.cloudflare.com) on port 443. Pinned as CIDRs rather
