@@ -683,6 +683,7 @@ defmodule Embervm.SessionManagerTest do
     put_session_workload(ctx, "wl-gone")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-gone", "p1")
     {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
 
     assert {:error, {:gone, "destroyed"}} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
   end
@@ -867,7 +868,7 @@ defmodule Embervm.SessionManagerTest do
 
     :ok = SessionManager.reconcile(ctx.mgr)
 
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    session = wait_for_state(ctx, created.session_id, :destroyed)
     assert session.state == :destroyed
 
     kinds = op_kinds_for(ctx, created.session_id)
@@ -1206,6 +1207,7 @@ defmodule Embervm.SessionManagerTest do
 
     original = create_persistence_session(ctx)
     {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
 
     # The fleet still reports the lineage's volume on an instance co-located
     # with (but distinct from) the base workload brick, modelling the real
@@ -1239,6 +1241,7 @@ defmodule Embervm.SessionManagerTest do
 
     original = create_persistence_session(ctx)
     {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
 
     assert {:ok, restored} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
     assert restored.restored == false
@@ -1260,6 +1263,7 @@ defmodule Embervm.SessionManagerTest do
     ctx = start_stack(prime_fun: fake_prime_fun("vm-restore-source"), channel_fun: fake_channel_fun())
     original = create_persistence_session(ctx, workload: "wl-persist-a")
     {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
     put_session_workload(ctx, "wl-persist-b", persistence_workload_opts())
 
     assert {:error, {:denied, :lineage_workload_mismatch}} =
@@ -1270,6 +1274,7 @@ defmodule Embervm.SessionManagerTest do
     ctx = start_stack(prime_fun: fake_prime_fun("vm-restore-owner"), channel_fun: fake_channel_fun())
     original = create_persistence_session(ctx, principal: "p1")
     {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
 
     assert {:error, {:denied, :lineage_principal_mismatch}} =
              SessionManager.create(ctx.mgr, "wl-persist", "p2", original.session_id)
@@ -1306,6 +1311,7 @@ defmodule Embervm.SessionManagerTest do
 
     original = create_persistence_session(ctx)
     {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
 
     assert {:error, {:denied, _reason}} =
              SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
@@ -1445,6 +1451,7 @@ defmodule Embervm.SessionManagerTest do
     ctx = start_stack(prime_fun: prime_fun, channel_fun: fake_channel_fun())
     original = create_persistence_session(ctx)
     {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
 
     first =
       Task.async(fn ->
@@ -1480,6 +1487,7 @@ defmodule Embervm.SessionManagerTest do
     ctx = start_stack(prime_fun: fake_prime_fun("vm-inflight-cleared"), channel_fun: fake_channel_fun())
     original = create_persistence_session(ctx)
     {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
 
     # Completes synchronously (no gate): by the time create/4 returns,
     # finish_create has already cleared original.session_id from
@@ -1488,6 +1496,7 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, first} = SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
     refute MapSet.member?(:sys.get_state(ctx.mgr).inflight_restore_lineages, original.session_id)
     {:ok, _} = SessionManager.destroy(ctx.mgr, first.session_id)
+    assert wait_for_state(ctx, first.session_id, :destroyed).state == :destroyed
 
     # Restore keys on LINEAGE, not session_id: first is itself a restoring
     # create, so first.session_id != first.lineage_id (original.session_id).
@@ -1838,11 +1847,51 @@ defmodule Embervm.SessionManagerTest do
     assert Registry.lookup(ctx.registry, created.session_id) == []
   end
 
+  test "create is not blocked by a hung live destroy" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        destroy_fun: fn _ch, _vm ->
+          send(parent, {:destroy_started, self()})
+
+          receive do
+            :finish_destroy -> {:ok, %{teardown_confirmed: true}}
+          after
+            5_000 -> {:ok, %{teardown_confirmed: false}}
+          end
+        end
+      )
+
+    put_session_workload(ctx, "wl-hung-destroy")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-hung-destroy", "p1")
+    put_session_workload(ctx, "wl-during-destroy")
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert_receive {:destroy_started, destroy_worker}, 1_000
+
+    create_task =
+      Task.async(fn ->
+        started_at = System.monotonic_time(:millisecond)
+        result = SessionManager.create(ctx.mgr, "wl-during-destroy", "p2")
+        {result, System.monotonic_time(:millisecond) - started_at}
+      end)
+
+    assert {{:ok, _other_session}, elapsed_ms} = Task.await(create_task, 500)
+    assert elapsed_ms < 250
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+
+    send(destroy_worker, :finish_destroy)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+  end
+
   test "destroy of an already-terminal session is a no-op success" do
     ctx = start_stack()
     put_session_workload(ctx, "wl-d2")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-d2", "p1")
     {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
 
     assert {:ok, :already_terminal} = SessionManager.destroy(ctx.mgr, created.session_id)
   end
@@ -1868,6 +1917,10 @@ defmodule Embervm.SessionManagerTest do
 
     assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
     assert wait_for_state(ctx, created.session_id, :destroying).state == :destroying
+
+    assert eventually(fn ->
+             not MapSet.member?(:sys.get_state(ctx.mgr).destroy_inflight, created.session_id)
+           end)
 
     report_session_vm(ctx, created.session_id, "wl-retry-destroy")
     assert :ok = SessionManager.reconcile(ctx.mgr)
@@ -2008,7 +2061,7 @@ defmodule Embervm.SessionManagerTest do
 
     :ok = SessionManager.reconcile(ctx.mgr)
 
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    session = wait_for_state(ctx, created.session_id, :destroyed)
     assert session.state == :destroyed
 
     :ok = Embervm.SpecTrace.drain(writer)

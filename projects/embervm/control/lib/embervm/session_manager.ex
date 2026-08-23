@@ -89,7 +89,8 @@ defmodule Embervm.SessionManager do
   @default_wake_max 30
   @default_wake_window_ms 60_000
   @create_worker_timeout_ms 130_000
-  @reconcile_destroy_timeout_ms 15_000
+  @destroy_worker_timeout_ms 30_000
+  @destroy_rpc_timeout_ms 15_000
 
   # Three consecutive bank failures fail the session and destroy its VM: a session
   # that cannot bank must not squat live capacity forever.
@@ -305,6 +306,11 @@ defmodule Embervm.SessionManager do
       create_inflight: %{},
       create_next_ref: 0,
       create_workers: %{},
+      # session_id -> {pid, monitor_ref, timeout_ref, worker_ref, resumed}. Live
+      # teardown must not run on this process because a stuck node RPC would block
+      # creates, routing, sweeps, and the reconcile pass that can redrive it.
+      destroy_workers: %{},
+      destroy_inflight: MapSet.new(),
       # #4306/#4313 review fix 2 (TOCTOU): the set of restore_lineage values
       # a restoring create currently has in flight (added synchronously in
       # handle_call({:create,...}) when accepted, removed in finish_create
@@ -408,8 +414,7 @@ defmodule Embervm.SessionManager do
   def handle_continue({:do_destroy_live, session_id}, state) do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :destroying} = session} ->
-        {_reply, state} = destroy_live(state, session, false)
-        {:noreply, state}
+        {:noreply, spawn_destroy_worker(state, session, false)}
 
       _ ->
         {:noreply, state}
@@ -499,6 +504,9 @@ defmodule Embervm.SessionManager do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: session_state}} when session_state in [:expired, :evicted, :destroyed, :failed] ->
         {:reply, {:ok, :already_terminal}, state}
+
+      {:ok, %{state: :destroying}} ->
+        {:reply, {:ok, :destroying}, state}
 
       {:ok, %{state: session_state} = session} when session_state in [:banked, :parked] ->
         {reply, state} = destroy_live(state, session)
@@ -610,11 +618,35 @@ defmodule Embervm.SessionManager do
     end
   end
 
+  def handle_info({:destroy_done, session_id, confirmed}, state) do
+    {:noreply, finish_destroy(state, session_id, confirmed)}
+  end
+
+  def handle_info({:destroy_timeout, ref}, state) do
+    case Enum.find(state.destroy_workers, fn {_session_id, {_pid, _monitor_ref, _timer_ref, worker_ref, _resumed}} ->
+           worker_ref == ref
+         end) do
+      {session_id, {pid, _monitor_ref, _timer_ref, _worker_ref, _resumed}} ->
+        Process.exit(pid, :kill)
+        {:noreply, finish_destroy(state, session_id, false)}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, state) do
     case Enum.find(state.create_workers, fn {_ref, {_pid, mref, _timer_ref}} -> mref == monitor_ref end) do
       {ref, _worker} ->
         {:noreply, finish_create(state, ref, {:error, {:create_worker_crashed, reason}})}
-      nil -> {:noreply, state}
+
+      nil ->
+        case Enum.find(state.destroy_workers, fn {_session_id, {_pid, mref, _timer_ref, _worker_ref, _resumed}} ->
+               mref == monitor_ref
+             end) do
+          {session_id, _worker} -> {:noreply, finish_destroy(state, session_id, false)}
+          nil -> {:noreply, state}
+        end
     end
   end
 
@@ -2587,6 +2619,9 @@ defmodule Embervm.SessionManager do
     end
 
     cond do
+      MapSet.member?(state.destroy_inflight, sid) ->
+        state
+
       # Owner still reports the VM: retry the node-confirmed teardown. Terminate any
       # lingering process first (a same-CP retry after a failed RPC), then re-issue
       # the Destroy; a CP-crash re-drive has no process, so this is a no-op there.
@@ -2595,13 +2630,7 @@ defmodule Embervm.SessionManager do
 
         if node_reporting?(state, dial_key) do
           emit_redrive_intent.()
-          confirmed = stop_session_process(state, sid, session)
-
-          if confirmed do
-            record_session_destroyed(state, session, "teardown")
-          else
-            state
-          end
+          spawn_destroy_worker(state, session, true)
         else
           state
           |> maybe_warn_dead_destroy_instance(session, dial_key)
@@ -3468,6 +3497,148 @@ defmodule Embervm.SessionManager do
   defp schedule(_msg, interval) when interval <= 0, do: :ok
   defp schedule(msg, interval), do: Process.send_after(self(), msg, interval)
 
+  # Live teardown runs in a monitored worker so a slow or stuck node cannot occupy
+  # the SessionManager. The manager remains the single writer for the terminal
+  # transition and owns all worker cleanup.
+  defp spawn_destroy_worker(state, session, resumed) do
+    session_id = session.session_id
+
+    if MapSet.member?(state.destroy_inflight, session_id) do
+      state
+    else
+      owner = self()
+      ref = make_ref()
+      timeout_ref = Process.send_after(owner, {:destroy_timeout, ref}, @destroy_worker_timeout_ms)
+
+      {pid, monitor_ref} =
+        spawn_monitor(fn ->
+          confirmed =
+            try do
+              if is_binary(session.node_id) and is_binary(session.vm_id) do
+                stop_session_process(state, session_id, session)
+              else
+                _ = stop_session_process(state, session_id, session)
+                true
+              end
+            rescue
+              _ -> false
+            catch
+              _, _ -> false
+            end
+
+          send(owner, {:destroy_done, session_id, confirmed})
+        end)
+
+      %{
+        state
+        | destroy_workers:
+            Map.put(state.destroy_workers, session_id, {pid, monitor_ref, timeout_ref, ref, resumed}),
+          destroy_inflight: MapSet.put(state.destroy_inflight, session_id)
+      }
+    end
+  end
+
+  defp finish_destroy(state, session_id, confirmed) do
+    case Map.pop(state.destroy_workers, session_id) do
+      {nil, _workers} ->
+        state
+
+      {{_pid, _monitor_ref, _timeout_ref, _worker_ref, resumed} = worker, workers} ->
+        cleanup_destroy_worker(worker)
+
+        state = %{
+          state
+          | destroy_workers: workers,
+            destroy_inflight: MapSet.delete(state.destroy_inflight, session_id)
+        }
+
+        case SessionStore.get(state.session_store, session_id) do
+          {:ok, %{state: session_state}}
+          when session_state in [:expired, :evicted, :destroyed, :failed] ->
+            state
+
+          {:ok, %{state: :destroying} = session} ->
+            finish_destroying_session(state, session, confirmed, resumed)
+
+          _ ->
+            state
+        end
+    end
+  end
+
+  defp finish_destroying_session(state, session, confirmed, resumed) do
+    # The second arm preserves the legacy gate-off ordering for callers that start
+    # from a pre-destroying state. Workers normally observe :destroying, so an
+    # unconfirmed live teardown remains eligible for reconcile redrive.
+    finish? = confirmed or (not state.node_confirmed_destroy and session.state != :destroying)
+
+    state =
+      if state.node_confirmed_destroy or finish? do
+        drain_relight_waiters(state, session.session_id, {:error, {:gone, "destroyed"}})
+      else
+        state
+      end
+
+    if finish? do
+      retire_session_volume(state, session)
+
+      if resumed do
+        record_session_destroyed(state, session, "teardown")
+      else
+        reply =
+          SessionStore.transition(
+            state.session_store,
+            session.session_id,
+            :destroy,
+            :session_destroyed,
+            %{reason: :destroyed},
+            %{}
+          )
+
+        if match?({:ok, _}, reply) do
+          node_confirmed =
+            if state.node_confirmed_destroy do
+              confirmed
+            else
+              if(vm_resident?(session), do: confirmed, else: nil)
+            end
+
+          Embervm.SpecTrace.emit(:adoption, :confirm_destroy, %{
+            "session_id" => session.session_id,
+            "vm_id" => session.vm_id,
+            "node_id" => session.node_id,
+            "had_vm" => vm_resident?(session),
+            "node_confirmed" => node_confirmed,
+            "gate" => state.node_confirmed_destroy,
+            "confirmed_by" => if(state.node_confirmed_destroy, do: "teardown", else: "none")
+          })
+        end
+
+        Logger.info("embervm session destroyed",
+          session_id: session.session_id,
+          workload: session.workload,
+          principal: session.principal
+        )
+
+        state
+      end
+    else
+      Logger.warning("embervm session teardown unconfirmed, left destroying",
+        session_id: session.session_id,
+        workload: session.workload,
+        vm_id: session.vm_id
+      )
+
+      state
+    end
+  end
+
+  defp cleanup_destroy_worker({pid, monitor_ref, timeout_ref, _worker_ref, _resumed}) do
+    Process.cancel_timer(timeout_ref)
+    Process.demonitor(monitor_ref, [:flush])
+    if Process.alive?(pid), do: Process.exit(pid, :kill)
+  end
+
   # Destroy a session: tear down whatever it holds. A live session (running/banking/
   # relighting) has a process + VM, stopped and destroyed here; a banked session has
   # only a snapshot, evicted here. Any parked relight waiters are drained gone (the
@@ -3678,16 +3849,14 @@ defmodule Embervm.SessionManager do
     # Dial the OWNING instance running this live vm_id, not the node-name alias.
     dial_key = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id)
 
-    case state.channel_fun.(dial_key) do
+    case safe_channel(state.channel_fun, dial_key) do
       {:ok, channel} ->
         opts = state.session_opts
 
         destroy_fun =
           Keyword.get(opts, :destroy_fun, fn ch, id ->
-            # Reconcile runs this on the SessionManager process, so a wedged node
-            # RPC must release the GenServer within a bounded interval.
             Embervm.Node.V1.NodeService.Stub.destroy(ch, %Embervm.Node.V1.DestroyRequest{vm_id: id},
-              timeout: @reconcile_destroy_timeout_ms
+              timeout: @destroy_rpc_timeout_ms
             )
           end)
 
