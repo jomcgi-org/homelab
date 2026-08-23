@@ -33,6 +33,21 @@ if [[ -z "$BUILD_BUDDY" ]]; then
 	exit 1
 fi
 
+LOCAL_AFFECTED_TEST=""
+for candidate in \
+	"${RUNFILES_DIR:-}/_main/bazel/tools/ci/local-affected-test.sh" \
+	"${TEST_SRCDIR:-}/_main/bazel/tools/ci/local-affected-test.sh" \
+	"${BASH_SOURCE[0]%/*}/local-affected-test.sh"; do
+	if [[ -f "$candidate" ]]; then
+		LOCAL_AFFECTED_TEST="$(cd "${candidate%/*}" && pwd)/${candidate##*/}"
+		break
+	fi
+done
+if [[ -z "$LOCAL_AFFECTED_TEST" ]]; then
+	echo "ERROR: cannot locate local-affected-test.sh" >&2
+	exit 1
+fi
+
 PASS=0
 FAIL=0
 pass() {
@@ -120,20 +135,21 @@ else
 	fail "buildbuddy_resource_parity" "$(printf '%s | ' "${drift[@]}")"
 fi
 
-if grep -q 'local feedback loop' "$CI" &&
+if grep -q 'local affected-target feedback' "$CI" &&
 	grep -q 'SKIP_REMOTE=1' "$CI" &&
-	grep -q 'include-secrets=true' "$CI"; then
+	grep -q 'include-secrets=true' "$CI" &&
+	grep -q 'ls-files --others --exclude-standard' "$CI"; then
 	pass "header_docs"
 else
 	fail "header_docs" "missing usage/docs markers"
 fi
 
-if grep -q 'deleted_packages=bazel/tools/python' "$CI" &&
-	grep -q 'test_tag_filters=-external,-future' "$CI" &&
-	grep -qF '//...' "$CI"; then
-	pass "ci_test_argv_locked"
+if grep -q 'deleted_packages=bazel/tools/python' "$LOCAL_AFFECTED_TEST" &&
+	grep -q 'test_tag_filters=-external,-future' "$LOCAL_AFFECTED_TEST" &&
+	grep -q -- '--script=' "$CI"; then
+	pass "ci_affected_argv_locked"
 else
-	fail "ci_test_argv_locked" "missing locked Test flags"
+	fail "ci_affected_argv_locked" "missing affected script mode or locked Test flags"
 fi
 
 flag_ln=$(grep -n "unexpected flag" "$CI" | head -1 | cut -d: -f1)
@@ -160,6 +176,8 @@ TMP="${TEST_TMPDIR:-$(mktemp -d)}"
 FAKE_ROOT="$TMP/ci-fake-root"
 STUB_BIN="$TMP/ci-stub-bin"
 mkdir -p "$FAKE_ROOT" "$STUB_BIN"
+mkdir -p "$FAKE_ROOT/bazel/tools/ci"
+cp "$LOCAL_AFFECTED_TEST" "$FAKE_ROOT/bazel/tools/ci/local-affected-test.sh"
 
 cat >"$STUB_BIN/git" <<'EOF'
 #!/usr/bin/env bash
@@ -172,6 +190,7 @@ chmod +x "$STUB_BIN/git"
 
 cat >"$STUB_BIN/bb" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$@" >"$BB_LOG"
 cat "$BB_FIXTURE"
 exit "${BB_STATUS:-0}"
 EOF
@@ -184,6 +203,9 @@ EOF
 cat >"$TMP/singular_green_run" <<'EOF'
 INFO: Analyzed 1 target
 Executed 1 out of 1 test: 1 test passes.
+EOF
+cat >"$TMP/no_affected_targets" <<'EOF'
+ci-local-affected: no Bazel targets affected; skipping bazel test
 EOF
 cat >"$TMP/action_failed" <<'EOF'
 Command failed: exit status 1
@@ -246,7 +268,8 @@ run_behavioral_case() {
 
 	if (cd "$FAKE_ROOT" && HOME="$home" XDG_CACHE_HOME="$xdg_cache_home" \
 		PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
-		BB_FIXTURE="$fixture" BB_STATUS="$bb_status" "$CI" test >"$output" 2>&1); then
+		BB_FIXTURE="$fixture" BB_STATUS="$bb_status" BB_LOG="$TMP/$name.bb.log" \
+		"$CI" test >"$output" 2>&1); then
 		got_status=0
 	else
 		got_status=$?
@@ -260,6 +283,7 @@ run_behavioral_case() {
 
 run_behavioral_case "green_run_passes" "$TMP/green_run" 0 0
 run_behavioral_case "singular_green_passes" "$TMP/singular_green_run" 0 0
+run_behavioral_case "no_affected_targets_passes" "$TMP/no_affected_targets" 0 0
 run_behavioral_case "action_failed_caught" "$TMP/action_failed" 0 1
 run_behavioral_case "missing_summary_caught" "$TMP/missing_summary" 0 1
 run_behavioral_case "bb_failure_propagates" "$TMP/bb_failure" 1 1
@@ -267,6 +291,28 @@ run_behavioral_case "summary_reports_failures_caught" "$TMP/summary_reports_fail
 run_behavioral_case "ansi_prefixed_markers_caught" "$TMP/ansi_prefixed_markers_caught" 0 1
 run_behavioral_case "midline_marker_not_infra" "$TMP/midline_marker_not_infra" 0 0
 run_behavioral_case "bb_status_3_propagates" "$TMP/bb_status_3_propagates" 3 3
+
+if grep -qxF -- "--env=CI_BASE_REF=origin/main" "$TMP/green_run_passes.bb.log" &&
+	grep -qF -- "--script=#!/usr/bin/env bash" "$TMP/green_run_passes.bb.log" &&
+	grep -qF -- "--config=ci" "$TMP/green_run_passes.bb.log" &&
+	! grep -qxF "run" "$TMP/green_run_passes.bb.log"; then
+	pass "default_uses_affected_runner"
+else
+	fail "default_uses_affected_runner" "args=$(tr '\n' ' ' <"$TMP/green_run_passes.bb.log")"
+fi
+
+explicit_output="$TMP/explicit_target.out"
+if (cd "$FAKE_ROOT" && HOME="$TMP/explicit-home" XDG_CACHE_HOME="$TMP/explicit-cache" \
+	PATH="$STUB_BIN:$PATH" CI_FAKE_ROOT="$FAKE_ROOT" \
+	BB_FIXTURE="$TMP/singular_green_run" BB_STATUS=0 BB_LOG="$TMP/explicit.bb.log" \
+	"$CI" test -- //projects/example:test >"$explicit_output" 2>&1) &&
+	grep -qxF "test" "$TMP/explicit.bb.log" &&
+	grep -qxF "//projects/example:test" "$TMP/explicit.bb.log" &&
+	! grep -qF -- "--script=" "$TMP/explicit.bb.log"; then
+	pass "explicit_target_override"
+else
+	fail "explicit_target_override" "args=$(tr '\n' ' ' <"$TMP/explicit.bb.log")"
+fi
 
 red_run_output="$TMP/red_run_diagnosed_as_red.out"
 red_run_status=0

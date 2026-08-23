@@ -46,17 +46,18 @@ evidence, not the same flake.
 
 ## Reproduce locally
 
-`ci test` is 1:1 with the Workflows Test action:
+`ci test` runs the affected subset on one hosted Linux runner using the same
+test flags as PR CI. Use the explicit target escape hatch to reproduce the full
+merge-queue test:
 
 ```bash
-bb remote --os=linux --arch=amd64 \
-  test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+ci test -- //...
 ```
 
-Same argv means a shared action cache, so a green `ci test` should make the PR
-Test check mostly cache-hit. Bare `bazel` / `bazelisk` on the Mac will not
-reproduce anything useful: there are no darwin workflow executors and the
-platforms are wrong.
+The default affected run and explicit full run both use the hosted Linux runner
+and PR Test flags, so their test actions share the remote cache. Bare `bazel` or
+`bazelisk` on the Mac will not reproduce anything useful: there are no darwin
+workflow executors and the platforms are wrong.
 
 ## Failures with a known shape
 

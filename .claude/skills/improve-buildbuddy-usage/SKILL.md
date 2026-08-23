@@ -98,8 +98,9 @@ re-confirmed under the new layout: invocation `6273779d` reports 61.4 GB while
 its six child bazel invocations sum to 8.0 GB. Runner traffic is its own thing,
 not a rollup of the bazel graph.
 
-`ci test` runs `bazel test //... --config=ci` on a hosted worker, so it shares
-every `--config=ci` flag with PR CI. Any flag fix lands on both lanes at once.
+`ci test` resolves and tests only locally affected targets on one hosted worker.
+It keeps the PR CI flags, so changed-target actions share the same remote cache.
+Only the merge queue runs the mandatory full `//...` suite.
 
 ## What the bytes actually are (settled 2026-08-09, do not relitigate)
 
@@ -252,9 +253,9 @@ confirmed against a real invocation** before you act on it.
 2. **Shrink `deploy`'s snapshot further.** This PR removes the image runfiles
    staging. If `deploy`'s cold unit does not fall from 33.1 GB toward
    `pr-checks`' 20.9 GB, the extra 12 GB is something else and worth finding.
-3. **`HOSTED_BAZEL` at 240 GB/day is local `ci test`.** Real bytes, but not what
-   BuildBuddy wrote to us about. Report it separately, never fold it into the
-   CI number.
+3. **`HOSTED_BAZEL` at 240 GB/day was full local `ci test`.** Local runs now use
+   affected targets; keep reporting this role separately to verify the drop,
+   never fold it into the CI number.
 4. **Fewer redundant pushes.** 1,396 runs in 7 days were superseded within 10
    minutes by another run of the same action on the same branch. The strict
    "up to date with main" rule forces `update-branch` on every open PR whenever

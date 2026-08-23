@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
-# ci: local feedback loop that matches PR CI so Workflows mostly cache-hit.
+# ci: local affected-target feedback on the same hosted Linux runner shape as PR CI.
 #
 # Steps:
 #   1. lint   format only files changed vs origin/main
 #   2. regen  generators only when their inputs changed (BUILD generation is CI-only)
-#   3. test   bb remote (Linux) bazel test with the same flags as buildbuddy.yaml "Test"
+#   3. test   bb remote (Linux) affected Bazel tests with the PR Test flags
 #
 # Usage:
 #   ci              # lint + regen + remote test
 #   ci lint         # format changed files only
 #   ci regen        # selective generators (gazelle itself runs only in CI)
-#   ci test         # bb remote test only (optional: ci test -- //path:target ...)
+#   ci test         # bb remote affected tests only
+#   ci test -- //path:target  # explicit target override, including //...
 #   ci --help
 #
 # Env:
 #   CI_BASE_REF     git ref to diff against (default: origin/main)
 #   SKIP_REMOTE=1   skip the remote test step when running full `ci`
 #
-# Test flags are locked to buildbuddy.yaml "Test" for action-cache sharing:
-#   test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
+# Test flags are locked to buildbuddy.yaml "Test" for action-cache sharing.
+# Local and PR feedback use affected targets; the merge queue alone runs `//...`.
 #
 # Secrets: `ci test` passes include-secrets=true so the remote runner matches CI
 # (Docker Hub etc.). That widens org secrets from CI-only runners to any local
@@ -64,6 +65,7 @@ changed_files() {
 		git diff --name-only --diff-filter=ACMR "$base" 2>/dev/null || true
 		git diff --name-only --diff-filter=ACMR 2>/dev/null || true
 		git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true
+		git ls-files --others --exclude-standard 2>/dev/null || true
 	} | sed '/^$/d' | sort -u
 }
 
@@ -226,30 +228,25 @@ cmd_regen() {
 }
 
 # ---------- test (bb remote = Workflows backend, Linux) ----------
-# MUST stay byte-for-byte identical to buildbuddy.yaml action "Test" so the
-# remote action cache is shared with PR CI (cache hits = green PR immediately).
-# Workflows Test runs:
-#   bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
 cmd_test() {
 	# Parse args before requiring bb so unit tests can validate flag rejection
 	# in hermetic sandboxes that do not install the BuildBuddy CLI.
 	local -a targets=()
-	local -a extra=()
 	local saw_ddash=0
 	local a
 	for a in "$@"; do
-		if [[ $saw_ddash -eq 1 ]]; then
-			extra+=("$a")
-			continue
-		fi
 		if [[ "$a" == "--" ]]; then
+			if [[ $saw_ddash -eq 1 ]]; then
+				err "ci test: '--' may only appear once"
+				exit 2
+			fi
 			saw_ddash=1
 			continue
 		fi
 		if [[ "$a" == -* ]]; then
-			err "ci test: unexpected flag '$a' (would break CI argv parity)."
-			err "Usage: ci test                  # full //... like Workflows Test"
-			err "       ci test -- //pkg:tgt     # focused targets (same --config flags)"
+			err "ci test: unexpected flag '$a'"
+			err "Usage: ci test                  # affected targets"
+			err "       ci test -- //pkg:tgt     # explicit target override"
 			exit 2
 		fi
 		targets+=("$a")
@@ -260,21 +257,26 @@ cmd_test() {
 		exit 1
 	fi
 
-	local -a bazel_args=(test)
-	if [[ ${#targets[@]} -eq 0 ]]; then
-		bazel_args+=(//...)
-	else
-		bazel_args+=("${targets[@]}")
-	fi
-	bazel_args+=(
+	local -a test_flags=(
 		--config=ci
 		--deleted_packages=bazel/tools/python
 		--test_tag_filters=-external,-future
 	)
-	[[ ${#extra[@]} -gt 0 ]] && bazel_args+=("${extra[@]}")
-
-	log "test: bb remote (linux/amd64) 1:1 with buildbuddy.yaml Test"
-	dim "  bb remote --os=linux --arch=amd64 ${bazel_args[*]}"
+	local -a remote_args=()
+	if [[ ${#targets[@]} -eq 0 ]]; then
+		local affected_script
+		affected_script="$(cat "$ROOT/bazel/tools/ci/local-affected-test.sh")"
+		remote_args+=(
+			--env="CI_BASE_REF=$BASE_REF"
+			--script="$affected_script"
+		)
+		log "test: bb remote affected targets (linux/amd64)"
+		dim "  bb remote --os=linux --arch=amd64 --env=CI_BASE_REF=$BASE_REF --script=<affected-test>"
+	else
+		remote_args+=(test "${targets[@]}" "${test_flags[@]}")
+		log "test: bb remote explicit targets (linux/amd64)"
+		dim "  bb remote --os=linux --arch=amd64 ${remote_args[*]}"
+	fi
 	dim "  (include-secrets=true: runner may receive org secrets; treat as CI)"
 
 	# Match the Test action's `resource_requests` in buildbuddy.yaml: disk 120GB,
@@ -317,7 +319,7 @@ cmd_test() {
 		--runner_exec_properties=EstimatedFreeDiskBytes=120GB \
 		--runner_exec_properties=EstimatedCPU=8 \
 		--runner_exec_properties=EstimatedMemory=10GB \
-		"${bazel_args[@]}" 2>&1 | tee "$out" || bb_status=$?
+		"${remote_args[@]}" 2>&1 | tee "$out" || bb_status=$?
 
 	# bb remote exits 0 when the remote ACTION fails, so require positive evidence
 	# of a test summary before accepting (#4118). Diagnose red test runs before
@@ -332,6 +334,9 @@ cmd_test() {
 	if grep -qE "(^|${esc}\[[0-9;]*m)(Action failed:|Command failed: exit status)" "$out"; then
 		err "remote runner failed before or while running tests (see output above, issue #4118)"
 		return 1
+	fi
+	if grep -qE 'ci-local-affected: (no Bazel targets affected; skipping bazel test|affected targets contain no tests; build succeeded)' "$out"; then
+		return "$bb_status"
 	fi
 	if ! grep -qE 'Executed [0-9]+ out of [0-9]+ tests?' "$out"; then
 		if grep -qF 'Multiple entries with same key: Range' "$out"; then

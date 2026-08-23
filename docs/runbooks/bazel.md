@@ -28,10 +28,14 @@ Defined in `buildbuddy.yaml`:
 | Action | What it does |
 | ------ | ------------ |
 | **Format check** | Formatters + generators + gazelle; auto-commits on PR branches |
-| **Test** | `bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future` |
+| **PR Test** | affected targets with `--config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future` |
+| **Merge queue Test** | `bazel test //...` with the same flags |
 | **Push images** | OCI publish + chart bumps on main |
 
-`ci test` uses the **exact** Test argv so the remote action cache is shared.
+`ci test` resolves the local committed and worktree diff inside one hosted Linux
+runner, then tests only affected targets with the PR Test flags. The merge queue
+alone runs the mandatory full `//...` suite. Use `ci test -- //...` only when an
+explicit local full run is needed.
 
 ## Key Targets (CI-only)
 
@@ -98,5 +102,4 @@ Typical workflow after making changes:
 1. Edit code or chart files
 2. Run `ci` (lint + regen + remote test)
 3. Review with `git diff`, commit, push, open PR
-4. PR Workflows should mostly cache-hit if `ci test` was green
-
+4. PR Workflows should cache-hit the affected test actions if `ci test` was green
