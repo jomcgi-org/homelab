@@ -15,7 +15,10 @@ vi.mock("$lib/public/posts/posts-manifest.json", () => ({
   ],
 }));
 
-import { DOCS_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  DOCS_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 import { load } from "./+page.server.js";
 
 describe("/public/posts/[slug] load", () => {
@@ -39,7 +42,7 @@ describe("/public/posts/[slug] load", () => {
     expect(result.html).toContain("Hello <strong>world</strong>.");
     expect(result.summary).toBe("One sentence.");
     expect(setHeaders).toHaveBeenCalledWith({
-      "cache-control": DOCS_CACHE_CONTROL,
+      ...cloudflareCacheHeaders(DOCS_CACHE_CONTROL),
       etag: '"testbuild-posts-example"',
     });
   });

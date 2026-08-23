@@ -6,7 +6,10 @@ vi.mock("$lib/public/posts/posts-manifest.json", () => ({
   default: manifest,
 }));
 
-import { DOCS_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  DOCS_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 import { load } from "./+page.server.js";
 
 describe("/public/posts load", () => {
@@ -21,7 +24,7 @@ describe("/public/posts load", () => {
 
     expect(result.posts).toEqual([]);
     expect(setHeaders).toHaveBeenCalledWith({
-      "cache-control": DOCS_CACHE_CONTROL,
+      ...cloudflareCacheHeaders(DOCS_CACHE_CONTROL),
       etag: '"testbuild-posts"',
     });
   });

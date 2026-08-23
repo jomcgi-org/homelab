@@ -4,7 +4,10 @@ const { manifest } = vi.hoisted(() => ({ manifest: [] }));
 
 vi.mock("$lib/public/docs/docs-manifest.json", () => ({ default: manifest }));
 
-import { DOCS_CACHE_CONTROL } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  DOCS_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 import { load } from "./+page.server.js";
 import { buildProjectCards } from "$lib/server/docs.js";
 
@@ -67,8 +70,8 @@ describe("/docs load", () => {
       "Current-state documentation for the public projects, rendered from the repository.",
     );
     expect(result.projects[0]).not.toHaveProperty("content");
-    expect(setHeaders).toHaveBeenCalledWith({
-      "cache-control": DOCS_CACHE_CONTROL,
-    });
+    expect(setHeaders).toHaveBeenCalledWith(
+      cloudflareCacheHeaders(DOCS_CACHE_CONTROL),
+    );
   });
 });
