@@ -261,6 +261,48 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     assert Agent.get(calls, & &1) == [child_pid]
   end
 
+  test "armed sweeper logs accumulating strikes before it reaps (#4419)" do
+    # When the gate is ON the sweeper used to log NOTHING until it killed
+    # something, so "working and finding nothing" and "not running at all"
+    # read identically. Every pass must leave a heartbeat, and a pid climbing
+    # toward the threshold must be visible before the kill lands.
+    supervisor = mock_supervisor()
+    target = "10.42.9.99:9090"
+    child_pid = mock_child(target)
+    MockSupervisor.set_children(supervisor, [child(child_pid)])
+    {terminate_fun, _calls} = terminate_child_collector()
+
+    sweeper =
+      start_sweeper(
+        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
+        supervisor: supervisor,
+        terminate_child_fun: terminate_fun,
+        sweep_enabled: true
+      )
+
+    log = ExUnit.CaptureLog.capture_log(fn -> GrpcConnectionSweeper.sweep_now(sweeper) end)
+    assert log =~ "pass complete (children=1, keep_set=1, reaped=0, pending=1)"
+    assert log =~ "1 orchestrator(s) accumulating strikes"
+    assert log =~ "#{inspect(child_pid)}: target #{inspect(target)} not in live set (strike 1 of 3)"
+    refute log =~ "DRY RUN"
+  end
+
+  test "dry-run sweeper logs a heartbeat on a clean pass" do
+    supervisor = mock_supervisor()
+    live_pid = mock_child("10.42.3.34:9090")
+    MockSupervisor.set_children(supervisor, [child(live_pid)])
+
+    sweeper =
+      start_sweeper(
+        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
+        supervisor: supervisor,
+        sweep_enabled: false
+      )
+
+    log = ExUnit.CaptureLog.capture_log(fn -> GrpcConnectionSweeper.sweep_now(sweeper) end)
+    assert log =~ "(DRY RUN, gate off): pass complete (children=1, keep_set=1, reaped=0, pending=0)"
+  end
+
   test "timeout/wedged branch is protected by strikes" do
     supervisor = mock_supervisor()
 
