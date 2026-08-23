@@ -31,7 +31,7 @@ Custom policies included:
 
 - **OTel Injection** (`inject-otel-env-vars`) - Mutates Deployments, StatefulSets, and DaemonSets to inject `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` environment variables
 - **Require Resource Requests** (`require-resource-requests`) - Audits workloads for missing CPU/memory resource requests
-- **Clone Monolith PG Secret** (`clone-monolith-pg-app`) - Clones the monolith Postgres app secret into target namespaces
+- **Clone Monolith Workflow Secrets** (`clone-monolith-workflows-secrets`) - Clones the monolith Postgres app secret and the other job-pod Secrets into `monolith-workflows`, triggered on each source Secret so a recreated source is re-cloned
 - **Clone SigNoz API Key** (`clone-signoz-api-key`) - Replicates the SigNoz `signoz-api-key` secret from the `signoz` namespace into the namespaces that call the SigNoz API
 
 ## Key Features
