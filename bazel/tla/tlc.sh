@@ -78,8 +78,9 @@ fi
 rm -f "trans_check.tla"
 
 # --- Model check ------------------------------------------------------------
-# -Dtlc2.TLC.stopAfter=600 bounds wall time (seconds) so a runaway check fails
-# instead of hanging the CI action; -workers auto uses the executor's cores.
+# -Dtlc2.TLC.stopAfter=600 bounds wall time (seconds) so a runaway check cannot
+# hang the CI action; -workers auto uses the executor's cores. Note TLC exits 0
+# when the bound fires, so pass mode below also checks the queue drained.
 set +e
 "$java" -XX:+UseParallelGC -Dtlc2.TLC.stopAfter=600 \
 	-cp "$jar" tlc2.TLC -workers auto -config "$cfg_name" "$module" >"$out" 2>&1
@@ -92,7 +93,19 @@ if [ "$expect" = "pass" ]; then
 		cat "$out" >&2
 		exit 1
 	fi
-	echo "TLC PASS: $spec_name checked clean." >&2
+	# A zero exit is NOT proof of an exhaustive check: when stopAfter fires, TLC
+	# prints "No error has been found", leaves states on the queue, and still
+	# exits 0 (#4050). Require the completion line to report an empty queue so a
+	# truncated search reads as INCOMPLETE, never as PASS.
+	if ! grep -qE 'states generated, .*, 0 states left on queue' "$out"; then
+		echo "TLC INCOMPLETE: $spec_name was NOT checked exhaustively. TLC exited 0" >&2
+		echo "but its output does not report '0 states left on queue', so the state" >&2
+		echo "space was truncated (most likely the -Dtlc2.TLC.stopAfter wall-time" >&2
+		echo "bound fired) and a clean result proves nothing. Output:" >&2
+		cat "$out" >&2
+		exit 1
+	fi
+	echo "TLC PASS: $spec_name checked clean (exhaustive)." >&2
 elif [ "$expect" = "fail" ]; then
 	# Negative mode: the model must still reproduce the historical violation. A
 	# zero exit means TLC found no error, i.e. the model went blind to the bug it
