@@ -676,8 +676,9 @@ workloads:
   runtimePi:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/runtime-pi/rootfs.ext4
     harnessInit: /usr/local/bin/ember-runtime-guest-init
-  # Internal serving-path prover. The Go server is PID 1, so its image binary
-  # path is also the per-image harness init used for cold serving boots.
+  # Internal serving-path prover. The go_image entrypoint binary is the PID-1
+  # init the kernel boots (the repo go_image macro installs it at /opt/app) and
+  # it serves both the vsock readiness contract and the tap-facing serving port.
   pingWorkload:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/ping/rootfs.ext4
     harnessInit: /opt/app
