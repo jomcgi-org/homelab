@@ -47,6 +47,18 @@ the full monolith catalogue and still show each caller only their subset.
 Group matching runs against the authentik `groups` claim by **name**, so
 renaming a group in authentik silently stops matching. The names are not ids.
 
+Which group lands in which team is declared in Git: `teamMapping.teams` in
+`context-forge-gateway/deploy/values.yaml`, reconciled every 15 minutes by
+the `team-mapping` CronJob (`templates/team-mapping-cronjob.yaml`). The job
+creates any declared team that is missing and writes
+`sso_providers.team_mapping` (group name to team id) only when it differs, so
+a new group in values grants on the next tick and a Context Forge database
+rebuild self-heals. Membership itself is never written by the job: Context
+Forge applies the mapping per request from the token's `groups` claim. The
+`sso_providers` row itself (client id, issuer, `trusted_for_api_auth`) is
+still created by hand with `scripts/provision-mcp-auth.sh`, and the job fails
+loudly while it is absent rather than inventing one.
+
 The ACL is **tool-granular**: it decides whether you may call
 `search_knowledge`, never what `search_knowledge` returns. Per-caller scoping of
 results is a separate concern, and is not live (see Token forwarding).
@@ -292,7 +304,10 @@ token verifier, while the stale-catalogue reasoning still holds.
 
 Postgres via CloudNativePG (`templates/postgres-cnpg.yaml`). Context Forge holds
 its own gateway registrations, team membership, tool catalogue cache and
-`sso_providers` there. Secrets sync from 1Password via `OnePasswordItem`.
+`sso_providers` there. Of that, only `sso_providers.team_mapping` and the
+teams it names are reconciled from Git (see Identity above); the rest is
+restored by hand after a rebuild. Secrets sync from 1Password via
+`OnePasswordItem`.
 
 **Why.** The original gateway consolidated remote access, authentication
 workarounds, and virtual tool registration in one in-cluster component (ADR

@@ -1,0 +1,114 @@
+{{- if .Values.teamMapping.enabled }}
+# Reconcile the authentik group -> Context Forge team mapping from values.
+#
+# Context Forge reconciles team MEMBERSHIP itself, per request, from the
+# token's `groups` claim, so authentik owns who is in a team. The wiring that
+# gives those claims meaning (the team row and sso_providers.team_mapping) only
+# existed in CF's Postgres, written by hand from a laptop by
+# scripts/provision-mcp-auth.sh, and that database has been rebuilt from
+# scratch once already. This CronJob makes Git own the wiring: every tick it
+# ensures each declared team exists and PUTs team_mapping back from
+# .Values.teamMapping.teams, so a DB rebuild or a new group in values
+# converges on its own. Creating the sso_providers row still needs the OAuth
+# client id and stays on the script; the job fails loudly when the row is
+# missing rather than inventing one.
+#
+# Cadence: every 15 minutes. There is nothing to hurry (entitlement for a new
+# group is a values change that lands on the next tick) and this job never
+# touches the tool catalogue, so unlike the retired tool-refresh CronJob it
+# cannot preempt CF's own AUTO_REFRESH_SERVERS loop whatever cadence it runs
+# at. 15 is still chosen to sit off the 10-minute refresh interval so the two
+# do not routinely land on the same second in the gateway log.
+#
+# Mints a short-lived admin JWT from JWT_SECRET_KEY + PLATFORM_ADMIN_EMAIL (the
+# same context-forge secret the gateway reads, synced from 1Password) and
+# reuses the gateway image, which bundles mcpgateway and python3.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-team-mapping
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+data:
+  reconcile_team_mapping.py: |
+{{ .Files.Get "files/reconcile_team_mapping.py" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-team-mapping
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.teamMapping.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 120
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: {{ .Values.teamMapping.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            {{- include "context-forge.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: team-mapping
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 0
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: team-mapping
+              {{- with (index .Values "mcp-stack" "mcpContextForge" "image") }}
+              image: "{{ .repository }}:{{ .tag }}"
+              imagePullPolicy: {{ .pullPolicy }}
+              {{- end }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.secret.name }}
+              env:
+                - name: CF_GATEWAY_URL
+                  value: "http://{{ .Release.Name }}-mcp-stack-mcpgateway:80"
+                - name: CF_SSO_PROVIDER_ID
+                  value: {{ .Values.teamMapping.providerId | quote }}
+                - name: TEAM_MAPPING_JSON
+                  value: {{ toJson .Values.teamMapping.teams | quote }}
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  CF_ADMIN_TOKEN=$(python3 -m mcpgateway.utils.create_jwt_token -u "$PLATFORM_ADMIN_EMAIL" --admin -e 600 | tail -1)
+                  export CF_ADMIN_TOKEN
+                  exec python3 /scripts/reconcile_team_mapping.py
+              resources:
+                {{- toYaml .Values.teamMapping.resources | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            - name: scripts
+              configMap:
+                name: {{ .Release.Name }}-team-mapping
+{{- end }}

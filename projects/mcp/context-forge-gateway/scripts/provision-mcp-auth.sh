@@ -13,8 +13,13 @@
 #      from token claims (see verify_credentials: token_use="session" resolves
 #      via resolve_session_teams, not normalize_token_teams).
 #
-# None of this is in Git otherwise: Context Forge keeps it in Postgres, and that
-# database was rebuilt from scratch once already. Re-running this restores it.
+# Context Forge keeps all three in Postgres, and that database was rebuilt from
+# scratch once already. Steps 1 and 3 are now also reconciled from Git every
+# 15 minutes by the chart's team-mapping CronJob (#5033, deploy/values.yaml
+# `teamMapping`), so after a rebuild this script is only needed for step 2,
+# the provider row, which needs CLIENT_ID. The CronJob rewrites team_mapping
+# from values on its next tick, so the mapping this script writes is a
+# placeholder until then; keep the two in agreement.
 #
 # Idempotent: every step is create-or-update, so it is safe to run repeatedly
 # and safe to run after a database rebuild.
