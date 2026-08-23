@@ -814,26 +814,29 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	// can attach it as a read-only drive and import the handler off disk. This is
 	// strictly ADDITIVE: the base memory snapshot above is still produced (the task
 	// lane needs it if the workload is also task-class), and a non-serving build never
-	// enters this branch. Only the zip lane carries an archive; an image-lane serving
-	// base has no handler zip and is left for a later rung.
+	// enters this branch. Only the zip lane carries an archive. An image-lane serving
+	// base has no handler zip, so ADR embervm/038 registers its rootfs with no handler.
 	servingImageRef := ""
-	if req.GetServing() && archive != nil && s.servingDriver != nil {
-		path, artifactBytes, werr := s.servingDriver.WriteServingHandlerArtifact(baseKey, imageDigest, archive)
-		if werr != nil {
-			// A handler-artifact write failure fails the build: a serving base that
-			// reports READY without a usable cold-boot artifact would place and then
-			// FAILED_PRECONDITION at StartServing, which is worse than failing here.
-			s.bases.failBuild(baseKey, werr.Error())
-			s.signalChange()
-			return nil, status.Errorf(codes.FailedPrecondition, "noded: write serving handler artifact for %q: %v", baseKey, werr)
-		}
-		s.servingImage.add(servingImageEntry{
+	if req.GetServing() && s.servingDriver != nil {
+		simg := servingImageEntry{
 			baseKey:         baseKey,
 			workload:        workload,
-			handlerPath:     path,
-			runtimeImageRef: imageDigest, // the zip lane's imageDigest IS the runtime ref
-			sizeBytes:       artifactBytes,
-		})
+			runtimeImageRef: imageDigest,
+		}
+		if archive != nil {
+			path, artifactBytes, werr := s.servingDriver.WriteServingHandlerArtifact(baseKey, imageDigest, archive)
+			if werr != nil {
+				// A handler-artifact write failure fails the build: a serving base that
+				// reports READY without a usable cold-boot artifact would place and then
+				// FAILED_PRECONDITION at StartServing, which is worse than failing here.
+				s.bases.failBuild(baseKey, werr.Error())
+				s.signalChange()
+				return nil, status.Errorf(codes.FailedPrecondition, "noded: write serving handler artifact for %q: %v", baseKey, werr)
+			}
+			simg.handlerPath = path
+			simg.sizeBytes = artifactBytes
+		}
+		s.servingImage.add(simg)
 		servingImageRef = baseKey
 	}
 

@@ -1244,12 +1244,10 @@ func TestBuildBaseZipUnknownRuntime(t *testing.T) {
 	}
 }
 
-// TestBuildBaseZipServingWritesHandlerArtifact: a serving-class zip BuildBase MUST
-// additionally write the cold-boot handler artifact and report serving_image_ref
-// (D-R3.11.2), while STILL snapshotting the base (strictly additive; amendment 2, A3
-// deferred). A non-serving build must NOT write the artifact and reports no serving
-// image ref, proving the task lane is byte-unchanged.
-func TestBuildBaseZipServingWritesHandlerArtifact(t *testing.T) {
+// TestBuildBaseServingRegistersImage: a serving BuildBase always registers a serving
+// image. The zip lane MUST write its cold-boot handler artifact, while the image lane
+// registers the runtime rootfs with no handler artifact (ADR embervm/038).
+func TestBuildBaseServingRegistersImage(t *testing.T) {
 	archive := []byte("PK\x03\x04 serving handler zip bytes")
 	ctx := context.Background()
 
@@ -1303,8 +1301,22 @@ func TestBuildBaseZipServingWritesHandlerArtifact(t *testing.T) {
 		}
 		// The handler artifact was written for the base key, with the exact archive bytes.
 		baseKey := resp.GetSnapshotRef()
-		if _, ok := fsd.ServingHandlerArtifactPath(baseKey); !ok {
+		artifactPath, ok := fsd.ServingHandlerArtifactPath(baseKey)
+		if !ok {
 			t.Errorf("no handler artifact written for serving base %q", baseKey)
+		}
+		if got := fsd.handlerArtifactWriteCount(); got != 1 {
+			t.Errorf("WriteServingHandlerArtifact calls = %d, want 1", got)
+		}
+		images := s.servingImage.snapshot()
+		if len(images) != 1 {
+			t.Fatalf("serving image inventory entries = %d, want 1", len(images))
+		}
+		if images[0].handlerPath != artifactPath || artifactPath == "" {
+			t.Errorf("zip-lane inventory handler path = %q, want written path %q", images[0].handlerPath, artifactPath)
+		}
+		if images[0].sizeBytes != int64(len(archive)) {
+			t.Errorf("zip-lane inventory size bytes = %d, want %d", images[0].sizeBytes, len(archive))
 		}
 		// The response and NodeStatus both report serving_image_ref == the base key.
 		if resp.GetServingImageRef() != baseKey {
@@ -1318,6 +1330,65 @@ func TestBuildBaseZipServingWritesHandlerArtifact(t *testing.T) {
 		}
 		if wc == nil || wc.GetServingImageRef() != baseKey {
 			t.Errorf("NodeStatus serving_image_ref = %+v, want %q", wc, baseKey)
+		}
+	})
+
+	t.Run("image lane registers rootfs without writing artifact", func(t *testing.T) {
+		s, build, fsd, _ := newServer()
+		resp, err := s.BuildBase(ctx, &nodev1.BuildBaseRequest{
+			Trace:            &nodev1.Trace{Workload: "serving-image-lane"},
+			ImageRef:         "runtime-python:1",
+			WorkloadRevision: "r1",
+			ReadyPath:        "/shim/ready",
+			Resources:        &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+			Serving:          true,
+		})
+		if err != nil {
+			t.Fatalf("BuildBase serving image lane: %v", err)
+		}
+		if build.snapshots != 1 {
+			t.Errorf("snapshots = %d, want 1", build.snapshots)
+		}
+		if got := fsd.handlerArtifactWriteCount(); got != 0 {
+			t.Errorf("WriteServingHandlerArtifact calls = %d, want 0", got)
+		}
+		images := s.servingImage.snapshot()
+		if len(images) != 1 {
+			t.Fatalf("serving image inventory entries = %d, want 1", len(images))
+		}
+		got := images[0]
+		if got.workload != "serving-image-lane" {
+			t.Errorf("inventory workload = %q, want serving-image-lane", got.workload)
+		}
+		if got.baseKey != resp.GetSnapshotRef() {
+			t.Errorf("inventory base key = %q, want %q", got.baseKey, resp.GetSnapshotRef())
+		}
+		if got.handlerPath != "" {
+			t.Errorf("inventory handler path = %q, want empty", got.handlerPath)
+		}
+		if got.runtimeImageRef != "runtime-python:1" {
+			t.Errorf("inventory runtime image ref = %q, want runtime-python:1", got.runtimeImageRef)
+		}
+		if got.sizeBytes != 0 {
+			t.Errorf("inventory size bytes = %d, want 0", got.sizeBytes)
+		}
+		if resp.GetServingImageRef() != got.baseKey {
+			t.Errorf("serving_image_ref = %q, want %q", resp.GetServingImageRef(), got.baseKey)
+		}
+	})
+
+	t.Run("zip artifact write failure fails build", func(t *testing.T) {
+		s, _, fsd, url := newServer()
+		fsd.failHandlerWrite = context.Canceled
+		_, err := s.BuildBase(ctx, zipReq(url, true))
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("artifact write failure code = %v, want FailedPrecondition", status.Code(err))
+		}
+		if got := fsd.handlerArtifactWriteCount(); got != 1 {
+			t.Errorf("WriteServingHandlerArtifact calls = %d, want 1", got)
+		}
+		if got := len(s.servingImage.snapshot()); got != 0 {
+			t.Errorf("serving image inventory entries = %d, want 0 after failed write", got)
 		}
 	})
 

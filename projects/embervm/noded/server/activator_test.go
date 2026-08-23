@@ -154,6 +154,35 @@ func TestActivatorColdBootAndProxyFiltersHeaders(t *testing.T) {
 	}
 }
 
+func TestActivatorColdBootsFromImageLaneInventory(t *testing.T) {
+	port, _ := activatorGuest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == defaultReadyPath {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_, _ = w.Write([]byte("image lane"))
+	}))
+	s, _, driver := newServingTestServer(t)
+	s.servingImage = newServingImageRegistry()
+	s.servingImage.add(servingImageEntry{
+		baseKey:         "image-base",
+		workload:        "wl-serve",
+		runtimeImageRef: "img-a",
+	})
+	enableActivatorWorkload(s, "wl-serve", port)
+
+	rec := activatorRequest(t, s.ActivatorHandler(), "wl-serve", "/invoke", "request")
+	if rec.Code != http.StatusOK || rec.Body.String() != "image lane" {
+		t.Fatalf("activator response = %d %q, want 200 image lane", rec.Code, rec.Body.String())
+	}
+	if driver.claims != 1 {
+		t.Errorf("ClaimServing calls = %d, want 1", driver.claims)
+	}
+	if driver.lastHandlerDiskPath != "" || driver.lastHandlerZipBytes != 0 {
+		t.Errorf("image-lane activator attached handler drive %q (%d bytes)", driver.lastHandlerDiskPath, driver.lastHandlerZipBytes)
+	}
+}
+
 func TestActivatorDenyListFiltersBothDirections(t *testing.T) {
 	headers := make(http.Header, len(activatorDeniedHeaders)+1)
 	for denied := range activatorDeniedHeaders {
