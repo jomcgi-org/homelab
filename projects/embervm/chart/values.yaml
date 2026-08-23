@@ -676,6 +676,11 @@ workloads:
   runtimePi:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/runtime-pi/rootfs.ext4
     harnessInit: /usr/local/bin/ember-runtime-guest-init
+  # Internal serving-path prover. The Go server is PID 1, so its image binary
+  # path is also the per-image harness init used for cold serving boots.
+  pingWorkload:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/ping/rootfs.ext4
+    harnessInit: /opt/app
   # R4 scratch-postgres stateful base (ADR embervm/001, D-R4.PR-11.1). Its PID-1
   # ember-postgres-init mounts the writable volume, decodes POSTGRES_PASSWORD from
   # the mmds_env boot-args, and runs initdb-if-empty then postgres. The key must
@@ -1785,3 +1790,26 @@ piRuntimeWorkload:
     # returns a specific shim error instead of a generic transport cancel.
     # Dropping this below 600 inverts that for a few minutes of a held cap slot.
     timeoutSeconds: 900
+
+# The first serving-class workload. It is cluster-internal only: the
+# EndpointPublisher owns the vhost below for node Envoy, with no edge HTTPRoute
+# and no egress lane. A zero floor exercises miss-wake, idle bank, and relight;
+# nodeLocalWake also proves the brick-local activator path during a CP gap.
+pingWorkload:
+  enabled: true
+  name: ping
+  port: 8080
+  readyPath: /healthz
+  healthPath: /healthz
+  host: ping.embervm.internal
+  vcpus: 1
+  memMib: 128
+  minInstances: 0
+  maxInstances: 1
+  idleBankSeconds: 120
+  bankedTtlSeconds: 3600
+  nodeLocalWake: true
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/ping
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

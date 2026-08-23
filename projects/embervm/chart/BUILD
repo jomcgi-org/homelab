@@ -53,6 +53,10 @@ helm_chart(
         # entry, and the Workload's source.image.ref all resolve to the same
         # digest.
         "runtimePi.guestImage": "//projects/embervm/runtimes/pi:image.info",
+        # First serving-class workload (#5180): the internal serving-path
+        # prover, a minimal Go HTTP guest. Distinct FLAT top-level key,
+        # digest-pinned from its .info.
+        "pingWorkload.guestImage": "//projects/embervm/runtimes/ping:image.info",
         # R4 stateful consumer (D-R4.PR-11.1): the scratch-postgres base image.
         # Distinct FLAT top-level key (D14a.6), digest-pinned from its .info.
         "scratchPostgres.guestImage": "//projects/embervm/runtimes/postgres:image.info",
