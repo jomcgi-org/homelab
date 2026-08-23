@@ -47,6 +47,7 @@
 //   - EGRESS_INTERNAL_DEFAULT: "deny" (default) or "allow" for internal ones.
 //   - EGRESS_INTERNAL_ALLOWLIST: comma-separated host[:port] permitted internally.
 //   - EGRESS_INTERNAL_CIDRS: comma-separated extra CIDRs classified as internal.
+//   - EGRESS_MAX_CONNS: maximum concurrent guest connections (default 256).
 //   - EGRESS_SECRETS: the credential catalog; enables the plaintext inject lane.
 //   - EGRESS_CA_CERT_FILE / EGRESS_CA_KEY_FILE: optional, adds the TLS-MITM lane.
 package main
@@ -60,11 +61,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
-// dialTimeout bounds the upstream connect; it does not cap a tunnel's lifetime.
-const dialTimeout = 30 * time.Second
+const (
+	// dialTimeout bounds the upstream connect; it does not cap a tunnel's lifetime.
+	dialTimeout      = 30 * time.Second
+	maxPreambleBytes = 1024
+	defaultMaxConns  = 256
+)
+
+var handshakeTimeout = 10 * time.Second
 
 // exitFn is os.Exit, indirected so the fail-closed config paths are testable.
 var exitFn = os.Exit
@@ -84,6 +92,7 @@ func main() {
 	internalDefaultAllow := envOr("EGRESS_INTERNAL_DEFAULT", "deny") == "allow"
 	internalAllowlist := parseAllowlist(os.Getenv("EGRESS_INTERNAL_ALLOWLIST"))
 	extraInternalNets := parseCIDRs(logger, os.Getenv("EGRESS_INTERNAL_CIDRS"))
+	maxConns := maxConnsFromEnv(logger)
 
 	logger.Info("egress-proxy starting",
 		"listen", listen,
@@ -91,6 +100,7 @@ func main() {
 		"internalDefaultAllow", internalDefaultAllow,
 		"internalAllowlist", internalAllowlist,
 		"extraInternalCIDRs", len(extraInternalNets),
+		"maxConns", maxConns,
 	)
 	if !internalDefaultAllow && len(internalAllowlist) == 0 {
 		logger.Warn("internal egress deny-by-default with an empty allowlist; all internal destinations will be denied")
@@ -124,6 +134,7 @@ func main() {
 		brokerURL:            brokerURL,
 		minter:               minter,
 		logger:               logger,
+		conns:                make(chan struct{}, maxConns),
 	}
 
 	ln, err := net.Listen("tcp", listen)
@@ -143,6 +154,12 @@ func main() {
 		// to an 11.24 MiB clone, so disable Nagle on this socket.
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
 			_ = tcpConn.SetNoDelay(true)
+		}
+		if !p.acquireConn() {
+			total := p.rejectedConns.Load()
+			logger.Warn("egress connection cap reached; rejecting", "cap", cap(p.conns), "rejected", total)
+			_ = conn.Close()
+			continue
 		}
 		go p.handle(conn)
 	}
@@ -179,23 +196,66 @@ type proxy struct {
 	// the TLS-MITM lane (the plaintext inject lane does not need it).
 	minter *caMinter
 	logger *slog.Logger
+	// conns bounds concurrent guest connections. A nil channel leaves the proxy
+	// unlimited for tests and other direct construction sites.
+	conns         chan struct{}
+	rejectedConns atomic.Int64
+}
+
+func (p *proxy) acquireConn() bool {
+	if p.conns == nil {
+		return true
+	}
+	select {
+	case p.conns <- struct{}{}:
+		return true
+	default:
+		p.rejectedConns.Add(1)
+		return false
+	}
+}
+
+func (p *proxy) releaseConn() {
+	if p.conns != nil {
+		<-p.conns
+	}
 }
 
 // handle services one guest connection: read the "host:port" preamble, apply the
 // split-horizon guardrail (resolve + classify + pin), then inject a credential for
 // a secret-bearing destination or blind-tunnel to the pinned upstream.
 func (p *proxy) handle(client net.Conn) {
+	defer p.releaseConn()
 	defer client.Close()
 	br := bufio.NewReader(client)
 
-	line, err := br.ReadString('\n')
-	if err != nil {
-		p.logger.Warn("egress preamble read failed", "err", err)
+	if err := client.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		p.logger.Warn("egress preamble deadline failed", "err", err)
 		return
 	}
-	host, port := splitHostPort(strings.TrimSpace(line))
+	line := make([]byte, 0, maxPreambleBytes)
+	for len(line) < maxPreambleBytes {
+		b, err := br.ReadByte()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				p.logger.Warn("egress preamble timeout", "err", err)
+			} else {
+				p.logger.Warn("egress preamble read failed", "err", err)
+			}
+			return
+		}
+		line = append(line, b)
+		if b == '\n' {
+			break
+		}
+	}
+	if len(line) == maxPreambleBytes && line[len(line)-1] != '\n' {
+		p.logger.Warn("egress preamble too long", "limit", maxPreambleBytes)
+		return
+	}
+	host, port := splitHostPort(strings.TrimSpace(string(line)))
 	if host == "" || port == "" {
-		p.logger.Warn("egress preamble invalid", "preamble", strings.TrimSpace(line))
+		p.logger.Warn("egress preamble invalid", "preamble", strings.TrimSpace(string(line)))
 		return
 	}
 	dest := net.JoinHostPort(host, port)
@@ -248,6 +308,9 @@ func (p *proxy) handle(client net.Conn) {
 		}
 		first, err := br.Peek(1)
 		switch {
+		case isTimeout(err):
+			p.logger.Warn("egress preamble timeout", "err", err)
+			return
 		case err != nil:
 			// Nothing to classify; fall through to the blind tunnel below.
 		case first[0] != 0x16:
@@ -260,10 +323,12 @@ func (p *proxy) handle(client net.Conn) {
 				return
 			}
 			p.logger.Info("egress allowed (inject, plaintext)", "dest", dest, "dial", tlsAddr)
+			_ = client.SetReadDeadline(time.Time{})
 			p.swapPlaintext(br, client, tlsAddr, host, sec)
 			return
 		case p.minter != nil:
 			p.logger.Info("egress allowed (inject, tls)", "dest", dest, "dial", dialAddr)
+			_ = client.SetReadDeadline(time.Time{})
 			p.terminateAndSwap(br, client, dialAddr, host, sec)
 			return
 		}
@@ -275,6 +340,7 @@ func (p *proxy) handle(client net.Conn) {
 		// tlsMitmLane=false, and warning per connection would drown the log.
 		p.logger.Debug("secret-bearing TLS destination with no egress CA; credential not injected", "dest", dest)
 	}
+	_ = client.SetReadDeadline(time.Time{})
 	p.logger.Info("egress allowed", "dest", dest, "dial", dialAddr)
 
 	up, err := net.DialTimeout("tcp", dialAddr, dialTimeout)
@@ -299,6 +365,11 @@ func (p *proxy) handle(client net.Conn) {
 	go func() { _, _ = io.Copy(up, newOriginFormReader(br)); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(client, up); done <- struct{}{} }()
 	<-done
+}
+
+func isTimeout(err error) bool {
+	netErr, ok := err.(net.Error)
+	return ok && netErr.Timeout()
 }
 
 // originFormReader is deliberately only a request-line filter, not a reverse
@@ -501,4 +572,17 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func maxConnsFromEnv(logger *slog.Logger) int {
+	raw := os.Getenv("EGRESS_MAX_CONNS")
+	if raw == "" {
+		return defaultMaxConns
+	}
+	maxConns, err := strconv.Atoi(raw)
+	if err != nil || maxConns < 1 {
+		logger.Warn("invalid EGRESS_MAX_CONNS; using default", "value", raw, "default", defaultMaxConns)
+		return defaultMaxConns
+	}
+	return maxConns
 }
