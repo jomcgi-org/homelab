@@ -955,10 +955,14 @@ defmodule Embervm.Application do
 
   defp pool_opts, do: [op_log: op_log_mod(), op_log_mod: op_log_mod()]
 
-  # Extra opts threaded into every Embervm.Session the SessionManager starts. Empty
-  # in production (the session process uses its real NodeChannel/SessionAssign
-  # defaults); tests inject fake daemon seams here.
-  defp session_opts, do: []
+  # Extra opts threaded into every Embervm.Session the SessionManager starts. The
+  # session process uses its real NodeChannel/SessionAssign defaults in production
+  # (tests inject fake daemon seams here); the one chart-wired knob is the invoke
+  # wall-clock watchdog margin (#4434), added on top of the transport deadline so
+  # a wedged SessionAssign on an orphaned channel cannot pin the session forever.
+  defp session_opts do
+    [invoke_watchdog_margin_ms: env_ms("EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS", 15_000)]
+  end
 
   # SessionManager config: the session-process seams plus the R2 policy knobs the
   # chart wires from values (the reconcile/sweep cadences, the snapshot-disk low

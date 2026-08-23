@@ -260,6 +260,10 @@ spec:
             - name: EMBERVM_PRINCIPAL_SHARE_FRACTION
               value: {{ .Values.dispatcher.principalShareFraction | quote }}
             {{- end }}
+            # Session invoke wall-clock watchdog margin (#4434): last-resort kill
+            # of a SessionAssign worker that outlived the server-enforced deadline.
+            - name: EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS
+              value: {{ .Values.session.invokeWatchdogMarginMs | quote }}
             # Metering + quotas (Task 12). Per-principal daily vCPU-second budgets
             # rendered as `principal=budget` pairs (quota OFF when the map is
             # empty), an optional blanket default, and the usage-read admin list.

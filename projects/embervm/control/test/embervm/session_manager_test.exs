@@ -113,7 +113,9 @@ defmodule Embervm.SessionManagerTest do
       channel_fun: Keyword.get(opts, :session_channel_fun, fn _node -> {:ok, :ch} end),
       assign_fun: assign_fun,
       destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end),
-      invalidate_fun: fn _node, _ch -> :ok end
+      invalidate_fun: fn _node, _ch -> :ok end,
+      # Test-only watchdog budget (#4434); nil keeps the production formula.
+      invoke_watchdog_ms: Keyword.get(opts, :invoke_watchdog_ms)
     ]
 
     mgr_opts =
@@ -1801,6 +1803,66 @@ defmodule Embervm.SessionManagerTest do
     assert {:error, :queue_full} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "y"})
 
     Enum.each(callers, fn pid -> Process.exit(pid, :kill) end)
+  end
+
+  test "a wedged invoke worker is killed by the wall-clock watchdog and releases the slot" do
+    # #4434: a SessionAssign stuck in the client stream (orphaned channel, the
+    # server never sees the deadline header) must not pin the session forever.
+    # The first assign sleeps forever; any later one (a new session) answers.
+    {:ok, assigns} = Agent.start_link(fn -> 0 end)
+
+    assign_fun = fn _ch, req ->
+      case Agent.get_and_update(assigns, fn n -> {n, n + 1} end) do
+        0 ->
+          :timer.sleep(:infinity)
+
+        _ ->
+          {:ok,
+           %SessionAssignResponse{
+             response: %GuestResponse{status_code: 200, headers: %{}, body: req.request.body},
+             usage: %UsageStats{cpu_ms: 1, peak_rss_mib: 1, wall_ms: 1},
+             suspect: false
+           }}
+      end
+    end
+
+    ctx = start_stack(assign_fun: assign_fun, invoke_watchdog_ms: 150)
+    put_session_workload(ctx, "wl-wedge", cap: 1, max_sessions: 8)
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-wedge", "p1")
+
+    # The wedged invoke plus one caller queued behind it.
+    wedged = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"}) end)
+    assert eventually(fn -> Agent.get(assigns, & &1) == 1 end)
+    queued = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "y"}) end)
+    Process.sleep(50)
+    # Nothing has fired yet: the caller is still parked (no spurious early kill).
+    assert nil == Task.yield(wedged, 0)
+
+    # The watchdog fires: the parked caller gets the timeout, the queued caller
+    # drains as :failed, and the session is failed (unknown guest state).
+    assert {:error, :invoke_timeout} = Task.await(wedged, 2_000)
+    assert {:error, :failed} = Task.await(queued, 2_000)
+
+    assert eventually(fn ->
+             match?({:ok, %{state: :failed}}, SessionStore.get(ctx.store, created.session_id))
+           end)
+
+    # The slot is released: with cap 1, a fresh create on the workload is admitted
+    # and its invoke completes on the healthy assign path.
+    assert {:ok, fresh} = SessionManager.create(ctx.mgr, "wl-wedge", "p1")
+    assert {:ok, %{status_code: 200, body: "z"}} = SessionManager.invoke(ctx.mgr, fresh.session_id, %{body: "z"})
+  end
+
+  test "a fast invoke completes without the watchdog firing" do
+    ctx = start_stack(invoke_watchdog_ms: 150)
+    put_session_workload(ctx, "wl-fast-invoke")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-fast-invoke", "p1")
+
+    assert {:ok, %{status_code: 200, body: "a"}} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "a"})
+    # Well past the budget: the session is still running and serves the next invoke.
+    Process.sleep(300)
+    assert {:ok, %{status_code: 200, body: "b"}} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "b"})
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
   end
 
   test "a suspect/transport failure on invoke fails the session and 502s the caller" do
