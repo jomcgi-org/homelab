@@ -1,7 +1,7 @@
 # ADR 034: Conformance Harness: Synthetic Actions, Fault Injection and Trace Validation
 
 **Author:** Joe McGinley
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-08-12
 **Extends:** [ADR embervm/006](006-tla-formal-specification-pilot.md) (the TLA+ pilot; layer 2, trace validation, was a stated pilot success criterion and was never built)
 **Relates to:** [ADR embervm/007](007-sharded-control-plane-pg-oplog-cells.md) (the op-log appender shape the trace source depends on), [ADR embervm/014](014-worker-authoritative-state-hot-path-consistency.md) (worker authority and node-confirmed destruction, the protocol this harness must observe honestly)
@@ -185,6 +185,10 @@ Baseline per `docs/security.md`; nothing in this decision loosens an existing bo
 3. **Whether OTEL spans, already flowing from `NodeRegistry` edges to SigNoz, can shrink `protocol_events`' scope** rather than duplicating the same emission into two sinks, given OTEL is explicitly ruled out as the gate-grade source (sampled, async, lossy) but nothing rules it out as a way to narrow what the durable sink needs to carry.
 
 ---
+
+## Amendment 2026-08-23
+
+The deployed-dev scenario runner is an in-cluster Deployment in the EmberVM chart. This placement lets it exercise the same service identity and routing that promotion will rely on. Session guests have no NIC by design (#4628), and dev has no egress lane, so model-unreachable is the expected proof that relight reached the guest. The Deployment rolls on every chart version because `CHART_VERSION` is stamped into its environment and every verdict. A Kargo HTTP step on the dev Stage reads `/verdict` before promoting the Freight. Vacuous scenarios fail the gate rather than allowing an unexercised path to pass. Phase 1 is implemented in [#5224](https://github.com/jomcgi/homelab/issues/5224).
 
 ## References
 

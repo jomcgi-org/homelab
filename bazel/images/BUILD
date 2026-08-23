@@ -30,6 +30,7 @@ multirun(
         "//bazel/tools/hf2oci:image.push",
         "//bazel/tools/image:image.push",
         "//projects/embervm/chart:chart.push",
+        "//projects/embervm/conformance:image.push",
         "//projects/embervm/image:image.push",
         "//projects/embervm/noded/image:image.push",
         "//projects/embervm/runtimes/bazel:image.push",

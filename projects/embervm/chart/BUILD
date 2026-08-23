@@ -77,6 +77,9 @@ helm_chart(
         "bazelQuery.guestImage": "//projects/embervm/runtimes/bazel:image.info",
         "scratchPrep.image": "//projects/embervm/scratch-prep:image.info",
         "tokenBroker.image": "//projects/embervm/tokenbroker/image:image.info",
+        # Dev-only deployed scenario runner. Kept beside tokenBroker.image as
+        # another control-plane-adjacent image rather than a guest image.
+        "conformance.image": "//projects/embervm/conformance:image.info",
     },
     publish = True,
     visibility = ["//overlays:__subpackages__"],

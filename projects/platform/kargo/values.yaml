@@ -234,6 +234,16 @@ promotion:
           application: embervm-dev
           upstream: []
           autoPromotion: true
+          # Functional gate (#5224): after argocd-wait, poll the conformance
+          # runner the embervm chart ships into dev until it reports a verdict
+          # for THIS chart version. The runner rolls with the chart, waits up
+          # to 15m for a ready brick, then runs a suite budgeted at about 4m
+          # (task cold boot, session create / bank / relight / destroy,
+          # create-after-destroy, control-plane invariants). 20m0s covers the
+          # runner's own wait plus the suite plus one retry; a wedged brick
+          # rebuild already failed argocd-wait before this step runs.
+          verdictURL: http://embervm-dev-embervm-conformance.embervm-dev.svc.cluster.local:8080/verdict
+          verdictTimeout: 20m0s
         - name: prod
           application: embervm
           upstream:

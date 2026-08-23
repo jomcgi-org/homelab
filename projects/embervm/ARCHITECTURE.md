@@ -1040,6 +1040,21 @@ S3-compatible object store.
 The reference deployment's concrete fleet (node roles, current brick mix,
 shared Postgres) is in [deploy/README.md](deploy/README.md).
 
+### Promotion gate
+
+EmberVM promotes the dev chart to production through Kargo. The existing
+`argocd-wait` step proves that Argo CD reached the requested revision, while the
+soak interval exposes failures that appear only after reconciliation has settled.
+The in-cluster conformance runner adds synthetic API coverage against the deployed
+dev control plane. Its S1 through S4 scenarios exercise task execution, session
+sleep and relight, second-session restart latency, and control-plane invariants.
+The `/verdict` contract passes only when every scenario passes, so a failed or
+all-vacuous run blocks promotion and never becomes a hold state. Each verdict is
+stamped with the chart version so Kargo cannot accept evidence from an older
+deployment. Freight approval remains the explicit operator override when a
+promotion must proceed despite the gate or soak. The Phase 1 implementation is
+tracked in [GitHub issue #5224](https://github.com/jomcgi/homelab/issues/5224).
+
 **Known walls and provisional numbers** (each states what would move it):
 
 | Item | Value | Status | Confidence |

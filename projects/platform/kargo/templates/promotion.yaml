@@ -300,6 +300,40 @@ spec:
                   - health
                   - sync
                   - operation
+        {{- if $stage.verdictURL }}
+        {{- /*
+        FUNCTIONAL GATE (#5224). argocd-wait proves the chart synced and the
+        pods passed their readiness probes; this proves a guest boots, a task
+        completes, a session banks and relights, and the control plane's own
+        invariants held, by polling the conformance runner that the embervm
+        chart ships into dev. The runner rolls with every chart version
+        (CHART_VERSION in its pod env), so a verdict is keyed to the Freight by
+        construction: a stale chart_version means the runner has not rolled
+        yet and the step keeps polling; `running` keeps polling; `fail` fails
+        the Promotion; the retry timeout fails it too. Neither is a skip.
+
+        The version comparison is pre-evaluated by Kargo from the same
+        expression argocd-update used, so the step cannot accept a verdict for
+        a different chart than the one it just promoted.
+
+        Network: the embervm control plane carries no CiliumNetworkPolicy and
+        embervm-dev has no default deny, so kargo reaches the runner Service
+        today. If a policy ever lands on that namespace this dials out
+        silently and the timeout is what reports it; add a fromEndpoints entry
+        for the kargo namespace at the same time.
+        */}}
+        - uses: http
+          as: conformance
+          retry:
+            timeout: {{ $stage.verdictTimeout | default "10m0s" | quote }}
+          config:
+            method: GET
+            url: {{ $stage.verdictURL | quote }}
+            timeout: 10s
+            successExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'pass'"
+            failureExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'fail'"
+            errorExpression: "'conformance suite failed on chart ' + response.body.chart_version + ': ' + toJSON(response.body.scenarios)"
+        {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

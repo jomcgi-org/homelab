@@ -175,6 +175,49 @@ def test_renders_are_non_empty(renders):
     )
 
 
+def test_conformance_runner_is_dev_only(renders):
+    prod = [
+        (kind, name)
+        for kind, name, _doc in _docs(renders["prod"])
+        if "conformance" in name
+    ]
+    dev = [
+        (kind, name)
+        for kind, name, _doc in _docs(renders["dev"])
+        if "conformance" in name
+    ]
+    assert prod == []
+    assert dev == [
+        ("ServiceAccount", "embervm-dev-embervm-conformance"),
+        ("Service", "embervm-dev-embervm-conformance"),
+        ("Deployment", "embervm-dev-embervm-conformance"),
+    ]
+    assert (
+        "system:serviceaccount:embervm-dev:embervm-dev-embervm-conformance"
+        in renders["dev"]
+    )
+
+
+def test_conformance_runner_refuses_production_namespace():
+    helm_bin = os.environ.get("HELM_BIN", "helm")
+    result = subprocess.run(
+        [
+            helm_bin,
+            "template",
+            "embervm",
+            str(_chart_dir()),
+            "--namespace",
+            "embervm",
+            "--set",
+            "conformance.enabled=true",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "conformance runner is dev-only" in result.stderr
+
+
 def test_control_plane_runtime_envs_render(renders):
     def control_plane_env(rendered: str) -> dict[str, str]:
         deployments = [

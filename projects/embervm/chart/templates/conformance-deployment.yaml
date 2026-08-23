@@ -1,0 +1,64 @@
+{{- if .Values.conformance.enabled }}
+{{- if eq .Release.Namespace "embervm" }}
+{{- fail "conformance runner is dev-only and must not be enabled in the embervm production namespace" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "embervm.conformance.fullname" . }}
+  labels:
+    {{- include "embervm.conformance.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      {{- include "embervm.conformance.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+      labels:
+        {{- include "embervm.conformance.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "embervm.conformance.fullname" . }}
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      containers:
+        - name: conformance
+          image: "{{ .Values.conformance.image.repository }}{{ with .Values.conformance.image.tag }}:{{ . }}{{ end }}{{ with .Values.conformance.image.digest }}@{{ . }}{{ end }}"
+          imagePullPolicy: {{ .Values.conformance.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          env:
+            - { name: EMBERVM_URL, value: {{ printf "http://%s.%s.svc.cluster.local:%v" (include "embervm.fullname" .) .Release.Namespace .Values.service.port | quote }} }
+            - { name: EMBERVM_TOKEN_FILE, value: /var/run/secrets/kubernetes.io/serviceaccount/token }
+            - { name: CHART_VERSION, value: {{ .Chart.Version | quote }} }
+            - { name: LISTEN_ADDR, value: ":8080" }
+            - { name: RUN_INTERVAL, value: {{ .Values.conformance.runInterval | quote }} }
+            - { name: READY_WAIT, value: {{ .Values.conformance.readyWait | quote }} }
+            - { name: TASK_WORKLOAD, value: {{ .Values.conformance.taskWorkload | quote }} }
+            - { name: SESSION_WORKLOAD, value: {{ .Values.conformance.sessionWorkload | quote }} }
+            - { name: IDLE_BANK_SECONDS, value: {{ .Values.conformance.idleBankSeconds | quote }} }
+            - { name: SWEEP_GRACE_SECONDS, value: {{ .Values.conformance.sweepGraceSeconds | quote }} }
+            - { name: MIN_PASSING_INVARIANTS, value: {{ .Values.conformance.minPassingInvariants | quote }} }
+            - { name: S1_BUDGET, value: {{ .Values.conformance.budgets.s1 | quote }} }
+            - { name: S2_BUDGET, value: {{ .Values.conformance.budgets.s2 | quote }} }
+            - { name: S3_BUDGET, value: {{ .Values.conformance.budgets.s3 | quote }} }
+            - { name: S4_BUDGET, value: {{ .Values.conformance.budgets.s4 | quote }} }
+          resources:
+            {{- toYaml .Values.conformance.resources | nindent 12 }}
+          readinessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 5, periodSeconds: 5 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 10, periodSeconds: 30 }
+{{- end }}
