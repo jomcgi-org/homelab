@@ -1431,6 +1431,27 @@ defmodule Embervm.StatefulManager do
 
   defp finish_wake_failure(state, workload, outcome, waiters) do
     case outcome do
+      # FAILED_PRECONDITION from a RELIGHT is the daemon saying the bundle cannot be
+      # restored (a Firecracker snapshot-format bump, a corrupt bundle): it keeps the
+      # bundle and every retry fails the same way, so this is NOT the transient
+      # `relight_abort` edge (relighting -> banked), which re-relit the same doomed
+      # snapshot_ref on every wake (#4408). Fail the instance instead (the FSM's
+      # `relighting -> failed` edge, durable stateful_failed{snapshot_unrestorable}):
+      # the next wake finds no banked candidate and plans a COLD boot off the
+      # durable volume (warmth fails open, standing decision 4), and the orphaned
+      # bundle is reclaimed by the warmth reaper. The caller sees a classified
+      # error, not a generic wake failure.
+      {:error, {:relight_failed, instance_id, {:error, %GRPC.RPCError{status: 9, message: msg}}}} ->
+        Logger.error("embervm stateful relight refused: snapshot unrestorable, failing the banked instance (next wake cold-boots from the volume)",
+          workload: workload,
+          instance_id: instance_id,
+          reason: msg
+        )
+
+        _ = fail_instance(state, instance_id, "snapshot_unrestorable")
+        reply_all(waiters, {:error, {:wake_failed, {:snapshot_unrestorable, msg}}})
+        state
+
       {:error, {:relight_failed, instance_id, reason}} ->
         Logger.warning("embervm stateful relight failed", workload: workload, instance_id: instance_id, reason: inspect(reason))
         _ = StatefulStore.mark(state.store, instance_id, :relight_abort)
