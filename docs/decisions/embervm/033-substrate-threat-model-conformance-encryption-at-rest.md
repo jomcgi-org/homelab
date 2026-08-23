@@ -251,6 +251,6 @@ The implementation work this decision implies is tracked in GitHub issue
 | [ADR embervm/030](030-lineage-decoupled-from-session-generation.md) | Lineage decoupled from session generation, one of the artifact kinds this decision covers |
 | [ADR agents/047](../agents/047-per-principal-egress-credential-broker.md) | Draft, per-principal grants at the egress credential broker; explicitly not re-decided here |
 | [ADR agents/055](../agents/055-tool-mediated-github-access.md) | Draft, request-scoped GitHub access via tool mediation; explicitly not re-decided here |
-| [ADR agents/014](../agents/014-ax-substrate-agent-runtime.md) (Deprecated) and [ADR agents/015](../agents/015-temporal-orchestration-substrate.md) (also Deprecated) | Prior art in the opposite direction: 014 adopted this same project's code in May 2026 and was deprecated within two weeks, before the adoption shipped. This ADR takes the frame and leaves the code |
+| [ADR agents/014](../agents/014-ax-substrate-agent-runtime.md) (Deprecated) and ADR agents/015 (also Deprecated) | Prior art in the opposite direction: 014 adopted this same project's code in May 2026 and was deprecated within two weeks, before the adoption shipped. This ADR takes the frame and leaves the code |
 | GitHub issue #4691 | The outstanding implementation work this decision implies |
 | [docs/security.md](../../security.md) | Security baseline |

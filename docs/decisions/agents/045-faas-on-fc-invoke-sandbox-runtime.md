@@ -113,7 +113,7 @@ Baseline per `docs/security.md`. FaaS inherits the sandbox's isolation posture (
 | [ADR 044](044-code-executor-sandbox.md)                               | The zero-egress Python sandbox runtime FaaS is built on          |
 | [ADR 030](030-fc-invoke-configurable-firecracker-surface.md)          | The stateless configurable microVM daemon and its workload model |
 | [ADR 023](023-egress-secret-proxy.md)                                 | Split-horizon egress + secret-swap for the v2 egress-capable tier|
-| [ADR 024](024-discord-agent-hosted-model-tiers-and-artifacts.md)      | The artifact publish/read pattern the OG-image function mirrors  |
+| ADR 024      | The artifact publish/read pattern the OG-image function mirrors  |
 | [public-tier checklist](../../runbooks/public-tier-checklist.md)      | Required gate for exposing functions on the public tier          |
 | AWS Lambda SnapStart                                                  | Prior art: the restore-safety contract for snapshot-warmed code  |
 | OpenFaaS python3-http template                                        | Prior art: the `handler.py` + requirements registration model    |

@@ -5,7 +5,7 @@
 **Created:** 2026-06-26
 **Superseded in part:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) decision 6 drops the `AgentWorkflow` (Argo Workflows) hot-path framing for the snapshot-managed agent-thread tier, in favour of the Postgres-reconcile controller (the `job-mcp` branch). Argo Workflows is retained only for batch CronWorkflows and optional future multi-agent DAG fan-out above the controller.
 **Builds on:** [019 - Substrate Executor + AgentWorkflow over Argo](019-substrate-executor-agentworkflow.md) (consumes its `AgentWorkflow` tier and `Snapshotable` executor), [003 - Context Forge](003-context-forge.md) / [020 - Deprecate Context Forge](020-deprecate-context-forge-mcp-gateway.md) (MCP surface), [security/003 - gVisor RuntimeClass](../../../projects/platform/ARCHITECTURE.md) (isolation prerequisite)
-**Relates to:** [services/002 - Discord Chat Automation](../services/002-discord-chat-automation.md) (the bot this rides on)
+**Relates to:** services/002 - Discord Chat Automation (the bot this rides on)
 
 ---
 
@@ -165,7 +165,7 @@ Answered during execution, not gates on the decision.
 | [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md)                                         | Origin of the executor abstraction and the self-hosted-inference assumption this diverges from |
 | [security/003 - gVisor RuntimeClass](../../../projects/platform/ARCHITECTURE.md)                                   | Isolation boundary for the untrusted/external future                                           |
 | [020 - Deprecate Context Forge](020-deprecate-context-forge-mcp-gateway.md)                                     | The MCP surface the harness calls                                                              |
-| [services/002 - Discord Chat Automation](../services/002-discord-chat-automation.md)                            | The bot and outbox this rides on                                                               |
+| services/002 - Discord Chat Automation                            | The bot and outbox this rides on                                                               |
 | [Firecracker](https://firecracker-microvm.github.io/)                                                           | Sub-second microVM snapshot/restore, the smoothness mechanism                                  |
 | [Kata Containers](https://katacontainers.io/)                                                                   | Firecracker microVM as a RuntimeClass for the untrusted future                                 |
 | [Trigger a routine via API](https://platform.claude.com/docs/en/api/claude-code/routines-fire)                  | The claude.ai `/fire` path evaluated and set aside as primary                                  |

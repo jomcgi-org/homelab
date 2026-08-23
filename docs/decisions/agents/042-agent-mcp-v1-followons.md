@@ -8,7 +8,7 @@
 
 ## Problem
 
-[ADR 004 (Autonomous Agents)](004-autonomous-agents.md) and [ADR 007 (Agent Orchestrator)](007-agent-orchestrator.md) established the in-cluster agent execution surface. Today (2026-05-08) PRs [#2295](https://github.com/jomcgi/homelab/pull/2295), [#2300](https://github.com/jomcgi/homelab/pull/2300), and [#2301](https://github.com/jomcgi/homelab/pull/2301) shipped v1 of the **`monolith-agent-*` MCP surface** — the cluster-side coordination layer that lets cloud Claude Code Routines (the `claude-routine-agent` actor) read internal cluster state, take TTL locks for opportunistic dedup, claim/complete delegated work, and notify via Discord.
+ADR 004 (Autonomous Agents) and ADR 007 (Agent Orchestrator) established the in-cluster agent execution surface. Today (2026-05-08) PRs [#2295](https://github.com/jomcgi/homelab/pull/2295), [#2300](https://github.com/jomcgi/homelab/pull/2300), and [#2301](https://github.com/jomcgi/homelab/pull/2301) shipped v1 of the **`monolith-agent-*` MCP surface** — the cluster-side coordination layer that lets cloud Claude Code Routines (the `claude-routine-agent` actor) read internal cluster state, take TTL locks for opportunistic dedup, claim/complete delegated work, and notify via Discord.
 
 The v1 design doc sketched two further phases: **v2** (self-improving loop where Routine failures auto-produce capability-gap PRs) and **v2+** (tiered model pipeline: Opus planner, Sonnet implementer, Opus reviewer, Opus merger). Neither was implemented in v1 by deliberate choice.
 
@@ -184,6 +184,6 @@ v3 (auto-merge) is the first relaxation and intentionally gated behind extensive
 | [PR #2295](https://github.com/jomcgi/homelab/pull/2295)                          | v1 ship (24 commits, design + plan + impl + 4 fix-up commits)                              |
 | [PR #2300](https://github.com/jomcgi/homelab/pull/2300)                          | Docstring fix to clear Context Forge sanitizer                                             |
 | [PR #2301](https://github.com/jomcgi/homelab/pull/2301)                          | Regression test for Context Forge description compliance                                   |
-| [ADR 004 — Autonomous Agents](004-autonomous-agents.md)                          | The original autonomous-agent direction this ADR continues                                 |
-| [ADR 007 — Agent Orchestrator](007-agent-orchestrator.md)                        | In-cluster job execution surface; complementary to v1's MCP coordination layer             |
+| ADR 004 — Autonomous Agents                          | The original autonomous-agent direction this ADR continues                                 |
+| ADR 007 — Agent Orchestrator                        | In-cluster job execution surface; complementary to v1's MCP coordination layer             |
 | `.claude/CLAUDE.md`                                                              | Engineering philosophy: simplest approach first, YAGNI, no auto-merge for non-trivial work |
