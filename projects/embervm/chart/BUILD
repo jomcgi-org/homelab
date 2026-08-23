@@ -192,3 +192,9 @@ semgrep_test(
     srcs = ["chart_env_identity_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
+
+semgrep_test(
+    name = "noded_networkpolicy_test_semgrep_test",
+    srcs = ["noded_networkpolicy_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
