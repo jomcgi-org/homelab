@@ -1972,8 +1972,8 @@ defmodule Embervm.BaseBuilder do
       # handler artifact (D-R3.11.2): a serving VM cold-boots with a NIC and cannot
       # resume the vsock-only base memory snapshot to get the handler, so it imports
       # it off the artifact drive. Task/session zip bases leave this false and their
-      # build path is byte-unchanged. Only the zip lane carries a handler to
-      # materialize; the image lane omits the flag entirely.
+      # build path is byte-unchanged. The image lane stamps serving too (its own
+      # clause below); there it registers a handler-less rootfs entry instead.
       serving: Map.get(w, :class) == "serving",
       source:
         {:zip,
@@ -1993,7 +1993,15 @@ defmodule Embervm.BaseBuilder do
       guest_port: w.guest_port || 0,
       ready_path: w.ready_path,
       resources: %ResourceSpec{vcpus: w.vcpus || 0, mem_mib: w.mem_mib || 0},
-      init_env: w.init_env
+      init_env: w.init_env,
+      # serving marks a serving-class image base so noded registers the built
+      # rootfs in the serving-images inventory (ADR embervm/038): an image-lane
+      # entry has no handler archive, so noded stores handler_path "" and
+      # startServingFresh boots the image entrypoint directly. Without this
+      # stamp the activator's inventory scan stays empty and every wake fails
+      # with "no serving image provisioned". Task/session image bases leave
+      # this false and their build path is byte-unchanged.
+      serving: Map.get(w, :class) == "serving"
     }
   end
 

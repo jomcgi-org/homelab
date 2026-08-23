@@ -581,8 +581,10 @@ message BuildBaseRequest {
   // as a second read-only drive. The base memory snapshot is STILL produced
   // (the task lane needs it if the workload is also task-class); skipping it for
   // serving-exclusive bases is a deferred disk optimization, not done here.
-  // Ignored by the image lane. Task/session-only workloads leave it false and
-  // their build path is byte-unchanged.
+  // On the IMAGE lane the flag registers the built rootfs itself as the
+  // serving-images inventory entry with no handler (ADR embervm/038), so
+  // startServingFresh boots the image entrypoint directly. Task/session-only
+  // workloads leave it false and their build path is byte-unchanged.
   bool serving = 9;
 }
 
