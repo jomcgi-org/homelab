@@ -184,6 +184,17 @@ spec:
                   # {:error, :no_root}) rather than blocking the control plane
                   # from starting. Encryption is its own flag.
                   optional: true
+            - name: EMBERVM_KEK_ROOT_GENERATION
+              value: {{ .Values.kekRoot.generation | quote }}
+            {{- if .Values.kekRoot.previous.enabled }}
+            - name: EMBERVM_KEK_ROOT_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "embervm.kekRootPreviousSecretName" . }}
+                  key: {{ .Values.kekRoot.previous.key }}
+            - name: EMBERVM_KEK_ROOT_PREVIOUS_GENERATION
+              value: {{ .Values.kekRoot.previous.generation | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.customerKms.secretName }}
             # Customer-managed KEK custody (ADR embervm/033): the Secret holds

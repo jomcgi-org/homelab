@@ -82,7 +82,9 @@ defmodule Embervm.Application do
     # Keep decoded key-custody configuration in app env only while constructing
     # and starting the supervision tree. KeyService copies it into its redacted
     # process state; the `after` block removes the transient second reference.
-    Application.put_env(:embervm, :kek_root, kek_root())
+    {kek_roots, kek_root_generation} = kek_roots()
+    Application.put_env(:embervm, :kek_roots, kek_roots)
+    Application.put_env(:embervm, :kek_root_generation, kek_root_generation)
     Application.put_env(:embervm, :customer_kms, customer_kms_config())
 
     children = [
@@ -446,7 +448,8 @@ defmodule Embervm.Application do
     try do
       Supervisor.start_link(children, opts)
     after
-      Application.delete_env(:embervm, :kek_root)
+      Application.delete_env(:embervm, :kek_roots)
+      Application.delete_env(:embervm, :kek_root_generation)
       Application.delete_env(:embervm, :customer_kms)
     end
   end
@@ -567,16 +570,51 @@ defmodule Embervm.Application do
   end
 
   defp key_service_opts do
+    roots = Application.fetch_env!(:embervm, :kek_roots)
+    root_generation = Application.fetch_env!(:embervm, :kek_root_generation)
+
     [
-      root: Application.fetch_env!(:embervm, :kek_root),
+      root: Map.get(roots, root_generation),
+      roots: roots,
+      root_generation: root_generation,
       customer_kms: Application.fetch_env!(:embervm, :customer_kms),
       op_log: op_log_mod(),
       op_log_mod: op_log_mod()
     ]
   end
 
-  defp kek_root do
-    case trimmed_env("EMBERVM_KEK_ROOT") do
+  defp kek_roots do
+    current = decode_kek_root("EMBERVM_KEK_ROOT")
+    previous = decode_kek_root("EMBERVM_KEK_ROOT_PREVIOUS")
+    current_generation = root_generation("EMBERVM_KEK_ROOT_GENERATION", 1)
+
+    previous_generation =
+      case {previous, trimmed_env("EMBERVM_KEK_ROOT_PREVIOUS_GENERATION")} do
+        {nil, ""} -> nil
+        {nil, _generation} -> raise "EMBERVM_KEK_ROOT_PREVIOUS_GENERATION requires a previous root"
+        {_root, ""} -> raise "EMBERVM_KEK_ROOT_PREVIOUS requires its generation"
+        {_root, _generation} -> root_generation("EMBERVM_KEK_ROOT_PREVIOUS_GENERATION", nil)
+      end
+
+    cond do
+      is_nil(current) and not is_nil(previous) ->
+        raise "EMBERVM_KEK_ROOT_PREVIOUS requires a current root"
+
+      previous_generation == current_generation ->
+        raise "current and previous KEK roots must have different generations"
+
+      true ->
+        roots =
+          %{}
+          |> maybe_put_root(current_generation, current)
+          |> maybe_put_root(previous_generation, previous)
+
+        {roots, current_generation}
+    end
+  end
+
+  defp decode_kek_root(name) do
+    case trimmed_env(name) do
       "" ->
         nil
 
@@ -586,10 +624,26 @@ defmodule Embervm.Application do
             root
 
           _invalid ->
-            raise "invalid EMBERVM_KEK_ROOT: expected base64 decoding to at least 32 bytes"
+            raise "invalid #{name}: expected base64 decoding to at least 32 bytes"
         end
     end
   end
+
+  defp root_generation(name, default) do
+    case trimmed_env(name) do
+      "" when is_integer(default) -> default
+      raw ->
+        case Integer.parse(raw) do
+          {generation, ""}
+          when generation > 0 and generation <= 18_446_744_073_709_551_615 ->
+            generation
+          _ -> raise "invalid #{name}: expected a positive integer"
+        end
+    end
+  end
+
+  defp maybe_put_root(roots, _generation, nil), do: roots
+  defp maybe_put_root(roots, generation, root), do: Map.put(roots, generation, root)
 
   defp customer_kms_config do
     case Embervm.CustomerKMS.parse_config(trimmed_env("EMBERVM_CUSTOMER_KMS_CONFIG")) do

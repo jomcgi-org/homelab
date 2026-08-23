@@ -81,6 +81,17 @@ point both sides at a Secret the operator never created.
 {{- end -}}
 {{- end -}}
 
+{{/* Previous KEK root Secret name, present only during a root rotation. */}}
+{{- define "embervm.kekRootPreviousSecretName" -}}
+{{- if .Values.kekRoot.previous.name -}}
+{{- .Values.kekRoot.previous.name -}}
+{{- else if .Values.kekRoot.previous.onepassword.itemPath -}}
+{{- printf "%s-kek-root-previous" (include "embervm.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- fail "kekRoot.previous.name is required when the previous root is enabled without kekRoot.previous.onepassword.itemPath" -}}
+{{- end -}}
+{{- end -}}
+
 {{/*
 Size-class BRICK labels (brick-capacity, ADR embervm/013). A brick is a noded
 Deployment, so it SHARES noded's app.kubernetes.io/name (the pods are noded pods)

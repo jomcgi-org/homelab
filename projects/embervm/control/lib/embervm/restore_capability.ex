@@ -153,7 +153,8 @@ defmodule Embervm.RestoreCapability do
     end
   end
 
-  defp ensure_envelope_epoch(key_service, %Envelope{version: 1, principal: principal}),
+  defp ensure_envelope_epoch(key_service, %Envelope{version: version, principal: principal})
+       when version in [1, 3],
     do: ensure_first_epoch(key_service, principal)
 
   defp ensure_envelope_epoch(_key_service, %Envelope{version: 2}), do: :ok

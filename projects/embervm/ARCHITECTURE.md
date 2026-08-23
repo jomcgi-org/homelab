@@ -769,10 +769,12 @@ principal with an explicit broad instantiation grant, the widest and
 most-reviewed grant in the system. Neither exists in code today.
 
 `Embervm.KeyService` is the platform key custodian from ADR embervm/036. It
-derives per-principal, per-epoch KEKs on demand from one root and stores only
-the current epoch and minimum accepted epoch, whose floor is the revocation
-fact. Mutable principal artifacts are encrypted in dev and production, and an
-enveloped restore requires a five-minute tuple-scoped brick capability.
+derives per-principal, per-epoch KEKs on demand from one current root and stores
+only the current epoch and minimum accepted epoch, whose floor is the revocation
+fact. Root generation 1 remains the implicit version 1 envelope; later roots use
+an explicit version 3 generation, and exactly one previous root can coexist
+during rewrap. Mutable principal artifacts are encrypted in dev and production,
+and an enveloped restore requires a five-minute tuple-scoped brick capability.
 Customer-managed principals instead use a Secret-configured HTTPS KMS oracle:
 the customer service retains the KEK and returns only a plaintext data key plus
 an opaque wrapped key. Disabling the customer key or grant refuses unwrap and
@@ -950,7 +952,7 @@ exposure is per-principal encryption at rest (#4691).
 | ---------------------------- | ----------- |
 | Node storage access scoped to actors scheduled on it (36, 37) | **Built**: the gateway enforces SigV4 and only the `embervm` identity reaches the ember buckets (#4708). For encrypted mutable warmth, a brick receives a five-minute decryption capability for exactly the tuple it is waking (#4691); enforcement is armed in dev and production. |
 | Node API access scoped to its own actors (38) | **Built**: node reports are authoritative only for instances anchored to that node, wake grants are gated on the volume's anchor (section 4), and the bound token's TokenReview pod-uid and node-name claims must match the claimed (node, pod uid). A brick can register only itself. |
-| Granular admin access and envelope encryption at rest (39, 40) | **Built** for mutable principal warmth (#4691): platform-managed KEKs derive per epoch from a single root, while customer-managed envelopes call the principal's HTTPS KMS oracle for issue and unwrap so unilateral key or grant revocation makes warmth unrestorable. No customer oracle is configured in the reference deployment. Immutable private rootfs chunk encryption remains planned (ADR 028, #4182). The op-log deliberately shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
+| Granular admin access and envelope encryption at rest (39, 40) | **Built** for mutable principal warmth (#4691): platform-managed KEKs derive per epoch from a generation-numbered root, with one previous generation accepted during rotation, while customer-managed envelopes call the principal's HTTPS KMS oracle for issue and unwrap so unilateral key or grant revocation makes warmth unrestorable. No customer oracle is configured in the reference deployment. Immutable private rootfs chunk encryption remains planned (ADR 028, #4182). The op-log deliberately shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
 | Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). The journal is prefix-compacted past 30 days; older audit lives only in the observability stack. |
 | Containment of a detected-bad actor (43) | **Built** for one lever: principal cutoff as an admission action, stop minting tokens, 402 at the edge. The volume quarantine is a data-integrity guard against generation divergence, not an adversary control; no brick- or principal-level quarantine primitive exists, and an automatic containment policy is not decided. |
 
