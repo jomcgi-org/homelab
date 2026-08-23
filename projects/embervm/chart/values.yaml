@@ -251,6 +251,18 @@ dispatcher:
   # the others. Set a fraction in (0, 1] to fix each principal's share instead.
   principalShareFraction: ""
 
+# Session-process tuning (control-plane env).
+session:
+  # Invoke wall-clock watchdog margin (#4434), in ms. A session invoke's gRPC
+  # deadline is a header the SERVER enforces, so on an orphaned channel (#4419)
+  # nothing fires and the invoke worker wedges forever, pinning the session's
+  # slot against the workload cap. The control plane kills the worker and fails
+  # the session once the invoke has run for the workload's timeoutSeconds plus
+  # the 5s transport headroom plus this margin. It must stay strictly above zero
+  # so the server-enforced deadline always fires first and the client-side kill
+  # is last resort. Matches the dispatcher's assign watchdog margin.
+  invokeWatchdogMarginMs: 15000
+
 # Metering, audit, and quotas (Task 12). Quota is OPT-IN and asymmetric to the
 # auth allow-list: an empty budget map means quota is OFF (principals with no
 # configured budget are allowed), NOT deny-all. Budgets are per-principal DAILY

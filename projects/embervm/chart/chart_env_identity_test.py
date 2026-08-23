@@ -175,7 +175,7 @@ def test_renders_are_non_empty(renders):
     )
 
 
-def test_dev_brick_controller_and_warmth_gc_envs_render(renders):
+def test_control_plane_runtime_envs_render(renders):
     def control_plane_env(rendered: str) -> dict[str, str]:
         deployments = [
             doc
@@ -205,6 +205,8 @@ def test_dev_brick_controller_and_warmth_gc_envs_render(renders):
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_MAX_ARTIFACTS") == "100"
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_CONCURRENCY") == "8"
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_INTERVAL_MS") == "3600000"
+    assert prod_env.get("EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS") == "15000"
+    assert dev_env.get("EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS") == "15000"
 
 
 def test_noded_bearer_secret_flips_control_plane_and_bricks_together():

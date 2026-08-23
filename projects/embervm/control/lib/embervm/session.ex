@@ -72,6 +72,11 @@ defmodule Embervm.Session do
   alias Embervm.Node.V1.{GuestRequest, GuestResponse, SessionAssignRequest, SessionAssignResponse, Trace}
   alias Embervm.SessionTrace
 
+  # Default margin the invoke watchdog adds on top of transport_timeout/1. Matches
+  # the dispatcher's @assign_watchdog_margin_ms; overridable per deploy through
+  # EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS.
+  @invoke_watchdog_margin_ms 15_000
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -121,6 +126,18 @@ defmodule Embervm.Session do
       # round-trip timeout, and (PR-4) the idle-bank delay.
       queue_cap: Keyword.fetch!(opts, :queue_cap),
       timeout_ms: Keyword.get(opts, :timeout_ms, 90_000),
+      # Invoke wall-clock watchdog (#4434). The gRPC deadline on SessionAssign is
+      # a header the SERVER enforces, so on an orphaned channel (#4419) nothing
+      # fires and the worker sits in build_stream/2 forever, pinning `worker` and
+      # the session's slot. The watchdog budget is transport_timeout(timeout_ms)
+      # plus this margin, so the server-enforced deadline always gets first shot
+      # and the client-side kill is genuinely last resort. Chart-wired via
+      # EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS (values session.invokeWatchdogMarginMs).
+      invoke_watchdog_margin_ms:
+        Keyword.get(opts, :invoke_watchdog_margin_ms, @invoke_watchdog_margin_ms),
+      # Test-only seam: when set, IS the watchdog budget (tests avoid waiting out
+      # the 5s transport headroom floor). nil in production.
+      invoke_watchdog_ms: Keyword.get(opts, :invoke_watchdog_ms, nil),
       # The guest path a bare invoke (no explicit X-Ember-Guest-Path) is forwarded
       # to. Defaults to the shim's only route, /invoke; the create/restart paths pass
       # the workload's configured invokePath so a custom path is honored.
@@ -137,7 +154,8 @@ defmodule Embervm.Session do
       destroy_fun: Keyword.get(opts, :destroy_fun, &default_destroy/2),
       rejoin_failure_fun: Keyword.get(opts, :rejoin_failure_fun),
       # FIFO of {from, req} waiting their turn; the head runs when no worker is in
-      # flight. `worker` is the {pid, ref, from} of the in-flight invoke, or nil.
+      # flight. `worker` is the {pid, ref, from, watchdog_timer} of the in-flight
+      # invoke, or nil.
       queue: :queue.new(),
       worker: nil,
       # The armed idle-bank timer ref (nil when disarmed).
@@ -172,8 +190,11 @@ defmodule Embervm.Session do
   end
 
   @impl true
-  def handle_info({:invoke_done, pid, outcome}, %{worker: {pid, ref, from}} = state) do
+  def handle_info({:invoke_done, pid, outcome}, %{worker: {pid, ref, from, timer}} = state) do
     Process.demonitor(ref, [:flush])
+    # Defensive cancellation: a late {:invoke_timeout, ref} is harmless because
+    # the handler compares the ref against the live worker.
+    _ = Process.cancel_timer(timer)
     state = %{state | worker: nil}
 
     case outcome do
@@ -199,10 +220,38 @@ defmodule Embervm.Session do
 
   # A worker died without reporting (it always sends {:invoke_done, ...}): treat as
   # a transport failure, same as a reported error (same durable-before-reply order).
-  def handle_info({:DOWN, ref, :process, pid, down_reason}, %{worker: {pid, ref, from}} = state) do
+  def handle_info({:DOWN, ref, :process, pid, down_reason}, %{worker: {pid, ref, from, timer}} = state) do
+    _ = Process.cancel_timer(timer)
     state = %{state | worker: nil}
     fail_and_stop(state, {:worker_down, down_reason}, from)
   end
+
+  # The invoke wall-clock watchdog fired (#4434): the worker has outlived the
+  # server-enforced gRPC deadline plus margin, so nothing is going to complete it.
+  # Kill it, answer the parked caller, and fail the session exactly as a transport
+  # timeout would (the guest is in an unknown mid-request state, the failure
+  # posture above): the VM is destroyed, queued callers drain as :failed, and the
+  # process stops, releasing the session's slot. Keyed on the unique monitor ref
+  # (the SessionManager create_timeout pattern), so a stale timer for a finished
+  # worker, or a reused pid, never kills the wrong thing.
+  def handle_info({:invoke_timeout, ref}, %{worker: {pid, ref, from, _timer}} = state) do
+    Process.demonitor(ref, [:flush])
+
+    Logger.warning(
+      "session invoke worker watchdog fired (budget=#{invoke_watchdog_ms(state)}ms)",
+      session_id: state.session_id,
+      workload: state.workload,
+      node_id: state.node_id
+    )
+
+    Process.exit(pid, :kill)
+    state = %{state | worker: nil}
+    # Preserve the durable-before-observed failure ordering from #4644: append
+    # session_failed before the timed-out caller receives its error.
+    fail_and_stop(state, :invoke_timeout, from)
+  end
+
+  def handle_info({:invoke_timeout, _stale_ref}, state), do: {:noreply, state}
 
   # The idle-bank timer fired. ASK the manager to bank ONLY if still quiescent (no
   # worker, empty queue); a stale timer (idle_timer already cleared) is ignored. On
@@ -280,7 +329,10 @@ defmodule Embervm.Session do
     case :queue.out(state.queue) do
       {{:value, {from, req, enqueued_at}}, rest} ->
         {pid, ref} = spawn_invoke_worker(state, req, enqueued_at)
-        %{state | queue: rest, worker: {pid, ref, from}}
+        # Last-resort wall clock (#4434): must fire AFTER the gRPC deadline the
+        # server enforces, so the normal DEADLINE_EXCEEDED path gets first shot.
+        timer = Process.send_after(self(), {:invoke_timeout, ref}, invoke_watchdog_ms(state))
+        %{state | queue: rest, worker: {pid, ref, from, timer}}
 
       {:empty, _} ->
         arm_idle_timer(state)
@@ -288,6 +340,14 @@ defmodule Embervm.Session do
   end
 
   defp maybe_start_next(state), do: state
+
+  # The watchdog budget: the injected test value, or the transport deadline (which
+  # already exceeds the guest's timeout_ms by @headroom_ms) plus the margin. Same
+  # shape as the dispatcher's assign watchdog; the two must stay strictly above
+  # their respective server-enforced deadlines.
+  defp invoke_watchdog_ms(state) do
+    state.invoke_watchdog_ms || transport_timeout(state.timeout_ms) + state.invoke_watchdog_margin_ms
+  end
 
   defp spawn_invoke_worker(state, req, enqueued_at) do
     owner = self()
