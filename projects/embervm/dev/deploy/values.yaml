@@ -50,6 +50,12 @@ bricks:
 # Warmth GC and base retention operate on S3; separate buckets prevent
 # production GC from deleting dev artifacts. The store endpoint and bucket are
 # rendered into noded's config for S3 warmth export/restore.
+# Control-plane half of #4691: the wrap endpoint answers and restores are
+# stamped with capabilities. Armed together with noded.store.encrypt so a
+# session banked from now on exports with an envelope.
+artifactEncryption:
+  enabled: true
+
 # Platform KEK root (ADR embervm/036, #4976): dev derives per-principal KEKs
 # from the embervm-kek-root item. The secretKeyRef is optional, so until the
 # item exists the custodian is inert and nothing below encrypts.
@@ -78,6 +84,12 @@ noded:
       enabled: true
       onepassword:
         itemPath: "vaults/k8s-homelab/items/embervm-store"
+    # Envelope encryption of principal artifacts (ADR embervm/033, #4691):
+    # dev arms the writer first. The reader is unconditional, plaintext
+    # artifacts stay restorable, and noded refuses nothing yet
+    # (requireRestoreCapability stays false until a capability relight is
+    # verified here).
+    encrypt: true
 
 # nvmeRoot lives UNDER node-4's NVMe mount so it inherits that capacity bound,
 # production's shared node-4 NVMe scratch. Scratch is shared metal; the split
