@@ -38,11 +38,18 @@ func (s *Store) sign(req *http.Request) error {
 	req.Header.Set("x-amz-content-sha256", unsignedPayload)
 	req.Header.Set("x-amz-date", amzDate)
 
-	signedHeaders := []string{"host", "x-amz-content-sha256", "x-amz-date"}
-	if req.Header.Get("Content-Type") != "" {
-		signedHeaders = append(signedHeaders, "content-type")
-		sort.Strings(signedHeaders)
+	signedSet := map[string]struct{}{"host": {}}
+	for name := range req.Header {
+		lower := strings.ToLower(name)
+		if lower != "authorization" {
+			signedSet[lower] = struct{}{}
+		}
 	}
+	signedHeaders := make([]string, 0, len(signedSet))
+	for name := range signedSet {
+		signedHeaders = append(signedHeaders, name)
+	}
+	sort.Strings(signedHeaders)
 	canonical := canonicalRequest(req, signedHeaders, unsignedPayload)
 	scope := date + "/" + sigV4Region + "/" + sigV4Service + "/aws4_request"
 	stringToSign := sigV4Algorithm + "\n" + amzDate + "\n" + scope + "\n" + sha256Hex(canonical)

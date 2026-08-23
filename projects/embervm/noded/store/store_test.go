@@ -33,7 +33,10 @@ type fakeObjectStore struct {
 	// putOrder records the path of every PUT in order, so a test can assert
 	// meta.json is written LAST.
 	putOrder        []string
+	getOrder        []string
 	failFilePuts    bool
+	failCAS         bool
+	omitETag        bool
 	accessKeyID     string
 	secretAccessKey string
 }
@@ -64,6 +67,14 @@ func (f *fakeObjectStore) handler() http.Handler {
 			}
 			body, _ := io.ReadAll(r.Body)
 			f.mu.Lock()
+			if match := r.Header.Get("If-Match"); match != "" {
+				current, ok := f.objects[key]
+				if f.failCAS || !ok || match != objectETag(current) {
+					f.mu.Unlock()
+					w.WriteHeader(http.StatusPreconditionFailed)
+					return
+				}
+			}
 			f.objects[key] = body
 			f.putOrder = append(f.putOrder, key)
 			f.mu.Unlock()
@@ -76,12 +87,16 @@ func (f *fakeObjectStore) handler() http.Handler {
 			}
 			f.mu.Lock()
 			b, ok := f.objects[key]
+			f.getOrder = append(f.getOrder, key)
 			f.mu.Unlock()
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
 			w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+			if !f.omitETag {
+				w.Header().Set("ETag", objectETag(b))
+			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(b)
 		case http.MethodHead:
@@ -107,6 +122,11 @@ func (f *fakeObjectStore) handler() http.Handler {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})
+}
+
+func objectETag(body []byte) string {
+	sum := sha256.Sum256(body)
+	return `"` + hex.EncodeToString(sum[:]) + `"`
 }
 
 // verifySigV4 independently reconstructs the signature. It deliberately does
@@ -221,6 +241,14 @@ func (f *fakeObjectStore) putOrderCopy() []string {
 	return out
 }
 
+func (f *fakeObjectStore) getOrderCopy() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.getOrder))
+	copy(out, f.getOrder)
+	return out
+}
+
 // newTestStore stands up a fake object store and returns a Store pointed at it.
 func newTestStore(t *testing.T) (*Store, *fakeObjectStore) {
 	return newTestStoreWithCompression(t, false)
@@ -241,6 +269,27 @@ func newTestStoreWithOptions(t *testing.T, compress bool, opts ...Option) (*Stor
 type staticDataKeys struct {
 	key      []byte
 	envelope []byte
+}
+
+type staticEnvelopeRewrapper struct {
+	staticDataKeys
+	replacement []byte
+	changed     bool
+	err         error
+	mu          sync.Mutex
+	calls       []rewrapCall
+}
+
+type rewrapCall struct {
+	kind, workload, ref string
+	envelope            []byte
+}
+
+func (p *staticEnvelopeRewrapper) RewrapEnvelope(_ context.Context, kind, workload, ref string, envelope []byte) ([]byte, bool, error) {
+	p.mu.Lock()
+	p.calls = append(p.calls, rewrapCall{kind: kind, workload: workload, ref: ref, envelope: append([]byte(nil), envelope...)})
+	p.mu.Unlock()
+	return append([]byte(nil), p.replacement...), p.changed, p.err
 }
 
 func (p staticDataKeys) DataKey(context.Context, string, string, string) ([]byte, []byte, error) {
@@ -276,6 +325,101 @@ func writeLocalArtifact(t *testing.T, files map[string]string) (string, []string
 func TestNewDisabledOnEmptyEndpoint(t *testing.T) {
 	if New("", "embervm", false) != nil {
 		t.Fatal("New(\"\", ...) should return nil (store disabled)")
+	}
+}
+
+func TestRewrapEnvelopeUpdatesOnlyMarkerEnvelopeWithETagCAS(t *testing.T) {
+	rewrapper := &staticEnvelopeRewrapper{replacement: []byte("new-envelope"), changed: true}
+	s, fake := newTestStoreWithOptions(t, false, WithDataKeys(rewrapper))
+	const prefix = "session/amd/demo/ref-1"
+	metaKey := "/embervm/" + prefix + "/meta.json"
+	payloadKey := "/embervm/" + prefix + "/memfile"
+	originalPayload := []byte("payload-must-not-be-read-or-written")
+	originalMeta := []byte(`{"files":{"memfile":{"size":33,"sha256":"abc"}},"generation":7,"createdAtUnixMs":11,"envelope":"b2xkLWVudmVsb3Bl","futureField":{"nested":true}}`)
+	fake.objects[metaKey] = append([]byte(nil), originalMeta...)
+	fake.objects[payloadKey] = append([]byte(nil), originalPayload...)
+
+	changed, err := s.RewrapEnvelope(context.Background(), prefix, ExportOptions{Kind: "session", Workload: "demo", Ref: "ref-1"})
+	if err != nil || !changed {
+		t.Fatalf("RewrapEnvelope = %v, %v, want true, nil", changed, err)
+	}
+	if got := fake.object(payloadKey); !bytes.Equal(got, originalPayload) {
+		t.Fatalf("payload changed: %q", got)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(fake.object(metaKey), &got); err != nil {
+		t.Fatal(err)
+	}
+	var envelope []byte
+	if err := json.Unmarshal(got["envelope"], &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(envelope, []byte("new-envelope")) {
+		t.Fatalf("envelope = %q", envelope)
+	}
+	if string(got["futureField"]) != `{"nested":true}` {
+		t.Fatalf("futureField = %s", got["futureField"])
+	}
+	if len(rewrapper.calls) != 1 || rewrapper.calls[0].kind != "session" || rewrapper.calls[0].workload != "demo" || rewrapper.calls[0].ref != "ref-1" || !bytes.Equal(rewrapper.calls[0].envelope, []byte("old-envelope")) {
+		t.Fatalf("rewrap calls = %#v", rewrapper.calls)
+	}
+	if got := fake.putOrderCopy(); len(got) != 1 || got[0] != metaKey {
+		t.Fatalf("PUT order = %v, want only %s", got, metaKey)
+	}
+	if got := fake.getOrderCopy(); len(got) != 1 || got[0] != metaKey {
+		t.Fatalf("GET order = %v, want only %s", got, metaKey)
+	}
+}
+
+func TestRewrapEnvelopeCASConflictLeavesWinnerIntact(t *testing.T) {
+	rewrapper := &staticEnvelopeRewrapper{replacement: []byte("new-envelope"), changed: true}
+	s, fake := newTestStoreWithOptions(t, false, WithDataKeys(rewrapper))
+	const prefix = "volume/demo"
+	metaKey := "/embervm/" + prefix + "/meta.json"
+	original := []byte(`{"files":{},"generation":3,"createdAtUnixMs":1,"envelope":"b2xk"}`)
+	fake.objects[metaKey] = append([]byte(nil), original...)
+	fake.failCAS = true
+
+	changed, err := s.RewrapEnvelope(context.Background(), prefix, ExportOptions{Kind: "volume", Workload: "demo"})
+	if changed || !errors.Is(err, ErrPreconditionFailed) {
+		t.Fatalf("RewrapEnvelope = %v, %v, want false, ErrPreconditionFailed", changed, err)
+	}
+	if got := fake.object(metaKey); !bytes.Equal(got, original) {
+		t.Fatalf("conflict overwrote marker: %s", got)
+	}
+}
+
+func TestRewrapEnvelopeRefusesMissingETag(t *testing.T) {
+	rewrapper := &staticEnvelopeRewrapper{replacement: []byte("new-envelope"), changed: true}
+	s, fake := newTestStoreWithOptions(t, false, WithDataKeys(rewrapper))
+	const prefix = "stateful/amd/demo/ref-1"
+	metaKey := "/embervm/" + prefix + "/meta.json"
+	fake.objects[metaKey] = []byte(`{"files":{},"envelope":"b2xk"}`)
+	fake.omitETag = true
+
+	changed, err := s.RewrapEnvelope(context.Background(), prefix, ExportOptions{Kind: "stateful", Workload: "demo", Ref: "ref-1"})
+	if changed || !errors.Is(err, ErrMissingETag) {
+		t.Fatalf("RewrapEnvelope = %v, %v, want false, ErrMissingETag", changed, err)
+	}
+	if len(rewrapper.calls) != 0 {
+		t.Fatalf("rewrapper called without CAS validator: %#v", rewrapper.calls)
+	}
+}
+
+func TestRewrapEnvelopeSignsIfMatch(t *testing.T) {
+	const accessKeyID = "embervm-test"
+	const secretAccessKey = "test-secret"
+	rewrapper := &staticEnvelopeRewrapper{replacement: []byte("new-envelope"), changed: true}
+	fake := newFakeObjectStore(accessKeyID, secretAccessKey)
+	srv := httptest.NewServer(fake.handler())
+	t.Cleanup(srv.Close)
+	s := New(srv.URL, "embervm", false, WithCredentials(accessKeyID, secretAccessKey), WithDataKeys(rewrapper))
+	const prefix = "group_set/amd/demo/ref-1"
+	fake.objects["/embervm/"+prefix+"/meta.json"] = []byte(`{"files":{},"envelope":"b2xk"}`)
+
+	changed, err := s.RewrapEnvelope(context.Background(), prefix, ExportOptions{Kind: "group_set", Workload: "demo", Ref: "ref-1"})
+	if err != nil || !changed {
+		t.Fatalf("RewrapEnvelope = %v, %v, want true, nil", changed, err)
 	}
 }
 

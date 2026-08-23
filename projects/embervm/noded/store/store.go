@@ -53,6 +53,8 @@ const metaObject = "meta.json"
 // gate).
 const reachableTimeout = 3 * time.Second
 
+const maxMetaSize = 8 << 20
+
 // ErrNotPresent is the sentinel a Restore (or a meta fetch) returns when the
 // store holds no meta.json for the prefix (the artifact is absent or was only
 // partially written). The verb handler maps it to codes.FailedPrecondition so a
@@ -84,6 +86,16 @@ const fileEncryptionAES256GCMV1 = "aes-256-gcm-v1"
 // on byte-identical content -- which is exactly the case that does NOT arise when
 // two nodes have diverged.
 var ErrStaleGeneration = errors.New("store: refusing export, store holds a newer generation")
+
+// ErrPreconditionFailed reports that a conditional metadata update lost its
+// ETag race. The caller must leave the winner intact and may retry from a fresh
+// read later.
+var ErrPreconditionFailed = errors.New("store: conditional update precondition failed")
+
+// ErrMissingETag reports that the object store omitted the validator required
+// for a compare-and-swap metadata update. Rewrap refuses rather than risking a
+// blind overwrite.
+var ErrMissingETag = errors.New("store: object response has no ETag")
 
 // FileMeta is one file's completeness record within an artifact's meta.json:
 // its exact byte size and hex SHA-256, verified on restore so a corrupt or
@@ -121,6 +133,12 @@ type DataKeyProvider interface {
 	DataKey(ctx context.Context, kind, workload, ref string) (key []byte, envelope []byte, err error)
 }
 
+// EnvelopeRewrapper returns the current opaque envelope for one artifact. It
+// never returns or handles the plaintext data key.
+type EnvelopeRewrapper interface {
+	RewrapEnvelope(ctx context.Context, kind, workload, ref string, envelope []byte) (replacement []byte, changed bool, err error)
+}
+
 // ExportOptions identifies an artifact to a configured DataKeyProvider. An
 // empty Kind keeps the export plaintext, which lets callers explicitly exclude
 // non-principal artifacts such as bases.
@@ -140,6 +158,7 @@ type Store struct {
 	client      *http.Client
 	compress    bool
 	dataKeys    DataKeyProvider
+	rewrapper   EnvelopeRewrapper
 	credentials credentials
 	now         func() time.Time
 }
@@ -159,6 +178,10 @@ func WithCredentials(accessKeyID, secretAccessKey string) Option {
 func WithDataKeys(p DataKeyProvider) Option {
 	return func(s *Store) {
 		s.dataKeys = p
+		s.rewrapper = nil
+		if rewrapper, ok := p.(EnvelopeRewrapper); ok {
+			s.rewrapper = rewrapper
+		}
 	}
 }
 
@@ -256,29 +279,59 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64) er
 // reader. A 404 is reported as ErrNotPresent so callers can distinguish a
 // missing object from a transport failure.
 func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	body, size, _, err := s.getWithETag(ctx, key)
+	return body, size, err
+}
+
+func (s *Store) getWithETag(ctx context.Context, key string) (io.ReadCloser, int64, string, error) {
 	if s == nil {
-		return nil, 0, ErrNotPresent
+		return nil, 0, "", ErrNotPresent
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url(key), nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("store: build GET %q: %w", key, err)
+		return nil, 0, "", fmt.Errorf("store: build GET %q: %w", key, err)
 	}
 	if err := s.sign(req); err != nil {
-		return nil, 0, fmt.Errorf("store: sign GET %q: %w", key, err)
+		return nil, 0, "", fmt.Errorf("store: sign GET %q: %w", key, err)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("store: GET %q: %w", key, err)
+		return nil, 0, "", fmt.Errorf("store: GET %q: %w", key, err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		drainClose(resp.Body)
-		return nil, 0, ErrNotPresent
+		return nil, 0, "", ErrNotPresent
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		drainClose(resp.Body)
-		return nil, 0, fmt.Errorf("store: GET %q: unexpected status %d", key, resp.StatusCode)
+		return nil, 0, "", fmt.Errorf("store: GET %q: unexpected status %d", key, resp.StatusCode)
 	}
-	return resp.Body, resp.ContentLength, nil
+	return resp.Body, resp.ContentLength, resp.Header.Get("ETag"), nil
+}
+
+func (s *Store) putIfMatch(ctx context.Context, key string, body []byte, etag string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.url(key), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("store: build conditional PUT %q: %w", key, err)
+	}
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", etag)
+	if err := s.sign(req); err != nil {
+		return fmt.Errorf("store: sign conditional PUT %q: %w", key, err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("store: conditional PUT %q: %w", key, err)
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusPreconditionFailed {
+		return fmt.Errorf("%w: %q", ErrPreconditionFailed, key)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("store: conditional PUT %q: unexpected status %d", key, resp.StatusCode)
+	}
+	return nil
 }
 
 // Head reports whether the object key exists (HTTP HEAD, true iff 200). A 404 is
@@ -767,6 +820,70 @@ func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, 
 		total += fm.Size
 	}
 	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, meta.Generation, append([]byte(nil), meta.Envelope...), nil
+}
+
+// RewrapEnvelope lazily replaces only meta.json's opaque envelope after an
+// artifact is accessed. It reads no payload objects and uses the exact ETag
+// returned with the marker as an If-Match precondition, so a concurrent export
+// or rewrap can never be overwritten by stale metadata.
+func (s *Store) RewrapEnvelope(ctx context.Context, prefix string, options ExportOptions) (bool, error) {
+	if s == nil || s.rewrapper == nil || options.Kind == "" {
+		return false, nil
+	}
+	key := prefix + "/" + metaObject
+	body, _, etag, err := s.getWithETag(ctx, key)
+	if errors.Is(err, ErrNotPresent) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer drainClose(body)
+	if etag == "" {
+		return false, fmt.Errorf("%w for %q", ErrMissingETag, key)
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, maxMetaSize+1))
+	if err != nil {
+		return false, fmt.Errorf("store: read meta for rewrap %q: %w", prefix, err)
+	}
+	if len(raw) > maxMetaSize {
+		return false, fmt.Errorf("store: meta for rewrap %q exceeds 8 MiB", prefix)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return false, fmt.Errorf("store: decode meta for rewrap %q: %w", prefix, err)
+	}
+	var envelope []byte
+	if encoded, ok := fields["envelope"]; ok {
+		if err := json.Unmarshal(encoded, &envelope); err != nil {
+			return false, fmt.Errorf("store: decode envelope for rewrap %q: %w", prefix, err)
+		}
+	}
+	if len(envelope) == 0 {
+		return false, nil
+	}
+	replacement, changed, err := s.rewrapper.RewrapEnvelope(ctx, options.Kind, options.Workload, options.Ref, envelope)
+	if err != nil {
+		return false, fmt.Errorf("store: rewrap envelope for %q: %w", prefix, err)
+	}
+	if !changed {
+		return false, nil
+	}
+	if len(replacement) == 0 {
+		return false, fmt.Errorf("store: envelope rewrapper returned an empty replacement for %q", prefix)
+	}
+	fields["envelope"], err = json.Marshal(replacement)
+	if err != nil {
+		return false, fmt.Errorf("store: encode replacement envelope for %q: %w", prefix, err)
+	}
+	updated, err := json.Marshal(fields)
+	if err != nil {
+		return false, fmt.Errorf("store: encode rewrapped meta for %q: %w", prefix, err)
+	}
+	if err := s.putIfMatch(ctx, key, updated, etag); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // getMeta fetches and decodes meta.json for a prefix. It returns (false, _, nil)

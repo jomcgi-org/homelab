@@ -47,6 +47,7 @@ type artifactStore interface {
 	// fields list and restore consume, including generation and opaque envelope.
 	// It stays flat so callers depend only on the fields they consume.
 	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, generation uint64, envelope []byte, err error)
+	RewrapEnvelope(ctx context.Context, prefix string, options store.ExportOptions) (changed bool, err error)
 }
 
 // artifactKindStr maps an ArtifactKind to its lowercase store-key segment (Fork
@@ -86,6 +87,47 @@ func isPrincipalKind(kind nodev1.ArtifactKind) bool {
 	default:
 		return false
 	}
+}
+
+// isRewrappableKind mirrors every mutable artifact class understood by the
+// control plane's ArtifactPrincipal resolver. Serving exports are plaintext
+// today, but including them here makes the lazy path safely no-op and keeps it
+// correct for an encrypted serving marker written by another rollout stage.
+func isRewrappableKind(kind nodev1.ArtifactKind) bool {
+	return kind == nodev1.ArtifactKind_ARTIFACT_KIND_SERVING || isPrincipalKind(kind)
+}
+
+const lazyEnvelopeRewrapTimeout = 15 * time.Second
+
+// rewrapEnvelopeAfterAccess detaches the best-effort metadata update from the
+// request that proved access. Restore and export latency therefore never waits
+// for KMS or a second object-store round trip, while the timeout bounds the
+// detached goroutine. The store's ETag CAS protects concurrent writers.
+func (s *Server) rewrapEnvelopeAfterAccess(ref *nodev1.ArtifactRef, prefix string) {
+	if !isRewrappableKind(ref.GetKind()) {
+		return
+	}
+	options := store.ExportOptions{
+		Kind:     artifactKindStr(ref.GetKind()),
+		Workload: ref.GetWorkload(),
+		Ref:      ref.GetRef(),
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), lazyEnvelopeRewrapTimeout)
+		defer cancel()
+		changed, err := s.store.RewrapEnvelope(ctx, prefix, options)
+		if errors.Is(err, store.ErrPreconditionFailed) {
+			s.logger.Info("noded: lazy envelope rewrap lost metadata race", "artifact", prefix)
+			return
+		}
+		if err != nil {
+			s.logger.Warn("noded: lazy envelope rewrap failed", "artifact", prefix, "err", err)
+			return
+		}
+		if changed {
+			s.logger.Info("noded: lazily rewrapped artifact envelope", "artifact", prefix)
+		}
+	}()
 }
 
 // legacyVendorAlias is the vendor a pre-R7 (un-vendored) store artifact is
@@ -555,6 +597,9 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	}
 	s.exported.mark(prefix, generation)
 	s.signalChange()
+	if skipped {
+		s.rewrapEnvelopeAfterAccess(ref, prefix)
+	}
 	return &nodev1.ExportArtifactResponse{BytesMoved: uint64(moved), Skipped: skipped, Generation: generation}, nil
 }
 
@@ -633,6 +678,9 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	// bypass the same authorization required for a download.
 	if local, err := enumerateArtifactFiles(localDir); err == nil && len(local) > 0 {
 		s.reregisterRestored(ref)
+		if len(envelope) > 0 {
+			s.rewrapEnvelopeAfterAccess(ref, prefix)
+		}
 		return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen}, nil
 	}
 
@@ -652,6 +700,9 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	s.reregisterRestored(ref)
 	s.exported.mark(prefix, generation)
 	s.signalChange()
+	if len(envelope) > 0 {
+		s.rewrapEnvelopeAfterAccess(ref, prefix)
+	}
 	return &nodev1.RestoreArtifactResponse{BytesMoved: uint64(moved), Generation: generation}, nil
 }
 
