@@ -71,6 +71,9 @@ func TestParseAndVerifyCapability(t *testing.T) {
 		{name: "wrong_ref", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Ref = "other" }), wantErr: ErrCapabilityRefMismatch},
 		{name: "wrong_kind", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Kind = "stateful" }), wantErr: ErrCapabilityKindMismatch},
 		{name: "wrong_generation", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Generation++ }), wantErr: ErrCapabilityGenerationMismatch},
+		{name: "zero_generation_is_wildcard", raw: func() []byte {
+			return mintCapability(t, macKey, dataKey, now.Add(time.Minute), withScope(want, func(s *capabilityScope) { s.Generation = 0 }))
+		}, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Generation = 123 }), wantErr: nil},
 		{name: "wrong_principal", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Principal = "acct:bob" }), wantErr: ErrCapabilityPrincipalMismatch},
 		{name: "wrong_lineage", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Lineage = "lineage-2" }), wantErr: ErrCapabilityLineageMismatch},
 		{name: "bad_key_length", raw: func() []byte { return mintCapability(t, macKey, dataKey[:31], now.Add(time.Minute), want) }, macKey: macKey, want: want, wantErr: ErrCapabilityKeyLength},
