@@ -4322,8 +4322,8 @@ sys.exit(1)
 def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     """pi must be launched with the context budget pinned down.
 
-    Qwen serves a 32768-token window. These flags are the entire reason pi was
-    chosen over the claude CLI, and losing any of them fails SILENTLY: the turn
+    Pi gets one bounded share of NInfer's shared KV pool. These flags keep that
+    budget available to the task. Losing any of them fails SILENTLY: the turn
     still succeeds, it just spends the window on discovered context or a default
     prompt instead of the task, and the answers quietly get worse.
     """
@@ -4358,14 +4358,12 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
 
 
 def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
-    """models.json must declare contextWindow and maxTokens matching vLLM.
+    """models.json must declare the bounded per-session NInfer budget.
 
     If these values are wrong, pi's clampMaxTokensToContext computes available
-    tokens using a false budget. With contextWindow=128000 (pi's hardcoded
-    default), pi believes available tokens is about 107k even when the real
-    window is 32768, leading to a loud 400 error as soon as input tokens
-    exceed 30000 - 4096 (exactly half the real window). The arithmetic
-    must ensure that input + max_output_tokens <= real_budget for all inputs.
+    tokens using a false budget. Pi's 128000-token default would let two active
+    sessions consume 256000 tokens, leaving less than the required shared
+    headroom in NInfer's 262144-token page pool.
     """
     manager = _pi_manager(tmp_path, monkeypatch)
     manager.turn("hello", model="qwen")
@@ -4376,7 +4374,7 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
         - shim.PI_CONTEXT_SAFETY_TOKENS
         > 0
     ), "Context window too small: max output tokens plus safety margin exceeds budget"
-    assert shim.PI_CONTEXT_WINDOW == 30000
+    assert shim.PI_CONTEXT_WINDOW == 122880
 
     models_path = tmp_path / "workspace" / ".pi" / "agent" / "models.json"
     models = json.loads(models_path.read_text())
@@ -4392,22 +4390,29 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
 
 
 def test_pi_context_window_headroom_relationship():
-    """PI_CONTEXT_WINDOW plus PI_CONTEXT_WINDOW_HEADROOM must not exceed vLLM capacity.
+    """Two Pi windows plus shared headroom must fit NInfer's KV capacity.
 
-    The headroom gap absorbs pi's estimate error. This test uses only constants,
-    so it runs without file I/O or temporary paths, and verifies the invariant
-    even without the Bazel data dependency.
+    The cross-file test reads the deployment values. This fast unit test pins
+    the approved production arithmetic even without its Bazel data dependency.
     """
-    # vLLM is configured to serve 32768 tokens in projects/inference/deploy/values.yaml
-    vllm_max_model_len = 32768
+    ninfer_kv_capacity = 262144
+    ninfer_max_concurrency = 2
     declared_window = shim.PI_CONTEXT_WINDOW
     declared_headroom = shim.PI_CONTEXT_WINDOW_HEADROOM
+    assert declared_window == 122880
+    assert declared_headroom == 16384
 
-    total = declared_window + declared_headroom
-    assert total <= vllm_max_model_len, (
-        "PI_CONTEXT_WINDOW (%s) + PI_CONTEXT_WINDOW_HEADROOM (%s) = %s exceeds "
-        "vLLM capacity (%s). Raise vLLM's --max-model-len or lower PI_CONTEXT_WINDOW."
-        % (declared_window, declared_headroom, total, vllm_max_model_len)
+    total = declared_window * ninfer_max_concurrency + declared_headroom
+    assert total == ninfer_kv_capacity, (
+        "%s Pi contexts at %s tokens plus %s headroom = %s, which does not "
+        "exactly account for NInfer KV capacity %s."
+        % (
+            ninfer_max_concurrency,
+            declared_window,
+            declared_headroom,
+            total,
+            ninfer_kv_capacity,
+        )
     )
 
 
