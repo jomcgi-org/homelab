@@ -1953,6 +1953,9 @@ defmodule Embervm.SessionManagerTest do
     assert :session_destroyed in kinds
     # destroying is appended BEFORE destroyed.
     assert index_of(kinds, :session_destroying) < index_of(kinds, :session_destroyed)
+    # ...and exactly once: the intent is written by the destroy call, never again
+    # by the gated teardown path (#4804).
+    assert Enum.count(kinds, &(&1 == :session_destroying)) == 1
   end
 
   test "gated: destroy with an unconfirming node stays destroying, no destroyed op" do
