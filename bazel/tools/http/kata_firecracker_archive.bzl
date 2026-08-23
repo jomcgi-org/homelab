@@ -15,7 +15,8 @@ EmberVM warm-restore fleet needs (#4389: upstream #5688 in v1.15.0, #5882 in
 v1.16.0, #5958 in v1.16.1). Snapshot formats are version-locked and nothing
 rebuilds existing snapshots automatically when this pin moves (the base
 signature has no hypervisor input), so any version change here must move
-hypervisorEpoch in projects/embervm/chart/values.yaml in the same PR.
+hypervisorEpoch in projects/embervm/chart/values.yaml in the same PR
+(//projects/embervm/chart:chart_hypervisor_epoch_test enforces it, #4409).
 
 The per-arch kata-static bundle is large (~1.5 GiB amd64) and unpacks to several
 GiB, but only the kernel plus the upstream Firecracker and snapshot-editor ride

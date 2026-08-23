@@ -76,6 +76,13 @@ exports_files(
     visibility = ["//bazel/tools/ci:__pkg__"],
 )
 
+# The EmberVM chart test that couples hypervisorEpoch to the vendored
+# Firecracker version (#4409) reads the kata_firecracker_archive pin from here.
+exports_files(
+    ["MODULE.bazel"],
+    visibility = ["//projects/embervm/chart:__pkg__"],
+)
+
 # Produce aspect_rules_py targets rather than rules_python
 # gazelle:map_kind py_binary py_venv_binary @aspect_rules_py//py/private/py_venv:defs.bzl
 # gazelle:map_kind py_library py_library @aspect_rules_py//py:defs.bzl

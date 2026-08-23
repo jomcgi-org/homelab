@@ -137,6 +137,25 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
+py_test(
+    name = "chart_hypervisor_epoch_test",
+    srcs = ["chart_hypervisor_epoch_test.py"],
+    data = [
+        "values.yaml",
+        "//:MODULE.bazel",
+    ],
+    env = {
+        "MODULE_BAZEL": "$(rootpath //:MODULE.bazel)",
+    },
+    deps = ["@pip//pytest"],
+)
+
+semgrep_test(
+    name = "chart_hypervisor_epoch_test_semgrep_test",
+    srcs = ["chart_hypervisor_epoch_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
 semgrep_test(
     name = "chart_sync_wave_test_semgrep_test",
     srcs = ["chart_sync_wave_test.py"],

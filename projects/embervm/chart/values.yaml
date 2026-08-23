@@ -33,7 +33,8 @@ scratchSizeGi: 35
 # are version-locked: a base rebuild does not happen on its own when the binary
 # moves (the signature has no hypervisor input), and a v-old snapshot loaded by
 # a v-new hypervisor fails every dispatch (#4389). Bump this in the SAME PR as
-# any Firecracker version change. Banked session and stateful memory snapshots
+# any Firecracker version change: chart_hypervisor_epoch_test asserts the
+# version in this value equals MODULE.bazel's firecracker_version (#4409). Banked session and stateful memory snapshots
 # are separate artifacts this knob does not rebuild; they must be drained or
 # left to fail over cold at rollout.
 # r2: the first fc-v1.16.1 re-key raced the brick roll. The CR update landed
