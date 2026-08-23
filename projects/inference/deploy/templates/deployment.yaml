@@ -1,4 +1,8 @@
-{{- if eq .Values.llm.engine "vllm" }}
+{{/*
+The generative LLM served by NInfer (ninfer-serve). The Service, its selector,
+and every caller URL key off the `inference` component label and the chart
+fullname, which this Deployment keeps from the engines it replaced.
+*/}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,26 +42,22 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: llama-server
-          image: "{{ .Values.image.vllm.repository }}:{{ .Values.image.vllm.tag }}"
-          imagePullPolicy: {{ .Values.image.vllm.pullPolicy }}
+        - name: ninfer-serve
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           command: ["/bin/sh", "-c"]
           args:
             - |
-              # Auto-discover model: HuggingFace format (config.json) or GGUF.
-              MODEL=$(find {{ .Values.modelVolume.mountPath }} -maxdepth 2 -name 'config.json' -type f -exec dirname {} \; | head -1)
+              MODEL=$(find {{ .Values.ninfer.modelVolume.mountPath }} -maxdepth 2 -name '*.ninfer' -type f | sort | head -1)
               if [ -z "$MODEL" ]; then
-                MODEL=$(find {{ .Values.modelVolume.mountPath }} -maxdepth 2 -name '*.gguf' ! -name 'mmproj*' -type f | sort | head -1)
-              fi
-              if [ -z "$MODEL" ]; then
-                echo "ERROR: no model found under {{ .Values.modelVolume.mountPath }}" >&2
+                echo "ERROR: no .ninfer artifact found under {{ .Values.ninfer.modelVolume.mountPath }}" >&2
                 exit 1
               fi
               echo "Auto-discovered model: $MODEL"
-              exec vllm serve "$MODEL" \
-                {{ include "inference.vllmArgs" . | indent 16 | trim }}
+              exec ninfer-serve "$MODEL" \
+                {{ include "inference.ninferArgs" . | indent 16 | trim }}
           ports:
             - name: http
               containerPort: {{ .Values.server.port }}
@@ -77,35 +77,20 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            {{- if .Values.modelVolume.enabled }}
+            {{- if .Values.ninfer.modelVolume.enabled }}
             - name: model
-              mountPath: {{ .Values.modelVolume.mountPath }}
+              mountPath: {{ .Values.ninfer.modelVolume.mountPath }}
               readOnly: true
             {{- end }}
-            {{- if .Values.server.chatTemplate }}
-            - name: chat-template
-              mountPath: /etc/chat-template
-              readOnly: true
-            {{- end }}
-            - name: vllm-cache
-              mountPath: /root/.cache
             - name: dshm
               mountPath: /dev/shm
       volumes:
-        {{- if .Values.modelVolume.enabled }}
+        {{- if .Values.ninfer.modelVolume.enabled }}
         - name: model
           image:
-            reference: {{ .Values.modelVolume.reference }}
+            reference: {{ .Values.ninfer.modelVolume.reference }}
             pullPolicy: IfNotPresent
         {{- end }}
-        {{- if .Values.server.chatTemplate }}
-        - name: chat-template
-          configMap:
-            name: {{ include "inference.fullname" . }}-chat-template
-        {{- end }}
-        - name: vllm-cache
-          persistentVolumeClaim:
-            claimName: {{ include "inference.fullname" . }}-vllm-cache
         - name: dshm
           emptyDir:
             medium: Memory
@@ -114,4 +99,3 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-{{- end }}

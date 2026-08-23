@@ -62,7 +62,7 @@ external route keeps working because httproute-private.yaml resolves its
 backendRef through this same helper, so both move together.
 
 WHY NOT fullnameOverride, which would be the obvious lever: the Deployment
-(deployment-llamacpp.yaml) derives its name from inference.fullname too. A
+(deployment.yaml) derives its name from inference.fullname too. A
 rename there deletes and recreates the Deployment, and on a single GPU the new
 pod sits Pending on nvidia.com/gpu: 1 until ArgoCD prunes the old one. Renaming
 only the Service leaves the Deployment, and therefore the GPU claim, untouched.
@@ -87,35 +87,6 @@ would break grimoire and knowledge retrieval for no benchmark benefit.
 {{- end }}
 
 {{/*
-Concurrent llama.cpp slots. ctxSize is the TOTAL KV pool divided across these,
-so lowering the count widens every remaining slot at identical VRAM: bench mode
-gives its single slot the whole 98304-token pool instead of 32768.
-
-One slot also removes batch interference from the timings, which is only
-tolerable because the Service rename above has already cut the in-cluster
-callers off. At 3 slots they would interleave and skew results; at 1 slot with
-callers still connected they would queue behind a full generation, up to about
-5.7 minutes at max_tokens 16384 and the observed 48 t/s.
-*/}}
-{{- define "inference.llamaCppParallel" -}}
-{{- if .Values.benchMode.enabled -}}1{{- else -}}{{ .Values.llamacpp.parallel }}{{- end -}}
-{{- end }}
-
-{{/*
-Total KV pool in tokens. Bench mode overrides it here rather than by editing
-llamacpp.ctxSize, so the single benchMode flag still restores everything: an
-override left behind in production would run 3 slots against a pool sized for
-one, quietly tightening VRAM below the headroom that value was chosen for.
-
-Sizing is solved from three measured points rather than estimated. See the
-llamacpp.ctxSize comment in values.yaml for the derivation and for why the
-GiB-per-32k rule of thumb it replaced was 35% too pessimistic.
-*/}}
-{{- define "inference.llamaCppCtxSize" -}}
-{{- if .Values.benchMode.enabled -}}{{ .Values.benchMode.ctxSize }}{{- else -}}{{ .Values.llamacpp.ctxSize }}{{- end -}}
-{{- end }}
-
-{{/*
 Embedding llama-server CLI arguments.
 */}}
 {{- define "inference.embeddingArgs" -}}
@@ -136,48 +107,33 @@ Embedding llama-server CLI arguments.
 {{- end }}
 
 {{/*
-LLM llama-server CLI arguments (llm.engine "llamacpp").
-
-Mirrors inference.embeddingArgs but for the generative path: GPU offload, a
-multi-slot KV pool, and the jinja/reasoning flags that make tool calls and
-reasoning_content come back in the shape the monolith already parses. The model
-and mmproj paths are auto-discovered in the container, so they are not emitted
-here.
+ninfer-serve CLI arguments. The artifact path is auto-discovered in the
+container and passed as the positional argument, so it is not emitted here.
 */}}
-{{- define "inference.llamaCppArgs" -}}
---n-gpu-layers {{ .Values.llamacpp.nGpuLayers | quote }} \
---ctx-size {{ include "inference.llamaCppCtxSize" . | quote }} \
---parallel {{ include "inference.llamaCppParallel" . | quote }} \
-{{- if .Values.llamacpp.flashAttn }}
---flash-attn {{ .Values.llamacpp.flashAttn | quote }} \
-{{- end }}
---cache-type-k {{ .Values.llamacpp.cacheTypeK | quote }} \
---cache-type-v {{ .Values.llamacpp.cacheTypeV | quote }} \
---threads {{ .Values.llamacpp.threads | quote }} \
+{{- define "inference.ninferArgs" -}}
 --host {{ .Values.server.host | quote }} \
---port {{ .Values.server.port | quote }}{{ range .Values.llamacpp.extraArgs }} \
+--port {{ .Values.server.port | quote }} \
+--model-id {{ .Values.ninfer.modelId | quote }} \
+--max-context {{ .Values.ninfer.maxContext | quote }} \
+--kv-capacity {{ .Values.ninfer.kvCapacity | quote }} \
+--kv-dtype {{ .Values.ninfer.kvDtype | quote }} \
+--max-concurrency {{ .Values.ninfer.maxConcurrency | quote }} \
+--max-pending-requests {{ .Values.ninfer.maxPendingRequests | quote }} \
+--pending-timeout-ms {{ .Values.ninfer.pendingTimeoutMs | quote }} \
+--prefill-chunk {{ .Values.ninfer.prefillChunk | quote }} \
+{{- if .Values.ninfer.spec }}
+--spec {{ .Values.ninfer.spec | quote }} \
+--draft-tokens {{ .Values.ninfer.draftTokens | quote }} \
+{{- end }}
+{{- if .Values.ninfer.lmHeadDraft }}
+--lm-head-draft \
+{{- end }}
+{{- if .Values.ninfer.vision }}
+--vision \
+{{- end }}
+{{- if .Values.ninfer.preserveThinking }}
+--preserve-thinking \
+{{- end }}
+--log-stats-interval-ms "10000"{{ range .Values.ninfer.extraArgs }} \
 {{ . | quote }}{{ end }}
-{{- end }}
-
-{{/*
-vLLM CLI arguments.
-*/}}
-{{- define "inference.vllmArgs" -}}
---host {{ .Values.server.host }} \
---port {{ .Values.server.port }} \
---max-model-len {{ .Values.vllm.maxModelLen }} \
---gpu-memory-utilization {{ .Values.vllm.gpuMemoryUtilization }} \
-{{- if .Values.vllm.quantization }}
---quantization {{ .Values.vllm.quantization }} \
-{{- end }}
-{{- if .Values.vllm.tokenizer }}
---tokenizer {{ .Values.vllm.tokenizer }} \
-{{- end }}
-{{- if .Values.server.chatTemplate }}
---chat-template /etc/chat-template/chat-template.jinja \
-{{- end }}
-{{- range .Values.vllm.extraArgs }}
-{{ . | quote }} \
-{{- end }}
---dtype {{ .Values.vllm.dtype }}
 {{- end }}
