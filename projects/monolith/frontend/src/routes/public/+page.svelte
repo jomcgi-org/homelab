@@ -226,7 +226,7 @@
 </div>
 
 <!-- ═══ Project stack ═══ -->
-<HomepageRack {stats} />
+<HomepageRack stats={data.stats} />
 
 <!-- ═══ Footer ═══ -->
 <Footer />
