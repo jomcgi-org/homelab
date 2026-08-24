@@ -119,6 +119,14 @@ spec:
             # node-confirmed path executes anywhere.
             - name: EMBERVM_NODE_CONFIRMED_DESTROY
               value: {{ if .Values.nodeConfirmedDestroy }}"true"{{ else }}"false"{{ end }}
+            # Async lifecycle op-log appends (ADR embervm/014 decision 2,
+            # GitHub issue #5230): true defers the boot/wake lifecycle appends
+            # (:assigned/:started, session_created/session_relit) to
+            # Embervm.AsyncWriter off the hot path; false (the default) keeps
+            # today's write-through ordering. Rendered beside its sibling gate
+            # above so both ADR-014 ordering gates flip via values only.
+            - name: EMBERVM_ASYNC_LIFECYCLE_WRITES
+              value: {{ if .Values.asyncLifecycleWrites }}"true"{{ else }}"false"{{ end }}
             # SpecTrace gate for spec validation (GitHub issue #4770):
             # the debug-gated, spec-shaped trace reads once at boot.
             # OFF means no process, no connection, no sweep.
@@ -260,6 +268,12 @@ spec:
             - name: EMBERVM_PRINCIPAL_SHARE_FRACTION
               value: {{ .Values.dispatcher.principalShareFraction | quote }}
             {{- end }}
+            # Placement reject/retry gate (GitHub issue #5230): true lets the
+            # dispatcher walk remaining candidates after a rejection; false
+            # (the default) stops at the first failed candidate. Read by
+            # Embervm.Scheduler.Retry.enabled?/0.
+            - name: EMBERVM_PLACEMENT_RETRY
+              value: {{ if .Values.dispatcher.placementRetry }}"true"{{ else }}"false"{{ end }}
             # Session invoke wall-clock watchdog margin (#4434): last-resort kill
             # of a SessionAssign worker that outlived the server-enforced deadline.
             - name: EMBERVM_SESSION_INVOKE_WATCHDOG_MARGIN_MS

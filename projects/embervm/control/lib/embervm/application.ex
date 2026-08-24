@@ -1017,7 +1017,9 @@ defmodule Embervm.Application do
   # (RPC already succeeded), taking the durable write off the hot path; a lost write
   # (CP crash before the async append) is repaired by the adoption backfill. Metering,
   # :submitted, destruction, and bank ops are NEVER deferred. Wired here so it flips
-  # via a deploy values env change, no code change. Nothing sets it on in this PR.
+  # via a deploy values env change, no code change: the chart's `asyncLifecycleWrites`
+  # key (chart/values.yaml) renders this variable in deployment.yaml. Nothing sets
+  # it on in this PR.
   defp async_lifecycle_writes_enabled do
     case trimmed_env("EMBERVM_ASYNC_LIFECYCLE_WRITES") do
       v when v in ["1", "true", "TRUE", "True"] -> true

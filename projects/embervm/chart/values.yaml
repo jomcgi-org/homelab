@@ -169,6 +169,19 @@ opLog:
 # until dev has exercised it under the conformance harness.
 nodeConfirmedDestroy: false
 
+# Async lifecycle op-log appends (ADR embervm/014 decision 2, GitHub issue
+# #5230). Read once at boot by Embervm.Application.async_lifecycle_writes_enabled/0
+# (control/lib/embervm/application.ex) as EMBERVM_ASYNC_LIFECYCLE_WRITES. False
+# (the default) keeps today's write-through ordering: the boot/wake lifecycle
+# appends (:assigned/:started on dispatch, session_created/session_relit on
+# session boot/wake) block the hot-path caller before the instance is handed
+# back. True defers those four appends to Embervm.AsyncWriter after in-memory
+# state advances (a lost write is repaired by adoption backfill); metering,
+# :submitted, destruction, and bank ops are never deferred regardless. This key
+# exists so the gate flips via a values-only deploy, the same surface its
+# sibling nodeConfirmedDestroy above has had all along.
+asyncLifecycleWrites: false
+
 # existing op_log_mod/0 selection and avoids inventing a second switch.
 specTrace:
   # Default OFF in production. ON in dev for local spec validation.
@@ -250,6 +263,14 @@ dispatcher:
   # cap / active-principals (min 1), so under contention no principal starves
   # the others. Set a fraction in (0, 1] to fix each principal's share instead.
   principalShareFraction: ""
+  # Placement reject/retry gate (GitHub issue #5230). Read by
+  # Embervm.Scheduler.Retry.enabled?/0 (control/lib/embervm/scheduler/retry.ex)
+  # as EMBERVM_PLACEMENT_RETRY. False (the default) keeps today's
+  # single-attempt placement: the first candidate rejection ends the attempt.
+  # True lets the placement walk its remaining candidates after a rejection
+  # (reject/retry policy). Mirrors the env-gate convention of the ADR-014
+  # changes so it flips via a values-only deploy, no code change.
+  placementRetry: false
 
 # Session-process tuning (control-plane env).
 session:
