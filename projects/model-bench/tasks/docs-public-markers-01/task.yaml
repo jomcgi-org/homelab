@@ -1,0 +1,218 @@
+id: docs-public-markers-01
+version: v1
+class: code-fix
+# hard: a new module with nine marker categories and several deliberate
+# lookalike boundaries (dotted key paths, bare env names, public IP space);
+# getting the acceptance/rejection split exactly right trips most candidates.
+tier: hard
+mode: agentic
+# Real fix 1897c3d20 (PR #5193, "fix(docs): reject internal markers from public
+# content"): gen_posts_manifest published post bodies with NO content check while
+# gen_docs_manifest carried an inline three-marker check; the fix extracts a
+# shared knowledge/tools/public_content.py with a much fuller marker list and
+# wires both generators to it. The snapshot pins the fix's PARENT (no shared
+# module yet, posts unchecked).
+source_commit: 1897c3d209ce7593fe8da96086105ba90bf86144
+snapshot:
+  commit: 7bbcc70e0f575caf9d5026910934ce13b695f7e6
+  paths:
+    - projects/monolith/knowledge/tools
+  strip_components: 2
+  exclude:
+    - "*_test.py"
+    - BUILD
+agent:
+  max_turns: 30
+prompt: |
+  This is the documentation pipeline package (knowledge/tools) from a real repo.
+  Two generators produce manifests of documents published on the public site:
+
+    - gen_docs_manifest.py indexes project docs behind a path allowlist. It
+      already guards content: an inline check_public_content(rel_path, content)
+      raises SystemExit naming "<rel_path>:<line>" when a document contains an
+      internal-only identifier. Today it knows only three markers: in-cluster
+      ".svc.cluster.local" hostnames, "op://" references, and
+      "vaults/<vault>/items/" item paths.
+    - gen_posts_manifest.py publishes Markdown posts gated by frontmatter. It
+      validates the frontmatter of "public: true" posts but does NOT check post
+      body content at all, so an internal identifier pasted into a published post
+      body reaches the public site unguarded.
+
+  Make two changes:
+
+  1. Create knowledge/tools/public_content.py exporting
+     check_public_content(rel_path, content). It must raise SystemExit with the
+     message "<rel_path>:<line>: public doc contains <label>" for the FIRST
+     matching marker, where <line> is the 1-based line number of the match within
+     content. It must reject every one of these categories:
+
+       - in-cluster service hostnames (anything ending .svc.cluster.local)
+       - 1Password op:// references
+       - 1Password vault item paths (vaults/<name>/items/...)
+       - private IPv4 addresses in 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+       - cluster node names of the form node-<digits>
+       - brick names of the form brick-<digits>
+       - s3:// bucket URIs
+       - hostnames ending in ".internal", BUT NOT dotted key paths where
+         ".internal" is just a path segment followed by another dot-word (the
+         string "egress.internal.allowlist" is a YAML key path, not a host)
+       - secret-shaped env var assignments: an UPPERCASE_SNAKE name ending in
+         TOKEN, SECRET, PASSWORD, PASSPHRASE, API_KEY, or PRIVATE_KEY followed by
+         "=" or ":" and a value. A bare name with NO value next to it is already
+         public API surface in this repo and must stay acceptable.
+
+     Concretely, each of these must be REJECTED:
+
+       see http://gw.mcp.svc.cluster.local:80/mcp
+       token from op://vault/item/field
+       create vaults/k8s-homelab/items/thing first
+       the pod sits at 10.42.0.17 on the overlay
+       curl 172.16.4.9:8080/health
+       router at 192.168.1.1
+       scratch lives on node-4
+       the guest landed on brick-2
+       artifacts in s3://artifacts/ambient-evals/
+       fetched from ca.egress.internal:80
+       export EMBERVM_NODED_BEARER_TOKEN=abc123
+       AUTH_ENCRYPTION_SECRET: hunter2
+
+     and each of these must still PASS:
+
+       # fine
+
+       plain prose
+       egress.internal.allowlist is one global list
+       `OPENROUTER_API_KEY` must be set; it syncs `AUTH_ENCRYPTION_SECRET`
+       reach 8.8.8.8 or 172.32.0.1 from v10.4
+       a node-local cache, brick-shaped, node-N
+
+  2. Wire both generators to the shared guard. gen_docs_manifest.py must use the
+     shared function instead of its private copy (same call sites and behaviour,
+     now catching the fuller marker set, and check_public_content must remain
+     importable from knowledge.tools.gen_docs_manifest). In
+     gen_posts_manifest.py, build_manifest() must run the shared check on every
+     PUBLISHED post's body after frontmatter validation, before its entry is
+     appended; drafts (public: false or ungated) must keep passing through
+     untouched.
+
+  Do not change any other behaviour of either generator.
+target_files:
+  - knowledge/tools/public_content.py
+  - knowledge/tools/gen_docs_manifest.py
+  - knowledge/tools/gen_posts_manifest.py
+verifier:
+  kind: pytest
+  args:
+    tests:
+      knowledge/tools/public_content_gold_test.py: |
+        """Hidden grader for docs-public-markers-01."""
+
+        from pathlib import Path
+
+        import pytest
+
+        from knowledge.tools.gen_docs_manifest import (
+            check_public_content as check_from_docs,
+        )
+        from knowledge.tools.gen_posts_manifest import build_manifest
+        from knowledge.tools.public_content import check_public_content
+
+
+        def write_post(root: Path, name: str, frontmatter: str, body: str = "Body.\n") -> str:
+            posts = root / "docs" / "posts"
+            posts.mkdir(parents=True, exist_ok=True)
+            (posts / name).write_text(f"---\n{frontmatter}---\n{body}", encoding="utf-8")
+            return f"docs/posts/{name}"
+
+
+        def public_frontmatter(
+            *, title: str = "Example", date: str = "2026-01-15", summary: str = "One sentence."
+        ) -> str:
+            return f"title: \"{title}\"\ndate: {date}\nsummary: '{summary}'\npublic: true\n"
+
+
+        def test_docs_generator_reexports_the_shared_guard():
+            # The docs generator must use the shared module, not keep a copy.
+            assert check_from_docs is check_public_content
+
+
+        @pytest.mark.parametrize(
+            "body",
+            [
+                "see http://gw.mcp.svc.cluster.local:80/mcp",
+                "token from op://vault/item/field",
+                "create vaults/k8s-homelab/items/thing first",
+                "the pod sits at 10.42.0.17 on the overlay",
+                "curl 172.16.4.9:8080/health",
+                "router at 192.168.1.1",
+                "scratch lives on node-4",
+                "the guest landed on brick-2",
+                "artifacts in s3://artifacts/ambient-evals/",
+                "fetched from ca.egress.internal:80",
+                "export EMBERVM_NODED_BEARER_TOKEN=abc123",
+                "AUTH_ENCRYPTION_SECRET: hunter2",
+            ],
+        )
+        def test_check_public_content_rejects_internal_markers(body: str):
+            with pytest.raises(SystemExit):
+                check_public_content("projects/x/README.md", body)
+
+
+        @pytest.mark.parametrize(
+            "body",
+            [
+                "# fine\n\nplain prose\n",
+                # Dotted values key path, not a hostname.
+                "egress.internal.allowlist is one global list",
+                # Bare secret env var names are already in the public source tree.
+                "`OPENROUTER_API_KEY` must be set; it syncs `AUTH_ENCRYPTION_SECRET`",
+                # Public address space and version-ish numbers.
+                "reach 8.8.8.8 or 172.32.0.1 from v10.4",
+                "a node-local cache, brick-shaped, node-N",
+            ],
+        )
+        def test_check_public_content_accepts_public_prose(body: str):
+            check_public_content("projects/x/README.md", body)
+
+
+        def test_marker_error_names_the_line():
+            with pytest.raises(SystemExit, match=r"^projects/x/README\.md:3:") as excinfo:
+                check_public_content("projects/x/README.md", "one\ntwo\nsee node-4\n")
+            assert "node" in str(excinfo.value)
+
+
+        def test_public_post_with_internal_marker_fails(tmp_path: Path):
+            path = write_post(
+                tmp_path,
+                "2026-01-15-leak.md",
+                public_frontmatter(),
+                "Call http://monolith-web.monolith.svc.cluster.local/api\n",
+            )
+
+            with pytest.raises(SystemExit, match=r"docs/posts/2026-01-15-leak.md:1"):
+                build_manifest(tmp_path, [path])
+
+
+        def test_draft_post_with_internal_marker_is_skipped(tmp_path: Path):
+            path = write_post(
+                tmp_path,
+                "2026-01-15-draft.md",
+                "title: Draft\ndate: 2026-01-15\nsummary: One sentence.\npublic: false\n",
+                "Call http://monolith-web.monolith.svc.cluster.local/api\n",
+            )
+
+            assert build_manifest(tmp_path, [path]) == []
+
+
+        def test_clean_public_post_still_publishes(tmp_path: Path):
+            path = write_post(
+                tmp_path,
+                "2026-01-15-clean.md",
+                public_frontmatter(),
+                "Reach the site at https://example.com.\n",
+            )
+
+            entries = build_manifest(tmp_path, [path])
+            assert [entry["slug"] for entry in entries] == ["clean"]
+    targets: ["knowledge/tools/public_content_gold_test.py"]
+    timeout_s: 120

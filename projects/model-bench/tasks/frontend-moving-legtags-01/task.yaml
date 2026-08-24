@@ -1,0 +1,163 @@
+id: frontend-moving-legtags-01
+version: v1
+class: code-fix
+# standard: pure-function layout arithmetic over a self-contained module; the
+# subtlety is the measured-vs-fallback split and keeping the old behaviour byte
+# for byte when unmeasured.
+tier: standard
+mode: agentic
+# Real fix 069d25d1a (PR #5187, "fix(monolith): size moving leg tag stagger by
+# label width"): packLegTags() staggered tags on a fixed 24% start gap, blind to
+# how wide each label renders. The snapshot pins the fix's PARENT and keeps only
+# moving.js, which is dependency-free ESM.
+source_commit: 069d25d1a96b5fea85928a570f9ae102b0ede874
+snapshot:
+  commit: c4e0a1395ea728ac50283fe3df14588e8814e9c7
+  paths:
+    - projects/monolith/frontend/src/routes/friends/moving/moving.js
+  strip_components: 7
+agent:
+  max_turns: 25
+prompt: |
+  moving.js is the dependency-free timeline layout module behind the friends/moving
+  page. Its packLegTags(tags) assigns each trip "leg tag" a stagger level so
+  overlapping tags on the gantt plot do not collide: tags are processed in position
+  order, and a tag lands on the first existing level that has cleared, else opens a
+  new level. Today "has cleared" is approximated with a FIXED start gap
+  (LEG_TAG_MIN_GAP_PERCENT = 24): a level is reusable when the new tag starts at
+  least 24 percentage points after the tag currently occupying it started.
+
+  That fixed gap is blind to how wide each tag actually renders. A tag's rendered
+  width comes from its TEXT, not its date span: long labels overlap anyway on a
+  narrow track, and short labels get pushed onto needless second rows on a wide
+  one.
+
+  Rework the packing so that when the caller supplies the measured plot track
+  width, each tag's footprint is estimated in pixels from its text and converted
+  to a percentage of that track:
+
+    - the label renders at roughly 7px per character (12.5px bold),
+    - the optional date-range line (formatDateRange(starts_on, ends_on); empty
+      when the tag has neither date) renders at roughly 5.8px per character
+      (9.5px mono),
+    - a tag's pixel footprint is the larger of those two plus 14px of clearance,
+    - a level becomes reusable once the new tag's START reaches the previous
+      occupant's estimated END (its position plus its footprint as a percent of
+      the track), instead of a fixed distance after its start.
+
+  Callers pass options as the second argument: packLegTags(tags,
+  { trackWidthPx }). Without a usable track width (undefined, non-finite, or <= 0,
+  e.g. SSR, tests, or not yet measured) the packer must behave EXACTLY as it does
+  today, including the fixed-gap fallback semantics. A null/empty tag list and the
+  returned shape ({ tags: [...each original tag plus its stagger],
+  staggerCount }) stay unchanged. Existing exports keep their names; only
+  packLegTags' second parameter changes shape, and you may add a small exported
+  width-estimation helper next to it if that keeps things readable. The page
+  itself will supply the measured track width; you do not need to touch any
+  .svelte file.
+target_files:
+  - moving.js
+verifier:
+  kind: command
+  args:
+    write_files:
+      # node treats an extensionless-package .js as CommonJS without this hint;
+      # moving.js is ESM.
+      package.json: |
+        {"type": "module"}
+      legtags_gold_test.mjs: |
+        import assert from "node:assert/strict";
+        import { packLegTags } from "./moving.js";
+
+        // Fixed 24% fallback clears two tags 25% apart...
+        const longShort = [
+          {
+            id: "span-move",
+            label: "Pack out and leave Vancouver",
+            starts_on: "2026-10-01",
+            ends_on: "2026-10-10",
+            position: 50,
+          },
+          {
+            id: "span-japan",
+            label: "Japan",
+            starts_on: "2026-10-11",
+            ends_on: "2026-10-25",
+            position: 75,
+          },
+        ];
+        assert.equal(packLegTags(longShort).staggerCount, 1);
+        // ...but on a 600px track "Pack out and leave Vancouver" is wider than
+        // 25% of the track, so the pair must stagger.
+        assert.equal(packLegTags(longShort, { trackWidthPx: 600 }).staggerCount, 2);
+
+        // 8% apart trips the fixed fallback, but short labels fit side by side
+        // on a wide track.
+        const shortLabels = [
+          {
+            id: "span-japan",
+            label: "Japan",
+            starts_on: "2026-10-11",
+            ends_on: "2026-10-25",
+            position: 50,
+          },
+          { id: "span-uk", label: "UK", starts_on: "2026-10-26", ends_on: "2026-11-02", position: 58 },
+        ];
+        assert.equal(packLegTags(shortLabels).staggerCount, 2);
+        assert.equal(packLegTags(shortLabels, { trackWidthPx: 1600 }).staggerCount, 1);
+
+        // The date line measures too: a short label with a long range must not
+        // be packed tight against a follower 4% away on a 1200px track.
+        const dateLine = [
+          {
+            id: "a",
+            label: "UK",
+            starts_on: "2026-09-28",
+            ends_on: "2026-11-30",
+            position: 50,
+          },
+          { id: "b", label: "Go", starts_on: "2026-12-01", ends_on: "2026-12-02", position: 54 },
+        ];
+        assert.equal(packLegTags(dateLine, { trackWidthPx: 1200 }).staggerCount, 2);
+
+        // Non-positive / non-finite widths fall back to the fixed gap.
+        assert.equal(
+          packLegTags(
+            [
+              { id: "a", label: "Pack out and leave Vancouver", position: 50 },
+              { id: "b", label: "Japan", position: 75 },
+            ],
+            { trackWidthPx: 0 },
+          ).staggerCount,
+          1,
+        );
+        assert.equal(
+          packLegTags(
+            [
+              { id: "a", label: "Pack out and leave Vancouver", position: 50 },
+              { id: "b", label: "Japan", position: 75 },
+            ],
+            { trackWidthPx: Number.NaN },
+          ).staggerCount,
+          1,
+        );
+
+        // Shape and degenerate input stay stable.
+        assert.deepEqual(packLegTags([]), { tags: [], staggerCount: 0 });
+        assert.deepEqual(packLegTags(null), { tags: [], staggerCount: 0 });
+        const tagged = packLegTags([
+          { id: "a", label: "A", position: 10 },
+          { id: "b", label: "B", position: 40 },
+        ]);
+        assert.deepEqual(
+          tagged.tags.map((t) => [t.id, t.stagger]),
+          [
+            ["a", 0],
+            ["b", 0],
+          ],
+        );
+        assert.equal(tagged.staggerCount, 1);
+
+        console.log("legtags gold: all assertions passed");
+    cmd: ["node", "legtags_gold_test.mjs"]
+    timeout_s: 120

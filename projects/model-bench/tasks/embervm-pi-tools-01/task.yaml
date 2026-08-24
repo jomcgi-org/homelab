@@ -1,0 +1,201 @@
+id: embervm-pi-tools-01
+version: v1
+class: code-fix
+# standard (floor): the navigation is real (a 4000-line shim) but the edit itself
+# is a pointed argv-construction change once the pi CLI contract is understood.
+tier: standard
+mode: agentic
+# Real fix 46a0966f3 (PR #5223, "fix(embervm): allow Pi web extension tools"): Pi
+# treats --tools as a complete session allowlist, so naming only the built-ins
+# blocked the trusted web-research extension's tools from ever activating. The
+# snapshot pins the fix's PARENT (buggy state) and keeps only shim.py; the tests
+# are the hidden grader and BUILD/apko packaging is irrelevant to the edit.
+source_commit: 46a0966f35cab26c4c4ee262cd4051341ac64bd9
+snapshot:
+  commit: 1ec19160f44e63d773fc60759e0a45c8a2896679
+  paths:
+    - projects/embervm/runtimes/claude/shim.py
+  strip_components: 4
+agent:
+  max_turns: 25
+prompt: |
+  shim.py is the HTTP-over-vsock shim that hosts an agentic coding agent inside a
+  Firecracker microVM. Class PiProcess spawns the "pi" coding CLI in RPC mode and
+  builds its full command line in _spawn.
+
+  The guest image ships a trusted web-research extension for pi, and every spawn
+  passes it via --extension (the PI_WEB_RESEARCH_EXTENSION constant), so the web
+  tools that extension registers should be available in every pi session. They are
+  not: sessions come up with only the four default built-in tools, and anything
+  the extension registers never activates.
+
+  The pi CLI's contract on this point: --tools is a COMPLETE tool allowlist for
+  the session, not a selector scoped to pi's built-ins. Naming built-ins there
+  prevents explicitly loaded extensions from registering their own tools at
+  session_start. With no --tools flag at all, pi enables those same four built-ins
+  by default AND lets explicitly loaded extension tools join them.
+
+  Fix the argv construction in _spawn so that pi sessions keep the four built-in
+  tools while the trusted extension's tools can also activate, keeping every other
+  flag, value, and ordering exactly as it is today. Do not change anything outside
+  the spawn argv construction, and do not disable discovery flags or any other
+  existing behaviour.
+target_files:
+  - shim.py
+verifier:
+  kind: pytest
+  args:
+    tests:
+      shim_gold_test.py: |
+        """Hidden grader for embervm-pi-tools-01: the pi spawn argv must keep the
+        trusted web-research extension loadable without allowlisting away its tools.
+
+        The fake pi CLI and manager helper are extracted verbatim from the fix
+        commit's shim_test.py; the fake CLI itself asserts the fixed contract, so
+        on the buggy snapshot the spawn dies before the RPC handshake completes.
+        """
+
+        import ast
+        import json
+        import os
+
+        import shim
+
+        FAKE_PI_CLI = r"""#!/usr/bin/env python3
+        import json
+        import os
+        import sys
+        import time
+
+        args_path = os.environ.get("FAKE_PI_ARGS")
+        if args_path:
+            with open(args_path, "a") as stream:
+                json.dump(sys.argv[1:], stream)
+                stream.write("\n")
+        assert "--provider" in sys.argv
+        assert sys.argv[sys.argv.index("--provider") + 1] == "openai-completions"
+        assert sys.argv[sys.argv.index("--model") + 1] == "qwen3.6-27b"
+        for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
+            assert flag in sys.argv
+        assert sys.argv[sys.argv.index("--extension") + 1] == "/usr/share/ember-pi/extensions/web-research.ts"
+        assert "--tools" not in sys.argv
+        assert "disposable Firecracker microVM" in sys.argv[sys.argv.index("--system-prompt") + 1]
+        rpc_path = os.environ.get("FAKE_PI_RPC")
+        state = {"sessionId": "pi-session", "model": {"id": "qwen3.6-27b"}}
+        def record(value):
+            if rpc_path:
+                with open(rpc_path, "a") as stream:
+                    json.dump(value, stream)
+                    stream.write("\n")
+        def emit(value):
+            print(json.dumps(value), flush=True)
+        def response(command, success=True, data=None):
+            value = {"type": "response", "command": command, "success": success}
+            if data is not None:
+                value["data"] = data
+            emit(value)
+        for line in sys.stdin:
+            request = json.loads(line)
+            record(request)
+            command = request["type"]
+            if command == "get_state":
+                response(command, data=state)
+            elif command == "set_model":
+                state["model"] = {"id": request["modelId"]}
+                response(command, data=state["model"])
+            elif command == "set_thinking_level":
+                response(command, data={"level": request["level"]})
+            elif command == "switch_session":
+                if os.environ.get("FAKE_PI_SWITCH") == "failed":
+                    response(command, success=False)
+                else:
+                    state["sessionId"] = os.path.basename(request["sessionPath"]).split(".")[0]
+                    response(command, data={"cancelled": os.environ.get("FAKE_PI_SWITCH") == "cancelled"})
+            elif command == "prompt":
+                response(command)
+                if os.environ.get("FAKE_PI_MODE") == "death":
+                    print("fake pi died mid-turn", file=sys.stderr, flush=True)
+                    sys.exit(17)
+                if os.environ.get("FAKE_PI_MODE") == "interruptible":
+                    emit({"type": "agent_start"})
+                    abort_request = json.loads(sys.stdin.readline())
+                    record(abort_request)
+                    response("abort")
+                    emit({"type": "agent_end", "messages": []})
+                    continue
+                if os.environ.get("FAKE_PI_SLEEP"):
+                    time.sleep(float(os.environ["FAKE_PI_SLEEP"]))
+                if os.environ.get("FAKE_PI_MODE") == "provider-error":
+                    emit({"type": "agent_end", "messages": [{"role": "assistant", "content": [],
+                          "errorMessage": "provider failed: ECONNREFUSED"}]})
+                elif os.environ.get("FAKE_PI_MODE") == "textless":
+                    emit({"type": "agent_end", "messages": []})
+                elif os.environ.get("FAKE_PI_MODE") == "telemetry":
+                    emit({"type": "message_start", "message": {"role": "assistant"}})
+                    emit({"type": "message_end", "message": {"role": "assistant",
+                          "content": [], "stopReason": "toolUse", "usage": {}}})
+                    emit({"type": "tool_execution_start", "toolCallId": "read-1",
+                          "toolName": "read", "args": {"path": "a.txt"}})
+                    emit({"type": "tool_execution_end", "toolCallId": "read-1"})
+                    emit({"type": "tool_execution_start", "toolCallId": "bash-1",
+                          "toolName": "bash", "args": {"command": "echo pi"}})
+                    emit({"type": "tool_execution_end", "toolCallId": "bash-1"})
+                    emit({"type": "message_start", "message": {"role": "assistant"}})
+                    emit({"type": "message_end", "message": {"role": "assistant",
+                          "content": [{"type": "text", "text": "Telemetry done"}],
+                          "stopReason": "stop", "usage": {"input": 5, "output": 7}}})
+                    emit({"type": "agent_end", "messages": []})
+                elif os.environ.get("FAKE_PI_MODE") == "no-tools":
+                    emit({"type": "message_start", "message": {"role": "assistant"}})
+                    emit({"type": "message_end", "message": {"role": "assistant",
+                          "content": [{"type": "text", "text": "No tools needed"}],
+                          "stopReason": "stop", "usage": {"input": 2, "output": 3}}})
+                    emit({"type": "agent_end", "messages": []})
+                else:
+                    emit({"type": "tool_start", "toolName": "bash",
+                          "args": {"command": "echo pi"}})
+                    emit({"type": "message_end", "message": {"role": "assistant",
+                          "content": [{"type": "text", "text": "Done <voice>Pi completed the work.</voice>"}],
+                          "stopReason": "stop", "usage": {"input": 5, "output": 7}}})
+                    emit({"type": "agent_end", "messages": []})
+            elif command == "abort":
+                response(command)
+                emit({"type": "agent_end", "messages": []})
+        """
+
+
+        def test_fake_pi_cli_fixture_syntax_is_valid():
+            """The embedded fake CLI stays valid Python."""
+            ast.parse(FAKE_PI_CLI)
+
+
+        def _pi_manager(tmp_path, monkeypatch):
+            workspace = tmp_path / "workspace"
+            workspace.mkdir()
+            executable = tmp_path / "fake-pi"
+            executable.write_text(FAKE_PI_CLI)
+            os.chmod(executable, 0o755)
+            home = tmp_path / "home"
+            home.mkdir()
+            monkeypatch.setenv("HOME", str(home))
+            monkeypatch.setenv("FAKE_PI_ARGS", str(tmp_path / "pi-args.jsonl"))
+            monkeypatch.setenv("FAKE_PI_RPC", str(tmp_path / "pi-rpc.jsonl"))
+            monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+            return shim.PiProcess(str(workspace), str(executable))
+
+
+        def test_pi_argv_does_not_allowlist_away_extension_tools(tmp_path, monkeypatch):
+            """Pi's built-in allowlist must not block the trusted web extension."""
+            manager = _pi_manager(tmp_path, monkeypatch)
+            manager.turn("hello", model="qwen")
+            argv = json.loads((tmp_path / "pi-args.jsonl").read_text().splitlines()[0])
+
+            assert argv[argv.index("--extension") + 1] == shim.PI_WEB_RESEARCH_EXTENSION
+            # Pi treats --tools as a COMPLETE allowlist. Naming only read,bash,
+            # edit,write silently prevented web_search and web_fetch from becoming
+            # active at session_start. With no allowlist, Pi keeps those same four
+            # default built-ins and permits the loaded extension tools to join them.
+            assert "--tools" not in argv
+            manager._close_process()
+    targets: ["shim_gold_test.py"]
+    timeout_s: 180
