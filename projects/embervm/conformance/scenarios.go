@@ -338,7 +338,7 @@ func runS2(ctx context.Context, cfg config, client *controlPlaneClient) s2Result
 		return s2Result{verdict: scenarioVerdict{Verdict: verdictFail, Detail: "idle bank wait interrupted: " + err.Error()}, liveDelay: liveDelay}
 	}
 	if _, err := waitForSessionState(ctx, client, session, bankedSessionStates); err != nil {
-		return s2Result{verdict: scenarioVerdict{Verdict: verdictVacuous, Detail: "bank never observed"}, liveDelay: liveDelay}
+		return s2Result{verdict: scenarioVerdict{Verdict: verdictVacuous, Detail: "bank never observed: " + err.Error()}, liveDelay: liveDelay}
 	}
 
 	invokePath := "/v1/sessions/" + url.PathEscape(session.ID) + "/invoke"
