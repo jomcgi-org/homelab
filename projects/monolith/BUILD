@@ -5217,6 +5217,21 @@ py_test(
     ],
 )
 
+py_test(
+    name = "chat_public_health_test",
+    srcs = ["chat_public/health_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
 # Artifact service: TestClient unit tests for the publish and read endpoints
 # (S3 faked) and the S3 helper (boto3 mocked).
 py_test(
