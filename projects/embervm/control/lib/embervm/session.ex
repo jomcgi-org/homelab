@@ -42,6 +42,16 @@ defmodule Embervm.Session do
   silently. The parked caller gets the error; every still-queued caller gets a
   `{:error, :failed}` (the router 410s them). This process then stops.
 
+  The wall-clock watchdog (#4434) is deliberately gentler, because it fires in
+  the opposite diagnostic situation: the server never enforced its deadline
+  because the exchange never completed through the channel at all (an orphaned
+  channel, #4419), so a fired watchdog is evidence about the CLIENT side of the
+  stream, not about the guest. The wedged worker is killed (its stream dies with
+  its process) and the timed-out caller gets `{:error, :invoke_timeout}`, but
+  the session stays live: queued turns dispatch normally, quiescence re-arms
+  the idle timer, and the session banks, releasing its workload-cap slot
+  without discarding guest state.
+
   ## the idle-bank timer (Task 7)
 
   A live session with ZERO in-flight and ZERO queued invokes for `idle_bank_ms`
@@ -227,13 +237,22 @@ defmodule Embervm.Session do
   end
 
   # The invoke wall-clock watchdog fired (#4434): the worker has outlived the
-  # server-enforced gRPC deadline plus margin, so nothing is going to complete it.
-  # Kill it, answer the parked caller, and fail the session exactly as a transport
-  # timeout would (the guest is in an unknown mid-request state, the failure
-  # posture above): the VM is destroyed, queued callers drain as :failed, and the
-  # process stops, releasing the session's slot. Keyed on the unique monitor ref
-  # (the SessionManager create_timeout pattern), so a stale timer for a finished
-  # worker, or a reused pid, never kills the wrong thing.
+  # server-enforced gRPC deadline plus margin, so neither completion path
+  # ({:invoke_done, ...} or DOWN) is ever coming: the stream is wedged
+  # client-side, which is exactly the case where the server never sees the
+  # deadline header (orphaned channel, #4419). Kill the worker (the wedged
+  # stream dies with its process) and answer the parked caller, but do NOT fail
+  # the session: a reported DEADLINE_EXCEEDED means the guest hung mid-request,
+  # while a fired watchdog says nothing reliable about the guest, and the issue's
+  # acceptance is that the session survive to serve its queued turns and bank.
+  # The queue drains normally through maybe_start_next, quiescence re-arms the
+  # idle timer, and the bank releases the workload-cap slot. The rejoin watcher
+  # disarms like the success branch: it exists to catch a restored volume that
+  # fails delivery, and a client-side wedge does not implicate the volume; a
+  # genuinely broken VM surfaces as an ordinary transport failure on the next
+  # turn. Keyed on the unique monitor ref (the SessionManager create_timeout
+  # pattern), so a stale timer for a finished worker, or a reused pid, never
+  # kills the wrong thing.
   def handle_info({:invoke_timeout, ref}, %{worker: {pid, ref, from, _timer}} = state) do
     Process.demonitor(ref, [:flush])
 
@@ -246,9 +265,8 @@ defmodule Embervm.Session do
 
     Process.exit(pid, :kill)
     state = %{state | worker: nil}
-    # Preserve the durable-before-observed failure ordering from #4644: append
-    # session_failed before the timed-out caller receives its error.
-    fail_and_stop(state, :invoke_timeout, from)
+    GenServer.reply(from, {:error, :invoke_timeout})
+    {:noreply, maybe_start_next(disarm_rejoin_failure(state))}
   end
 
   def handle_info({:invoke_timeout, _stale_ref}, state), do: {:noreply, state}

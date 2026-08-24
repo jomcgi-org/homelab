@@ -1805,11 +1805,13 @@ defmodule Embervm.SessionManagerTest do
     Enum.each(callers, fn pid -> Process.exit(pid, :kill) end)
   end
 
-  test "a wedged invoke worker is killed by the wall-clock watchdog and releases the slot" do
+  test "a wedged invoke worker is reaped by the wall-clock watchdog and the slot is reusable" do
     # #4434: a SessionAssign stuck in the client stream (orphaned channel, the
     # server never sees the deadline header) must not pin the session forever.
-    # The first assign sleeps forever; any later one (a new session) answers.
+    # The first assign sleeps forever; any later one answers, proving the reap
+    # leaves the session serving.
     {:ok, assigns} = Agent.start_link(fn -> 0 end)
+    {:ok, destroys} = Agent.start_link(fn -> 0 end)
 
     assign_fun = fn _ch, req ->
       case Agent.get_and_update(assigns, fn n -> {n, n + 1} end) do
@@ -1826,8 +1828,25 @@ defmodule Embervm.SessionManagerTest do
       end
     end
 
-    ctx = start_stack(assign_fun: assign_fun, invoke_watchdog_ms: 150)
-    put_session_workload(ctx, "wl-wedge", cap: 1, max_sessions: 8)
+    destroy_fun = fn _ch, _vm ->
+      Agent.update(destroys, &(&1 + 1))
+      {:ok, %{teardown_confirmed: true}}
+    end
+
+    ctx = start_stack(assign_fun: assign_fun, destroy_fun: destroy_fun, invoke_watchdog_ms: 150)
+
+    # A 1s idle bank so the test observes the slot release path the issue names:
+    # quiescence arms the timer and the session banks (a banked session holds
+    # disk only, freeing its live-VM count against the cap-1 workload).
+    put_session_workload(ctx, "wl-wedge", cap: 1,
+      session: %{
+        idle_bank_seconds: 1,
+        max_lifetime_seconds: 3600,
+        banked_ttl_seconds: 3600,
+        max_sessions: 8,
+        invoke_queue_cap: 4
+      })
+
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-wedge", "p1")
 
     # The wedged invoke plus one caller queued behind it.
@@ -1838,17 +1857,24 @@ defmodule Embervm.SessionManagerTest do
     # Nothing has fired yet: the caller is still parked (no spurious early kill).
     assert nil == Task.yield(wedged, 0)
 
-    # The watchdog fires: the parked caller gets the timeout, the queued caller
-    # drains as :failed, and the session is failed (unknown guest state).
+    # The watchdog fires: the wedged caller gets the timeout, but the queued
+    # caller is SERVED (the wedge was client-side; the guest is healthy) and the
+    # session stays running. The VM is NOT destroyed (#4434 keeps the session
+    # bankable; only a reported daemon failure destroys).
     assert {:error, :invoke_timeout} = Task.await(wedged, 2_000)
-    assert {:error, :failed} = Task.await(queued, 2_000)
+    assert {:ok, %{status_code: 200}} = Task.await(queued, 2_000)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
 
+    # Quiescence arms the idle timer: the session banks, releasing its live-VM
+    # count against the workload cap.
     assert eventually(fn ->
-             match?({:ok, %{state: :failed}}, SessionStore.get(ctx.store, created.session_id))
-           end)
+             match?({:ok, %{state: :banked}}, SessionStore.get(ctx.store, created.session_id))
+           end, 3_000)
 
-    # The slot is released: with cap 1, a fresh create on the workload is admitted
-    # and its invoke completes on the healthy assign path.
+    assert Agent.get(destroys, & &1) == 0
+
+    # Slot released: with cap 1, a fresh create on the workload is admitted and
+    # its invoke completes on the healthy assign path.
     assert {:ok, fresh} = SessionManager.create(ctx.mgr, "wl-wedge", "p1")
     assert {:ok, %{status_code: 200, body: "z"}} = SessionManager.invoke(ctx.mgr, fresh.session_id, %{body: "z"})
   end
