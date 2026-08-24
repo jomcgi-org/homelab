@@ -179,10 +179,20 @@ k8s-infra:
                 CF-Access-Client-Id: "${env:CF_ACCESS_CLIENT_ID}"
                 CF-Access-Client-Secret: "${env:CF_ACCESS_CLIENT_SECRET}"
         # Cloudflare Pages (static sites) - no auth required
+        # jomcgi.dev itself is the monolith-public frontend (not Pages), but it
+        # shares this group's no-auth posture; keep public no-auth probes here.
+        # /health is the frontend's proxy to the backend deep check (issue
+        # #4867): 503 on fatal component failure, 200 plus degraded[] when only
+        # advisory components (cd health) degrade, so an httpcheck alert on it
+        # fires on real outages and stays silent on advisory degradation.
         httpcheck/cloudflare-pages:
           targets:
             # Personal website
             - endpoint: https://jomcgi.dev
+              method: GET
+            # Public composite health surface (the signal that was 503 for 30+
+            # minutes during #4865 with nothing watching it)
+            - endpoint: https://jomcgi.dev/health
               method: GET
             # Hiking routes
             - endpoint: https://hikes.jomcgi.dev

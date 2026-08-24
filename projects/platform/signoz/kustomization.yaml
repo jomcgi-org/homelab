@@ -7,3 +7,4 @@ resources:
   - incidentio-channel.yaml
   - signoz-httpcheck-alert.yaml
   - jomcgi-dev-httpcheck-alert.yaml
+  - public-health-httpcheck-alert.yaml

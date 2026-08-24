@@ -137,12 +137,19 @@ The `thresholds` block is still needed for the SigNoz UI to render threshold con
 
 Monitor service availability via the OTel httpcheck receiver. Pattern: `max(httpcheck.status)` (space aggregation) where `http.url = '<url>'`, alert when `< 1` for 5 consecutive checks. Uses `max` space aggregation to avoid false positives from stale metric series left by previous collector pod incarnations.
 
-| Service    | URL                                             | Location                      |
-| ---------- | ----------------------------------------------- | ----------------------------- |
-| ArgoCD     | `https://private.jomcgi.dev/app/argocd/healthz` | `projects/platform/argocd/`   |
-| Longhorn   | `https://private.jomcgi.dev/app/longhorn/`      | `projects/platform/longhorn/` |
-| SigNoz     | `https://private.jomcgi.dev/app/signoz`         | `projects/platform/signoz/`   |
-| jomcgi.dev | `https://jomcgi.dev`                            | `projects/platform/signoz/`   |
+| Service          | URL                                             | Location                      |
+| ---------------- | ----------------------------------------------- | ----------------------------- |
+| ArgoCD           | `https://private.jomcgi.dev/app/argocd/healthz` | `projects/platform/argocd/`   |
+| Longhorn         | `https://private.jomcgi.dev/app/longhorn/`      | `projects/platform/longhorn/` |
+| SigNoz           | `https://private.jomcgi.dev/app/signoz`         | `projects/platform/signoz/`   |
+| jomcgi.dev       | `https://jomcgi.dev`                            | `projects/platform/signoz/`   |
+| Public /health   | `https://jomcgi.dev/health`                     | `projects/platform/signoz/`   |
+
+The public `/health` probe (`public-health-httpcheck-alert.yaml`, critical) watches the
+composite health surface rather than page reachability: the frontend proxies
+`https://jomcgi.dev/health` to the backend deep check, so a fatal component failure
+returns 503 while advisory-only degradation (cd chart lag, red CI) stays at 200 with
+`degraded[]` entries and does not trip this alert (#4867).
 
 ### ArgoCD App State Alerts
 
