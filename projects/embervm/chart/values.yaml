@@ -1355,13 +1355,10 @@ noded:
         # generated Secret name to <embervm.fullname>-store.
         itemPath: ""
 
-  # R7 (ADR embervm/011, standing decision 4): the control plane becomes the
-  # sole issuer of volume generations. true rejects a writable attach carrying
-  # blessed_generation == 0 (a legacy self-bump) FAILED_PRECONDITION; this chart
-  # deploys BOTH the control plane and noded, so setting this true here lands
-  # in the exact version the control plane starts blessing, never a mixed
-  # CP/noded state.
-  requireBlessing: true
+  # R7 (ADR embervm/011, standing decision 4): the control plane is the sole
+  # issuer of volume generations. noded rejects an unblessed writable attach
+  # (blessed_generation == 0) FAILED_PRECONDITION unconditionally; the
+  # EMBERVM_NODED_REQUIRE_BLESSING rollout gate was collapsed in #4950.
 
   # EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY. Phase 1 validates restore
   # capabilities with enforcement inert. Arm only after the control plane

@@ -362,15 +362,6 @@ containers:
             name: {{ include "embervm.store.credentialsSecretName" $ctx }}
             key: {{ $ctx.Values.noded.store.credentials.secretAccessKeyKey }}
       {{- end }}
-      # R7 (ADR embervm/011, standing decision 4): the control plane becomes
-      # the sole issuer of volume generations. false accepts a legacy
-      # blessed_generation == 0 self-bump (the default, so this PR can land
-      # both sides in one chart version without a wedge); true rejects an
-      # unblessed writable attach FAILED_PRECONDITION. The CP and noded ship
-      # from this ONE chart, so flipping this true here lands in the same
-      # version the control plane starts blessing (never a mixed state).
-      - name: EMBERVM_NODED_REQUIRE_BLESSING
-        value: {{ $ctx.Values.noded.requireBlessing | quote }}
       - name: EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY
         value: {{ $ctx.Values.noded.requireRestoreCapability | quote }}
       # Artifact-decoupling Phase 2: the node-side image identity table that

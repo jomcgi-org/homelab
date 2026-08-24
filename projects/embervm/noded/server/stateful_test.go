@@ -295,17 +295,20 @@ func newStatefulTestServer(t *testing.T) (*Server, *fakeServingNet, *fakeStatefu
 }
 
 // startFreshStateful is a helper that FRESH-boots a stateful VM (creating the
-// volume) against a ready loopback TCP endpoint.
+// volume) against a ready loopback TCP endpoint. It carries the blessed
+// generation the control plane would issue for a fresh volume (ledger 0, so 1):
+// noded rejects an unblessed writable attach unconditionally (#4950).
 func startFreshStateful(t *testing.T, s *Server, port uint32, workload string) *nodev1.StartStatefulResponse {
 	t.Helper()
 	resp, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace:           &nodev1.Trace{Workload: workload},
-		Mode:            nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
-		BootImageRef:    "img-a",
-		Port:            port,
-		VolumeSizeBytes: 1 << 20,
-		VolumeMount:     "/var/lib/postgresql/data",
-		CreateIfMissing: true,
+		Trace:             &nodev1.Trace{Workload: workload},
+		Mode:              nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
+		BootImageRef:      "img-a",
+		Port:              port,
+		VolumeSizeBytes:   1 << 20,
+		VolumeMount:       "/var/lib/postgresql/data",
+		CreateIfMissing:   true,
+		BlessedGeneration: 1,
 	})
 	if err != nil {
 		t.Fatalf("StartStateful(fresh): %v", err)
@@ -364,7 +367,7 @@ func TestStartStatefulFreshCreatesVolumeAndBoots(t *testing.T) {
 		t.Error("StartStateful returned no vm_id")
 	}
 	if resp.GetGeneration() != 1 {
-		t.Errorf("generation = %d want 1 (first FRESH attach bumps from 0)", resp.GetGeneration())
+		t.Errorf("generation = %d want 1 (the CP-issued first blessed generation)", resp.GetGeneration())
 	}
 	if resp.GetWasRelight() {
 		t.Error("a FRESH boot must not report was_relight")
@@ -441,13 +444,14 @@ func TestStartStatefulGenerationBumpedBeforeBootAndNotRolledBackOnFailure(t *tes
 	fsd.failClaim = status.Error(codes.Internal, "boom")
 
 	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace:           &nodev1.Trace{Workload: "wl-state"},
-		Mode:            nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
-		BootImageRef:    "img-a",
-		Port:            port,
-		VolumeSizeBytes: 1 << 20,
-		VolumeMount:     "/data",
-		CreateIfMissing: true,
+		Trace:             &nodev1.Trace{Workload: "wl-state"},
+		Mode:              nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
+		BootImageRef:      "img-a",
+		Port:              port,
+		VolumeSizeBytes:   1 << 20,
+		VolumeMount:       "/data",
+		CreateIfMissing:   true,
+		BlessedGeneration: 1,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("boot failure: got %v want FailedPrecondition", err)
@@ -457,7 +461,7 @@ func TestStartStatefulGenerationBumpedBeforeBootAndNotRolledBackOnFailure(t *tes
 		t.Fatalf("Generation after failed boot: %v", gerr)
 	}
 	if gen != 1 {
-		t.Errorf("generation after a failed boot = %d want 1 (bump is never rolled back)", gen)
+		t.Errorf("generation after a failed boot = %d want 1 (the record is never rolled back)", gen)
 	}
 	// The failed attach must have released the lock so a retry is possible.
 	if s.volumes.IsAttached("wl-state") {
@@ -498,14 +502,13 @@ func TestStartStatefulBlessedGenerationRecordedVerbatim(t *testing.T) {
 	}
 }
 
-// TestStartStatefulUnblessedRejectedWhenRequireBlessingSet proves that once
-// the daemon's EMBERVM_NODED_REQUIRE_BLESSING flag is on, a writable attach
-// carrying blessed_generation == 0 is refused FAILED_PRECONDITION rather than
-// falling back to a legacy self-bump.
-func TestStartStatefulUnblessedRejectedWhenRequireBlessingSet(t *testing.T) {
+// TestStartStatefulUnblessedRejected proves a writable attach carrying
+// blessed_generation == 0 is refused FAILED_PRECONDITION rather than falling
+// back to a legacy self-bump. The EMBERVM_NODED_REQUIRE_BLESSING rollout gate
+// was collapsed in #4950: this is unconditional, no config knob.
+func TestStartStatefulUnblessedRejected(t *testing.T) {
 	port := tcpHealthServer(t)
 	s, _, _ := newStatefulTestServer(t)
-	s.cfg.RequireBlessing = true
 
 	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
 		Trace:           &nodev1.Trace{Workload: "wl-state"},
@@ -517,23 +520,16 @@ func TestStartStatefulUnblessedRejectedWhenRequireBlessingSet(t *testing.T) {
 		CreateIfMissing: true,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("unblessed attach with RequireBlessing set: got %v want FailedPrecondition", err)
+		t.Fatalf("unblessed attach: got %v want FailedPrecondition", err)
 	}
-}
-
-// TestStartStatefulUnblessedAllowedWhenRequireBlessingUnset proves the legacy
-// self-bump lane still works while RequireBlessing is false (the default
-// during a rollout where the control plane has not yet started blessing).
-func TestStartStatefulUnblessedAllowedWhenRequireBlessingUnset(t *testing.T) {
-	port := tcpHealthServer(t)
-	s, _, _ := newStatefulTestServer(t)
-
-	resp := startFreshStateful(t, s, port, "wl-state")
-	if resp.GetGeneration() != 1 {
-		t.Errorf("generation = %d want 1 (legacy self-bump)", resp.GetGeneration())
+	// The refusal must be fail-closed BEFORE any ledger write: an unblessed
+	// attach never advances (or blesses) the generation.
+	gen, gerr := s.volumes.Generation("wl-state")
+	if gerr != nil {
+		t.Fatalf("Generation after refused unblessed attach: %v", gerr)
 	}
-	if s.volumes.GenerationBlessed("wl-state") {
-		t.Error("a legacy self-bumped attach must not read as blessed")
+	if gen != 0 {
+		t.Errorf("generation after refused unblessed attach = %d want 0 (no self-bump)", gen)
 	}
 }
 
@@ -562,6 +558,7 @@ func TestStartStatefulRelightMatchedGeneration(t *testing.T) {
 		RelightSnapshotRef: bankResp.GetSnapshotRef(),
 		Port:               port,
 		VolumeMount:        "/data",
+		BlessedGeneration:  2,
 	})
 	if err != nil {
 		t.Fatalf("StartStateful(relight): %v", err)
@@ -573,7 +570,7 @@ func TestStartStatefulRelightMatchedGeneration(t *testing.T) {
 		t.Errorf("cold_boot_reason = %q want empty for a matched relight", relit.GetColdBootReason())
 	}
 	if relit.GetGeneration() != 2 {
-		t.Errorf("relight generation = %d want 2 (bumped again on resume)", relit.GetGeneration())
+		t.Errorf("relight generation = %d want 2 (the CP-issued next generation, recorded on resume)", relit.GetGeneration())
 	}
 	_ = fsd
 }
@@ -600,7 +597,7 @@ func TestStartStatefulRelightGenerationMismatchFallsBackAndEvicts(t *testing.T) 
 	// COLD boot + destroy (no bank), so the bundle is now stale.
 	cold, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
 		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
-		BootImageRef: "img-a", Port: port, VolumeMount: "/data",
+		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	})
 	if err != nil {
 		t.Fatalf("cold boot to advance generation: %v", err)
@@ -618,6 +615,7 @@ func TestStartStatefulRelightGenerationMismatchFallsBackAndEvicts(t *testing.T) 
 		RelightSnapshotRef: staleRef,
 		Port:               port,
 		VolumeMount:        "/data",
+		BlessedGeneration:  3,
 	})
 	if err != nil {
 		t.Fatalf("StartStateful(relight, mismatched): %v", err)
@@ -658,6 +656,7 @@ func TestStartStatefulRelightNoBundleFallsBack(t *testing.T) {
 		RelightSnapshotRef: "ghost-ref",
 		Port:               port,
 		VolumeMount:        "/data",
+		BlessedGeneration:  2,
 	})
 	if err != nil {
 		t.Fatalf("StartStateful(relight, no bundle): %v", err)
@@ -702,10 +701,12 @@ func TestStartStatefulRelightLedgerUnreadableEvictsBundle(t *testing.T) {
 		RelightSnapshotRef: staleRef,
 		Port:               port,
 		VolumeMount:        "/data",
+		BlessedGeneration:  2,
 	})
-	// A genuinely corrupted ledger cannot be bumped even for the cold-boot
-	// fallback, so the call fails; the important assertion is what happened
-	// BEFORE that failure (the stale bundle was evicted), not the outer error.
+	// A genuinely corrupted ledger cannot be recorded even for the cold-boot
+	// fallback (RecordBlessed must read the ledger first), so the call fails;
+	// the important assertion is what happened BEFORE that failure (the stale
+	// bundle was evicted), not the outer error.
 	if err == nil {
 		t.Fatal("StartStateful against a corrupted ledger should fail (fail-closed)")
 	}
@@ -733,7 +734,7 @@ func TestStopStatefulBankEvictsPriorBundle(t *testing.T) {
 
 	cold, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
 		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
-		BootImageRef: "img-a", Port: port, VolumeMount: "/data",
+		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	})
 	if err != nil {
 		t.Fatalf("cold boot: %v", err)
@@ -925,6 +926,7 @@ func TestStatefulResolveCommit(t *testing.T) {
 	relit, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
 		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
 		BootImageRef: "img-a", RelightSnapshotRef: resp.GetSnapshotRef(), Port: port, VolumeMount: "/data",
+		BlessedGeneration: 2,
 	})
 	if err != nil {
 		t.Fatalf("relight off committed bundle: %v", err)
@@ -1169,6 +1171,7 @@ func TestStartStatefulRelightRepinsTapIP(t *testing.T) {
 	relit, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
 		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
 		BootImageRef: "img-a", RelightSnapshotRef: bankResp.GetSnapshotRef(), Port: port, VolumeMount: "/data",
+		BlessedGeneration: 2,
 	})
 	if err != nil {
 		t.Fatalf("StartStateful(relight): %v", err)

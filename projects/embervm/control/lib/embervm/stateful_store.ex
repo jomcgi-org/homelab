@@ -79,7 +79,7 @@ defmodule Embervm.StatefulStore do
   A volume is QUARANTINED when a node reports its generation has moved PAST
   the last value this control plane blessed, with `generation_blessed: false`
   on the wire (a self-bump the daemon made outside the blessing ledger, e.g. a
-  legacy noded that has not yet enabled `EMBERVM_NODED_REQUIRE_BLESSING`, or a
+  node-local activator whose blessing lease was absent or exhausted, or a
   split-brain write). `upsert_volume/3` re-derives `quarantined` in the
   blessing table on every node refresh that carries a `generation_blessed`
   fact: true when the reported generation exceeds `blessed_generation` AND the
