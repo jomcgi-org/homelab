@@ -1,6 +1,6 @@
 # EmberVM Threat Model
 
-_@ 3592d6f61_
+_@ ccaba452d_
 
 STPA-Sec evaluation of EmberVM's substrate: an adversary who deliberately
 issues or suppresses control actions, forges feedback, or sits on a
@@ -36,10 +36,12 @@ crosses one of these.
 | Operator to control plane | `kubectl` is read-only cluster-wide; Helm and ArgoCD GitOps is the only mutation path | The management API additionally authenticates callers via Kubernetes TokenReview against an allow-list |
 | Tenant to tenant | No direct channel exists | Isolation is enforced by invariant (no mutable VM or snapshot lineage ever crosses a principal), not by network segmentation between tenants sharing the same brick pool and object store |
 
-The last row is the one this document returns to most: several findings
-below are cases where the invariant is enforced by code discipline and a
-shared credential, not by a boundary a network attacker or a compromised
-component cannot cross by construction.
+The last row is the one this document returns to most. Confidentiality
+across it is now cryptographic (per-principal envelope encryption,
+armed in production), but destruction and substitution still ride a
+credential shared fleet-wide: for those verbs the invariant is enforced
+by code discipline, not by a boundary a compromised component cannot
+cross by construction.
 
 ```mermaid
 graph LR
@@ -55,7 +57,7 @@ graph LR
     subgraph cp ["Control plane"]
         F["admission, facts, op-log audit"]
     end
-    S[("Object store<br/>one shared identity, bucket-wide<br/>encryption at rest: built, off by default")]
+    S[("Object store<br/>one shared identity, bucket-wide<br/>envelope encryption: armed in prod")]
     X["External destinations"]
 
     G1 -- "vsock only" --> N
@@ -65,15 +67,17 @@ graph LR
     P -- "credential injected only for<br/>allowlisted destinations" --> X
     N -- "bearer token + ingress policy" --> F
     N -- "shared credential, bucket-wide reach" --> S
-    N -. "dial-home: self-asserted identity" .-> F
+    N -. "dial-home: bound-token identity" .-> F
 ```
 
-The picture matches STPA.md's physical view. Two edges carry this
-document's largest findings: noded's reach into the object store is one
-credential shared fleet-wide rather than scoped per principal (finding
-1, section 5), and the dashed dial-home edge is accepted from whoever
-holds the shared brick ServiceAccount with no binding to which physical
-brick is actually speaking (finding 2, section 5).
+The picture matches STPA.md's physical view. noded's reach into the
+object store is still one credential shared fleet-wide rather than
+scoped per principal, but the mutable state behind it is now enveloped
+per principal and restore requires a control-plane-issued capability
+(finding 2, section 5); the residual is write, delete, and list reach.
+The dashed dial-home edge is no longer self-asserted: registration is
+refused unless the body's `node` and `pod_uid` match the bound projected
+token's own claims (#4707, closed by #5049).
 
 ## 2. Adversaries
 
@@ -148,14 +152,14 @@ control exists).
 | --- | --- | --- | --- | --- | --- |
 | `api.admit_task` | Issue: submit a workload that references another principal's artifact ref or lineage | If accepted, cross-principal read of another tenant's state | No mutable VM or snapshot lineage ever crosses a principal (invariant 3); a principal-scoped keyspace for the shared prefix remains planned, not implemented | built (invariant) / designed (keyspace) | ADR embervm/027 open question 3, ARCHITECTURE.md section 8 |
 | `dispatcher.quota_gate` | Suppress: run up spend with no per-principal budget configured | Unbounded spend for a principal the operator never set a budget for; metering is counting, not enforcement, by design | Fails closed only once a budget is set; the reference deployment ships with none set. Cutting off a principal is an admission action (stop minting tokens, 402 at the edge), not a metering one | designed / none enforced by default | STPA "Not UCAs": "no per-principal daily budget configured" is a deliberate accepted state, not a bug |
-| `noded.artifact_verb` (indirect) | Issue: a submitted workload's artifact reference targets a lineage the principal does not own | Storage-ACL authorization is per-identity, not per-tuple; a malicious principal cannot supply the shared store credential itself, but the gap this depends on is the same one that lets a credential holder ignore lineage ownership | Requires also compromising a brick or the store credential; see the compromised-brick and object-store adversaries | shipped off (the tuple-authorized fix, #4691) | STPA `store-credential-unscoped` |
+| `noded.artifact_verb` (indirect) | Issue: a submitted workload's artifact reference targets a lineage the principal does not own | Storage-ACL authorization is per-identity, not per-tuple; a malicious principal cannot supply the shared store credential itself, but the gap this depends on is the same one that lets a credential holder ignore lineage ownership | Requires also compromising a brick or the store credential; the tuple-authorized restore capability is now armed in production, so noded refuses an enveloped artifact without one | enforced prod (#4691 rollout steps 1-3) | STPA `store-credential-unscoped` |
 
 ### A compromised node daemon or brick
 
 | Control action / feedback attacked | How | Consequence | Current control | Status | Reference |
 | --- | --- | --- | --- | --- | --- |
-| Dial-home registration | Forge: re-register an existing `(node, pod_uid)` at an address the attacker controls, using the shared ServiceAccount every brick already holds | The control plane adopts the impostor as the authoritative source for that brick's reported instance state (invariant 5) | None; re-registration is accepted unconditionally and expires the prior instance. The bound token's claims match only `(node, pod_uid)`, which the compromised ServiceAccount already satisfies | none | STPA `identity-hijack`, `dial-home.unauthorized-source`, #4707 |
-| `noded.artifact_verb` | Issue: write, evict, or substitute another principal's artifact | Since the store credential is bucket-wide and shared by every brick and the control plane, a compromised brick already holds valid signing keys for every principal's artifacts, not only its own | The gateway enforces per-identity SigV4 authentication, which stops an unsigned caller but not a caller signing with the fleet-shared identity | shipped (auth) / shipped off (per-tuple scoping, #4691) | STPA `store-credential-unscoped` |
+| Dial-home registration | Forge: re-register an existing `(node, pod_uid)` at an address the attacker controls, using the shared ServiceAccount every brick already holds | The control plane adopts the impostor as the authoritative source for that brick's reported instance state (invariant 5) | The register route refuses a body whose `pod_uid` or `node` does not match the bound projected token's own claims, a token with no pod binding, or an unset noded SA; a compromised brick can now impersonate only itself | enforced prod (#5049) | STPA `identity-hijack`, `dial-home.unauthorized-source`, #4707 (closed) |
+| `noded.artifact_verb` | Issue: write, evict, or substitute another principal's artifact | The store credential is still bucket-wide and fleet-shared, so a compromised brick can delete or overwrite any principal's artifacts; it can no longer read their plaintext (mutable state is enveloped per principal) or get a substituted artifact restored without a control-plane capability | SigV4 auth plus per-principal envelope encryption and the restore-capability gate, all armed in production; deletion and overwrite stay open until digest-verified manifests land | enforced prod (encryption, capability) / designed (digest manifests) | STPA `store-credential-unscoped`, #4691 |
 | `noded.refuse_if_silenced` | Delay: keep the dial-home or WatchNode channel alive (or fake liveness on it) to avoid tripping the silence gate | Node-local authority (activator wake, blessing-lease self-advance) continues past the intended six-hour bound | The gate is keyed off noded's own record of last live contact; a brick that can still speak on either channel is, by the gate's own definition, not silenced, so a compromised brick that keeps faking contact is not caught by this control | enforced prod (ADR embervm/037) for a genuinely partitioned brick; does not defend against a brick that fakes liveness | ADR embervm/037 |
 | Restore integrity | Issue: a compromised brick writes a substituted snapshot for a lineage it does not anchor | Vendor-mismatch stamps and base keys catch an accidental wrong-vendor or stale-digest restore, not a deliberate write by a credential holder; digest-verified manifests remain planned | Content digest verification described in ADR embervm/033 decision 3 is not yet built | designed | ADR embervm/033 decision 3 |
 
@@ -171,44 +175,54 @@ control exists).
 
 | Control action / feedback attacked | How | Consequence | Current control | Status | Reference |
 | --- | --- | --- | --- | --- | --- |
-| `s3-store` → `noded` fetched artifact bytes | Unauthorized-source: bytes restored were written by whoever held the shared credential, not necessarily the lineage's legitimate owner | Silent-incorrectness: a caller receives a restored state that may not be theirs, with no signal | SigV4 stops fully anonymous access; it does not scope the credential itself, which is one identity with bucket-wide read, write, list, and tag reach over both buckets | enforced (auth) / none (scoping) | STPA `store-credential-unscoped`, `warmth-fetch.unauthorized-source` |
-| Confidentiality of memory snapshots at rest | Read: a memory snapshot is the full process state of a principal's workload; anyone who can read the bucket can read it in plaintext | Direct disclosure of another tenant's data, credentials the workload was handling, and execution history | Per-principal envelope encryption (unique data key per artifact, wrapped by a principal-scoped KEK derived per ADR embervm/036) is built. Every enforcement flag (the KEK root, the control-plane encryption gate, the node writer, the restore-capability check) defaults false and is off in every environment today, including dev | shipped off, everywhere | ADR embervm/033, ADR embervm/036, #4691 |
-| Restore authorization | Issue: restore any artifact the credential can reach, regardless of which principal, lineage, brick, workload, generation, or lease it belongs to | A storage-ACL pass is treated as sufficient authorization | The tuple-authorized capability decided in ADR embervm/033 decision 3 (`principal, lineage, brick, workload, generation, lease`) exists as a design, not as an armed check | shipped off | ADR embervm/033 decision 3, #4691 |
+| `s3-store` → `noded` fetched artifact bytes | Unauthorized-source: bytes restored were written by whoever held the shared credential, not necessarily the lineage's legitimate owner | Silent-incorrectness: a caller receives a restored state that may not be theirs, with no signal | SigV4 stops fully anonymous access, envelope encryption makes another principal's mutable state unreadable, and the restore capability gates who can trigger a restore; the credential itself is still one identity with bucket-wide write, list, and delete reach, and restored bytes are not digest-verified | enforced (auth, encryption, capability) / designed (digest manifests) | STPA `store-credential-unscoped`, `warmth-fetch.unauthorized-source` |
+| Confidentiality of memory snapshots at rest | Read: a memory snapshot is the full process state of a principal's workload; a bucket reader used to get it in plaintext | Direct disclosure of another tenant's data, credentials the workload was handling, and execution history | Per-principal envelope encryption (unique data key per artifact, wrapped by a principal-scoped KEK derived per ADR embervm/036) is armed in production: the KEK root, the encryption gate, the node writer, and the restore-capability check are all enabled. Shared immutable bases stay plaintext and deduplicable by design; customer-managed KEK custody remains a design | enforced prod (platform custody) / designed (customer custody) | ADR embervm/033, ADR embervm/036, #4691 |
+| Restore authorization | Issue: restore any artifact the credential can reach, regardless of which principal, lineage, brick, workload, generation, or lease it belongs to | A storage-ACL pass alone no longer restores an enveloped artifact | noded refuses an enveloped artifact unless the control plane supplies a short-lived capability scoped to the full tuple (`principal, lineage, brick, workload, generation, lease`) | enforced prod | ADR embervm/033 decision 3, #4691 |
 
 ## 5. Unmitigated and partially mitigated findings
 
-Ranked by blast radius.
+Ranked by blast radius. Closed since the previous revision: dial-home
+identity hijack (that revision's finding 2) was fixed by binding
+registration to the brick's bound projected token (#4707, closed by
+#5049), and per-principal envelope encryption plus the tuple-authorized
+restore capability (the bulk of the old finding 1) are now armed in
+production.
 
-1. **The store credential is bucket-wide, not scoped per principal.**
-   Any actor holding it, a compromised brick, an insider with bucket
-   access, or a leaked credential, can read, write, or delete any
-   principal's memory snapshot, session bundle, or stateful volume
-   archive across both buckets. The built fix, per-principal envelope
-   encryption plus tuple-authorized restore, ships with every
-   enforcement flag off by default in production and in dev. Tracked in
-   #4691.
-2. **Dial-home brick identity is self-asserted.** Any actor holding the
-   ServiceAccount shared by the whole fleet can re-register an existing
-   brick's identity at an address it controls, and the control plane
-   accepts the re-registration unconditionally, treating the impostor as
-   authoritative for that brick going forward. Tracked in #4707.
-3. **Host-keyed egress credential injection authorizes by destination
+1. **Firecracker runs without the jailer.** noded execs the firecracker
+   binary directly, as root, inside a privileged pod; the only per-VM
+   containment added is a mount namespace for vsock isolation.
+   Firecracker's built-in seccomp filter is active, but a VMM escape
+   lands in a process holding `/dev/kvm`, the fleet-shared store
+   credential, and the noded bearer token: the compromised-brick
+   adversary, instantly. Section 6 assumes the Firecracker boundary
+   holds; this finding records that the deployment omits Firecracker's
+   own recommended containment around that assumption. Tracked in #5255.
+2. **The store credential is still bucket-wide for write, delete, and
+   list.** Envelope encryption and the restore capability close read and
+   restore, so the residual is destruction and substitution: any
+   credential holder can still delete or overwrite any principal's
+   artifacts, and shared immutable bases remain plaintext by design.
+   Customer-managed KEK custody is also still a design, so a platform
+   compromise that reaches the KEK derivation path still reaches every
+   platform-custody principal. Tracked in #4691.
+3. **Restored artifacts are not integrity-checked against deliberate
+   substitution.** The stamps that exist today (CPU-vendor keying, base
+   digest checks) catch accidents. The restore capability narrows who can
+   trigger a restore, but nothing digest-verifies the bytes a credential
+   holder substituted. Digest-verified manifests are described in ADR
+   embervm/033 decision 3 and not yet built. Tracked in #4691.
+4. **Host-keyed egress credential injection authorizes by destination
    only.** The proxy attaches a real credential to any request whose
    destination host is allowlisted, regardless of what the request
    actually asks that host to do, so a prompt-injected guest can shape
    the call a credential rides on. The decided direction (request-scoped
    tool mediation for at least the git credential class) is drafted in
    ADR agents/055 and not yet the default for every credential.
-4. **The internal egress allowlist is global to the shared sidecar, not
+5. **The internal egress allowlist is global to the shared sidecar, not
    scoped per workload.** Every entry added for one workload's benefit
    becomes reachable by every other egress-enabled workload. Recorded as
    an accepted, shrinking-but-not-zero cost in ADR embervm/035, still
    open.
-5. **Restored artifacts are not integrity-checked against deliberate
-   substitution.** The stamps that exist today (CPU-vendor keying, base
-   digest checks) catch accidents, not a write by whoever holds the
-   shared credential from finding 1. Digest-verified manifests are
-   described in ADR embervm/033 decision 3 and not yet built.
 6. **Quota is opt-in.** The reference deployment ships with no
    per-principal budget configured, so a malicious or runaway principal's
    spend is bounded by admission caps and concurrency, never by cost,
@@ -220,7 +234,12 @@ Ranked by blast radius.
 
 - **Kernel and hypervisor escape from Firecracker.** This document
   assumes the Firecracker boundary itself holds; Firecracker's own
-  security model is out of scope here.
+  security model is out of scope here. The assumption is load-bearing:
+  finding 1 in section 5 records that the deployment runs the VMM
+  without the jailer, so an escape is not contained (#5255).
+- **CPU side-channels between co-resident guests.** Tenants share bricks
+  by design; microarchitectural side-channels between their VMs are not
+  analyzed here. Recording an explicit posture is part of #5255.
 - **Supply chain of guest images.** Base image build pipeline, package
   provenance, and dependency compromise are not analyzed in this
   document.
