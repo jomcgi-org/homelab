@@ -18,9 +18,13 @@ specTrace:
   ttlSeconds: 86400
   sweepIntervalSeconds: 3600
 
-# Size-class brick cutover. Dev runs ONE tiny 1gi brick, pinned to node-4.
-# NEVER the masters: #4290 fills their 35 GiB scratch on any chart bump.
-# All other classes are explicitly zero. No autoscale in dev.
+# Size-class brick cutover. Dev runs ONE 2gi brick, pinned to node-4. The 1gi
+# class cannot admit sandbox-python: its 512 MiB task guest plus the 512 MiB
+# reject floor is 1024 MiB, above the class's 1014 MiB headroom. The 2gi class
+# admits that task guest alongside a 256 MiB pi session. Scratch remains under
+# noded.firecracker.nvmeRoot at /var/lib/embervm/scratch/dev, so its capacity
+# bound is unchanged. NEVER the masters: #4290 fills their 35 GiB scratch on
+# any chart bump. All desiredReplicas remain zero. No autoscale in dev.
 bricks:
   enabled: true
   # The first grouped dev roll's measured result is recorded on #4897.
@@ -41,10 +45,10 @@ bricks:
     16gi: 0
   autoscale:
     mode: observe
-  # The ONLY live brick in dev: one 1gi class, pinned to node-4. Never a master.
+  # The ONLY live brick in dev: one 2gi class, pinned to node-4. Never a master.
   nodeFloors:
     - node: node-4
-      class: 1gi
+      class: 2gi
 
 # S3 bucket split. Dev uses embervm-dev; production uses embervm.
 # Warmth GC and base retention operate on S3; separate buckets prevent
@@ -179,9 +183,9 @@ claudeRuntimeWorkload:
 # It earns its place by being the thing dev is for: this workload is the first
 # in the fleet sized at 256 MiB, and the only question that cannot be answered
 # by reading is whether a guest actually boots and reports /shim/ready in that
-# much RAM. Dev's 1gi brick has 768 MiB guest-schedulable, so one fits with
-# headroom, and its base is the ~100 MB pi image rather than the 300 MB claude
-# one that cost the first dev brick three of its four minutes.
+# much RAM. Dev's 2gi brick admits it alongside the 512 MiB sandbox-python task,
+# and its base is the ~100 MB pi image rather than the 300 MB claude one that
+# cost the first dev brick three of its four minutes.
 #
 # WHAT DEV CAN AND CANNOT PROVE HERE. Dev does not enable the egress lane
 # (egress.enabled defaults false and dev is silent on it), and a pi turn reaches

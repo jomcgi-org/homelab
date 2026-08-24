@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -22,7 +24,7 @@ func TestClassifyInvokeResponse(t *testing.T) {
 		{name: "pi no output", status: 422, body: `{"error":"pi turn produced no output: fetch failed"}`, pass: true},
 		{name: "relight failed", status: 502, body: `{"error":"session invoke failed","reason":"relight timeout"}`, pass: false},
 		{name: "stuck state", status: 409, body: `{"error":"session not ready","state":"relighting"}`, pass: false},
-		{name: "unknown success", status: 200, body: `{"result":"ok"}`, pass: false},
+		{name: "successful guest response", status: 200, body: `{"error":"session invoke failed"}`, pass: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -31,6 +33,43 @@ func TestClassifyInvokeResponse(t *testing.T) {
 				t.Fatalf("pass = %v, want %v; detail=%s", got.pass, test.pass, got.detail)
 			}
 		})
+	}
+}
+
+func TestWaitForReadyWaitsForDispatchableReadyTaskBase(t *testing.T) {
+	tokenFile := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var nodeRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/nodes":
+			if r.Header.Get("Authorization") != "Bearer test-token" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if nodeRequests.Add(1) == 1 {
+				_, _ = w.Write([]byte(`{"nodes":[{"dispatchable":true,"draining":false,"facts":{"workloads":{"sandbox-python":{"base_state":"BASE_BUILD_STATE_BUILDING","snapshot_ref":""}}}}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"nodes":[{"dispatchable":true,"draining":false,"facts":{"workloads":{"sandbox-python":{"base_state":"BASE_BUILD_STATE_READY","snapshot_ref":"base-1"}}}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := waitForReady(ctx, client, "sandbox-python"); err != nil {
+		t.Fatalf("waitForReady: %v", err)
+	}
+	if got := nodeRequests.Load(); got < 2 {
+		t.Fatalf("node requests = %d, want at least 2", got)
 	}
 }
 
@@ -52,7 +91,13 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"exit_code":0,"stdout":"conformance ok\n"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/nodes":
+			_, _ = w.Write([]byte(`{"nodes":[{"facts":{"live_vms":0,"workloads":{"sandbox-python":{}}}}]}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/conformance":
+			if r.URL.Query().Get("since_ts_ms") != "1000" {
+				http.Error(w, "missing suite start", http.StatusBadRequest)
+				return
+			}
 			_, _ = w.Write([]byte(`{"enabled":true,"verdicts":[{"invariant":"no_double_assign","verdict":"pass","coverage":1},{"invariant":"eventually_dispatched","verdict":"pass","coverage":2},{"invariant":"inventory_reconciled","verdict":"pass","coverage":3},{"invariant":"destroy_intent_precedes_record","verdict":"pass","coverage":1}]}`))
 		default:
 			http.NotFound(w, r)
@@ -65,7 +110,32 @@ func TestTaskAndInvariantScenariosAgainstFakeControlPlane(t *testing.T) {
 	if got := runS1(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
 		t.Fatalf("S1 = %#v", got)
 	}
-	if got := runS4(context.Background(), cfg, client); got.Verdict != verdictPass {
+	if got := runS4(context.Background(), cfg, client, time.Unix(1, 0)); got.Verdict != verdictPass {
+		t.Fatalf("S4 = %#v", got)
+	}
+}
+
+func TestRunS4SendsSuiteStart(t *testing.T) {
+	tokenFile := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	suiteStarted := time.Date(2026, time.August, 23, 12, 34, 56, 789000000, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/conformance" {
+			http.NotFound(w, r)
+			return
+		}
+		if got, want := r.URL.Query().Get("since_ts_ms"), fmt.Sprintf("%d", suiteStarted.UnixMilli()); got != want {
+			t.Errorf("since_ts_ms = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{"enabled":true,"verdicts":[{"invariant":"covered","verdict":"pass","coverage":1}]}`))
+	}))
+	defer server.Close()
+
+	cfg := config{baseURL: server.URL, tokenFile: tokenFile, minPassingInvariants: 1}
+	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+	if got := runS4(context.Background(), cfg, client, suiteStarted); got.Verdict != verdictPass {
 		t.Fatalf("S4 = %#v", got)
 	}
 }

@@ -325,6 +325,8 @@ spec:
         - uses: http
           as: conformance
           retry:
+            # Kargo default 1 fails the Promotion on transient dial errors; 3 allows retries for network hiccups. 404/stale chart_version keep polling regardless.
+            errorThreshold: 3
             timeout: {{ $stage.verdictTimeout | default "10m0s" | quote }}
           config:
             method: GET

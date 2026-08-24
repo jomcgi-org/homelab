@@ -54,6 +54,27 @@ type apiResponse struct {
 	body   []byte
 }
 
+type nodesView struct {
+	Nodes []nodeView `json:"nodes"`
+}
+
+type nodeView struct {
+	Dispatchable bool       `json:"dispatchable"`
+	Draining     bool       `json:"draining"`
+	Facts        *nodeFacts `json:"facts"`
+}
+
+type nodeFacts struct {
+	LiveVMs        *int                    `json:"live_vms"`
+	MemHeadroomMiB *int                    `json:"mem_headroom_mib"`
+	Workloads      map[string]workloadView `json:"workloads"`
+}
+
+type workloadView struct {
+	BaseState   string `json:"base_state"`
+	SnapshotRef string `json:"snapshot_ref"`
+}
+
 type sessionIdentity struct {
 	ID    string
 	Token string
@@ -108,7 +129,7 @@ func httpErrorDetail(method, path string, response apiResponse) string {
 	return fmt.Sprintf("%s %s status=%d body=%q", method, path, response.status, string(prefix))
 }
 
-func waitForReady(ctx context.Context, client *controlPlaneClient) error {
+func waitForReady(ctx context.Context, client *controlPlaneClient, taskWorkload string) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
@@ -125,15 +146,16 @@ func waitForReady(ctx context.Context, client *controlPlaneClient) error {
 			health.Body.Close()
 		}
 		if healthOK {
-			response, err := client.request(ctx, http.MethodGet, "/v1/nodes", nil, "", nil)
-			if err == nil && response.status == http.StatusOK {
-				var view struct {
-					Nodes []json.RawMessage `json:"nodes"`
-				}
-				// router.ex exposes health, dispatchable, connected, and draining, but
-				// no field named ready. Per the Phase 1 contract, any listed node is ready.
-				if json.Unmarshal(response.body, &view) == nil && len(view.Nodes) > 0 {
-					return nil
+			view, err := getNodes(ctx, client)
+			if err == nil {
+				for _, node := range view.Nodes {
+					if node.Facts == nil {
+						continue
+					}
+					workload, ok := node.Facts.Workloads[taskWorkload]
+					if node.Dispatchable && !node.Draining && ok && workload.BaseState == "BASE_BUILD_STATE_READY" && workload.SnapshotRef != "" {
+						return nil
+					}
 				}
 			}
 		}
@@ -170,7 +192,7 @@ func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, s
 	logScenario(s3)
 
 	s4 := runBudgeted(ctx, "S4", cfg.budgets["S4"], func(scenarioCtx context.Context) scenarioVerdict {
-		return runS4(scenarioCtx, cfg, client)
+		return runS4(scenarioCtx, cfg, client, started)
 	})
 	logScenario(s4)
 	return []scenarioVerdict{s1, s2, s3, s4}
@@ -219,7 +241,11 @@ func runS1(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 	if guest.ExitCode != 0 || !strings.Contains(guest.Stdout, "conformance ok") {
 		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("guest exit_code=%d stdout=%q", guest.ExitCode, truncate(guest.Stdout, maxErrorBody))}
 	}
-	return scenarioVerdict{Verdict: verdictPass, Detail: "guest exited 0 and printed conformance ok"}
+	reapDelay, finalLiveVMs, err := waitForWorkloadVMsZero(ctx, client, cfg.taskWorkload)
+	if err != nil {
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("task guest was not reaped; final live VM count=%d: %v", finalLiveVMs, err)}
+	}
+	return scenarioVerdict{Verdict: verdictPass, Detail: fmt.Sprintf("guest exited 0 and printed conformance ok; VM reap observed in %s", reapDelay.Round(time.Millisecond))}
 }
 
 func createSession(ctx context.Context, cfg config, client *controlPlaneClient) (sessionIdentity, string, error) {
@@ -294,7 +320,7 @@ func runS2(ctx context.Context, cfg config, client *controlPlaneClient) s2Result
 	cleanupNeeded := true
 	defer func() {
 		if cleanupNeeded {
-			cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = destroySession(cleanupCtx, client, session)
 		}
@@ -345,6 +371,9 @@ type invokeClassification struct {
 }
 
 func classifyInvokeResponse(status int, body []byte) invokeClassification {
+	if status >= 200 && status < 300 {
+		return invokeClassification{pass: true, detail: fmt.Sprintf("relight completed; guest answered with status=%d", status)}
+	}
 	text := strings.ToLower(string(body))
 	sessionFailures := []string{"session invoke failed", "session not ready", "session gone", "relight", "wake-rate", "invalid session token"}
 	for _, marker := range sessionFailures {
@@ -402,14 +431,123 @@ func waitForSessionGone(ctx context.Context, client *controlPlaneClient, session
 	}
 }
 
+func getNodes(ctx context.Context, client *controlPlaneClient) (nodesView, error) {
+	response, err := client.request(ctx, http.MethodGet, "/v1/nodes", nil, "", nil)
+	if err != nil {
+		return nodesView{}, fmt.Errorf("GET /v1/nodes: %w", err)
+	}
+	if response.status != http.StatusOK {
+		return nodesView{}, fmt.Errorf("%s", httpErrorDetail(http.MethodGet, "/v1/nodes", response))
+	}
+	var view nodesView
+	if err := json.Unmarshal(response.body, &view); err != nil {
+		return nodesView{}, fmt.Errorf("GET /v1/nodes invalid response: %w", err)
+	}
+	return view, nil
+}
+
+func workloadLiveVMCount(view nodesView, workload string) (int, bool) {
+	// The router exposes live_vms at node scope, not inside each workload fact.
+	// Limit the aggregate to nodes that advertise the requested workload.
+	total := 0
+	observed := false
+	for _, node := range view.Nodes {
+		if node.Facts == nil || node.Facts.LiveVMs == nil {
+			continue
+		}
+		if _, ok := node.Facts.Workloads[workload]; !ok {
+			continue
+		}
+		observed = true
+		total += *node.Facts.LiveVMs
+	}
+	return total, observed
+}
+
+func workloadHeadroomMiB(view nodesView, workload string) (int, bool) {
+	total := 0
+	observed := false
+	for _, node := range view.Nodes {
+		if node.Facts == nil || node.Facts.MemHeadroomMiB == nil {
+			continue
+		}
+		if _, ok := node.Facts.Workloads[workload]; !ok {
+			continue
+		}
+		observed = true
+		total += *node.Facts.MemHeadroomMiB
+	}
+	return total, observed
+}
+
+func waitForWorkloadVMsZero(ctx context.Context, client *controlPlaneClient, workload string) (time.Duration, int, error) {
+	started := time.Now()
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	lastLiveVMs := -1
+	for {
+		if view, err := getNodes(ctx, client); err == nil {
+			if liveVMs, observed := workloadLiveVMCount(view, workload); observed {
+				lastLiveVMs = liveVMs
+				if liveVMs == 0 {
+					return time.Since(started), liveVMs, nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return time.Since(started), lastLiveVMs, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForWorkloadCapacityRecovery(ctx context.Context, client *controlPlaneClient, workload string) (time.Duration, int, error) {
+	started := time.Now()
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	initialLiveVMs := -1
+	initialHeadroomMiB := -1
+	lastLiveVMs := -1
+	for {
+		if view, err := getNodes(ctx, client); err == nil {
+			if liveVMs, observed := workloadLiveVMCount(view, workload); observed {
+				lastLiveVMs = liveVMs
+				if initialLiveVMs < 0 {
+					initialLiveVMs = liveVMs
+				}
+				if liveVMs == 0 || liveVMs < initialLiveVMs {
+					return time.Since(started), liveVMs, nil
+				}
+			}
+			if headroomMiB, observed := workloadHeadroomMiB(view, workload); observed {
+				if initialHeadroomMiB < 0 {
+					initialHeadroomMiB = headroomMiB
+				} else if headroomMiB > initialHeadroomMiB {
+					return time.Since(started), lastLiveVMs, nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return time.Since(started), lastLiveVMs, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func runS3(ctx context.Context, cfg config, client *controlPlaneClient, baseline time.Duration) scenarioVerdict {
+	recoveryDelay, finalLiveVMs, err := waitForWorkloadCapacityRecovery(ctx, client, cfg.sessionWorkload)
+	if err != nil {
+		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("session teardown capacity did not recover; last observed live VM count=%d: %v", finalLiveVMs, err)}
+	}
 	started := time.Now()
 	session, initialState, err := createSession(ctx, cfg, client)
 	if err != nil {
 		return scenarioVerdict{Verdict: verdictFail, Detail: err.Error()}
 	}
 	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = destroySession(cleanupCtx, client, session)
 	}()
@@ -419,7 +557,7 @@ func runS3(ctx context.Context, cfg config, client *controlPlaneClient, baseline
 		}
 	}
 	latency := time.Since(started)
-	detail := fmt.Sprintf("second session live in %s (baseline %s)", latency.Round(time.Millisecond), baseline.Round(time.Millisecond))
+	detail := fmt.Sprintf("teardown capacity recovered in %s with live VM count=%d; second session live in %s (baseline %s)", recoveryDelay.Round(time.Millisecond), finalLiveVMs, latency.Round(time.Millisecond), baseline.Round(time.Millisecond))
 	if latency > baseline*2 {
 		return scenarioVerdict{Verdict: verdictFail, Detail: detail}
 	}
@@ -432,8 +570,9 @@ type invariantVerdict struct {
 	Coverage  float64 `json:"coverage"`
 }
 
-func runS4(ctx context.Context, cfg config, client *controlPlaneClient) scenarioVerdict {
-	path := "/v1/conformance"
+func runS4(ctx context.Context, cfg config, client *controlPlaneClient, suiteStarted time.Time) scenarioVerdict {
+	query := url.Values{"since_ts_ms": []string{fmt.Sprintf("%d", suiteStarted.UnixMilli())}}
+	path := "/v1/conformance?" + query.Encode()
 	response, err := client.request(ctx, http.MethodGet, path, nil, "", nil)
 	if err != nil {
 		return scenarioVerdict{Verdict: verdictFail, Detail: fmt.Sprintf("GET %s: %v", path, err)}
