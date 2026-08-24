@@ -1375,6 +1375,75 @@ func TestBuildBaseServingRegistersImage(t *testing.T) {
 		if resp.GetServingImageRef() != got.baseKey {
 			t.Errorf("serving_image_ref = %q, want %q", resp.GetServingImageRef(), got.baseKey)
 		}
+		// The registration must be DURABLE (#5221): the image-lane branch writes a
+		// runtime-ref marker (no handler.zip) the startup rescan can re-seed.
+		scan := fsd.ScanServingHandlerArtifacts()
+		if len(scan) != 1 {
+			t.Fatalf("rescan entries = %d, want 1", len(scan))
+		}
+		if scan[0].BaseKey != got.baseKey || scan[0].Path != "" || scan[0].RuntimeImageRef != "runtime-python:1" || scan[0].SizeBytes != 0 {
+			t.Errorf("rescanned marker mismatch: %+v", scan[0])
+		}
+	})
+
+	t.Run("image-lane registration survives a daemon restart", func(t *testing.T) {
+		s, _, fsd, _ := newServer()
+		resp, err := s.BuildBase(ctx, &nodev1.BuildBaseRequest{
+			Trace:            &nodev1.Trace{Workload: "serving-image-lane"},
+			ImageRef:         "runtime-python:1",
+			WorkloadRevision: "r1",
+			ReadyPath:        "/shim/ready",
+			Resources:        &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+			Serving:          true,
+		})
+		if err != nil {
+			t.Fatalf("BuildBase serving image lane: %v", err)
+		}
+		// A restarted daemon re-seeds its inventory from the driver's disk rescan;
+		// the marker must come back as a wakeable handler-less entry keyed by
+		// workload (recovered from the base-key prefix), not vanish like an
+		// in-memory-only registration.
+		restarted := New(Options{
+			Config: config.Config{
+				Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+				BootReadyTimeout:    time.Second,
+				ArchiveFetchTimeout: 30 * time.Second,
+				ArchiveMaxBytes:     512 << 20,
+				Images:              map[string]config.Image{"runtime-python:1": {RootfsPath: "/runtime.ext4"}},
+			},
+			Driver:         &fakeDriver{},
+			ServingDriver:  fsd,
+			Transport:      &fakeTransport{},
+			NewBuildDriver: func(BuildDriverSpec) BuildDriver { return &fakeDriver{} },
+			Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		})
+		images := restarted.servingImage.snapshot()
+		if len(images) != 1 {
+			t.Fatalf("post-restart inventory entries = %d, want 1", len(images))
+		}
+		got := images[0]
+		if got.workload != "serving-image-lane" || got.baseKey != resp.GetSnapshotRef() || got.handlerPath != "" || got.runtimeImageRef != "runtime-python:1" {
+			t.Errorf("post-restart inventory mismatch: %+v", got)
+		}
+	})
+
+	t.Run("image marker write failure fails build", func(t *testing.T) {
+		s, _, fsd, _ := newServer()
+		fsd.failHandlerWrite = context.Canceled
+		_, err := s.BuildBase(ctx, &nodev1.BuildBaseRequest{
+			Trace:            &nodev1.Trace{Workload: "serving-image-lane"},
+			ImageRef:         "runtime-python:1",
+			WorkloadRevision: "r1",
+			ReadyPath:        "/shim/ready",
+			Resources:        &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+			Serving:          true,
+		})
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("marker write failure code = %v, want FailedPrecondition", status.Code(err))
+		}
+		if got := len(s.servingImage.snapshot()); got != 0 {
+			t.Errorf("serving image inventory entries = %d, want 0 after failed marker write", got)
+		}
 	})
 
 	t.Run("zip artifact write failure fails build", func(t *testing.T) {

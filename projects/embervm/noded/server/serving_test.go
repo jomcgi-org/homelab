@@ -201,6 +201,19 @@ func (f *fakeServingDriver) WriteServingHandlerArtifact(baseKey, runtimeImageRef
 	return path, int64(len(zip)), nil
 }
 
+// WriteServingImageMarker records ONLY the runtime ref for an image-lane base key
+// (no handler artifact), mirroring the real driver's runtime.ref-only sidecar.
+func (f *fakeServingDriver) WriteServingImageMarker(baseKey, runtimeImageRef string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failHandlerWrite != nil {
+		return f.failHandlerWrite
+	}
+	delete(f.handlers, baseKey)
+	f.handlerRuntimeRefs[baseKey] = runtimeImageRef
+	return nil
+}
+
 func (f *fakeServingDriver) handlerArtifactWriteCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -215,13 +228,20 @@ func (f *fakeServingDriver) ServingHandlerArtifactPath(baseKey string) (string, 
 	return p, ok
 }
 
-// ScanServingHandlerArtifacts returns the recorded artifacts as a startup-rescan would.
+// ScanServingHandlerArtifacts returns the recorded artifacts as a startup-rescan
+// would: zip-lane bases carry their artifact path; image-lane markers (runtime ref
+// with no handler zip) come back as handler-less entries.
 func (f *fakeServingDriver) ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifact {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]substrate.ServingHandlerArtifact, 0, len(f.handlers))
+	out := make([]substrate.ServingHandlerArtifact, 0, len(f.handlers)+len(f.handlerRuntimeRefs))
 	for k, p := range f.handlers {
 		out = append(out, substrate.ServingHandlerArtifact{BaseKey: k, Path: p, RuntimeImageRef: f.handlerRuntimeRefs[k]})
+	}
+	for k, r := range f.handlerRuntimeRefs {
+		if _, hasZip := f.handlers[k]; !hasZip {
+			out = append(out, substrate.ServingHandlerArtifact{BaseKey: k, Path: "", RuntimeImageRef: r})
+		}
 	}
 	return out
 }

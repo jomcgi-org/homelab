@@ -617,7 +617,10 @@ func (d *Driver) baseMemfile(key string) string  { return filepath.Join(d.baseDi
 // the memory snapshot. handler.zip is the verified zip bytes noded holds, attached as a
 // read-only drive on a serving cold boot; runtime.ref records the runtime image whose
 // rootfs is drive 1 so a startup rescan can rebuild the serving-images inventory without
-// a control-plane round-trip.
+// a control-plane round-trip. An IMAGE-lane serving base (ADR embervm/038) has no
+// handler.zip: its runtime.ref alone marks the bundle as serving, and the rescan
+// re-seeds it as a handler-less inventory entry so the registration survives a daemon
+// restart (#5221).
 func (d *Driver) baseHandlerZip(key string) string {
 	return filepath.Join(d.baseDir(key), "handler.zip")
 }
@@ -675,6 +678,21 @@ func (d *Driver) WriteServingHandlerArtifact(baseKey, runtimeImageRef string, zi
 	return path, int64(len(zip)), nil
 }
 
+// WriteServingImageMarker persists ONLY the runtime-ref sidecar for an IMAGE-lane
+// serving base (ADR embervm/038): the bundle has no handler.zip, so the marker is
+// what makes the serving-images registration durable. The startup rescan treats
+// bases/<key>/runtime.ref without handler.zip as a handler-less inventory entry,
+// so the entry survives a daemon restart (#5221), exactly like its zip-lane twin.
+func (d *Driver) WriteServingImageMarker(baseKey, runtimeImageRef string) error {
+	if err := os.MkdirAll(d.baseDir(baseKey), 0o750); err != nil {
+		return fmt.Errorf("driver: mkdir base bundle for serving marker: %w", err)
+	}
+	if err := os.WriteFile(d.baseHandlerRuntimeRef(baseKey), []byte(runtimeImageRef), 0o640); err != nil {
+		return fmt.Errorf("driver: write serving image runtime ref sidecar: %w", err)
+	}
+	return nil
+}
+
 // ServingHandlerArtifactPath returns a base's handler-artifact path and whether it
 // exists on disk.
 func (d *Driver) ServingHandlerArtifactPath(baseKey string) (string, bool) {
@@ -685,13 +703,16 @@ func (d *Driver) ServingHandlerArtifactPath(baseKey string) (string, bool) {
 	return path, true
 }
 
-// ScanServingHandlerArtifacts globs bases/*/handler.zip on startup and returns each
-// discovered artifact with its base key, path, size, and runtime ref (from the
+// ScanServingHandlerArtifacts globs the base bundles on startup and returns each
+// discovered serving entry with its base key, path, size, and runtime ref (from the
 // runtime.ref sidecar), so the daemon re-seeds its serving-images inventory after a
-// restart. A base dir with a memory snapshot but no handler.zip (a task/session-only
-// base) is skipped; a handler.zip without a readable sidecar is skipped with no error
-// (it will be rebuilt on the next BuildBase), keeping the rescan best-effort like the
-// banked-snapshot rescan.
+// restart. Two shapes come back: a ZIP-lane artifact (handler.zip + runtime.ref,
+// Path set, SizeBytes exact) and an IMAGE-lane marker (runtime.ref alone per ADR
+// embervm/038, Path "" and SizeBytes 0; #5221). A bundle dir with neither file (a
+// task/session-only base) is skipped; either file without its counterpart is
+// handled: zip-without-ref and ref-without-zip each yield their shape above. A
+// malformed sidecar is skipped with no error (it will be rebuilt on the next
+// BuildBase), keeping the rescan best-effort like the banked-snapshot rescan.
 func (d *Driver) ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifact {
 	basesDir := filepath.Join(d.cfg.SnapshotRoot, "bases")
 	entries, err := os.ReadDir(basesDir)
@@ -705,13 +726,23 @@ func (d *Driver) ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifac
 		}
 		baseKey := e.Name()
 		zipPath := d.baseHandlerZip(baseKey)
-		fi, err := os.Stat(zipPath)
-		if err != nil {
-			continue // not a serving base (no handler artifact)
-		}
 		runtimeRef, rerr := os.ReadFile(d.baseHandlerRuntimeRef(baseKey))
 		if rerr != nil {
-			continue // artifact without a runtime sidecar: skip, BuildBase rebuilds it
+			continue // not a serving base (no runtime sidecar): skip, BuildBase rebuilds it
+		}
+		fi, err := os.Stat(zipPath)
+		if err != nil {
+			// runtime.ref without handler.zip: an IMAGE-lane serving base
+			// (ADR embervm/038). Re-seed it as a HANDLER-LESS inventory entry:
+			// Path "" and SizeBytes 0 tell startServingFresh to boot the image
+			// entrypoint with no artifact drive.
+			out = append(out, substrate.ServingHandlerArtifact{
+				BaseKey:         baseKey,
+				Path:            "",
+				RuntimeImageRef: strings.TrimSpace(string(runtimeRef)),
+				SizeBytes:       0,
+			})
+			continue
 		}
 		// Exact zip length from the sidecar (the on-disk file is sector-padded, so
 		// its size is >= the real zip; the guest must read only the payload). Fall

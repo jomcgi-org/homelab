@@ -1468,6 +1468,35 @@ func TestWriteAndScanServingHandlerArtifact(t *testing.T) {
 	}
 }
 
+// TestWriteAndScanServingImageMarker proves the IMAGE-lane durability shape
+// (#5221): WriteServingImageMarker persists ONLY the runtime-ref sidecar (no
+// handler.zip), and the startup rescan re-discovers the base as a HANDLER-LESS
+// inventory entry (Path "", SizeBytes 0) whose fresh boot runs the image
+// entrypoint with no artifact drive (ADR embervm/038). A bundle with neither file
+// stays invisible to the rescan.
+func TestWriteAndScanServingImageMarker(t *testing.T) {
+	d := testDriver(t)
+	if err := d.WriteServingImageMarker("ping__abc", "sha256:439160ce"); err != nil {
+		t.Fatalf("WriteServingImageMarker: %v", err)
+	}
+	// The marker must be runtime.ref alone: no handler.zip may exist beside it.
+	if _, err := os.Stat(d.baseHandlerZip("ping__abc")); !os.IsNotExist(err) {
+		t.Fatalf("handler.zip must not exist for an image-lane marker, stat err = %v", err)
+	}
+	// A task/session-only bundle dir (no serving files at all) stays skipped.
+	if err := os.MkdirAll(filepath.Join(d.cfg.SnapshotRoot, "bases", "task__xyz"), 0o750); err != nil {
+		t.Fatalf("mkdir task bundle: %v", err)
+	}
+	got := d.ScanServingHandlerArtifacts()
+	if len(got) != 1 {
+		t.Fatalf("rescan found %d entries want 1 (marker yes, bare dir no)", len(got))
+	}
+	a := got[0]
+	if a.BaseKey != "ping__abc" || a.Path != "" || a.RuntimeImageRef != "sha256:439160ce" || a.SizeBytes != 0 {
+		t.Fatalf("rescanned marker mismatch: %+v", a)
+	}
+}
+
 // TestServingSnapshotRoundTrip banks a serving VM (writing the pinned-IP sidecar),
 // reads the pin back, restores from the bundle, and evicts it, mirroring the session
 // round-trip test but asserting the D-R3.4.1 IP pin is persisted and recovered.

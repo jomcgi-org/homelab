@@ -164,23 +164,28 @@ type SnapshotRef struct {
 	Base bool
 }
 
-// ServingHandlerArtifact is one discovered cold-boot handler artifact on disk (a
-// serving base's handler.zip plus its runtime-ref sidecar), returned by the driver's
-// startup rescan so the server re-seeds its serving-images inventory after a restart
-// (D-R3.11.2). It sits in substrate because both the driver (which owns the on-disk
-// base-bundle layout it globs) and the server (which consumes the rescan through the
-// servingDriver seam) name it, and neither may import the other.
+// ServingHandlerArtifact is one discovered serving-images entry on disk, returned
+// by the driver's startup rescan so the server re-seeds its serving-images
+// inventory after a restart (D-R3.11.2). It sits in substrate because both the
+// driver (which owns the on-disk base-bundle layout it globs) and the server
+// (which consumes the rescan through the servingDriver seam) name it, and neither
+// may import the other. Two shapes: a ZIP-lane handler artifact (handler.zip plus
+// its runtime-ref sidecar; Path set, SizeBytes exact) and an IMAGE-lane marker
+// (runtime.ref alone per ADR embervm/038; Path "" and SizeBytes 0, a HANDLER-LESS
+// entry whose fresh boot runs the image entrypoint with no artifact drive).
 type ServingHandlerArtifact struct {
 	// BaseKey is the serving base key (== the serving image ref the control plane
 	// places on), recovered from the bundle dir name.
 	BaseKey string
-	// Path is the host path of the handler.zip artifact (the cold-boot drive 2).
+	// Path is the host path of the handler.zip artifact (the cold-boot drive 2),
+	// or "" for an IMAGE-lane marker entry (no artifact drive exists).
 	Path string
 	// RuntimeImageRef is the runtime image whose rootfs is drive 1, read from the
 	// runtime.ref sidecar the write records so the rescan needs no control-plane call.
 	RuntimeImageRef string
 	// SizeBytes is the exact zip length (the EOCD-padding defence), read from the
-	// artifact file so the guest reads only the payload, not the block padding.
+	// artifact file so the guest reads only the payload, not the block padding;
+	// always 0 for an IMAGE-lane marker entry.
 	SizeBytes int64
 }
 
