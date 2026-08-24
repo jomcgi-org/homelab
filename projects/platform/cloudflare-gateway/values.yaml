@@ -74,12 +74,6 @@ tunnel:
   protocol: ""
   noAutoupdate: true
 
-  # Routes WARP-enrolled clients into the LAN ranges added under the tunnel's
-  # Private Network config in Zero Trust. Off by default; prod turns it on for
-  # kubectl access to the k3s apiserver from outside the LAN.
-  warpRouting:
-    enabled: false
-
   secret:
     type: onepassword
     onepassword:
