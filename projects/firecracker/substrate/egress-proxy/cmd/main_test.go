@@ -363,3 +363,117 @@ func TestMaxConnsFromEnv(t *testing.T) {
 		})
 	}
 }
+
+// echoUpstream accepts one connection and echoes every byte back until the
+// peer hangs up, standing in for the git-mirror sidecar's loopback listener.
+func echoUpstream(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				_, _ = io.Copy(conn, conn)
+				_ = conn.Close()
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// driveHandle writes input into one end of a real TCP connection handled by
+// p.handle, half-closes so the tunnels see EOF, and returns everything that
+// comes back before the connection closes. A real socket rather than net.Pipe
+// because the pump under test relies on a genuine half-close.
+func driveHandle(t *testing.T, p *proxy, input string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	client, dialErr := net.Dial("tcp", ln.Addr().String())
+	if dialErr != nil {
+		t.Fatal(dialErr)
+	}
+	defer client.Close()
+
+	serverConn, acceptErr := ln.Accept()
+	if acceptErr != nil {
+		t.Fatal(acceptErr)
+	}
+	go p.handle(serverConn)
+
+	if _, err := io.WriteString(client, input); err != nil {
+		t.Fatal(err)
+	}
+	// No half-close here: the first-direction-wins pump would tear down the
+	// response mid-flight, which is exactly the truncation real clients avoid
+	// by keeping their side open until the response ends. A read deadline
+	// bounds the wait instead.
+	if err := client.SetReadDeadline(time.Now().Add(1500 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	buf := make([]byte, 512)
+	for {
+		n, err := client.Read(buf)
+		if n > 0 {
+			got.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	_ = serverConn.Close()
+	return got.String()
+}
+
+func TestMirrorReservedHostTunnelsToLocalSidecar(t *testing.T) {
+	addr := echoUpstream(t)
+	p := &proxy{
+		mirrorAddr: addr,
+		lookupIP: func(string) ([]net.IP, error) {
+			// Must never be consulted: the reserved host is answered before
+			// routing, not resolved.
+			t.Error("lookupIP called for reserved mirror host")
+			return nil, net.UnknownNetworkError("unreachable")
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	for _, preamble := range []string{
+		"git-mirror.egress.internal:9419\n",
+		"GIT-MIRROR.EGRESS.INTERNAL:80\n",
+	} {
+		got := driveHandle(t, p, preamble+"GET /owner/repo.git/info/refs HTTP/1.1\r\n\r\n")
+		if !strings.Contains(got, "GET /owner/repo.git/info/refs") {
+			t.Errorf("preamble %q: mirrored payload = %q, want the echoed request", preamble, got)
+		}
+	}
+}
+
+func TestMirrorLaneFailClosedWhenUnset(t *testing.T) {
+	p := &proxy{
+		// No mirrorAddr: the reserved host must fall through to routing,
+		// where its name cannot resolve, and be denied (connection closed
+		// with nothing dialled).
+		lookupIP: func(host string) ([]net.IP, error) {
+			return nil, &net.DNSError{Name: host, Err: "no such host"}
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	upstreamAddr := echoUpstream(t)
+	_ = upstreamAddr // nothing may dial it; the deny path is local
+	got := driveHandle(t, p, "git-mirror.egress.internal:9419\nGET / HTTP/1.1\r\n\r\n")
+	if got != "" {
+		t.Errorf("disabled mirror lane answered %q, want silence + close", got)
+	}
+}

@@ -649,6 +649,25 @@ egress:
     name: embervm-embervm-egress
     itemPath: "vaults/k8s-homelab/items/embervm-agent-secrets"
 
+# Node-local git mirror (#4473): serve the mirrored repos over git smart http
+# from a loopback sidecar in every noded pod, and point session hydration at it
+# so the clone leaves the GitHub rate limit and the slow credentialed lane.
+# Guests reach it as http://git-mirror.egress.internal:<port> through the
+# ordinary egress lane; the reserved host is answered by the co-located
+# egress-proxy before any routing, so no allowlist entry is spent. The shim
+# falls back to its credentialed GitHub clone for repos this list does not
+# carry, so catalog drift degrades to today's path instead of failed sessions.
+gitMirror:
+  enabled: true
+  port: 9419
+  refreshIntervalSeconds: 60
+  # The MCP agent tool defaults every session to jomcgi/homelab (#4473), which
+  # is why the mirror exists; extend only as other catalogs earn their disk on
+  # every FC node (one clone per repo per node, refreshed every interval).
+  repos:
+    - jomcgi/homelab
+
+
 # Voice-drivable Claude Code agent sessions (issue #4055). The monolith addresses
 # this workload by name, so it must exist before agent_sessions can create a
 # session at all. Sizing and the node disk arithmetic are in chart/values.yaml.

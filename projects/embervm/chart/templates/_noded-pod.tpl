@@ -502,6 +502,14 @@ containers:
       {{- end }}
       {{- end }}
       {{- end }}
+      {{- if and $ctx.Values.egress.enabled $ctx.Values.gitMirror.enabled }}
+      # Node-local git mirror lane (#4473): connections the guests address to
+      # the reserved host are tunnelled straight to the co-located mirror
+      # sidecar's loopback listener below instead of being resolved as an
+      # ordinary destination. Unset (gitMirror disabled) keeps the seam dead.
+      - name: EGRESS_GIT_MIRROR_ADDR
+        value: "127.0.0.1:{{ $ctx.Values.gitMirror.port }}"
+      {{- end }}
     {{- if $ctx.Values.egress.ca.enabled }}
     volumeMounts:
       - name: egress-ca
@@ -510,6 +518,57 @@ containers:
     {{- end }}
     resources:
       {{- toYaml $ctx.Values.egress.resources | nindent 6 }}
+{{- end }}
+{{- if and $ctx.Values.egress.enabled $ctx.Values.gitMirror.enabled }}
+  # Node-local git mirror sidecar (#4473). Mirrors the configured repos from
+  # GitHub on an interval and serves them over git smart http on the pod
+  # LOOPBACK, so session guests hydrate node-local with no GitHub dependency
+  # and no credential anywhere on the clone path. Loopback-only is load
+  # bearing twice over: nothing in the cluster can dial it directly (the ONLY
+  # consumer is the egress-proxy above via its reserved-host seam), and a
+  # loopback listener is unreachable by kubelet probes, so there are none; the
+  # shim's github fallback covers a dead or warming mirror instead.
+  # nosemgrep: require-readiness-probe
+  - name: git-mirror
+    image: "{{ $ctx.Values.gitMirror.image.repository }}@{{ $ctx.Values.gitMirror.image.digest }}"
+    imagePullPolicy: {{ $ctx.Values.noded.image.pullPolicy | default "IfNotPresent" }}
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+    env:
+      - name: EMBERVM_MIRROR_LISTEN
+        value: "127.0.0.1:{{ $ctx.Values.gitMirror.port }}"
+      - name: EMBERVM_MIRROR_ROOT
+        value: /var/lib/git-mirror/mirrors
+      # An empty list makes the server exit non-zero rather than serve a
+      # mirror that can never answer a clone, so the misconfiguration is loud.
+      - name: EMBERVM_MIRROR_REPOS
+        value: {{ join "," $ctx.Values.gitMirror.repos | quote }}
+      - name: EMBERVM_MIRROR_REFRESH_INTERVAL
+        value: "{{ $ctx.Values.gitMirror.refreshIntervalSeconds }}s"
+      {{- if and $ctx.Values.gitMirror.githubToken $ctx.Values.gitMirror.githubToken.secretRef.name }}
+      # Optional read token for private repos. Lives only in this container,
+      # travels per-invocation as extraheader argv inside the sidecar (never
+      # written to disk, never in a guest), and is optional so a not-yet-synced
+      # 1Password item degrades to anonymous mirroring of public repos.
+      - name: EMBERVM_MIRROR_GITHUB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: {{ $ctx.Values.gitMirror.githubToken.secretRef.name | quote }}
+            key: {{ $ctx.Values.gitMirror.githubToken.secretRef.key | quote }}
+            optional: true
+      {{- end }}
+    resources:
+      {{- toYaml $ctx.Values.gitMirror.resources | nindent 6 }}
+    volumeMounts:
+      - name: git-mirror-mirrors
+        mountPath: /var/lib/git-mirror/mirrors
 {{- end }}
 volumes:
 {{- if and $ctx.Values.egress.enabled $ctx.Values.egress.ca.enabled }}
@@ -530,6 +589,15 @@ volumes:
       # cleartext lane, so a guest loses https:// credential injection rather
       # than all egress.
       optional: true
+{{- end }}
+{{- if and $ctx.Values.egress.enabled $ctx.Values.gitMirror.enabled }}
+  # The bare mirror clones. Per-node and disposable by design: an emptyDir on
+  # the node disk, sized so a runaway refresh is evicted rather than filling
+  # the node. Losing it costs one re-clone per repo, not data: the mirror is a
+  # cache of upstream, never a source of record.
+  - name: git-mirror-mirrors
+    emptyDir:
+      sizeLimit: {{ $ctx.Values.gitMirror.diskSizeLimit | quote }}
 {{- end }}
   - name: dev-kvm
     hostPath:

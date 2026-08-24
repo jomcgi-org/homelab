@@ -1709,6 +1709,49 @@ egress:
     limits:
       memory: 64Mi
 
+# Node-local git mirror sidecar (#4473). When enabled alongside egress, every
+# noded pod runs a small server that mirrors a fixed repo list from GitHub and
+# serves it over git smart http on the POD LOOPBACK only. Guests hydrate from
+# it through the egress lane's reserved host (git-mirror.egress.internal),
+# which restores node-local session hydration (~1.3s class) and takes GitHub's
+# rate limit off the session-create path with NO credential on the clone path.
+#
+# Reachability is deliberately narrower than the retired central mirror: the
+# listener binds loopback inside the noded pod, so nothing in the cluster can
+# dial it directly and no allowlist entry is spent; the reserved host is
+# answered by the co-located egress-proxy before routing or never.
+gitMirror:
+  enabled: false
+  # Requires egress.enabled: the mirror is reached THROUGH the egress lane,
+  # and its env is rendered into the egress-proxy container below.
+  port: 9419
+  # Any port except 9418 would work; 9419 reads as git-adjacent and keeps the
+  # guest-side half-close suppression (scoped to :9418) out of these tunnels.
+  refreshIntervalSeconds: 60
+  # Repos mirrored on every FC node, "owner/name". Keep this list short: each
+  # entry is cloned onto every node's disk and re-fetched every interval.
+  repos: []
+  # Optional read token for private repos (1Password operator syncs it). The
+  # token lives in this container only, rides per-invocation extraheader argv
+  # (never written to disk), and is optional: public repos need nothing, and
+  # guests fall back to their credentialed GitHub path when a repo is absent.
+  githubToken:
+    secretRef:
+      name: ""
+      key: ""
+  # Bazel-pinned at chart-build from the mirror image .info provider
+  # (chart/BUILD `images`).
+  image: {}
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  # Ceiling for the bare clones (emptyDir sizeLimit). The mirror is a cache,
+  # so hitting the ceiling evicts pod-local state rather than filling the node.
+  diskSizeLimit: 10Gi
+
 # The claude-runtime session workload (issue #4055): voice-drivable Claude Code
 # agent sessions. Same frozen guest contract as every other guest (vsock 1027,
 # /shim/ready), but the invoke path is /shim/turn, and the monolith addresses it
