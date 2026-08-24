@@ -70,16 +70,18 @@ func TestColdBootPrecreatesSinkAndIssuesPutSerialBeforeStart(t *testing.T) {
 	if !ok {
 		t.Fatalf("rate_limiter missing from body: %v", bodies[0])
 	}
-	bw, ok := rl["bandwidth"].(map[string]any)
-	if !ok {
-		t.Fatalf("bandwidth missing from rate limiter: %v", rl)
-	}
+	// n v1.16.1's serial dialect takes the token bucket FLAT under
+	// rate_limiter; the drive/net {bandwidth: ...} wrapper is rejected with
+	// SerdeJson "missing field `size`" (observed live on the dev fleet).
 	wantSize := float64(serialBurstBytes + serialBandwidthBytesPerSec)
-	if bw["size"] != wantSize ||
-		bw["one_time_burst"] != float64(serialBurstBytes) ||
-		bw["refill_time"] != float64(serialBandwidthRefillMs) {
-		t.Fatalf("bandwidth token bucket = %v, want size/burst/refill %v/%d/%d",
-			bw, wantSize, serialBurstBytes, serialBandwidthRefillMs)
+	if rl["size"] != wantSize ||
+		rl["one_time_burst"] != float64(serialBurstBytes) ||
+		rl["refill_time"] != float64(serialBandwidthRefillMs) {
+		t.Fatalf("rate limiter token bucket = %v, want size/burst/refill %v/%d/%d",
+			rl, wantSize, serialBurstBytes, serialBandwidthRefillMs)
+	}
+	if _, wrapped := rl["bandwidth"]; wrapped {
+		t.Fatalf("rate_limiter must be a flat token bucket, got wrapper: %v", rl)
 	}
 }
 
