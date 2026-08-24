@@ -119,6 +119,43 @@ type SnapshotLoad struct {
 	ResumeVM            bool        `json:"resume_vm"`
 }
 
+// TokenBucket is one half of a Firecracker RateLimiter: `size` tokens are
+// available immediately and refilled to full every `refill_time` milliseconds,
+// so size/refill_time is the sustained rate, with an optional initial
+// one_time_burst on top of the first bucket.
+type TokenBucket struct {
+	Size         int64 `json:"size"`
+	OneTimeBurst int64 `json:"one_time_burst,omitempty"`
+	RefillTime   int64 `json:"refill_time"`
+}
+
+// RateLimiter is a Firecracker token-bucket rate limiter over bandwidth (bytes)
+// and/or ops (I/O operation count). Each half is optional.
+type RateLimiter struct {
+	Bandwidth *TokenBucket `json:"bandwidth,omitempty"`
+	Ops       *TokenBucket `json:"ops,omitempty"`
+}
+
+// Serial is the body of PUT /serial. Firecracker v1.14 added the endpoint with
+// serial_out_path (upstream #5350); v1.16 added the rate limiter. It redirects
+// the microVM's UART output away from the Firecracker process's inherited
+// stdio into a host file sink. Serial configuration is deliberately NOT part
+// of the snapshot state, so EVERY process that will run this microVM must
+// issue it afresh: before Start on a cold boot AND before LoadSnapshot when
+// restoring (issue #4404).
+type Serial struct {
+	SerialOutPath string       `json:"serial_out_path"`
+	RateLimiter   *RateLimiter `json:"rate_limiter,omitempty"`
+}
+
+// PutSerial points the microVM's UART at a host file sink, optionally rate
+// limited. It must be issued while the microVM is not yet running: before
+// Start on a cold boot, or before LoadSnapshot when restoring into a fresh
+// Firecracker process (a restored process has no serial sink until told).
+func (c *Client) PutSerial(ctx context.Context, s Serial) error {
+	return c.do(ctx, http.MethodPut, "/serial", s)
+}
+
 // PutMachineConfig configures vCPUs and memory.
 func (c *Client) PutMachineConfig(ctx context.Context, m MachineConfig) error {
 	return c.do(ctx, http.MethodPut, "/machine-config", m)

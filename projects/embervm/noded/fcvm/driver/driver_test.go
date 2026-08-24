@@ -29,7 +29,13 @@ type fakeLauncher struct {
 	machineConfigs  []map[string]any
 	snapshotCreates []map[string]any
 	snapshotLoads   []map[string]any
+	serialPuts      []map[string]any
 	failDiffCreate  bool
+	failPath        string // if set, return 500 for this API path
+	// serialOutput, when set, is what the fake guest "prints" to its UART: the
+	// PUT /serial handler truncates serial_out_path and writes it there,
+	// mimicking Firecracker opening the sink and console bytes arriving.
+	serialOutput []byte
 }
 
 type fakeProcess struct {
@@ -91,6 +97,9 @@ func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (P
 	})
 	mux.HandleFunc("/snapshot/load", func(w http.ResponseWriter, r *http.Request) {
 		record(r)
+		if l.fail(r.URL.Path, w) {
+			return
+		}
 		var body map[string]any
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &body)
@@ -99,8 +108,30 @@ func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (P
 		l.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("/serial", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		if l.fail(r.URL.Path, w) {
+			return
+		}
+		var body map[string]any
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		l.mu.Lock()
+		l.serialPuts = append(l.serialPuts, body)
+		output := l.serialOutput
+		l.mu.Unlock()
+		// Simulate Firecracker opening the sink and the guest writing console
+		// bytes: the file at serial_out_path is truncated then filled.
+		if path, ok := body["serial_out_path"].(string); ok && len(output) > 0 {
+			_ = os.WriteFile(path, output, 0o640)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		record(r)
+		if l.fail(r.URL.Path, w) {
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	srv := &http.Server{Handler: mux}
@@ -130,6 +161,23 @@ func (l *fakeLauncher) snapshotLoadBodies() []map[string]any {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]map[string]any(nil), l.snapshotLoads...)
+}
+
+// serialPutBodies returns the recorded PUT /serial bodies in arrival order.
+func (l *fakeLauncher) serialPutBodies() []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]map[string]any(nil), l.serialPuts...)
+}
+
+// fail writes a 500 when path is the injected failure point, so tests can
+// make one Firecracker API call blow up after earlier ones succeeded.
+func (l *fakeLauncher) fail(path string, w http.ResponseWriter) bool {
+	if l.failPath == "" || l.failPath != path {
+		return false
+	}
+	http.Error(w, "injected failure", http.StatusInternalServerError)
+	return true
 }
 
 // shortTempDir returns a temp dir under /tmp with a short path. The fake
@@ -307,7 +355,9 @@ func TestDriverClaimWithVolumeLoadPatchResume(t *testing.T) {
 		t.Fatal("Claim returned empty handle")
 	}
 	paths := launcher.requestPaths()
-	want := []string{"PUT /snapshot/load", "PATCH /drives/volume", "PATCH /vm"}
+	// PUT /serial precedes the load: serial config is not snapshotted, so the
+	// fresh process must be given its sink before LoadSnapshot (issue #4404).
+	want := []string{"PUT /serial", "PUT /snapshot/load", "PATCH /drives/volume", "PATCH /vm"}
 	if len(paths) != len(want) {
 		t.Fatalf("request paths = %v, want %v", paths, want)
 	}

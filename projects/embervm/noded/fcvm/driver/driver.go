@@ -164,6 +164,7 @@ type fcAPI interface {
 	PatchDrive(ctx context.Context, driveID string, d fcclient.PatchedDrive) error
 	PutVsock(ctx context.Context, v fcclient.Vsock) error
 	PutNetworkInterface(ctx context.Context, n fcclient.NetworkInterface) error
+	PutSerial(ctx context.Context, s fcclient.Serial) error
 	Start(ctx context.Context) error
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
@@ -885,6 +886,12 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapP
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
 	}
+	// Pre-create the per-VM serial sink (issue #4404) before the process exists,
+	// so even an instant-crash restore has somewhere to have written.
+	serialPath, err := d.prepareSerialOutput(threadID)
+	if err != nil {
+		return substrate.Handle{}, err
+	}
 	sock := filepath.Join(dir, sockName)
 	_ = os.Remove(sock)
 	// A restored snapshot re-binds the vsock UDS from its embedded config; clear
@@ -897,6 +904,12 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapP
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
 	}
 	client := d.newClient(sock)
+	// Serial configuration is deliberately NOT part of the snapshot state: this
+	// fresh process has no UART sink until told, and resume_vm may start the
+	// guest immediately, so PutSerial MUST precede LoadSnapshot (issue #4404).
+	if err := issueSerial(ctx, client, serialPath); err != nil {
+		return d.abortWithSerialDiag(proc, err, threadID)
+	}
 	resumeVM := volumeDiskPath == ""
 	if err := client.LoadSnapshot(ctx, fcclient.SnapshotLoad{
 		SnapshotPath:        snapPath,
@@ -905,17 +918,17 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapP
 		TrackDirtyPages:     enableDiffSnapshots,
 		ResumeVM:            resumeVM,
 	}); err != nil {
-		return d.abort(proc, err)
+		return d.abortWithSerialDiag(proc, err, threadID)
 	}
 	if volumeDiskPath != "" {
 		if err := client.PatchDrive(ctx, "volume", fcclient.PatchedDrive{
 			DriveID:    "volume",
 			PathOnHost: volumeDiskPath,
 		}); err != nil {
-			return d.abort(proc, err)
+			return d.abortWithSerialDiag(proc, err, threadID)
 		}
 		if err := client.Resume(ctx); err != nil {
-			return d.abort(proc, err)
+			return d.abortWithSerialDiag(proc, err, threadID)
 		}
 	}
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
@@ -1051,6 +1064,13 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
 	}
+	// Pre-create the per-VM serial sink (issue #4404) before the process exists,
+	// so even an instant-crash boot has somewhere to have written. Truncating any
+	// stale file here also bounds disk across reused thread ids.
+	serialPath, err := d.prepareSerialOutput(threadID)
+	if err != nil {
+		return substrate.Handle{}, err
+	}
 	// Clear a stale vsock UDS left by a prior incarnation so PUT /vsock can bind
 	// (see removeStaleVsockUDS): the bundle dir persists across daemon restarts.
 	d.removeStaleVsockUDS(threadID)
@@ -1075,7 +1095,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 		rootfsPath, err = d.provisioner.Provision(pctx, threadID, dir)
 		pspan.End()
 		if err != nil {
-			return d.abort(proc, err)
+			return d.abortWithSerialDiag(proc, err, threadID)
 		}
 	}
 
@@ -1153,11 +1173,17 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 		if err := client.PutVsock(ctx, fcclient.Vsock{GuestCID: guestCID, UDSPath: d.bootVsockPath(threadID)}); err != nil {
 			return err
 		}
+		// Per-VM serial sink (issue #4404): redirect the guest's UART output into
+		// the bundle's serial.log instead of the daemon's inherited stdio. Must be
+		// issued pre-Start; serial config is not part of snapshot state.
+		if err := issueSerial(ctx, client, serialPath); err != nil {
+			return err
+		}
 		return client.Start(ctx)
 	}()
 	bspan.End()
 	if bootErr != nil {
-		return d.abort(proc, bootErr)
+		return d.abortWithSerialDiag(proc, bootErr, threadID)
 	}
 
 	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
@@ -2481,11 +2507,6 @@ func (d *Driver) Release(_ context.Context, h substrate.Handle) error {
 		return fmt.Errorf("driver: kill firecracker: %w", killErr)
 	}
 	return nil
-}
-
-func (d *Driver) abort(proc Process, cause error) (substrate.Handle, error) {
-	_ = proc.Kill()
-	return substrate.Handle{}, cause
 }
 
 func (d *Driver) track(inst *instance) {

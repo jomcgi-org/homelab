@@ -30,7 +30,14 @@ type recordedReq struct {
 
 func startFakeFC(t *testing.T) (*fakeFC, string) {
 	t.Helper()
-	dir := t.TempDir()
+	// Short temp dir under /tmp: macOS caps unix socket paths at 104 bytes and
+	// t.TempDir()'s long /var/folders paths (which embed the test name) exceed
+	// it for longer test names. Mirrors driver_test.go's shortTempDir shim.
+	dir, err := os.MkdirTemp("/tmp", "fc")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "fc.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -172,6 +179,70 @@ func TestClientLoadSnapshotResume(t *testing.T) {
 	mb, ok := r.Body["mem_backend"].(map[string]any)
 	if !ok || mb["backend_type"] != "File" {
 		t.Fatalf("mem_backend = %v", r.Body["mem_backend"])
+	}
+}
+
+// TestClientPutSerialWireFormat pins the PUT /serial request shape (issue
+// #4404): method+path, the sink path field, and the bandwidth token bucket.
+func TestClientPutSerialWireFormat(t *testing.T) {
+	fake, sock := startFakeFC(t)
+	c := New(sock)
+	serial := Serial{
+		SerialOutPath: "/disks/nvme-02/thread-t1/serial.log",
+		RateLimiter: &RateLimiter{
+			Bandwidth: &TokenBucket{Size: 1089536, OneTimeBurst: 1048576, RefillTime: 1000},
+		},
+	}
+	if err := c.PutSerial(context.Background(), serial); err != nil {
+		t.Fatalf("PutSerial: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(fake.requests))
+	}
+	r := fake.requests[0]
+	if r.Method != http.MethodPut || r.Path != "/serial" {
+		t.Fatalf("request = %s %s, want PUT /serial", r.Method, r.Path)
+	}
+	if r.Body["serial_out_path"] != serial.SerialOutPath {
+		t.Fatalf("serial_out_path = %v, want %q", r.Body["serial_out_path"], serial.SerialOutPath)
+	}
+	rl, ok := r.Body["rate_limiter"].(map[string]any)
+	if !ok {
+		t.Fatalf("rate_limiter = %v, want object", r.Body["rate_limiter"])
+	}
+	bw, ok := rl["bandwidth"].(map[string]any)
+	if !ok {
+		t.Fatalf("bandwidth = %v, want object", rl["bandwidth"])
+	}
+	if bw["size"] != float64(1089536) || bw["one_time_burst"] != float64(1048576) || bw["refill_time"] != float64(1000) {
+		t.Fatalf("bandwidth bucket = %v", bw)
+	}
+	if _, present := rl["ops"]; present {
+		t.Fatalf("ops must be omitted when unset: %v", rl)
+	}
+}
+
+// TestClientPutSerialWithoutRateLimiter proves the omitempty discipline: with
+// no rate limiter the body is exactly the sink path, matching Firecracker's
+// v1.14 schema (which predates the rate limiter).
+func TestClientPutSerialWithoutRateLimiter(t *testing.T) {
+	fake, sock := startFakeFC(t)
+	c := New(sock)
+	if err := c.PutSerial(context.Background(), Serial{SerialOutPath: "/tmp/serial.log"}); err != nil {
+		t.Fatalf("PutSerial: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	r := fake.requests[0]
+	if _, present := r.Body["rate_limiter"]; present {
+		t.Fatalf("rate_limiter must be omitted when nil: %v", r.Body)
+	}
+	if len(r.Body) != 1 {
+		t.Fatalf("body has extra fields = %v, want exactly serial_out_path", r.Body)
 	}
 }
 

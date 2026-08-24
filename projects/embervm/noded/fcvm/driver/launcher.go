@@ -88,6 +88,10 @@ func (l *ExecLauncher) Launch(ctx context.Context, vmID, socketPath string) (Pro
 	} else {
 		cmd = exec.Command(l.Bin, "--api-sock", socketPath, "--id", vmID)
 	}
+	// Firecracker's own startup/error messages ride the daemon's stdio. The
+	// GUEST console no longer does: the driver issues PUT /serial pre-Start and
+	// pre-LoadSnapshot (issue #4404), pointing the UART at the per-VM bundle
+	// file, so consoles cannot interleave into or flood the noded log.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
