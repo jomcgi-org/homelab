@@ -2166,7 +2166,6 @@ py_test(
         ],
     ),
     imports = ["."],
-    deps = ["@pip//pytest"],
 )
 
 py_test(
@@ -7465,6 +7464,19 @@ semgrep_target_test(
 semgrep_test(
     name = "public_cilium_scoped_egress_guard_test_semgrep_test",
     srcs = ["public_cilium_scoped_egress_guard_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "github_repo_slug_test_semgrep_test",
+    srcs = ["github_repo_slug_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",
