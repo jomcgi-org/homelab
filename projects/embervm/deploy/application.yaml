@@ -20,7 +20,7 @@ spec:
     # Chart from OCI (pushed by CI via Bazel helm_push); image tag pinned at build.
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: embervm
-      targetRevision: 0.44.2
+      targetRevision: 0.45.0
       helm:
         valueFiles:
           - $values/projects/embervm/deploy/values.yaml
