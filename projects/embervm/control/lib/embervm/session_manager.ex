@@ -1807,7 +1807,12 @@ defmodule Embervm.SessionManager do
     %{state | session_dials: Map.put(state.session_dials, session_id, dial_id)}
   end
 
-  defp remember_session_dial(state, _session_id, _node_id, _dial_id), do: state
+  # A re-placement whose dial resolved to the bare node name must CLEAR any
+  # previous placement's instance dial: leaving it would misroute the next bank
+  # or destroy to the old brick, the same class the sentinel check avoids.
+  defp remember_session_dial(state, session_id, _node_id, _dial_id) do
+    %{state | session_dials: Map.delete(state.session_dials, session_id)}
+  end
 
   defp session_dial(state, session_id, node_id, vm_id) do
     case Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id) do
@@ -2698,7 +2703,7 @@ defmodule Embervm.SessionManager do
       # lingering process first (a same-CP retry after a failed RPC), then re-issue
       # the Destroy; a CP-crash re-drive has no process, so this is a no-op there.
       Map.has_key?(live_vms, sid) ->
-        dial_key = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, session.node_id, session.vm_id)
+        dial_key = session_dial(state, sid, session.node_id, session.vm_id)
 
         if node_reporting?(state, dial_key) do
           emit_redrive_intent.()
@@ -2844,6 +2849,7 @@ defmodule Embervm.SessionManager do
       :orphan ->
         confirmed =
           destroy_vm(state, %{
+            session_id: v.session_id,
             node_id: fact.configured_id,
             vm_id: v.vm_id
           })
