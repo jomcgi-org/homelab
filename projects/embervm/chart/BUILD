@@ -39,6 +39,10 @@ helm_chart(
         # The egress-proxy sidecar (ADR 023). Pinned from its
         # .info so the sidecar the daemon tunnels to is the digest CI built.
         "egress.image": "//projects/firecracker/substrate/egress-proxy:image.info",
+        # The node-local git mirror sidecar (#4473). Distinct FLAT top-level key
+        # (D14a.6), pinned from its .info so every brick serves the digest CI
+        # built. Reached only through the egress lane's reserved host.
+        "gitMirror.image": "//projects/embervm/mirror/image:image.info",
         # Issue #4055: the runtime-claude base image, a session-class guest that
         # runs the Claude Code CLI headlessly under a vsock shim so monolith can
         # expose agent sessions as MCP tools. Distinct FLAT top-level key (D14a.6),

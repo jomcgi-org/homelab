@@ -31,6 +31,16 @@ VSOCK_EGRESS_PORT = 1025
 # after the request and FC hybrid vsock kills the in-flight response on any
 # shutdown. See VsockEgressForwarder._forward.
 GIT_DAEMON_PORT = "9418"
+# Node-local hydration source (#4473). The noded pod runs a git-mirror sidecar
+# serving bare clones over smart http on its LOOPBACK, and the egress-proxy
+# tunnels the reserved host below straight to it, so the only thing a guest
+# needs is this URL through the ordinary lane proxy. The port is deliberately
+# NOT GIT_DAEMON_PORT: the half-close suppression that wedged connection #2 on
+# git:// is scoped to :9418, so smart-http's sequential connections here tear
+# down normally and blob:none lazy fetches are safe again. Setting
+# EMBER_GIT_MIRROR_URL empty disables the mirror attempt entirely.
+MIRROR_URL_ENV = "EMBER_GIT_MIRROR_URL"
+DEFAULT_MIRROR_URL = "http://git-mirror.egress.internal:9419"
 EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS = 5.0
 EGRESS_VSOCK_CONNECT_ATTEMPTS = 3
 EGRESS_VSOCK_CONNECT_BACKOFF_SECONDS = 0.2
@@ -547,9 +557,11 @@ SANDBOX_PROMPT = (
     "is present and git log, git blame and git bisect all work. File contents "
     "are fetched on demand, so an operation touching many old revisions pauses "
     "while blobs download rather than failing.\n"
-    "- origin points at GitHub over https. Pushes go to the real repository, so "
-    "treat any push as publishing. The proxy attaches the credential on the way "
-    "out; you hold none.\n"
+    "- The checkout was cloned from a read-only node-local mirror, so "
+    "origin does not accept pushes (#4473). To publish work, add GitHub as "
+    "a remote (`git remote add github https://github.com/OWNER/REPO.git`) "
+    "and push there; the proxy attaches the credential on the way out, so "
+    "you still hold none.\n"
     "- Your git identity is already configured. Do not set user.name or "
     "user.email.\n"
     "- All network egress is proxied. The public internet is reachable and "
@@ -607,6 +619,26 @@ def _github_basic_optin():
     """
     token = os.environ.get(GH_TOKEN_ENV, "")
     return base64.b64encode(("x-access-token:%s" % token).encode()).decode()
+
+
+def _clone_sources(repo):
+    """Ordered (source, url, credential_optin) attempts for workspace hydration.
+
+    Mirror first (#4473): node-local, no credential anywhere on the path, and
+    full history plus lazy blobs because the mirror advertises the filter
+    capability. GitHub direct second: it keeps unmirrored repos and private
+    repos hydrating exactly as today, which is what bounds #4473's two caveats
+    (up-to-one-refresh-interval staleness, token-scoped mirroring) to staleness
+    on catalogued repos instead of breakage on everything else. The github
+    entry carries the Basic opt-in header; the mirror entry deliberately
+    carries nothing.
+    """
+    sources = []
+    mirror_base = os.environ.get(MIRROR_URL_ENV, DEFAULT_MIRROR_URL).strip().rstrip("/")
+    if mirror_base:
+        sources.append(("mirror", "%s/%s.git" % (mirror_base, repo), False))
+    sources.append(("github", "https://github.com/%s.git" % repo, True))
+    return sources
 
 
 # The egress CA the sidecar mints MITM leaves from, and the reserved preamble
@@ -3538,128 +3570,158 @@ class ProcessManager:
             # A durable volume can contain a partial clone from a prior failure.
             shutil.rmtree(checkout_dir, ignore_errors=True)
         _ensure_cli_dir(self.workspace)
-        # Hydrate from GitHub over https, not from the git-mirror over git://.
+        # Hydrate from the node-local git mirror over http (#4473), falling
+        # back to GitHub direct over https.
         #
-        # The mirror was chosen (ADR agents/050) because it needs no credential
-        # and is node-local. What disqualified it is the transport: #4389 stopped
-        # propagating half-close onto the vsock leg, and that suppression is
-        # scoped to the git-daemon port
-        # (shim.py: half_close_upstream = not host_port.endswith(":9418")), so a
-        # git:// tunnel never closes and a SECOND lane connection while it lingers
-        # wedges (#4417). That is what forced --depth=1: a blob filter defers
-        # blobs, and checkout then lazy-fetches them on exactly that second
-        # connection. Shallow-but-complete was the only single-connection shape.
+        # The mirror was dropped once (ADR agents/050 -> #4470) because of its
+        # transport: #4389 stopped propagating half-close onto the vsock leg,
+        # and that suppression is scoped to the git-daemon port
+        # (shim.py: half_close_upstream = not host_port.endswith(":9418")), so
+        # a git:// tunnel never closes and a SECOND lane connection while it
+        # lingers wedges (#4417). That forced --depth=1, because a blob filter
+        # defers blobs and checkout lazy-fetches them on exactly that second
+        # connection.
         #
-        # Over :443 the tunnel tears down normally, which is why sequential CLI
-        # HTTPS and gh both work today. So the filter becomes usable, and with it
-        # FULL HISTORY: --filter=blob:none keeps every commit and tree and defers
-        # only file contents, so git log, blame and bisect all work and blobs
-        # arrive on demand. --depth=1 is therefore gone, not merely relaxed.
+        # The fix is the transport, not the mirror. Smart http on :9419 (any
+        # non-9418 port) tears its tunnels down normally, which is why
+        # sequential CLI HTTPS and gh already work on this lane, so the two
+        # sequential connections a partial clone needs are safe again. With the
+        # filter usable, FULL HISTORY returns: --filter=blob:none keeps every
+        # commit and tree and defers only file contents, so git log, blame and
+        # bisect all work and blobs arrive on demand. --depth=1 stays gone.
         #
-        # No credential enters the guest. github.com is a credentialed egressTo
-        # host (deploy/values.yaml): the sidecar terminates the guest's TLS with a
-        # leaf minted from the egress CA, sets Authorization itself using Basic
-        # (git-receive-pack 401s on Bearer), and originates fresh verified TLS. A
-        # guest already reaches github.com this way for gh and for push, so
-        # sourcing the clone here grants nothing it did not already hold. It also
-        # fixes private repos, which the mirror non-fatally SKIPS when it has no
-        # read token of its own.
+        # No credential is on the mirror path at all. The sidecar answers the
+        # reserved host with anonymous read-only upload-pack; nothing here
+        # sends an Authorization header toward it, so there is nothing to
+        # inject, discard, or leak. The github fallback keeps today's shape:
+        # github.com is a credentialed egressTo host (deploy/values.yaml), the
+        # sidecar sets Authorization itself using Basic (git-receive-pack 401s
+        # on Bearer), and originates fresh verified TLS. That fallback is also
+        # what bounds the mirror's caveats (#4473): staleness up to one refresh
+        # interval and repos the mirror has no token for degrade to today's
+        # path instead of failed sessions.
         #
         # http.proxy rather than HTTPS_PROXY: apply_egress_ca_trust() runs before
         # this and exports GIT_SSL_CAINFO into os.environ, but the proxy URL is
         # only ever built inside the per-adapter CLI spawn envs, which this
         # subprocess does not inherit. Passing it as git config keeps the setting
-        # on this one clone instead of leaking proxy env into every child.
+        # on this one clone instead of leaking proxy env into every child. Both
+        # sources ride the same lane proxy; only the destination differs.
         egress_port = os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT))
-        clone_command = [
-            "git",
-            "clone",
-            "--progress",
-            "--branch",
-            branch,
-            "--config",
-            "http.proxy=http://%s:%s" % (EGRESS_LOCALHOST, egress_port),
-            # The LOGIN GATE DUMMY that opts this clone into credential
-            # injection, derived from the same GH_TOKEN gh already presents
-            # rather than defined here.
-            #
-            # The sidecar's injection is PRESENCE-KEYED: it replaces an
-            # Authorization header the guest already sent and DISCARDS whatever
-            # value was in it (egress-proxy injectRequest: `requested :=
-            # len(req.Header.Values(sec.Header)) > 0 || sec.injectAlwaysPath(...)`
-            # then `if !requested { return false }`). The header is an opt-in
-            # switch, never a credential, which is what stops a prompt-injected
-            # guest from authenticating as anyone else.
-            #
-            # git sends no Authorization on its first request, so nothing was
-            # injected and github.com answered 401, which git surfaces as
-            # "could not read Username for 'https://github.com'" once it falls
-            # through to an interactive prompt. gh never hit this because it
-            # always sends its own dummy. Reusing GH_TOKEN keeps the value where
-            # guest env is defined (guest-init setDefaultEnv, alongside
-            # CLAUDE_CODE_OAUTH_TOKEN) instead of adding a second, credential
-            # shaped literal to this file.
-            #
-            # injectAlwaysPaths cannot cover this instead: it is an EXACT match
-            # on req.URL.Path, and git's paths are per repository
-            # (/owner/repo.git/info/refs, /owner/repo.git/git-upload-pack), so it
-            # would have to enumerate every repo anyone might ever select.
-            #
-            # x-access-token:<token> is the Basic shape GitHub's git endpoint
-            # expects. Scoped to github.com by URL so it is never presented
-            # anywhere else, and written into the clone's config so the lazy blob
-            # fetches --filter=blob:none defers carry it too.
-            "--config",
-            "http.https://github.com/.extraHeader=Authorization: Basic %s"
-            % _github_basic_optin(),
-            "--single-branch",
-            "--filter=blob:none",
-            "https://github.com/%s.git" % repo,
-            checkout_dir,
-        ]
-        try:
-            clone_start = _turn_timing_now()
-            result = subprocess.run(
-                clone_command,
-                capture_output=True,
-                timeout=GIT_CLONE_TIMEOUT_SECONDS,
-                **_cli_privilege_kwargs(),
-            )
-            _emit_elapsed("hydration_clone", clone_start)
-            if result.returncode != 0:
-                stderr = result.stderr
-                if isinstance(stderr, bytes):
-                    stderr = stderr.decode("utf-8", "replace")
-                stderr = (stderr or "").strip()
-                raise RuntimeError(
-                    "git command failed with exit code %s%s"
-                    % (result.returncode, ": " + stderr if stderr else "")
+        failure = None
+        failure_source = None
+        for source, url, credential_optin in _clone_sources(repo):
+            if failure is not None:
+                sys.stderr.write(
+                    "ember-claude-shim: %s hydration clone failed (%s); "
+                    "falling back to %s\n"
+                    % (
+                        failure_source,
+                        str(failure).strip()[:200] or "no detail",
+                        source,
+                    )
                 )
-            validation = subprocess.run(
-                ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
-                capture_output=True,
-                timeout=5,
-                **_cli_privilege_kwargs(),
-            )
-            if validation.returncode != 0:
-                raise RuntimeError("cloned directory validation failed: HEAD not found")
-        except subprocess.TimeoutExpired as exc:
-            _write_hydration_diagnostics(exc, checkout_dir)
-            shutil.rmtree(checkout_dir, ignore_errors=True)
-            self._hydration_error = str(exc)
+                sys.stderr.flush()
+            clone_command = [
+                "git",
+                "clone",
+                "--progress",
+                "--branch",
+                branch,
+                "--config",
+                "http.proxy=http://%s:%s" % (EGRESS_LOCALHOST, egress_port),
+            ]
+            if credential_optin:
+                # The LOGIN GATE DUMMY that opts this clone into credential
+                # injection, derived from the same GH_TOKEN gh already presents
+                # rather than defined here.
+                #
+                # The sidecar's injection is PRESENCE-KEYED: it replaces an
+                # Authorization header the guest already sent and DISCARDS whatever
+                # value was in it (egress-proxy injectRequest: `requested :=
+                # len(req.Header.Values(sec.Header)) > 0 || sec.injectAlwaysPath(...)`
+                # then `if !requested { return false }`). The header is an opt-in
+                # switch, never a credential, which is what stops a prompt-injected
+                # guest from authenticating as anyone else.
+                #
+                # git sends no Authorization on its first request, so nothing was
+                # injected and github.com answered 401, which git surfaces as
+                # "could not read Username for 'https://github.com'" once it falls
+                # through to an interactive prompt. gh never hit this because it
+                # always sends its own dummy. Reusing GH_TOKEN keeps the value where
+                # guest env is defined (guest-init setDefaultEnv, alongside
+                # CLAUDE_CODE_OAUTH_TOKEN) instead of adding a second, credential
+                # shaped literal to this file.
+                #
+                # injectAlwaysPaths cannot cover this instead: it is an EXACT match
+                # on req.URL.Path, and git's paths are per repository
+                # (/owner/repo.git/info/refs, /owner/repo.git/git-upload-pack), so it
+                # would have to enumerate every repo anyone might ever select.
+                #
+                # x-access-token:<token> is the Basic shape GitHub's git endpoint
+                # expects. Scoped to github.com by URL so it is never presented
+                # anywhere else, and written into the clone's config so the lazy blob
+                # fetches --filter=blob:none defers carry it too.
+                clone_command += [
+                    "--config",
+                    "http.https://github.com/.extraHeader=Authorization: Basic %s"
+                    % _github_basic_optin(),
+                ]
+            clone_command += [
+                "--single-branch",
+                "--filter=blob:none",
+                url,
+                checkout_dir,
+            ]
+            try:
+                clone_start = _turn_timing_now()
+                result = subprocess.run(
+                    clone_command,
+                    capture_output=True,
+                    timeout=GIT_CLONE_TIMEOUT_SECONDS,
+                    **_cli_privilege_kwargs(),
+                )
+                _emit_elapsed(
+                    "hydration_clone",
+                    clone_start,
+                    status="ok:%s" % source
+                    if result.returncode == 0
+                    else "failed:%s" % source,
+                )
+                if result.returncode != 0:
+                    stderr = result.stderr
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode("utf-8", "replace")
+                    stderr = (stderr or "").strip()
+                    raise RuntimeError(
+                        "git command failed with exit code %s%s"
+                        % (result.returncode, ": " + stderr if stderr else "")
+                    )
+                validation = subprocess.run(
+                    ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
+                    capture_output=True,
+                    timeout=5,
+                    **_cli_privilege_kwargs(),
+                )
+                if validation.returncode != 0:
+                    raise RuntimeError(
+                        "cloned directory validation failed: HEAD not found"
+                    )
+                failure = None
+                break
+            except Exception as exc:
+                failure = exc
+                failure_source = source
+                # A partial clone from a failed attempt must not survive: the
+                # next attempt (or the retry on a later turn) starts clean.
+                shutil.rmtree(checkout_dir, ignore_errors=True)
+        if failure is not None:
+            if isinstance(failure, subprocess.TimeoutExpired):
+                _write_hydration_diagnostics(failure, checkout_dir)
+            self._hydration_error = str(failure)
             sys.stderr.write(
                 "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
-                % (repo, branch, exc)
-            )
-            sys.stderr.flush()
-            return
-        except Exception as exc:
-            _write_hydration_diagnostics(exc, checkout_dir)
-            shutil.rmtree(checkout_dir, ignore_errors=True)
-            self._hydration_error = str(exc)
-            sys.stderr.write(
-                "ember-claude-shim: workspace hydration failed for %s@%s: %s\n"
-                % (repo, branch, exc)
+                % (repo, branch, failure)
             )
             sys.stderr.flush()
             return

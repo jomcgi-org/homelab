@@ -163,7 +163,9 @@ def test_failed_hydration_retries_on_next_turn_and_succeeds(
     def fake_run(command, **_kwargs):
         if command[1] == "clone":
             clone_calls.append(command)
-            if len(clone_calls) == 1:
+            # Both the mirror attempt and the github fallback fail on the
+            # first turn; the retry on turn two succeeds on the mirror.
+            if len(clone_calls) <= 2:
                 raise subprocess.TimeoutExpired("git", shim.GIT_CLONE_TIMEOUT_SECONDS)
         return _GitProcess()
 
@@ -174,9 +176,13 @@ def test_failed_hydration_retries_on_next_turn_and_succeeds(
 
     assert first["workspace_hydration"]["failed"]
     assert second["workspace_hydration"] == "ok"
-    assert len(clone_calls) == 2
+    assert len(clone_calls) == 3
+    assert clone_calls[0][-2].startswith(shim.DEFAULT_MIRROR_URL)
+    assert clone_calls[1][-2] == "https://github.com/owner/repo.git"
     assert manager.claude.workspace == os.path.join(manager.workspace, "src")
-    assert "retrying workspace hydration" in capsys.readouterr().err
+    captured = capsys.readouterr().err
+    assert "retrying workspace hydration" in captured
+    assert "falling back to github" in captured
 
 
 def test_hydration_failure_is_capped_and_keeps_reporting(manager, monkeypatch):
@@ -195,7 +201,9 @@ def test_hydration_failure_is_capped_and_keeps_reporting(manager, monkeypatch):
         for _ in range(shim.HYDRATION_ATTEMPT_CAP + 1)
     ]
 
-    assert len(clone_calls) == shim.HYDRATION_ATTEMPT_CAP
+    # Every capped hydration turn burns BOTH sources (mirror, then github
+    # fallback) before reporting failure.
+    assert len(clone_calls) == 2 * shim.HYDRATION_ATTEMPT_CAP
     assert manager._hydration_attempts == shim.HYDRATION_ATTEMPT_CAP
     assert all(record["workspace_hydration"]["failed"] for record in records)
 
@@ -213,28 +221,55 @@ def test_git_command_shape(manager, monkeypatch):
 
     manager.turn("first", repo="owner/repo", branch="main")
     checkout_dir = os.path.join(manager.workspace, "src")
-    assert commands == [
-        [
-            "git",
-            "clone",
-            "--progress",
-            "--branch",
-            "main",
-            "--config",
-            "http.proxy=http://127.0.0.1:1024",
-            "--config",
-            "http.https://github.com/.extraHeader=Authorization: Basic %s"
-            % shim._github_basic_optin(),
-            "--single-branch",
-            "--filter=blob:none",
-            "https://github.com/owner/repo.git",
-            checkout_dir,
-        ],
+    # Mirror first (#4473): node-local smart http on the reserved host, no
+    # credential anywhere on the command.
+    assert commands[0] == [
+        "git",
+        "clone",
+        "--progress",
+        "--branch",
+        "main",
+        "--config",
+        "http.proxy=http://127.0.0.1:1024",
+        "--single-branch",
+        "--filter=blob:none",
+        "%s/owner/repo.git" % shim.DEFAULT_MIRROR_URL,
+        checkout_dir,
     ]
 
 
-def test_git_clone_regression_guards(manager, monkeypatch):
-    """Verify critical clone command properties to prevent regressions."""
+def test_mirror_clone_failure_falls_back_to_github(manager, monkeypatch):
+    """An unmirrored repo degrades to today's credentialed GitHub clone."""
+    processes = [
+        _GitProcess(returncode=128, stderr_text="fatal: repository not found"),
+        _GitProcess(),
+        _GitProcess(),
+    ]
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            commands.append(command)
+        return processes.pop(0)
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+    record = manager.turn("first", repo="owner/repo", branch="main")
+
+    assert record["workspace_hydration"] == "ok"
+    checkout_dir = os.path.join(manager.workspace, "src")
+    assert len(commands) == 2
+    fallback = commands[1]
+    assert fallback[-2] == "https://github.com/owner/repo.git"
+    assert (
+        "http.https://github.com/.extraHeader=Authorization: Basic %s"
+        % shim._github_basic_optin()
+    ) in fallback
+    assert "http.proxy=http://127.0.0.1:1024" in fallback
+
+
+def test_mirror_disabled_by_empty_env(manager, monkeypatch):
+    monkeypatch.setenv(shim.MIRROR_URL_ENV, "")
     processes = [_GitProcess(), _GitProcess()]
     commands = []
 
@@ -248,35 +283,84 @@ def test_git_clone_regression_guards(manager, monkeypatch):
     manager.turn("first", repo="owner/repo", branch="main")
 
     assert len(commands) == 1
-    command = commands[0]
+    assert commands[0][-2] == "https://github.com/owner/repo.git"
 
-    # Regression guard: --depth=1 must be ABSENT. It was the workaround for
-    # #4417 while hydration ran over git:// (:9418, the one port whose tunnels
-    # deliberately never close). Over https the tunnel closes normally, and the
-    # whole point of the move is that history is present.
-    assert "--depth=1" not in command, "clone command must not be shallow"
 
-    # Regression guard: the blob filter is what makes full history affordable.
-    # Dropping it turns hydration into a full-content clone of all history.
-    assert "--filter=blob:none" in command, "clone command missing --filter=blob:none"
+def test_clone_sources_order_and_optin():
+    sources = shim._clone_sources("owner/repo")
+    assert [name for name, _url, _optin in sources] == ["mirror", "github"]
+    assert sources[0][1] == "%s/owner/repo.git" % shim.DEFAULT_MIRROR_URL
+    assert sources[0][2] is False, "the mirror path must carry no credential opt-in"
+    assert sources[1][1] == "https://github.com/owner/repo.git"
+    assert sources[1][2] is True
 
-    # Regression guard: https to GitHub, never git://. A git:// URL would put
-    # hydration back on the port whose lingering tunnels wedge connection #2,
-    # and would also lose the sidecar's credential injection (it can only set a
-    # header on bytes it can read, which requires the TLS-MITM lane).
-    url = command[-2]
-    assert url.startswith("https://github.com/"), "clone must use https to GitHub"
-    assert not any(arg.startswith("git://") for arg in command), (
-        "clone command must not use the git:// transport"
+
+def test_git_clone_regression_guards(manager, monkeypatch):
+    """Verify critical clone command properties to prevent regressions."""
+    processes = [
+        # Mirror attempt fails so the github fallback attempt also runs and
+        # both command shapes land under guard.
+        _GitProcess(returncode=128, stderr_text="not mirrored"),
+        _GitProcess(),  # github clone
+        _GitProcess(),  # rev-parse validation
+    ]
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            commands.append(command)
+        return processes.pop(0)
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+    manager.turn("first", repo="owner/repo", branch="main")
+
+    assert len(commands) == 2
+    mirror_command, github_command = commands
+
+    for name, command in (("mirror", mirror_command), ("github", github_command)):
+        # Regression guard: --depth=1 must be ABSENT. It was the workaround for
+        # #4417 while hydration ran over git:// (:9418, the one port whose
+        # tunnels deliberately never close). Over http(s) the tunnel closes
+        # normally, and the whole point of the move is that history is present.
+        assert "--depth=1" not in command, "%s clone must not be shallow" % name
+
+        # Regression guard: the blob filter is what makes full history
+        # affordable. Dropping it turns hydration into a full-content clone of
+        # all history.
+        assert "--filter=blob:none" in command, (
+            "%s clone missing --filter=blob:none" % name
+        )
+
+        # Verify load-bearing flags remain. http.proxy, not core.gitProxy: the
+        # helper is a git:// proxy and does nothing for an https remote, and
+        # this subprocess does not inherit the CLI spawn env that carries
+        # HTTPS_PROXY. Both sources ride the same lane proxy.
+        assert "--single-branch" in command, "%s clone missing --single-branch" % name
+        assert any(arg.startswith("http.proxy=") for arg in command), (
+            "%s clone missing http.proxy config" % name
+        )
+        assert not any(arg.startswith("git://") for arg in command), (
+            "%s clone must not use the git:// transport" % name
+        )
+
+    # The mirror URL is the reserved host on a NON-9418 port (#4473): the port
+    # is what keeps half-close propagation (and with it the #4417 wedge)
+    # away from these tunnels.
+    mirror_url = mirror_command[-2]
+    assert mirror_url == "%s/owner/repo.git" % shim.DEFAULT_MIRROR_URL
+    assert not shim.DEFAULT_MIRROR_URL.endswith(":" + shim.GIT_DAEMON_PORT)
+
+    # The mirror attempt carries NO credential opt-in: anonymous read-only is
+    # the whole posture. Only the github fallback carries it.
+    assert not any("extraHeader" in arg for arg in mirror_command), (
+        "mirror clone must not send an Authorization opt-in"
     )
-
-    # Verify load-bearing flags remain. http.proxy, not core.gitProxy: the
-    # helper is a git:// proxy and does nothing for an https remote, and this
-    # subprocess does not inherit the CLI spawn env that carries HTTPS_PROXY.
-    assert "--single-branch" in command, "clone command missing --single-branch"
-    assert any(arg.startswith("http.proxy=") for arg in command), (
-        "clone command missing http.proxy config"
+    assert any("extraHeader" in arg for arg in github_command), (
+        "github fallback lost its credential opt-in"
     )
+    url = github_command[-2]
+    assert url.startswith("https://github.com/"), "fallback must use https to GitHub"
 
 
 def test_cli_cwd_set_to_checkout(manager, monkeypatch):
@@ -326,12 +410,9 @@ def test_hydration_works_for_non_default_branch(manager, monkeypatch):
         "develop",
         "--config",
         "http.proxy=http://127.0.0.1:1024",
-        "--config",
-        "http.https://github.com/.extraHeader=Authorization: Basic %s"
-        % shim._github_basic_optin(),
         "--single-branch",
         "--filter=blob:none",
-        "https://github.com/owner/repo.git",
+        "%s/owner/repo.git" % shim.DEFAULT_MIRROR_URL,
         checkout_dir,
     ]
     assert manager._checkout_dir == checkout_dir
@@ -404,7 +485,7 @@ def test_hydration_timing_reports_clone_and_existing_status(
         for line in first_lines
     )
     assert any(
-        line.startswith("ember-claude-shim: turn-timing phase=hydration_clone ms=")
+        line.startswith("ember-claude-shim: turn-timing phase=hydration_clone ")
         and line.rsplit("ms=", 1)[1].isdigit()
         for line in first_lines
     )
@@ -538,7 +619,7 @@ def test_no_progress_push_without_a_token(manager, monkeypatch):
 def test_clone_sends_an_authorization_header_to_opt_into_injection(
     manager, monkeypatch
 ):
-    """Regression for a live 401: the clone MUST present Authorization.
+    """Regression for a live 401: the GITHUB clone MUST present Authorization.
 
     The egress sidecar's injection is presence-keyed. It replaces a header the
     guest already sent and discards the value (injectRequest: `requested :=
@@ -550,22 +631,32 @@ def test_clone_sends_an_authorization_header_to_opt_into_injection(
 
     injectAlwaysPaths cannot substitute: it is an exact match on req.URL.Path and
     git's paths are per repository, so it would have to enumerate every repo.
+
+    Since #4473 the first attempt targets the mirror (no credential at all);
+    this guard pins the github FALLBACK attempt, which is where the opt-in
+    belongs.
     """
     monkeypatch.setenv("GH_TOKEN", "dummy-from-guest-env")
+    processes = [
+        _GitProcess(returncode=128, stderr_text="not mirrored"),
+        _GitProcess(),
+        _GitProcess(),
+    ]
     commands = []
 
     def fake_run(command, **_kwargs):
         if command[1] == "clone":
             commands.append(command)
-        return _GitProcess()
+        return processes.pop(0)
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
     manager.turn("first", repo="owner/repo", branch="main")
 
+    assert len(commands) == 2, "the mirror attempt must fail over to github"
     configs = [
-        arg for arg in commands[0] if arg.startswith("http.") and "extraHeader" in arg
+        arg for arg in commands[1] if arg.startswith("http.") and "extraHeader" in arg
     ]
-    assert len(configs) == 1, "clone must set exactly one extraHeader"
+    assert len(configs) == 1, "github fallback must set exactly one extraHeader"
     config = configs[0]
 
     # Scoped by URL, so the opt-in is never presented to any other host.

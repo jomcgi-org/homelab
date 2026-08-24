@@ -50,6 +50,10 @@
 //   - EGRESS_MAX_CONNS: maximum concurrent guest connections (default 256).
 //   - EGRESS_SECRETS: the credential catalog; enables the plaintext inject lane.
 //   - EGRESS_CA_CERT_FILE / EGRESS_CA_KEY_FILE: optional, adds the TLS-MITM lane.
+//   - EGRESS_GIT_MIRROR_ADDR: optional node-local git mirror (#4473). When set,
+//     connections addressed to the reserved mirrorHost name are tunnelled
+//     straight to this loopback address instead of being resolved and
+//     classified as a normal destination.
 package main
 
 import (
@@ -133,8 +137,12 @@ func main() {
 		secrets:              secrets,
 		brokerURL:            brokerURL,
 		minter:               minter,
+		mirrorAddr:           os.Getenv("EGRESS_GIT_MIRROR_ADDR"),
 		logger:               logger,
 		conns:                make(chan struct{}, maxConns),
+	}
+	if p.mirrorAddr != "" {
+		logger.Info("git mirror lane enabled", "reserved_host", mirrorReservedHost, "dial", p.mirrorAddr)
 	}
 
 	ln, err := net.Listen("tcp", listen)
@@ -173,6 +181,15 @@ const defaultListenAddr = "127.0.0.1:8888"
 // destination or escape the node.
 const caFetchHost = "ca.egress.internal"
 
+// mirrorReservedHost is the reserved preamble name for the node-local git
+// mirror (#4473). Like caFetchHost it is never resolved and never classified:
+// when EGRESS_GIT_MIRROR_ADDR is configured, connections addressed here are
+// tunnelled straight to that loopback listener in the same pod. The name does
+// not exist in any DNS the sidecar can reach, so with the address unset (or on
+// any pod without a mirror) the request falls through to route(), fails to
+// resolve, and is denied: fail-closed by construction.
+const mirrorReservedHost = "git-mirror.egress.internal"
+
 // proxy holds the split-horizon posture, the secret catalog, and the CA minter.
 type proxy struct {
 	// externalAllow permits public (non-internal) destinations.
@@ -195,7 +212,10 @@ type proxy struct {
 	// minter mints leaf certs from the egress CA for TLS termination; nil disables
 	// the TLS-MITM lane (the plaintext inject lane does not need it).
 	minter *caMinter
-	logger *slog.Logger
+	// mirrorAddr is the loopback git-mirror listener behind mirrorReservedHost;
+	// empty disables the mirror seam entirely.
+	mirrorAddr string
+	logger     *slog.Logger
 	// conns bounds concurrent guest connections. A nil channel leaves the proxy
 	// unlimited for tests and other direct construction sites.
 	conns         chan struct{}
@@ -279,6 +299,35 @@ func (p *proxy) handle(client net.Conn) {
 			return
 		}
 		p.logger.Info("egress: served CA certificate to guest")
+		return
+	}
+
+	// Node-local git mirror lane (#4473). The reserved host is answered before
+	// routing for the same reason caFetchHost is: it must never resolve or be
+	// classified as a normal destination. What it reaches is the co-located
+	// mirror sidecar's loopback listener, anonymous and read-only upload-pack,
+	// so a guest naming this host gains nothing it could not get from the
+	// public internet except locality: no credential is injected here and none
+	// would help. With mirrorAddr unset the branch is dead and the name falls
+	// through to route(), which cannot resolve it and denies.
+	if p.mirrorAddr != "" && strings.EqualFold(host, mirrorReservedHost) {
+		p.logger.Info("egress allowed (git-mirror)", "dest", dest, "dial", p.mirrorAddr)
+		_ = client.SetReadDeadline(time.Time{})
+		up, err := net.DialTimeout("tcp", p.mirrorAddr, dialTimeout)
+		if err != nil {
+			p.logger.Error("egress git-mirror dial failed", "dial", p.mirrorAddr, "err", err)
+			return
+		}
+		// Git's protocol is request/response in small messages; same Nagle
+		// reasoning as every other upstream in this file.
+		if tcpConn, ok := up.(*net.TCPConn); ok {
+			_ = tcpConn.SetNoDelay(true)
+		}
+		defer up.Close()
+		done := make(chan struct{}, 2)
+		go func() { _, _ = io.Copy(up, newOriginFormReader(br)); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(client, up); done <- struct{}{} }()
+		<-done
 		return
 	}
 

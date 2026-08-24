@@ -14,6 +14,7 @@ oci_digest_manifest(
         "//bazel/tools/image:image.info": "//bazel/tools/image:image.push",
         "//projects/embervm/conformance:image.info": "//projects/embervm/conformance:image.push",
         "//projects/embervm/image:image.info": "//projects/embervm/image:image.push",
+        "//projects/embervm/mirror/image:image.info": "//projects/embervm/mirror/image:image.push",
         "//projects/embervm/noded/image:image.info": "//projects/embervm/noded/image:image.push",
         "//projects/embervm/runtimes/bazel:image.info": "//projects/embervm/runtimes/bazel:image.push",
         "//projects/embervm/runtimes/claude:image.info": "//projects/embervm/runtimes/claude:image.push",
