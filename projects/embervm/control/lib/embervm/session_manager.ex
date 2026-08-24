@@ -100,6 +100,11 @@ defmodule Embervm.SessionManager do
   # gate in that domain instead of comparing it with session row wall-clock times.
   @fleet_freshness_window_ms 120_000
 
+  # #4919: a create idempotency key is 1..200 bytes of printable ASCII. Anything
+  # else (oversized, control characters, non-ASCII) is a client bug and is
+  # denied BEFORE any placement/capacity work, never stored, never bound.
+  @idem_key_max_bytes 200
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -171,9 +176,47 @@ defmodule Embervm.SessionManager do
   @spec create(GenServer.server(), String.t(), String.t(), String.t() | nil) ::
           {:ok, map()} | {:error, term()}
   def create(server, workload, principal, restore_lineage) do
+    create(server, workload, principal, restore_lineage, [])
+  end
+
+  @doc """
+  Like `create/4`, with `opts` carrying the optional `:idempotency_key`
+  (#4919). A key makes the create an UPSERT for the calling workflow:
+
+    * the FIRST create with a given (principal, key) proceeds normally and
+      binds the key to the new session durably;
+    * a retry with the SAME key while that session is live returns the SAME
+      session (`{:ok, map}` with `replayed: true` and NO `token`: the
+      capability was returned exactly once, at the original create);
+    * a second create arriving while the first is still mid-flight (claim/
+      prime run outside this process) is PARKED and resolved with the same
+      replay view when the first settles, so concurrent same-key creates
+      yield exactly ONE session;
+    * reusing a key whose holder is TERMINAL (destroyed/expired/evicted/
+      failed) is `{:error, {:conflict, :session_idempotency_key_reused}}`,
+      never a silent fresh session;
+    * a malformed or oversized key (>200 bytes, or containing anything but
+      printable ASCII) is `{:error, {:denied, :invalid_idempotency_key}}`.
+
+  Enforcement of the binding itself lives in the op-log projection (a unique
+  `(principal, idempotency_key)` constraint applied inside the append
+  transaction, terminal rows included), not in check-then-create here; the
+  lookup above is the fast path, the store has the final word. A binding's
+  lifetime is its session row's lifetime: retention compaction of a terminal
+  session frees its key. Keys are scoped PER PRINCIPAL: two principals may use
+  the same key independently.
+  """
+  @spec create(GenServer.server(), String.t(), String.t(), String.t() | nil, keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def create(server, workload, principal, restore_lineage, opts) do
     # Cold-boot persistence creates can legitimately take tens of seconds while
     # the manager remains responsive to other calls.
-    GenServer.call(server, {:create, workload, principal, normalize_restore_lineage(restore_lineage)}, 180_000)
+    GenServer.call(
+      server,
+      {:create, workload, principal, normalize_restore_lineage(restore_lineage),
+       normalize_idempotency_key(Keyword.get(opts, :idempotency_key))},
+      180_000
+    )
   end
 
   @doc """
@@ -301,11 +344,18 @@ defmodule Embervm.SessionManager do
       # invoke can park (relighting ledger) and be relit once the bank completes.
       banking: %{},
       # create_ref -> {from, lineage_id, workload, principal, entry, node_id,
-      # snapshot_ref, dial_id, restore_lineage}; claim/prime runs outside this
-      # process. restore_lineage is nil for a normal create (#4306 slice 3).
+      # snapshot_ref, dial_id, restore_lineage, idempotency_key}; claim/prime runs
+      # outside this process. restore_lineage is nil for a normal create (#4306
+      # slice 3); idempotency_key is nil for an unkeyed create (#4919).
       create_inflight: %{},
       create_next_ref: 0,
       create_workers: %{},
+      # #4919: {principal, key} -> create_ref for creates currently mid-flight,
+      # and {principal, key} -> [from] callers parked behind them. Claimed
+      # synchronously in handle_call (so a later same-key caller parks instead of
+      # racing), drained in finish_create with the winner's result as a replay.
+      idempotency_inflight: %{},
+      idempotency_waiters: %{},
       # session_id -> {pid, monitor_ref, timeout_ref, worker_ref, resumed}. Live
       # teardown must not run on this process because a stuck node RPC would block
       # creates, routing, sweeps, and the reconcile pass that can redrive it.
@@ -422,53 +472,138 @@ defmodule Embervm.SessionManager do
   end
 
   @impl true
-  def handle_call({:create, workload, principal, restore_lineage}, from, state) do
-    case do_create_inline(state, workload, principal, restore_lineage) do
-      {:ok,
-       %{entry: entry, node_id: node_id, dial_id: dial_id, snapshot_ref: snapshot_ref, lineage_id: lineage_id}} ->
-        ref = state.create_next_ref
-
-        state =
-          put_in(
-            state.create_inflight[ref],
-            {from, lineage_id, workload, principal, entry, node_id, snapshot_ref, dial_id, restore_lineage}
-          )
-
-        # #4306/#4313 review fix 2: mark the lineage in flight in the SAME
-        # state update, synchronously, before this handle_call returns (so
-        # the very next {:create,...} this GenServer processes, for any
-        # caller, sees it).
-        state =
-          if restore_lineage do
-            %{state | inflight_restore_lineages: MapSet.put(state.inflight_restore_lineages, restore_lineage)}
-          else
-            state
-          end
-
-        state = %{state | create_next_ref: ref + 1}
-        {state, worker} =
-          spawn_create_worker(
-            state,
-            ref,
-            node_id,
-            dial_id,
-            workload,
-            snapshot_ref,
-            entry,
-            lineage_id,
-            restore_lineage,
-            principal
-          )
-
-        {:noreply, put_in(state.create_workers[ref], worker)}
-
-      {:error, {:denied, reason}} = error_result ->
-        # Bind the FULL {:error, {:denied, _}} tuple: binding the inner term
-        # replied {:denied, reason} and every denial test failed on the shape.
+  def handle_call({:create, workload, principal, restore_lineage, idempotency_key}, from, state) do
+    cond do
+      # A present-but-malformed key is a client bug: deny before anything runs.
+      idempotency_key != nil and not valid_idempotency_key?(idempotency_key) ->
+        reason = :invalid_idempotency_key
         audit_denial(state, principal, workload, reason)
-        log_create_result(error_result, workload, principal)
-        {:reply, error_result, state}
+        log_create_result({:error, {:denied, reason}}, workload, principal)
+        {:reply, {:error, {:denied, reason}}, state}
+
+      # Same-key retry against an already-bound session: replay the live holder,
+      # conflict on a terminal one (reuse after destroy is never a fresh create).
+      idempotency_key != nil ->
+        case idempotency_lookup(state, principal, idempotency_key) do
+          {:replay, session} ->
+            {:reply, {:ok, replay_view(session)}, state}
+
+          {:conflict, _terminal} ->
+            {:reply, {:error, {:conflict, :session_idempotency_key_reused}}, state}
+
+          :unbound ->
+            create_unbound(state, from, workload, principal, restore_lineage, idempotency_key)
+        end
+
+      true ->
+        create_unbound(state, from, workload, principal, restore_lineage, nil)
     end
+  end
+
+  # The tail of {:create, ...} for a key that is not yet bound (or was never
+  # supplied): the ordinary inline fast path, plus the in-flight parking that
+  # makes concurrent same-key creates resolve to ONE session. do_create_inline
+  # runs synchronously here; if it admits the create, its worker (claim/prime)
+  # runs OUTSIDE this process, so a second same-key caller arriving before
+  # finish_create parks on {principal, key} instead of racing a duplicate.
+  defp create_unbound(state, from, workload, principal, restore_lineage, idempotency_key) do
+    waiter_key = {principal, idempotency_key}
+
+    if idempotency_key != nil and Map.has_key?(state.idempotency_inflight, waiter_key) do
+      # The first same-key create has not settled yet. Park this caller; it is
+      # replied when finish_create drains the key (same result shape, replay view).
+      waiters = Map.get(state.idempotency_waiters, waiter_key, [])
+      {:noreply, %{state | idempotency_waiters: Map.put(state.idempotency_waiters, waiter_key, [from | waiters])}}
+    else
+      case do_create_inline(state, workload, principal, restore_lineage) do
+        {:ok,
+         %{entry: entry, node_id: node_id, dial_id: dial_id, snapshot_ref: snapshot_ref, lineage_id: lineage_id}} ->
+          ref = state.create_next_ref
+
+          state =
+            put_in(
+              state.create_inflight[ref],
+              {from, lineage_id, workload, principal, entry, node_id, snapshot_ref, dial_id, restore_lineage,
+               idempotency_key}
+            )
+
+          # #4306/#4313 review fix 2: mark the lineage in flight in the SAME
+          # state update, synchronously, before this handle_call returns (so
+          # the very next {:create,...} this GenServer processes, for any
+          # caller, sees it).
+          state =
+            if restore_lineage do
+              %{state | inflight_restore_lineages: MapSet.put(state.inflight_restore_lineages, restore_lineage)}
+            else
+              state
+            end
+
+          # #4919: claim the key in the SAME synchronous update, so any later
+          # same-key create sees it parked rather than racing a duplicate.
+          state =
+            if idempotency_key do
+              %{
+                state
+                | idempotency_inflight: Map.put(state.idempotency_inflight, waiter_key, ref),
+                  idempotency_waiters: Map.put(state.idempotency_waiters, waiter_key, [])
+              }
+            else
+              state
+            end
+
+          state = %{state | create_next_ref: ref + 1}
+
+          {state, worker} =
+            spawn_create_worker(
+              state,
+              ref,
+              node_id,
+              dial_id,
+              workload,
+              snapshot_ref,
+              entry,
+              lineage_id,
+              restore_lineage,
+              principal
+            )
+
+          {:noreply, put_in(state.create_workers[ref], worker)}
+
+        {:error, {:denied, reason}} = error_result ->
+          # Bind the FULL {:error, {:denied, _}} tuple: binding the inner term
+          # replied {:denied, reason} and every denial test failed on the shape.
+          audit_denial(state, principal, workload, reason)
+          log_create_result(error_result, workload, principal)
+          {:reply, error_result, state}
+      end
+    end
+  end
+
+  # The durable hot-set lookup behind a keyed retry: `{:replay, session}` for a
+  # live holder, `{:conflict, session}` for a terminal one (the issue's rule:
+  # reuse after destroy conflicts), `:unbound` to proceed with a normal create.
+  defp idempotency_lookup(state, principal, key) do
+    case SessionStore.get_by_idempotency_key(state.session_store, principal, key) do
+      {:ok, %{state: session_state} = session} ->
+        if SessionState.terminal?(session_state), do: {:conflict, session}, else: {:replay, session}
+
+      :error ->
+        :unbound
+    end
+  end
+
+  # The replay body of a same-key retry: the SAME session's current identity,
+  # no token (the capability was minted once, at the original create).
+  defp replay_view(session) do
+    %{
+      session_id: session.session_id,
+      lineage_id: session.lineage_id || session.session_id,
+      expires_at: session.expires_at,
+      base_digest: session.base_digest,
+      state: session.state,
+      restored: false,
+      replayed: true
+    }
   end
 
   def handle_call({:route_invoke, session_id, req}, from, state) do
@@ -901,7 +1036,8 @@ defmodule Embervm.SessionManager do
       {nil, _} ->
         state
 
-      {{from, lineage_id, workload, principal, entry, node_id, _snapshot_ref, dial_id, restore_lineage}, inflight} ->
+      {{from, lineage_id, workload, principal, entry, node_id, _snapshot_ref, dial_id, restore_lineage,
+        idempotency_key}, inflight} ->
         cleanup_create_worker(Map.get(state.create_workers, ref))
 
         state = %{state | create_inflight: inflight, create_workers: Map.delete(state.create_workers, ref)}
@@ -920,7 +1056,7 @@ defmodule Embervm.SessionManager do
         result =
           case outcome do
             {:ok, vm_id, restored} ->
-              register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored)
+              register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored, idempotency_key)
 
             {:error, reason} ->
               audit_denial(state, principal, workload, reason)
@@ -941,10 +1077,36 @@ defmodule Embervm.SessionManager do
           end
 
         GenServer.reply(from, result)
+
+        # #4919: drain callers parked on this key with the SAME outcome, shaped
+        # as a replay for a success (they never receive the capability token:
+        # exactly one create response ever carries it). A failed winner replies
+        # its failure to every waiter; each client simply retries.
+        waiter_key = {principal, idempotency_key}
+        {waiters, waiters_map} = Map.pop(state.idempotency_waiters, waiter_key, [])
+
+        state = %{
+          state
+          | idempotency_inflight: Map.delete(state.idempotency_inflight, waiter_key),
+            idempotency_waiters: waiters_map
+        }
+
+        Enum.each(waiters, fn waiter ->
+          GenServer.reply(waiter, idempotent_waiter_result(result))
+        end)
+
         log_create_result(result, workload, principal)
         state
     end
   end
+
+  # A parked same-key caller's view of the winning create: identical identity,
+  # replayed: true, and NO token (the capability was returned exactly once).
+  defp idempotent_waiter_result({:ok, created}) do
+    {:ok, created |> Map.delete(:token) |> Map.put(:replayed, true)}
+  end
+
+  defp idempotent_waiter_result(other), do: other
 
   defp cleanup_create_worker({pid, monitor_ref, timeout_ref}) do
     Process.cancel_timer(timeout_ref)
@@ -1075,6 +1237,19 @@ defmodule Embervm.SessionManager do
   defp normalize_restore_lineage(lineage) when is_binary(lineage) and lineage != "", do: lineage
   defp normalize_restore_lineage(_other), do: nil
 
+  # #4919: absent, empty, or non-string mean "no key"; a present key is carried
+  # verbatim (format validation is the server-side gate below, so a malformed
+  # key is a structured denial rather than a silently unkeyed create).
+  defp normalize_idempotency_key(key) when is_binary(key) and key != "", do: key
+  defp normalize_idempotency_key(_other), do: nil
+
+  defp valid_idempotency_key?(key) when is_binary(key) do
+    byte_size(key) <= @idem_key_max_bytes and
+      Enum.all?(:binary.bin_to_list(key), fn b -> b >= 0x20 and b <= 0x7E end)
+  end
+
+  defp valid_idempotency_key?(_other), do: false
+
   defp prime(state, node_id, workload, snapshot_ref, entry, lineage_id) do
     # A prime failure is NOT a capacity problem, and reporting it as one cost a
     # whole debugging cycle: the persistence flip denied every create with
@@ -1150,7 +1325,7 @@ defmodule Embervm.SessionManager do
   # PR-4 rebinds). If the process fails to start, the durable session is orphaned as
   # a live-but-unrouted row; PR-4 adoption rebinds it from NodeStatus, so we surface
   # the create as failed rather than leave the caller a token to a dead process.
-  defp register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored) do
+  defp register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored, idempotency_key \\ nil) do
     attrs = %{
       tenant: state.tenant,
       principal: principal,
@@ -1180,7 +1355,8 @@ defmodule Embervm.SessionManager do
       volume_node_id: if(persistence_enabled_workload?(entry), do: node_id, else: nil),
       base_snapshot_ref: Map.get(entry, :image_ref),
       base_digest: base_digest(entry),
-      expires_at: state.clock.() + entry.session.max_lifetime_seconds * 1000
+      expires_at: state.clock.() + entry.session.max_lifetime_seconds * 1000,
+      idempotency_key: idempotency_key
     }
 
     # node_id is the K8s node where the VM primed/started; SessionStore carries it into session_created.
@@ -1195,8 +1371,30 @@ defmodule Embervm.SessionManager do
             {:error, {:denied, :process_start_failed}}
         end
 
+      # #4919 defense in depth: this manager's own fast path already serializes
+      # same-key creates, so reaching the store-level duplicate means another
+      # writer bound the key first (a restart race, or a second manager against
+      # one op-log). Resolve the holder to exactly what the fast path would have
+      # answered: replay the live winner, conflict on a terminal one.
+      {:error, {:duplicate_session_idempotency_key, holder}} ->
+        resolve_lost_key_race(state, holder)
+
       {:error, reason} ->
         {:error, {:denied, {:store, reason}}}
+    end
+  end
+
+  defp resolve_lost_key_race(state, holder) do
+    case SessionStore.get(state.session_store, holder) do
+      {:ok, %{state: session_state} = winner} ->
+        if SessionState.terminal?(session_state) do
+          {:error, {:conflict, :session_idempotency_key_reused}}
+        else
+          {:ok, replay_view(winner)}
+        end
+
+      :error ->
+        {:error, {:denied, {:store, {:duplicate_session_idempotency_key, holder}}}}
     end
   end
 

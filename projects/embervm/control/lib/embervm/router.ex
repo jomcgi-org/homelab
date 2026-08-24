@@ -121,6 +121,11 @@ defmodule Embervm.Router do
 
   # -- session routes (R2, front-end only; no placement logic here) ----------
 
+  # POST /v1/workloads/:name/sessions takes an optional `Idempotency-Key`
+  # header (#4919): same-key retry replays the SAME live session (200, no
+  # token), reuse after its terminal state conflicts (409), malformed keys
+  # are rejected (400). GET on this path accepts ?idempotency_key= to resolve
+  # one binding instead of paging.
   post "/v1/workloads/:name/sessions" do
     handle_create_session(conn, name)
   end
@@ -976,19 +981,28 @@ defmodule Embervm.Router do
   # body `{"restore_lineage": "<lineage-id>"}` requests a #4306 slice 3
   # cross-generation create: the new session inherits that lineage's durable
   # workspace instead of minting a fresh one (an absent/empty/malformed body
-  # is always a normal create). 201 with the token (returned ONCE) and
-  # `restored` (whether the inherited workspace was actually recovered), 429
-  # for a capacity/quota denial, 403/404/409 for a class, workload, or lineage
-  # mismatch, 500 for an internal failure.
+  # is always a normal create). An optional `Idempotency-Key` header (#4919)
+  # makes the create an UPSERT: a same-key retry answers 200 with the SAME
+  # live session's current state and NO token (the capability was returned
+  # exactly once), a same-key retry after that session went terminal is a 409
+  # conflict, and a malformed/oversized key is a 400. Keys are scoped per
+  # principal and bounded by their session row's lifetime (retention frees a
+  # terminal row's key). 201 with the token (returned ONCE) and `restored`
+  # (whether the inherited workspace was actually recovered) for a fresh
+  # create, 429 for a capacity/quota denial, 403/404/409 for a class,
+  # workload, or lineage mismatch, 500 for an internal failure.
   defp handle_create_session(conn, workload) do
     principal = conn.assigns.principal
     {restore_lineage, conn} = optional_restore_lineage(conn)
+    idempotency_key = header_value(conn, "idempotency-key")
 
     # Cold-boot persistence creates legitimately take tens of seconds; the
     # SessionManager call must not cut the claim/prime RPC at the old 5-second limit.
     result =
       try do
-        session_manager().create(session_manager_server(), workload, principal, restore_lineage)
+        session_manager().create(session_manager_server(), workload, principal, restore_lineage,
+          idempotency_key: idempotency_key
+        )
       catch
         :exit, {:timeout, _} -> :control_plane_busy
       end
@@ -996,6 +1010,20 @@ defmodule Embervm.Router do
     case result do
       :control_plane_busy ->
         send_json(conn, 503, %{error: "control plane busy", retryable: true})
+
+      # A keyed retry resolved to an EXISTING live session: 200 with its current
+      # state, deliberately WITHOUT a session_token (that capability is minted
+      # once, at the original create; replaying it would widen a bearer secret).
+      {:ok, %{replayed: true} = replay} ->
+        send_json(conn, 200, %{
+          session_id: replay.session_id,
+          lineage_id: Map.get(replay, :lineage_id, replay.session_id),
+          expires_at: replay.expires_at,
+          base_digest: replay.base_digest,
+          state: to_string(Map.get(replay, :state, :running)),
+          restored: false,
+          replayed: true
+        })
 
       {:ok, created} ->
         send_json(conn, 201, %{
@@ -1010,6 +1038,18 @@ defmodule Embervm.Router do
           base_digest: created.base_digest,
           state: to_string(Map.get(created, :state, :running)),
           restored: Map.get(created, :restored, false)
+        })
+
+      # A key whose holder is terminal (destroyed/expired/evicted/failed):
+      # the issue's rule is CONFLICT, never a silent fresh session. The old
+      # session is gone, so this is not retryable against THIS key; callers
+      # mint a new key to create again.
+      {:error, {:conflict, reason}} ->
+        send_json(conn, 409, %{
+          error: "session idempotency key already bound to a terminal session",
+          reason: to_string(reason),
+          workload: workload,
+          retryable: false
         })
 
       {:error, {:denied, reason}} ->
@@ -1053,6 +1093,17 @@ defmodule Embervm.Router do
           reason: to_string(r),
           workload: workload,
           retryable: true
+        })
+
+      # #4919: a malformed or oversized Idempotency-Key is a CLIENT bug (400,
+      # the request itself is invalid), unlike a cap denial (429, retry when
+      # capacity frees). Nothing was placed or bound.
+      :invalid_idempotency_key ->
+        send_json(conn, 400, %{
+          error: "idempotency key must be 1..200 bytes of printable ASCII",
+          reason: "invalid_idempotency_key",
+          workload: workload,
+          retryable: false
         })
 
       :unknown_workload ->
@@ -1136,20 +1187,50 @@ defmodule Embervm.Router do
     end
   end
 
-  # GET /v1/workloads/:name/sessions (management auth): paged listing.
+  # GET /v1/workloads/:name/sessions (management auth): paged listing. With an
+  # `idempotency_key` query parameter (#4919) it answers the query-by-key seam
+  # instead of paging: at most ONE session (a key binds one session per
+  # principal), scoped to the CALLER's principal, so a caller can never probe
+  # another principal's bindings by guessing keys; a mismatched workload or
+  # principal reads as an empty page rather than an error.
   defp handle_list_sessions(conn, workload) do
     limit = conn |> int_param("limit", 50) |> clamp(1, 500)
     offset = conn |> int_param("offset", 0) |> max(0)
 
-    {:ok, page} = session_store().list(session_store_server(), workload, limit: limit, offset: offset)
+    case Map.get(conn.query_params, "idempotency_key") do
+      nil ->
+        {:ok, page} = session_store().list(session_store_server(), workload, limit: limit, offset: offset)
 
-    send_json(conn, 200, %{
-      workload: workload,
-      items: Enum.map(page.items, &session_view/1),
-      total: page.total,
-      limit: page.limit,
-      offset: page.offset
-    })
+        send_json(conn, 200, %{
+          workload: workload,
+          items: Enum.map(page.items, &session_view/1),
+          total: page.total,
+          limit: page.limit,
+          offset: page.offset
+        })
+
+      "" ->
+        send_json(conn, 200, empty_session_page(workload, limit, offset))
+
+      key ->
+        items =
+          case session_store().get_by_idempotency_key(session_store_server(), conn.assigns.principal, key) do
+            {:ok, %{workload: ^workload} = session} -> [session_view(session)]
+            _ -> []
+          end
+
+        send_json(conn, 200, %{
+          workload: workload,
+          items: items,
+          total: length(items),
+          limit: limit,
+          offset: offset
+        })
+    end
+  end
+
+  defp empty_session_page(workload, limit, offset) do
+    %{workload: workload, items: [], total: 0, limit: limit, offset: offset}
   end
 
   # POST /v1/sessions/:id/invoke (SESSION TOKEN auth ONLY). The bearer token must

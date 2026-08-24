@@ -60,7 +60,10 @@ defmodule Embervm.RouterTest do
   # can drive the HTTP surface, and especially the SESSION-TOKEN auth boundary,
   # without a live daemon or the supervised SessionManager.
   defmodule FakeSessionManager do
-    def create(_srv, "wl-ok", _principal, _restore_lineage),
+    # The 5th arg is the create-call opts (the #4919 idempotency key rides in as
+    # idempotency_key: <header value or nil>); every clause below ignores it
+    # unless it exists to prove header threading.
+    def create(_srv, "wl-ok", _principal, _restore_lineage, _opts),
       do:
         {:ok,
          %{
@@ -73,9 +76,9 @@ defmodule Embervm.RouterTest do
            restored: false
          }}
 
-    def create(_srv, "wl-cap", _principal, _restore_lineage), do: {:error, {:denied, :session_cap}}
-    def create(_srv, "wl-vmcap", _principal, _restore_lineage), do: {:error, {:denied, :workload_cap}}
-    def create(_srv, "wl-task", _principal, _restore_lineage), do: {:error, {:denied, :not_session_class}}
+    def create(_srv, "wl-cap", _principal, _restore_lineage, _opts), do: {:error, {:denied, :session_cap}}
+    def create(_srv, "wl-vmcap", _principal, _restore_lineage, _opts), do: {:error, {:denied, :workload_cap}}
+    def create(_srv, "wl-task", _principal, _restore_lineage, _opts), do: {:error, {:denied, :not_session_class}}
 
     # #4306 slice 3: restore_lineage-carrying creates. wl-restore-ok only
     # returns restored: true when it actually RECEIVED restore_lineage (a
@@ -83,7 +86,7 @@ defmodule Embervm.RouterTest do
     # rather than the fake just always answering true. lineage_id echoes the
     # RECEIVED restore_lineage (item B): the response must expose the same
     # inherited lineage handle the caller sent, not the fresh session_id.
-    def create(_srv, "wl-restore-ok", _principal, restore_lineage) when is_binary(restore_lineage) and restore_lineage != "",
+    def create(_srv, "wl-restore-ok", _principal, restore_lineage, _opts) when is_binary(restore_lineage) and restore_lineage != "",
       do:
         {:ok,
          %{
@@ -96,16 +99,44 @@ defmodule Embervm.RouterTest do
            restored: true
          }}
 
-    def create(_srv, "wl-unknown-lineage", _principal, _restore_lineage), do: {:error, {:denied, :unknown_lineage}}
-    def create(_srv, "wl-lineage-workload-mismatch", _principal, _restore_lineage), do: {:error, {:denied, :lineage_workload_mismatch}}
-    def create(_srv, "wl-lineage-principal-mismatch", _principal, _restore_lineage), do: {:error, {:denied, :lineage_principal_mismatch}}
-    def create(_srv, "wl-lineage-live-heir", _principal, _restore_lineage), do: {:error, {:denied, :lineage_live_heir}}
+    def create(_srv, "wl-unknown-lineage", _principal, _restore_lineage, _opts), do: {:error, {:denied, :unknown_lineage}}
+    def create(_srv, "wl-lineage-workload-mismatch", _principal, _restore_lineage, _opts), do: {:error, {:denied, :lineage_workload_mismatch}}
+    def create(_srv, "wl-lineage-principal-mismatch", _principal, _restore_lineage, _opts), do: {:error, {:denied, :lineage_principal_mismatch}}
+    def create(_srv, "wl-lineage-live-heir", _principal, _restore_lineage, _opts), do: {:error, {:denied, :lineage_live_heir}}
 
     # #4306/#4313 review fix 2: TOCTOU guard denial.
-    def create(_srv, "wl-lineage-restore-in-flight", _principal, _restore_lineage),
+    def create(_srv, "wl-lineage-restore-in-flight", _principal, _restore_lineage, _opts),
       do: {:error, {:denied, :lineage_restore_in_flight}}
 
-    def create(_srv, _wl, _principal, _restore_lineage), do: {:error, {:denied, :unknown_workload}}
+    # #4919: the replay/conflict/invalid-key response shapes, plus wl-idem-echo,
+    # which answers successfully ONLY when the router threaded the exact
+    # Idempotency-Key header value through, proving the hop.
+    def create(_srv, "wl-idem-echo", _principal, _restore_lineage, opts) do
+      case Keyword.get(opts, :idempotency_key) do
+        "thread-me" ->
+          {:ok,
+           %{
+             session_id: "s-replayed",
+             lineage_id: "s-replayed",
+             expires_at: 9_000_000,
+             base_digest: "sha256:x",
+             state: :running,
+             restored: false,
+             replayed: true
+           }}
+
+        _ ->
+          {:error, {:denied, :unknown_workload}}
+      end
+    end
+
+    def create(_srv, "wl-idem-conflict", _principal, _restore_lineage, _opts),
+      do: {:error, {:conflict, :session_idempotency_key_reused}}
+
+    def create(_srv, "wl-idem-invalid", _principal, _restore_lineage, _opts),
+      do: {:error, {:denied, :invalid_idempotency_key}}
+
+    def create(_srv, _wl, _principal, _restore_lineage, _opts), do: {:error, {:denied, :unknown_workload}}
 
     def invoke(_srv, "s-live", _req), do: {:ok, %{status_code: 200, headers: %{"content-type" => "text/plain"}, body: "echoed"}}
     def invoke(_srv, "s-queue", _req), do: {:error, :queue_full}
@@ -120,7 +151,7 @@ defmodule Embervm.RouterTest do
   end
 
   defmodule TimeoutSessionManager do
-    def create(server, _workload, _principal, _restore_lineage) do
+    def create(server, _workload, _principal, _restore_lineage, _opts) do
       timeout = Application.fetch_env!(:embervm, :session_create_call_timeout_ms)
       GenServer.call(server, :create, timeout)
     end
@@ -156,6 +187,26 @@ defmodule Embervm.RouterTest do
       do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
 
     def list(_srv, _wl, _opts), do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
+
+    # #4919 query-by-key: one known binding for the list-by-key request test.
+    def get_by_idempotency_key(_srv, _principal, "find-me"),
+      do:
+        {:ok,
+         %{
+           session_id: "s-live",
+           workload: "wl-ok",
+           principal: "p",
+           state: :running,
+           generation: 0,
+           base_digest: "sha256:x",
+           created_at: 1,
+           last_invoke_at: nil,
+           expires_at: 9_000_000,
+           updated_at: 1,
+           terminal_reason: nil
+         }}
+
+    def get_by_idempotency_key(_srv, _principal, _key), do: :error
 
     def all(_srv) do
       [
@@ -1127,6 +1178,73 @@ defmodule Embervm.RouterTest do
     assert json(resp.body)["restored"] == false
   end
 
+  # -- Idempotency-Key on session create (#4919) ------------------------------
+
+  test "POST .../sessions threads the Idempotency-Key header through and answers a replay with 200 and no token" do
+    with_session_fakes()
+
+    resp =
+      req(
+        :post,
+        "/v1/workloads/wl-idem-echo/sessions",
+        auth("good") ++ [{"idempotency-key", "thread-me"}]
+      )
+
+    assert resp.status == 200
+    body = json(resp.body)
+    assert body["session_id"] == "s-replayed"
+    # The capability token was returned ONCE (at the original create); a replay
+    # view carries the session's current state but never a fresh token.
+    refute Map.has_key?(body, "session_token")
+    assert body["replayed"] == true
+  end
+
+  test "POST .../sessions without the header passes no idempotency key (normal create path)" do
+    with_session_fakes()
+
+    # wl-idem-echo only succeeds when the exact key arrives, so a bare request
+    # proves the router forwards an ABSENT key as absent, not as some default.
+    resp = req(:post, "/v1/workloads/wl-idem-echo/sessions", auth("good"))
+    assert resp.status == 404
+    assert json(resp.body)["reason"] == "unknown_workload"
+  end
+
+  test "POST .../sessions with a reused-after-destroy key is a non-retryable 409 conflict" do
+    with_session_fakes()
+
+    resp =
+      req(
+        :post,
+        "/v1/workloads/wl-idem-conflict/sessions",
+        auth("good") ++ [{"idempotency-key", "dead/run"}]
+      )
+
+    assert resp.status == 409
+    body = json(resp.body)
+    assert body["reason"] == "session_idempotency_key_reused"
+    assert body["retryable"] == false
+  end
+
+  test "POST .../sessions with an oversized key is a 400" do
+    with_session_fakes()
+
+    # An oversized key travels fine over HTTP and must be denied BY THE CONTROL
+    # PLANE (400), not by an HTTP client. Control-character keys never reach the
+    # router over HTTP/1 (the client refuses them first), so byte-level
+    # malformedness is pinned in SessionCreateIdempotencyTest against the
+    # manager directly.
+    oversized =
+      req(
+        :post,
+        "/v1/workloads/wl-idem-invalid/sessions",
+        auth("good") ++ [{"idempotency-key", String.duplicate("k", 201)}]
+      )
+
+    assert oversized.status == 400
+    assert json(oversized.body)["reason"] == "invalid_idempotency_key"
+    assert json(oversized.body)["retryable"] == false
+  end
+
   test "an empty or malformed restore_lineage body is treated as a normal create, not an error" do
     with_session_fakes()
 
@@ -1274,6 +1392,21 @@ defmodule Embervm.RouterTest do
     body = json(resp.body)
     assert body["workload"] == "wl-ok"
     assert body["items"] == []
+  end
+
+  test "GET /v1/workloads/:name/sessions?idempotency_key= resolves one session by key (#4919)" do
+    with_session_fakes()
+
+    hit = req(:get, "/v1/workloads/wl-ok/sessions?idempotency_key=find-me", auth("good"))
+    assert hit.status == 200
+    body = json(hit.body)
+    assert body["total"] == 1
+    assert [%{"session_id" => "s-live"}] = body["items"]
+
+    miss = req(:get, "/v1/workloads/wl-ok/sessions?idempotency_key=never-seen", auth("good"))
+    assert miss.status == 200
+    assert json(miss.body)["total"] == 0
+    assert json(miss.body)["items"] == []
   end
 
   # -- activator (R3, Task 8) ------------------------------------------------
