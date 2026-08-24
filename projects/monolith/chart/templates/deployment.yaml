@@ -304,6 +304,13 @@ spec:
               value: {{ .Values.cdHealth.chartLagSeconds | quote }}
             - name: CD_HEALTH_CI_RED_WINDOW_S
               value: {{ .Values.cdHealth.ciRedWindowSeconds | quote }}
+            # Which Kargo-managed production apps the chart-lag check covers
+            # (#4890), rendered as the JSON list cd_health._parse_apps reads.
+            # One entry per promotion pipeline; see cdHealth.apps in values.yaml
+            # for the three fields each entry carries. Rendered even when empty:
+            # an empty list faults loudly rather than watching nothing silently.
+            - name: CD_HEALTH_KARGO_APPS
+              value: {{ .Values.cdHealth.apps | toJson | quote }}
             - name: CD_PROBE_INTERVAL_S
               value: {{ .Values.cdHealth.probeIntervalSeconds | quote }}
             {{- if .Values.whatsapp.enabled }}

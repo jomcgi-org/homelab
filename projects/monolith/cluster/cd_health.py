@@ -11,12 +11,19 @@ This component is advisory. A deploy in progress or production behind a chart
 is not the public site being down, so the signal is reported as metadata and
 does not make the health endpoint return 503.
 
-1. Production's live monolith chart is older than the oldest unpromoted monolith
-   chart Kargo has discovered, for longer than the lag window. The old ArgoCD
-   sweep faulted on permanently unconvergeable OutOfSync/Healthy diffs in authentik,
-   argocd, kyverno, and context-forge-gateway, so it was always red and
-   monitored nothing. The original #4597 fault class, a targetRevision for a
-   chart that was never published, is structurally impossible now that Kargo
+Coverage is configured, not hardcoded (#4890): ``CD_HEALTH_KARGO_APPS`` lists
+every Kargo-managed production app (monolith and embervm today, rendered from
+``cdHealth.apps`` in the chart), and the lag judgement below runs once per
+entry. Before embervm joined, its four-version lag on 2026-08-14 (#4884) was
+invisible here while `Synced`/`Healthy` stayed true, because those describe
+agreement with the pinned version, not currency with main.
+
+1. A production app's live chart is older than the oldest unpromoted chart
+   Kargo has discovered for it, for longer than the lag window. The old ArgoCD
+   sweep faulted on permanently unconvergeable OutOfSync/Healthy diffs in
+   authentik, argocd, kyverno, and context-forge-gateway, so it was always red
+   and monitored nothing. The original #4597 fault class, a targetRevision for
+   a chart that was never published, is structurally impossible now that Kargo
    owns targetRevision and only promotes discovered Freight. What can still
    happen is production sitting on an old chart while newer charts pile up.
 2. main's CI: the most recent commit WITH A COMPLETED STATUS is red and older
@@ -43,6 +50,7 @@ which is when it starts to matter.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -80,8 +88,49 @@ def _parse_ts(value: str | None) -> datetime | None:
         return None
 
 
-PROD_APP_NAME = "monolith"
-KARGO_NAMESPACE = "kargo-monolith"
+# One entry per Kargo-managed production app, rendered from
+# cdHealth.apps by the chart (issue #4890). Each entry carries the three
+# names the lag check needs: app is the ArgoCD Application whose deployed
+# revision counts as that app's production, kargo_namespace is the Kargo
+# project namespace whose Warehouse discovers its chart Freight, and
+# chart_repo_suffix picks that chart out of a Freight's repoURL. The RBAC
+# for both reads is already ClusterRole-scoped, so a new app costs a values
+# change only.
+def _parse_apps(raw: str | None) -> list[dict]:
+    """Parse CD_HEALTH_KARGO_APPS into per-app check inputs.
+
+    Malformed or incomplete entries are dropped with a warning rather than
+    aborting the rest of the list, but an empty RESULT is not silently
+    healthy: _chart_lag_fault faults on it, mirroring how empty Freight is
+    treated below. A signal watching nothing must not read as green.
+    """
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except ValueError:
+        logger.warning("cd health: CD_HEALTH_KARGO_APPS is not valid JSON")
+        return []
+    if not isinstance(entries, list):
+        logger.warning("cd health: CD_HEALTH_KARGO_APPS is not a JSON list")
+        return []
+    apps = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            logger.warning("cd health: dropping non-object app entry %r", entry)
+            continue
+        app = entry.get("app")
+        namespace = entry.get("kargo_namespace")
+        suffix = entry.get("chart_repo_suffix")
+        if not app or not namespace or not suffix:
+            logger.warning("cd health: dropping incomplete app entry %r", entry)
+            continue
+        apps.append({"app": app, "namespace": namespace, "suffix": suffix})
+    return apps
+
+
+def _configured_apps() -> list[dict]:
+    return _parse_apps(os.environ.get("CD_HEALTH_KARGO_APPS", ""))
 
 
 def _chart_version(value: str | None) -> tuple[int, int, int] | None:
@@ -95,16 +144,23 @@ def _chart_version(value: str | None) -> tuple[int, int, int] | None:
 
 
 def _evaluate_chart_lag(
-    live_version: str | None, freight: list[dict], lag_s: float, now: datetime
+    app: str,
+    live_version: str | None,
+    freight: list[dict],
+    lag_s: float,
+    now: datetime,
 ) -> tuple[str | None, str | None]:
-    """Judge production chart lag without doing any I/O."""
+    """Judge one app's production chart lag without doing any I/O.
+
+    Every message names its app so several apps can share one detail string.
+    """
     live = _chart_version(live_version)
     if live is None:
-        return None, "prod chart version unreadable"
+        return None, f"{app}: prod chart version unreadable"
     if not freight:
         # This component is advisory and pages nobody, so a false positive is
         # acceptable, but a false negative when the entire signal dies is not.
-        return "no monolith Freight found, chart discovery may be broken", None
+        return f"{app}: no Freight found, chart discovery may be broken", None
 
     newer = []
     for item in freight:
@@ -112,7 +168,7 @@ def _evaluate_chart_lag(
         if version is not None and version > live and _parse_ts(item.get("created_at")):
             newer.append(item)
     if not newer:
-        return None, f"prod on {live_version}, up to date"
+        return None, f"{app}: prod on {live_version}, up to date"
 
     # The oldest unpromoted Freight owns the clock. New charts arriving every
     # 20 minutes must not reset how long production has actually been behind.
@@ -127,24 +183,50 @@ def _evaluate_chart_lag(
     # immaterial, but it should not surprise the next reader.
     if age_s > lag_s:
         return (
-            f"prod on {live_version}, {count} chart(s) behind through "
+            f"{app}: prod on {live_version}, {count} chart(s) behind through "
             f"{newest['version']}, waiting {age_s / 60:.0f}m",
             None,
         )
     return None, (
-        f"prod {count} chart(s) behind through {newest['version']} "
+        f"{app}: prod {count} chart(s) behind through {newest['version']} "
         f"for {age_s / 60:.0f}m"
     )
 
 
-async def _chart_lag_fault(lag_s: float) -> tuple[str | None, str | None]:
-    """Read the live Application and Kargo Freight, then judge chart lag."""
+async def _chart_lag_fault(lag_s: float) -> tuple[bool, list[str]]:
+    """Read every configured app's live Application and Kargo Freight.
+
+    Returns (ok, details): ok is False when any app faults. The clock stays
+    the oldest unpromoted Freight per app; nothing about the advisory tier
+    changes with coverage.
+    """
     from cluster.kubernetes import KubernetesClient  # noqa: PLC0415
 
+    apps = _configured_apps()
+    if not apps:
+        # Same treatment as empty Freight: watching nothing is a dead signal
+        # and must fault, never read as an all-clear.
+        return False, ["no Kargo-managed apps configured, chart lag watches nothing"]
+
     kubernetes = KubernetesClient()
-    live = await kubernetes.get_argocd_app_deployed_revision(PROD_APP_NAME)
-    freight = await kubernetes.list_kargo_freight(KARGO_NAMESPACE)
-    return _evaluate_chart_lag(live, freight, lag_s, datetime.now(timezone.utc))
+    ok = True
+    details: list[str] = []
+    for entry in apps:
+        live = await kubernetes.get_argocd_app_deployed_revision(entry["app"])
+        freight = await kubernetes.list_kargo_freight(
+            entry["namespace"], repo_suffix=entry["suffix"]
+        )
+        app_ok = True
+        fault, note = _evaluate_chart_lag(
+            entry["app"], live, freight, lag_s, datetime.now(timezone.utc)
+        )
+        if fault:
+            app_ok = False
+            details.append(fault)
+        if note:
+            details.append(note)
+        ok = ok and app_ok
+    return ok, details
 
 
 async def _ci_fault(red_window_s: float) -> str | None:
@@ -248,19 +330,16 @@ async def cd_health() -> dict:
     ok = True
 
     try:  # nosemgrep: no-broad-except-swallow - reported in-band, logged below
-        chart_lag = await _chart_lag_fault(lag_s)
+        lag_ok, lag_details = await _chart_lag_fault(lag_s)
     except Exception as exc:  # noqa: BLE001
         # Includes the Forbidden an RBAC gap would produce. Report it rather
         # than 503: a broken checker must not masquerade as a broken platform.
         logger.warning("cd health: chart lag check failed: %s", exc)
         details.append(f"chart lag check unavailable ({exc})")
     else:
-        chart_lag_fault, chart_lag_note = chart_lag
-        if chart_lag_fault:
+        if not lag_ok:
             ok = False
-            details.append(chart_lag_fault)
-        if chart_lag_note:
-            details.append(chart_lag_note)
+        details.extend(lag_details)
 
     if not os.environ.get("GITHUB_API_TOKEN", ""):
         details.append("ci check disabled: no GITHUB_API_TOKEN")
