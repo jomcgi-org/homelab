@@ -182,7 +182,9 @@ defmodule Embervm.Scheduler.Retry do
   Whether the reject/retry policy is enabled, from `EMBERVM_PLACEMENT_RETRY`
   (default OFF). UNSET or "0"/"false"/"" keeps today's single-attempt behaviour;
   "1"/"true" turns on multi-candidate retry. Mirrors the env-gate convention of
-  the other ADR-014 changes so it flips via a values-only deploy, no code change.
+  the other ADR-014 changes: the chart key `dispatcher.placementRetry`
+  (chart/values.yaml) renders this variable in deployment.yaml, so it flips via
+  a values-only deploy, no code change.
   """
   @spec enabled?() :: boolean()
   def enabled? do
