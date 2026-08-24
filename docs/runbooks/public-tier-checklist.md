@@ -8,11 +8,15 @@ Every table the public tier reads needs an explicit `GRANT SELECT ... TO public_
 
 Missing this is invisible in review and in tests: it only shows up as a 503 at runtime, on a real curl against the public URL.
 
-A PreToolUse hook (`check-public-reader-grant.sh`) now blocks new public-schema `CREATE TABLE` migrations that lack a grant, but it only catches the table-creation case, not every way a public read path can end up ungranted, so still check by hand.
+A PreToolUse hook (`bazel/tools/hooks/check-public-reader-grant.sh`) blocks new public-schema `CREATE TABLE` migrations that lack a grant. It only catches the table-creation case, its schema list is hand-maintained, and it fires only for edits made through Claude Code, so still check by hand.
+
+Reads are the only thing `public_reader` covers. The one write path on the public tier is `public_writer`, scoped to DML on `chat_public` (`projects/monolith-public/chart/values.yaml`, `publicWriter:`). Do not widen it for a new feature; add a proxy route on the private tier instead.
 
 ## 2. No `/api` on the public origin
 
-The public tier deliberately has no `/api` ingress rule. Public pages must fetch data via a same-origin SvelteKit `+server.js` proxy route, never a client-side fetch to `/api/...`. If a public page calls `/api/...` directly, it will work against the private/monolith origin in dev and fail (or worse, silently hit nothing) on the actual public origin.
+The public tier deliberately has no `/api` ingress rule (`projects/monolith-public/chart/templates/httproute-public.yaml`). Public pages must fetch data via a same-origin SvelteKit `+server.js` proxy route, never a client-side fetch to `/api/...`. If a public page calls `/api/...` directly, it will work against the private/monolith origin in dev and fail (or worse, silently hit nothing) on the actual public origin.
+
+`/functions/` is the one prefix that reaches the public backend from the internet, rate-limited at the route. Anything new that needs the backend goes through the frontend proxy, never a second rule on that route.
 
 ## 3. gazelle-exclude vs the public binary
 
@@ -24,9 +28,9 @@ If a package directory is gazelle-excluded, the public binary's BUILD glob may d
 
 Public reads must filter to the public corpus, for example `is_global = true`. A schema-wide grant without row-level filtering does not just fail to serve data correctly, it leaks private rows to the public tier. Granting a table is necessary but not sufficient: the query itself has to filter.
 
-## Rollout: both charts need a bump
+## Rollout: the public origin is `monolith-public`
 
-A public page change requires a chart version bump for **both** `monolith` and `monolith-public`, not just the service that owns the code change. `jomcgi.dev` is served by the `monolith-public` chart specifically; bumping only `monolith` will not move the public origin at all.
+`jomcgi.dev` is served by the `monolith-public` chart, so a change that only moves the `monolith` chart does not move the public origin. Chart versions are written back on `main` after merge (ADR platform/009): a PR never touches `Chart.yaml` `version:` or `targetRevision:`. Confirm the `chart-version-bot` write-back for `monolith-public` landed before curling the route.
 
 ## Post-deploy verification
 
