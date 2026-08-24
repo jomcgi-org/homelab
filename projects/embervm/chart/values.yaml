@@ -257,10 +257,11 @@ session:
   # deadline is a header the SERVER enforces, so on an orphaned channel (#4419)
   # nothing fires and the invoke worker wedges forever, pinning the session's
   # slot against the workload cap. The control plane kills the worker and fails
-  # the session once the invoke has run for the workload's timeoutSeconds plus
-  # the 5s transport headroom plus this margin. It must stay strictly above zero
-  # so the server-enforced deadline always fires first and the client-side kill
-  # is last resort. Matches the dispatcher's assign watchdog margin.
+  # the TURN (the session itself stays live to serve its queue and bank) once
+  # the invoke has run for the workload's timeoutSeconds plus the 5s transport
+  # headroom plus this margin. It must stay strictly above zero so the
+  # server-enforced deadline always fires first and the client-side kill is
+  # last resort. Matches the dispatcher's assign watchdog margin.
   invokeWatchdogMarginMs: 15000
 
 # Metering, audit, and quotas (Task 12). Quota is OPT-IN and asymmetric to the
