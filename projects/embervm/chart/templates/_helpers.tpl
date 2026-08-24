@@ -252,8 +252,8 @@ change). The digest moves only when the guest image actually moves, which is the
 property this path always meant to express.
 
 Input: (dict "wl" $wl "top" $top). MUST be used by BOTH the rootfs-builder
-BASE_ROOTFS_PATH and the EMBERVM_NODED_IMAGES rootfsPath so the built file and the
-path noded attaches are byte-identical.
+BASE_ROOTFS_PATH and the pushed image-identity rootfsPath (EMBERVM_NODE_IMAGE_IDENTITY)
+so the built file and the path noded attaches are byte-identical.
 */}}
 {{- define "embervm.noded.rootfsPath" -}}
 {{- $digest := required "guestImage.digest is required to name a base rootfs (Bazel pins it via helm_chart images=). An empty suffix would collide across guest versions and swap bytes under banked snapshots." .top.guestImage.digest -}}

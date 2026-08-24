@@ -107,10 +107,9 @@ noded:
       onepassword:
         itemPath: "vaults/k8s-homelab/items/embervm-store"
     # Envelope encryption of principal artifacts (ADR embervm/033, #4691):
-    # dev arms the writer first. The reader is unconditional, plaintext
-    # artifacts stay restorable, and noded refuses nothing yet
-    # (requireRestoreCapability stays false until a capability relight is
-    # verified here).
+    # dev armed the writer first. The reader is unconditional, plaintext
+    # artifacts stay restorable, and capability enforcement followed above
+    # (requireRestoreCapability).
     encrypt: true
 
 # nvmeRoot lives UNDER node-4's NVMe mount so it inherits that capacity bound,
@@ -304,9 +303,10 @@ usageAdmins:
 # ordering has never executed anywhere. adoption.tla's NoDestroyBeforeConfirm
 # and DestroyIntentPrecedesRecord model behaviour production has never run.
 #
-# Dev is where that ordering runs for the first time, under the conformance
-# harness, with EMBERVM_SPEC_TRACE on so the destroy invariants have data. Prod
-# stays false until this has soaked.
+# Dev is where that ordering ran for the first time, under the conformance
+# harness, with EMBERVM_SPEC_TRACE on so the destroy invariants have data.
+# Production armed the same day the drill passed, 2026-08-22 (see
+# deploy/values.yaml).
 nodeConfirmedDestroy: true
 
 # rootfsPath is a SEPARATE key from noded.firecracker.nvmeRoot, and overriding

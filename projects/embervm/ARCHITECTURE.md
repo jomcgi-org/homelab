@@ -376,7 +376,7 @@ and backfill on reconcile. **Planned**: partially landed, soak ongoing.
 
 | Tier | Window | Artifact | Pinning |
 | ---- | ------ | -------- | ------- |
-| Live | 6h continuous ceiling (`maxLifetimeSeconds`) | running VM | node-resident |
+| Live | up to `maxLifetimeSeconds` (21600s in the agent lanes by values; CRD default 86400s, no platform clamp) | running VM | node-resident |
 | Warm bank | 7 days from last bank | memory snapshot in S3 | CPU-vendor + base-generation |
 | Durable workspace | 7 days from last use | zstd content-addressed file set | none |
 
@@ -408,7 +408,7 @@ so the Bank RPC gets longer, not shorter. Enable it only after the in-place merg
 design or reflink-capable scratch lands, tracked in #4970. Park-only sessions do
 not enter this path.
 
-**The 6h ceiling is a version-convergence bound, not a data lifetime.**
+**The `maxLifetimeSeconds` cap is a version-convergence bound, not a data lifetime.**
 It exists so a session cannot ride a stale base image forever, since a
 session pinned to an old base keeps that base's registry entry active and
 blocks the retention sweep from reclaiming it. It is deliberately not raised
@@ -486,8 +486,8 @@ against them.
    to the pod UID and node name claims in the brick's bound ServiceAccount
    token, so a brick can establish only its own stream. The one carve-out is
    destruction: an instance is recorded destroyed only after the owning node
-   confirms teardown (gate `nodeConfirmedDestroy`: false in production
-   today, true in dev, #4758), and reconciliation is fail-closed toward destruction (an
+   confirms teardown (gate `nodeConfirmedDestroy`: true in production
+   and dev since 2026-08-22, #4758), and reconciliation is fail-closed toward destruction (an
    unrecognised node VM is an orphan to destroy, unless it carries the
    `origin: ACTIVATOR` marker, in which case it is adopted and backfilled).
    Model-checked (`adoption.tla`) against control-plane and node crashes
@@ -558,8 +558,8 @@ discardable (ADR embervm/006, ADR embervm/014).
   no earlier op recorded and so appends a `stateful_banked` op marked
   `adopted: true` write-through (#4201). This is the
   standing fix for the restart-wedge bug class, and the protocols are
-  model-checked: three PlusCal specs in `projects/embervm/specs/`
-  (`adoption`, `bank_relight`, `quota`) run under TLC in the build, so a
+  model-checked: four PlusCal specs in `projects/embervm/specs/`
+  (`adoption`, `bank_relight`, `quota`, `session_create`) run under TLC in the build, so a
   spec violation is a red build rather than a report, and the vocabulary
   guard (`vocabulary.exs`) keeps the specs honest against the code, though
   only against the spec text: it cannot see whether a modeled op kind is
@@ -888,8 +888,7 @@ embervm/032).
   serving ingress; bound dial-home registration identity.
 - **Accepted risk**: privileged noded with /dev/kvm; external-allow guest
   egress via the broker; taint optional.
-- **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade; per-principal
-  envelope encryption and tuple-authorized restore (#4691); granular
+- **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade; granular
   containment.
 
 EmberVM evaluates itself against the threat model published by
@@ -935,7 +934,7 @@ graph LR
     subgraph cp ["Control plane"]
         F["admission, facts,<br/>op-log audit"]
     end
-    S[("artifact store<br/>SigV4 per-identity access, gateway enforces (#4708)<br/>per-principal encryption Planned #4691")]
+    S[("artifact store<br/>SigV4 per-identity access, gateway enforces (#4708)<br/>per-principal encryption enabled per environment (#4691)")]
     X["external hosts"]
 
     G1 -- "vsock only" --> N
@@ -947,8 +946,7 @@ graph LR
     N -- "snapshot bytes, never via the CP,<br/>SigV4 per-identity access, gateway enforces (#4708)" --> S
 ```
 
-Trust diagram legend: every edge is a current path; the remaining labelled
-exposure is per-principal encryption at rest (#4691).
+Trust diagram legend: every edge is a current path.
 
 ### Attacks from guests
 
@@ -956,7 +954,7 @@ exposure is per-principal encryption at rest (#4691).
 | ---------------------------- | ----------- |
 | Hardened sandbox, never bare containers (15) | **Built.** Every guest is a Firecracker microVM; there is no container lane. New execution technologies enter as lanes under existing classes (invariant 9), so the sandbox floor is a platform decision, never a workload one. |
 | Default-deny actor networking (17) | **Built** for the cross-actor half: task and session guests have no NIC at all, vsock only, so no actor-to-actor network path exists. Serving guests get a tap device reachable solely via node Envoy authority matches and kernel DNAT (section 2). Egress is the deliberate exception: the brokered proxy lane defaults internal-deny but external-allow (`EGRESS_EXTERNAL: allow`), so guests read the public internet by design, and the credential boundary rather than reachability is the control there (section 9). |
-| No guest access to node services, metadata, or cluster DNS (16, 19, 34) | **Built**, with named exceptions: a vsock guest reaches the shim contract plus the deployment-declared internal egress allowlist (two entries in the reference deployment; the values file records that adding an entry is a security decision). No host network namespace, no metadata service, no cluster DNS inside the guest. |
+| No guest access to node services, metadata, or cluster DNS (16, 19, 34) | **Built**, with named exceptions: a vsock guest reaches the shim contract plus the deployment-declared internal egress allowlist (entries recorded in `deploy/values.yaml`, where adding one is a security decision). No host network namespace, no metadata service, no cluster DNS inside the guest. |
 | No Kubernetes or management-API escalation from guests (20, 22) | **Built**: a guest holds no cluster credential by construction (no NIC, no mounted ServiceAccount). The audience-scoped projected guest token is **Planned**. Definitions are CP-owned and there is no self-modification verb. |
 | Worker state fully reset between actors (18, 27, 30) | **Built**: Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no mutable VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, placement is CP-owned, never guest-chosen, and each VM sees an immutable rootfs plus private scratch. ADR 028's Planned physical chunk sharing cannot expose another manifest or writable filesystem. |
 | Credentials never inside the sandbox by default (28, 29) | **Built**: class 1 derivable short-lived credentials may enter PLATFORM-TRUSTED guest classes only and are revoked at bank; the brick-local egress proxy holds other real credentials and injects them only at the sidecar hop, only for hosts in that secret's `egressTo`. UNTRUSTED workload guests never receive any credential class. Revocation at the validator is the control, and RAM scrubbing is rejected as a mechanism (section 9). **Planned**: per-principal grants at the credential broker and request-scoped GitHub tool mediation replacing host-keyed injection. |
@@ -1063,7 +1061,7 @@ tracked in [GitHub issue #5224](https://github.com/jomcgi/homelab/issues/5224).
 | CPU pivot | 1,024 MiB per vCPU | **Built** | provisional; replace from measured utilization |
 | Active brick utilization target | >90% | **Built** | asserted; too high if shed events become common |
 | Stateful continuity floor | 8h (also the S3 stateful warmth TTL) | **Built** | asserted; validate against rotation cadence |
-| Session lifetime ceiling | 6h (`maxLifetimeSeconds`) | **Built** | asserted; version-convergence bound, not a durability claim |
+| Session lifetime cap | `maxLifetimeSeconds` (agent lanes 21600s by values, CRD default 86400s) | **Built** | asserted; version-convergence bound, not a durability claim; no platform-wide clamp |
 | Brick silence timeout | 21600s armed | **Built** | asserted; the divergence bound for the ownership-arbitration design (ADR 037) |
 | Wake-grant gap budget | k=4 (default cadence class) | **Decided direction** | the Fork B grant; Fork A activator self-advance is what is Built |
 | Definitions target | 100k+ | **Planned** | provisional; owner-set goal, not measured demand |
@@ -1089,8 +1087,6 @@ is the current work and the decided directions behind it.
 - distribution: vendor-aware placement over the export/restore verbs
   (needs a second warm-capable node to matter)
 - standalone packaging
-- per-principal envelope encryption at rest and verified tuple-authorized
-  restore (#4691)
 - the management-surface actor / principal / permission split
 
 Hard multi-tenancy (virtual control planes) is deferred pending real

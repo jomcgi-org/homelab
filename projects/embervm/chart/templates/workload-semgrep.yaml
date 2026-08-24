@@ -1,8 +1,9 @@
 {{- if .Values.semgrepWorkload.enabled }}
 # The semgrep workload (Task 14b): EmberVM's named first consumer, side-by-side
 # with the fc-invoke semgrep path. Its guest image ref is the SAME Bazel-pinned
-# value the noded rootfs-builder bakes and EMBERVM_NODED_IMAGES keys on, so
-# BaseBuilder's BuildBase(ref) resolves on the node. The frozen fc-invoke semgrep
+# value the noded rootfs-builder bakes and the control-plane-pushed image identity
+# (EMBERVM_NODE_IMAGE_IDENTITY) carries, so BaseBuilder's BuildBase(ref) resolves
+# on the node. The frozen fc-invoke semgrep
 # guest is used verbatim (vsock 1027, /shim/ready, /invoke).
 apiVersion: embervm.dev/v1alpha1
 kind: Workload
@@ -15,8 +16,8 @@ spec:
   class: task
   source:
     image:
-      # Must match the top-level semgrep.guestImage exactly (the derived
-      # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
+      # Must match the top-level semgrep.guestImage exactly (the pushed
+      # image identity + rootfs-builder GUEST_IMAGE use the same value).
       ref: "{{ .Values.semgrep.guestImage.repository }}@{{ .Values.semgrep.guestImage.digest }}"
       port: {{ .Values.semgrepWorkload.port }}
       readyPath: {{ .Values.semgrepWorkload.readyPath | quote }}
