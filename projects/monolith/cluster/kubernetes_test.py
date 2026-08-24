@@ -116,7 +116,7 @@ async def test_list_kargo_freight_parses_real_shape(k8s_client):
 
 
 @pytest.mark.asyncio
-async def test_list_kargo_freight_skips_non_monolith_and_missing_charts(k8s_client):
+async def test_list_kargo_freight_skips_other_charts_and_missing_charts(k8s_client):
     mock_api = MagicMock()
     mock_custom = MagicMock()
     mock_custom.list_namespaced_custom_object = AsyncMock(
@@ -138,6 +138,55 @@ async def test_list_kargo_freight_skips_non_monolith_and_missing_charts(k8s_clie
         patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
     ):
         assert await k8s_client.list_kargo_freight() == []
+
+
+@pytest.mark.asyncio
+async def test_list_kargo_freight_suffix_selects_the_app_chart(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    mock_custom.list_namespaced_custom_object = AsyncMock(
+        return_value={
+            "items": [
+                {
+                    "metadata": {"name": "embervm-freight"},
+                    "charts": [
+                        {
+                            "repoURL": "oci://ghcr.io/jomcgi/homelab/charts/embervm",
+                            "version": "0.13.7",
+                        }
+                    ],
+                },
+                {
+                    "metadata": {"name": "monolith-freight"},
+                    "charts": [
+                        {
+                            "repoURL": "oci://ghcr.io/jomcgi/homelab/charts/monolith",
+                            "version": "0.301.1",
+                        }
+                    ],
+                },
+            ]
+        }
+    )
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch("cluster.kubernetes.client.CustomObjectsApi", return_value=mock_custom),
+    ):
+        embervm = await k8s_client.list_kargo_freight(
+            "kargo-embervm", repo_suffix="/charts/embervm"
+        )
+        monolith = await k8s_client.list_kargo_freight(
+            "kargo-monolith", repo_suffix="/charts/monolith"
+        )
+    assert embervm == [
+        {
+            "name": "embervm-freight",
+            "version": "0.13.7",
+            "created_at": None,
+        }
+    ]
+    assert monolith[0]["name"] == "monolith-freight"
 
 
 async def _deployed_revision(k8s_client, result):

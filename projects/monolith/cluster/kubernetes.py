@@ -142,12 +142,18 @@ class KubernetesClient:
             return None
         return result.get("status")
 
-    async def list_kargo_freight(self, namespace: str = "kargo-monolith") -> list[dict]:
-        """Return published monolith chart Freight in creation order-independent form.
+    async def list_kargo_freight(
+        self,
+        namespace: str = "kargo-monolith",
+        repo_suffix: str = "/charts/monolith",
+    ) -> list[dict]:
+        """Return published chart Freight for one app's chart, any pipeline.
 
         Kargo stores ``charts`` at the TOP LEVEL of a Freight object, not under
         ``spec`` or ``status``. For each Freight, use the first chart whose
-        repoURL identifies the monolith chart and skip Freight without one.
+        repoURL ends with ``repo_suffix`` (e.g. "/charts/embervm") and skip
+        Freight without one. The suffix keeps co-discovered charts in the same
+        namespace from cross-contaminating each app's version list.
         """
         api = await self._ensure_client()
         custom = client.CustomObjectsApi(api)
@@ -161,7 +167,7 @@ class KubernetesClient:
         for item in result.get("items", []):
             metadata = item.get("metadata") or {}
             for chart in item.get("charts") or []:
-                if (chart.get("repoURL") or "").endswith("/charts/monolith"):
+                if (chart.get("repoURL") or "").endswith(repo_suffix):
                     freight.append(
                         {
                             "name": metadata.get("name"),

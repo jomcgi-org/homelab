@@ -426,3 +426,19 @@ scratchPostgres:
 ciliumPolicy:
   ingress:
     enabled: true
+
+# cd health chart-lag coverage (#4890): every Kargo-managed production app, so
+# embervm's lag is visible next to monolith's instead of invisible (#4884).
+# Entries mirror projects/platform/kargo/values.yaml promotion.pipelines: app
+# is the pipeline's prod Stage application, kargo_namespace its project,
+# chart_repo_suffix picks its chart out of Freight repoURLs. The clock stays
+# "oldest unpromoted Freight" per app and the component stays advisory: it
+# pages nobody. Adding a Kargo pipeline means adding an entry here.
+cdHealth:
+  apps:
+    - app: monolith
+      kargo_namespace: kargo-monolith
+      chart_repo_suffix: /charts/monolith
+    - app: embervm
+      kargo_namespace: kargo-embervm
+      chart_repo_suffix: /charts/embervm
