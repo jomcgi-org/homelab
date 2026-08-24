@@ -92,6 +92,12 @@ type servingDriver interface {
 	// The exact length is returned so noded reports it and the guest reads only the
 	// payload, not the block device's sector padding.
 	WriteServingHandlerArtifact(baseKey, runtimeImageRef string, zip []byte) (path string, sizeBytes int64, err error)
+	// WriteServingImageMarker persists ONLY the runtime-ref sidecar for an IMAGE-lane
+	// serving base (ADR embervm/038: no handler archive exists). The marker is what
+	// makes the serving-images registration durable: the startup rescan treats
+	// bases/<baseKey>/runtime.ref without handler.zip as a handler-less inventory
+	// entry, so the registration survives a daemon restart (#5221). Idempotent.
+	WriteServingImageMarker(baseKey, runtimeImageRef string) error
 	// ServingHandlerArtifactPath returns the host path of a base's handler artifact
 	// and whether it exists on disk. Used by the startup rescan to re-discover serving
 	// images and by startServingFresh to resolve the drive to attach.

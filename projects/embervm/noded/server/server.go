@@ -835,6 +835,18 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 			}
 			simg.handlerPath = path
 			simg.sizeBytes = artifactBytes
+		} else {
+			// Image lane: persist the runtime-ref MARKER so this registration is
+			// durable (#5221). Without it the inventory entry lived only in
+			// memory and every daemon restart silently un-wakeable the workload:
+			// the rescan re-seeds zip-lane artifacts from disk but had nothing to
+			// find for a handler-less base. A marker write failure fails the
+			// build for the same reason as its zip-lane twin above.
+			if werr := s.servingDriver.WriteServingImageMarker(baseKey, imageDigest); werr != nil {
+				s.bases.failBuild(baseKey, werr.Error())
+				s.signalChange()
+				return nil, status.Errorf(codes.FailedPrecondition, "noded: write serving image marker for %q: %v", baseKey, werr)
+			}
 		}
 		s.servingImage.add(simg)
 		servingImageRef = baseKey
