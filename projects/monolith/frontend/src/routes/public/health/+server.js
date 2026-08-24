@@ -14,6 +14,12 @@ const API_BASE = process.env.API_BASE || "http://localhost:8000";
 // keeping the /api surface off the browser. Success is edge-cached for 60s
 // (HEALTH_CACHE_CONTROL) to cap origin load at ~1 req/min; the 503 path sets no
 // cache header so failures are never cached and an outage surfaces within a cycle.
+//
+// The backend distinguishes two kinds of health component: fatal (which cause
+// 503) and advisory (which are reported as degraded on a 200 response). This
+// proxy must preserve that distinction: the frontend never lists advisory
+// component names under failing, and it exposes degraded on both 200 and 503
+// paths so the advisory signal is visible and correctly labelled.
 export async function GET({ fetch }) {
   let res;
   try {
@@ -28,12 +34,19 @@ export async function GET({ fetch }) {
   }
 
   if (!res.ok) {
-    // Expose component names for attribution, never internal detail strings.
+    // Expose component names for attribution (fatal ones only), never internal
+    // detail strings. Advisory components are listed separately under degraded.
     let failing = [];
+    let degraded = [];
     try {
       const body = await res.json();
+      // Guard the shape once: a non-array degraded (an older backend, a
+      // mangled body) would otherwise become a Set of its characters and
+      // start matching single-letter component names.
+      degraded = Array.isArray(body?.degraded) ? body.degraded : [];
+      const advisoryNames = new Set(degraded);
       failing = Object.entries(body?.components ?? {})
-        .filter(([, c]) => !c?.ok)
+        .filter(([name, c]) => !c?.ok && !advisoryNames.has(name))
         .map(([name]) => name)
         .sort();
     } catch {
@@ -44,6 +57,7 @@ export async function GET({ fetch }) {
         status: "unhealthy",
         backendStatus: res.status,
         ...(failing.length ? { failing } : {}),
+        ...(degraded.length ? { degraded } : {}),
       },
       { status: 503 },
     );
