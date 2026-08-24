@@ -2,14 +2,17 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of [ADR embervm/006](../../../docs/decisions/embervm/006-tla-formal-specification-pilot.md):
-four specs now, checked exhaustively over small bounds, plus the layer-1
+five specs now, checked exhaustively over small bounds, plus the layer-1
 vocabulary sync guard that keeps them honest against the code. Protocol 1 (VM
 lifecycle + adoption) is `adoption.tla`; protocol 2 (session bank/relight
 generation pairing) is `bank_relight.tla`, added by the ADR embervm/014 PR 5
 follow-through. Both are modeled under the ADR embervm/014 worker-authoritative
 consistency rules (node state is the source of truth, node-confirmed destruction).
 Protocol 3 (the fail-closed per-principal daily quota gate) is `quota.tla`.
-The SessionManager create-starvation model is `session_create.tla`.
+The SessionManager create-starvation model is `session_create.tla`. Protocol 4
+(generation issuance authority: blessing, wake grants, quarantine,
+checkpoint-abort auto-heal) is `generation_issuance.tla`, added for issue
+#4700.
 
 ## What is here
 
@@ -34,7 +37,16 @@ The SessionManager create-starvation model is `session_create.tla`.
 - `session_create.cfg`, `session_create_liveness.cfg`,
   `session_create_wedge.cfg` : safety, positive liveness, and negative wedge TLC
   run configurations (below).
-- `BUILD` : thirteen genrules run TLC over the four specs, one per cfg, via the
+- `generation_issuance.tla` : the PlusCal model of the generation issuance
+  authority (issue #4700): the CP as sole issuer of stateful volume generations,
+  the three legitimate issuance shapes (CP pre-dispatch blessing,
+  checkpoint-abort auto-heal, delegated advancement under a wake grant), the
+  update_quarantine ladder, and the adversarial scheduler (either side crashes
+  between any two steps; node reports may lag; a budgeted second writer).
+- `generation_issuance.cfg`, `generation_issuance_liveness.cfg`,
+  `generation_issuance_heal_wedge.cfg`, `generation_issuance_lag_wedge.cfg` :
+  the four generation issuance TLC run configurations (below).
+- `BUILD` : seventeen genrules run TLC over the five specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -307,9 +319,111 @@ for the overshoot bound is ALSO what carries fail-closed enforcement past the
 submit path. Submit-only enforcement loses both properties, not just the bound,
 which is a stronger argument for D12.3 than the decision entry itself makes.
 
+## Protocol 4: generation issuance authority (`generation_issuance.tla`)
+
+Added for issue #4700, this spec models the protocol with the worst incident
+record in the system: the CP as SOLE issuer of a stateful volume's generation
+(R7, ADR embervm/011 standing decision 4), judged against an adversarial
+scheduler (either side crashes between any two steps; node reports may lag; a
+budgeted second writer can jump the brick ledger). The header's prose map cites
+the implementation modules action by action: `stateful_store.ex`
+(`bless_generation`, `update_quarantine`, `ensure_blessing_lease`,
+`record_checkpoint_dispatch`), `stateful_manager.ex` (`bless_wake_generation`,
+`plan_wake`'s quarantine refusal), `stateful_sweeper.ex`
+(`finish_checkpoint`), `noded/server/stateful.go` (`attachGeneration`,
+`autoAbortCheckpoint`, `recordAbortGeneration`), and `noded/volume/volume.go`
+(`BumpGeneration`, `RecordBlessed`, `ConsumeGenerationFromLease`).
+
+The three legitimate issuance shapes (ARCHITECTURE.md, "Generation blessing
+and quarantine") are one protocol here: CP-issued pre-dispatch blessing behind
+the op-log-before-dispatch fence; checkpoint-abort auto-heal, where noded's
+resolve-timeout backstop self-bumps exactly +1 on the same vm_id and a durable
+`checkpoint_dispatched{workload, vm_id, generation}` record lets a restarted CP
+prove the +1 was its own (ADR embervm/017); and delegated advancement under a
+wake grant `[floor, ceiling)` consumed by the anchor's activator during
+control-plane absence, degrading to the unblessable self-bump when exhausted,
+which fenced-writer anchor adoption backfills on return (ADR embervm/014).
+Report folding copies `update_quarantine/4`'s cond ladder order for order,
+including the clear-suppression shield for uncorroborated blessed reports
+while quarantined. The activator pairwise interaction is deliberately out of
+scope (modeled later with the activator spec, per the issue), as are the ADR
+embervm/037 silence gate, export gating, handoffs, and the pair-key machinery
+(`bank_relight.tla`'s protocol).
+
+| cfg | bounds | switches | checks | expect | proves |
+| --- | --- | --- | --- | --- | --- |
+| `generation_issuance.cfg` | 2 nodes; MaxGen 4; lease 1; wakes 2; CP crash 1; auto-abort 1; rogue 1 | heal + adoption + grant expiry ON, adversarial reports ON | all five invariants | pass | the shipped issuance protocol's safety over the full adversarial space: no regress, no serving while quarantined, no false quarantine, well-formed grants |
+| `generation_issuance_liveness.cfg` | 1 node; MaxGen 3; lease 1; wakes 1; CP crash 1; auto-abort 1; rogue 0 | heals + adoption ON, expiry OFF, truthful reports | `EventuallyServed` (FairSpec) | pass | under fair scheduling every parked wake drains across a CP crash-restart, an auto-abort, and grant exhaustion |
+| `generation_issuance_heal_wedge.cfg` | 1 node; MaxGen 3; rogue 0 | `AutoHealEnabled = FALSE` | all five invariants | fail | re-finds the pre-ADR-017 fail-closed-both-ways quarantine of the CP's own auto-aborted checkpoint |
+| `generation_issuance_lag_wedge.cfg` | 1 node; MaxGen 3; rogue 0 | `AdoptFencedWriter = FALSE` | all five invariants | fail | re-finds the pre-ADR-014 fenced-writer deadlock: the anchor's own lag quarantines and the workload can never wake |
+
+The invariants:
+
+- `TypeOK` : ledgers, watermark, grants, records, budgets, and the report
+  channel stay in their declared domains.
+- `WatermarkNeverRegresses` : the blessing watermark never drops below its
+  high-water mark (the `bless_generation` monotonicity guard plus the ladder's
+  strictly-forward advances). Stated against a ghost high-water variable the
+  way `bank_relight.tla` states its floor.
+- `NoServeQuarantined` : a quarantined volume never serves. Tripwire style
+  (like adoption.tla's `NoReapLive`): both serving paths carry the guard, and
+  a ghost witness catches any drop.
+- `NoFalseQuarantine` : the fence never quarantines an advancement the CP can
+  account for: neither its own provably-resumed checkpoint (heal half) nor its
+  anchor's own watermark lag (adoption half). This is the invariant both
+  negative configs trip, one half each, and it is non-vacuous in the positive
+  config: genuinely unprovable jumps (a non-anchor report, a mismatched or
+  past-+1 jump under a live record) DO reach quarantine states there.
+- `LeaseWellFormed` : a grant is an anchor-scoped range inside the generation
+  cap whose cursor never passes its ceiling (a drained grant stays recorded
+  with cursor = ceiling, like the store keeps the row until regrant). Grants
+  change who may ISSUE a generation only: they are granted to and consumed by
+  the anchor alone, and the writable attach stays fenced to the single writer
+  throughout.
+
+Two modeling decisions deserve their plain statement. First, the liveness
+property carries two scoped escapes: the model's generation cap (real
+generations are uint64-unbounded) and the ADR embervm/017 manual remainder
+(an unresolved dispatch record whose context does not add up fails closed BY
+DESIGN; recovery is runbook break-glass, a human decision outside the
+protocol). What liveness still promises there is sharp: the fence never parks
+a wake behind a mere watermark lag, and never without a provably unresolvable
+record context (`NoFalseQuarantine`). Second, the liveness cfg sets
+`AdversarialReports = FALSE`: with adversarial reports on, the scheduler can
+rotate junk reports through the bounded channel forever and starve the one
+truthful report, which is a scheduler artifact (adoption.tla's AgingEnabled
+precedent), not a protocol wedge; the safety cfg checks the full adversarial
+report space exhaustively instead.
+
+### Why the two negative modes catch the blessing-watermark history
+
+The issue calls this bug "three consecutive wrong fixes of the same shape, CP
+ledger reasoning vs brick ledger running ahead". Each negative mode removes
+one fix and asserts TLC still reproduces the outage that motivated it:
+
+- **Heal wedge** (`AutoHealEnabled = FALSE`): keeps the durable dispatch
+  record and its fail-closed arm but removes the heal, modeling ADR 017's
+  Context sentence: a CP that cannot remember its own outstanding checkpoint
+  must fail closed on BOTH its own auto-aborted +1 and a rogue's +1. Trace:
+  pause at gen 1, record `{vm1, 1}`, CP crash, resolve-timeout auto-abort
+  bumps to gen 2 on the SAME vm_id, CP returns, report `(2, unblessed)`:
+  forward-unblessed under a live record, signature matches, but with the heal
+  off the volume QUARANTINES (`falseQuarantineHeal`), and every later wake is
+  refused forever: the demo-postgres 503 that was always going to be a
+  rubber-stamp re-bless.
+- **Lag wedge** (`AdoptFencedWriter = FALSE`): removes the fenced-writer
+  adoption, modeling the naive fence before commit 1fb15264f. Trace: wake
+  request parks, CP crashes before issuing anything, the anchor's activator
+  takes the unblessable self-bump fallback (ledger 1 -> 2, marker left
+  behind), CP returns, report `(2, unblessed)` from the ANCHOR itself:
+  forward-unblessed with no checkpoint context, so with adoption off the
+  volume QUARANTINES (`falseQuarantineLag`). A quarantined volume can never
+  wake, so it can never re-bless to catch the watermark up: the recurring
+  demo-postgres quarantine after a CP roll.
+
 ## Running TLC
 
-CI runs all thirteen genrules via `bazel test //projects/embervm/specs/...`. There is
+CI runs all seventeen genrules via `bazel test //projects/embervm/specs/...`. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
 copy of this directory (swap `adoption` for `bank_relight` for protocol 2):
@@ -327,11 +441,13 @@ Never hand-edit the translation region.
 
 ## Scope
 
-The pilot now models four protocols: protocol 1 (VM lifecycle + adoption,
-`adoption.tla`) and protocol 2 (session bank/relight generation pairing,
+The pilot now models five protocols: protocol 1 (VM lifecycle + adoption,
+`adoption.tla`), protocol 2 (session bank/relight generation pairing,
 `bank_relight.tla`, added by the ADR embervm/014 PR 5 follow-through since the
-pilot earned its keep) and protocol 3 (the fail-closed quota gate, `quota.tla`).
-Layer-2 trace validation (op-log events mapped to TLA+ actions and
-checked against a drill trace) is a separate follow-up and is deliberately not
-built here. The fourth model, `session_create.tla`, covers SessionManager's
-single-mailbox create starvation from issue #5051.
+pilot earned its keep), protocol 3 (the fail-closed quota gate, `quota.tla`),
+and protocol 4 (generation issuance authority: blessing, wake grants,
+quarantine, checkpoint-abort auto-heal, `generation_issuance.tla`, added for
+issue #4700). The SessionManager create-starvation model `session_create.tla`
+covers issue #5051 alongside them. Layer-2 trace validation (op-log events
+mapped to TLA+ actions and checked against a drill trace) is a separate
+follow-up and is deliberately not built here.
