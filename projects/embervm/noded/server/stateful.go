@@ -98,10 +98,11 @@ func (s *Server) startStateful(ctx context.Context, req *nodev1.StartStatefulReq
 // attachGeneration resolves the generation a writable attach records. A nonzero
 // blessedGeneration on the request is recorded via volume.Manager.RecordBlessed
 // (the control-plane-issued value, never invented here). Zero means the lease
-// lane for a trusted node-local activator and, while
-// s.cfg.RequireBlessing is false, the legacy RPC path. The activator follows
-// the same self-bump discipline as checkpoint auto-abort when its lease is
-// absent or exhausted and relies on the physical volume attach fence.
+// lane for a trusted node-local activator; any other unblessed writable attach
+// is refused FAILED_PRECONDITION (R7, ADR embervm/011, standing decision 4:
+// the control plane is the sole issuer of volume generations). The activator
+// follows the same self-bump discipline as checkpoint auto-abort when its lease
+// is absent or exhausted and relies on the physical volume attach fence.
 func (s *Server) attachGeneration(workload string, blessedGeneration uint64, activatorOrigin bool) (uint64, error) {
 	if blessedGeneration > 0 {
 		gen, err := s.volumes.RecordBlessed(workload, blessedGeneration)
@@ -130,9 +131,11 @@ func (s *Server) attachGeneration(workload string, blessedGeneration uint64, act
 			s.logger.Warn("blessing lease exhausted for workload, falling back to unblessable self-bump", "workload", workload)
 		}
 	}
-	if s.cfg.RequireBlessing && !activatorOrigin {
-		return 0, status.Errorf(codes.FailedPrecondition, "noded: writable attach for %q requires a blessed_generation (EMBERVM_NODED_REQUIRE_BLESSING is set)", workload)
+	if !activatorOrigin {
+		return 0, status.Errorf(codes.FailedPrecondition, "noded: writable attach for %q requires a blessed_generation", workload)
 	}
+	// Only the activator's lease-exhaustion fallback reaches this legacy
+	// self-bump; every RPC caller must carry a blessed_generation.
 	gen, err := s.volumes.BumpGeneration(workload)
 	if err != nil {
 		return 0, status.Errorf(codes.Internal, "noded: bump generation for %q: %v", workload, err)

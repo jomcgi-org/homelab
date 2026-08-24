@@ -418,14 +418,6 @@ type Config struct {
 	// encrypted objects. Env EMBERVM_NODED_STORE_ENCRYPT. Default false.
 	StoreEncrypt bool
 
-	// RequireBlessing rejects any writable stateful attach (FRESH/RELIGHT/COLD)
-	// carrying blessed_generation == 0 with FAILED_PRECONDITION, once the
-	// control plane has started issuing blessed generations (R7, ADR
-	// embervm/011, standing decision 4). Defaults false so a rollout can land
-	// the control-plane side first; the chart flips this true in the SAME
-	// version so a mixed CP/noded state cannot outlive the roll. Env
-	// EMBERVM_NODED_REQUIRE_BLESSING.
-	RequireBlessing bool
 	// RequireRestoreCapability refuses an enveloped artifact restore unless its
 	// request carries a valid, tuple-scoped capability. This is a two-phase
 	// rollout: validation ships everywhere with enforcement OFF, then enforcement
@@ -505,7 +497,6 @@ func Load() (Config, error) {
 		StoreAccessKeyID:     os.Getenv("EMBERVM_NODED_STORE_ACCESS_KEY_ID"),
 		StoreSecretAccessKey: os.Getenv("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY"),
 
-		RequireBlessing:          boolDefault("EMBERVM_NODED_REQUIRE_BLESSING", false),
 		RequireRestoreCapability: boolDefault("EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY", false),
 	}
 	if c.AdmissionModel != "observed" && c.AdmissionModel != "reserved" {

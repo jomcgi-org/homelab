@@ -404,9 +404,6 @@ func TestLoadDefaults(t *testing.T) {
 	if c.GroupUnhealthyThreshold != 3 {
 		t.Errorf("GroupUnhealthyThreshold = %d, want 3", c.GroupUnhealthyThreshold)
 	}
-	if c.RequireBlessing {
-		t.Error("RequireBlessing should default false so a rollout can land the control-plane side first")
-	}
 	if c.StoreEncrypt {
 		t.Error("StoreEncrypt should default false for the two-phase rollout")
 	}
@@ -427,20 +424,6 @@ func TestLoadDiffBankingOverride(t *testing.T) {
 	}
 	if got, want := strings.Join(c.DiffBankingWorkloads, ","), "sandbox-session,another-session"; got != want {
 		t.Errorf("DiffBankingWorkloads = %q, want %q", got, want)
-	}
-}
-
-// TestLoadRequireBlessingOverride proves EMBERVM_NODED_REQUIRE_BLESSING is
-// parsed as a bool (R7, ADR embervm/011): the chart flips this true in the
-// same version the control plane starts blessing.
-func TestLoadRequireBlessingOverride(t *testing.T) {
-	t.Setenv("EMBERVM_NODED_REQUIRE_BLESSING", "true")
-	c, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !c.RequireBlessing {
-		t.Error("RequireBlessing should be true when EMBERVM_NODED_REQUIRE_BLESSING=true")
 	}
 }
 

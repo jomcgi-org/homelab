@@ -895,9 +895,10 @@ message StartStatefulRequest {
   map<string, string> mmds_env = 10;
   // blessed_generation is the volume generation the control plane issued for
   // THIS writable attach (R7, ADR embervm/011, standing decision 4). The daemon
-  // records it and reports it back, it never invents one. 0 means legacy
-  // self-bump, accepted only until noded's EMBERVM_NODED_REQUIRE_BLESSING flag
-  // is set, after which 0 is rejected.
+  // records it and reports it back, it never invents one. 0 is refused
+  // FAILED_PRECONDITION (the control plane is the sole issuer of generations;
+  // only the node-local activator's blessing lease may advance a generation
+  // without one).
   uint64 blessed_generation = 11;
   // volume_device is the host block-device path (e.g. /dev/longhorn/<name>) the
   // control plane resolved for this workload's Longhorn-native volume (R7,
