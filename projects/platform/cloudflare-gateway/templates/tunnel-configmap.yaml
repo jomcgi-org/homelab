@@ -12,10 +12,6 @@ data:
     metrics: {{ .Values.tunnel.metrics.address }}
     {{- end }}
     no-autoupdate: {{ .Values.tunnel.noAutoupdate }}
-    {{- if .Values.tunnel.warpRouting.enabled }}
-    warp-routing:
-      enabled: true
-    {{- end }}
     ingress:
     {{- range .Values.tunnel.ingress.routes }}
     - hostname: {{ .hostname }}

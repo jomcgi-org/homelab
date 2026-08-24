@@ -37,13 +37,6 @@ tunnel:
   # Revert to "" (quic) only once the egress path is confirmed to hold UDP.
   protocol: http2
 
-  # kubectl from off-LAN: WARP client -> tunnel private network route
-  # (192.168.1.119/32, apiserver, added in Zero Trust by hand) -> k3s. TLS
-  # stays end to end so the client cert kubeconfig works unchanged. TCP only
-  # while protocol is http2; UDP through this route needs quic back.
-  warpRouting:
-    enabled: true
-
   ingress:
     routes:
       # argocd, longhorn, and signoz retired: they now serve under
