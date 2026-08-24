@@ -151,7 +151,9 @@ defmodule Embervm.SessionManagerTest do
           :quota_table,
           :node_confirmed_destroy,
           :destroying_alarm_ms,
-          :orphan_grace_ms
+          :orphan_grace_ms,
+          :pressure_retry_interval_ms,
+          :pressure_wait_bound_ms
         ])
 
     {:ok, mgr} = SessionManager.start_link(mgr_opts)
@@ -899,6 +901,199 @@ defmodule Embervm.SessionManagerTest do
     assert session.volume_node_id == parked.volume_node_id
     assert session.node_id == parked.volume_node_id
     assert session.vm_id == "vm-rejoined"
+  end
+
+  # -- #4355: a wake denied on memory pressure queues instead of failing ------
+
+  describe "#4355 wake denied on pressure:mem" do
+    # The node fact re-put after banking: same shape put_session_workload writes,
+    # plus the session_snapshots warmth the relight placement resolves against.
+    defp put_snapshot_fact(ctx, wl, session_id) do
+      NodeCapacity.put(ctx.cap_table, "node-4", %{
+        node_id: "node-4",
+        pod_uid: "pod-node-4",
+        configured_id: "node-4",
+        workloads: %{
+          wl => %{
+            free_primed_slots: 1,
+            snapshot_ref: "snap-#{wl}",
+            base_state: :BASE_BUILD_STATE_READY,
+            primed_vm_ids: []
+          }
+        },
+        live_vms: 0,
+        max_live_vms: 8,
+        session_vms: [],
+        session_snapshots: [
+          %{snapshot_ref: "snap-#{session_id}", session_id: session_id, workload: wl, size_bytes: 1_000, created_at_unix_ms: 0}
+        ],
+        draining: false,
+        store_reachable: true,
+        updated_at: 5_000_000
+      })
+    end
+
+    defp pressure_error do
+      %GRPC.RPCError{status: 8, message: "noded: pressure:mem (need 4096 MiB, floor 512 MiB)"}
+    end
+
+    test "a relight denied on pressure parks and succeeds once pressure clears" do
+      parent = self()
+      {:ok, gate} = Agent.start_link(fn -> :pressure end)
+
+      relight_fun = fn _channel, _req ->
+        if Agent.get(gate, & &1) == :pressure do
+          send(parent, {:relight_denied, System.unique_integer()})
+          {:error, pressure_error()}
+        else
+          {:ok, %RelightResponse{vm_id: "vm-after-pressure"}}
+        end
+      end
+
+      ctx = start_stack(relight_fun: relight_fun, pressure_retry_interval_ms: 10)
+      put_session_workload(ctx, "wl-pressure")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-pressure", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      put_snapshot_fact(ctx, "wl-pressure", created.session_id)
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{method: "POST", path: "/", headers: %{}, body: "queued"})
+        end)
+
+      # First attempt denied: the caller is NOT failed, it parks while the wake retries.
+      assert_receive {:relight_denied, _}, 1_000
+      assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
+
+      # Pressure clears: the next retry relights and drains the parked caller.
+      :ok = Agent.update(gate, fn _ -> :clear end)
+      {:ok, resp} = Task.await(task)
+      assert resp.status_code == 200
+      assert resp.body == "queued"
+
+      session = wait_for_state(ctx, created.session_id, :running)
+      assert session.vm_id == "vm-after-pressure"
+      assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+    end
+
+    test "a parked session's rejoin prime denied on pressure queues and succeeds" do
+      parent = self()
+      {:ok, gate} = Agent.start_link(fn -> :clear end)
+
+      prime_fun = fn _channel, _req ->
+        if Agent.get(gate, & &1) == :pressure do
+          send(parent, {:prime_denied, System.unique_integer()})
+          {:error, pressure_error()}
+        else
+          {:ok, %PrimeResponse{vm_id: "vm-rejoin-after-pressure"}}
+        end
+      end
+
+      ctx = start_stack(prime_fun: prime_fun, channel_fun: fake_channel_fun(), pressure_retry_interval_ms: 10)
+      created = create_persistence_session(ctx)
+      parked = park_session(ctx, created)
+
+      # Only the REJOIN prime is denied; the create above needed its own prime.
+      :ok = Agent.update(gate, fn _ -> :pressure end)
+
+      task =
+        Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "rejoin-queued"}) end)
+
+      assert_receive {:prime_denied, _}, 1_000
+      # The wake unwinds to its resting state (parked, not failed) between attempts.
+      assert parked.state == :parked
+      wait_for_state(ctx, created.session_id, :parked)
+
+      :ok = Agent.update(gate, fn _ -> :clear end)
+      {:ok, resp} = Task.await(task)
+      assert resp.status_code == 200
+      assert resp.body == "rejoin-queued"
+
+      session = wait_for_state(ctx, created.session_id, :running)
+      assert session.vm_id == "vm-rejoin-after-pressure"
+      assert session.node_id == parked.volume_node_id
+    end
+
+    test "the pressure-wait bound expires into a clean, retryable failure" do
+      parent = self()
+      {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+      deny_forever = fn _channel, _req ->
+        send(parent, {:relight_denied, System.unique_integer()})
+        {:error, pressure_error()}
+      end
+
+      ctx =
+        start_stack(
+          relight_fun: deny_forever,
+          monotonic_clock: fn -> Agent.get(mono, & &1) end,
+          pressure_retry_interval_ms: 10,
+          pressure_wait_bound_ms: 100
+        )
+
+      put_session_workload(ctx, "wl-expiry")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-expiry", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      put_snapshot_fact(ctx, "wl-expiry", created.session_id)
+
+      task =
+        Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "expire-me"}) end)
+
+      assert_receive {:relight_denied, _}, 1_000
+      wait_for_state(ctx, created.session_id, :banked)
+
+      # Advance the manager's monotonic clock past the bound: the very next retry
+      # tick gives up instead of re-driving the wake.
+      :ok = Agent.update(mono, &(&1 + 1_000))
+
+      assert {:error, {:relight_failed, {:pressure_wait_expired, {:relight, %GRPC.RPCError{status: 8}}}}} =
+               Task.await(task)
+
+      # Clean expiry: the session is back at its resting state (NOT failed), no
+      # snapshot was evicted, and the error classifies as retryable for callers.
+      assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
+      assert Registry.lookup(ctx.registry, created.session_id) == []
+      refute_receive {:evicted, _}
+      reason = {:relight_failed, {:pressure_wait_expired, %GRPC.RPCError{status: 8}}}
+      assert Embervm.Router.classify_error_as_retryable(reason)
+    end
+
+    test "snapshot_lost mid-episode still fails immediately and is never queued" do
+      parent = self()
+      {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+      relight_fun = fn _channel, _req ->
+        case Agent.get_and_update(attempts, fn n -> {n, n + 1} end) do
+          0 ->
+            send(parent, {:relight_denied, System.unique_integer()})
+            {:error, pressure_error()}
+
+          _ ->
+            {:error, %GRPC.RPCError{status: 9, message: "unrestorable"}}
+        end
+      end
+
+      evict_fun = fn _channel, req -> send(parent, {:evicted, req.snapshot_ref}) && {:ok, %{}} end
+
+      ctx = start_stack(relight_fun: relight_fun, evict_fun: evict_fun, pressure_retry_interval_ms: 10)
+      put_session_workload(ctx, "wl-lost-mid")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-lost-mid", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      put_snapshot_fact(ctx, "wl-lost-mid", created.session_id)
+
+      # First attempt parks under pressure; the retry's unrestorable-snapshot
+      # verdict takes the #5174 lane: fail now, never queue.
+      assert {:error, {:gone, "snapshot_lost"}} =
+               SessionManager.invoke(ctx.mgr, created.session_id, %{body: "x"})
+
+      session = wait_for_state(ctx, created.session_id, :failed)
+      assert session.state == :failed
+      assert session.terminal_reason == "snapshot_lost"
+      assert_receive {:evicted, _ref}, 1_000
+    end
   end
 
   test "rejoin propagates the qualified volume dial to the first invoke" do

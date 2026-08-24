@@ -37,6 +37,10 @@ defmodule Embervm.SessionManager do
       transient window). PR-3 returns `{:error, {:not_ready, state}}` which the
       router 409s, rather than block, since no bank/relight path exists yet to
       resolve it (noted);
+    * a wake DENIED on node memory pressure (#4355): the callers stay parked and
+      the wake re-arms on a timer until the pressure clears or the wait bound
+      expires; only expiry replies an error (`{:relight_failed,
+      {:pressure_wait_expired, last_reason}}`) to the parked callers;
     * a TERMINAL session: `{:error, {:gone, reason}}` (the router 410s with the
       recorded terminal reason);
     * an unknown session: `{:error, :not_found}`.
@@ -105,6 +109,18 @@ defmodule Embervm.SessionManager do
   # denied BEFORE any placement/capacity work, never stored, never bound.
   @idem_key_max_bytes 200
 
+  # #4355: a wake denied on node memory pressure (RESOURCE_EXHAUSTED, gRPC status
+  # 8, "noded: pressure:mem") parks its callers and retries instead of failing
+  # their turns. Pressure is inherently transient (idle VMs park or evict on TTLs
+  # measured in minutes), so the wake re-arms on this cadence...
+  @default_pressure_retry_interval_ms 5_000
+
+  # ...until this bound has elapsed since the FIRST denial. Only expiry surfaces
+  # an error to the parked callers, and it is distinguishable
+  # ({:relight_failed, {:pressure_wait_expired, last_reason}}): the issue's window
+  # is two to three minutes.
+  @default_pressure_wait_bound_ms 180_000
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -132,6 +148,12 @@ defmodule Embervm.SessionManager do
 
   @doc false
   def create_worker_timeout_ms, do: @create_worker_timeout_ms
+
+  @doc false
+  def default_pressure_retry_interval_ms, do: @default_pressure_retry_interval_ms
+
+  @doc false
+  def default_pressure_wait_bound_ms, do: @default_pressure_wait_bound_ms
 
   @doc """
   Like `create/3`, but `restore_lineage` (nilable, empty treated as absent)
@@ -388,6 +410,15 @@ defmodule Embervm.SessionManager do
       # racing two. Also the crash-consistency ledger: a relight appends session_relit
       # ONLY after the daemon returns a live vm_id, and until then these callers park.
       relighting: %{},
+      # #4355 wake-retry knobs: a wake denied on node memory pressure re-arms on
+      # this cadence until the bound expires since the first denial.
+      pressure_retry_interval_ms:
+        Keyword.get(opts, :pressure_retry_interval_ms, @default_pressure_retry_interval_ms),
+      pressure_wait_bound_ms:
+        Keyword.get(opts, :pressure_wait_bound_ms, @default_pressure_wait_bound_ms),
+      # session_id -> %{first_denied_at: monotonic_ms, last_reason: term}: wakes
+      # parked behind node memory pressure, retried until the bound expires.
+      pressure_waits: %{},
       # The registry sweep (adoption) and the TTL/eviction sweep cadences. Distinct
       # timers; both clock-injected and disable-able for tests (interval 0 = off).
       reconcile_interval_ms: Keyword.get(opts, :reconcile_interval_ms, 0),
@@ -711,6 +742,13 @@ defmodule Embervm.SessionManager do
   @impl true
   def handle_info({:relight_done, session_id, outcome}, state) do
     {:noreply, finish_relight(state, session_id, outcome)}
+  end
+
+  # The #4355 retry tick for a wake parked behind node memory pressure: re-drive
+  # the wake unless the callers are gone (drained by a concurrent destroy or an
+  # expiry), the bound expired, or the session went terminal while waiting.
+  def handle_info({:relight_pressure_retry, session_id}, state) do
+    {:noreply, resume_pressure_wait(state, session_id)}
   end
 
   def handle_info({:rejoin_done, session_id, outcome}, state) do
@@ -2023,25 +2061,22 @@ defmodule Embervm.SessionManager do
 
   # -- relight-on-invoke (Task 8) --------------------------------------------
 
-  # First invoke on a banked session: apply the wake-rate limit, then either park +
-  # start a relight, or 429 the caller without touching the node.
+  # First invoke on a banked/parked session: apply the wake-rate limit, then either
+  # park + start a wake, or 429 the caller without touching the node.
   defp park_and_relight(state, session, from, req) do
     principal = session.principal
 
     cond do
-      session.state == :parked and is_binary(session.volume_node_id) ->
-        if persistence_enabled_workload?(session_workload_entry(state, session.workload)) do
-          rejoin_parked(state, session, from, req)
-        else
-          _ = destroy_live_legacy(state, session)
-          GenServer.reply(from, {:error, {:gone, "persistence_disabled"}})
-          state
-        end
+      session.state == :parked and is_binary(session.volume_node_id) and
+          not persistence_enabled_workload?(session_workload_entry(state, session.workload)) ->
+        _ = destroy_live_legacy(state, session)
+        GenServer.reply(from, {:error, {:gone, "persistence_disabled"}})
+        state
 
       wake_allowed?(state, principal) ->
         state = record_wake(state, principal)
         state = park_relighting(state, session.session_id, from, req)
-        start_relight(state, session)
+        begin_wake(state, session)
 
       true ->
         audit_denial(state, principal, session.workload, :wake_rate)
@@ -2050,17 +2085,18 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp rejoin_parked(state, session, from, req) do
-    principal = session.principal
-
-    if wake_allowed?(state, principal) do
-      state = record_wake(state, principal)
-      state = park_relighting(state, session.session_id, from, req)
+  # Start (or, for a #4355 pressure retry, re-drive) the wake for a session whose
+  # callers are already parked in the relighting ledger: a parked session with an
+  # attached workspace volume rejoins (workspace restore + prime on the scheduled
+  # brick), everything else relights the banked snapshot in place. Deliberately no
+  # wake-rate re-check here: the triggering invoke was already admitted, and a
+  # pressure retry is not a new wake decision.
+  defp begin_wake(state, session) do
+    if session.state == :parked and is_binary(session.volume_node_id) and
+         persistence_enabled_workload?(session_workload_entry(state, session.workload)) do
       start_rejoin_worker(state, session)
     else
-      audit_denial(state, principal, session.workload, :wake_rate)
-      GenServer.reply(from, {:error, :wake_rate_limited})
-      state
+      start_relight(state, session)
     end
   end
 
@@ -2181,6 +2217,7 @@ defmodule Embervm.SessionManager do
     session = get_session!(state, session_id)
     owner = self()
     failure_fun = fn reason -> send(owner, {:rejoin_assign_failed, session_id, reason}) end
+    state = clear_pressure_wait(state, session_id)
 
     case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id,
            dial_id, [rejoin_failure_fun: failure_fun]) do
@@ -2199,8 +2236,17 @@ defmodule Embervm.SessionManager do
   end
 
   defp finish_rejoin(state, session_id, {:error, reason}) do
-    _ = SessionStore.mark(state.session_store, session_id, :parked_abort)
-    drain_relight_waiters(state, session_id, {:error, {:relight_failed, reason}})
+    cond do
+      # #4355: a prime denied on node memory pressure parks the wake (see
+      # park_pressure_wait) instead of failing every parked caller's turn.
+      pressure_denied?(reason) and Map.get(state.relighting, session_id, []) != [] ->
+        park_pressure_wait(state, session_id, reason)
+
+      true ->
+        _ = SessionStore.mark(state.session_store, session_id, :parked_abort)
+        state = clear_pressure_wait(state, session_id)
+        drain_relight_waiters(state, session_id, {:error, {:relight_failed, reason}})
+    end
   end
 
   # Park a caller behind an in-flight relight for its session (FIFO within the
@@ -2588,6 +2634,7 @@ defmodule Embervm.SessionManager do
       # adoption/next-sweep reaps it. Drain any parked callers gone and drop the
       # ledger. Never start a process for a session that is going away.
       {:ok, %{state: st}} when st in [:destroying, :expired, :evicted, :destroyed, :failed] ->
+        state = clear_pressure_wait(state, session_id)
         drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
 
       _ ->
@@ -2619,6 +2666,7 @@ defmodule Embervm.SessionManager do
           )
 
         state = clear_bank_failures(state, session_id)
+        state = clear_pressure_wait(state, session_id)
 
         case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id) do
           {:ok, pid} ->
@@ -2636,24 +2684,32 @@ defmodule Embervm.SessionManager do
         end
 
       {:error, :snapshot_lost} ->
+        # Unrestorable snapshot (#5174 lane): the session fails and every parked
+        # caller 410s. NEVER queued: a lost snapshot does not clear with time.
+        state = clear_pressure_wait(state, session_id)
         session = get_session!(state, session_id)
         fail_session(state, session_id, :snapshot_lost, "snapshot_lost")
         _ = evict_snapshot(state, session)
         drain_relight_waiters(state, session_id, {:error, {:gone, "snapshot_lost"}})
 
       {:error, reason} ->
-        # Transient (non-precondition) failure: the snapshot is intact (the proto
-        # never deletes it on a failed restore), so return ETS relighting -> banked
-        # (ETS-only, no op) and reply the error. A later invoke re-relights.
-        Logger.warning("embervm session relight failed", session_id: session_id, reason: inspect(reason))
-        abort_event =
-          case SessionStore.get(state.session_store, session_id) do
-            {:ok, %{volume_node_id: volume_node_id}} when is_binary(volume_node_id) -> :parked_abort
-            _ -> :relight_abort
-          end
+        cond do
+          # #4355: memory pressure is transient, so park the wake (callers stay
+          # parked) and re-arm it instead of failing their turns. snapshot_lost
+          # never reaches this arm (its own clause above).
+          pressure_denied?(reason) and Map.get(state.relighting, session_id, []) != [] ->
+            park_pressure_wait(state, session_id, reason)
 
-        _ = SessionStore.mark(state.session_store, session_id, abort_event)
-        drain_relight_waiters(state, session_id, {:error, {:relight_failed, reason}})
+          true ->
+            # Transient (non-precondition) failure: the snapshot is intact (the proto
+            # never deletes it on a failed restore), so return ETS relighting ->
+            # resting state (ETS-only, no op) and reply the error. A later invoke
+            # re-relights.
+            Logger.warning("embervm session relight failed", session_id: session_id, reason: inspect(reason))
+            _ = SessionStore.mark(state.session_store, session_id, wake_abort_event(state, session_id))
+            state = clear_pressure_wait(state, session_id)
+            drain_relight_waiters(state, session_id, {:error, {:relight_failed, reason}})
+        end
     end
   end
 
@@ -2672,6 +2728,133 @@ defmodule Embervm.SessionManager do
     waiters = Map.get(state.relighting, session_id, [])
     for {from, _req} <- waiters, do: GenServer.reply(from, reply)
     %{state | relighting: Map.delete(state.relighting, session_id)}
+  end
+
+  # -- wake denied on memory pressure (#4355) ---------------------------------
+
+  # Whether a wake-failure reason is a node memory-pressure admission denial:
+  # RESOURCE_EXHAUSTED (gRPC status 8), the daemon's cheap "pressure:mem" reject.
+  # Matches the reason nested in either wake path's error shape
+  # ({:relight, err} from the Relight RPC, {:prime_failed, err} from a rejoin's
+  # Prime). Deliberately narrow: any other failure keeps today's semantics.
+  defp pressure_denied?(%GRPC.RPCError{status: 8}), do: true
+  defp pressure_denied?(reason) when is_tuple(reason) do
+    reason |> Tuple.to_list() |> Enum.any?(&pressure_denied?/1)
+  end
+
+  defp pressure_denied?(reason) when is_list(reason) do
+    Enum.any?(reason, &pressure_denied?/1)
+  end
+
+  defp pressure_denied?(_), do: false
+
+  # The FSM event that unwinds an in-flight wake to its pre-wake resting state: a
+  # session with an attached workspace volume returns :parked (its next wake is a
+  # rejoin), everything else :banked.
+  defp wake_abort_event(state, session_id) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{volume_node_id: volume_node_id}} when is_binary(volume_node_id) -> :parked_abort
+      _ -> :relight_abort
+    end
+  end
+
+  # A wake (banked relight or parked rejoin) was denied on node memory pressure.
+  # Return the session to its resting state, KEEP the callers parked, and arm the
+  # retry timer; resume_pressure_wait/2 re-drives the wake when it fires. The wait
+  # is bounded: once pressure_wait_bound_ms has elapsed since the FIRST denial of
+  # this episode, give_up_pressure_wait fails the parked callers instead.
+  defp park_pressure_wait(state, session_id, reason) do
+    now = state.monotonic_clock.()
+
+    {wait, first_denial?} =
+      case Map.get(state.pressure_waits, session_id) do
+        nil -> {%{first_denied_at: now}, true}
+        wait -> {wait, false}
+      end
+
+    wait = Map.put(wait, :last_reason, reason)
+    elapsed_ms = now - wait.first_denied_at
+
+    if first_denial? do
+      Logger.warning("embervm session wake denied on node memory pressure, parking",
+        session_id: session_id,
+        workload: workload_of(state, session_id),
+        principal: principal_of(state, session_id),
+        waited_ms: elapsed_ms,
+        bound_ms: state.pressure_wait_bound_ms,
+        reason: inspect(reason)
+      )
+    end
+
+    if elapsed_ms >= state.pressure_wait_bound_ms do
+      give_up_pressure_wait(state, session_id, wait)
+    else
+      _ = SessionStore.mark(state.session_store, session_id, wake_abort_event(state, session_id))
+      # The retry tick is what enforces the bound, so a zero/negative cadence is
+      # floored at 1ms rather than silently stranding the parked callers.
+      schedule({:relight_pressure_retry, session_id}, max(state.pressure_retry_interval_ms, 1))
+      %{state | pressure_waits: Map.put(state.pressure_waits, session_id, wait)}
+    end
+  end
+
+  # The retry tick: decide what a pressure-parked wake does next.
+  defp resume_pressure_wait(state, session_id) do
+    case Map.get(state.pressure_waits, session_id) do
+      nil ->
+        state
+
+      wait ->
+        cond do
+          # Every caller was drained while waiting (a concurrent destroy): drop
+          # the episode silently.
+          Map.get(state.relighting, session_id, []) == [] ->
+            clear_pressure_wait(state, session_id)
+
+          state.monotonic_clock.() - wait.first_denied_at >= state.pressure_wait_bound_ms ->
+            give_up_pressure_wait(state, session_id, wait)
+
+          true ->
+            case SessionStore.get(state.session_store, session_id) do
+              # The session went terminal while waiting (destroy, expiry, TTL or
+              # disk-pressure eviction): fail the callers with the recorded reason.
+              {:ok, %{state: st}} when st in [:destroying, :expired, :evicted, :destroyed, :failed] ->
+                state = clear_pressure_wait(state, session_id)
+                drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
+
+              # Still restable: re-drive the wake. A fresh pressure denial
+              # re-parks (the bound check above runs again); success drains the
+              # callers into the fresh process.
+              {:ok, %{state: st}} when st in [:banked, :parked] ->
+                begin_wake(state, get_session!(state, session_id))
+
+              _ ->
+                # A transient non-resting state (restart limbo the reconcile
+                # heals): keep the callers parked, try again next tick.
+                schedule({:relight_pressure_retry, session_id}, max(state.pressure_retry_interval_ms, 1))
+                state
+            end
+        end
+    end
+  end
+
+  # Bound expired: unwind the wake and fail every parked caller with the
+  # distinguishable expiry reason. The session itself stays alive at its resting
+  # state: a later invoke may try again once pressure has genuinely cleared.
+  defp give_up_pressure_wait(state, session_id, wait) do
+    Logger.warning("embervm session wake parked behind memory pressure expired its bound",
+      session_id: session_id,
+      workload: workload_of(state, session_id),
+      bound_ms: state.pressure_wait_bound_ms,
+      reason: inspect(wait.last_reason)
+    )
+
+    _ = SessionStore.mark(state.session_store, session_id, wake_abort_event(state, session_id))
+    state = clear_pressure_wait(state, session_id)
+    drain_relight_waiters(state, session_id, {:error, {:relight_failed, {:pressure_wait_expired, wait.last_reason}}})
+  end
+
+  defp clear_pressure_wait(state, session_id) do
+    %{state | pressure_waits: Map.delete(state.pressure_waits, session_id)}
   end
 
   # -- wake-rate limit (Task 8) ----------------------------------------------

@@ -1346,6 +1346,11 @@ defmodule Embervm.RouterTest do
     assert Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8}}})
     refute Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9}}})
     refute Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 2}}})
+    # A #4355 pressure wait that expired its bound keeps the transient-pressure
+    # retryable class (the wake was queued, not dead).
+    assert Embervm.Router.classify_error_as_retryable(
+             {:relight_failed, {:pressure_wait_expired, {:relight, %GRPC.RPCError{status: 8}}}}
+           )
   end
 
   test "GET /v1/sessions/:id accepts the session token OR a management token" do

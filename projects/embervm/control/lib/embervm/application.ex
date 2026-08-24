@@ -986,12 +986,33 @@ defmodule Embervm.Application do
       node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
+      # #4355 pressure-parked wake retry cadence and bound.
+      pressure_retry_interval_ms: session_pressure_retry_interval_ms(),
+      pressure_wait_bound_ms: session_pressure_wait_bound_ms(),
       # The Direction-2 adopt-and-backfill discriminator asks AsyncWriter whether a
       # rowless reported VM has a write in flight (ADR embervm/014 decision 2), so it
       # needs both the gate and the writer reference.
       async_lifecycle_writes: async_lifecycle_writes_enabled(),
       async_writer: Embervm.AsyncWriter
     ] ++ wake_opts()
+  end
+
+  # Retry cadence for a wake parked behind node memory pressure (#4355;
+  # EMBERVM_SESSION_PRESSURE_RETRY_INTERVAL_MS), default 5s.
+  defp session_pressure_retry_interval_ms do
+    case trimmed_env("EMBERVM_SESSION_PRESSURE_RETRY_INTERVAL_MS") do
+      "" -> Embervm.SessionManager.default_pressure_retry_interval_ms()
+      raw -> String.to_integer(raw)
+    end
+  end
+
+  # How long a pressure-parked wake keeps retrying before the parked callers get
+  # the expiry error (#4355; EMBERVM_SESSION_PRESSURE_WAIT_BOUND_MS), default 3m.
+  defp session_pressure_wait_bound_ms do
+    case trimmed_env("EMBERVM_SESSION_PRESSURE_WAIT_BOUND_MS") do
+      "" -> Embervm.SessionManager.default_pressure_wait_bound_ms()
+      raw -> String.to_integer(raw)
+    end
   end
 
   # EMBERVM_NODE_CONFIRMED_DESTROY (ADR embervm/014 decision 5). UNSET or
