@@ -1,6 +1,6 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Four specs, thirteen genrules run the //bazel/tla:tlc.sh driver:
+# Five specs, seventeen genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
@@ -16,6 +16,11 @@
 #   session_create.tla (SessionManager create starvation, issue #5051) with
 #     positive safety and liveness configs plus one NEGATIVE mode reproducing
 #     the blocking do_reconcile mailbox wedge.
+#   generation_issuance.tla (protocol 4: generation issuance authority, issue
+#     #4700) with four cfgs: a rich adversarial safety config, a positive
+#     liveness config, and two NEGATIVE modes reproducing the two halves of the
+#     blessing-watermark false-quarantine history: the pre-ADR-017 fail-closed-
+#     both-ways checkpoint abort and the pre-ADR-014 fenced-writer deadlock.
 # The driver fails the build if a "fail" mode finds NO violation (the model went
 # blind). Safety and liveness are split across cfgs because exhaustive liveness over
 # the rich safety graph is too slow for CI; see README.md for the cfg matrix.
@@ -244,6 +249,75 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location session_create.tla)\" " +
           "\"$(location session_create_wedge.cfg)\" " +
+          "\"$@\" fail",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+# Protocol 4 (issue #4700): the generation issuance authority spec. One rich
+# adversarial safety config (all guards on, rogue second-writer budgeted, grant
+# expiry armed), one positive liveness config on lean bounds, and two NEGATIVE
+# configs that prove the model still catches each half of the
+# blessing-watermark false-quarantine history.
+genrule(
+    name = "tlc_generation_issuance",
+    srcs = _JRE_SRCS + [
+        "generation_issuance.tla",
+        "generation_issuance.cfg",
+    ],
+    outs = ["generation_issuance.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location generation_issuance.tla)\" " +
+          "\"$(location generation_issuance.cfg)\" " +
+          "\"$@\" pass",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_generation_issuance_liveness",
+    srcs = _JRE_SRCS + [
+        "generation_issuance.tla",
+        "generation_issuance_liveness.cfg",
+    ],
+    outs = ["generation_issuance_liveness.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location generation_issuance.tla)\" " +
+          "\"$(location generation_issuance_liveness.cfg)\" " +
+          "\"$@\" pass",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_generation_issuance_heal_wedge",
+    srcs = _JRE_SRCS + [
+        "generation_issuance.tla",
+        "generation_issuance_heal_wedge.cfg",
+    ],
+    outs = ["generation_issuance_heal_wedge.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location generation_issuance.tla)\" " +
+          "\"$(location generation_issuance_heal_wedge.cfg)\" " +
+          "\"$@\" fail",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_generation_issuance_lag_wedge",
+    srcs = _JRE_SRCS + [
+        "generation_issuance.tla",
+        "generation_issuance_lag_wedge.cfg",
+    ],
+    outs = ["generation_issuance_lag_wedge.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location generation_issuance.tla)\" " +
+          "\"$(location generation_issuance_lag_wedge.cfg)\" " +
           "\"$@\" fail",
     tools = ["//bazel/tla:tlc.sh"],
 )
