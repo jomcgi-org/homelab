@@ -504,14 +504,17 @@ async def test_owner_slash_flow_creates_luna_session_bound_to_thread(
     channel.create_thread = AsyncMock(return_value=thread)
 
     outcome = await bot.start_agent_flow(
-        channel, SimpleNamespace(id=42, mention="<@42>"), "build it", "jomcgi/homelab"
+        channel,
+        SimpleNamespace(id=42, mention="<@42>"),
+        "build it",
+        "jomcgi-org/homelab",
     )
 
     assert outcome.thread is thread
     with Session(engine) as session:
         row = session.exec(select(AgentSession)).one()
         assert row.model == "luna"
-        assert row.repo == "jomcgi/homelab"
+        assert row.repo == "jomcgi-org/homelab"
         assert row.discord_thread == "555"
 
 

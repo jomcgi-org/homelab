@@ -30,7 +30,7 @@ def test_start_session_for_swarm_retry_preserves_original_workflow_id(
             "test-key",
             "prompt1",
             "luna",
-            "jomcgi/homelab",
+            "jomcgi-org/homelab",
             "main",
             workflow_id="wf-1",
             node_key="implement",
@@ -40,7 +40,7 @@ def test_start_session_for_swarm_retry_preserves_original_workflow_id(
             "test-key",
             "prompt1",
             "luna",
-            "jomcgi/homelab",
+            "jomcgi-org/homelab",
             "main",
             workflow_id="wf-2",
         )

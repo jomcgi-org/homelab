@@ -20,9 +20,10 @@ from datetime import datetime, timezone
 
 import httpx
 
+from core.github import GITHUB_API, GITHUB_REPO
+
 logger = logging.getLogger(__name__)
 
-GITHUB_REPO = "jomcgi/homelab"
 _GITHUB_CACHE_TTL_SECS = 60
 
 # Module-level cache: {"data": dict, "expires_at": float} or None until first fill.
@@ -63,9 +64,10 @@ async def _fetch_check_run_status(client: httpx.AsyncClient, head_sha: str) -> s
 async def _fetch_github_live() -> dict:
     """Fetch open PRs (with CI status) and recent merges from the GitHub API."""
     async with httpx.AsyncClient(
-        base_url="https://api.github.com",
+        base_url=GITHUB_API,
         headers=_github_headers(),
         timeout=10,
+        follow_redirects=True,
     ) as client:
         open_resp, closed_resp = await asyncio.gather(
             client.get(f"/repos/{GITHUB_REPO}/pulls", params={"state": "open"}),

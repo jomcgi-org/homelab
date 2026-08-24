@@ -11,12 +11,11 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 from agent_sessions.rationale import parse_rationale
+from core.github import GITHUB_API, GITHUB_REPO
 from swarm.unified_diff import parse_unified_diff
 
 router = APIRouter(prefix="/compare", tags=["swarm"])
 
-_GITHUB_API = "https://api.github.com"
-_DEFAULT_REPO = "jomcgi/homelab"
 _COMPARE_BASE = "main"
 _CACHE_TTL_S = 90.0
 _cache: dict[str, tuple[float, dict]] = {}
@@ -49,7 +48,7 @@ def _turn_data(session_id: int, turn_seq: int):
             "diff_truncated": turn.diff_truncated,
             "diff_base_sha": turn.diff_base_sha,
             "branch": session.branch,
-            "repo": session.repo or _DEFAULT_REPO,
+            "repo": session.repo or GITHUB_REPO,
             "usage_json": turn.usage_json,
             "prompt_intent": turn.prompt_intent,
             "result_text": turn.result_text,
@@ -111,7 +110,7 @@ async def _github_get(url: str) -> httpx.Response:
     token = os.environ.get("GITHUB_API_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         response = await client.get(url, headers=headers)
     return response
 
@@ -124,7 +123,7 @@ async def _compare(
         if cached is not None:
             return cached
     response = await _github_get(
-        f"{_GITHUB_API}/repos/{repo}/compare/{quote(base, safe='')}...{quote(head, safe='')}"
+        f"{GITHUB_API}/repos/{repo}/compare/{quote(base, safe='')}...{quote(head, safe='')}"
     )
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail="GitHub compare unavailable")
@@ -216,7 +215,7 @@ async def compare_stats(session_id: int, turn_seq: int) -> dict:
         resolution_rung, diff_type = 3, None
     elif branch:
         branch_response = await _github_get(
-            f"{_GITHUB_API}/repos/{repo}/branches/{quote(branch, safe='')}"
+            f"{GITHUB_API}/repos/{repo}/branches/{quote(branch, safe='')}"
         )
         if branch_response.status_code == 200:
             resolution_rung, diff_type = 2, "branch_ephemeral"
@@ -289,7 +288,7 @@ async def compare_patch(session_id: int, turn_seq: int, path: str = Query(...)) 
         raise HTTPException(status_code=404, detail="no_compare_available")
     elif data["branch"]:
         branch_response = await _github_get(
-            f"{_GITHUB_API}/repos/{data['repo']}/branches/{quote(data['branch'], safe='')}"
+            f"{GITHUB_API}/repos/{data['repo']}/branches/{quote(data['branch'], safe='')}"
         )
         if branch_response.status_code != 200:
             raise HTTPException(status_code=404, detail="no_compare_available")

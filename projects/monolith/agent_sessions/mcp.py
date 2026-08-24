@@ -27,6 +27,7 @@ from agent_sessions.transport import (
     Turn,
 )
 from core.db import get_engine
+from core.github import GITHUB_REPO
 from core.mcp_app import mcp
 from goosecracker.api import REPO_CATALOG
 from agent_sessions.rationale import parse_rationale
@@ -42,7 +43,7 @@ from auth.api import Authority, current_principal
 # new session clones again. Issue #4473 moves the clone back to a node-local
 # mirror over http, which is what makes this default cheap rather than merely
 # convenient.
-DEFAULT_AGENT_REPO = "jomcgi/homelab"
+DEFAULT_AGENT_REPO = GITHUB_REPO
 from faas.embervm_client import EmberVMTransportError
 from framework import log_task_exception
 
@@ -673,7 +674,7 @@ async def monolith_agent_session_start(
             sol. Pi family: qwen. Omit for the claude CLI default. Later
             sends may only name models within the pinned family.
         repo: owner/repo to check out into the guest workspace, defaulting to
-            jomcgi/homelab. Must be in the catalog. Pass an empty string for a
+            jomcgi-org/homelab. Must be in the catalog. Pass an empty string for a
             session with NO checkout, which starts faster and suits a session
             that only talks.
         branch: Branch to check out. Defaults to main.

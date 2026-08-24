@@ -2136,6 +2136,40 @@ py_test(
 )
 
 py_test(
+    name = "github_test",
+    srcs = ["core/github_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//pytest",
+    ],
+)
+
+# The sources are `data`, not just `srcs`: this test WALKS the tree rather than
+# importing it, and a bazel test only sees its own runfiles. Without the glob the
+# walk finds nothing, the violations list is empty, and the test passes while
+# guarding nothing. The test asserts a floor on the file count for the same
+# reason, so a future glob that silently stops matching fails loudly.
+py_test(
+    name = "github_repo_slug_test",
+    srcs = ["github_repo_slug_test.py"],
+    data = glob(
+        ["**/*.py"],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            # pytest auto-collects any conftest.py it finds under its rootdir,
+            # which here is the runfiles tree. Collecting one imports it, and
+            # these pull sqlmodel and friends that this target deliberately
+            # does not depend on, so the run dies at collection.
+            "**/conftest.py",
+        ],
+    ),
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
     name = "jobs_main_test",
     srcs = ["app/jobs_main_test.py"],
     imports = ["."],
@@ -4196,6 +4230,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_swarm",
+        "@pip//httpx",
         "@pip//pytest",
     ],
 )

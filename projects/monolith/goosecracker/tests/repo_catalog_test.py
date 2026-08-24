@@ -5,8 +5,8 @@ from goosecracker.repo_catalog import REPO_CATALOG, describe_repos
 
 
 def test_menu_lists_only_granted_repos():
-    menu = describe_repos(frozenset({"jomcgi/homelab"}))
-    assert "- jomcgi/homelab = " in menu
+    menu = describe_repos(frozenset({"jomcgi-org/homelab"}))
+    assert "- jomcgi-org/homelab = " in menu
     # A repo the invoker does not hold is never offered.
     assert "weave-hand/loom" not in menu
 
@@ -18,9 +18,9 @@ def test_menu_carries_the_catalog_description():
 
 
 def test_known_repos_render_in_catalog_order():
-    menu = describe_repos(frozenset({"weave-hand/loom", "jomcgi/homelab"}))
+    menu = describe_repos(frozenset({"weave-hand/loom", "jomcgi-org/homelab"}))
     # Catalog order (homelab before loom) is preserved regardless of set order.
-    assert menu.index("jomcgi/homelab") < menu.index("weave-hand/loom")
+    assert menu.index("jomcgi-org/homelab") < menu.index("weave-hand/loom")
 
 
 def test_granted_but_uncatalogued_repo_still_appears():
@@ -31,8 +31,8 @@ def test_granted_but_uncatalogued_repo_still_appears():
 
 
 def test_known_repos_lead_uncatalogued_follow():
-    menu = describe_repos(frozenset({"someone/newrepo", "jomcgi/homelab"}))
-    assert menu.index("jomcgi/homelab") < menu.index("someone/newrepo")
+    menu = describe_repos(frozenset({"someone/newrepo", "jomcgi-org/homelab"}))
+    assert menu.index("jomcgi-org/homelab") < menu.index("someone/newrepo")
 
 
 def test_no_grants_renders_none_sentinel():
@@ -41,7 +41,7 @@ def test_no_grants_renders_none_sentinel():
 
 
 def test_deterministic_for_a_given_scope_set():
-    scopes = frozenset({"jomcgi/homelab", "weave-hand/loom", "z/z", "a/a"})
+    scopes = frozenset({"jomcgi-org/homelab", "weave-hand/loom", "z/z", "a/a"})
     assert describe_repos(scopes) == describe_repos(scopes)
 
 

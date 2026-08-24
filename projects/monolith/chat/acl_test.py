@@ -141,8 +141,10 @@ class TestBootstrapDefaults:
         monkeypatch.setenv("OWNER_DISCORD_USER_ID", "owner1")
         with patch("chat.acl.get_engine", return_value=engine):
             acl.bootstrap_defaults()
-            # jomcgi/homelab (public) is open to everyone in the home server
-            assert acl.is_granted("home1", "anyone", "agent", "jomcgi/homelab") is True
+            # The public homelab repo is open to everyone in the home server.
+            assert (
+                acl.is_granted("home1", "anyone", "agent", "jomcgi-org/homelab") is True
+            )
             # loom (private) from the home server is owner-only
             assert acl.is_granted("home1", "owner1", "agent", "weave-hand/loom") is True
             assert (
@@ -154,7 +156,9 @@ class TestBootstrapDefaults:
                 is True
             )
             assert (
-                acl.is_granted(acl.LOOM_GUILD_ID, "anyone", "agent", "jomcgi/homelab")
+                acl.is_granted(
+                    acl.LOOM_GUILD_ID, "anyone", "agent", "jomcgi-org/homelab"
+                )
                 is False
             )
             # ADR 036: the orchestrator tier is granted server-wide on the home
