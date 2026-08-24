@@ -1253,10 +1253,6 @@ orchestrator:
   # Initial-compile budget: covers BOTH the route-decision call and the
   # submit_plan tool call (plan construction is real work, not a quick classify).
   timeoutSeconds: 60
-  # Replan budget (the capped goose escape hatch): a replan runs after goose has
-  # opened the task and reported what it learned, so it gets a more generous
-  # budget than the initial compile.
-  replanTimeoutSeconds: 120
 
 # WhatsApp channel gateway (ADR 039): a transport-only Go whatsmeow service in
 # its own single-replica Deployment. Disabled by default; Joe flips

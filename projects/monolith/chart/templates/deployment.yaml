@@ -510,8 +510,6 @@ spec:
             {{- end }}
             - name: ORCHESTRATOR_TIMEOUT_S
               value: {{ .Values.orchestrator.timeoutSeconds | quote }}
-            - name: ORCHESTRATOR_REPLAN_TIMEOUT_S
-              value: {{ .Values.orchestrator.replanTimeoutSeconds | quote }}
             {{- end }}
             - name: AUTH_AUTHENTIK_JWKS_URL
               value: {{ .Values.auth.authentik.jwksUrl | quote }}

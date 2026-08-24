@@ -33,7 +33,10 @@ frontend:
   otelCollectorUrl: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
 
 postgres:
-  # Nightly logical refresh of monolith-dev-pg from this cluster's REPLICA.
+  # Nightly logical refresh of monolith-dev-pg, dumped from the production
+  # PRIMARY (monolith-pg-rw), not the -ro replica: standby recovery conflicts
+  # killed every run (see the env comment in
+  # chart/templates/cnpg-dev-refresh-cronworkflow.yaml).
   # Enabled here rather than in the chart default so the chart stays inert for
   # anyone rendering it, matching how every other environment choice is made in
   # this repo. The hand-made half of its credentials (monolith-pg-dump-reader)
@@ -134,27 +137,6 @@ cfIngress:
     authentik:
       onepassword:
         itemPath: vaults/k8s-homelab/items/moving-oidc
-  todo:
-    public:
-      enabled: false
-      tier: public
-      hostname: todo.jomcgi.dev
-      servicePort: 8000
-      gateway:
-        name: cloudflare-ingress
-        namespace: envoy-gateway-system
-      rateLimit:
-        requests: 100
-        unit: Minute
-    admin:
-      enabled: false
-      tier: trusted
-      hostname: todo-admin.jomcgi.dev
-      servicePort: 8000
-      gateway:
-        name: cloudflare-ingress
-        namespace: envoy-gateway-system
-      team: jomcgi
 
 knowledge:
   enabled: true
