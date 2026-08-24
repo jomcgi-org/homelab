@@ -1043,7 +1043,7 @@ shared Postgres) is in [deploy/README.md](deploy/README.md).
 ### Promotion gate
 
 EmberVM promotes the dev chart to production through Kargo. The existing
-`argocd-wait` step proves that Argo CD reached the requested revision, while the
+`argocd-wait` step proves the Application is Synced and Healthy, while the
 soak interval exposes failures that appear only after reconciliation has settled.
 The in-cluster conformance runner adds synthetic API coverage against the deployed
 dev control plane. Its S1 through S4 scenarios exercise task execution, session

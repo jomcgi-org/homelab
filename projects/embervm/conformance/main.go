@@ -47,7 +47,7 @@ func runLoop(ctx context.Context, cfg config, client *controlPlaneClient, store 
 		started := time.Now().UTC()
 		store.start(started)
 		readyCtx, cancelReady := context.WithTimeout(ctx, cfg.readyWait)
-		err := waitForReady(readyCtx, client)
+		err := waitForReady(readyCtx, client, cfg.taskWorkload)
 		cancelReady()
 		if err != nil {
 			result := scenarioVerdict{ID: "S0", Verdict: verdictFail, Detail: "no ready brick within READY_WAIT", MS: time.Since(started).Milliseconds()}

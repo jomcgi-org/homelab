@@ -17,6 +17,7 @@ spec:
   template:
     metadata:
       annotations:
+        # Note: Prometheus scraping is aspirational today; no scraper targets this pod yet.
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
         prometheus.io/path: /metrics
@@ -30,7 +31,7 @@ spec:
       {{- end }}
       containers:
         - name: conformance
-          image: "{{ .Values.conformance.image.repository }}{{ with .Values.conformance.image.tag }}:{{ . }}{{ end }}{{ with .Values.conformance.image.digest }}@{{ . }}{{ end }}"
+          image: "{{ .Values.conformance.image.repository }}:{{ .Values.conformance.image.tag }}@{{ .Values.conformance.image.digest }}"
           imagePullPolicy: {{ .Values.conformance.image.pullPolicy }}
           ports:
             - { name: http, containerPort: 8080 }

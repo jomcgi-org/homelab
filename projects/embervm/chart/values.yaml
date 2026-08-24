@@ -323,8 +323,8 @@ conformance:
   enabled: false
   image:
     repository: ghcr.io/jomcgi/homelab/projects/embervm/conformance
-    tag: null # Injected at build time via helm_images_values
-    digest: null # Injected at build time
+    tag: "latest" # Placeholder replaced at build time via helm_images_values
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000" # Placeholder replaced at build time
     pullPolicy: IfNotPresent
   runInterval: 30m
   readyWait: 15m
@@ -335,7 +335,9 @@ conformance:
   minPassingInvariants: 4
   budgets:
     s1: 60s
-    s2: 120s
+    # The guest shim's inner init read timeout is 90s. A 180s outer budget safely
+    # leaves time for the 35s idle-bank wait and the invoke after relight.
+    s2: 180s
     s3: 60s
     s4: 10s
   resources:
