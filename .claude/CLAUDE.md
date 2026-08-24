@@ -228,7 +228,7 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 
 | When | Read |
 |------|------|
-| Security-sensitive change | `docs/security.md` first |
+| Security-sensitive change | `docs/security.md` first; `docs/THREAT-MODEL.md` for open findings |
 | Public tier: jomcgi.dev pages, monolith-public, `public_reader` data | `docs/runbooks/public-tier-checklist.md` first |
 | ArgoCD OutOfSync, stuck rollout, "is my change live?" | `docs/runbooks/argocd-outofsync.md` |
 | Adding a service | `docs/contributing.md`, `docs/reference/services.md` |

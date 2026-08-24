@@ -234,9 +234,9 @@ production.
 
 - **Kernel and hypervisor escape from Firecracker.** This document
   assumes the Firecracker boundary itself holds; Firecracker's own
-  security model is out of scope here. The assumption is load-bearing:
-  finding 1 in section 5 records that the deployment runs the VMM
-  without the jailer, so an escape is not contained (#5255).
+  security model is out of scope here. Finding 1 in section 5 records
+  that the deployment runs the VMM without the jailer, so an escape is
+  not contained (#5255).
 - **CPU side-channels between co-resident guests.** Tenants share bricks
   by design; microarchitectural side-channels between their VMs are not
   analyzed here. Recording an explicit posture is part of #5255.

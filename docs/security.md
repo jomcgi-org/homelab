@@ -1,6 +1,8 @@
 # Security Model
 
 This document describes the security architecture of the homelab cluster.
+Open findings and the per-surface ranking live in
+[THREAT-MODEL.md](THREAT-MODEL.md).
 
 ## Defense-in-Depth Architecture
 
