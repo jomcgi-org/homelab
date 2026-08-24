@@ -96,6 +96,12 @@ defmodule Embervm.SessionManager do
   # that cannot bank must not squat live capacity forever.
   @bank_fail_limit 3
 
+  # Bank retries on dial-resolution miss (capacity-table miss, dial fell back to node_id).
+  # At 20s idle-bank cadence, this is roughly ten minutes. Comfortably outlasts a control-plane
+  # restart plus fleet re-registration (transient cause), while terminalizing a genuinely dead
+  # instance long before the six-hour session lifetime (maxLifetimeSeconds 21600).
+  @bank_dial_miss_limit 30
+
   # NodeCapacity.updated_at is stamped from a monotonic clock. Keep its freshness
   # gate in that domain instead of comparing it with session row wall-clock times.
   @fleet_freshness_window_ms 120_000
@@ -321,10 +327,13 @@ defmodule Embervm.SessionManager do
       # GenServer call wrote synchronously, not an inference over another
       # structure's shape.
       inflight_restore_lineages: MapSet.new(),
-      # session_id -> consecutive bank-failure count. Lives HERE (not in the session
-      # process, which stops on admission) so three strikes across bank attempts fails
-      # the session. Cleared on a successful bank or a successful invoke-driven relight.
+      # session_id -> consecutive non-dial bank-failure count. Lives HERE (not in the
+      # session process, which stops on admission) so three strikes across bank attempts
+      # fails the session. Dial-resolution misses are tracked separately in
+      # bank_dial_misses with their own limit and do not advance this counter. Both are
+      # cleared on a successful bank or a successful invoke-driven relight.
       bank_failures: %{},
+      bank_dial_misses: %{},
       # session_id -> placed instance dial. The capacity table is eventually
       # consistent, so keep the dial that actually created or restarted the VM for
       # bank and destroy when its live-vm fact is temporarily absent.
@@ -1644,8 +1653,9 @@ defmodule Embervm.SessionManager do
   #     session_banked op (generation+1, snapshot fact), clear the failure streak,
   #     and if a mid-bank invoke parked, immediately relight it;
   #   * on failure: mark ETS `banking -[bank_abort]-> running` (the VM is still alive,
-  #     no snapshot written), count the failure, and either restart a session process
-  #     (so it can serve invokes + retry) or, at three strikes, fail + destroy the VM.
+  #     no snapshot written), count the relevant failure class, and either restart a
+  #     session process (so it can serve invokes + retry) or fail + destroy the VM when
+  #     that class reaches its limit.
   defp finish_bank(state, session_id, node_id, outcome) do
     state =
       state
@@ -1713,47 +1723,60 @@ defmodule Embervm.SessionManager do
   end
 
   # A bank failed: ETS back to running. A dial-resolution miss is retryable
-  # infrastructure and does not count as a strike. Other failures preserve the
-  # three-strike policy. Under the limit, restart a session process so the live VM
-  # keeps serving and its idle timer will retry the bank.
+  # infrastructure and has its own longer limit without counting as a strike. Other
+  # failures preserve the three-strike policy. Under the applicable limit, restart a
+  # session process so the live VM keeps serving and its idle timer will retry the bank.
   defp handle_bank_failure(state, session_id, reason) do
     _ = SessionStore.mark(state.session_store, session_id, :bank_abort)
 
     if bank_dial_miss?(reason) do
-      Logger.warning("embervm session bank failed", session_id: session_id, reason: inspect(reason))
-      restart_running_process(state, session_id)
+      misses = Map.get(state.bank_dial_misses, session_id, 0) + 1
+      Logger.warning("embervm session bank failed", session_id: session_id, reason: inspect(reason), consecutive: misses)
+
+      if misses >= @bank_dial_miss_limit do
+        state
+        |> clear_bank_failures(session_id)
+        |> terminal_bank_failure(session_id, "bank_dial_miss_limit")
+      else
+        state = %{state | bank_dial_misses: Map.put(state.bank_dial_misses, session_id, misses)}
+        restart_running_process(state, session_id)
+      end
     else
       failures = Map.get(state.bank_failures, session_id, 0) + 1
       Logger.warning("embervm session bank failed", session_id: session_id, reason: inspect(reason), consecutive: failures)
 
       if failures >= @bank_fail_limit do
-        state = clear_bank_failures(state, session_id)
-
-        case SessionStore.get(state.session_store, session_id) do
-          {:ok, session} ->
-            destroying? =
-              session.state == :destroying or
-                MapSet.member?(state.destroy_inflight, session_id)
-
-            state =
-              if destroying? do
-                state
-              else
-                fail_session_and_destroy(state, session)
-              end
-
-            # Any mid-bank parked callers: the session is failed now, or its destroy
-            # worker already owns teardown.
-            gone_state = if destroying?, do: "destroying", else: "failed"
-            drain_relight_waiters(state, session_id, {:error, {:gone, gone_state}})
-
-          :error ->
-            clear_session_tracking(state, session_id)
-        end
+        state
+        |> clear_bank_failures(session_id)
+        |> terminal_bank_failure(session_id, "bank_failed_three_strikes")
       else
         state = %{state | bank_failures: Map.put(state.bank_failures, session_id, failures)}
         restart_running_process(state, session_id)
       end
+    end
+  end
+
+  defp terminal_bank_failure(state, session_id, fail_reason) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, session} ->
+        destroying? =
+          session.state == :destroying or
+            MapSet.member?(state.destroy_inflight, session_id)
+
+        state =
+          if destroying? do
+            state
+          else
+            fail_session_and_destroy(state, session, fail_reason)
+          end
+
+        # Any mid-bank parked callers: the session is failed now, or its destroy
+        # worker already owns teardown.
+        gone_state = if destroying?, do: "destroying", else: "failed"
+        drain_relight_waiters(state, session_id, {:error, {:gone, gone_state}})
+
+      :error ->
+        clear_session_tracking(state, session_id)
     end
   end
 
@@ -1785,19 +1808,24 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp fail_session_and_destroy(state, session) do
+  defp fail_session_and_destroy(state, session, fail_reason) do
     _ = destroy_vm(state, session)
-    fail_session(state, session.session_id, :failed, "bank_failed_three_strikes")
+    fail_session(state, session.session_id, :failed, fail_reason)
   end
 
   defp clear_bank_failures(state, session_id) do
-    %{state | bank_failures: Map.delete(state.bank_failures, session_id)}
+    %{
+      state
+      | bank_failures: Map.delete(state.bank_failures, session_id),
+        bank_dial_misses: Map.delete(state.bank_dial_misses, session_id)
+    }
   end
 
   defp clear_session_tracking(state, session_id) do
     %{
       state
       | bank_failures: Map.delete(state.bank_failures, session_id),
+        bank_dial_misses: Map.delete(state.bank_dial_misses, session_id),
         session_dials: Map.delete(state.session_dials, session_id)
     }
   end
