@@ -726,12 +726,16 @@ claudeRuntimeWorkload:
     # refcount-pinning the stale intel base against retention. Vendor-blind
     # conditions and the dangling intel ref are tracked in #4937.
     EMBER_BASE_EPOCH: "diff-capture-2"
-    # INERT, kept only as documented intent: the shim reads EMBER_PREWARM_CLIS
-    # from its own environment, which never receives this, so _read_prewarm_clis
-    # returns () and prewarm silently no-ops. Live turn-timing confirms it: first
-    # turns log path=lazy_spawn, never a prewarmed CLI. #4423 (prewarm codex and
-    # pi too) has to fix the wiring above before it can build on this.
-    EMBER_PREWARM_CLIS: "claude"
+    # Prewarm config deliberately does NOT live here anymore. EMBER_PREWARM_CLIS
+    # used to sit in this map as documented intent, but nothing here reaches the
+    # guest (see above), so prewarm silently no-oped for every family, which is
+    # why first turns logged path=lazy_spawn (#4423). The list now ships IN the
+    # image as /usr/share/ember-shim/prewarm-clis, baked per runtime: claude
+    # carries "claude,codex,pi" (runtimes/claude/prewarm-clis), pi-runtime
+    # carries only "pi" (runtimes/pi/prewarm-clis), because that image omits
+    # the other two CLIs. EMBER_PREWARM_CLIS remains a live env override in the
+    # shim for tests and one-off boots; it just cannot be set from here until
+    # #4429 makes initEnv mean what it says.
     # The git proxy idle deadline that dominates hydration (#4429) is deliberately
     # NOT here: it was set here first, rebuilt the base, and left the guest on its
     # 10s default anyway. It now lives in the guest at shim.py, which is the only

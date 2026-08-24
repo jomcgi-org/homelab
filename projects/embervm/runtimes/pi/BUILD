@@ -36,6 +36,20 @@ tar(
     visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
+# This image's prewarm list (#4423), read by the shared shim's
+# ProcessManager._read_prewarm_clis at /usr/share/ember-shim/prewarm-clis.
+# Only pi: the claude and codex CLIs are deliberately absent from this image,
+# and prewarming a binary that does not exist would fail every boot. Task-class
+# guests have no env delivery (#4429), so this baked file, not initEnv, is how
+# the list reaches the guest.
+tar(
+    name = "prewarm_clis_tar",
+    srcs = ["prewarm-clis"],
+    mtree = [
+        "./usr/share/ember-shim/prewarm-clis type=file content=$(execpath prewarm-clis) mode=0644 uid=0 gid=0",
+    ],
+)
+
 apko_image(
     name = "image",
     # amd64-only. Unlike ../claude this is not forced by the CLI (pi ships
@@ -56,6 +70,7 @@ apko_image(
         "//projects/embervm/runtimes/claude:guest_config_tar",
         "//projects/embervm/runtimes/claude:guest_init_tar_amd64",
         ":web_research_extension_tar",
+        ":prewarm_clis_tar",
         # The pi coding agent, a self-contained Bun-compiled ELF from the GitHub
         # release (see pi_coding_agent in MODULE.bazel), plus the theme JSONs and
         # wasm sidecar it loads relative to argv0. The ONLY CLI in this image:

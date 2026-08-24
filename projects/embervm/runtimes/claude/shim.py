@@ -374,7 +374,13 @@ def _write_hydration_diagnostics(exc, checkout_dir):
 
 
 PREWARM_CLIS_ENV = "EMBER_PREWARM_CLIS"
-SUPPORTED_PREWARM_CLIS = ("claude",)
+SUPPORTED_PREWARM_CLIS = ("claude", "codex", "pi")
+# The in-image prewarm config. Task-class guests have no env delivery (#4429):
+# initEnv entries never reach a guest, so the per-image list of CLIs to prewarm
+# ships as a file baked into each runtime image (runtimes/claude prewarms all
+# three families, runtimes/pi only pi). EMBER_PREWARM_CLIS stays as an explicit
+# override for tests and one-off boots.
+PREWARM_CLIS_FILE = "/usr/share/ember-shim/prewarm-clis"
 CODEX_MODELS = {
     "luna": ("gpt-5.6-luna", "medium"),
     "terra": ("gpt-5.6-terra", "high"),
@@ -2110,6 +2116,10 @@ class CodexProcess:
         self._turn_done = threading.Event()
         self._turn_done.set()
         self._write_lock = threading.Lock()
+        # Spawn-time workspace identity, read by the manager's remediation to
+        # detect a volume mount hiding the tmpfs workspace this process was
+        # spawned against. Same contract as ClaudeProcess.
+        self._process_workspace_identity = _workspace_identity(self.workspace)
 
     def ready(self):
         with self.process_lock:
@@ -2241,6 +2251,7 @@ wire_api = "responses"
         with self.process_lock:
             self.process = process
             self._stdout_queue = output_queue
+            self._process_workspace_identity = _workspace_identity(self.workspace)
             _managed_child_pids.add(process.pid)
         threading.Thread(
             target=self._pump_codex_stdout, args=(process, output_queue), daemon=True
@@ -2688,6 +2699,10 @@ class PiProcess:
         self._model = None
         self._system_prompt = None
         self._session_file = None
+        # Spawn-time workspace identity, read by the manager's remediation to
+        # detect a volume mount hiding the tmpfs workspace this process was
+        # spawned against. Same contract as ClaudeProcess.
+        self._process_workspace_identity = _workspace_identity(self.workspace)
 
     def ready(self):
         with self.process_lock:
@@ -2825,6 +2840,7 @@ class PiProcess:
             self._stdout_queue = output_queue
             self._model = model
             self._system_prompt = system_prompt
+            self._process_workspace_identity = _workspace_identity(self.workspace)
             _managed_child_pids.add(process.pid)
         threading.Thread(
             target=self._pump_pi_stdout,
@@ -3385,7 +3401,7 @@ class ProcessManager:
         self.pi = PiProcess(cli_workspace, pi_executable)
         if self._prewarm_clis and self.fatal_error is None:
             self._prewarm_thread = threading.Thread(
-                target=self.prewarm, name="claude-prewarm", daemon=True
+                target=self.prewarm, name="cli-prewarm", daemon=True
             )
             self._prewarm_thread.start()
 
@@ -3397,8 +3413,17 @@ class ProcessManager:
     def _read_prewarm_clis():
         value = os.environ.get(PREWARM_CLIS_ENV, "")
         if not value.strip():
-            return ()
-        clis = tuple(item.strip() for item in value.split(",") if item.strip())
+            # No explicit override: fall back to the list baked into the
+            # image. A missing file (dev host, older image) means no prewarm.
+            # ValueError covers a torn or non-UTF-8 read the same way.
+            try:
+                with open(PREWARM_CLIS_FILE, "r") as stream:
+                    value = stream.read()
+            except (OSError, ValueError):
+                return ()
+        clis = tuple(
+            item.strip() for item in value.replace("\n", ",").split(",") if item.strip()
+        )
         unknown = sorted(set(clis) - set(SUPPORTED_PREWARM_CLIS))
         if unknown:
             raise StartupError(
@@ -3422,12 +3447,39 @@ class ProcessManager:
                     # Claude emits a generated id in init, but a parked process
                     # has not adopted a session until its first user message.
                     self.claude.session_id = None
+                elif cli == "codex":
+                    # The app-server binds thread identity only when a turn
+                    # asks for one (thread/start or thread/resume), so a parked
+                    # process carries nothing session-shaped to roll back.
+                    # Model and effort ride every turn/start and developer
+                    # instructions ride the first thread request, so spawn plus
+                    # the initialize handshake is the entire init cost.
+                    self.codex._spawn()
+                elif cli == "pi":
+                    # Pi takes model and system prompt as spawn-time flags, so
+                    # the parked process carries the defaults. A turn naming a
+                    # different model pays one set_model RPC; a different
+                    # system prompt respawns through the turn path exactly as
+                    # it would for an unparked spawn.
+                    self.pi._spawn(DEFAULT_PI_MODEL, system_prompt=None)
+                    # Whatever startup state get_state reported, a parked
+                    # process owns no caller session until its first prompt.
+                    # Clearing it keeps a later switch_session from hitting the
+                    # SessionConflictError guard, exactly like the claude park
+                    # above (#4358 late-bound session identity).
+                    self.pi.session_id = None
             self._prewarm_complete = True
         except Exception as exc:
             self.fatal_error = "CLI prewarm failed: %s" % exc
             prewarm_error = self.fatal_error
-            if hasattr(self.claude, "_close_process"):
-                self.claude._close_process(kill=True)
+            # Close every CLI this guest spawned: a half-prewarmed guest never
+            # becomes ready, and it must not sit on hundreds of MiB of resident
+            # CLIs while the base build times out against /shim/ready.
+            if hasattr(self, "_close_process"):
+                try:
+                    self._close_process(kill=True)
+                except Exception:
+                    pass
             sys.stderr.write("ember-claude-shim: %s\n" % prewarm_error)
             sys.stderr.flush()
         finally:
@@ -3637,21 +3689,21 @@ class ProcessManager:
             return False
         if not self.claude.ready() or not self.codex.ready() or not self.pi.ready():
             return False
-        process = getattr(self.claude, "process", None)
         # Base build safety depends on the noded placeholder volume staying blank
         # (zero-filled, no filesystem). Guest-init in guest init forbids mounting a
         # placeholder during base build (volume_linux.go:97-100). If the placeholder
         # gains a superblock this probe would misfire and skip the build liveness check.
         volume_has_ext4 = _volume_has_ext4()
-        if (
-            self._prewarm_clis
-            and "claude" in self._prewarm_clis
-            and not volume_has_ext4
-        ):
-            # A base build has no filesystem on the volume, so its parked CLI
-            # must be alive before the image is accepted as a warm base.
-            if process is None or process.poll() is not None:
-                return False
+        if self._prewarm_clis and not volume_has_ext4:
+            # A base build has no filesystem on the volume, so every configured
+            # prewarm must still be alive before the image is accepted as a
+            # warm base: a snapshot with a dead CLI would restore warmth that
+            # is not there.
+            for cli in self._prewarm_clis:
+                adapter = getattr(self, cli)
+                process = getattr(adapter, "process", None)
+                if process is None or process.poll() is not None:
+                    return False
         if _workspace_is_tmpfs() and volume_has_ext4:
             self._kick_remediation()
         return True
@@ -3695,22 +3747,30 @@ class ProcessManager:
                     # path has always re-created it; readiness must too.
                     _ensure_cli_dir(self.claude.workspace)
                     identity = self._workspace_identity(self.claude.workspace)
-                    process = getattr(self.claude, "process", None)
-                    process_dead = process is not None and process.poll() is not None
-                    identity_changed = identity != getattr(
-                        self.claude, "_process_workspace_identity", None
-                    )
-                    if identity_changed or process_dead:
-                        # Mount-only remediation: close the stranded process
-                        # and leave the respawn to the turn path's proven lazy
-                        # spawn. The eager respawn here waited its full 30s
-                        # init budget without ever observing the init event
-                        # (#4393), turning every warm-restore rejoin into a
-                        # 30s stall; until that wait is fixed, closing early
-                        # and spawning lazily restores the ~3s pre-deploy
-                        # rejoin while prewarm keeps its create and cold-boot
-                        # wins.
-                        self.claude._close_process(kill=False)
+                    # Every prewarmed family is stranded by the same mount:
+                    # its process was spawned against the tmpfs workspace the
+                    # volume now hides, so close each one whose identity moved
+                    # (or that died) and leave the respawn to the turn path's
+                    # proven lazy spawn for that family.
+                    for adapter in (self.claude, self.codex, self.pi):
+                        process = getattr(adapter, "process", None)
+                        process_dead = (
+                            process is not None and process.poll() is not None
+                        )
+                        identity_changed = identity != getattr(
+                            adapter, "_process_workspace_identity", None
+                        )
+                        if identity_changed or process_dead:
+                            # Mount-only remediation: close the stranded process
+                            # and leave the respawn to the turn path's proven lazy
+                            # spawn. The eager respawn here waited its full 30s
+                            # init budget without ever observing the init event
+                            # (#4393), turning every warm-restore rejoin into a
+                            # 30s stall; until that wait is fixed, closing early
+                            # and spawning lazily restores the ~3s pre-deploy
+                            # rejoin while prewarm keeps its create and cold-boot
+                            # wins.
+                            adapter._close_process(kill=False)
                     with self._remediation_lock:
                         self._remediation_attempts += 1
                 except Exception as exc:

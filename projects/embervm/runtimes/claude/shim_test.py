@@ -1390,6 +1390,112 @@ def test_process_manager_prewarm_failure_is_not_ready(tmp_path):
     assert "CLI prewarm failed" in manager.fatal_error
 
 
+def test_process_manager_prewarm_spawns_every_configured_family_parked(tmp_path):
+    """#4423: codex and pi park like claude, each per its own init profile.
+
+    Claude parks with no session identity (init emits a throwaway id), codex
+    binds nothing until thread/start, and pi is parked on the default model
+    with no caller system prompt so the common first turn reuses it.
+    """
+    workspace = tmp_path / "workspace" / "src"
+    workspace.mkdir(parents=True)
+    manager = _new_process_manager()
+    manager._prewarm_clis = ("claude", "codex", "pi")
+    manager._prewarm_complete = False
+    manager.fatal_error = None
+    calls = {}
+
+    class Adapter:
+        session_id = None
+        fatal_error = None
+        process = _FakeLiveProcess()
+
+        def _spawn(self, *args, **kwargs):
+            calls[self.name] = (args, kwargs)
+            if self.name == "claude":
+                # A real claude init emits a generated session id.
+                self.session_id = "init-sid"
+
+        def ready(self):
+            return True
+
+    for name in ("claude", "codex", "pi"):
+        adapter = Adapter()
+        adapter.name = name
+        adapter.workspace = str(workspace)
+        adapter.turn_lock = threading.Lock()
+        setattr(manager, name, adapter)
+    manager._close_process = lambda **_kwargs: None
+    manager.prewarm()
+
+    assert calls["claude"] == (
+        (),
+        {
+            "session_id": None,
+            "first_message": None,
+            "model": None,
+            "init_timeout": 30,
+        },
+    )
+    # Codex's whole init is the app-server spawn plus initialize handshake:
+    # model, effort and developer instructions all ride per-turn requests.
+    assert calls["codex"] == ((), {})
+    # Pi takes model and system prompt at spawn time only.
+    assert calls["pi"] == ((shim.DEFAULT_PI_MODEL,), {"system_prompt": None})
+    for name in ("claude", "codex", "pi"):
+        adapter = getattr(manager, name)
+        assert adapter.session_id is None
+        assert adapter.process.poll() is None
+    assert manager._prewarm_complete
+
+
+def test_process_manager_prewarm_failure_closes_every_cli(tmp_path):
+    """A half-prewarmed guest must not hold resident CLIs while unready."""
+    workspace = tmp_path / "workspace" / "src"
+    workspace.mkdir(parents=True)
+    manager = _new_process_manager()
+    manager._prewarm_clis = ("claude", "codex", "pi")
+    manager._prewarm_complete = False
+    manager.fatal_error = None
+
+    class Adapter:
+        session_id = None
+        fatal_error = None
+
+        def __init__(self, name):
+            self.name = name
+            self.closed = None
+            self.process = _FakeLiveProcess()
+
+        def _spawn(self, **_kwargs):
+            if self.name == "codex":
+                raise shim.StartupError("init timeout")
+
+        def _close_process(self, kill=False):
+            self.closed = kill
+
+        def ready(self):
+            return True
+
+    for name in ("claude", "codex", "pi"):
+        adapter = Adapter(name)
+        adapter.workspace = str(workspace)
+        adapter.turn_lock = threading.Lock()
+        setattr(manager, name, adapter)
+
+    def close_all(kill=False):
+        for name in ("claude", "codex", "pi"):
+            getattr(manager, name)._close_process(kill=kill)
+
+    manager._close_process = close_all
+    manager.prewarm()
+
+    assert "CLI prewarm failed" in manager.fatal_error
+    # Codex failed, but claude had already parked: everything closes.
+    for name in ("claude", "codex", "pi"):
+        assert getattr(manager, name).closed is True
+
+
 def test_process_manager_turn_always_ensures_workspace_volume(monkeypatch):
     manager = _new_process_manager()
     calls = []
@@ -1800,9 +1906,44 @@ def test_missing_transcript_is_a_turn_error(tmp_path, monkeypatch):
 def test_read_prewarm_clis_rejects_unknown_and_deduplicates(monkeypatch):
     monkeypatch.setenv(shim.PREWARM_CLIS_ENV, " claude, claude,  ")
     assert shim.ProcessManager._read_prewarm_clis() == ("claude",)
-    monkeypatch.setenv(shim.PREWARM_CLIS_ENV, "claude, codex")
-    with pytest.raises(shim.StartupError, match="codex"):
+    monkeypatch.setenv(shim.PREWARM_CLIS_ENV, "pi, codex , claude\ncodex")
+    assert shim.ProcessManager._read_prewarm_clis() == ("pi", "codex", "claude")
+    monkeypatch.setenv(shim.PREWARM_CLIS_ENV, "claude, gemini")
+    with pytest.raises(shim.StartupError, match="gemini"):
         shim.ProcessManager._read_prewarm_clis()
+
+
+def test_read_prewarm_clis_falls_back_to_baked_file(tmp_path, monkeypatch):
+    """Without the env override the per-image baked list drives prewarm."""
+    baked = tmp_path / "prewarm-clis"
+    baked.write_text("claude,codex,pi\n")
+    monkeypatch.delenv(shim.PREWARM_CLIS_ENV, raising=False)
+    monkeypatch.setattr(shim, "PREWARM_CLIS_FILE", str(baked))
+    assert shim.ProcessManager._read_prewarm_clis() == ("claude", "codex", "pi")
+
+
+def test_read_prewarm_clis_baked_file_validates_names(tmp_path, monkeypatch):
+    baked = tmp_path / "prewarm-clis"
+    baked.write_text("pi, gemini\n")
+    monkeypatch.delenv(shim.PREWARM_CLIS_ENV, raising=False)
+    monkeypatch.setattr(shim, "PREWARM_CLIS_FILE", str(baked))
+    with pytest.raises(shim.StartupError, match="gemini"):
+        shim.ProcessManager._read_prewarm_clis()
+
+
+def test_read_prewarm_clis_env_overrides_baked_file(tmp_path, monkeypatch):
+    baked = tmp_path / "prewarm-clis"
+    baked.write_text("claude,codex,pi\n")
+    monkeypatch.setenv(shim.PREWARM_CLIS_ENV, "pi")
+    monkeypatch.setattr(shim, "PREWARM_CLIS_FILE", str(baked))
+    assert shim.ProcessManager._read_prewarm_clis() == ("pi",)
+
+
+def test_read_prewarm_clis_without_env_or_file_disables_prewarm(tmp_path, monkeypatch):
+    """An older image without the baked file must boot exactly as before."""
+    monkeypatch.delenv(shim.PREWARM_CLIS_ENV, raising=False)
+    monkeypatch.setattr(shim, "PREWARM_CLIS_FILE", str(tmp_path / "absent"))
+    assert shim.ProcessManager._read_prewarm_clis() == ()
 
 
 def test_parked_create_latches_session_and_rejects_conflict(tmp_path, monkeypatch):
@@ -1888,6 +2029,57 @@ def test_takeover_remediation_closes_stranded_process_without_respawn(
     assert manager.ready()
 
 
+def test_takeover_remediation_closes_stranded_prewarms_of_every_family(
+    tmp_path, monkeypatch
+):
+    """#4423 parity: a volume takeover strands parked codex and pi too.
+
+    All three families were spawned against the base's tmpfs workspace; when
+    the session volume bind-mounts over /workspace, each parked process holds
+    config paths on the hidden tmpfs, so remediation must close all of them
+    and let each family's turn path lazy-spawn against the volume.
+    """
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path)
+    manager._prewarm_clis = ("claude", "codex", "pi")
+    manager._prewarm_complete = True
+    manager.fatal_error = None
+    manager._remediation_lock = threading.Lock()
+    manager._remediation_attempts = 0
+    manager._remediation_thread = None
+
+    class Adapter:
+        workspace = str(tmp_path / "src")
+
+        def __init__(self):
+            self.process = _FakeLiveProcess()
+            self.session_id = None
+            self.turn_lock = threading.Lock()
+            self._process_workspace_identity = (1, 1)
+
+        def ready(self):
+            return True
+
+        def _close_process(self, **_kwargs):
+            self.process = None
+
+    manager.claude = Adapter()
+    manager.codex = Adapter()
+    manager.pi = Adapter()
+    # The takeover has happened: current identity (2, 2) differs from every
+    # parked process's spawn-time identity (1, 1).
+    manager._workspace_identity = lambda _path: (2, 2)
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "_ensure_cli_dir", lambda _path: None)
+    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
+    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
+
+    assert manager.ready()
+    manager._remediation_thread.join(timeout=1)
+    for name in ("claude", "codex", "pi"):
+        assert getattr(manager, name).process is None
+
+
 def test_remediation_recreates_cli_workspace_hidden_by_volume_mount(
     tmp_path, monkeypatch
 ):
@@ -1969,9 +2161,13 @@ def test_workspace_is_tmpfs_reads_last_mount(monkeypatch):
     assert not shim._workspace_is_tmpfs()
 
 
-def test_ready_build_requires_parked_alive_but_session_is_best_effort(monkeypatch):
+@pytest.mark.parametrize("dead_cli", ["claude", "codex", "pi"])
+def test_ready_build_requires_parked_alive_but_session_is_best_effort(
+    monkeypatch, dead_cli
+):
+    """During a base build every configured prewarm must still be alive."""
     manager = _new_process_manager()
-    manager._prewarm_clis = ("claude",)
+    manager._prewarm_clis = ("claude", "codex", "pi")
     manager._prewarm_complete = True
     manager.fatal_error = None
     manager._remediation_lock = threading.Lock()
@@ -1991,11 +2187,43 @@ def test_ready_build_requires_parked_alive_but_session_is_best_effort(monkeypatc
 
     dead = _FakeLiveProcess()
     dead.returncode = 1
-    manager.claude = Adapter(dead)
-    manager.codex = Adapter()
-    manager.pi = Adapter()
+    processes = {
+        "claude": _FakeLiveProcess(),
+        "codex": _FakeLiveProcess(),
+        "pi": _FakeLiveProcess(),
+    }
+    processes[dead_cli] = dead
+    manager.claude = Adapter(processes["claude"])
+    manager.codex = Adapter(processes["codex"])
+    manager.pi = Adapter(processes["pi"])
     # Dead parked CLI in build-guest state -> ready() must return False
     assert not manager.ready()
+
+
+def test_ready_build_accepts_every_prewarm_alive(monkeypatch):
+    """All families parked and alive: the base is accepted as warm."""
+    manager = _new_process_manager()
+    manager._prewarm_clis = ("claude", "codex", "pi")
+    manager._prewarm_complete = True
+    manager.fatal_error = None
+    manager._remediation_lock = threading.Lock()
+    manager._remediation_attempts = 0
+    manager._remediation_thread = None
+    monkeypatch.setattr(shim, "_volume_has_ext4", lambda: False)
+    monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: False)
+
+    class Adapter:
+        def __init__(self):
+            self.process = _FakeLiveProcess()
+            self.turn_lock = threading.Lock()
+
+        def ready(self):
+            return True
+
+    manager.claude = Adapter()
+    manager.codex = Adapter()
+    manager.pi = Adapter()
+    assert manager.ready()
 
 
 def test_remediation_bound_session_closes_without_respawn(tmp_path, monkeypatch):
@@ -2022,10 +2250,15 @@ def test_remediation_bound_session_closes_without_respawn(tmp_path, monkeypatch)
             calls.append("spawn")
 
     manager.claude = Adapter()
+    # The remediation pass covers every family now; codex and pi are dormant
+    # stubs here (no process, never spawned), so closing them records nothing.
+    manager.codex = Adapter()
+    manager.pi = Adapter()
     monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
     manager._workspace_identity = lambda _path: (2, 2)
     manager._remediate_workspace()
-    assert calls == ["close"]
+    assert calls.count("close") == 3
+    assert "spawn" not in calls
     assert manager.claude.session_id == "bound-session"
 
 
@@ -2490,6 +2723,125 @@ def test_claude_prewarm_adoption_respawns_for_system_prompt(tmp_path, monkeypatc
 
     manager.turn("hello", session_id="sid", system_prompt="CALLER-MARKER")
     assert calls[0]["system_prompt"] == "CALLER-MARKER"
+
+
+def test_codex_parked_prewarm_adopts_without_respawn(tmp_path, monkeypatch, capsys):
+    """A prewarmed app-server serves the first turn with no second spawn.
+
+    This is the codex half of #4423: prewarm runs _spawn() and nothing else,
+    the first turn binds a thread via thread/start, and cli_ready reports
+    adopt instead of lazy_spawn.
+    """
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager._spawn()
+    parked_process = manager.process
+    assert manager.session_id is None
+
+    record = manager.turn("first", model="luna")
+
+    assert manager.process is parked_process
+    assert manager.session_id == "codex-thread"
+    assert record["session_id"] == "codex-thread"
+    spawns = [
+        json.loads(line)
+        for line in (tmp_path / "codex-args.jsonl").read_text().splitlines()
+    ]
+    assert spawns == [["app-server"]]
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    methods = [request.get("method") for request in requests]
+    assert methods.count("initialize") == 1
+    assert methods.count("thread/start") == 1
+    assert "thread/resume" not in methods
+    err = capsys.readouterr().err
+    assert "phase=cli_ready path=adopt ms=" in err
+    assert "path=lazy_spawn" not in err
+    manager._close_process()
+
+
+def test_codex_parked_prewarm_resumes_bound_session(tmp_path, monkeypatch):
+    """Late-bound identity (#4358) on a prewarmed server: resume, no conflict."""
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    session_id = manager.session_id
+    # Emulate the post-relight state: a fresh prewarmed server that has not
+    # bound any thread yet, while the caller asks for its old one.
+    manager._close_process(kill=True)
+    manager._spawn()
+    parked_process = manager.process
+    manager.session_id = None
+
+    manager.turn("second", session_id=session_id, model="luna")
+
+    assert manager.process is parked_process
+    assert manager.session_id == session_id
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    assert (
+        sum(1 for request in requests if request.get("method") == "thread/resume") == 1
+    )
+    manager._close_process()
+
+
+def test_pi_parked_prewarm_serves_first_turn_without_respawn(
+    tmp_path, monkeypatch, capsys
+):
+    """The pi half of #4423: a parked rpc process answers the first prompt.
+
+    Prewarm spawns pi on the default model with no caller system prompt; the
+    first turn reuses that process. The fake pi reports a startup session id,
+    so this also pins that prewarm clears it: a parked process owns no caller
+    session until its first prompt, exactly like the claude park.
+    """
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager._spawn(shim.DEFAULT_PI_MODEL, system_prompt=None)
+    assert manager.session_id is not None
+    manager.session_id = None
+    parked_process = manager.process
+
+    record = manager.turn("hello", model="qwen")
+
+    assert manager.process is parked_process
+    assert record["voice"] == "Pi completed the work."
+    spawns = [
+        json.loads(line)
+        for line in (tmp_path / "pi-args.jsonl").read_text().splitlines()
+    ]
+    assert len(spawns) == 1
+    err = capsys.readouterr().err
+    # A fresh turn has no caller session to bind, so the process is reused;
+    # the point is that it is NOT a lazy_spawn.
+    assert "phase=cli_ready path=reuse ms=" in err
+    assert "path=lazy_spawn" not in err
+    manager._close_process()
+
+
+def test_pi_parked_prewarm_binds_caller_session_without_conflict(
+    tmp_path, monkeypatch, capsys
+):
+    """A resume against a parked pi switches sessions instead of conflicting."""
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager._spawn(shim.DEFAULT_PI_MODEL, system_prompt=None)
+    manager.session_id = None
+    parked_process = manager.process
+
+    manager.turn("resume", session_id="pi-session", model="qwen")
+
+    assert manager.process is parked_process
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
+    ]
+    assert (
+        sum(1 for request in requests if request.get("type") == "switch_session") == 1
+    )
+    err = capsys.readouterr().err
+    assert "phase=cli_ready path=adopt ms=" in err
+    manager._close_process()
 
 
 def test_malformed_assistant_events_are_skipped(tmp_path, monkeypatch):

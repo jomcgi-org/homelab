@@ -101,6 +101,23 @@ tar(
     visibility = ["//projects/embervm/runtimes/pi:__pkg__"],
 )
 
+# The CLIs this image prewarms at shim boot (#4423), read by the shared shim's
+# ProcessManager._read_prewarm_clis. This image carries all three families, so
+# a base build parks a claude CLI, a codex app-server and a pi RPC process in
+# the snapshot and every family's first turn adopts instead of lazy-spawning.
+#
+# This file, not initEnv, is how the list reaches the guest: task-class guests
+# have no env delivery (#4429), BuildBaseRequest.init_env is dead weight. The
+# pi runtime bakes its own tar with only "pi" at this exact path, because its
+# image omits the other two CLIs and prewarming them would fail the boot.
+tar(
+    name = "prewarm_clis_tar",
+    srcs = ["prewarm-clis"],
+    mtree = [
+        "./usr/share/ember-shim/prewarm-clis type=file content=$(execpath prewarm-clis) mode=0644 uid=0 gid=0",
+    ],
+)
+
 apko_image(
     name = "image",
     # amd64-only: the Claude Code CLI is a single 262 MB arch-specific ELF and
@@ -115,6 +132,7 @@ apko_image(
     tars = [
         ":shim_tar",
         ":guest_config_tar",
+        ":prewarm_clis_tar",
         ":guest_init_tar_amd64",
         # The Claude Code CLI, a single 262 MB glibc ELF extracted from the npm
         # registry tarball (see claude_code_cli in MODULE.bazel). amd64 only, so
