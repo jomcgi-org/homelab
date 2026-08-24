@@ -183,15 +183,16 @@ func TestClientLoadSnapshotResume(t *testing.T) {
 }
 
 // TestClientPutSerialWireFormat pins the PUT /serial request shape (issue
-// #4404): method+path, the sink path field, and the bandwidth token bucket.
+// #4404): method+path, the sink path field, and the rate limiter as a FLAT
+// token bucket. n v1.16.1 rejects the drive/net {bandwidth: ...} wrapper with
+// SerdeJson "missing field `size`" (observed live on the dev fleet); its
+// serial limiter sits directly under rate_limiter.
 func TestClientPutSerialWireFormat(t *testing.T) {
 	fake, sock := startFakeFC(t)
 	c := New(sock)
 	serial := Serial{
 		SerialOutPath: "/disks/nvme-02/thread-t1/serial.log",
-		RateLimiter: &RateLimiter{
-			Bandwidth: &TokenBucket{Size: 1089536, OneTimeBurst: 1048576, RefillTime: 1000},
-		},
+		RateLimiter:   &TokenBucket{Size: 1089536, OneTimeBurst: 1048576, RefillTime: 1000},
 	}
 	if err := c.PutSerial(context.Background(), serial); err != nil {
 		t.Fatalf("PutSerial: %v", err)
@@ -209,19 +210,19 @@ func TestClientPutSerialWireFormat(t *testing.T) {
 	if r.Body["serial_out_path"] != serial.SerialOutPath {
 		t.Fatalf("serial_out_path = %v, want %q", r.Body["serial_out_path"], serial.SerialOutPath)
 	}
-	rl, ok := r.Body["rate_limiter"].(map[string]any)
+	tb, ok := r.Body["rate_limiter"].(map[string]any)
 	if !ok {
 		t.Fatalf("rate_limiter = %v, want object", r.Body["rate_limiter"])
 	}
-	bw, ok := rl["bandwidth"].(map[string]any)
-	if !ok {
-		t.Fatalf("bandwidth = %v, want object", rl["bandwidth"])
+	if tb["size"] != float64(1089536) || tb["one_time_burst"] != float64(1048576) || tb["refill_time"] != float64(1000) {
+		t.Fatalf("token bucket = %v", tb)
 	}
-	if bw["size"] != float64(1089536) || bw["one_time_burst"] != float64(1048576) || bw["refill_time"] != float64(1000) {
-		t.Fatalf("bandwidth bucket = %v", bw)
-	}
-	if _, present := rl["ops"]; present {
-		t.Fatalf("ops must be omitted when unset: %v", rl)
+	// The drive/net wrapper shape must stay absent: this dialect has no
+	// bandwidth/ops halves on the serial endpoint.
+	for _, banned := range []string{"bandwidth", "ops"} {
+		if _, present := tb[banned]; present {
+			t.Fatalf("%s must be omitted (flat token bucket dialect): %v", banned, tb)
+		}
 	}
 }
 

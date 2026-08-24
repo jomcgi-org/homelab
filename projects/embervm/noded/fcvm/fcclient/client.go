@@ -122,30 +122,27 @@ type SnapshotLoad struct {
 // TokenBucket is one half of a Firecracker RateLimiter: `size` tokens are
 // available immediately and refilled to full every `refill_time` milliseconds,
 // so size/refill_time is the sustained rate, with an optional initial
-// one_time_burst on top of the first bucket.
+// one_time_burst on top of the first bucket. On PUT /serial this type appears
+// DIRECTLY under rate_limiter (no bandwidth/ops wrapper in that dialect).
 type TokenBucket struct {
 	Size         int64 `json:"size"`
 	OneTimeBurst int64 `json:"one_time_burst,omitempty"`
 	RefillTime   int64 `json:"refill_time"`
 }
 
-// RateLimiter is a Firecracker token-bucket rate limiter over bandwidth (bytes)
-// and/or ops (I/O operation count). Each half is optional.
-type RateLimiter struct {
-	Bandwidth *TokenBucket `json:"bandwidth,omitempty"`
-	Ops       *TokenBucket `json:"ops,omitempty"`
-}
-
 // Serial is the body of PUT /serial. Firecracker v1.14 added the endpoint with
-// serial_out_path (upstream #5350); v1.16 added the rate limiter. It redirects
-// the microVM's UART output away from the Firecracker process's inherited
-// stdio into a host file sink. Serial configuration is deliberately NOT part
-// of the snapshot state, so EVERY process that will run this microVM must
-// issue it afresh: before Start on a cold boot AND before LoadSnapshot when
-// restoring (issue #4404).
+// serial_out_path (upstream #5350); v1.16 added the rate limiter, which on this
+// dialect is a FLAT token bucket ({size, refill_time, one_time_burst}) directly
+// under rate_limiter, NOT the drive/net {bandwidth: ...} wrapper: n v1.16.1
+// answers a wrapped body with SerdeJson "missing field `size`" (the wrapper
+// object has no size of its own). It redirects the microVM's UART output away
+// from the Firecracker process's inherited stdio into a host file sink. Serial
+// configuration is deliberately NOT part of the snapshot state, so EVERY
+// process that will run this microVM must issue it afresh: before Start on a
+// cold boot AND before LoadSnapshot when restoring (issue #4404).
 type Serial struct {
 	SerialOutPath string       `json:"serial_out_path"`
-	RateLimiter   *RateLimiter `json:"rate_limiter,omitempty"`
+	RateLimiter   *TokenBucket `json:"rate_limiter,omitempty"`
 }
 
 // PutSerial points the microVM's UART at a host file sink, optionally rate
