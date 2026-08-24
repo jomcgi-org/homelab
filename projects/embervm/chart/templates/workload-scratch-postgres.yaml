@@ -3,7 +3,8 @@
 # scratch Postgres. One long-lived microVM owns one writable volume (data on the
 # volume, warmth in the snapshot); it banks when idle and wakes on the next
 # inbound TCP connection. The guest image ref is the SAME Bazel-pinned value the
-# noded rootfs-builder bakes and EMBERVM_NODED_IMAGES keys on (scratchPostgres.
+# noded rootfs-builder bakes and the control-plane-pushed image identity
+# (EMBERVM_NODE_IMAGE_IDENTITY) carries (scratchPostgres.
 # guestImage), so BaseBuilder's BuildBase(ref) resolves on the node. First boot
 # runs initdb from the POSTGRES_PASSWORD delivered via the secretRef -> mmds-lite
 # boot-args seam; later cold boots skip initdb (WAL recovery only).
@@ -19,8 +20,8 @@ spec:
   class: stateful
   source:
     image:
-      # Must match the top-level scratchPostgres.guestImage exactly (the derived
-      # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
+      # Must match the top-level scratchPostgres.guestImage exactly (the pushed
+      # image identity + rootfs-builder GUEST_IMAGE use the same value).
       ref: "{{ .Values.scratchPostgres.guestImage.repository }}@{{ .Values.scratchPostgres.guestImage.digest }}"
       # The vsock health/ready contract used at BASE BUILD time (the warm-base
       # cold boot health-gates over vsock at readyPath; the guest-init answers

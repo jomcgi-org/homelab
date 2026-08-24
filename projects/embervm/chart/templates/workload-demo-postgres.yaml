@@ -3,7 +3,7 @@
 # Postgres alongside scratch-postgres, tuned so the lifecycle is watchable: it
 # banks ~a tick after the demo's connection closes and pays a visible relight on
 # the next query. It reuses scratchPostgres' guest image pin (the SAME image ref
-# string, so the noded rootfs base and EMBERVM_NODED_IMAGES entry resolve with
+# string, so the noded rootfs base and the pushed image identity resolve with
 # zero extra provisioning) and the same first-boot POSTGRES_PASSWORD Secret; only
 # the workload identity, port, and lifecycle economics differ. The volume is its
 # own (volumes are keyed by workload name), so demo rows never land in a real

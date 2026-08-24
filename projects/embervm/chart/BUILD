@@ -47,15 +47,15 @@ helm_chart(
         # runs the Claude Code CLI headlessly under a vsock shim so monolith can
         # expose agent sessions as MCP tools. Distinct FLAT top-level key (D14a.6),
         # digest-pinned from its .info so the rootfs-builder GUEST_IMAGE, the
-        # EMBERVM_NODED_IMAGES entry, and the Workload's source.image.ref all
-        # resolve to the same digest.
+        # pushed image identity (EMBERVM_NODE_IMAGE_IDENTITY), and the
+        # Workload's source.image.ref all resolve to the same digest.
         "runtimeClaude.guestImage": "//projects/embervm/runtimes/claude:image.info",
         # The runtime-pi base image: the same session guest as runtime-claude
         # carrying only the pi CLI, so a qwen turn runs at 256 MiB instead of
         # 4096. Distinct FLAT top-level key (D14a.6), digest-pinned from its
-        # .info so the rootfs-builder GUEST_IMAGE, the EMBERVM_NODED_IMAGES
-        # entry, and the Workload's source.image.ref all resolve to the same
-        # digest.
+        # .info so the rootfs-builder GUEST_IMAGE, the pushed image identity
+        # (EMBERVM_NODE_IMAGE_IDENTITY), and the Workload's source.image.ref all
+        # resolve to the same digest.
         "runtimePi.guestImage": "//projects/embervm/runtimes/pi:image.info",
         # First serving-class workload (#5180): the internal serving-path
         # prover, a minimal Go HTTP guest. Distinct FLAT top-level key,
@@ -75,9 +75,9 @@ helm_chart(
         "shotter.guestImage": "//projects/embervm/runtimes/shotter:image.info",
         # ADR embervm/010 (Skyframe snapshot demo): the bazel-query base image (a
         # warm Bazel server over Abseil). Distinct FLAT top-level key (D14a.6),
-        # digest-pinned from its .info so the noded EMBERVM_NODED_IMAGES ref, the
-        # rootfs-builder GUEST_IMAGE, and the Workload CR's source.image.ref all
-        # resolve to the same pinned digest.
+        # digest-pinned from its .info so the pushed image identity
+        # (EMBERVM_NODE_IMAGE_IDENTITY), the rootfs-builder GUEST_IMAGE, and the
+        # Workload CR's source.image.ref all resolve to the same pinned digest.
         "bazelQuery.guestImage": "//projects/embervm/runtimes/bazel:image.info",
         "scratchPrep.image": "//projects/embervm/scratch-prep:image.info",
         "tokenBroker.image": "//projects/embervm/tokenbroker/image:image.info",

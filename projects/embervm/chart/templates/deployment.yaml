@@ -115,8 +115,8 @@ spec:
             # nothing could set. Rendering it here is what makes arming it a
             # values decision rather than an impossibility.
             #
-            # Production stays false. Dev arms it, which is the first time the
-            # node-confirmed path executes anywhere.
+            # Chart default stays false. Dev armed it first; production followed
+            # on 2026-08-22 after the dev drill passed (see deploy/values.yaml).
             - name: EMBERVM_NODE_CONFIRMED_DESTROY
               value: {{ if .Values.nodeConfirmedDestroy }}"true"{{ else }}"false"{{ end }}
             # Async lifecycle op-log appends (ADR embervm/014 decision 2,
@@ -219,7 +219,7 @@ spec:
             # runtime base image ref, as `runtime=ref` pairs. BaseBuilder resolves
             # source.zip.runtime through this map to a ZipSource.runtime_image_ref.
             # The ref MUST match the runtime-python entry the noded rootfs-builder
-            # bakes and EMBERVM_NODED_IMAGES keys on (both derive from
+            # bakes and the pushed image identity carries (both derive from
             # runtimePython.guestImage), so BuildBase resolves it on the node.
             - name: EMBERVM_RUNTIME_IMAGES
               value: {{ printf "%s=%s@%s" .Values.runtimePython.runtime .Values.runtimePython.guestImage.repository .Values.runtimePython.guestImage.digest | quote }}

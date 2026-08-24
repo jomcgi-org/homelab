@@ -1,7 +1,11 @@
 # EmberVM submit API (Task 8, invocation front-end). Hand-written contract; this
 # is what the monolith scan client (Task 15) programs against. Served by the
-# control plane on :8080 behind the cluster Service; every /v1 path requires a
-# bearer token authenticated by Kubernetes TokenReview against the allow-list.
+# control plane on :8080 behind the cluster Service. Management /v1 paths require
+# a bearer token authenticated by Kubernetes TokenReview against the allow-list.
+# Two exception classes authenticate in-handler instead: the node routes
+# (/v1/nodes/register, /v1/artifacts/wrap) verify the noded ServiceAccount (NOT
+# the task-submit allow-list), and session invoke verifies a per-session
+# capability. See router.ex authenticate/2 for the closed route list.
 openapi: 3.1.0
 info:
   title: EmberVM Submit API

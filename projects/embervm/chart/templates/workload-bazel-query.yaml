@@ -1,7 +1,8 @@
 {{- if .Values.bazelQueryWorkload.enabled }}
 # The bazel-query workload (ADR embervm/010: the Skyframe snapshot demo). Its guest
 # image ref is the SAME Bazel-pinned value the noded rootfs-builder bakes and
-# EMBERVM_NODED_IMAGES keys on, so BaseBuilder's BuildBase(ref) resolves on the
+# the control-plane-pushed image identity (EMBERVM_NODE_IMAGE_IDENTITY) carries,
+# so BaseBuilder's BuildBase(ref) resolves on the
 # node. The base is a warm Bazel server (Abseil analysis graph resident in the JVM
 # heap); on admission the control plane cold-boots one VM, runs the warming cquery
 # in guest-init, snapshots it as the base (status.snapshotRef), the PoolManager
@@ -18,8 +19,8 @@ spec:
   class: task
   source:
     image:
-      # Must match the top-level bazelQuery.guestImage exactly (the derived
-      # EMBERVM_NODED_IMAGES + rootfs-builder GUEST_IMAGE use the same value).
+      # Must match the top-level bazelQuery.guestImage exactly (the pushed
+      # image identity + rootfs-builder GUEST_IMAGE use the same value).
       ref: "{{ .Values.bazelQuery.guestImage.repository }}@{{ .Values.bazelQuery.guestImage.digest }}"
       port: {{ .Values.bazelQueryWorkload.port }}
       readyPath: {{ .Values.bazelQueryWorkload.readyPath | quote }}

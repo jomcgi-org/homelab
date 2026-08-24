@@ -81,10 +81,11 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.servingEnvoy.listenerPort }}
-            # Stats port for the later Task 9 scrape. Envoy exposes Prometheus stats
-            # on the admin endpoint (loopback), so a stats-only sidecar or an admin
-            # bind is wired in Task 9; the port is declared here so the scrape target
-            # is stable. Named for discovery; no containerPort duplication with admin
+            # Stats port for the Prometheus scrape. Envoy exposes Prometheus stats
+            # through the path-restricted stats listener (its `prefix: /stats` route
+            # covers /stats/prometheus), and the pod annotations point the scraper at
+            # this port, so admin stays loopback-only. Named for discovery; no
+            # containerPort duplication with admin
             # (admin is loopback-only and not a pod port).
             - name: stats
               containerPort: {{ .Values.servingEnvoy.statsPort }}

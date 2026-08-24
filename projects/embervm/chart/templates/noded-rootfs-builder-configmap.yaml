@@ -8,7 +8,7 @@
 #
 # Digest-keyed cache (artifact-decoupling Phase 0): the ext4 is baked ONCE per
 # guest CONTENT DIGEST into a content-addressed cache file, and the template-time
-# BASE_ROOTFS_PATH (the path the noded EMBERVM_NODED_IMAGES entry attaches) is an
+# BASE_ROOTFS_PATH (the path the pushed image identity attaches) is an
 # instant hardlink to that cache file. The guest image TAG is a per-build
 # timestamp (apko stamps STABLE_IMAGE_TAG on every CI build), so a tag-keyed name
 # changed on every roll even when the image bytes were identical, re-paying the
