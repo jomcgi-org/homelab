@@ -25,13 +25,13 @@ own compile.
 
 | Package | Version |
 | ------- | ------- |
-| busybox | 1.37.0-r61 |
+| busybox | 1.38.0-r1 |
 | ca-certificates-bundle | 20260413-r1 |
-| glibc | 2.43-r13 |
-| glibc-locale-posix | 2.43-r13 |
-| go-1.26 | 1.26.6-r0 |
-| ld-linux | 2.43-r13 |
-| libcrypt1 | 2.43-r13 |
-| libgcc | 16.1.0-r4 |
+| glibc-2.43 | 2.43-r15 |
+| glibc-2.43-locale-posix | 2.43-r15 |
+| go-1.26 | 1.26.7-r0 |
+| ld-linux-2.43 | 2.43-r15 |
+| libcrypt1-2.43 | 2.43-r15 |
+| libgcc | 16.2.0-r0 |
 | libxcrypt | 4.5.2-r4 |
 | wolfi-baselayout | 20230201-r29 |
