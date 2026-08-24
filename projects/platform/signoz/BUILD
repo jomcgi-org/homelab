@@ -1,4 +1,6 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
     name = "chart",
@@ -29,4 +31,25 @@ argocd_app(
         "values.yaml",
         "values-prod.yaml",
     ],
+)
+
+# Hand-written test target (this directory has no gazelle-managed Python): the
+# alert ConfigMaps, the httpcheck probe values, and the kustomization must stay
+# consistent or #4867's blind spot (public /health failing unalerted) returns.
+# The data glob materializes the YAML files as runfiles so the test can read
+# them during execution. See signoz_alerts_test.py for what each guard pins.
+py_test(
+    name = "signoz_alerts_test",
+    srcs = ["signoz_alerts_test.py"],
+    data = glob(["*.yaml"]),
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+semgrep_test(
+    name = "signoz_alerts_test_semgrep_test",
+    srcs = ["signoz_alerts_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
 )
