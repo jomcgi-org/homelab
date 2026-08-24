@@ -1,0 +1,157 @@
+id: embervm-capability-generation-01
+version: v1
+class: code-fix
+# standard: one file, a fully specified comparison-semantics change; the work is
+# reading the framing contract carefully and not loosening anything else.
+tier: standard
+mode: agentic
+# Real fix f50b711b9 (PR #5175): the control plane stamped session restore
+# capabilities with the session row's bank counter while noded compared it to the
+# artifact export generation in meta.json, so the two diverged after a relight and
+# valid restores were refused with ErrCapabilityGenerationMismatch. Generation 0 in
+# the capability now means "any". The snapshot pins the fix's PARENT and keeps only
+# capability.go, which is stdlib-only and self-contained.
+source_commit: f50b711b9b4d592457b3c09bf046395ec477896f
+snapshot:
+  commit: 2b70e6c8e3e48727a91c0389491c6fadbe6294e0
+  paths:
+    - projects/embervm/noded/server/capability.go
+  strip_components: 4
+agent:
+  max_turns: 20
+prompt: |
+  capability.go implements noded's restore-capability bearer token: a versioned,
+  MAC-authenticated framing around a capabilityScope tuple (principal, lineage,
+  node, pod_uid, workload, ref, kind, generation) plus a 32-byte data key. Read the
+  whole file first. parseAndVerifyCapability validates framing and HMAC, then
+  compares every scope field against the caller's expected scope and fails with a
+  specific ErrCapability* error before returning the data key on success.
+
+  There is a production bug in the generation comparison. For session restores the
+  control plane stamps the capability with the session row's generation, which
+  counts bank rebuilds and is NOT the artifact export generation recorded in the
+  artifact's meta.json that noded compares against. After a relight the two
+  numbers diverge, so a perfectly authorized restore is refused with
+  ErrCapabilityGenerationMismatch.
+
+  Change the semantics so that a capability whose Generation is 0 means "any":
+  it must verify successfully regardless of the expected scope's Generation.
+  A non-zero capability generation must continue to require exact equality with
+  the expected scope. Nothing else may loosen: the MAC, version, expiry, key
+  length, node, pod_uid, workload, ref, kind, principal, and lineage checks all
+  stay exactly as they are, and the minting/framing code does not change.
+target_files:
+  - capability.go
+verifier:
+  kind: command
+  args:
+    # The fixture is the single real source file; go.mod is dropped in by the
+    # verifier at grade time (hidden from the model) so `go test ./...` runs
+    # without any module setup.
+    write_files:
+      go.mod: |
+        module github.com/jomcgi/homelab/projects/embervm/noded/server
+
+        go 1.25
+      capability_gold_test.go: |
+        package server
+
+        import (
+        	"bytes"
+        	"crypto/hmac"
+        	"crypto/sha256"
+        	"encoding/binary"
+        	"encoding/json"
+        	"errors"
+        	"testing"
+        	"time"
+        )
+
+        func mintCapability(t *testing.T, macKey, dataKey []byte, expiry time.Time, scope capabilityScope) []byte {
+        	t.Helper()
+        	tuple, err := json.Marshal(scope)
+        	if err != nil {
+        		t.Fatal(err)
+        	}
+        	var framed bytes.Buffer
+        	framed.WriteByte(0x01)
+        	var n [8]byte
+        	binary.BigEndian.PutUint64(n[:], uint64(expiry.UnixMilli()))
+        	framed.Write(n[:])
+        	var short [2]byte
+        	binary.BigEndian.PutUint16(short[:], uint16(len(dataKey)))
+        	framed.Write(short[:])
+        	framed.Write(dataKey)
+        	binary.BigEndian.PutUint16(short[:], uint16(len(tuple)))
+        	framed.Write(short[:])
+        	framed.Write(tuple)
+        	h := hmac.New(sha256.New, macKey)
+        	h.Write([]byte(restoreCapabilityLabel))
+        	h.Write(framed.Bytes())
+        	framed.Write(h.Sum(nil))
+        	return framed.Bytes()
+        }
+
+        func withScope(scope capabilityScope, change func(*capabilityScope)) capabilityScope {
+        	change(&scope)
+        	return scope
+        }
+
+        func TestParseAndVerifyCapability(t *testing.T) {
+        	macKey := []byte("shared-bearer")
+        	dataKey := bytes.Repeat([]byte{0x5a}, 32)
+        	now := time.UnixMilli(1_800_000_000_000)
+        	want := capabilityScope{
+        		Principal: "acct:alice", Lineage: "lineage-1", Node: "node-a", PodUID: "pod-a",
+        		Workload: "sandbox-session", Ref: "session-1", Kind: "session", Generation: 9,
+        	}
+        	valid := mintCapability(t, macKey, dataKey, now.Add(time.Minute), want)
+
+        	got, err := parseAndVerifyCapability(valid, macKey, now, want)
+        	if err != nil || !bytes.Equal(got, dataKey) {
+        		t.Fatalf("valid capability = (%x, %v), want data key", got, err)
+        	}
+
+        	tests := []struct {
+        		name    string
+        		raw     func() []byte
+        		macKey  []byte
+        		want    capabilityScope
+        		wantErr error
+        	}{
+        		{name: "no_mac_key", raw: func() []byte { return valid }, want: want, wantErr: ErrNoCapabilityKey},
+        		{name: "missing", raw: func() []byte { return nil }, macKey: macKey, want: want, wantErr: ErrMissingCapability},
+        		{name: "malformed", raw: func() []byte { return []byte{0x01} }, macKey: macKey, want: want, wantErr: ErrMalformedCapability},
+        		{name: "bad_version", raw: func() []byte { b := append([]byte(nil), valid...); b[0] = 2; return b }, macKey: macKey, want: want, wantErr: ErrBadCapabilityVersion},
+        		{name: "mac_mismatch", raw: func() []byte { b := append([]byte(nil), valid...); b[len(b)-1] ^= 1; return b }, macKey: macKey, want: want, wantErr: ErrCapabilityMACMismatch},
+        		{name: "expired", raw: func() []byte { return mintCapability(t, macKey, dataKey, now, want) }, macKey: macKey, want: want, wantErr: ErrCapabilityExpired},
+        		{name: "wrong_node", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Node = "node-b" }), wantErr: ErrCapabilityNodeMismatch},
+        		{name: "wrong_pod_uid", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.PodUID = "pod-b" }), wantErr: ErrCapabilityPodUIDMismatch},
+        		{name: "wrong_workload", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Workload = "other" }), wantErr: ErrCapabilityWorkloadMismatch},
+        		{name: "wrong_ref", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Ref = "other" }), wantErr: ErrCapabilityRefMismatch},
+        		{name: "wrong_kind", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Kind = "stateful" }), wantErr: ErrCapabilityKindMismatch},
+        		{name: "wrong_generation", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Generation++ }), wantErr: ErrCapabilityGenerationMismatch},
+        		{name: "zero_generation_is_wildcard", raw: func() []byte {
+        			return mintCapability(t, macKey, dataKey, now.Add(time.Minute), withScope(want, func(s *capabilityScope) { s.Generation = 0 }))
+        		}, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Generation = 123 }), wantErr: nil},
+        		{name: "zero_capability_still_scoped_by_principal", raw: func() []byte {
+        			return mintCapability(t, macKey, dataKey, now.Add(time.Minute), withScope(want, func(s *capabilityScope) { s.Generation = 0 }))
+        		}, macKey: macKey, want: withScope(want, func(s *capabilityScope) {
+        			s.Generation = 123
+        			s.Principal = "acct:bob"
+        		}), wantErr: ErrCapabilityPrincipalMismatch},
+        		{name: "wrong_principal", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Principal = "acct:bob" }), wantErr: ErrCapabilityPrincipalMismatch},
+        		{name: "wrong_lineage", raw: func() []byte { return valid }, macKey: macKey, want: withScope(want, func(s *capabilityScope) { s.Lineage = "lineage-2" }), wantErr: ErrCapabilityLineageMismatch},
+        		{name: "bad_key_length", raw: func() []byte { return mintCapability(t, macKey, dataKey[:31], now.Add(time.Minute), want) }, macKey: macKey, want: want, wantErr: ErrCapabilityKeyLength},
+        	}
+        	for _, tt := range tests {
+        		t.Run(tt.name, func(t *testing.T) {
+        			_, err := parseAndVerifyCapability(tt.raw(), tt.macKey, now, tt.want)
+        			if !errors.Is(err, tt.wantErr) {
+        				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+        			}
+        		})
+        	}
+        }
+    cmd: ["go", "test", "./..."]
+    timeout_s: 240

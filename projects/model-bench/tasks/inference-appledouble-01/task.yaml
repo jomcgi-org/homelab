@@ -1,0 +1,54 @@
+id: inference-appledouble-01
+version: v1
+class: config-plumbing
+# easy (floor): a pointed template edit once the AppleDouble failure mode is
+# understood; no cross-file plumbing.
+tier: easy
+mode: agentic
+# Real fix 2f58fba4e (PR #5209, "fix(inference): ignore AppleDouble model
+# artifacts"): model discovery on the NInfer deployment matched macOS AppleDouble
+# sidecars (._*.ninfer) staged next to real artifacts. The snapshot pins the fix's
+# PARENT and keeps what a render needs; charts/ stays because the vendored
+# cf-ingress dependency must be present or `helm template` refuses to run.
+# application.yaml, kustomization.yaml, Chart.lock and BUILD are deploy plumbing
+# the edit never touches.
+source_commit: 2f58fba4e828279ca585d541443347dfb6fca218
+snapshot:
+  commit: 30e60f63fc81a7a642f91cc62f26dee38fc465a8
+  paths:
+    - projects/inference/deploy
+  strip_components: 3
+  exclude:
+    - BUILD
+    - Chart.lock
+    - application.yaml
+    - kustomization.yaml
+prompt: |
+  This is the Helm chart that runs the NInfer LLM server. The main container's
+  start command discovers which model artifact to load with a find(1) over the
+  mounted model volume (see templates/deployment.yaml: it searches
+  {{ .Values.ninfer.modelVolume.mountPath }} at maxdepth 2 for *.ninfer files and
+  takes the lexicographically first match, exiting non-zero when none qualifies).
+
+  Model volumes are staged from a macOS workstation, and the staging copy drops
+  AppleDouble metadata sidecars named like "._my-model.ninfer" alongside every
+  real file. Those sidecars match *.ninfer too, so discovery can pick one and the
+  server then tries to load metadata junk as a model and crash-loops.
+
+  Fix discovery so AppleDouble sidecar files are ignored entirely. Everything else
+  about the pipeline stays identical: same mount path from values.yaml, same
+  search depth, same lexicographic-first selection over the remaining matches,
+  same empty-result error handling. Do not change any other template or value.
+target_files:
+  - templates/deployment.yaml
+verifier:
+  kind: helm-template
+  args:
+    release: ninfer
+    chart: .
+    values: values.yaml
+    assert_contains:
+      # Sidecars are excluded...
+      - "! -name '._*'"
+      # ...and normal discovery still finds .ninfer artifacts.
+      - "-name '*.ninfer'"
