@@ -19,6 +19,7 @@ import time
 from sqlmodel import Session, select
 
 from core.db import get_engine
+from core.github import GITHUB_REPO
 from chat.models import DiscordFeatureGrant
 
 logger = logging.getLogger(__name__)
@@ -154,8 +155,8 @@ def bootstrap_defaults() -> None:
     # names registered on the git-mirror.
     defaults: list[tuple[str, str, str, str]] = []
     if home:
-        # jomcgi/homelab is public: anyone in the home server may run /agent on it.
-        defaults.append((home, "", "agent", "jomcgi/homelab"))
+        # The homelab repo is public: anyone in the home server may run /agent on it.
+        defaults.append((home, "", "agent", GITHUB_REPO))
         # ADR 036: enable the orchestrator brief-compiler tier for the whole home
         # server (scope "" = all channels, subject "" = server-wide). Escalations
         # in the home server route through the paid OpenRouter brief compiler;

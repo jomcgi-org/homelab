@@ -1461,7 +1461,7 @@ def test_session_start_defaults_to_the_homelab_repo(monkeypatch, session):
     result = asyncio.run(mcp.monolith_agent_session_start("hello"))
 
     row = store.get_session(session, result["session_id"])
-    assert row.repo == "jomcgi/homelab"
+    assert row.repo == "jomcgi-org/homelab"
     assert row.branch == "main"
 
 

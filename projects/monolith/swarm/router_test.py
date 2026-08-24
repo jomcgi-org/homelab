@@ -71,7 +71,7 @@ def test_disabled_returns_503(monkeypatch):
     monkeypatch.setenv("SWARM_ENABLED", "false")
     response = client().post(
         "/api/swarm/runs",
-        json={"task": "fix", "repo": "jomcgi/homelab", "branch": "main"},
+        json={"task": "fix", "repo": "jomcgi-org/homelab", "branch": "main"},
     )
     assert response.status_code == 503
     assert "disabled" in response.json()["detail"]
@@ -106,7 +106,7 @@ def test_start_run(monkeypatch):
         "/api/swarm/runs",
         json={
             "task": "fix",
-            "repo": "jomcgi/homelab",
+            "repo": "jomcgi-org/homelab",
             "branch": "main",
             "idempotency_key": "request-1",
         },
@@ -147,13 +147,13 @@ def test_start_run_passes_budget(monkeypatch):
         "/api/swarm/runs",
         json={
             "task": "fix",
-            "repo": "jomcgi/homelab",
+            "repo": "jomcgi-org/homelab",
             "branch": "main",
             "budget_usd": 2.0,
         },
     )
     assert response.status_code == 200
-    assert captured[0][1:] == ("fix", "jomcgi/homelab", "main", 2.0, None)
+    assert captured[0][1:] == ("fix", "jomcgi-org/homelab", "main", 2.0, None)
 
 
 def test_planned_run_with_explicit_model(monkeypatch):
@@ -184,14 +184,20 @@ def test_planned_run_with_explicit_model(monkeypatch):
         "/api/swarm/classify-and-start",
         json={
             "task": "fix",
-            "repo": "jomcgi/homelab",
+            "repo": "jomcgi-org/homelab",
             "branch": "main",
             "model": "terra",
         },
     )
 
     assert response.status_code == 200
-    assert captured[0][1:] == ("fix", "jomcgi/homelab", "main", None, "terra")
+    assert captured[0][1:] == (
+        "fix",
+        "jomcgi-org/homelab",
+        "main",
+        None,
+        "terra",
+    )
 
 
 def test_planned_run_rejects_unknown_model(monkeypatch):
@@ -208,7 +214,7 @@ def test_planned_run_rejects_unknown_model(monkeypatch):
         "/api/swarm/classify-and-start",
         json={
             "task": "fix",
-            "repo": "jomcgi/homelab",
+            "repo": "jomcgi-org/homelab",
             "branch": "main",
             "model": "invalid",
         },
@@ -394,7 +400,7 @@ def test_follower_replica_returns_503(monkeypatch):
     monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: False)
     response = client().post(
         "/api/swarm/runs",
-        json={"task": "fix", "repo": "jomcgi/homelab", "branch": "main"},
+        json={"task": "fix", "repo": "jomcgi-org/homelab", "branch": "main"},
     )
     assert response.status_code == 503
     assert "not launched" in response.json()["detail"]

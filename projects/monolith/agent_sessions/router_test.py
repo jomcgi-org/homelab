@@ -576,12 +576,12 @@ def test_start_session_persists_repo(client, session, monkeypatch):
 
     body = client.post(
         "/api/agents/sessions",
-        json={"prompt": "Hello", "repo": "jomcgi/homelab"},
+        json={"prompt": "Hello", "repo": "jomcgi-org/homelab"},
     ).json()
     row = session.get(AgentSession, body["session_id"])
     assert body["accepted"] is True
-    assert row.repo == "jomcgi/homelab"
-    assert client.get("/api/agents/sessions").json()[0]["repo"] == "jomcgi/homelab"
+    assert row.repo == "jomcgi-org/homelab"
+    assert client.get("/api/agents/sessions").json()[0]["repo"] == "jomcgi-org/homelab"
 
 
 def test_start_session_persists_triggered_by_header(client, session, monkeypatch):
@@ -655,7 +655,7 @@ def test_list_repos_degrades_when_github_is_down(client, monkeypatch):
     response = client.get("/api/agents/repos")
     assert response.status_code == 200
     assert [repo["id"] for repo in response.json()["repos"]] == [
-        "jomcgi/homelab",
+        "jomcgi-org/homelab",
         "weave-hand/loom",
         "colincee/homelab",
         "scotscottmca/parkedlikea",
@@ -665,7 +665,7 @@ def test_list_repos_degrades_when_github_is_down(client, monkeypatch):
 
 def test_list_repos_success_cache_hit_and_expiry(client, monkeypatch):
     repo_ids = [
-        "jomcgi/homelab",
+        "jomcgi-org/homelab",
         "weave-hand/loom",
         "colincee/homelab",
         "scotscottmca/parkedlikea",
@@ -712,7 +712,7 @@ def test_list_repo_branches_success_with_pagination(client, monkeypatch):
 
     async def github_get(url):
         calls.append(url)
-        if url.endswith("/jomcgi/homelab"):
+        if url.endswith("/jomcgi-org/homelab"):
             return httpx.Response(200, json={"default_branch": "main"})
         if "page=2" in url:
             return httpx.Response(200, json=page_two)
@@ -726,7 +726,7 @@ def test_list_repo_branches_success_with_pagination(client, monkeypatch):
 
     monkeypatch.setattr("agent_sessions.router._github_get", github_get)
 
-    response = client.get("/api/agents/repos/jomcgi/homelab/branches")
+    response = client.get("/api/agents/repos/jomcgi-org/homelab/branches")
 
     assert response.status_code == 200
     body = response.json()
@@ -744,7 +744,7 @@ def test_list_repo_branches_requires_catalog_and_token(client, monkeypatch):
         client.get("/api/agents/repos/not-cataloged/repo/branches").status_code == 404
     )
     monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
-    response = client.get("/api/agents/repos/jomcgi/homelab/branches")
+    response = client.get("/api/agents/repos/jomcgi-org/homelab/branches")
     assert response.status_code == 503
     assert "GITHUB_API_TOKEN" in response.json()["detail"]
 
@@ -1138,7 +1138,7 @@ def test_start_session_for_discord_thread_adds_rationale_prompt(session, monkeyp
     assert repoless.system_prompt is None
 
     with_repo_id = asyncio.run(
-        api.start_session_for_thread("thread-2", "Hello", repo="jomcgi/homelab")
+        api.start_session_for_thread("thread-2", "Hello", repo="jomcgi-org/homelab")
     )
     with_repo = store.get_session(session, with_repo_id)
     assert "RATIONALE" in with_repo.system_prompt

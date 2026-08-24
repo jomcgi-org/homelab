@@ -1,7 +1,7 @@
 """Repo catalog: descriptions of the hydratable repos, for repo selection.
 
 The orchestrator picks the agent brief's ``repo`` from the
-invoker's ADR 029 grants. Names alone (jomcgi/homelab, weave-hand/loom) are a
+invoker's ADR 029 grants. Names alone (jomcgi-org/homelab, weave-hand/loom) are a
 weak signal, so this module carries a one-line description per registered repo
 and renders the invoker-scoped menu that the route prompt injects into its user
 message. It rides in the user message (never the byte-stable system bundle)
@@ -20,6 +20,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from core.github import GITHUB_REPO
+
 
 @dataclass(frozen=True)
 class RepoEntry:
@@ -33,8 +35,8 @@ class RepoEntry:
 # for the repos an invoker holds; keep it stable rather than alphabetizing so
 # the owner's two primary repos lead.
 REPO_CATALOG: dict[str, RepoEntry] = {
-    "jomcgi/homelab": RepoEntry(
-        "jomcgi/homelab",
+    GITHUB_REPO: RepoEntry(
+        GITHUB_REPO,
         "This secure Kubernetes homelab: every service, operator, and website "
         "colocated with its GitOps deploy config (Helm + ArgoCD), built with "
         "Bazel + apko. Go, Python, JavaScript, Starlark. Choose this for the "

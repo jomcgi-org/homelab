@@ -42,6 +42,7 @@ from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
+from core.github import GITHUB_REPO
 from semgrep_scan.client import scan_files
 from semgrep_scan.cohorts import diff_cohort
 from semgrep_scan.report import report_pr_scan
@@ -60,7 +61,7 @@ _harvest_tasks: set[asyncio.Task] = set()
 
 
 @internal_router.post("/harvest-scans")
-async def trigger_harvest(repo: str = "jomcgi/homelab") -> dict:
+async def trigger_harvest(repo: str = GITHUB_REPO) -> dict:
     """Fire the SMS scan-perf harvest for ``repo`` as a background task and
     return immediately. Internal only (see internal_router).
 
@@ -170,7 +171,7 @@ async def _backfill_cohorts(repo: str) -> dict:
 
 
 @internal_router.post("/backfill-cohorts")
-async def trigger_cohort_backfill(repo: str = "jomcgi/homelab") -> dict:
+async def trigger_cohort_backfill(repo: str = GITHUB_REPO) -> dict:
     """Fire the one-time cohort backfill (GitHub API) as a background task.
 
     Internal only. Populates the diff-cohort columns on historical route-b rows

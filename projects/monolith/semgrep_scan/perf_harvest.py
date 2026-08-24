@@ -22,6 +22,7 @@ from typing import Any
 import httpx
 from sqlmodel import Session, select
 
+from core.github import GITHUB_REPO
 from semgrep_scan.perf_store import ScanPerf, upsert_scan_perf
 
 logger = logging.getLogger("monolith.semgrep.perf_harvest")
@@ -152,7 +153,7 @@ def scan_to_row(scan: dict) -> ScanPerf | None:
     )
 
 
-def harvest_scans(session: Session, repo: str = "jomcgi/homelab") -> dict:
+def harvest_scans(session: Session, repo: str = GITHUB_REPO) -> dict:
     """Discover new SMS scan ids via findings, fetch each, and upsert SMS rows.
 
     Skips scan ids already stored (regardless of which environment they were

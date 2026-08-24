@@ -58,10 +58,9 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from core.github import GITHUB_API, GITHUB_REPO
 
-GITHUB_API = "https://api.github.com"
-REPO = "jomcgi/homelab"
+logger = logging.getLogger(__name__)
 
 # Cache window. UptimeRobot polls frequently and neither the k8s API nor the
 # GitHub API should be hit per request. Short enough that a fault surfaces
@@ -249,9 +248,9 @@ async def _ci_fault(red_window_s: float) -> str | None:
     now = datetime.now(timezone.utc)
     since = (now - timedelta(seconds=red_window_s)).isoformat()
 
-    async with httpx.AsyncClient(timeout=10.0) as http:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as http:
         resp = await http.get(
-            f"{GITHUB_API}/repos/{REPO}/commits",
+            f"{GITHUB_API}/repos/{GITHUB_REPO}/commits",
             params={"sha": "main", "per_page": 20},
             headers=headers,
         )
@@ -269,7 +268,7 @@ async def _ci_fault(red_window_s: float) -> str | None:
         newest_completed: dict | None = None
         for commit in commits:
             status = await http.get(
-                f"{GITHUB_API}/repos/{REPO}/commits/{commit['sha']}/status",
+                f"{GITHUB_API}/repos/{GITHUB_REPO}/commits/{commit['sha']}/status",
                 headers=headers,
             )
             status.raise_for_status()

@@ -23,11 +23,11 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import text
 
-from core.db import get_engine
 from cluster.api import KubernetesClient
+from core.db import get_engine
+from core.github import GITHUB_API, GITHUB_REPO
 from home.observability.clickhouse import ClickHouseClient
 
-GITHUB_REPO = "jomcgi/homelab"
 ARGOCD_APP_NAME = "monolith"
 
 logger = logging.getLogger(__name__)
@@ -159,9 +159,9 @@ async def _query_github_latest_commit() -> dict | None:
     Unauthenticated (60 req/hr per IP); the 60s stats cache keeps us under that.
     """
     try:
-        async with httpx.AsyncClient(timeout=5.0) as http:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as http:
             resp = await http.get(
-                f"https://api.github.com/repos/{GITHUB_REPO}/commits/main",
+                f"{GITHUB_API}/repos/{GITHUB_REPO}/commits/main",
                 headers={"Accept": "application/vnd.github+json"},
             )
         if resp.status_code != 200:

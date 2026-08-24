@@ -1,6 +1,7 @@
 import json
 import zlib
 
+import httpx
 import pytest
 
 from swarm import compare_router as mod
@@ -31,6 +32,37 @@ class Response:
 
     def json(self):
         return self._payload
+
+
+@pytest.mark.asyncio
+async def test_github_get_follows_repository_redirect(monkeypatch):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/repos/jomcgi/homelab":
+            return httpx.Response(
+                301,
+                headers={"Location": f"{mod.GITHUB_API}/repositories/12345"},
+            )
+        return httpx.Response(200, json={"full_name": "jomcgi-org/homelab"})
+
+    real_async_client = httpx.AsyncClient
+
+    def mock_async_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", mock_async_client)
+
+    response = await mod._github_get(f"{mod.GITHUB_API}/repos/jomcgi/homelab")
+
+    assert response.status_code == 200
+    assert response.json()["full_name"] == "jomcgi-org/homelab"
+    assert [request.url.path for request in requests] == [
+        "/repos/jomcgi/homelab",
+        "/repositories/12345",
+    ]
 
 
 def _compare_payload(truncated=False):
