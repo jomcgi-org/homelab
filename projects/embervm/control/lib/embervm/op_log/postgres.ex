@@ -75,6 +75,50 @@ defmodule Embervm.OpLog.Postgres do
   @default_compact_batch_size 500
   @marker_key "compacted_through_seq"
 
+  # TCP keepalive for the one long-lived postgrex connection, and the reason it
+  # is not optional here.
+  #
+  # This connection is idle between appends, sometimes for an hour. Cilium is
+  # eBPF L4 with no L7 proxy on this path, so a TCP flow carrying no packets
+  # eventually has its conntrack entry reaped, and the next INSERT writes into a
+  # black hole: it HANGS rather than failing, until some timeout above it fires.
+  # That is not a slow database, and it does not look like one from the server
+  # (Postgres sees the cancel, never the statement).
+  #
+  # This cluster has already paid for this lesson one layer down. The
+  # control-plane to noded gRPC connection lost multi-GB base exports the same
+  # way, with the same "the connection is closed" error, because neither side
+  # set gRPC keepalive; see projects/embervm/noded/server/store.go:505. There it
+  # was fixed by making the long call async. Here the flow simply has to keep
+  # breathing.
+  #
+  # SO_KEEPALIVE alone is not enough: Linux defaults to probing only after
+  # tcp_keepalive_time, 7200 seconds, which is far longer than the datapath's
+  # patience. The raw options are the load-bearing part, so the first probe
+  # lands a minute into an idle period and a genuinely dead socket is known
+  # within about 105s (60 + 3 x 15) instead of hanging.
+  #
+  # The raw option numbers are Linux (IPPROTO_TCP 6; TCP_KEEPIDLE 4,
+  # TCP_KEEPINTVL 5, TCP_KEEPCNT 6). The control plane is an amd64 Linux image
+  # and every node is Linux, so this is not conditioned on the platform; a port
+  # to another OS has to revisit these three numbers, which is why they are
+  # named rather than inlined.
+  @tcp_keepidle_seconds 60
+  @tcp_keepintvl_seconds 15
+  @tcp_keepcnt 4
+
+  # Postgrex's own query timeout, made explicit rather than inherited, because
+  # the append budget below is defined RELATIVE to it.
+  @query_timeout_ms 15_000
+
+  # The append call budget, deliberately ABOVE @query_timeout_ms. The old value
+  # was the implicit GenServer 5000, which expired BEFORE the database layer's
+  # own timeout: the caller gave up first and died while the transaction might
+  # still commit, and every store that appends died with it under
+  # :rest_for_one. With the database's timeout firing first, the reply is
+  # authoritative and a slow append degrades to a slow append.
+  @append_timeout_ms 20_000
+
   @ddl [
     """
     CREATE TABLE IF NOT EXISTS ops (
@@ -332,9 +376,14 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
+  @doc false
+  # Reachable so a test can assert it stays ABOVE the database's own timeout.
+  # That ordering is the whole point of the value, and nothing else enforces it.
+  def append_timeout_ms, do: @append_timeout_ms
+
   @impl Embervm.OpLog
   def append(server \\ __MODULE__, %Op{} = op) do
-    GenServer.call(server, {:append, op})
+    GenServer.call(server, {:append, op}, @append_timeout_ms)
   end
 
   @impl Embervm.OpLog
@@ -463,22 +512,47 @@ defmodule Embervm.OpLog.Postgres do
   # Postgrex.Utils.default_opts/1 has no public DSN parser, so we accept
   # either a full "postgres://user:pass@host:port/db" DSN (parsed here) or,
   # for tests, opts already in Postgrex's own keyword shape.
-  defp connect(dsn) when is_binary(dsn) do
+  defp connect(dsn) when is_binary(dsn), do: dsn |> connect_opts() |> Postgrex.start_link()
+
+  # Opts already in Postgrex's own keyword shape (tests). Keepalive is put_new,
+  # so a test that pins its own socket_options still wins.
+  defp connect(opts) when is_list(opts) do
+    opts
+    |> Keyword.put(:name, nil)
+    |> Keyword.put_new(:socket_options, keepalive_socket_options())
+    |> Postgrex.start_link()
+  end
+
+  @doc false
+  # Split out from connect/1 and left reachable so the keepalive settings are
+  # assertable without a live database: CI has no Postgres for the control
+  # plane, and a silently dropped socket option would only surface as the
+  # months-apart connection reap this exists to prevent.
+  def connect_opts(dsn) when is_binary(dsn) do
     uri = URI.parse(dsn)
     [user, pass] = String.split(uri.userinfo || ":", ":", parts: 2)
     database = String.trim_leading(uri.path || "", "/")
 
-    Postgrex.start_link(
+    [
       hostname: uri.host,
       port: uri.port || 5432,
       username: nil_if_empty(user),
       password: nil_if_empty(pass),
       database: nil_if_empty(database),
-      name: nil
-    )
+      name: nil,
+      timeout: @query_timeout_ms,
+      socket_options: keepalive_socket_options()
+    ]
   end
 
-  defp connect(opts) when is_list(opts), do: Postgrex.start_link(Keyword.put(opts, :name, nil))
+  defp keepalive_socket_options do
+    [
+      {:keepalive, true},
+      {:raw, 6, 4, <<@tcp_keepidle_seconds::native-32>>},
+      {:raw, 6, 5, <<@tcp_keepintvl_seconds::native-32>>},
+      {:raw, 6, 6, <<@tcp_keepcnt::native-32>>}
+    ]
+  end
 
   defp nil_if_empty(""), do: nil
   defp nil_if_empty(v), do: v
@@ -571,7 +645,31 @@ defmodule Embervm.OpLog.Postgres do
 
   # -- append + projection -------------------------------------------------
 
+  # A transport fault must NOT kill this GenServer. It is the FIRST child under
+  # :rest_for_one (see Embervm.Application), so its death restarts every store
+  # behind it and Bandit last, which is how a dropped connection turned into a
+  # failed liveness probe and a control-plane restart. Postgrex reconnects on
+  # its own, so the honest answer to the caller is that this append did not
+  # land. Callers already match on {:error, _}.
   defp do_append(conn, %Op{} = op) do
+    do_append_now(conn, op)
+  rescue
+    error in DBConnection.ConnectionError ->
+      Logger.warning(
+        "embervm op-log append failed on a dead connection: #{Exception.message(error)}"
+      )
+
+      {:error, :unavailable}
+  catch
+    # DBConnection raises for a broken socket but EXITS when the connection
+    # process itself is gone. Both are the same event to a caller, and neither
+    # may take this GenServer with it.
+    :exit, reason ->
+      Logger.warning("embervm op-log append exited: #{inspect(reason)}")
+      {:error, :unavailable}
+  end
+
+  defp do_append_now(conn, %Op{} = op) do
     if op.kind not in Embervm.OpLog.kinds() do
       {:error, {:unknown_kind, op.kind}}
     else
