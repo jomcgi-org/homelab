@@ -110,6 +110,55 @@ def test_list_sessions_with_status_filter(client, session):
     assert [item["local_session_id"] for item in body] == ["done"]
 
 
+def test_models_endpoint_offers_everything_when_env_unset(client, monkeypatch):
+    """Unset AGENT_MODELS means the full supported catalogue (prod default)."""
+    from agent_sessions import SUPPORTED_MODELS
+
+    monkeypatch.delenv("AGENT_MODELS", raising=False)
+    body = client.get("/api/agents/models").json()
+
+    assert [entry["name"] for entry in body["models"]] == list(SUPPORTED_MODELS)
+    for entry in body["models"]:
+        assert entry["family"] in {"codex", "claude", "pi"}
+
+
+def test_models_endpoint_narrows_to_configured_list(client, monkeypatch):
+    """AGENT_MODELS narrows the catalogue; entries keep name and family."""
+    monkeypatch.setenv("AGENT_MODELS", "qwen")
+    body = client.get("/api/agents/models").json()
+
+    assert body == {"models": [{"name": "qwen", "family": "pi"}]}
+
+
+def test_models_endpoint_ignores_unknown_names_and_blank_parts(client, monkeypatch):
+    """Configuration we own, not a boundary: unknown names never widen the
+    catalogue past SUPPORTED_MODELS and are dropped rather than rejected."""
+    monkeypatch.setenv("AGENT_MODELS", " qwen ,, luna, not-a-model ")
+    body = client.get("/api/agents/models").json()
+
+    assert [entry["name"] for entry in body["models"]] == ["luna", "qwen"]
+
+
+def test_models_endpoint_empty_value_means_all(client, monkeypatch):
+    from agent_sessions import SUPPORTED_MODELS
+
+    monkeypatch.setenv("AGENT_MODELS", "")
+    body = client.get("/api/agents/models").json()
+
+    assert [entry["name"] for entry in body["models"]] == list(SUPPORTED_MODELS)
+
+
+def test_models_endpoint_empty_config_renders_visibly_empty(client, monkeypatch):
+    """An allowlist that matches nothing yields an EMPTY catalogue.
+
+    The frontend has no bundled fallback list, so this response is what an
+    empty picker looks like: the honest rendering of a misconfigured value.
+    """
+    monkeypatch.setenv("AGENT_MODELS", "not-a-model")
+
+    assert client.get("/api/agents/models").json() == {"models": []}
+
+
 def test_list_sessions_ordering(client, session):
     # A NULL last_turn_at is unrepresentable: the column is NOT NULL DEFAULT
     # NOW() in Postgres, and the model's default_factory backfills an explicit
@@ -270,7 +319,7 @@ def test_refresh_cp_state_polls_every_lane(client, monkeypatch):
     sessions out of the published map. The console reads an absent session_id
     as "off" (frontend status.js vmState), so a live qwen guest would render
     "vm off" for its whole turn, and on monolith-dev that is every session
-    because localModelsOnly restricts the picker to qwen.
+    because the configured model list restricts the picker to qwen.
     """
     lanes = []
 

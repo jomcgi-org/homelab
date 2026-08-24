@@ -19,8 +19,11 @@
 # poking at behaviour without spending on a metered or subscription provider.
 # This is a values choice, not a guard. Nothing rejects a paid model here, so
 # a NEW model-consuming feature has to be pointed at the free lane in this
-# file too, or dev will quietly inherit production's provider. See issue #4859
-# for the fuller console configuration change this defers.
+# file too, or dev will quietly inherit production's provider. Since #4859
+# that includes what dev OFFERS: the console picker and Discord /agent list
+# are served from agents.models below, so the offered catalogue is
+# deliberately env-scoped even though routes, templates and migrations stay
+# identical to prod.
 
 backend:
   # THE side-effect mute. One switch covers all five leader singletons (Discord
@@ -169,7 +172,11 @@ jobs:
   image: ""
 
 agents:
-  localModelsOnly: true
+  # What dev OFFERS in the console picker and the Discord /agent command
+  # (GET /api/agents/models, issue #4859): qwen alone. Dev routes only the
+  # free in-cluster lane (see the model paragraphs below), so offering the
+  # paid providers here would be UI dishonesty, not a capability.
+  models: "qwen"
 
 # EVERY MODEL IN DEV POINTS AT THE IN-CLUSTER QWEN.
 #

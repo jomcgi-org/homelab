@@ -146,6 +146,15 @@ spec:
             - name: AGENT_PI_WORKLOAD
               value: {{ .Values.agentSessions.piWorkload | quote }}
             {{- end }}
+            {{- if .Values.agents }}
+            # Offered model catalogue for the console picker and the Discord
+            # /agent command (issue #4859). Comma-separated subset of
+            # agent_sessions.SUPPORTED_MODELS; empty offers everything. Served
+            # by GET /api/agents/models and read at chat.bot import, so both
+            # surfaces follow one values edit.
+            - name: AGENT_MODELS
+              value: {{ .Values.agents.models | default "" | quote }}
+            {{- end }}
             {{- if .Values.swarm.enabled }}
             # DBOS swarm layer (ADR agents/038, agents/053). SWARM_ENABLED is
             # the master switch the module reads: with it false the router still
@@ -595,8 +604,6 @@ spec:
           env:
             - name: API_BASE
               value: "http://localhost:8000"
-            - name: AGENTS_LOCAL_MODELS_ONLY
-              value: {{ .Values.agents.localModelsOnly | quote }}
             - name: OTEL_COLLECTOR_HTTP_URL
               value: {{ .Values.frontend.otelCollectorUrl | quote }}
             {{- if .Values.imgproxySigning.enabled }}
