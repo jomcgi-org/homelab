@@ -85,13 +85,16 @@ func (d *Driver) prepareSerialOutput(threadID string) (string, error) {
 // burst for boot-time kernel spew, then 64 KiB/s sustained. Once the bucket
 // empties Firecracker drops further UART bytes, so a flooding guest loses
 // middle output but the most recent console lines keep flowing.
-func serialRateLimiter() *fcclient.RateLimiter {
-	return &fcclient.RateLimiter{
-		Bandwidth: &fcclient.TokenBucket{
-			Size:         serialBurstBytes + serialBandwidthBytesPerSec,
-			OneTimeBurst: serialBurstBytes,
-			RefillTime:   serialBandwidthRefillMs,
-		},
+//
+// n v1.16.1's PUT /serial takes the limiter as a FLAT token bucket
+// ({size, refill_time, one_time_burst}), not the drive/net {bandwidth: ...}
+// wrapper: the fleet answered our first wrapped body with SerdeJson "missing
+// field `size`" pointing at the end of the bandwidth object.
+func serialRateLimiter() *fcclient.TokenBucket {
+	return &fcclient.TokenBucket{
+		Size:         serialBurstBytes + serialBandwidthBytesPerSec,
+		OneTimeBurst: serialBurstBytes,
+		RefillTime:   serialBandwidthRefillMs,
 	}
 }
 
