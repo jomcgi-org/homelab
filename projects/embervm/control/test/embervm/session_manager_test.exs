@@ -460,6 +460,110 @@ defmodule Embervm.SessionManagerTest do
     refute "node-4/small" in keys
   end
 
+  test "bank uses the placed instance dial when the capacity fact misses the VM" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        channel_fun: fn dial_key ->
+          send(parent, {:bank_dialed, dial_key})
+          {:ok, :ch}
+        end,
+        claim_fun: fake_claim_fun("vm-bank-stored-dial")
+      )
+
+    put_session_workload(ctx, "wl-bank-stored-dial")
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, "wl-bank-stored-dial", "bank-owner", [])
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-bank-stored-dial", "p1")
+    assert :sys.get_state(ctx.mgr).session_dials[created.session_id] == "node-4/bank-owner"
+
+    NodeCapacity.drop(ctx.cap_table, {"node-4", "bank-owner"})
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
+    assert_receive {:bank_dialed, "node-4/bank-owner"}
+  end
+
+  test "a bank dial miss returns to running without counting a strike" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        channel_fun: fn dial_key ->
+          send(parent, {:bank_dialed, dial_key})
+          {:error, :unknown_node}
+        end,
+        destroy_fun: fn _ch, _vm ->
+          send(parent, :destroyed_after_dial_miss)
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    put_session_workload(ctx, "wl-bank-dial-miss")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-bank-dial-miss", "p1")
+
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :running).state == :running
+    assert_receive {:bank_dialed, "node-4"}
+    assert :sys.get_state(ctx.mgr).bank_failures == %{}
+    refute_received :destroyed_after_dial_miss
+    assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+  end
+
+  test "three non-dial bank failures still fail and destroy the session" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        bank_fun: fn _ch, _req -> {:error, :boom} end,
+        destroy_fun: fn _ch, vm_id ->
+          send(parent, {:destroyed_after_bank_failures, vm_id})
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    put_session_workload(ctx, "wl-bank-three-strikes")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-bank-three-strikes", "p1")
+
+    for failure <- 1..2 do
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      assert wait_for_state(ctx, created.session_id, :running).state == :running
+      assert :sys.get_state(ctx.mgr).bank_failures[created.session_id] == failure
+    end
+
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :failed).state == :failed
+    assert_receive {:destroyed_after_bank_failures, vm_id}
+    assert is_binary(vm_id)
+    refute Map.has_key?(:sys.get_state(ctx.mgr).bank_failures, created.session_id)
+  end
+
+  test "destroy uses the placed instance dial when the capacity fact misses the VM" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        channel_fun: fn dial_key ->
+          send(parent, {:destroy_dialed, dial_key})
+          {:ok, :ch}
+        end,
+        claim_fun: fake_claim_fun("vm-destroy-stored-dial")
+      )
+
+    put_session_workload(ctx, "wl-destroy-stored-dial")
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    put_brick(ctx, "wl-destroy-stored-dial", "destroy-owner", [])
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-destroy-stored-dial", "p1")
+    NodeCapacity.drop(ctx.cap_table, {"node-4", "destroy-owner"})
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+    assert_receive {:destroy_dialed, "node-4/destroy-owner"}
+    refute Map.has_key?(:sys.get_state(ctx.mgr).session_dials, created.session_id)
+  end
+
   test "create happy path: claims a primed VM, mints a token, starts a live session" do
     ctx = start_stack()
     put_session_workload(ctx, "wl-a")
