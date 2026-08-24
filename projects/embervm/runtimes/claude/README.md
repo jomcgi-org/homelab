@@ -33,6 +33,33 @@ overhead is not worth optimising further. In particular this is why the guest do
 not need memory-snapshot warmth: relighting from a cold boot costs a quarter
 second against a multi-second turn.
 
+## CLI prewarm
+
+The shim can park every CLI family at boot so the first turn adopts a live
+process instead of paying its spawn (`#4423`). Which CLIs to prewarm ships as
+`/usr/share/ember-shim/prewarm-clis`, baked into each image: this image lists
+`claude,codex,pi`; the pi-only image (`../pi`) lists just `pi`, because
+prewarming a binary it omits would fail the boot. The list can be overridden
+per boot with `EMBER_PREWARM_CLIS`. It cannot be delivered through workload
+`initEnv`: those entries never reach a guest environment (`#4429`), which is
+why earlier attempts silently no-oped and every turn logged `path=lazy_spawn`.
+
+Prewarm parks each family differently:
+
+- **claude** spawns and then clears the generated session id: a parked process
+  owns no caller session until its first user message.
+- **codex** binds nothing at spawn. Thread identity, model, effort and developer
+  instructions all ride per-turn requests, so the initialize handshake is the
+  whole init cost.
+- **pi** takes model and system prompt as spawn flags, so it parks on the
+  default model with no caller prompt. A different model costs one `set_model`
+  RPC; a different prompt respawns through the turn path.
+
+A turn that hands a session id to an unbound process reports `path=adopt` in
+the turn-timing log; a turn served by the already-bound process reports
+`reuse`. During a base build `/shim/ready` stays 503 until every configured
+parked CLI is alive, so the snapshot cannot capture warmth that is not there.
+
 ## Completion and metering
 
 The `result` event carries the completion signal and the usage record together:
