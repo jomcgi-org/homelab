@@ -1,12 +1,14 @@
 # Homelab Threat Model
 
-_Reviewed against commit 5618dd15d._
+_Reviewed against commit 23bcbca65._
 
 Open security findings across everything the cluster hosts, ranked.
 The live list is the
 [`security-finding` label](https://github.com/jomcgi-org/homelab/issues?q=label%3Asecurity-finding+is%3Aopen);
 ADR [security/007](decisions/security/007-aggregate-threat-model-index.md)
-records how this page is maintained.
+records why this page exists, and the
+[maintenance runbook](runbooks/threat-model-maintenance.md) is the
+procedure for updating it.
 
 ## Assets
 
@@ -62,16 +64,28 @@ Ranked by what an attacker gets. Each issue holds the detail.
    The monolith verifies who is calling; no tool then checks whether
    that caller should reach it. Finding 1 of the
    [monolith model](../projects/monolith/THREAT-MODEL.md).
-4. **One storage credential can delete any tenant's artifacts**
+4. **A compromised public-tier pod can reach every in-cluster endpoint**
+   ([#5276](https://github.com/jomcgi-org/homelab/issues/5276)).
+   Its egress policy allows the whole cluster, while its own comment
+   documents four intended destinations.
+5. **The private monolith pod has no egress policy at all**
+   ([#5277](https://github.com/jomcgi-org/homelab/issues/5277)).
+   The pod holding every backend secret can send anywhere the node
+   can reach.
+6. **One storage credential can delete any tenant's artifacts**
    ([#4691](https://github.com/jomcgi-org/homelab/issues/4691)).
    Encryption stops reads of tenant state; shared base images stay
    plaintext, and deletes and overwrites are open to every holder of
    the shared credential.
-5. **Production promotion has no functional check**
+7. **The public docs site publishes committed docs verbatim**
+   ([#5275](https://github.com/jomcgi-org/homelab/issues/5275)).
+   A path allowlist with no redaction; an internal service hostname
+   is published today.
+8. **Production promotion has no functional check**
    ([#4745](https://github.com/jomcgi-org/homelab/issues/4745)).
    Promotion waits for rollout health and a short soak, and only
    EmberVM runs a conformance test first. A change that deploys
    cleanly but misbehaves promotes.
-6. **Swarm run budgets are never enforced**
+9. **Swarm run budgets are never enforced**
    ([#4784](https://github.com/jomcgi-org/homelab/issues/4784)).
    Recorded and reported only.

@@ -21,6 +21,7 @@ description matching. Open only when:
 | [embervm-node-scratch-setup.md](embervm-node-scratch-setup.md) | EmberVM node scratch |
 | [embervm-stateful-generation-quarantine.md](embervm-stateful-generation-quarantine.md) | Stateful generation quarantine |
 | [scheduler.md](scheduler.md) | Kick / inspect Postgres scheduled jobs |
+| [threat-model-maintenance.md](threat-model-maintenance.md) | Add/close a `security-finding`, refresh `docs/THREAT-MODEL.md`, per-domain models, model review |
 
 ### Knowledge graph
 

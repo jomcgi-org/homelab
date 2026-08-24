@@ -195,7 +195,7 @@ Ranked by blast radius.
    is live on the public docs site today and names an internal cluster
    service hostname for the MCP gateway. The same class of gap applies to
    every README, ARCHITECTURE.md, STPA.md, and THREAT-MODEL.md at an
-   allowlisted path, including this document. No tracking issue exists.
+   allowlisted path, including this document. Tracked in #5275.
 3. **The public tier's off-cluster egress lockdown scopes by
    "in-cluster or not," never by destination.** The backend's own
    CiliumNetworkPolicy comment states the intended reach is Postgres
@@ -203,7 +203,7 @@ Ranked by blast radius.
    that implements it (`toEntities: cluster`) allows every in-cluster pod
    endpoint, not just those four. A compromised public-tier pod has
    cluster-wide pod-to-pod reach despite the isolation this control is
-   documented as providing. No tracking issue exists.
+   documented as providing. Tracked in #5276.
 4. **`run_code`'s dedupe key omits input files.** The Idempotency-Key is
    `(language, code)` only; a resubmission with the same code but
    different files, within the EmberVM result-cache TTL, silently returns
@@ -214,8 +214,8 @@ Ranked by blast radius.
    all.** It holds every backend secret and the full `k8s.mutate` RBAC
    surface; a compromise (through any of the findings above, a dependency
    vulnerability, or a stolen pod credential) has open-ended cluster and
-   internet reach with nothing at the network layer to contain it. No
-   tracking issue exists.
+   internet reach with nothing at the network layer to contain it.
+   Tracked in #5277.
 6. **Scratch-Postgres DSN injection breaks `run_code`'s own isolation
    claim for Python whenever the feature is enabled.** The tool's
    docstring advertises "no network at all" unconditionally; the scratch
