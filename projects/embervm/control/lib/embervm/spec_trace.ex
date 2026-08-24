@@ -271,8 +271,26 @@ defmodule Embervm.SpecTrace.Writer do
   # the exit is caught here, so a stall costs counted drops and nothing else.
   defp flush(state) do
     case state.store_mod.write(state.store, Enum.reverse(state.records)) do
-      :ok -> schedule_flush(%{state | records: []})
-      {:error, reason} -> Embervm.SpecTrace.note_drop(); Logger.warning("embervm spec_trace store write failed", reason: inspect(reason)); schedule_flush(%{state | records: []})
+      :ok ->
+        schedule_flush(%{state | records: []})
+
+      {:error, reason} ->
+        Embervm.SpecTrace.note_drop()
+
+        if seq_collision?(reason) do
+          old_seq = state.seq
+          new_seq = max(old_seq, safe_max_seq(state.store_mod, state.store))
+
+          Logger.warning("embervm spec_trace seq collided, fast-forwarded",
+            old_seq: old_seq,
+            new_seq: new_seq
+          )
+
+          schedule_flush(%{state | seq: new_seq, records: []})
+        else
+          Logger.warning("embervm spec_trace store write failed", reason: inspect(reason))
+          schedule_flush(%{state | records: []})
+        end
     end
   catch
     :exit, reason ->
@@ -282,6 +300,10 @@ defmodule Embervm.SpecTrace.Writer do
   rescue
     error -> Embervm.SpecTrace.note_drop(); Logger.warning("embervm spec_trace store write failed", error: inspect(error)); schedule_flush(%{state | records: []})
   end
+
+  defp seq_collision?(%Postgrex.Error{postgres: %{code: :unique_violation}}), do: true
+  defp seq_collision?(reason), do: inspect(reason) =~ "UNIQUE constraint failed"
+
   defp schedule_flush(state), do: (Process.send_after(self(), :flush, state.flush_ms); state)
 
   defp stringify(value) when is_atom(value), do: Atom.to_string(value)

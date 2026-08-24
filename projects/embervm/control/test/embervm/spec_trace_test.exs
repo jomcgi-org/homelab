@@ -4,6 +4,24 @@ defmodule Embervm.SpecTraceTest do
   alias Embervm.SpecTrace
   alias Embervm.SpecTrace.Store.SQLite
 
+  defmodule SeqStore do
+    def start_link(state), do: Agent.start_link(fn -> state end)
+
+    def max_seq(store) do
+      Agent.get_and_update(store, fn %{max_seqs: [max_seq | rest]} = state ->
+        {max_seq, %{state | max_seqs: rest}}
+      end)
+    end
+
+    def write(store, records) do
+      Agent.get_and_update(store, fn %{write_replies: [reply | rest]} = state ->
+        {reply, %{state | write_replies: rest, writes: state.writes ++ [records]}}
+      end)
+    end
+
+    def state(store), do: Agent.get(store, & &1)
+  end
+
   setup do
     System.put_env("EMBERVM_SPEC_TRACE", "on")
     SpecTrace.configure()
@@ -121,6 +139,55 @@ defmodule Embervm.SpecTraceTest do
     assert seqs == Enum.uniq(seqs), "duplicate seq values: #{inspect(seqs)}"
   end
 
+  test "writer fast-forwards after a SQLite seq collision" do
+    {writer, store} =
+      start_seq_writer(
+        {:error, "UNIQUE constraint failed: spec_trace.seq"},
+        :sqlite_collision_store,
+        :sqlite_collision_writer
+      )
+
+    :ok = SpecTrace.drain(writer)
+    SpecTrace.emit(:spec_trace_test, :consume_drop, %{})
+    send(writer, {:emit, :adoption, :prime, %{vm_id: "vm-after"}, 10, 20})
+    :ok = SpecTrace.drain(writer)
+
+    state = SeqStore.state(store)
+    assert [failed_batch, [%{"seq" => 501}]] = state.writes
+    assert [%{"action" => "preamble"}] = failed_batch
+    assert state.max_seqs == []
+  end
+
+  test "writer fast-forwards after a Postgrex unique violation" do
+    error = %Postgrex.Error{postgres: %{code: :unique_violation}}
+    {writer, store} = start_seq_writer({:error, error}, :postgres_collision_store, :postgres_collision_writer)
+
+    :ok = SpecTrace.drain(writer)
+    SpecTrace.emit(:spec_trace_test, :consume_drop, %{})
+    send(writer, {:emit, :adoption, :prime, %{vm_id: "vm-after"}, 10, 20})
+    :ok = SpecTrace.drain(writer)
+
+    state = SeqStore.state(store)
+    assert [failed_batch, [%{"seq" => 501}]] = state.writes
+    assert [%{"action" => "preamble"}] = failed_batch
+    assert state.max_seqs == []
+  end
+
+  test "writer does not fast-forward after a non-collision write error" do
+    {writer, store} =
+      start_seq_writer({:error, :store_down}, :ordinary_error_store, :ordinary_error_writer)
+
+    :ok = SpecTrace.drain(writer)
+    SpecTrace.emit(:spec_trace_test, :consume_drop, %{})
+    send(writer, {:emit, :adoption, :prime, %{vm_id: "vm-after"}, 10, 20})
+    :ok = SpecTrace.drain(writer)
+
+    state = SeqStore.state(store)
+    assert [failed_batch, [%{"seq" => 2}]] = state.writes
+    assert [%{"action" => "preamble"}] = failed_batch
+    assert state.max_seqs == [500]
+  end
+
   # Emissions follow the SCOPED writer, so one test's trace cannot contain
   # another's records.
   #
@@ -199,5 +266,26 @@ defmodule Embervm.SpecTraceTest do
     assert {:ok, %{deleted: 1, done: false}} = SQLite.sweep(store, now_ms: 100, ttl_ms: 1, batch_size: 1)
     assert {:ok, %{deleted: 1, done: false}} = SQLite.sweep(store, now_ms: 100, ttl_ms: 1, batch_size: 1)
     assert {:ok, %{deleted: 1, done: true}} = SQLite.sweep(store, now_ms: 100, ttl_ms: 1, batch_size: 1)
+  end
+
+  defp start_seq_writer(first_write_reply, store_id, writer_id) do
+    store =
+      start_supervised!(
+        %{
+          id: store_id,
+          start:
+            {SeqStore, :start_link,
+             [%{max_seqs: [0, 500], write_replies: [first_write_reply, :ok], writes: []}]}
+        }
+      )
+
+    writer =
+      start_supervised!(
+        {SpecTrace.Writer,
+         name: nil, store_mod: SeqStore, store: store, batch_size: 100, flush_ms: 60_000},
+        id: writer_id
+      )
+
+    {writer, store}
   end
 end
