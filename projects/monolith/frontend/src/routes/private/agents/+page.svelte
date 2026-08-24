@@ -56,6 +56,7 @@
     walkthroughTurns,
   } from "./session-view.js";
   import { periodForHour } from "$lib/private/period.js";
+  import { modelEntries, modelLabel, modelName } from "./model-list.js";
 
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
   const VOICE_POLL_MS = 2000;
@@ -63,8 +64,11 @@
 
   let { data } = $props();
 
-  const MODELS = ["opus", "fable", "sonnet", "luna", "terra", "sol", "qwen"];
-  const DEV_MODELS = ["qwen"];
+  // The offered model catalogue comes from GET /api/agents/models via the
+  // server load (issue #4859). There is deliberately NO hardcoded fallback:
+  // an empty or failed catalogue leaves the picker visibly empty instead of
+  // silently offering models this environment may not route.
+  let modelCatalog = $state(modelEntries(data));
   // Retry logic for initial run load before concluding engine is absent.
   // A transient network failure on first load should not blank the page.
   const RUNS_LOAD_MAX_ATTEMPTS = 3;
@@ -107,7 +111,12 @@
     }
   }
   let sessions = $state(data.sessions ?? []);
-  let availableModels = $state(MODELS);
+  // Names feed `includes` checks and option values; labels carry the
+  // "(local)" display hint for the free pi lane.
+  const availableModels = $derived(modelCatalog.map(modelName));
+  const modelLabels = $derived(
+    new Map(modelCatalog.map((entry) => [modelName(entry), modelLabel(entry)])),
+  );
   let runs = $state([]);
   let terminalRuns = $state([]);
   let runDetail = $state(null);
@@ -381,10 +390,7 @@
       if (!response.ok) throw new Error("Unable to refresh sessions");
       const body = await response.json();
       sessions = Array.isArray(body) ? body : (body.sessions ?? []);
-      availableModels =
-        !Array.isArray(body) && body.localModelsOnly === true
-          ? DEV_MODELS
-          : MODELS;
+      modelCatalog = modelEntries(body);
       await loadRuns();
       errorMessage = null;
       if (
@@ -2211,8 +2217,9 @@
       {#if current && !availableModels.includes(current)}
         <option value={current}>{current}</option>
       {/if}
-      {#each availableModels as model}<option value={model}>{model}</option
-        >{/each}
+      {#each availableModels as model}
+        <option value={model}>{modelLabels.get(model) ?? model}</option>
+      {/each}
     </select>
   </label>
 {/snippet}

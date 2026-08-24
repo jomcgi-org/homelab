@@ -1,14 +1,42 @@
 """Voice-drivable Claude Code agent sessions."""
 
+import os
+
 # Every model a caller may name, ordered by family (codex, claude, pi). This is
-# the single source for selectable models: the Discord /agent choice list is
-# built from it, so a model added here appears there without a second edit and
-# the two can never disagree about what model_family accepts.
+# the single source for selectable models: the Discord /agent choice list and
+# GET /api/agents/models are built from it, so a model added here appears
+# everywhere without a second edit and nothing can disagree about what
+# model_family accepts.
 #
-# Deliberately no imports in this module. chat.bot reads SUPPORTED_MODELS at
-# import time to build its slash-command choices, and anything imported here
-# would land in that path (see the agent_sessions.api cycle in chat/bot.py).
+# Deliberately no FIRST-PARTY imports in this module. chat.bot reads
+# SUPPORTED_MODELS at import time to build its slash-command choices, and any
+# first-party module imported here would land in that path, dragging a Bazel
+# dep onto every target that imports chat.bot without one (see the drift test
+# in chat/bot_on_message_test.py). The stdlib os import below is safe: it ships
+# with every interpreter.
 SUPPORTED_MODELS = ("luna", "terra", "sol", "opus", "sonnet", "fable", "qwen")
+
+# Per-env allowlist narrowing what the console picker and the Discord /agent
+# command OFFER (issue #4859). Comma-separated names; empty or unset means
+# every supported model. This is configuration we own, not a boundary: names
+# here never widen past SUPPORTED_MODELS, and unknown names are ignored rather
+# than rejected. Wired from chart value agents.models.
+MODEL_ENV_VAR = "AGENT_MODELS"
+
+
+def offered_models(configured: str | None = None) -> tuple[str, ...]:
+    """Return SUPPORTED_MODELS narrowed by the AGENT_MODELS allowlist.
+
+    ``configured`` overrides the environment read for tests; None means read
+    MODEL_ENV_VAR. An empty or unset allowlist means "offer everything": prod
+    keeps the full selection by default while dev narrows it to the free
+    in-cluster lane with a single values edit.
+    """
+    raw = os.environ.get(MODEL_ENV_VAR, "") if configured is None else configured
+    allowed = {part.strip() for part in raw.split(",") if part.strip()}
+    if not allowed:
+        return SUPPORTED_MODELS
+    return tuple(model for model in SUPPORTED_MODELS if model in allowed)
 
 
 def model_family(model: str | None) -> str:

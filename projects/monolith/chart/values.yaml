@@ -77,11 +77,19 @@ progress:
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
 
-# Restrict the agents console model picker to the in-cluster model when true.
-# Production keeps the full model list; dev overrides this to avoid offering
-# providers that are not intended for dev use.
+# Offered model catalogue for the agents console picker and the Discord
+# /agent slash command (issue #4859). Comma-separated subset of
+# agent_sessions.SUPPORTED_MODELS, served by GET /api/agents/models and read
+# by chat.bot from AGENT_MODELS; empty means offer every supported model.
+# This is configuration we own, not a boundary: names never widen past
+# SUPPORTED_MODELS and unknown names are ignored, but an allowlist matching
+# nothing renders an EMPTY picker (there is no bundled fallback list), so a
+# typo is visible rather than masked. Adding a model to the offer is a values
+# edit here once it exists in SUPPORTED_MODELS.
 agents:
-  localModelsOnly: false
+  # Current production selection: every supported model, listed explicitly so
+  # prod renders unchanged and stays unchanged when code adds a model later.
+  models: "luna,terra,sol,opus,sonnet,fable,qwen"
 
 # Off-pod batch-job execution via Argo CronWorkflows.
 #

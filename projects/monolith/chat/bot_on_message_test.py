@@ -1656,21 +1656,44 @@ class TestStartAgentFlowOrchestrator:
             assert start_session.await_args.kwargs["model"] == expected
 
     def test_agent_model_choices_match_supported_models(self):
-        """chat.bot's picker list must equal agent_sessions.SUPPORTED_MODELS.
+        """chat.bot's picker list must track agent_sessions' catalogue.
 
         The list is duplicated on purpose: importing agent_sessions at module
         scope in chat.bot would drag it into the Bazel dep graph of every target
         importing chat.bot (~38 of them fail with ModuleNotFoundError), which is
         why every other agent_sessions import in that file is function-local.
-        This test is the seam that keeps the two copies honest, and it lives here
-        because this target already depends on both.
+        This test is the seam that keeps the copies honest: the literal
+        universes must be equal, and bot.py's env filter must behave
+        identically to agent_sessions.offered_models across every setting the
+        chart can produce (issue #4859). The filter is a pure function in
+        bot.py, so each scenario runs without re-importing the module.
         """
-        from agent_sessions import SUPPORTED_MODELS, model_family
+        from agent_sessions import SUPPORTED_MODELS, model_family, offered_models
 
-        from chat.bot import AGENT_MODEL_CHOICES
+        from chat.bot import (
+            AGENT_MODEL_CHOICES,
+            _ALL_AGENT_MODEL_CHOICES,
+            _filter_agent_models,
+        )
 
-        assert tuple(AGENT_MODEL_CHOICES) == tuple(SUPPORTED_MODELS)
-        # Discord caps a slash-command choice list at 25.
+        scenarios = [
+            None,
+            "",
+            "qwen",
+            "qwen,luna",
+            " luna , terra ",
+            "not-a-model",
+            "bogus,qwen",
+        ]
+        for configured in scenarios:
+            env_value = "" if configured is None else configured
+            assert tuple(_filter_agent_models(SUPPORTED_MODELS, env_value)) == tuple(
+                offered_models(env_value)
+            ), f"AGENT_MODELS={configured!r}"
+
+        # The universe itself cannot drift from what model_family accepts,
+        # and Discord caps a slash-command choice list at 25.
+        assert tuple(_ALL_AGENT_MODEL_CHOICES) == tuple(SUPPORTED_MODELS)
         assert 0 < len(AGENT_MODEL_CHOICES) <= 25
         for name in AGENT_MODEL_CHOICES:
             assert model_family(name) in {"codex", "claude", "pi"}

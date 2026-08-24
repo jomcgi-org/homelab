@@ -14,7 +14,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
-from agent_sessions import model_family, store, transport as transport_module, voice_ui
+from agent_sessions import (
+    model_family,
+    offered_models,
+    store,
+    transport as transport_module,
+    voice_ui,
+)
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
@@ -220,6 +226,25 @@ def list_sessions(
     return _rows(session, status, limit)
 
 
+@router.get("/models")
+def list_offered_models() -> dict:
+    """Model catalogue the console picker offers (issue #4859).
+
+    SUPPORTED_MODELS narrowed by the AGENT_MODELS env var, which the chart
+    wires from agents.values. The frontend has no built-in list: an empty
+    catalogue renders an empty picker rather than a bundled fallback, so a
+    misconfigured env is visible instead of silently masked. Entries carry
+    name and family; family is the display hint that lets the picker label
+    the free in-cluster (pi) lane. No auth dependency and no cluster reads,
+    matching GET /sessions next to which it ships.
+    """
+    return {
+        "models": [
+            {"name": model, "family": model_family(model)} for model in offered_models()
+        ]
+    }
+
+
 # Control-plane session states collapsed to what the console renders. The
 # guest lifecycle is the control plane's truth, not the monolith's local
 # binding: a park (idleBankSeconds after the last invoke) happens without
@@ -287,8 +312,8 @@ async def _refresh_cp_state() -> None:
     # would leave them out of the published map entirely. The console reads an
     # absent session_id as "off" (frontend status.js vmState), so a live qwen
     # guest would render "vm off" and "waking vm" for its whole turn. On
-    # monolith-dev that is total, because localModelsOnly restricts the picker
-    # to qwen alone.
+    # monolith-dev that is total, because the configured model list restricts
+    # the picker to qwen alone.
     #
     # Aggregating here does NOT contradict list_sessions defaulting to one
     # lane: that default serves the operator tool, where the per-workload

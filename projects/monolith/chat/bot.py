@@ -51,13 +51,37 @@ logger = logging.getLogger(__name__)
 # model_family accepts. A model pins the session's adapter family for its
 # whole life, so this is chosen once at /agent time and not per turn.
 DEFAULT_AGENT_MODEL = "luna"
-# Kept as a LITERAL, not imported from agent_sessions. A module-level import
-# here would put agent_sessions into the Bazel dep graph of every target that
-# imports chat.bot, which is why every other agent_sessions import in this file
-# is function-local. The pairing is enforced instead by a drift test
-# (test_agent_model_choices_match_supported_models), in a target that already
-# depends on both.
-AGENT_MODEL_CHOICES = ("luna", "terra", "sol", "opus", "sonnet", "fable", "qwen")
+# The full universe of selectable models, kept as a LITERAL, not imported from
+# agent_sessions. A module-level import there would put agent_sessions into the
+# Bazel dep graph of every target that imports chat.bot, which is why every
+# other agent_sessions import in this file is function-local. Two things keep
+# this copy honest instead: the drift test (test_agent_model_choices_match_
+# supported_models) in a target that already depends on both, and the filter
+# below mirroring agent_sessions.offered_models, which the same test checks
+# for behavioural equality across env settings.
+_ALL_AGENT_MODEL_CHOICES = ("luna", "terra", "sol", "opus", "sonnet", "fable", "qwen")
+
+
+def _filter_agent_models(models, configured: str) -> tuple:
+    """Narrow ``models`` to a comma-separated allowlist; empty means all.
+
+    Mirrors agent_sessions.offered_models (same semantics, no import: see
+    above). The drift test in chat/bot_on_message_test.py asserts behavioural
+    equality between the two across every setting the chart can produce.
+    """
+    allowed = {part.strip() for part in (configured or "").split(",") if part.strip()}
+    if not allowed:
+        return tuple(models)
+    return tuple(model for model in models if model in allowed)
+
+
+# Per-env narrowing (issue #4859), read at import like the rest of this
+# module's config: AGENT_MODELS is a comma-separated subset; empty or unset
+# offers everything. Wired from chart value agents.models so dev offers only
+# what it routes (the free qwen lane) without shipping a different image.
+AGENT_MODEL_CHOICES = _filter_agent_models(
+    _ALL_AGENT_MODEL_CHOICES, os.environ.get("AGENT_MODELS", "")
+)
 AGENT_REACTION_QUEUED = "⏳"
 
 
