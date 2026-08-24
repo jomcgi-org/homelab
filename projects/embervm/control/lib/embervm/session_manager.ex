@@ -325,6 +325,10 @@ defmodule Embervm.SessionManager do
       # process, which stops on admission) so three strikes across bank attempts fails
       # the session. Cleared on a successful bank or a successful invoke-driven relight.
       bank_failures: %{},
+      # session_id -> placed instance dial. The capacity table is eventually
+      # consistent, so keep the dial that actually created or restarted the VM for
+      # bank and destroy when its live-vm fact is temporarily absent.
+      session_dials: %{},
       # Snapshot-disk low watermark (bytes): when a node's snapshot_disk_free_bytes
       # is below this, disk-pressure eviction fires. nil = eviction disabled.
       disk_low_watermark_bytes: Keyword.get(opts, :disk_low_watermark_bytes, nil),
@@ -476,7 +480,9 @@ defmodule Embervm.SessionManager do
     # the session process's own FIFO parks the caller. So we reply the pid to the
     # caller path via a spawned forwarder, keeping the manager responsive. Simpler:
     # forward synchronously from a short task so the manager is not the bottleneck.
-    case resolve_route(state, session_id) do
+    {route, state} = resolve_route(state, session_id)
+
+    case route do
       {:live, pid} ->
         # Forward off the manager so a long guest round-trip does not serialize other
         # sessions' routing through this one GenServer.
@@ -503,7 +509,7 @@ defmodule Embervm.SessionManager do
   def handle_call({:destroy, session_id}, _from, state) do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: session_state}} when session_state in [:expired, :evicted, :destroyed, :failed] ->
-        {:reply, {:ok, :already_terminal}, state}
+        {:reply, {:ok, :already_terminal}, clear_session_tracking(state, session_id)}
 
       {:ok, %{state: :destroying}} ->
         {:reply, {:ok, :destroying}, state}
@@ -917,7 +923,7 @@ defmodule Embervm.SessionManager do
             state
           end
 
-        result =
+        {result, state} =
           case outcome do
             {:ok, vm_id, restored} ->
               register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored)
@@ -937,7 +943,7 @@ defmodule Embervm.SessionManager do
                 _ = retire_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: restore_lineage})
               end
 
-              {:error, {:denied, reason}}
+              {{:error, {:denied, reason}}, state}
           end
 
         GenServer.reply(from, result)
@@ -1186,17 +1192,19 @@ defmodule Embervm.SessionManager do
     # node_id is the K8s node where the VM primed/started; SessionStore carries it into session_created.
     case SessionStore.create(state.session_store, attrs) do
       {:ok, %{session_id: session_id} = created} ->
+        state = remember_session_dial(state, session_id, node_id, dial_id)
+
         case start_session_process(state, session_id, workload, principal, entry, node_id, vm_id, dial_id) do
           {:ok, _pid} ->
-            {:ok, Map.put(created, :restored, restored)}
+            {{:ok, Map.put(created, :restored, restored)}, state}
 
           {:error, reason} ->
             Logger.error("embervm session: process start failed for #{session_id}: #{inspect(reason)}")
-            {:error, {:denied, :process_start_failed}}
+            {{:error, {:denied, :process_start_failed}}, state}
         end
 
       {:error, reason} ->
-        {:error, {:denied, {:store, reason}}}
+        {{:error, {:denied, {:store, reason}}}, state}
     end
   end
 
@@ -1262,22 +1270,27 @@ defmodule Embervm.SessionManager do
   # A catalog miss (workload deleted) is surfaced so the caller can fail the session
   # rather than start a process with no config.
   defp start_session_from_row(state, session, node_id, vm_id, dial_id, extra_opts \\ []) do
+    state = remember_session_dial(state, session.session_id, node_id, dial_id)
+
     case fetch_session_workload(state, session.workload) do
       {:ok, entry} ->
-        start_session_process(
-          state,
-          session.session_id,
-          session.workload,
-          session.principal,
-          entry,
-          node_id,
-          vm_id,
-          dial_id,
-          extra_opts
-        )
+        result =
+          start_session_process(
+            state,
+            session.session_id,
+            session.workload,
+            session.principal,
+            entry,
+            node_id,
+            vm_id,
+            dial_id,
+            extra_opts
+          )
+
+        {result, state}
 
       {:error, reason} ->
-        {:error, {:no_catalog_entry, reason}}
+        {{:error, {:no_catalog_entry, reason}}, state}
     end
   end
 
@@ -1292,14 +1305,14 @@ defmodule Embervm.SessionManager do
       {:ok, %{state: st, expires_at: exp} = session}
       when st in [:running, :banked, :parked] and is_integer(exp) ->
         if exp <= state.clock.() do
-          _ = expire_session(state, session)
-          {:error, {:gone, "expired"}}
+          state = expire_session(state, session)
+          {{:error, {:gone, "expired"}}, state}
         else
-          resolve_non_expired(state, session_id)
+          {resolve_non_expired(state, session_id), state}
         end
 
       _ ->
-        resolve_non_expired(state, session_id)
+        {resolve_non_expired(state, session_id), state}
     end
   end
 
@@ -1593,10 +1606,10 @@ defmodule Embervm.SessionManager do
     workload = session.workload
     parent_base_ref = session.base_snapshot_ref
     generation = (session.generation || 0) + 1
-    # Dial the OWNING instance running this live vm_id, not the node-name alias
-    # (co-location made it point at an arbitrary sibling brick). Resolved on the owner
-    # so the worker reads a settled key; fail-open to node_id.
-    dial_key = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id)
+    # dial_for_session_vm fails open to node_id on a miss. As restore_then_prime
+    # does for volume ownership, detect that sentinel exactly and fall back to the
+    # instance dial retained when this VM was placed or restarted.
+    dial_key = session_dial(state, session_id, node_id, vm_id)
 
     spawn(fn ->
       # A lifecycle span (Task 9). Idle-bank has no caller trace, so it is a root
@@ -1645,7 +1658,9 @@ defmodule Embervm.SessionManager do
       # adoption reaps it; drain any mid-bank parked callers gone. Never resurrect
       # the session.
       {:ok, %{state: st}} when st in [:destroying, :expired, :evicted, :destroyed, :failed] ->
-        drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
+        state
+        |> clear_session_tracking(session_id)
+        |> drain_relight_waiters(session_id, {:error, {:gone, to_string(st)}})
 
       _ ->
         finish_bank_active(state, session_id, node_id, outcome)
@@ -1697,43 +1712,54 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # A bank failed: ETS back to running, count the strike. Three strikes fail the
-  # session + destroy its VM; under the limit, restart a session process so the live
-  # VM keeps serving and its idle timer will retry the bank.
+  # A bank failed: ETS back to running. A dial-resolution miss is retryable
+  # infrastructure and does not count as a strike. Other failures preserve the
+  # three-strike policy. Under the limit, restart a session process so the live VM
+  # keeps serving and its idle timer will retry the bank.
   defp handle_bank_failure(state, session_id, reason) do
     _ = SessionStore.mark(state.session_store, session_id, :bank_abort)
-    failures = Map.get(state.bank_failures, session_id, 0) + 1
-    Logger.warning("embervm session bank failed", session_id: session_id, reason: inspect(reason), consecutive: failures)
 
-    if failures >= @bank_fail_limit do
-      state = clear_bank_failures(state, session_id)
-
-      case SessionStore.get(state.session_store, session_id) do
-        {:ok, session} ->
-          destroying? =
-            session.state == :destroying or
-              MapSet.member?(state.destroy_inflight, session_id)
-
-          state =
-            if destroying? do
-              state
-            else
-              fail_session_and_destroy(state, session)
-            end
-
-          # Any mid-bank parked callers: the session is failed now, or its destroy
-          # worker already owns teardown.
-          gone_state = if destroying?, do: "destroying", else: "failed"
-          drain_relight_waiters(state, session_id, {:error, {:gone, gone_state}})
-
-        :error ->
-          state
-      end
-    else
-      state = %{state | bank_failures: Map.put(state.bank_failures, session_id, failures)}
+    if bank_dial_miss?(reason) do
+      Logger.warning("embervm session bank failed", session_id: session_id, reason: inspect(reason))
       restart_running_process(state, session_id)
+    else
+      failures = Map.get(state.bank_failures, session_id, 0) + 1
+      Logger.warning("embervm session bank failed", session_id: session_id, reason: inspect(reason), consecutive: failures)
+
+      if failures >= @bank_fail_limit do
+        state = clear_bank_failures(state, session_id)
+
+        case SessionStore.get(state.session_store, session_id) do
+          {:ok, session} ->
+            destroying? =
+              session.state == :destroying or
+                MapSet.member?(state.destroy_inflight, session_id)
+
+            state =
+              if destroying? do
+                state
+              else
+                fail_session_and_destroy(state, session)
+              end
+
+            # Any mid-bank parked callers: the session is failed now, or its destroy
+            # worker already owns teardown.
+            gone_state = if destroying?, do: "destroying", else: "failed"
+            drain_relight_waiters(state, session_id, {:error, {:gone, gone_state}})
+
+          :error ->
+            clear_session_tracking(state, session_id)
+        end
+      else
+        state = %{state | bank_failures: Map.put(state.bank_failures, session_id, failures)}
+        restart_running_process(state, session_id)
+      end
     end
   end
+
+  defp bank_dial_miss?({:error, :unknown_node}), do: true
+  defp bank_dial_miss?({:error, {:error, :unknown_node}}), do: true
+  defp bank_dial_miss?(_reason), do: false
 
   # Restart a session process for a running session that lost its process (a failed
   # bank: the process stopped on admission but the VM is still live). Idempotent: a
@@ -1749,8 +1775,8 @@ defmodule Embervm.SessionManager do
           [] ->
             # Resolve the co-located instance still running this live vm_id so the
             # restarted process's per-invoke dial targets the owner, not the alias.
-            dial_id = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id)
-            _ = start_session_from_row(state, session, node_id, vm_id, dial_id)
+            dial_id = session_dial(state, session_id, node_id, vm_id)
+            {_result, state} = start_session_from_row(state, session, node_id, vm_id, dial_id)
             state
         end
 
@@ -1762,11 +1788,32 @@ defmodule Embervm.SessionManager do
   defp fail_session_and_destroy(state, session) do
     _ = destroy_vm(state, session)
     fail_session(state, session.session_id, :failed, "bank_failed_three_strikes")
-    state
   end
 
   defp clear_bank_failures(state, session_id) do
     %{state | bank_failures: Map.delete(state.bank_failures, session_id)}
+  end
+
+  defp clear_session_tracking(state, session_id) do
+    %{
+      state
+      | bank_failures: Map.delete(state.bank_failures, session_id),
+        session_dials: Map.delete(state.session_dials, session_id)
+    }
+  end
+
+  defp remember_session_dial(state, session_id, node_id, dial_id)
+       when is_binary(dial_id) and dial_id != node_id do
+    %{state | session_dials: Map.put(state.session_dials, session_id, dial_id)}
+  end
+
+  defp remember_session_dial(state, _session_id, _node_id, _dial_id), do: state
+
+  defp session_dial(state, session_id, node_id, vm_id) do
+    case Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id) do
+      ^node_id -> Map.get(state.session_dials, session_id, node_id)
+      resolved -> resolved
+    end
   end
 
   # A node is at its bank cap when the count of in-flight banks on it reaches the
@@ -1984,18 +2031,21 @@ defmodule Embervm.SessionManager do
     owner = self()
     failure_fun = fn reason -> send(owner, {:rejoin_assign_failed, session_id, reason}) end
 
-    case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id,
-           dial_id, [rejoin_failure_fun: failure_fun]) do
+    {start_result, state} =
+      start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id,
+        dial_id, [rejoin_failure_fun: failure_fun])
+
+    case start_result do
       {:ok, pid} ->
         case SessionStore.transition(state.session_store, session_id, :rejoin_ready, :session_rejoined,
                %{volume_node_id: session.volume_node_id}, %{node_id: node_id, vm_id: vm_id}) do
           {:ok, _} -> drain_relight_into_process(state, session_id, pid)
           {:error, reason} ->
-            _ = destroy_vm(state, %{node_id: node_id, vm_id: vm_id})
+            _ = destroy_vm(state, %{session_id: session_id, node_id: node_id, vm_id: vm_id})
             drain_relight_waiters(state, session_id, {:error, reason})
         end
       {:error, reason} ->
-        _ = destroy_vm(state, %{node_id: node_id, vm_id: vm_id})
+        _ = destroy_vm(state, %{session_id: session_id, node_id: node_id, vm_id: vm_id})
         drain_relight_waiters(state, session_id, {:error, reason})
     end
   end
@@ -2422,7 +2472,10 @@ defmodule Embervm.SessionManager do
 
         state = clear_bank_failures(state, session_id)
 
-        case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id) do
+        {start_result, state} =
+          start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id)
+
+        case start_result do
           {:ok, pid} ->
             Logger.info("embervm session relit",
               session_id: session_id,
@@ -2433,13 +2486,13 @@ defmodule Embervm.SessionManager do
             drain_relight_into_process(state, session_id, pid)
 
           {:error, reason} ->
-            fail_session(state, session_id, :failed, "relit process start failed: #{inspect(reason)}")
+            state = fail_session(state, session_id, :failed, "relit process start failed: #{inspect(reason)}")
             drain_relight_waiters(state, session_id, {:error, :failed})
         end
 
       {:error, :snapshot_lost} ->
         session = get_session!(state, session_id)
-        fail_session(state, session_id, :snapshot_lost, "snapshot_lost")
+        state = fail_session(state, session_id, :snapshot_lost, "snapshot_lost")
         _ = evict_snapshot(state, session)
         drain_relight_waiters(state, session_id, {:error, {:gone, "snapshot_lost"}})
 
@@ -2724,7 +2777,7 @@ defmodule Embervm.SessionManager do
       workload: session.workload
     )
 
-    state
+    if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
   end
 
   # Direction 2: a node reports a live session VM whose session_id no CP row matches.
@@ -2978,7 +3031,7 @@ defmodule Embervm.SessionManager do
            %{}
          ) do
       {:ok, _} ->
-        state
+        clear_session_tracking(state, session.session_id)
 
       {:error, err} ->
         if MapSet.member?(state.logged_unapplicable, session.session_id) do
@@ -3012,7 +3065,10 @@ defmodule Embervm.SessionManager do
         state
 
       [] ->
-        case start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id) do
+        {start_result, state} =
+          start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id)
+
+        case start_result do
           {:ok, _pid} ->
             Logger.info("embervm session adopted (live)", session_id: session.session_id, node_id: node_id)
             state
@@ -3238,7 +3294,7 @@ defmodule Embervm.SessionManager do
 
     retire_session_volume(state, session)
 
-    _ =
+    reply =
       SessionStore.transition(
         state.session_store,
         session.session_id,
@@ -3254,7 +3310,7 @@ defmodule Embervm.SessionManager do
       principal: session.principal
     )
 
-    state
+    if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
   end
 
   # Banked/parked-TTL GC (#4305): a banked or parked session untouched
@@ -3341,7 +3397,7 @@ defmodule Embervm.SessionManager do
   defp evict_banked(state, session, reason) do
     _ = evict_snapshot(state, session)
 
-    _ =
+    reply =
       SessionStore.transition(
         state.session_store,
         session.session_id,
@@ -3358,7 +3414,7 @@ defmodule Embervm.SessionManager do
       reason: reason
     )
 
-    state
+    if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
   end
 
   # Evict a parked session: skips stop_session_process (park already tore down
@@ -3371,7 +3427,7 @@ defmodule Embervm.SessionManager do
     _ = evict_snapshot(state, session)
     retire_session_volume(state, session)
 
-    _ =
+    reply =
       SessionStore.transition(
         state.session_store,
         session.session_id,
@@ -3388,7 +3444,7 @@ defmodule Embervm.SessionManager do
       reason: reason
     )
 
-    state
+    if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
   end
 
   # -- snapshot eviction RPC -------------------------------------------------
@@ -3484,11 +3540,11 @@ defmodule Embervm.SessionManager do
            %{}
          ) do
       {:ok, _} ->
-        :ok
+        clear_session_tracking(state, session_id)
 
       {:error, err} ->
         Logger.warning("embervm session fail transition failed", session_id: session_id, error: inspect(err))
-        :error
+        state
     end
   end
 
@@ -3580,7 +3636,7 @@ defmodule Embervm.SessionManager do
         case SessionStore.get(state.session_store, session_id) do
           {:ok, %{state: session_state}}
           when session_state in [:expired, :evicted, :destroyed, :failed] ->
-            state
+            clear_session_tracking(state, session_id)
 
           {:ok, %{state: :destroying} = session} ->
             finish_destroying_session(state, session, confirmed, resumed)
@@ -3645,7 +3701,7 @@ defmodule Embervm.SessionManager do
           principal: session.principal
         )
 
-        state
+        if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
       end
     else
       Logger.warning("embervm session teardown unconfirmed, left destroying",
@@ -3744,6 +3800,7 @@ defmodule Embervm.SessionManager do
         principal: session.principal
       )
 
+      state = if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
       {reply, state}
     else
       Logger.warning("embervm session teardown unconfirmed, left destroying",
@@ -3815,6 +3872,7 @@ defmodule Embervm.SessionManager do
         principal: session.principal
       )
 
+      state = if match?({:ok, _}, reply), do: clear_session_tracking(state, session.session_id), else: state
       {reply, state}
     else
       # 3b. Unconfirmed: leave the session in destroying. The reconcile loop
@@ -3869,10 +3927,11 @@ defmodule Embervm.SessionManager do
   # unconfirmed). A dial failure, an RPC error, or a raised/thrown fault all read as
   # unconfirmed (false), keeping the session in destroying under the node-confirmed
   # gate; the legacy path discards this and proceeds as today.
-  defp destroy_vm(state, %{node_id: node_id, vm_id: vm_id})
+  defp destroy_vm(state, %{session_id: session_id, node_id: node_id, vm_id: vm_id})
        when is_binary(node_id) and is_binary(vm_id) do
-    # Dial the OWNING instance running this live vm_id, not the node-name alias.
-    dial_key = Embervm.WakeInstance.dial_for_session_vm(state.capacity_table, node_id, vm_id)
+    # Match the bank path: prefer current ownership, then the placed dial retained
+    # by the manager, and only then preserve the legacy bare-node fallback.
+    dial_key = session_dial(state, session_id, node_id, vm_id)
 
     case safe_channel(state.channel_fun, dial_key) do
       {:ok, channel} ->
@@ -3899,6 +3958,11 @@ defmodule Embervm.SessionManager do
       {:error, _} ->
         false
     end
+  end
+
+  defp destroy_vm(state, %{node_id: node_id, vm_id: vm_id} = session)
+       when is_binary(node_id) and is_binary(vm_id) do
+    destroy_vm(state, Map.put(session, :session_id, nil))
   end
 
   defp destroy_vm(_state, _session), do: false
