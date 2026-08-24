@@ -85,9 +85,28 @@ defmodule Embervm.BaseBuilder do
       gap), `BaseBuilt=False`.
 
   `status.snapshotRef` is only ever ADVANCED to a base the daemon has already
-  confirmed built, never to an in-progress one, which is what makes the
-  acceptance property hold: at any point, the `snapshotRef` in status names a
-  restorable base.
+  confirmed built, never to an in-progress one. What it NAMES is deliberately
+  narrow (#4893): a ref the daemon confirmed BUILT, i.e. it was present on a
+  node and boot-provable at that moment. It does NOT claim "fetchable from the
+  store". Store fetchability is a separate claim, tracked per vendor in the
+  workload's `store_confirmed` ledger and populated ONLY from node-reported
+  facts (`WorkloadCapacity.exported == true` on a READY base, noded's meta.json
+  completeness marker). No single field answers both questions, and every
+  reader says which it means:
+
+    * `Ready`/`snapshotRef`: a built base exists (a local-presence claim; #4937
+      keeps health out of it, #5009 keeps the claim at BOOT);
+    * `vendor_built`: which vendor's build the CP can vouch for, at signature;
+    * `store_confirmed`: the store provably holds that vendor's current ref;
+    * hydrate (restore-first): requires the ref recorded AND absent locally
+      AND affirmatively fetchable from the store. "Recorded" alone never
+      implies "fetchable".
+
+  When a recorded ref is absent locally and NOT fetchable, the builder does not
+  fire a doomed RestoreArtifact: if some node still holds the base READY it
+  exports that copy first (the reconcile backstop), and if no node holds it the
+  builder converges straight to BuildBase (the same destination the hydrate
+  fallback reaches on FAILED_PRECONDITION, without the wasted RPC).
 
   ## turnover on a digest change (a documented seam, not built here)
 
@@ -526,64 +545,74 @@ defmodule Embervm.BaseBuilder do
         {:noreply, state}
 
       w ->
-        if signature(w) != signature_at_start do
-          {:noreply, reconcile_desc(state, hydrate_fallback_desc(w))}
+        {:noreply, force_rebuild(state, w, workload_name, signature_at_start, anchor_node)}
+    end
+  end
+
+  # The shared rebuild-forcing core: clear the recorded base for the anchor
+  # vendor and re-drive a BuildBase. Returns plain state so the reconcile-time
+  # :unfetchable branch (#4893) can call it inline instead of casting.
+  defp force_rebuild(state, w, workload_name, signature_at_start, anchor_node) do
+    if signature(w) != signature_at_start do
+      reconcile_desc(state, hydrate_fallback_desc(w))
+    else
+      cleared_ref = w.snapshot_ref
+
+      anchor = anchor_node || node_name(w.node_id)
+
+      anchor_vendor =
+        if is_binary(anchor) do
+          state.capacity_table
+          |> Embervm.NodeCapacity.vendor_for(anchor)
+          |> to_string()
+          |> String.trim()
         else
-          cleared_ref = w.snapshot_ref
+          ""
+        end
 
-          anchor = anchor_node || node_name(w.node_id)
+      {vendor_built, store_confirmed} =
+        if anchor_vendor == "" do
+          # Without a capacity fact we cannot identify which vendor is being
+          # rebuilt. Keep every vendor entry rather than invalidating an
+          # unrelated vendor's completed build (or its store evidence).
+          {w.vendor_built, w.store_confirmed}
+        else
+          # Drop the anchor vendor's build record AND its store-fetchability
+          # entry: a forced rebuild declares this ref unobtainable for that
+          # vendor, so stale evidence must not re-arm restore-first against it.
+          {Map.delete(w.vendor_built, anchor_vendor),
+           Map.delete(w.store_confirmed, anchor_vendor)}
+        end
 
-          anchor_vendor =
-            if is_binary(anchor) do
-              state.capacity_table
-              |> Embervm.NodeCapacity.vendor_for(anchor)
-              |> to_string()
-              |> String.trim()
-            else
-              ""
-            end
+      Logger.warning(
+        "embervm base builder: forcing rebuild for #{workload_name}, cleared snapshot ref #{inspect(cleared_ref)}"
+      )
 
-          vendor_built =
-            if anchor_vendor == "" do
-              # Without a capacity fact we cannot identify which vendor is being
-              # rebuilt. Keep every vendor entry rather than invalidating an
-              # unrelated vendor's completed build.
-              w.vendor_built
-            else
-              Map.delete(w.vendor_built, anchor_vendor)
-            end
+      w = %{
+        w
+        | built_signature: nil,
+          snapshot_ref: nil,
+          scalar_vendor: "",
+          vendor_built: vendor_built,
+          store_confirmed: store_confirmed
+      }
 
-          Logger.warning(
-            "embervm base builder: forcing rebuild for #{workload_name}, cleared snapshot ref #{inspect(cleared_ref)}"
-          )
+      state = put_in(state.workloads[workload_name], w)
 
-          w = %{
-            w
-            | built_signature: nil,
-              snapshot_ref: nil,
-              scalar_vendor: "",
-              vendor_built: vendor_built
-          }
+      case anchor_node && build_instance_on_node(state, w, anchor_node) do
+        nil ->
+          reconcile_desc(state, hydrate_fallback_desc(w))
+
+        anchor_instance ->
+          w = %{w | node_id: anchor_instance}
           state = put_in(state.workloads[workload_name], w)
 
-          case anchor_node && build_instance_on_node(state, w, anchor_node) do
-            nil ->
-              {:noreply, reconcile_desc(state, hydrate_fallback_desc(w))}
-
-            anchor_instance ->
-              w = %{w | node_id: anchor_instance}
-              state = put_in(state.workloads[workload_name], w)
-
-              state =
-                state
-                |> cancel_pending_retry(workload_name)
-                |> enqueue(anchor_instance, workload_name)
-                |> write_base_status(w, :building)
-                |> maybe_start_build(anchor_instance)
-
-              {:noreply, state}
-          end
-        end
+          state
+          |> cancel_pending_retry(workload_name)
+          |> enqueue(anchor_instance, workload_name)
+          |> write_base_status(w, :building)
+          |> maybe_start_build(anchor_instance)
+      end
     end
   end
 
@@ -632,6 +661,10 @@ defmodule Embervm.BaseBuilder do
            snapshot_digest: w.snapshot_digest,
            built: w.built_signature != nil and w.built_signature == signature(w),
            vendor_built: w.vendor_built,
+           # Per-vendor store-fetchability evidence (#4893): refs a node has
+           # reported as exported (meta.json complete), distinct from the
+           # local-presence claims beside it.
+           store_confirmed: w.store_confirmed,
            superseded_refs: w.superseded_refs,
            base_refs: w.base_refs,
            backoff_ms: w.backoff_ms
@@ -682,6 +715,10 @@ defmodule Embervm.BaseBuilder do
   def handle_info(:export_reconcile, state) do
     state = export_reconcile(state)
     state = refresh_snapshot_refs(state)
+    # #4893 site 1: refresh the store-fetchability ledger from node truth on the
+    # same cadence the durability backstop runs, so a landed upload arms
+    # restore-first within one tick and a lost object cannot stay vouched for.
+    state = refresh_store_evidence(state)
     schedule_export_reconcile(state)
     {:noreply, state}
   end
@@ -699,6 +736,27 @@ defmodule Embervm.BaseBuilder do
   # the next export reconcile may re-issue it. See spawn_export for the dedup model.
   def handle_info({:export_done, key}, state) do
     {:noreply, %{state | exports_in_flight: MapSet.delete(state.exports_in_flight, key)}}
+  end
+
+  # A REMOTE retention eviction of one (vendor, ref) store object succeeded: the
+  # ref is no longer fetchable, so drop any ledger entry still vouching for it
+  # (#4893 site 1). Without this the ledger would claim fetchability for an
+  # object remote retention just deleted.
+  def handle_info({:store_evicted, workload, vendor, ref}, state) do
+    case state.workloads[workload] do
+      nil ->
+        # Forgotten between spawn and completion: nothing left to vouch for.
+        {:noreply, state}
+
+      w ->
+        confirmed =
+          case Map.get(w.store_confirmed, vendor) do
+            %{ref: ^ref} -> Map.delete(w.store_confirmed, vendor)
+            _ -> w.store_confirmed
+          end
+
+        {:noreply, put_in(state.workloads[workload], %{w | store_confirmed: confirmed})}
+    end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -724,28 +782,22 @@ defmodule Embervm.BaseBuilder do
     w = merge_desc(prev, desc, node_id)
     state = put_in(state.workloads[name], w)
 
-    cond do
-      node_id == nil ->
-        # No node wired (empty config, e.g. CI): hold the desc and report why.
-        write_base_status(state, w, {:pending, :no_node})
-
-      zip_runtime_unresolved?(state, w) ->
-        # A zip workload whose runtime does not resolve to a pinned image ref
-        # (unknown runtime, or no runtime image configured in this release).
-        # Report a precise Ready=False and build nothing, never crash. The
-        # existing base (if any) is untouched, so Ready stays True on an edit
-        # that broke only the runtime resolution.
-        write_base_status(state, w, {:failed, zip_runtime_error(state, w)})
-
-      should_hydrate?(state, w, node_id) ->
-        # Base-durability PR-2: restore-first (hydrate-on-miss). The CP recorded a
-        # base (snapshot_ref set, signature unchanged) but the node AFFIRMATIVELY
-        # reports it absent (base_state NONE, not merely unreported): a cold-start,
-        # a node replacement, or scratch loss. Instead of rebuilding, download the
-        # SAME content-addressed ref back from S3. noded fast-ACKs and downloads
-        # async, so this spawns a worker that triggers RestoreArtifact then polls
-        # NodeStatus for the base to appear READY; it falls back to BuildBase on an
-        # S3 miss (FAILED_PRECONDITION) or a poll timeout.
+    case restore_intent(state, w, node_id) do
+      {:hydrate, pinned_ref} ->
+        # Base-durability PR-2: restore-first (hydrate-on-miss), now gated on an
+        # explicit store-fetchability fact (#4893 site 1). The CP recorded a base
+        # (snapshot_ref set, signature unchanged) but the node AFFIRMATIVELY
+        # reports it absent (base_state NONE, not merely unreported): a
+        # cold-start, a node replacement, or scratch loss. Instead of rebuilding,
+        # download the SAME content-addressed ref back from S3 -- but only when
+        # the ledger or a live node fact proves the store actually holds it.
+        # "Recorded" alone never implies "fetchable": the recorded claim was
+        # minted by a BUILD, not by an export.
+        #
+        # noded fast-ACKs and downloads async, so this spawns a worker that
+        # triggers RestoreArtifact then polls NodeStatus for the base to appear
+        # READY; it falls back to BuildBase on an S3 miss (FAILED_PRECONDITION)
+        # or a poll timeout, so a stale fetchability entry still converges.
         #
         # SCOPE (deliberate): restore-first covers ONLY the recorded-but-absent
         # case. A NEW build and a spec-change REBUILD both target a ref the CP
@@ -757,79 +809,83 @@ defmodule Embervm.BaseBuilder do
         # weight. See docs/plans/2026-07-21-embervm-base-durability-and-cross-vendor.md.
         #
         # Hydrate the VENDOR-CORRECT ref (pinned_vendor_ref/3), not the scalar
-        # w.snapshot_ref: should_hydrate?/3's guard 0 already proved this instance's
-        # own vendor has a trustworthy record, so restore that ref rather than
+        # w.snapshot_ref: the intent's own guards already proved this instance's
+        # vendor has a trustworthy record, so restore that ref rather than
         # whichever vendor built last.
         state
         |> mark_hydrating(name)
-        |> spawn_hydrate(%{w | snapshot_ref: pinned_vendor_ref(state, w, node_id)})
+        |> spawn_hydrate(%{w | snapshot_ref: pinned_ref})
 
-      w.built_signature == signature(w) and w.snapshot_ref != nil ->
-        # The SCALAR base is built, but "some vendor, somewhere" is not the same
-        # as "every fleet vendor". Repair-enqueue any vendor still missing,
-        # stale, or unverified (see vendors_needing_build/2 for why unverified
-        # counts) rather than treating this as a blanket no-op. The workload is
-        # already servable on the vendor that has a base, so this deliberately
-        # does NOT write_base_status(:building): flipping the published status
-        # to building for a repair build a caller cannot observe would be a
-        # regression, and BaseVendorCoverage already reports the gap.
-        enqueue_vendor_repairs(state, w, name)
+      {:unfetchable, pinned_ref} ->
+        # Recorded, unchanged, affirmatively absent here -- and provably NOT in
+        # the store, with no node still holding a READY copy to export (#4893
+        # site 1's failure mode: a base built and never exported, then lost).
+        # Restoring could only fail FAILED_PRECONDITION, so converge straight to
+        # BuildBase: the same destination the hydrate worker's fallback reaches,
+        # minus one doomed RPC. This keeps the #4891 property (an unobtainable
+        # recorded ref converges to BuildBase) without routing through hydrate.
+        Logger.warning(
+          "embervm base builder: recorded base #{name}/#{pinned_ref} is absent on its node and not " <>
+            "fetchable from the store; forcing a rebuild"
+        )
 
-      already_targeting?(state, node_id, name, signature(w)) ->
-        # A build for this exact signature is already queued or in flight.
-        state
+        force_rebuild(state, w, name, signature(w), node_name(node_id))
 
-      true ->
-        state
-        |> cancel_pending_retry(name)
-        |> enqueue(node_id, name)
-        |> write_base_status(w, :building)
-        |> maybe_start_build(node_id)
+      nil ->
+        cond do
+          node_id == nil ->
+            # No node wired (empty config, e.g. CI): hold the desc and report why.
+            write_base_status(state, w, {:pending, :no_node})
+
+          zip_runtime_unresolved?(state, w) ->
+            # A zip workload whose runtime does not resolve to a pinned image ref
+            # (unknown runtime, or no runtime image configured in this release).
+            # Report a precise Ready=False and build nothing, never crash. The
+            # existing base (if any) is untouched, so Ready stays True on an edit
+            # that broke only the runtime resolution.
+            write_base_status(state, w, {:failed, zip_runtime_error(state, w)})
+
+          w.built_signature == signature(w) and w.snapshot_ref != nil ->
+            # The SCALAR base is built, but "some vendor, somewhere" is not the same
+            # as "every fleet vendor". Repair-enqueue any vendor still missing,
+            # stale, or unverified (see vendors_needing_build/2 for why unverified
+            # counts) rather than treating this as a blanket no-op. The workload is
+            # already servable on the vendor that has a base, so this deliberately
+            # does NOT write_base_status(:building): flipping the published status
+            # to building for a repair build a caller cannot observe would be a
+            # regression, and BaseVendorCoverage already reports the gap.
+            enqueue_vendor_repairs(state, w, name)
+
+          already_targeting?(state, node_id, name, signature(w)) ->
+            # A build for this exact signature is already queued or in flight.
+            state
+
+          true ->
+            state
+            |> cancel_pending_retry(name)
+            |> enqueue(node_id, name)
+            |> write_base_status(w, :building)
+            |> maybe_start_build(node_id)
+        end
     end
   end
 
   # -- restore-first (hydrate-on-miss, base-durability PR-2) --------------------
 
-  # Should this workload's recorded base be HYDRATED (S3 restore) rather than
-  # rebuilt? True only when ALL five guards hold (fail-safe: any unmet guard falls
-  # through to the ordinary build/no-op branches):
-  #
-  #   0. the PINNED instance resolves to a ref this control plane can vouch for,
-  #      via `pinned_vendor_ref/3`. This anchors on the DURABLE per-vendor CP
-  #      record (`w.vendor_built`), not on comparing the pinned instance's vendor
-  #      against `scalar_vendor` (the vendor `apply_result/4` last stamped the
-  #      SCALAR snapshot_ref with). Per-vendor enqueue makes cross-vendor builds
-  #      the STEADY STATE, not an edge case: `placement/3` pins a workload to ONE
-  #      instance, a repair build by definition runs on a DIFFERENT vendor from
-  #      most workloads' pin, and `apply_result/4` stamps the scalar
-  #      unconditionally while never touching `w.node_id`. A scalar comparison is
-  #      therefore false for nearly every workload in steady state, which would
-  #      disable restore-first fleet-wide rather than guard one cross-vendor
-  #      case. The per-vendor record survives exactly the failure this guard
-  #      exists to recover from (the node losing its local base): it is keyed by
-  #      vendor and does not move just because some OTHER vendor built more
-  #      recently;
-  #   1. a base is recorded (snapshot_ref set) AND the spec is unchanged
-  #      (built_signature == signature): we are restoring the SAME ref we would
-  #      otherwise rebuild, never papering over a spec change (whose target ref is
-  #      unknowable pre-build anyway);
-  #   2. the node AFFIRMATIVELY reports that base absent (base_state NONE for the
-  #      workload). This is the KEY guard: a workload the node has not yet reported
-  #      (no fact) is NOT hydrated, so the race window right after a build (base
-  #      built, node has not re-reported READY) never triggers a spurious restore;
-  #   3. no build is already queued or in flight for the workload (do not race a
-  #      hydrate against a build);
-  #   4. no hydrate is already in flight for the workload (the in-flight guard, so
-  #      a re-reconcile during the async download does not spawn a second worker).
   # Hydrate `workload`'s recorded base onto `node_id` after a wake found none there
   # (issue #4127). See note_base_missing/3 for why this is not gated on
   # node_reports_base_absent?/3.
   #
   # `node_id` here is a BARE node name (the wake's volume anchor), while this module
   # pins by INSTANCE id, so resolve the best build-eligible instance ON that node.
-  # Every other guard from should_hydrate?/3 still applies: there must be a recorded
-  # ref whose signature is current (never hydrate a stale or mid-change base), and
-  # `hydrating` dedupes so a 10s retry loop spawns one worker, not one per attempt.
+  # The recorded ref must be current-signature (never hydrate a stale or mid-change
+  # base) and, since #4893, provably fetchable from the store: the wake path gets
+  # the SAME explicit fetchability gate as the periodic reconcile. With no store
+  # evidence there are two outcomes: another node still holds the ref READY (then
+  # the export backstop ships that copy and a later wake hydrates; neither hydrate
+  # nor rebuild here), or nobody holds it (then force the rebuild directly, the
+  # same convergence the FAILED_PRECONDITION fallback produces without the doomed
+  # RPC). The `hydrating` guard dedupes so a 10s retry loop spawns one worker.
   defp hydrate_for_anchor(state, workload, node_id) when is_binary(workload) and is_binary(node_id) do
     w = Map.get(state.workloads, workload)
 
@@ -849,17 +905,29 @@ defmodule Embervm.BaseBuilder do
         state
 
       true ->
-        anchor_vendor = Embervm.NodeCapacity.vendor_for(state.capacity_table, node_id)
-        vendor_refs_map = snapshot_refs_by_vendor(state, w)
-        vendor_ref = Map.get(vendor_refs_map, anchor_vendor, []) |> List.first()
+        anchor_vendor =
+          state.capacity_table
+          |> Embervm.NodeCapacity.vendor_for(node_id)
+          |> to_string()
+          |> String.trim()
 
-        # Use anchor vendor's ref if available. If anchor vendor has no ref,
-        # skip hydrate to avoid wrong vendor stamp, letting the normal build path
-        # handle it. This prevents replicating the bug we are fixing in the
-        # no-facts-reported window.
-        ref_to_hydrate = vendor_ref
+        # Resolve the anchor vendor's own ref, preferring the DURABLE per-vendor
+        # build record over the fleet view (#4893 site 3): the observed map is
+        # built from whichever nodes reported last, while vendor_built carries
+        # signature currency. Fall back to the observed refs (sorted, so the
+        # pick is deterministic) only when no durable record exists.
+        ref_to_use =
+          case Map.get(w.vendor_built, anchor_vendor) do
+            %{signature: sig, ref: ref} when is_binary(ref) and ref != "" ->
+              if sig == signature(w), do: ref, else: nil
 
-        case {ref_to_hydrate, build_instance_on_node(state, w, node_id)} do
+            _ ->
+              snapshot_refs_by_vendor(state, w)
+              |> Map.get(anchor_vendor, [])
+              |> List.first()
+          end
+
+        case {ref_to_use, build_instance_on_node(state, w, node_id)} do
           {nil, _} ->
             # No vendor ref available for anchor. Skip hydrate to avoid wrong
             # vendor stamp. Return unchanged.
@@ -877,16 +945,49 @@ defmodule Embervm.BaseBuilder do
             state
 
           {ref_to_use, instance_id} ->
-            anchor_node = instance_id |> String.split("/", parts: 2) |> hd()
+            cond do
+              store_fetchable?(state, w, anchor_vendor, ref_to_use) ->
+                anchor_node = instance_id |> String.split("/", parts: 2) |> hd()
 
-            Logger.warning(
-              "embervm base builder: hydrating #{workload}/#{ref_to_use} onto #{instance_id} " <>
-                "after a wake found no base on its anchor node #{node_id}"
-            )
+                Logger.warning(
+                  "embervm base builder: hydrating #{workload}/#{ref_to_use} onto #{instance_id} " <>
+                    "after a wake found no base on its anchor node #{node_id}"
+                )
 
-            state
-            |> mark_hydrating(workload)
-            |> spawn_hydrate(%{w | node_id: instance_id, snapshot_ref: ref_to_use}, anchor_node)
+                state
+                |> mark_hydrating(workload)
+                |> spawn_hydrate(
+                  %{w | node_id: instance_id, snapshot_ref: ref_to_use},
+                  anchor_node
+                )
+
+              ref_present_on_any_node?(state, workload, ref_to_use) ->
+                # A surviving local copy exists but the store does not (yet)
+                # hold it: export first, hydrate later. Forcing a rebuild here
+                # would bake bytes another node already has.
+                Logger.info(
+                  "embervm base builder: wake found no base for #{workload} on #{node_id} and " <>
+                    "#{ref_to_use} has no confirmed store copy yet; waiting for the export " <>
+                    "backstop before hydrating"
+                )
+
+                state
+
+              true ->
+                # Recorded, absent on the anchor, nowhere local, nowhere in the
+                # store: converge to BuildBase now (#4865/#4891).
+                Logger.warning(
+                  "embervm base builder: recorded base #{workload}/#{ref_to_use} is absent " <>
+                    "everywhere and not fetchable from the store; forcing a rebuild"
+                )
+
+                GenServer.cast(
+                  self(),
+                  {:reconcile_force_rebuild, workload, signature(w), node_id}
+                )
+
+                state
+            end
         end
     end
   end
@@ -914,20 +1015,142 @@ defmodule Embervm.BaseBuilder do
   # and already guards this, but issue #4105 was exactly this shape (a nil
   # node_id killing the builder) via a different unguarded lookup, so this stays
   # total rather than relying on the caller forever.
-  defp should_hydrate?(_state, _w, node_id) when not is_binary(node_id), do: false
+  defp restore_intent(_state, _w, node_id) when not is_binary(node_id), do: nil
 
-  defp should_hydrate?(state, w, node_id) do
-    # Regression guard: apply_result/4 sets the SCALAR snapshot_ref/scalar_vendor
-    # from whichever vendor built LAST, and per-vendor enqueue (vendors_needing_build/2)
-    # makes cross-vendor builds the steady state rather than an edge case. Anchor
-    # on the durable per-vendor record (pinned_vendor_ref/3), not the scalar: see
-    # guard 0 in the doc comment above for why the scalar comparison this guard
-    # used to make would disable restore-first fleet-wide.
-    pinned_vendor_ref(state, w, node_id) != nil and
-      is_binary(w.snapshot_ref) and w.built_signature == signature(w) and
-      node_reports_base_absent?(state, node_id, w.name) and
-      not already_targeting?(state, node_id, w.name, signature(w)) and
-      not MapSet.member?(state.hydrating, w.name)
+  # Classify what a recorded-but-absent base should DO (#4893): the single
+  # scalar used to be read as both "present here" and "fetchable anywhere",
+  # which are different claims that came apart in the #4865 incident. Returns:
+  #
+  #   {:hydrate, ref}     - restore-first may fire: the recorded ref is
+  #                         affirmatively absent locally AND provably fetchable
+  #                         from the store;
+  #   {:unfetchable, ref} - the recorded ref is affirmatively absent locally but
+  #                         has NO store evidence and no node still holds a
+  #                         READY copy to export: converge straight to BuildBase
+  #                         (#4865/#4891);
+  #   nil                 - no restore decision (first build, spec change, race
+  #                         guards, or nothing recorded).
+  #
+  # Guards, all fail-safe (any unmet guard yields nil):
+  #
+  #   0. the PINNED instance resolves to a ref this control plane can vouch for,
+  #      via `pinned_vendor_ref/3`. This anchors on the DURABLE per-vendor CP
+  #      record (`w.vendor_built`), not on comparing the pinned instance's vendor
+  #      against `scalar_vendor` (the vendor `apply_result/4` last stamped the
+  #      SCALAR snapshot_ref with). Per-vendor enqueue makes cross-vendor builds
+  #      the STEADY STATE, not an edge case: `placement/3` pins a workload to ONE
+  #      instance, a repair build by definition runs on a DIFFERENT vendor from
+  #      most workloads' pin, and `apply_result/4` stamps the scalar
+  #      unconditionally while never touching `w.node_id`. A scalar comparison is
+  #      therefore false for nearly every workload in steady state, which would
+  #      disable restore-first fleet-wide rather than guard one cross-vendor
+  #      case. The per-vendor record survives exactly the failure this guard
+  #      exists to recover from (the node losing its local base): it is keyed by
+  #      vendor and does not move just because some OTHER vendor built more
+  #      recently;
+  #   1. a base is recorded (snapshot_ref set) AND the spec is unchanged
+  #      (built_signature == signature): we are restoring the SAME ref we would
+  #      otherwise rebuild, never papering over a spec change (whose target ref is
+  #      unknowable pre-build anyway);
+  #   2. the node AFFIRMATIVELY reports that base absent (base_state NONE for the
+  #      workload). This is the KEY guard: a workload the node has not yet reported
+  #      (no fact) is NOT classified at all, so the race window right after a
+  #      build (base built, node has not re-reported READY) never triggers a
+  #      spurious restore;
+  #   3. no build is already queued or in flight for the workload (do not race a
+  #      hydrate against a build);
+  #   4. no hydrate is already in flight for the workload (the in-flight guard, so
+  #      a re-reconcile during the async download does not spawn a second worker).
+  #
+  # The :hydrate/:unfetchable split is the explicit store-fetchability check the
+  # issue asks for: store evidence comes ONLY from the `store_confirmed` ledger
+  # (node-reported exported == true, refreshed each reconcile tick) or a live
+  # fact reporting the same, never from the mere presence of a recorded ref.
+  defp restore_intent(state, w, node_id) do
+    pinned = pinned_vendor_ref(state, w, node_id)
+
+    cond do
+      pinned == nil ->
+        nil
+
+      not is_binary(w.snapshot_ref) or w.built_signature != signature(w) ->
+        nil
+
+      not node_reports_base_absent?(state, node_id, w.name) ->
+        nil
+
+      already_targeting?(state, node_id, w.name, signature(w)) ->
+        nil
+
+      MapSet.member?(state.hydrating, w.name) ->
+        nil
+
+      store_fetchable?(state, w, pinned_vendor(state, node_id), pinned) ->
+        {:hydrate, pinned}
+
+      ref_present_on_any_node?(state, w.name, pinned) ->
+        # Someone still holds the bytes locally; exporting that copy (the
+        # reconcile backstop) is both cheaper and a precondition for any future
+        # hydrate. Neither hydrate nor rebuild here.
+        nil
+
+      true ->
+        {:unfetchable, pinned}
+    end
+  end
+
+  # The CPU vendor of `node_id` (a placement instance), "" when unknown.
+  defp pinned_vendor(state, node_id) do
+    state.capacity_table
+    |> Embervm.NodeCapacity.vendor_for(node_name(node_id))
+    |> to_string()
+    |> String.trim()
+  end
+
+  # POSITIVE evidence that the STORE holds `ref` for `vendor`: either the
+  # workload's ledger entry for that vendor names exactly this ref (a node
+  # reported exported == true on it, refreshed every export-reconcile tick), or
+  # a live capacity fact reports the same right now. Absence of evidence is NOT
+  # evidence of absence, but it IS enough to refuse a hydrate: the fallback for
+  # a refused hydrate is a rebuild, which is always safe, while a hydrate
+  # against a store that never held the ref is the doomed RPC this predicate
+  # exists to prevent (#4893 site 1).
+  defp store_fetchable?(state, w, vendor, ref) when is_binary(ref) and ref != "" do
+    case Map.get(w.store_confirmed, vendor) do
+      %{ref: ^ref} ->
+        true
+
+      _ ->
+        fact_reports_store_copy?(state, w.name, ref)
+    end
+  end
+
+  defp store_fetchable?(_state, _w, _vendor, _ref), do: false
+
+  # A live node fact reporting `ref` READY with its completeness marker set.
+  defp fact_reports_store_copy?(state, name, ref) do
+    state
+    |> representative_facts_by_node(name)
+    |> Enum.any?(fn fact ->
+      match?(
+        %{snapshot_ref: ^ref, base_state: :BASE_BUILD_STATE_READY, exported: true},
+        get_in(fact, [:workloads, name])
+      )
+    end)
+  end
+
+  # Some node still reports `ref` as its READY current base (local-presence
+  # evidence, any vendor). Used to distinguish "export the surviving copy
+  # first" from "the artifact is gone everywhere; rebuild".
+  defp ref_present_on_any_node?(state, name, ref) do
+    state
+    |> representative_facts_by_node(name)
+    |> Enum.any?(fn fact ->
+      match?(
+        %{snapshot_ref: ^ref, base_state: :BASE_BUILD_STATE_READY},
+        get_in(fact, [:workloads, name])
+      )
+    end)
   end
 
   # The ref to hydrate FOR `node_id` (a placement instance), or nil when none can
@@ -1614,25 +1837,6 @@ defmodule Embervm.BaseBuilder do
         do: fact
   end
 
-  # Map a (possibly stale) placement instance_id to the CURRENT registered instance
-  # on the SAME node, preferring one whose reported facts already include `workload`'s
-  # base. Falls back to the original id when no current node-mate is registered, so
-  # the path behaves exactly as before rather than acting on a guess.
-  #
-  # Base ownership is a NODE property: a built base lives on the node's hostPath
-  # scratch and survives a noded pod restart, but the build-time placement instance_id
-  # churns with the pod. Without this remap `find_capacity_fact`/`node_addr` miss after
-  # any pod restart (the churned pod_uid no longer matches w.node_id), which silently
-  # parks the durability export and local retention drain until the node reports again.
-  defp current_instance_on_node(state, stale_id, workload) do
-    target = node_name(stale_id)
-
-    case state |> capacity_facts_by_node() |> Map.get(target, []) |> representative_fact(workload) do
-      nil -> stale_id
-      fact -> Map.get(fact, :instance_id)
-    end
-  end
-
   # An instance can build the workload when it is a wildcard (empty class or zero
   # budget: the full-node envelope, always able to boot) or its budget covers need.
   defp build_eligible?(i, need_mib) do
@@ -1687,6 +1891,17 @@ defmodule Embervm.BaseBuilder do
       # history so pi-runtime's observed amd-only base cannot masquerade as Intel
       # coverage, without changing which builds this module enqueues yet.
       vendor_built: %{},
+      # Store-fetchability ledger (#4893 site 1), keyed by CPU vendor: a ref the
+      # STORE provably holds, evidenced only by a node reporting
+      # WorkloadCapacity.exported == true on a READY base (noded flips that
+      # after its meta.json completeness marker lands, never on the fast export
+      # ack). Deliberately separate from snapshot_ref/vendor_built (local
+      # presence): "recorded" must never imply "fetchable". One entry per
+      # vendor, replaced on each newer confirmation (N=1 store retention keeps
+      # only the newest ref per vendor prefix); cleared per vendor when remote
+      # retention evicts the object or a forced rebuild declares the recorded
+      # ref unobtainable. Refreshed from live facts every export-reconcile tick.
+      store_confirmed: %{},
       superseded_refs: [],
       # R2 refcounting: per-superseded-ref refcount tracking, keyed by snapshot
       # ref. A superseded base is destroyed (via EvictSnapshot) ONLY when zero
@@ -2102,12 +2317,43 @@ defmodule Embervm.BaseBuilder do
         })
       end
 
+    # Scalar ADOPTION is vendor-scoped (#4893 site 3): the scalar snapshot_ref
+    # is the ref of the workload's PIN's vendor, not of whichever vendor built
+    # last. A cross-vendor repair build records itself ONLY in `vendor_built`
+    # (the precise per-vendor history every restore-first reader already
+    # anchors on); moving the scalar to the repair vendor would re-derive the
+    # headline ref from build order, the exact conflation that let an amd ref
+    # speak for an intel anchor. The scalar still moves when scoping is
+    # impossible or meaningless: unknown build vendor (blank capacity fact),
+    # unknown pin vendor, a first build with nothing recorded yet (a known
+    # vendor's base beats no base for the Ready signal), and any same-vendor
+    # turnover.
+    pin_vendor =
+      if is_binary(w.node_id) do
+        state.capacity_table
+        |> Embervm.NodeCapacity.vendor_for(node_name(w.node_id))
+        |> to_string()
+        |> String.trim()
+      else
+        ""
+      end
+
+    adopts_scalar? =
+      vendor == "" or pin_vendor == "" or pin_vendor == vendor or is_nil(w.snapshot_ref)
+
+    {scalar_ref, scalar_digest, scalar_vendor} =
+      if adopts_scalar? do
+        {resp.snapshot_ref, resp.image_digest, vendor}
+      else
+        {w.snapshot_ref, w.snapshot_digest, w.scalar_vendor}
+      end
+
     w = %{
       w
       | built_signature: built_sig,
-        snapshot_ref: resp.snapshot_ref,
-        snapshot_digest: resp.image_digest,
-        scalar_vendor: vendor,
+        snapshot_ref: scalar_ref,
+        snapshot_digest: scalar_digest,
+        scalar_vendor: scalar_vendor,
         vendor_built: vendor_built,
         superseded_refs: superseded,
         base_refs: base_refs,
@@ -2137,14 +2383,9 @@ defmodule Embervm.BaseBuilder do
           # anchor-node export during that dial-home window; later facts replace it
           # with the per-node fan-out.
           #
-          # w.node_id (the pin) and w.snapshot_ref (the scalar) can now disagree
-          # by vendor: a repair build's worker_meta node_id is not threaded down
-          # to this branch, and the scalar was just stamped from whichever vendor
-          # built LAST. Dialing the pin with a ref built on a different vendor
-          # produces a logged export failure, not data loss (export_reconcile's
-          # 60s sweep and the per-node fan-out above are the real durability
-          # path once any node reports); left as a dial-home-window fallback
-          # rather than reworked here.
+          # The scalar is now ADOPTION-scoped (#4893 site 3): it names the pin
+          # vendor's ref, so dialing the pin with it stays vendor-coherent even
+          # when a repair build for another vendor just finished.
           spawn_export(state, w.node_id, w.name, w.snapshot_ref)
 
         _ ->
@@ -2165,51 +2406,96 @@ defmodule Embervm.BaseBuilder do
 
   # -- base export + durability (base-durability PR-1) ------------------------
 
-  # Periodic reconcile: for every workload whose CURRENT base (snapshot_ref) is
-  # present on its node but reported not-yet-exported, re-issue ExportArtifact.
-  # This is the self-healing backstop to the immediate post-build export: it
-  # recovers a lost export result, a CP restart between build and export, or a
-  # store that was down at build time. Deliberately bounded to
-  # current-base-present-but-unexported (never the superseded refs, which PR-1
-  # must not ship into the store), so it cannot hammer.
+  # Periodic reconcile: for every workload, re-issue ExportArtifact to EVERY
+  # node whose reported fact shows a current READY base that is not yet
+  # exported (#4893 site 2). The pre-fix sweep inspected only the workload's
+  # ANCHOR node, so a base sitting on a different node (the #4865 incident:
+  # built on node-4 while the anchor was node-3) was invisible to it no matter
+  # how long it ran. Base ownership is a NODE property, so the sweep now reads
+  # one representative fact per node, exactly like apply_result/4's post-build
+  # fan-out.
+  #
+  # Still bounded so it cannot hammer: only a node's OWN reported CURRENT ref
+  # is exported (never a superseded ref), and only when that ref is one the CP
+  # itself considers current -- the scalar or a signature-current per-vendor
+  # record. A node lagging a turnover still reports the old ref; that ref has
+  # already left vendor_built, so the sweep will not ship it.
   defp export_reconcile(state) do
-    Enum.reduce(state.workloads, state, fn {_name, w}, acc ->
-      cur = current_instance_on_node(acc, w.node_id, w.name)
+    Enum.reduce(state.workloads, state, fn {name, w}, acc ->
+      exportable = exportable_current_refs(w)
 
-      if current_base_present_but_unexported?(acc, cur, w) do
-        spawn_export(acc, cur, w.name, w.snapshot_ref)
-      else
-        acc
-      end
+      acc
+      |> representative_facts_by_node(name)
+      |> Enum.reduce(acc, fn fact, inner ->
+        case get_in(fact, [:workloads, name]) do
+          %{snapshot_ref: ref, base_state: :BASE_BUILD_STATE_READY, exported: exported}
+          when is_binary(ref) and ref != "" and exported != true ->
+            if MapSet.member?(exportable, ref) do
+              spawn_export(inner, fact[:instance_id], name, ref)
+            else
+              inner
+            end
+
+          _ ->
+            inner
+        end
+      end)
     end)
   end
 
-  # A workload's current base needs (re-)export when it has a built ref placed on
-  # a known node AND the node's reported fact for that same ref is a READY base
-  # that is not yet exported. Matching the ref guards against exporting during a
-  # turnover (the node may still report the old ref); requiring READY guards
-  # against exporting a BUILDING/FAILED entry; requiring the node fact at all
-  # means a base whose node has not yet reported is left for the next sweep
-  # (never blindly re-exported without evidence it is present).
-  # Note: `w.node_id` here is the PINNED instance, and this requires the
-  # PIN's own reported ref to equal `w.snapshot_ref` (the scalar). Once a
-  # repair build lands the scalar on a vendor other than the pin's, that
-  # equality goes permanently false for this workload and the 60s export
-  # backstop goes dead on the pin's own path. This is largely compensated: the
-  # per-node fan-out in apply_result/4's export_targets branch re-exports each
-  # node's own unexported ref on every subsequent build, and per-vendor repair
-  # builds are now frequent, so a node's ref does not stay unexported for long
-  # in practice. Left as observed behaviour rather than reworked here.
-  defp current_base_present_but_unexported?(state, node_ref, w) do
-    is_binary(w.node_id) and is_binary(w.snapshot_ref) and
-      case node_base_fact(state, node_ref, w.name) do
-        {:ok, %{snapshot_ref: ref, base_state: base_state, exported: exported}} ->
-          ref == w.snapshot_ref and
-            base_state == :BASE_BUILD_STATE_READY and exported != true
+  # The refs the CP currently vouches for, across vendors: the recorded scalar
+  # plus every per-vendor record at the current signature. This is the bound
+  # the reconcile sweep may ship into the store; requiring READY on the node
+  # side and currency on the CP side keeps BUILDING, FAILED, and superseded
+  # refs out.
+  defp exportable_current_refs(w) do
+    per_vendor =
+      for {_vendor, %{ref: ref, signature: sig}} <- w.vendor_built,
+          is_binary(ref),
+          sig == signature(w),
+          do: ref
 
-        _ ->
-          false
-      end
+    [w.snapshot_ref | per_vendor]
+    |> MapSet.new()
+    |> MapSet.delete(nil)
+  end
+
+  # Refresh each workload's store-fetchability ledger from live node facts
+  # (#4893 site 1). Evidence is ONLY a node-reported exported == true on a
+  # READY base (noded's meta.json completeness marker): never our own fast
+  # export ack, which precedes the async upload. One entry per vendor, replaced
+  # by each newer confirmation (N=1 store retention keeps only the newest ref
+  # per vendor prefix). Entries not re-confirmed this tick are kept: a node gap
+  # (brick roll, dial-home window) is not evidence the object left the bucket;
+  # explicit invalidation happens on remote eviction and forced rebuilds.
+  defp refresh_store_evidence(state) do
+    update_in(state.workloads, fn workloads ->
+      Map.new(workloads, fn {name, w} ->
+        sig = signature(w)
+
+        confirmed =
+          state
+          |> representative_facts_by_node(name)
+          |> Enum.reduce(w.store_confirmed, fn fact, acc ->
+            vendor =
+              fact
+              |> Map.get(:cpu_vendor, "")
+              |> to_string()
+              |> String.trim()
+
+            case get_in(fact, [:workloads, name]) do
+              %{snapshot_ref: ref, base_state: :BASE_BUILD_STATE_READY, exported: true}
+              when is_binary(ref) and ref != "" and vendor != "" ->
+                Map.put(acc, vendor, %{ref: ref, signature: sig})
+
+              _ ->
+                acc
+            end
+          end)
+
+        {name, %{w | store_confirmed: confirmed}}
+      end)
+    end)
   end
 
   # Look up one node's reported per-workload base fact (snapshot_ref, base_state,
@@ -2433,13 +2719,16 @@ defmodule Embervm.BaseBuilder do
 
   # Fire-and-forget remote eviction of one (vendor, ref) store object through a
   # node of that vendor. Idempotent on an already-absent object, so a re-sweep is
-  # harmless and a lost result just means the next tick retries.
+  # harmless and a lost result just means the next tick retries. On success the
+  # owner is told so the workload's store-fetchability ledger stops vouching for
+  # the deleted object (#4893 site 1).
   defp spawn_remote_evict(state, instance_id, workload, vendor, ref) do
     case Map.get(state.node_addr, instance_id) do
       nil ->
         :ok
 
       address ->
+        owner = self()
         connect_fun = state.connect_fun
         disconnect_fun = state.disconnect_fun
         remote_evict_fun = state.remote_evict_fun
@@ -2450,7 +2739,7 @@ defmodule Embervm.BaseBuilder do
               try do
                 case remote_evict_fun.(channel, workload, vendor, ref) do
                   {:ok, _} ->
-                    :ok
+                    send(owner, {:store_evicted, workload, vendor, ref})
 
                   {:error, reason} ->
                     Logger.warning(

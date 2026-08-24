@@ -2037,10 +2037,14 @@ defmodule Embervm.BaseBuilderTest do
   # -- restore-first (hydrate-on-miss, base-durability PR-2) -------------------
 
   # Bring a workload to a recorded-and-built state (snapshot_ref set,
-  # built_signature == signature), then flip the node fact so the base reads
-  # AFFIRMATIVELY absent (BASE_BUILD_STATE_NONE): the recorded-but-absent trigger.
-  # Returns {builder, agent, table}. The initial export is drained so it never
-  # perturbs later assertions.
+  # built_signature == signature) WITH a confirmed store copy (the node reports
+  # the base READY + exported, and an export-reconcile tick lands it in the
+  # store_confirmed ledger), then flip the node fact so the base reads
+  # AFFIRMATIVELY absent (BASE_BUILD_STATE_NONE): the recorded-but-absent
+  # trigger. Returns {builder, agent, table}. The initial export is drained so
+  # it never perturbs later assertions. Since #4893, restore-first requires
+  # positive store-fetchability evidence, so the confirmation step here is what
+  # makes the later reconcile classify :hydrate rather than :unfetchable.
   defp build_then_report_base_absent(opts) do
     agent = start_recorder()
     test_pid = self()
@@ -2057,6 +2061,7 @@ defmodule Embervm.BaseBuilderTest do
           # Signal each export so the immediate post-build one can be drained.
           export_fun: fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
             send(test_pid, {:exported, ref.ref})
+
             {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
           end
         ] ++
@@ -2075,6 +2080,14 @@ defmodule Embervm.BaseBuilderTest do
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
     assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
     assert_receive {:exported, "snap1"}, 1_000
+
+    # The upload LANDS on the node: the fact flips to exported=true, and one
+    # reconcile tick records that as store-fetchability evidence for snap1.
+    put_base_fact(table, "node-4", "big", "w", "snap1", :BASE_BUILD_STATE_READY, true)
+    send(builder, :export_reconcile)
+    assert_eventually(fn ->
+      :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "snap1"
+    end)
 
     # The node now AFFIRMATIVELY reports the recorded base absent (a cold-start /
     # node replacement / scratch loss), the sole restore-first trigger.
@@ -2434,6 +2447,214 @@ defmodule Embervm.BaseBuilderTest do
     # reconcile here must NOT hydrate.
     :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
     refute_receive :restore_called, 200
+  end
+
+  # -- recorded vs fetchable (#4893 site 1) ------------------------------------
+
+  test "#4893 site 1: a recorded-but-unexported base that vanishes rebuilds directly, never hydrating" do
+    # The #4865 failure shape: the base was built and NEVER exported (no store
+    # copy anywhere), then its node lost it. The recorded scalar must not be
+    # read as "fetchable": no RestoreArtifact may fire, and the builder must
+    # converge straight to BuildBase instead of looping on a doomed restore.
+    test_pid = self()
+    agent = start_recorder()
+    table = new_cap_table()
+
+    restore_fun = fn :fake_channel, %Embervm.Node.V1.RestoreArtifactRequest{artifact: ref} ->
+      send(test_pid, {:restore_called, ref.ref})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      call = Agent.get_and_update(calls, fn n -> {n + 1, n + 1} end)
+
+      if call == 1, do: {:ok, resp("snap1")}, else: {:ok, resp("snap2")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    # The export never landed: the node still reports exported == false, so the
+    # store_confirmed ledger holds NO evidence for snap1. Scratch loss makes the
+    # node report the base affirmatively absent.
+    refute Map.has_key?(:sys.get_state(builder).workloads["w"].store_confirmed, "amd")
+    put_base_fact(table, "node-4", "big", "w", "", :BASE_BUILD_STATE_NONE, false)
+
+    capture_log(fn ->
+      :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    end)
+
+    # No RestoreArtifact was ever attempted: absence of store evidence refuses
+    # the hydrate outright.
+    refute_receive {:restore_called, _}, 200
+
+    # And the workload CONVERGES: BuildBase runs immediately, without a hydrate
+    # round trip through FAILED_PRECONDITION first.
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2" end)
+    assert Agent.get(calls, & &1) == 2
+  end
+
+  test "#4893 sites 1+2: a base still held on another node is exported first, then hydrates once confirmed" do
+    # Ref exists locally (on a NON-anchor node) but is gone from the store: the
+    # doomed hydrate is refused AND the pointless rebuild is skipped, because
+    # the reconcile export fan-out reaches the node actually holding the bytes.
+    # Once that upload lands (exported == true), the same recorded ref becomes
+    # legitimately hydratable: the vice-versa half of the failure mode.
+    test_pid = self()
+    table = new_cap_table()
+
+    restore_fun = fn :fake_channel, %Embervm.Node.V1.RestoreArtifactRequest{artifact: ref} ->
+      send(test_pid, {:restore_called, ref.ref})
+      {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+    end
+
+    connect_fun = fn addr ->
+      send(test_pid, {:dialed, addr})
+      {:ok, :fake_channel}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "a4"}, %{id: "node-5/hold", address: "a5"}],
+        capacity_table: table,
+        connect_fun: connect_fun,
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap1")} end,
+        export_fun: fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+          send(test_pid, {:exported, ref.ref})
+          {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+        end,
+        restore_fun: restore_fun,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-5", "hold", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    # Drain the dial-home-window export (no node advertises the workload yet).
+    assert_receive {:dialed, "a4"}, 1_000
+    assert_receive {:exported, "snap1"}, 1_000
+
+    # node-4 (the pin) loses its scratch; node-5 still holds the SAME current
+    # ref locally, unexported.
+    put_base_fact(table, "node-4", "big", "w", "", :BASE_BUILD_STATE_NONE, false)
+    put_base_fact(table, "node-5", "hold", "w", "snap1", :BASE_BUILD_STATE_READY, false)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+
+    # Neither a hydrate (nothing confirmed in the store) nor a rebuild (the
+    # artifact survives next door) may fire.
+    refute_receive {:restore_called, _}, 200
+
+    # The reconcile export fan-out dials the HOLDING node and ships the copy.
+    send(builder, :export_reconcile)
+    assert_receive {:dialed, "a5"}, 1_000
+    assert_receive {:exported, "snap1"}, 1_000
+
+    # The upload lands: the confirmation arms restore-first for this exact ref.
+    put_base_fact(table, "node-5", "hold", "w", "snap1", :BASE_BUILD_STATE_READY, true)
+    send(builder, :export_reconcile)
+    assert_eventually(fn ->
+      :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "snap1"
+    end)
+
+    # Now node-5 loses it too: the only remaining source IS the store, so the
+    # next wake/reconcile hydrates.
+    put_base_fact(table, "node-5", "hold", "w", "", :BASE_BUILD_STATE_NONE, false)
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive {:restore_called, "snap1"}, 1_000
+  end
+
+  test "the export reconcile never ships a superseded ref a lagging node still reports" do
+    # The widened sweep stays bounded: a node lagging a turnover reports the OLD
+    # ref; that ref has left the CP's current set (scalar advanced, per-vendor
+    # record replaced), so PR-1's "never ship superseded refs" bound still holds.
+    test_pid = self()
+    table = new_cap_table()
+
+    build_fun = fn :fake_channel, req ->
+      if req.image_ref == "imgA", do: {:ok, resp("r1")}, else: {:ok, resp("r2")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "a4"}, %{id: "node-5/lag", address: "a5"}],
+        capacity_table: table,
+        build_fun: build_fun,
+        export_fun: fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
+          send(test_pid, {:exported, ref.ref})
+          {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
+        end,
+        export_reconcile_interval_ms: 0
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-5", "lag", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "r1" end)
+    assert_receive {:exported, "r1"}, 1_000
+
+    # Spec change: a real rebuild turns the base over to r2 on the pin node.
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000, image_ref: "imgB"}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "r2" end)
+    assert_receive {:exported, "r2"}, 1_000
+
+    # node-5 lags the turnover: it still reports r1 as its READY current base,
+    # unexported. node-4 reports the new r2 unexported.
+    put_base_fact(table, "node-4", "big", "w", "r2", :BASE_BUILD_STATE_READY, false)
+    put_base_fact(table, "node-5", "lag", "w", "r1", :BASE_BUILD_STATE_READY, false)
+
+    send(builder, :export_reconcile)
+    assert_receive {:exported, "r2"}, 1_000
+    refute_receive {:exported, "r1"}, 200
+  end
+
+  test "a successful remote eviction drops the matching store-fetchability ledger entry" do
+    agent = start_recorder()
+    table = new_cap_table()
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "a"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap1")} end
+      )
+
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
+
+    put_base_fact(table, "node-4", "big", "w", "snap1", :BASE_BUILD_STATE_READY, true)
+    send(builder, :export_reconcile)
+    assert_eventually(fn ->
+      :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "snap1"
+    end)
+
+    # The object leaves the bucket: the ledger must stop vouching for it, or a
+    # later hydrate would aim at a deleted object.
+    send(builder, {:store_evicted, "w", "amd", "snap1"})
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].store_confirmed == %{} end)
   end
 
   # Seed one node's per-workload base fact (snapshot_ref, base_state, exported)
@@ -3219,14 +3440,15 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(calls, & &1) == 2
   end
 
-  test "regression: should_hydrate? still restores after a cross-vendor repair build moved the scalar off the pin" do
-    # The exact steady state this PR creates (finding 1): the workload is
-    # pinned to an amd instance, but a LATER intel repair build (per-vendor
-    # enqueue is now routine) stamped the scalar snapshot_ref/scalar_vendor to
-    # "intel" without ever touching w.node_id. When the amd instance
-    # AFFIRMATIVELY reports its own base absent, should_hydrate?/3 must still
-    # fire and restore amd's OWN recorded ref (vendor_built["amd"]), not fail
-    # closed because the scalar now says "intel".
+  test "regression: restore-first still restores the pin vendor's own ref after a cross-vendor repair build" do
+    # The exact steady state #4893 site 3 creates: the workload is pinned to an
+    # amd instance, and a LATER intel repair build (per-vendor enqueue is now
+    # routine) completes. Since adoption-time vendor scoping, that repair no
+    # longer moves the scalar snapshot_ref/scalar_vendor at all -- the scalar
+    # keeps naming the PIN vendor's ref -- and the intel result lives only in
+    # vendor_built. When the amd instance AFFIRMATIVELY reports its own base
+    # absent, should_hydrate? must still fire and restore amd's OWN recorded
+    # ref (vendor_built["amd"]), which is now also what the scalar names.
     test_pid = self()
     agent = start_recorder()
     table = new_cap_table()
@@ -3260,25 +3482,36 @@ defmodule Embervm.BaseBuilderTest do
     :ok = BaseBuilder.reconcile(builder, desc())
     assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
 
-    # A second fleet vendor (intel) appears and its repair build completes,
-    # stamping the SCALAR fields to intel while the pin stays on amd (both
-    # bricks are classed identically, so build_rank ties and the amd instance
-    # -- registered first -- keeps its sticky pin per keep_or_replace/3).
+    # The upload lands on node-4: confirm amd's base as fetchable from the
+    # store before the intel repair build joins the fleet.
+    put_base_fact(table, "node-4", "amd", "w", "amd-base", :BASE_BUILD_STATE_READY, true)
+    send(builder, :export_reconcile)
+    assert_eventually(fn ->
+      :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "amd-base"
+    end)
+
+    # A second fleet vendor (intel) appears and its repair build completes.
+    # Both bricks are classed identically, so build_rank ties and the amd
+    # instance -- registered first -- keeps its sticky pin per keep_or_replace/3.
     put_brick(table, "node-1", "intel", cpu_vendor: "intel")
     :ok = BaseBuilder.add_node(builder, "node-1/intel", "intel")
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
 
     assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].vendor_built["intel"] end)
     workload = :sys.get_state(builder).workloads["w"]
-    assert workload.scalar_vendor == "intel"
-    assert workload.snapshot_ref == "intel-base"
-    assert workload.node_id == "node-4/amd"
-    assert workload.vendor_built["amd"].ref == "amd-base"
 
-    # amd's own instance now AFFIRMATIVELY reports its base absent (scratch
-    # loss, cold-start). A scalar comparison (pinned vendor == scalar_vendor)
-    # would read "amd" != "intel" and fail closed here, forever: this is the
-    # regression should_hydrate?/3's anchor on the per-vendor record fixes.
+    # ADOPTION-time vendor scoping (#4893 site 3): the intel repair build does
+    # NOT re-derive the headline ref from build order. The scalar still names
+    # the pin vendor's (amd's) base; intel's result is recorded per vendor.
+    assert workload.scalar_vendor == "amd"
+    assert workload.snapshot_ref == "amd-base"
+    assert workload.vendor_built["intel"].ref == "intel-base"
+    assert workload.node_id == "node-4/amd"
+
+    # amd's own instance now AFFIRMATIVELY reports its base absent again
+    # (scratch loss, cold-start). Restore-first anchors on the per-vendor
+    # record plus the confirmed store copy, not on the scalar comparison this
+    # regression used to guard against.
     put_base_fact(table, "node-4", "amd", "w", "", :BASE_BUILD_STATE_NONE, false)
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 3}))
 
@@ -3490,7 +3723,16 @@ defmodule Embervm.BaseBuilderTest do
     :ok = BaseBuilder.reconcile(builder, desc())
     assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "amd-base" end)
 
-    # amd's own instance affirmatively reports its base absent: should_hydrate?/3
+    # The upload lands (exported == true), one reconcile tick confirms the
+    # store copy in the ledger: since #4893, restore-first needs that positive
+    # fetchability evidence before it will fire.
+    put_base_fact(table, "node-4", "amd", "w", "amd-base", :BASE_BUILD_STATE_READY, true)
+    send(builder, :export_reconcile)
+    assert_eventually(fn ->
+      :sys.get_state(builder).workloads["w"].store_confirmed["amd"].ref == "amd-base"
+    end)
+
+    # amd's own instance affirmatively reports its base absent: restore-first
     # fires and marks "w" hydrating.
     put_base_fact(table, "node-4", "amd", "w", "", :BASE_BUILD_STATE_NONE, false)
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2}))
