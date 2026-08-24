@@ -43,6 +43,12 @@ defmodule Embervm.SessionStore do
 
   @sessions_table :embervm_sessions
   @residency_table :embervm_session_residency
+  # #4919: {{principal, idempotency_key} -> session_id}. The hot-set side of the
+  # create-dedupe contract; the AUTHORITATIVE enforcement lives in the op-log
+  # projection's unique (principal, idempotency_key) constraint. Rebuilt from the
+  # durable rows on init, so a restart recovers every binding whose session row
+  # survived (retention compaction of a terminal row frees its key).
+  @idem_table :embervm_session_idempotency
 
   # The live (non-terminal) session states, for residency and other non-terminal
   # checks; the per-workload COUNTS bucket a subset of these into `:banked`
@@ -74,11 +80,12 @@ defmodule Embervm.SessionStore do
   restoring create (#4306 slice 3, `session_manager.ex`'s `register_and_start`)
   passes an EXISTING lineage_id explicitly and `session_id` absent, so a fresh
   session_id is minted while lineage_id stays pinned to the inherited value,
-  the one place the two diverge. Appends `session_created` (write-through),
-  inserts the ETS hot-set row in `:running` (the create claimed a live VM),
-  records the residency fact, and returns `{:ok, %{session_id, lineage_id,
-  token, expires_at, base_digest, ...}}`. The plaintext token is returned ONLY
-  here and never stored.
+  the one place the two diverge. `idempotency_key` (#4919) is optional and
+  carried into the durable row + its per-principal uniqueness binding. Appends
+  `session_created` (write-through), inserts the ETS hot-set row in `:running`
+  (the create claimed a live VM), records the residency fact, and returns
+  `{:ok, %{session_id, lineage_id, token, expires_at, base_digest, ...}}`. The
+  plaintext token is returned ONLY here and never stored.
   """
   @spec create(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
   def create(store \\ __MODULE__, attrs) do
@@ -255,6 +262,18 @@ defmodule Embervm.SessionStore do
   end
 
   @doc """
+  The session currently bound to (principal, idempotency_key) by its create,
+  any state (terminal included: reuse-after-destroy must CONFLICT, not
+  rebind), or `:error` when unbound. #4919's query-by-key seam: a workflow
+  tick looks its deterministic key up here before creating, so the spawn is an
+  upsert and a crash between spawn and record recovers the existing session.
+  """
+  @spec get_by_idempotency_key(GenServer.server(), String.t(), String.t()) :: {:ok, map()} | :error
+  def get_by_idempotency_key(store \\ __MODULE__, principal, key) do
+    GenServer.call(store, {:get_by_idempotency_key, principal, key})
+  end
+
+  @doc """
   Pages sessions for `workload`, newest-created first, by `:limit` (default 50)
   and `:offset` (default 0). A full ETS scan (bounded, listing is rare), never
   the op-log; serves `GET /v1/workloads/{name}/sessions`.
@@ -291,6 +310,7 @@ defmodule Embervm.SessionStore do
 
     sessions = :ets.new(@sessions_table, [:set, :private])
     residency = :ets.new(@residency_table, [:set, :private])
+    idem = :ets.new(@idem_table, [:set, :private])
 
     state = %{
       op_log: op_log,
@@ -302,6 +322,7 @@ defmodule Embervm.SessionStore do
       async_lifecycle_writes: async_lifecycle_writes,
       sessions: sessions,
       residency: residency,
+      idem: idem,
       # workload -> %{live, banked}, kept in step with the hot set on every write.
       counts: %{}
     }
@@ -325,6 +346,7 @@ defmodule Embervm.SessionStore do
           Enum.reduce(rows, state, fn row, acc ->
             session = row_to_session(row)
             :ets.insert(acc.sessions, {session.session_id, session})
+            index_idempotency(acc, session)
             bump_counts(acc, nil, session.state, session.workload)
           end)
 
@@ -333,6 +355,17 @@ defmodule Embervm.SessionStore do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # The (principal, key) -> session_id hot-set binding. Rows with no principal
+  # or no key are unindexed (a keyed create always carries a principal).
+  defp index_idempotency(_state, %{idempotency_key: key}) when not is_binary(key) or key == "", do: :ok
+
+  defp index_idempotency(_state, %{principal: principal}) when not is_binary(principal), do: :ok
+
+  defp index_idempotency(state, session) do
+    :ets.insert(state.idem, {{session.principal, session.idempotency_key}, session.session_id})
+    :ok
   end
 
   defp row_to_session(row) do
@@ -360,7 +393,8 @@ defmodule Embervm.SessionStore do
       last_invoke_at: row.last_invoke_at,
       expires_at: row.expires_at,
       updated_at: row.updated_at,
-      terminal_reason: row.terminal_reason
+      terminal_reason: row.terminal_reason,
+      idempotency_key: Map.get(row, :idempotency_key)
     }
   end
 
@@ -464,6 +498,16 @@ defmodule Embervm.SessionStore do
     {:reply, reply, state}
   end
 
+  def handle_call({:get_by_idempotency_key, principal, key}, _from, state) do
+    reply =
+      case :ets.lookup(state.idem, {principal, key}) do
+        [{{^principal, ^key}, session_id}] -> get_view(state, session_id)
+        [] -> :error
+      end
+
+    {:reply, reply, state}
+  end
+
   def handle_call({:backfill_created, session_id}, _from, state) do
     case fetch(state, session_id) do
       {:ok, session} ->
@@ -486,7 +530,11 @@ defmodule Embervm.SessionStore do
             token_sha256: session.token_sha256,
             expires_at: session.expires_at,
             state: to_string(session.state),
-            lineage_id: session.lineage_id
+            lineage_id: session.lineage_id,
+            # #4919: the re-driven op carries the same binding key as the row it
+            # reconstructs, so a duplicate-key pre-check that resolves back to
+            # THIS session stays the benign no-op INSERT OR IGNORE already was.
+            idempotency_key: Map.get(session, :idempotency_key)
           }
         }
 
@@ -565,6 +613,10 @@ defmodule Embervm.SessionStore do
     # a rejoined volume. Groundwork only: this slice never diverges the two.
     lineage_id = Map.get(attrs, :lineage_id) || session_id
     {token, token_sha256} = SessionId.mint_token()
+    # #4919: the caller-supplied dedupe key (nil for an unkeyed create). The
+    # op-log projection enforces its uniqueness per principal; this module only
+    # carries it durably and indexes the hot set.
+    idempotency_key = normalize_key(Map.get(attrs, :idempotency_key))
 
     payload = %{
       node_id: Map.get(attrs, :node_id),
@@ -577,7 +629,8 @@ defmodule Embervm.SessionStore do
       # The durable projection defaults session_created to "running" (the create
       # already claimed a live VM); recorded explicitly for clarity.
       state: "running",
-      lineage_id: lineage_id
+      lineage_id: lineage_id,
+      idempotency_key: idempotency_key
     }
 
     op = %Op{
@@ -610,7 +663,8 @@ defmodule Embervm.SessionStore do
       last_invoke_at: nil,
       expires_at: Map.get(attrs, :expires_at),
       updated_at: ts,
-      terminal_reason: nil
+      terminal_reason: nil,
+      idempotency_key: idempotency_key
     }
 
     reply = %{
@@ -649,13 +703,23 @@ defmodule Embervm.SessionStore do
       case state.op_log_mod.append(state.op_log, op) do
         {:ok, _seq} ->
           insert_created_session(state, session)
+          index_idempotency(state, session)
           {:reply, {:ok, reply}, bump_counts(state, nil, :running, session.workload)}
 
         {:error, _reason} = error ->
+          # The durable append failed (a duplicate idempotency key among other
+          # reasons): ETS is untouched, so no hot-set row or binding exists for a
+          # session the log rejected. The caller surfaces the store reason.
           {:reply, error, state}
       end
     end
   end
+
+  # Absent/empty means "no key" (matching the router's header tolerance); a
+  # present key is carried verbatim. FORMAT validation is the SessionManager's
+  # job (it maps malformed input to a structured denial before anything runs).
+  defp normalize_key(key) when is_binary(key) and key != "", do: key
+  defp normalize_key(_other), do: nil
 
   # The ETS side of a create: the hot-set row + its residency fact. Shared by the
   # write-through and async paths so both land the identical in-memory state; only

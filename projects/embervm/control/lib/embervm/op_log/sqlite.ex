@@ -207,6 +207,7 @@ defmodule Embervm.OpLog.SQLite do
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
       lineage_id TEXT,
+      idempotency_key TEXT,
       tenant TEXT NOT NULL,
       principal TEXT,
       workload TEXT,
@@ -956,6 +957,32 @@ defmodule Embervm.OpLog.SQLite do
   defp project(conn, %Op{kind: :session_created} = op, _seq) do
     payload = op.payload
 
+    # #4919: enforce the per-principal create-key binding INSIDE the append
+    # transaction (BEGIN IMMEDIATE serializes writers, so check-then-insert is
+    # atomic here), the session-side mirror of :submitted's task dedupe. A
+    # collision returns the EXISTING holder's id and errors the whole append,
+    # so do_append rolls back the ops row too: no trace of the losing create
+    # survives, and the unique index stays a pure backstop. Terminal holders
+    # conflict as well (a reused key after destroy never silently mints a fresh
+    # session); retention compaction freeing the row is what frees the key.
+    # A holder EQUAL to this op's own session_id is not a collision: it is the
+    # adopt-and-backfill repair racing a late-draining original append, which
+    # INSERT OR IGNORE alone used to absorb as a benign no-op.
+    idempotency_key = Map.get(payload, :idempotency_key)
+
+    case existing_session_for_idempotency_key(conn, op.principal, idempotency_key) do
+      {:ok, nil} ->
+        do_insert_session_created(conn, op, payload, idempotency_key)
+
+      {:ok, holder} when holder == op.session_id ->
+        :ok
+
+      {:ok, holder} ->
+        {:error, {:duplicate_session_idempotency_key, holder}}
+    end
+  end
+
+  defp do_insert_session_created(conn, op, payload, idempotency_key) do
     # INSERT OR IGNORE: idempotent on session_id so the adopt-and-backfill repair
     # (session_manager Direction-2, ADR embervm/014) can re-append session_created
     # for a lost async write without a primary-key clash if the original append
@@ -966,8 +993,8 @@ defmodule Embervm.OpLog.SQLite do
       (session_id, tenant, principal, workload, state, node_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
        token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
-       lineage_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL, ?)
+       lineage_id, idempotency_key)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL, ?, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -992,11 +1019,34 @@ defmodule Embervm.OpLog.SQLite do
              # #4306 slice 1: do_create always sends lineage_id now (= session_id
              # this slice); the default here is belt-and-suspenders for an op
              # written by code that predates this field.
-             Map.get(payload, :lineage_id, op.session_id)
+             Map.get(payload, :lineage_id, op.session_id),
+             idempotency_key
            ]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
+    end
+  end
+
+  # The session_id currently bound to (principal, idempotency_key), or nil.
+  # nil key (an unkeyed create) always reads as unbound. Sees TERMINAL rows on
+  # purpose: reuse-after-destroy must conflict, not rebind (#4919).
+  defp existing_session_for_idempotency_key(_conn, _principal, nil), do: {:ok, nil}
+
+  defp existing_session_for_idempotency_key(conn, principal, idempotency_key) do
+    sql = "SELECT session_id FROM sessions WHERE principal=? AND idempotency_key=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [principal, idempotency_key]) do
+      case Sqlite3.step(conn, stmt) do
+        {:row, [existing]} ->
+          :ok = Sqlite3.release(conn, stmt)
+          {:ok, existing}
+
+        :done ->
+          :ok = Sqlite3.release(conn, stmt)
+          {:ok, nil}
+      end
     end
   end
 
@@ -2482,7 +2532,7 @@ defmodule Embervm.OpLog.SQLite do
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
-           COALESCE(lineage_id, session_id)
+           COALESCE(lineage_id, session_id), idempotency_key
     FROM sessions
     """
 
@@ -2515,7 +2565,8 @@ defmodule Embervm.OpLog.SQLite do
          expires_at,
          updated_at,
          terminal_reason,
-         lineage_id
+         lineage_id,
+         idempotency_key
        ]} ->
         session = %{
           session_id: session_id,
@@ -2536,7 +2587,8 @@ defmodule Embervm.OpLog.SQLite do
           expires_at: expires_at,
           updated_at: updated_at,
           terminal_reason: terminal_reason,
-          lineage_id: lineage_id
+          lineage_id: lineage_id,
+          idempotency_key: idempotency_key
         }
 
         collect_sessions(conn, stmt, [session | acc])
@@ -3450,6 +3502,7 @@ defmodule Embervm.OpLog.SQLite do
     with :ok <- migrate_results_headers(conn),
          :ok <- migrate_sessions_volume_node_id(conn),
          :ok <- migrate_sessions_lineage_id(conn),
+         :ok <- migrate_sessions_idempotency_key(conn),
          :ok <- migrate_ops_session_id(conn),
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
@@ -3481,6 +3534,31 @@ defmodule Embervm.OpLog.SQLite do
       else
         Sqlite3.execute(conn, "ALTER TABLE sessions ADD COLUMN lineage_id TEXT")
       end
+    end
+  end
+
+  # #4919: the additive nullable sessions.idempotency_key column plus the
+  # partial unique index backing the create-dedupe contract (one session per
+  # principal per key, terminal rows included). Mirrors
+  # migrate_sessions_lineage_id/1 for the column; the index is created HERE
+  # rather than in @ddl because on an upgraded DB the sessions CREATE TABLE IF
+  # NOT EXISTS is a no-op and the column would not exist yet when the @ddl list
+  # runs. An upgraded DB's existing rows get idempotency_key=NULL from the
+  # ALTER, which the partial index ignores: pre-existing sessions are unkeyed,
+  # exactly what they always were.
+  defp migrate_sessions_idempotency_key(conn) do
+    with {:ok, cols} <- table_columns(conn, "sessions"),
+         :ok <-
+           add_column_if_missing(
+             conn,
+             cols,
+             "idempotency_key",
+             "ALTER TABLE sessions ADD COLUMN idempotency_key TEXT"
+           ) do
+      Sqlite3.execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS sessions_idem_idx ON sessions(principal, idempotency_key) WHERE idempotency_key IS NOT NULL"
+      )
     end
   end
 

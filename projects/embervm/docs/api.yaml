@@ -125,16 +125,54 @@ paths:
         Assigns a primed pristine VM from the pool (principal-bound at claim) and
         returns a per-session capability token EXACTLY ONCE. The invocation
         front-end never computes placement; the control plane owns node choice.
+        An optional Idempotency-Key makes the create an upsert (#4919): the
+        first create binds the key to the new session per principal; a retry
+        with the same key answers 200 with the SAME live session's current state
+        and NO token (the capability was returned once, at the original create);
+        a key whose session went terminal answers 409 rather than silently
+        minting a fresh session. Keys are 1..200 bytes of printable ASCII,
+        scoped per principal, and their binding lives as long as the session's
+        durable row (retention of a terminal session eventually frees its key).
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 200 }
+          description: >-
+            Client-supplied dedupe key, unique per principal (two principals may
+            reuse one key independently). Deterministic workflow keys such as
+            swarm/{run_id}/{node_id} make a retried step's create an upsert and
+            let a crash between spawn and record recover the existing session;
+            GET ?idempotency_key= queries the binding directly.
       responses:
         "201":
           description: Session created. The session_token is returned only here.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SessionCreated" }
+        "200":
+          description: >-
+            Same-key retry against an existing LIVE session (idempotent replay).
+            Carries the session's current identity and replayed: true, never a
+            session_token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionReplayed" }
+        "400":
+          description: Malformed or oversized Idempotency-Key (>200 bytes or non-printable ASCII).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "403": { description: Workload is not class session, or the caller is not allow-listed. }
         "404": { description: Unknown workload. }
+        "409":
+          description: >-
+            The Idempotency-Key is bound to a TERMINAL session (destroyed,
+            expired, evicted, failed). Mint a new key to create again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "429":
           description: >-
             Create denied: session cap (live+banked+parked >= maxSessions), workload
@@ -149,9 +187,17 @@ paths:
         - { name: name, in: path, required: true, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1, maximum: 500 } }
         - { name: offset, in: query, schema: { type: integer, default: 0, minimum: 0 } }
+        - name: idempotency_key
+          in: query
+          required: false
+          schema: { type: string }
+          description: >-
+            Query by create key instead of paging: resolves the single session
+            bound to (your principal, this key), empty page when unbound. Scoped
+            to the caller's principal; another principal's bindings are invisible.
       responses:
         "200":
-          description: Session page.
+          description: Session page (a single-item page when idempotency_key is present).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SessionPage" }
@@ -268,6 +314,20 @@ components:
         expires_at: { type: integer, description: "Max-lifetime deadline, epoch ms." }
         base_digest: { type: string, description: The birth base the session is pinned to. }
         state: { type: string, enum: [running] }
+    SessionReplayed:
+      type: object
+      description: >-
+        The response body of a same-key idempotent retry (#4919): the existing
+        session's current state. No session_token field exists here by design;
+        the capability was returned once, on the original 201.
+      properties:
+        session_id: { type: string }
+        lineage_id: { type: string }
+        expires_at: { type: integer, description: epoch ms }
+        base_digest: { type: string }
+        state: { type: string, description: The session's current FSM state (e.g. running). }
+        restored: { type: boolean, enum: [false] }
+        replayed: { type: boolean, enum: [true] }
     SessionView:
       type: object
       properties:

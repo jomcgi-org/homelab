@@ -156,6 +156,28 @@ defmodule Embervm.OpLog.PostgresLiveTest do
     assert {:ok, nil} = Postgres.load_request(server, "missing")
   end
 
+  # #4919: the session-side mirror of the tasks table's duplicate-idempotency-key
+  # transactional rollback, unique per principal.
+  test "a duplicate (principal, idempotency_key) session_created rolls back and names the holder", %{
+    server: server
+  } do
+    append(server, :session_created, 300,
+      tenant: "t1", principal: "p9", workload: "wl-session", session_id: "sess-k1",
+      payload: %{state: "running", node_id: "node-1", base_snapshot_ref: "base", base_digest: "digest",
+        token_sha256: "token-1", expires_at: 999, idempotency_key: "dup"}
+    )
+
+    assert {:error, {:duplicate_session_idempotency_key, "sess-k1"}} =
+             append(server, :session_created, 310,
+               tenant: "t1", principal: "p9", workload: "wl-session", session_id: "sess-k2",
+               payload: %{state: "running", node_id: "node-1", base_snapshot_ref: "base", base_digest: "digest",
+                 token_sha256: "token-2", expires_at: 999, idempotency_key: "dup"}
+             )
+
+    # The failed append left no row (and no ops trace): the transaction rolled back.
+    assert {:ok, [%{session_id: "sess-k1", idempotency_key: "dup"}]} = Postgres.load_sessions(server)
+  end
+
   test "list_usage returns accumulated task metering", %{server: server} do
     for {task_id, ts, cpu_ms} <- [{"usage-1", 5 * 86_400_000, 2_000}, {"usage-2", 5 * 86_400_000 + 1, 1_000}] do
       append(server, :submitted, ts, tenant: "t1", principal: "p1", workload: "wl-usage", task_id: task_id)

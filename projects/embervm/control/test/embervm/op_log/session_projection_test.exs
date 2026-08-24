@@ -338,4 +338,93 @@ defmodule Embervm.OpLog.SessionProjectionTest do
 
     :ok = GenServer.stop(server)
   end
+
+  # -- idempotency-key binding (#4919) ----------------------------------------
+
+  test "a duplicate (principal, idempotency_key) session_created rolls the WHOLE append back", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, created_op("s-k1", "p1", 100, %{idempotency_key: "dup"}))
+
+    # Same key, same principal, different session: the append must fail with the
+    # EXISTING session id, and the failed op must leave no trace (the ops row is
+    # rolled back with the projection write, the pinned transactional semantics).
+    assert {:error, {:duplicate_session_idempotency_key, "s-k1"}} =
+             SQLite.append(server, created_op("s-k2", "p1", 200, %{idempotency_key: "dup"}))
+
+    {:ok, ops} = SQLite.read_from(server, 0)
+    refute Enum.any?(ops, &(&1.session_id == "s-k2"))
+    refute Map.has_key?(session_by_id(server), "s-k2")
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "the same key under a DIFFERENT principal is a distinct binding", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, created_op("s-pa", "pA", 100, %{idempotency_key: "shared"}))
+    {:ok, _} = SQLite.append(server, created_op("s-pb", "pB", 110, %{idempotency_key: "shared"}))
+
+    ids = session_by_id(server) |> Map.keys() |> Enum.sort()
+    assert ids == ["s-pa", "s-pb"]
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "a terminal session keeps its binding until retention compaction frees the key", %{path: path} do
+    server = start_server(path, retention_ms: 500)
+
+    {:ok, _} = SQLite.append(server, created_op("s-gone", "p1", 100, %{idempotency_key: "freed"}))
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :session_destroyed,
+        tenant: "t1",
+        principal: "p1",
+        workload: "sandbox-session",
+        session_id: "s-gone",
+        ts: 200,
+        payload: %{reason: "destroyed"}
+      })
+
+    # While the row survives (terminal or not), the binding still conflicts.
+    assert {:error, {:duplicate_session_idempotency_key, "s-gone"}} =
+             SQLite.append(server, created_op("s-new", "p1", 300, %{idempotency_key: "freed"}))
+
+    # Retention prunes the terminal row past its window; only then does a fresh
+    # create under the same key succeed (the documented bounded lifetime).
+    {:ok, res} = SQLite.compact(server, 200 + 501)
+    assert res.sessions_compacted == 1
+
+    {:ok, _} = SQLite.append(server, created_op("s-fresh", "p1", 800, %{idempotency_key: "freed"}))
+    assert Map.has_key?(session_by_id(server), "s-fresh")
+
+    :ok = GenServer.stop(server)
+  end
+
+  test "the binding is enforced again after a kill/restart (rebuild keeps it)", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, created_op("s-durable", "p1", 100, %{idempotency_key: "durable"}))
+    :ok = GenServer.stop(server)
+
+    server2 = start_server(path)
+
+    assert {:error, {:duplicate_session_idempotency_key, "s-durable"}} =
+             SQLite.append(server2, created_op("s-other", "p1", 200, %{idempotency_key: "durable"}))
+
+    :ok = GenServer.stop(server2)
+  end
+
+  test "load_sessions carries idempotency_key through the rebuild rows", %{path: path} do
+    server = start_server(path)
+
+    {:ok, _} = SQLite.append(server, created_op("s-carry", "p1", 100, %{idempotency_key: "carry-me"}))
+
+    {:ok, [row]} = SQLite.load_sessions(server)
+    assert row.session_id == "s-carry"
+    assert row.idempotency_key == "carry-me"
+
+    :ok = GenServer.stop(server)
+  end
 end

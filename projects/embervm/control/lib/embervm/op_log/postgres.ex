@@ -141,6 +141,7 @@ defmodule Embervm.OpLog.Postgres do
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
       lineage_id TEXT,
+      idempotency_key TEXT,
       tenant TEXT NOT NULL,
       principal TEXT,
       workload TEXT,
@@ -167,6 +168,20 @@ defmodule Embervm.OpLog.Postgres do
     # reads those back as session_id, exactly what lineage_id always equalled
     # for them since there is no adoption yet to make the two diverge.
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS lineage_id TEXT",
+    # #4919: the create-dedupe binding column plus its partial unique index (one
+    # session per principal per key, terminal rows included: reuse after destroy
+    # conflicts). The enforcement itself is an explicit pre-check inside the
+    # append transaction (see project/3 for :session_created) so the caller gets
+    # the holder's id back and the failed append rolls back whole; this index is
+    # the durable backstop. The binding lives as long as its session row does:
+    # retention compaction of a terminal session frees the key. The index sits
+    # AFTER the ALTER here so the column exists on upgraded DBs too.
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS sessions_idem_idx
+      ON sessions(principal, idempotency_key)
+      WHERE idempotency_key IS NOT NULL
+    """,
     """
     CREATE TABLE IF NOT EXISTS serving_instances (
       instance_id TEXT PRIMARY KEY,
@@ -795,6 +810,28 @@ defmodule Embervm.OpLog.Postgres do
   defp project(conn, %Op{kind: :session_created} = op, _seq) do
     payload = op.payload
 
+    # #4919: enforce the per-principal create-key binding inside the append
+    # transaction (Postgrex.transaction serializes this projection against the
+    # row it reads), mirroring Embervm.OpLog.SQLite. A collision errors the
+    # whole append (Postgrex.rollback discards the ops row too) and names the
+    # EXISTING holder, terminal holders included. A holder equal to this op's
+    # own session_id is the adopt-and-backfill repair racing a late-draining
+    # original append, which ON CONFLICT DO NOTHING used to absorb benignly.
+    idempotency_key = Map.get(payload, :idempotency_key)
+
+    case existing_session_for_idempotency_key(conn, op.principal, idempotency_key) do
+      {:ok, nil} ->
+        do_insert_session_created(conn, op, payload, idempotency_key)
+
+      {:ok, holder} when holder == op.session_id ->
+        :ok
+
+      {:ok, holder} ->
+        {:error, {:duplicate_session_idempotency_key, holder}}
+    end
+  end
+
+  defp do_insert_session_created(conn, op, payload, idempotency_key) do
     # ON CONFLICT DO NOTHING: idempotent on session_id so the adopt-and-backfill
     # repair can re-append session_created for a lost async write without a clash
     # (mirrors the SQLite backend's INSERT OR IGNORE), ADR embervm/014 decision 2.
@@ -803,8 +840,8 @@ defmodule Embervm.OpLog.Postgres do
       (session_id, tenant, principal, workload, state, node_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
        token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
-       lineage_id)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NULL, NULL, $10, $11, NULL, $12, $13, NULL, $14)
+       lineage_id, idempotency_key)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NULL, NULL, $10, $11, NULL, $12, $13, NULL, $14, $15)
     ON CONFLICT (session_id) DO NOTHING
     """
 
@@ -825,8 +862,25 @@ defmodule Embervm.OpLog.Postgres do
       # #4306 slice 1: do_create always sends lineage_id now (= session_id this
       # slice); the default here is belt-and-suspenders for an op written by
       # code that predates this field.
-      Map.get(payload, :lineage_id, op.session_id)
+      Map.get(payload, :lineage_id, op.session_id),
+      idempotency_key
     ])
+  end
+
+  # The session_id currently bound to (principal, idempotency_key), or nil.
+  # nil key (an unkeyed create) always reads as unbound. Sees TERMINAL rows on
+  # purpose: reuse-after-destroy must conflict, not rebind (#4919).
+  defp existing_session_for_idempotency_key(_conn, _principal, nil), do: {:ok, nil}
+
+  defp existing_session_for_idempotency_key(conn, principal, idempotency_key) do
+    case Postgrex.query(conn, "SELECT session_id FROM sessions WHERE principal=$1 AND idempotency_key=$2", [
+           principal,
+           idempotency_key
+         ]) do
+      {:ok, %Postgrex.Result{rows: []}} -> {:ok, nil}
+      {:ok, %Postgrex.Result{rows: [[existing]]}} -> {:ok, existing}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp project(conn, %Op{kind: :session_invoked} = op, _seq) do
@@ -1824,7 +1878,7 @@ defmodule Embervm.OpLog.Postgres do
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
-           COALESCE(lineage_id, session_id)
+           COALESCE(lineage_id, session_id), idempotency_key
     FROM sessions
     """
 
@@ -1835,26 +1889,27 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   defp row_to_session([
-         session_id,
-         tenant,
-         principal,
-         workload,
-         state,
-         node_id,
-         volume_node_id,
-         base_snapshot_ref,
-         base_digest,
-         generation,
-         snapshot_ref,
-         snapshot_size_bytes,
-         token_sha256,
-         created_at,
-         last_invoke_at,
-         expires_at,
-         updated_at,
-         terminal_reason,
-         lineage_id
-       ]) do
+          session_id,
+          tenant,
+          principal,
+          workload,
+          state,
+          node_id,
+          volume_node_id,
+          base_snapshot_ref,
+          base_digest,
+          generation,
+          snapshot_ref,
+          snapshot_size_bytes,
+          token_sha256,
+          created_at,
+          last_invoke_at,
+          expires_at,
+          updated_at,
+          terminal_reason,
+          lineage_id,
+          idempotency_key
+        ]) do
     %{
       session_id: session_id,
       tenant: tenant,
@@ -1874,7 +1929,8 @@ defmodule Embervm.OpLog.Postgres do
       expires_at: expires_at,
       updated_at: updated_at,
       terminal_reason: terminal_reason,
-      lineage_id: lineage_id
+      lineage_id: lineage_id,
+      idempotency_key: idempotency_key
     }
   end
 
