@@ -18,6 +18,8 @@ defmodule Embervm.SessionManagerTest do
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, UsageStats}
 
+  @bank_dial_miss_limit 30
+
   defmodule OpLogRecorder do
     def append(agent, op) do
       Agent.update(agent, &[op | &1])
@@ -509,6 +511,89 @@ defmodule Embervm.SessionManagerTest do
     assert :sys.get_state(ctx.mgr).bank_failures == %{}
     refute_received :destroyed_after_dial_miss
     assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+  end
+
+  test "bank dial misses beyond the limit fail the session and attempt destroy" do
+    parent = self()
+    {:ok, dial_attempts} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        channel_fun: fn _dial_key ->
+          attempt = Agent.get_and_update(dial_attempts, fn count -> {count + 1, count + 1} end)
+
+          if attempt <= @bank_dial_miss_limit do
+            {:error, :unknown_node}
+          else
+            {:ok, :ch}
+          end
+        end,
+        destroy_fun: fn _ch, vm_id ->
+          send(parent, {:destroyed_after_dial_miss_limit, vm_id})
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    put_session_workload(ctx, "wl-bank-dial-miss-limit")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-bank-dial-miss-limit", "p1")
+
+    for _miss <- 1..(@bank_dial_miss_limit - 1) do
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      assert wait_for_state(ctx, created.session_id, :running).state == :running
+    end
+
+    state = :sys.get_state(ctx.mgr)
+    assert state.bank_dial_misses[created.session_id] == @bank_dial_miss_limit - 1
+    assert state.bank_failures == %{}
+
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :failed).state == :failed
+    assert_receive {:destroyed_after_dial_miss_limit, vm_id}
+    assert is_binary(vm_id)
+
+    state = :sys.get_state(ctx.mgr)
+    refute Map.has_key?(state.bank_failures, created.session_id)
+    refute Map.has_key?(state.bank_dial_misses, created.session_id)
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    failed_op = Enum.find(ops, &(&1.session_id == created.session_id and &1.kind == :session_failed))
+    assert failed_op.payload["detail"] == "bank_dial_miss_limit"
+  end
+
+  test "bank dial misses under the limit stay running without striking" do
+    {:ok, remaining_misses} = Agent.start_link(fn -> @bank_dial_miss_limit - 1 end)
+
+    ctx =
+      start_stack(
+        channel_fun: fn _dial_key ->
+          Agent.get_and_update(remaining_misses, fn
+            remaining when remaining > 0 ->
+              {{:error, :unknown_node}, remaining - 1}
+
+            remaining ->
+              {{:ok, :ch}, remaining}
+          end)
+        end
+      )
+
+    put_session_workload(ctx, "wl-bank-dial-miss-under-limit")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-bank-dial-miss-under-limit", "p1")
+
+    for _miss <- 1..(@bank_dial_miss_limit - 1) do
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      assert wait_for_state(ctx, created.session_id, :running).state == :running
+    end
+
+    state = :sys.get_state(ctx.mgr)
+    assert state.bank_dial_misses[created.session_id] == @bank_dial_miss_limit - 1
+    assert state.bank_failures == %{}
+
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
+
+    state = :sys.get_state(ctx.mgr)
+    refute Map.has_key?(state.bank_dial_misses, created.session_id)
+    refute Map.has_key?(state.bank_failures, created.session_id)
   end
 
   test "three non-dial bank failures still fail and destroy the session" do
