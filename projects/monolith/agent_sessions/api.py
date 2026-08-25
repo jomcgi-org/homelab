@@ -109,6 +109,7 @@ def start_session_for_swarm(
     workflow_id: str | None = None,
     node_key: str | None = None,
     node_attempt: int | None = None,
+    reasoning: bool = False,
 ) -> int:
     """Create and schedule a swarm-owned session through the normal session path.
 
@@ -136,6 +137,7 @@ def start_session_for_swarm(
         branch,
         model,
         repo,
+        reasoning=reasoning,
         workflow_id=workflow_id,
         node_key=node_key,
         node_attempt=node_attempt,

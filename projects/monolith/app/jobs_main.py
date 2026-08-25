@@ -47,18 +47,22 @@ def ember_synthetic_trigger() -> None:
     probes run in the API pod, not this ephemeral job pod, so the job needs
     only HTTP access, not tokens or DB.
     """
-    _post_synthetic("/internal/ember/synthetic-probe", "ember-synthetic-trigger")
+    _post_internal("/internal/ember/synthetic-probe", "ember-synthetic-trigger")
 
 
 @app.command("ember-qwen-synthetic-trigger")
 def ember_qwen_synthetic_trigger() -> None:
     """Trigger the qwen session synthetic in the monolith API pod."""
-    _post_synthetic(
-        "/internal/ember/qwen-session-probe", "ember-qwen-synthetic-trigger"
-    )
+    _post_internal("/internal/ember/qwen-session-probe", "ember-qwen-synthetic-trigger")
 
 
-def _post_synthetic(path: str, name: str) -> None:
+@app.command("agent-drain-trigger")
+def agent_drain_trigger() -> None:
+    """Trigger one asynchronous qwen work-queue drain cycle."""
+    _post_internal("/internal/agent/drain", "agent-drain-trigger")
+
+
+def _post_internal(path: str, name: str) -> None:
     import httpx
 
     configure_logging()

@@ -154,6 +154,22 @@ spec:
             # surfaces follow one values edit.
             - name: AGENT_MODELS
               value: {{ .Values.agents.models | default "" | quote }}
+            {{- with .Values.agents.drainer }}
+            # Qwen routine-job drainer. DRAINER_ENABLED is checked both by the
+            # internal trigger and inside the DBOS workflow.
+            - name: DRAINER_ENABLED
+              value: {{ .enabled | quote }}
+            - name: DRAINER_MAX_JOBS_PER_CYCLE
+              value: {{ .maxJobsPerCycle | quote }}
+            - name: DRAINER_TURN_TIMEOUT_SECONDS
+              value: {{ .turnTimeoutSeconds | quote }}
+            - name: DRAINER_JOB_KIND
+              value: {{ .jobKind | quote }}
+            - name: DRAINER_REPO
+              value: {{ .repo | quote }}
+            - name: DRAINER_BRANCH
+              value: {{ .branch | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.swarm.enabled }}
             # DBOS swarm layer (ADR agents/038, agents/053). SWARM_ENABLED is

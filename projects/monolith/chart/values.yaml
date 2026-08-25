@@ -90,6 +90,18 @@ agents:
   # Current production selection: every supported model, listed explicitly so
   # prod renders unchanged and stays unchanged when code adds a model later.
   models: "luna,terra,sol,opus,sonnet,fable,qwen"
+  drainer:
+    # Master kill switch. The CronWorkflow stays unsuspended and safely gets a
+    # disabled response until a follow-up production values PR turns this on,
+    # following the values-versus-template rollout rule.
+    enabled: false
+    # Jobs are deliberately serial so one qwen lane remains free for chat and
+    # health probes. This only bounds how much backlog one tick may consume.
+    maxJobsPerCycle: 3
+    turnTimeoutSeconds: 1800
+    jobKind: "qwen-drain"
+    repo: "jomcgi-org/homelab"
+    branch: "main"
 
 # Off-pod batch-job execution via Argo CronWorkflows.
 #
@@ -113,6 +125,21 @@ jobs:
   dbSecretName: monolith-pg-app
   dbSecretKey: uri
   cronWorkflows:
+    # This job only asks the leader API pod to start a drain cycle, then exits.
+    # It stays active while the drainer is disabled because the endpoint no-ops.
+    - name: agent-drain
+      args: ["agent-drain-trigger"]
+      schedule: "*/15 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 120
+      suspend: false
+      internalApi: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     # worldcup.refresh cut over to Argo 2026-06-22, then the tournament it
     # models resolved on 2026-06-28: all 72 group fixtures finished and
     # qualification went final (16 eliminated / 32 qualified). The sim

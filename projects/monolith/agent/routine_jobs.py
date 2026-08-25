@@ -1,9 +1,8 @@
 """Operations over ``claude_agent.routine_jobs`` — delegated work for cloud Routines.
 
-These functions back the ``monolith-agent-*-routine-job`` MCP tools. Unlike
-``scheduler.api``'s ``scheduled_jobs`` (which is polled by the in-cluster
-tick loop), ``routine_jobs`` rows are only ever read or written by the MCP
-surface; cloud Routines claim, run, and complete them.
+These functions back the ``monolith-agent-*-routine-job`` MCP tools and the
+in-cluster qwen drainer. Unlike ``scheduler.api``'s ``scheduled_jobs``, these
+rows use explicit SKIP LOCKED claims so either consumer can safely lease work.
 """
 
 from __future__ import annotations
@@ -67,7 +66,7 @@ def claim_job(
     kind: str | None = None,
     name: str | None = None,
 ) -> dict | None:
-    """Claim a routine_jobs row.
+    """Claim a routine_jobs row, including its JSONB payload.
 
     If ``name`` is set, attempt to claim that specific row; returns None if it's
     held with a still-live lock. If ``name`` is None, claim the next due

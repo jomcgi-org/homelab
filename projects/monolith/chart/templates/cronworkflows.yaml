@@ -85,6 +85,10 @@ spec:
                 secretKeyRef:
                   name: {{ $.Values.jobs.dbSecretName }}
                   key: {{ $.Values.jobs.dbSecretKey }}
+            {{- if .internalApi }}
+            - name: MONOLITH_INTERNAL_URL
+              value: "http://{{ include "monolith.fullname" $ }}.{{ $.Release.Namespace }}.svc:{{ $.Values.service.apiPort }}"
+            {{- end }}
             {{- range $k, $v := .env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
