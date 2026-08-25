@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Response
 from agent.config import drainer_enabled
 from swarm import runtime
 from swarm.drainer import drain_cycle
+from swarm.queues import drainer_queue
 
 router = APIRouter(prefix="/internal/agent", tags=["agent-internal"])
 
@@ -18,8 +19,7 @@ def trigger_drain(response: Response) -> dict:
         raise HTTPException(
             status_code=503, detail="DBOS is not launched on this replica"
         )
-    dbos = runtime.init_dbos()
-    if dbos is None:
+    if runtime.init_dbos() is None:
         raise HTTPException(status_code=503, detail="DBOS is not configured")
-    dbos.start_workflow(drain_cycle)
+    drainer_queue().enqueue(drain_cycle)
     return {"status": "started"}

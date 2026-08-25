@@ -6892,6 +6892,7 @@ py_test(
     srcs = ["agent/config_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_core",
         ":pkg_cyclegroup",
         "@pip//pytest",
     ],
@@ -6922,6 +6923,15 @@ bdd_test(
     srcs = [
         "agent/tests/__init__.py",
         "agent/tests/bdd_routine_jobs_test.py",
+        "agent/tests/conftest.py",
+    ],
+)
+
+bdd_test(
+    name = "agent_bdd_drainer_test",
+    srcs = [
+        "agent/tests/__init__.py",
+        "agent/tests/bdd_drainer_test.py",
         "agent/tests/conftest.py",
     ],
 )

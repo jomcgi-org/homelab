@@ -18,6 +18,7 @@ import httpx
 import agent.api as agent_api
 from agent_sessions import store, voice, voice_ui
 from agent_sessions import model_family
+from agent_sessions.constants import CLEAN_TERMINAL_REASONS, DRAINER_NODE_KEY
 from agent_sessions.rationale import rationale_trailer_instruction
 from agent_sessions.models import AgentSession, AgentTurn
 from agent_sessions.transport import (
@@ -207,21 +208,12 @@ def _persist_session(
         )
 
 
-# Terminal reasons that mean the turn ended normally. The claude lane
-# reports "completed" or "end_turn"; the pi lane passes the model's raw
-# stopReason through, which is "stop" for a normal qwen turn (see
-# runtimes/claude/shim.py). Comparing against "completed" alone marked
-# every successful qwen turn warn. None (transport died mid-turn) and
-# unrecognized values stay warn.
-_CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop"}
-
-
 def _turn_status(turn: Turn) -> str:
     # permission_denials is the signal for "agent blocked waiting on user";
     # stop_reason enum (end_turn, max_tokens, etc.) never indicates user input needed
     if turn.permission_denials:
         return "needs_input"
-    if turn.is_error or turn.terminal_reason not in _CLEAN_TERMINAL_REASONS:
+    if turn.is_error or turn.terminal_reason not in CLEAN_TERMINAL_REASONS:
         return "warn"
     return "completed"
 
@@ -264,7 +256,7 @@ async def _notify_terminal(
 ) -> None:
     # The drainer owns its failure notification and suppresses successful jobs.
     # Skipping this generic session post keeps each failed job to one alert.
-    if row is not None and row.node_key == "qwen-drain":
+    if row is not None and row.node_key == DRAINER_NODE_KEY:
         return
     if turn.permission_denials or status == "needs_input":
         level = "warn"  # Needs user action

@@ -1,8 +1,10 @@
-"""Operations over ``claude_agent.routine_jobs`` — delegated work for cloud Routines.
+"""Operations over ``claude_agent.routine_jobs``, delegated work for cloud Routines.
 
 These functions back the ``monolith-agent-*-routine-job`` MCP tools and the
 in-cluster qwen drainer. Unlike ``scheduler.api``'s ``scheduled_jobs``, these
 rows use explicit SKIP LOCKED claims so either consumer can safely lease work.
+Completing a one-shot row clears ``next_run_at``; ``trigger_job`` explicitly
+re-arms it by setting ``next_run_at = now()``.
 """
 
 from __future__ import annotations
@@ -152,8 +154,9 @@ def complete_job(name: str, status: str, summary: str | None = None) -> bool:
 
     Sets ``last_run_at = now()``, ``last_status``, and (if provided)
     ``last_summary``; clears the lock fields. If ``interval_secs`` is non-null
-    on the row, advances ``next_run_at`` by that many seconds from now;
-    otherwise leaves ``next_run_at`` unchanged.
+    on the row, advances ``next_run_at`` by that many seconds from now.
+    One-shot rows clear ``next_run_at`` and remain idle until ``trigger_job``
+    re-arms them.
     """
     sql = text(
         """
@@ -166,7 +169,7 @@ def complete_job(name: str, status: str, summary: str | None = None) -> bool:
                next_run_at = CASE
                    WHEN interval_secs IS NOT NULL
                    THEN now() + (interval_secs || ' seconds')::interval
-                   ELSE next_run_at
+                   ELSE NULL
                END
          WHERE name = :name
         """
@@ -224,7 +227,7 @@ def deregister_job(name: str) -> bool:
 
 
 def trigger_job(name: str) -> bool:
-    """Set ``next_run_at = now()`` so the row becomes immediately claimable."""
+    """Re-arm a row by setting ``next_run_at = now()`` so it is claimable."""
     sql = text(
         "UPDATE claude_agent.routine_jobs SET next_run_at = now() WHERE name = :name"
     )

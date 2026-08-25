@@ -2,6 +2,7 @@
 import pytest
 
 from agent.config import load_drainer_settings, load_settings
+from core.github import GITHUB_REPO
 from goosecracker.api import REPO_CATALOG
 
 
@@ -44,7 +45,7 @@ def test_drainer_defaults(monkeypatch):
     assert settings.max_jobs_per_cycle == 3
     assert settings.turn_timeout_seconds == 1800
     assert settings.job_kind == "qwen-drain"
-    assert settings.repo == "jomcgi-org/homelab"
+    assert settings.repo == GITHUB_REPO
     assert settings.repo in REPO_CATALOG
     assert settings.branch == "main"
 

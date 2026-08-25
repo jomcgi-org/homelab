@@ -102,6 +102,9 @@ class TestClaimByName:
         assert completed["last_status"] == "ok"
         assert completed["last_summary"] == "drained"
         assert completed["locked_by"] is None
+        assert not any(
+            row["name"] == "targeted" for row in routine_jobs.list_jobs(due_only=True)
+        )
 
 
 class TestClaimNextDue:
@@ -181,7 +184,7 @@ class TestComplete:
         # interval_secs=600 means next_run_at should be ~10min after original.
         assert row["next_run_at"] > original_next + timedelta(seconds=300)
 
-    def test_oneoff_leaves_next_run_at_unchanged(self, agent_db: Session):
+    def test_oneoff_clears_next_run_at(self, agent_db: Session):
         now = _now_utc()
         routine_jobs.register_job(
             name="oneoff",
@@ -191,16 +194,17 @@ class TestComplete:
         )
         claimed = routine_jobs.claim_job(holder="r1", ttl_secs=60, name="oneoff")
         assert claimed is not None
-        original_next = claimed["next_run_at"]
-
         ok = routine_jobs.complete_job(name="oneoff", status="ok")
         assert ok is True
 
         rows = routine_jobs.list_jobs()
         row = next(r for r in rows if r["name"] == "oneoff")
         assert row["interval_secs"] is None
-        assert row["next_run_at"] == original_next
+        assert row["next_run_at"] is None
         assert row["locked_by"] is None
+        assert not any(
+            due["name"] == "oneoff" for due in routine_jobs.list_jobs(due_only=True)
+        )
 
 
 class TestTrigger:

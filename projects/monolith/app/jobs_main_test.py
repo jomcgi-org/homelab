@@ -26,7 +26,7 @@ def test_agent_drain_trigger_posts_internal_endpoint(monkeypatch):
 
     assert result.exit_code == 0, result.output
     post.assert_called_once_with(
-        "http://monolith:8000/internal/agent/drain", timeout=180
+        "http://monolith:8000/internal/agent/drain", timeout=90
     )
     response.raise_for_status.assert_called_once_with()
 
