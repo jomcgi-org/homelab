@@ -160,6 +160,36 @@ defmodule Embervm.Dispatcher do
   end
 
   @doc """
+  Removes a VM consumed by another control-plane lifecycle path from the primed
+  inventory and its adoption-provenance set. The operation is idempotent, so an
+  unknown VM is a no-op. This is the targeted consumption seam from #5300.
+
+  This is synchronous so a placement after a confirmed consumption cannot race
+  stale dispatcher inventory.
+
+  The exit is caught deliberately. Both callers run inside the SessionManager's
+  serialized loop, where a GenServer.call that EXITS (a dispatcher busy enough to
+  exceed the call timeout) would take down session lifecycle for what is only a
+  bookkeeping cleanup. A timed-out call is still DELIVERED and still handled, so
+  swallowing the exit costs this one caller its synchronous guarantee and nothing
+  else: the drop still lands.
+  """
+  @spec drop_vm(GenServer.server(), String.t()) :: :ok
+  def drop_vm(server \\ __MODULE__, vm_id) do
+    case GenServer.whereis(server) do
+      nil ->
+        :ok
+
+      _pid ->
+        try do
+          GenServer.call(server, {:drop_vm, vm_id})
+        catch
+          :exit, _reason -> :ok
+        end
+    end
+  end
+
+  @doc """
   Whether `principal` may submit another task to `workload` without breaching its
   per-principal queue-depth cap. A read-only advisory check the router runs
   BEFORE the durable submit to 429; the actual reservation happens on `enqueue`,
@@ -322,6 +352,10 @@ defmodule Embervm.Dispatcher do
 
   @impl true
   def handle_call(:stats, _from, state), do: {:reply, snapshot(state), state}
+
+  def handle_call({:drop_vm, vm_id}, _from, state) do
+    {:reply, :ok, drop_vm_id(state, vm_id)}
+  end
 
   def handle_call(:sweep, _from, state) do
     {:reply, :ok, run_sweep(state)}
@@ -1440,6 +1474,22 @@ defmodule Embervm.Dispatcher do
   end
 
   defp put_vm_if_unknown(state, _node_id, _wl, _vm_id), do: state
+
+  defp drop_vm_id(state, vm_id) when is_binary(vm_id) do
+    inventory =
+      for {key, queue} <- state.inventory, into: %{} do
+        remaining = queue |> :queue.to_list() |> Enum.reject(&(&1 == vm_id))
+        {key, :queue.from_list(remaining)}
+      end
+
+    %{
+      state
+      | inventory: inventory,
+        adoption_vm_ids: MapSet.delete(state.adoption_vm_ids, vm_id)
+    }
+  end
+
+  defp drop_vm_id(state, _vm_id), do: state
 
   # Every vm_id the dispatcher currently holds: parked in any inventory queue, or
   # reserved by an in-flight assign worker. The dedup basis for inventory adds.

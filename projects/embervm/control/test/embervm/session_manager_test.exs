@@ -13,7 +13,7 @@ defmodule Embervm.SessionManagerTest do
   """
   use ExUnit.Case, async: false
 
-  alias Embervm.{NodeCapacity, SessionManager, SessionStore, WorkloadCatalog}
+  alias Embervm.{Dispatcher, NodeCapacity, SessionManager, SessionStore, TaskStore, WorkloadCatalog}
   alias Embervm.KeyService.Envelope
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{BankResponse, GuestResponse, PrimeResponse, RelightResponse, SessionAssignResponse, UsageStats}
@@ -124,6 +124,7 @@ defmodule Embervm.SessionManagerTest do
       [
         name: nil,
         session_store: store,
+        dispatcher: Keyword.get(opts, :dispatcher, Embervm.Dispatcher),
         supervisor: sup,
         registry: registry,
         capacity_table: cap_table,
@@ -195,7 +196,7 @@ defmodule Embervm.SessionManagerTest do
           free_primed_slots: 1,
           snapshot_ref: "snap-#{wl}",
           base_state: :BASE_BUILD_STATE_READY,
-          primed_vm_ids: []
+          primed_vm_ids: Keyword.get(opts, :primed_ids, [])
         }
       },
       live_vms: Keyword.get(opts, :live, 0),
@@ -246,6 +247,31 @@ defmodule Embervm.SessionManagerTest do
   end
 
   defp fake_claim_fun(vm_id), do: fn _dispatcher, _node, _workload -> {:ok, vm_id} end
+
+  defp start_dispatcher(ctx, name) do
+    suffix = System.unique_integer([:positive])
+    depth_table = :"session_disp_depth_#{suffix}"
+
+    {:ok, task_store} =
+      TaskStore.start_link(
+        name: nil,
+        op_log: ctx.op_log,
+        on_queued: fn task -> Dispatcher.enqueue(name, task) end
+      )
+
+    {:ok, dispatcher} =
+      Dispatcher.start_link(
+        name: name,
+        task_store: task_store,
+        capacity_table: ctx.cap_table,
+        catalog_table: ctx.cat_table,
+        depth_table: depth_table,
+        clock: fn -> 5_000_000 end,
+        start_sweep: false
+      )
+
+    %{pid: dispatcher, name: name, task_store: task_store}
+  end
 
   defp fake_prime_fun(vm_id), do: fn _channel, _req -> {:ok, %PrimeResponse{vm_id: vm_id}} end
 
@@ -485,6 +511,63 @@ defmodule Embervm.SessionManagerTest do
     assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
     assert wait_for_state(ctx, created.session_id, :banked).state == :banked
     assert_receive {:bank_dialed, "node-4/bank-owner"}
+  end
+
+  test "a successful bank drops stale dispatcher inventory before another placement" do
+    dispatcher_name = :"bank_inventory_dispatcher_#{System.unique_integer([:positive])}"
+
+    ctx =
+      start_stack(
+        dispatcher: dispatcher_name,
+        claim_fun: &Dispatcher.claim/3
+      )
+
+    dispatcher = start_dispatcher(ctx, dispatcher_name)
+    put_session_workload(ctx, "wl-bank-inventory", primed_ids: ["vm-banked"], live: 1)
+
+    Dispatcher.sweep(dispatcher.name)
+    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-bank-inventory"}] == 1
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-bank-inventory", "p1")
+
+    # The node status still advertises the claimed VM until Bank adopts it into
+    # the session registry. A sweep during that window re-adopts the stale copy.
+    Dispatcher.sweep(dispatcher.name)
+    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-bank-inventory"}] == 1
+
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
+
+    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-bank-inventory"}] == 0
+    assert :miss = Dispatcher.claim(dispatcher.name, "node-4", "wl-bank-inventory")
+
+    put_session_workload(ctx, "wl-bank-inventory", primed_ids: ["vm-new"], live: 1)
+    Dispatcher.sweep(dispatcher.name)
+    assert {:ok, "vm-new"} = Dispatcher.claim(dispatcher.name, "node-4", "wl-bank-inventory")
+  end
+
+  test "a confirmed destroy drops stale dispatcher inventory" do
+    dispatcher_name = :"destroy_inventory_dispatcher_#{System.unique_integer([:positive])}"
+
+    ctx =
+      start_stack(
+        dispatcher: dispatcher_name,
+        claim_fun: &Dispatcher.claim/3
+      )
+
+    dispatcher = start_dispatcher(ctx, dispatcher_name)
+    put_session_workload(ctx, "wl-destroy-inventory", primed_ids: ["vm-destroyed"], live: 1)
+
+    Dispatcher.sweep(dispatcher.name)
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-destroy-inventory", "p1")
+    Dispatcher.sweep(dispatcher.name)
+    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-destroy-inventory"}] == 1
+
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+
+    assert Dispatcher.stats(dispatcher.name).inventory[{"node-4", "wl-destroy-inventory"}] == 0
+    assert :miss = Dispatcher.claim(dispatcher.name, "node-4", "wl-destroy-inventory")
   end
 
   test "a bank dial miss returns to running without counting a strike" do

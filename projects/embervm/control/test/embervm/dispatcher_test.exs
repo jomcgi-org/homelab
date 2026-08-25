@@ -350,6 +350,49 @@ defmodule Embervm.DispatcherTest do
     assert Dispatcher.stats(ctx.name).inventory[{"node-4", "wl-a"}] == 1
   end
 
+  test "dropping an unknown vm is a no-op" do
+    ctx = start_stack()
+    put_catalog(ctx, "wl-a", cap: 10)
+    Dispatcher.deposit(ctx.name, "node-4", "wl-a", "vm-kept")
+
+    assert :ok = Dispatcher.drop_vm(ctx.name, "vm-unknown")
+    assert Dispatcher.stats(ctx.name).inventory[{"node-4", "wl-a"}] == 1
+    assert {:ok, "vm-kept"} = Dispatcher.claim(ctx.name, "node-4", "wl-a")
+  end
+
+  test "dropping a vm returns ok instead of exiting when the dispatcher is too busy to reply" do
+    # Both callers run inside the SessionManager's serialized loop, so an exit
+    # here would take down session lifecycle for a bookkeeping cleanup. Stand in
+    # a process that never replies and assert drop_vm still returns :ok and
+    # leaves the caller alive.
+    # A dead pid exits :noproc immediately, which is the same catch the call
+    # timeout takes, without making the suite wait out the 5s default.
+    dead = spawn(fn -> :ok end)
+    ref = Process.monitor(dead)
+    assert_receive {:DOWN, ^ref, :process, ^dead, _}
+
+    assert :ok = Dispatcher.drop_vm(dead, "vm-consumed")
+    assert Process.alive?(self())
+  end
+
+  test "dropping an adopted vm clears provenance and later adoption still works" do
+    ctx = start_stack()
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-consumed"], live: 1, max: 8)
+
+    Dispatcher.sweep(ctx.name)
+    assert MapSet.member?(:sys.get_state(ctx.disp).adoption_vm_ids, "vm-consumed")
+
+    assert :ok = Dispatcher.drop_vm(ctx.name, "vm-consumed")
+    refute MapSet.member?(:sys.get_state(ctx.disp).adoption_vm_ids, "vm-consumed")
+    assert Dispatcher.stats(ctx.name).inventory[{"node-4", "wl-a"}] == 0
+
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-new"], live: 1, max: 8)
+    Dispatcher.sweep(ctx.name)
+
+    assert {:ok, "vm-new"} = Dispatcher.claim(ctx.name, "node-4", "wl-a")
+  end
+
   test "a miss worker's just-primed vm is not re-adopted while its assign is in flight" do
     gate = new_gate()
     parent = self()

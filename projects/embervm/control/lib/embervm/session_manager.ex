@@ -787,8 +787,8 @@ defmodule Embervm.SessionManager do
 
   # The async bank worker finished: complete the durable transition + failure
   # recovery on this (serialized) process. See finish_bank.
-  def handle_info({:bank_done, session_id, node_id, outcome}, state) do
-    {:noreply, finish_bank(state, session_id, node_id, outcome)}
+  def handle_info({:bank_done, session_id, node_id, vm_id, outcome}, state) do
+    {:noreply, finish_bank(state, session_id, node_id, vm_id, outcome)}
   end
 
   def handle_info({:create_done, ref, result}, state) do
@@ -1879,7 +1879,7 @@ defmodule Embervm.SessionManager do
           end
         end
 
-      send(owner, {:bank_done, session_id, node_id, outcome})
+      send(owner, {:bank_done, session_id, node_id, vm_id, outcome})
     end)
   end
 
@@ -1892,11 +1892,12 @@ defmodule Embervm.SessionManager do
   #     no snapshot written), count the relevant failure class, and either restart a
   #     session process (so it can serve invokes + retry) or fail + destroy the VM when
   #     that class reaches its limit.
-  defp finish_bank(state, session_id, node_id, outcome) do
+  defp finish_bank(state, session_id, node_id, vm_id, outcome) do
     state =
       state
       |> decr_bank_inflight(node_id)
       |> Map.update!(:banking, &Map.delete(&1, session_id))
+      |> drop_vm_after_bank(vm_id, outcome)
 
     case SessionStore.get(state.session_store, session_id) do
       # Destroying/destroyed/expired mid-bank: teardown or a terminal state already
@@ -1912,6 +1913,13 @@ defmodule Embervm.SessionManager do
         finish_bank_active(state, session_id, node_id, outcome)
     end
   end
+
+  defp drop_vm_after_bank(state, vm_id, {:ok, _ref, _size, _generation, _parent_base_ref}) do
+    :ok = Embervm.Dispatcher.drop_vm(state.dispatcher, vm_id)
+    state
+  end
+
+  defp drop_vm_after_bank(state, _vm_id, _outcome), do: state
 
   defp finish_bank_active(state, session_id, node_id, outcome) do
     case outcome do
@@ -4361,7 +4369,10 @@ defmodule Embervm.SessionManager do
 
         try do
           case destroy_fun.(channel, vm_id) do
-            {:ok, %{teardown_confirmed: true}} -> true
+            {:ok, %{teardown_confirmed: true}} ->
+              :ok = Embervm.Dispatcher.drop_vm(state.dispatcher, vm_id)
+              true
+
             _ -> false
           end
         rescue
