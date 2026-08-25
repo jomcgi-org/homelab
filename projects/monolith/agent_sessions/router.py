@@ -22,6 +22,7 @@ from agent_sessions import (
     voice_ui,
 )
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
+from agent_sessions.constants import QWEN_SYNTHETIC_PROMPT, SYNTHETIC_SESSION_PREFIX
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
     _append_rationale_trailer,
@@ -121,6 +122,19 @@ def _aggregate_statement(status: str | None = None, session_id: int | None = Non
         .outerjoin(pending, pending.c.session_id == AgentSession.id)
         .order_by(AgentSession.last_turn_at.desc())
     )
+    if session_id is None:
+        # Persisted health probes are useful for diagnosis by id, but they are
+        # not operator work and should not consume the console's recent list.
+        # The prompt clause also hides rows created before the origin prefix
+        # was introduced.
+        statement = statement.where(
+            ~AgentSession.local_session_id.startswith(SYNTHETIC_SESSION_PREFIX),
+            (func.coalesce(AgentSession.model, "") != "qwen")
+            | (
+                func.coalesce(first_turn_prompt, first_pending_prompt, "")
+                != QWEN_SYNTHETIC_PROMPT
+            ),
+        )
     if status is not None:
         statement = statement.where(AgentSession.status == status)
     return statement

@@ -3,9 +3,40 @@ from sqlmodel import Session, SQLModel, create_engine
 
 import agent_sessions.api as api
 import agent_sessions.mcp as mcp
+from agent_sessions.constants import SYNTHETIC_SESSION_PREFIX
 from agent_sessions.models import AgentSession
 from agent_sessions.transport import EmberSessionGone
 from faas.embervm_client import EmberVMTransportError
+
+
+@pytest.mark.asyncio
+async def test_run_synthetic_session_marks_its_origin(monkeypatch):
+    local_ids = []
+
+    def persist(local_session_id, workspace, branch, model, repo):
+        local_ids.append(local_session_id)
+        return AgentSession(
+            id=1,
+            local_session_id=local_session_id,
+            workspace=workspace,
+            branch=branch,
+            model=model,
+            repo=repo,
+        )
+
+    async def fail_delivery(*args, **kwargs):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(api, "_persist_session", persist)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
+    monkeypatch.setattr(api, "_mark_turn_error_sync", lambda *args: None)
+    monkeypatch.setattr(api._transport, "deliver", fail_delivery)
+
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        await api.run_synthetic_session("probe")
+
+    assert len(local_ids) == 1
+    assert local_ids[0].startswith(SYNTHETIC_SESSION_PREFIX)
 
 
 def test_start_session_for_swarm_retry_preserves_original_workflow_id(
