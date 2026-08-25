@@ -265,8 +265,7 @@
           <summary>
             <span class="cname">serving<small>always answering</small></span>
             <span class="cline"
-              >A warm HTTP endpoint; requests never touch the control
-              plane.</span
+              >A warm HTTP endpoint; requests never touch the control plane.</span
             >
           </summary>
           <div class="cmore">
@@ -300,15 +299,14 @@
           <summary>
             <span class="cname">composite<small>wakes as one</small></span>
             <span class="cline"
-              >Several VMs, one private network, banked and relit
-              together.</span
+              >Several VMs, one private network, banked and relit together.</span
             >
           </summary>
           <div class="cmore">
             <p>
               An all-or-none group. A scratch Kubernetes cluster ran as one
-              composite workload: control plane and workers woke together on
-              the first kubectl.
+              composite workload: control plane and workers woke together on the
+              first kubectl.
             </p>
           </div>
         </details>
@@ -577,7 +575,8 @@ serving                            → plain HTTP, straight into the VM</pre>
         {#each MILESTONES as m (m.name)}
           <details class="milestone" name="em-roadmap">
             <summary>
-              <span class="cb" class:todo={!m.done}>{m.done ? "[x]" : "[ ]"}</span
+              <span class="cb" class:todo={!m.done}
+                >{m.done ? "[x]" : "[ ]"}</span
               >
               <span class="rname">{m.name}</span>
             </summary>
