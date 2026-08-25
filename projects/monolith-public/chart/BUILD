@@ -26,8 +26,8 @@ filegroup(
 filegroup(
     name = "chart_render_inputs",
     srcs = [
-        "Chart.yaml",
         "Chart.lock",
+        "Chart.yaml",
         "values.yaml",
     ] + glob([
         "templates/**/*",

@@ -5470,8 +5470,8 @@ py_test(
     name = "public_cilium_scoped_egress_guard_test",
     srcs = ["public_cilium_scoped_egress_guard_test.py"],
     data = [
-        "//projects/monolith-public/chart:cilium_scoped_egress_template",
         "//projects/monolith-public/chart:chart_render_inputs",
+        "//projects/monolith-public/chart:cilium_scoped_egress_template",
         "//projects/monolith-public/deploy:deploy_values",
         "@multitool//tools/helm",
     ],
