@@ -92,7 +92,6 @@
     }, POLL_MS);
     return () => clearInterval(poll);
   });
-
 </script>
 
 <svelte:head>
@@ -502,8 +501,8 @@ serving                            → plain HTTP, straight into the VM</pre>
 
     <footer class="foot">
       <span
-        >Elixir/OTP control plane · Go node daemon · 10 of 12 roadmap
-        milestones shipped</span
+        >Elixir/OTP control plane · Go node daemon · 10 of 12 roadmap milestones
+        shipped</span
       >
       <span class="foot-links">
         <a href="https://github.com/jomcgi/homelab/tree/main/projects/embervm"
