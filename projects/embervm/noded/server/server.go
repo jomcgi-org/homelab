@@ -269,6 +269,18 @@ type Server struct {
 	// groupclock.Resync; overridable in tests.
 	groupClock groupClock
 
+	// Register-time snapshot data-format validation (#4407): the two probes behind
+	// snapformat.go's refusal check, overridable in tests exactly like the
+	// memHeadroom-style seams above. fcSupportedVersionFn asks OUR binary which
+	// snapshot data format it supports; fcDescribeVersionFn reads the format
+	// recorded in one base's snapfile. fcSupportedVer caches the first successful
+	// probe (nil until then: unknown support fails open, never refusing bases on
+	// absent information).
+	fcSupportedVersionFn func(string) (snapVersion, error)
+	fcDescribeVersionFn  func(string, string) (snapVersion, error)
+	fcVerMu              sync.Mutex
+	fcSupportedVer       *snapVersion
+
 	drainingMu          sync.RWMutex
 	draining            bool
 	drainDeadlineUnixMs int64
@@ -476,6 +488,10 @@ func New(opts Options) *Server {
 	s.cpuBudget = s.budget.CpuBudgetMillicores
 	s.cpuHeadroom = s.budget.CpuHeadroomMillicores
 	s.slotCeiling = s.budget.SlotCeiling
+	// #4407: default the snapshot-format probes to the real firecracker
+	// invocations; tests override the fields directly.
+	s.fcSupportedVersionFn = fcSnapshotSupportedVersion
+	s.fcDescribeVersionFn = fcDescribeSnapshotVersion
 	s.statefulResolveTimeout = defaultStatefulResolveTimeout
 	// Re-seed the serving-images inventory from disk so a daemon restart re-discovers
 	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
@@ -2808,6 +2824,23 @@ func (s *Server) ReconcileBasesFromDisk() {
 				buildErr = fmt.Sprintf("rootfs missing at %q, base cannot restore", rootfsPath)
 				s.logger.Warn("noded: base rootfs missing during reconcile, reporting base absent",
 					"base", baseKey, "rootfs", rootfsPath, "err", err)
+			}
+		}
+		// #4407: refuse to adopt a base whose snapshot data format the LOCAL binary
+		// cannot load. Formats are version-locked to the Firecracker that wrote
+		// them (same major, file minor not newer), so a base left by a different
+		// Firecracker generation fails PUT /snapshot/load on EVERY dispatch resting
+		// on it. Reporting NONE here (the only state the control plane acts on,
+		// same lane as the missing-rootfs branch above) turns that guaranteed
+		// per-dispatch abort into the normal absent-base rebuild. The dir is kept:
+		// a downgrade would make it usable again, and reclaiming superseded bases
+		// is retention's job, not adoption's.
+		if state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+			if refusal := s.snapshotFormatRefusal(snapfile); refusal != "" {
+				state = nodev1.BaseBuildState_BASE_BUILD_STATE_NONE
+				buildErr = refusal
+				s.logger.Warn("noded: refusing to register base with unusable snapshot format, reporting base absent",
+					"base", baseKey, "reason", refusal)
 			}
 		}
 		memfile := filepath.Join(root, baseKey, "memfile")
