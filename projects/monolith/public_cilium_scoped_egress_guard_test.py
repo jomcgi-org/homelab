@@ -1,4 +1,4 @@
-"""Guard (#5142, THREAT-MODEL finding 3): the public tier's destination-scoped
+"""Guard (#5142, security finding #5276): the public tier's destination-scoped
 egress policies must stay destination-scoped.
 
 ``cilium-policy-scoped-egress.yaml`` exists to replace the broad

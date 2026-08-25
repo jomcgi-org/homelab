@@ -1,0 +1,200 @@
+{
+  "lens": "security",
+  "commit": "ccaba452d",
+  "scope": {
+    "summary": "Deliberate attacks on EmberVM's control structure: an adversary who forges, withholds, or replays control actions or feedback. Same control structure as the logic lens, analyzed for attack rather than honest failure.",
+    "built": "bearer-token authentication on every unary and streaming gRPC call plus CiliumNetworkPolicy restricting noded ingress to control-plane pod selector labels (#4693); SigV4-authenticated access to S3 artifact store enforced by gateway (#4708); brick dial-home registration bound to the noded pod's projected token claim identity (#4707, closed by #5049); per-principal envelope encryption of mutable state and capability-gated restore authorization (#4691, armed in production and dev 2026-08); the brick silence timeout (ADR embervm/037) bounding node-local authority once control-plane contact goes stale, armed at 21600s in production and dev; warmth ownership transition guard (#4962) refreshing .alive claims and reaping unclaimed pre-heartbeat directories",
+    "designed": "mTLS/SPIFFE certificate-based mutual transport auth for noded, request-scoped GitHub tool mediation replacing host-keyed injection (ADR agents/055), digest-verified manifests for restored artifact integrity (ADR embervm/033 decision 3), per-workload egress allowlist scoping (ADR embervm/035)"
+  },
+  "losses": [
+    {
+      "key": "L.tenant-data-disclosure",
+      "title": "Another tenant's memory snapshot, session workspace, or state is read by an unauthorized principal"
+    },
+    {
+      "key": "L.tenant-data-corruption",
+      "title": "Another tenant's mutable state is written, deleted, or substituted by an unauthorized principal or brick"
+    },
+    {
+      "key": "L.credential-theft",
+      "title": "Egress credential, store credential, or bearer token is obtained and used by an unauthorized actor"
+    },
+    {
+      "key": "L.host-compromise",
+      "title": "A brick pod is compromised via a VMM escape or noded vulnerability and holds privileged access, store credential, and bearer token"
+    },
+    {
+      "key": "L.capacity-exhaustion",
+      "title": "A malicious tenant or unauthorized actor exhausts shared placement capacity, quota, or concurrency"
+    }
+  ],
+  "hazards": [
+    {
+      "key": "host-keyed-credential-overreach",
+      "view": "physical",
+      "statement": "host-keyed egress credential injection authorizes by destination host only, so a prompt-injected or compromised guest can shape any request to an allowlisted host and have the credential attached to it",
+      "losses": [
+        "L.credential-theft"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "identity-hijack",
+      "view": "physical",
+      "statement": "an actor holding the shared noded ServiceAccount token can re-register an existing brick's (node, pod_uid) at an address it controls and become the dial-home source the control plane treats as authoritative for that brick",
+      "losses": [
+        "L.credential-theft",
+        "L.host-compromise"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "shared-egress-allowlist-widening",
+      "view": "physical",
+      "statement": "egress.internal.allowlist is global to the shared sidecar rather than scoped per workload, so shotter's two new frontend destinations become reachable by every other egress-enabled workload (today the claude runtime, later pi if granted egress) with no per-workload authorization check",
+      "losses": [
+        "L.credential-theft"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "store-credential-unscoped",
+      "view": "physical",
+      "statement": "the S3 gateway now requires a valid SigV4-signed identity, but the embervm identity's credential is one secret rendered into every noded pod and the control plane, with bucket-wide read/write/list/tag reach over both the embervm and embervm-dev buckets; restore authorization is still storage-ACL-only, not scoped by (principal, lineage, brick, workload, generation, lease), so any brick holding the shared credential can write, substitute, or delete another principal's artifacts, bypassing noded's per-request artifact-verb checks entirely",
+      "losses": [
+        "L.tenant-data-corruption",
+        "L.tenant-data-disclosure"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "firecracker-no-jailer",
+      "view": "physical",
+      "statement": "noded execs the firecracker binary directly, as root, inside a privileged pod; the only per-VM containment added is a mount namespace for vsock isolation. Firecracker's built-in seccomp filter is active, but a VMM escape lands in a process holding /dev/kvm, the fleet-shared store credential, and the noded bearer token",
+      "losses": [
+        "L.host-compromise"
+      ],
+      "maturity": "built"
+    }
+  ],
+  "ucas": [
+    {
+      "key": "egress-proxy.inject_credential.providing",
+      "view": "physical",
+      "control_action": "egress-proxy.inject_credential",
+      "guideword": "providing",
+      "condition": "a prompt-injected guest gets a real credential attached to a request it authored, not one the operator intended",
+      "severity": "high",
+      "hazards": [
+        "host-keyed-credential-overreach"
+      ],
+      "evidence": "projects/embervm/ARCHITECTURE.md:745",
+      "status": "shipped-off",
+      "issue": "#5255"
+    },
+    {
+      "key": "noded.artifact_verb.wrong-ownership",
+      "view": "physical",
+      "control_action": "noded.artifact_verb",
+      "guideword": "providing",
+      "condition": "a compromised brick or a credential holder can write, evict, or substitute another principal's artifact; the store credential is still bucket-wide and fleet-shared, so a compromised brick can delete or overwrite any principal's artifacts",
+      "severity": "high",
+      "hazards": [
+        "store-credential-unscoped"
+      ],
+      "evidence": "projects/embervm/chart/templates/_noded-pod.tpl:353",
+      "status": "enforced-prod",
+      "issue": "#4691"
+    },
+    {
+      "key": "api.admit_task.cross-principal-artifact",
+      "view": "logical",
+      "control_action": "api.admit_task",
+      "guideword": "providing",
+      "condition": "a malicious principal submits a workload that references another principal's artifact ref or lineage; if accepted, cross-principal read of another tenant's state",
+      "severity": "high",
+      "hazards": [
+        "store-credential-unscoped"
+      ],
+      "evidence": "ADR embervm/027 open question 3, ARCHITECTURE.md section 8",
+      "status": "built",
+      "issue": "#4691"
+    },
+    {
+      "key": "control-plane.grpc_command.unauthorized-access",
+      "view": "physical",
+      "control_action": "control-plane.grpc_command",
+      "guideword": "providing",
+      "condition": "an attacker on the cluster network calls noded's gRPC surface (BuildBase, Assign, Destroy, RestoreArtifact) directly from anywhere on the pod network without a legitimate identity",
+      "severity": "high",
+      "hazards": [
+        "identity-hijack"
+      ],
+      "evidence": "projects/embervm/chart/templates/noded-networkpolicy.yaml:14-23",
+      "status": "enforced-prod",
+      "issue": "#4693"
+    }
+  ],
+  "unsafe_feedback": [
+    {
+      "key": "dial-home.unauthorized-source",
+      "view": "physical",
+      "from": "noded",
+      "to": "control-plane",
+      "signal": "dial-home registration {node, pod_uid, address, boot_id} + NodeStatus",
+      "guideword": "unauthorized-source",
+      "condition": "re-registering an existing (node, pod_uid) at a different address is accepted unconditionally and expires the prior instance, so identity is self-asserted under a ServiceAccount shared by every brick rather than bound to the actual brick",
+      "severity": "high",
+      "hazards": [
+        "identity-hijack"
+      ],
+      "evidence": "projects/embervm/control/lib/embervm/node_registry.ex:1320",
+      "status": "enforced-prod",
+      "issue": "#4707"
+    },
+    {
+      "key": "warmth-fetch.unauthorized-source",
+      "view": "physical",
+      "from": "s3-store",
+      "to": "noded",
+      "signal": "fetched artifact bytes on RestoreArtifact",
+      "guideword": "unauthorized-source",
+      "condition": "a memory snapshot or artifact noded restores as warmth may have been written by any brick holding that shared credential, not necessarily the legitimate owner of the lineage being restored; the credential itself is still one identity with bucket-wide write, list, and delete reach",
+      "severity": "high",
+      "hazards": [
+        "store-credential-unscoped"
+      ],
+      "evidence": "projects/embervm/chart/templates/_noded-pod.tpl:353",
+      "status": "enforced-prod",
+      "issue": "#4691"
+    },
+    {
+      "key": "shotter-egress-policy.unauthorized-source",
+      "view": "physical",
+      "from": "shotter-proxy",
+      "to": "egress-proxy",
+      "signal": "Forward request to allowlisted destination",
+      "guideword": "unauthorized-source",
+      "condition": "a guest on one egress-enabled workload benefits from a destination that was added to the allowlist for a different workload; the allowlist is global to the sidecar, so widening it for one workload widens it for every other egress-enabled workload",
+      "severity": "medium",
+      "hazards": [
+        "shared-egress-allowlist-widening"
+      ],
+      "evidence": "ADR embervm/035",
+      "status": "shipped-off",
+      "issue": "#4628"
+    }
+  ],
+  "non_ucas": [
+    {
+      "item": "a guest with no cluster credential accessing the store directly",
+      "reason": "noded is the sole store client; guests hold no cluster credential by construction, and have no network path to the store (ARCHITECTURE.md section 9)"
+    }
+  ],
+  "open_questions": [
+    "Whether per-workload egress allowlist scoping (ADR embervm/035 open question 1) should be implemented to prevent shared-egress-allowlist-widening",
+    "Whether digest-verified manifests for artifact integrity (ADR embervm/033 decision 3) should be implemented to detect deliberate artifact substitution by a credential holder",
+    "Whether the firecracker jailer (--jailer flag, #5255) should be enabled to contain a VMM escape",
+    "Whether request-scoped GitHub tool mediation (ADR agents/055) should replace host-keyed egress credential injection"
+  ]
+}

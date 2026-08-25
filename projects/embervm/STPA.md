@@ -1,23 +1,15 @@
-# STPA Control Analysis: embervm @ b1514fe38
+# STPA Control Analysis: embervm
 
-_Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there. Two views: logical (functional control flow) and physical (deployment)._
+_logic @ b1514fe38 · security @ ccaba452d_
+
+_Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._
 
 <details>
 <summary><b>How to read this</b>: STPA primer and diagram legend</summary>
 
-**STPA** (System-Theoretic Process Analysis) treats the system as *controllers* issuing *control actions* to *controlled processes*, with *feedback* flowing back up. Instead of "what component can fail," it asks "what control action, given or withheld at the wrong time, drives the system into an unsafe state?" "Unsafe" means a violation of this system's reason to exist, not merely a crash.
+**STPA** (System-Theoretic Process Analysis, Leveson) treats the system as controllers issuing control actions to controlled processes, with feedback flowing back. Instead of "what component fails," it asks "what control action, given or withheld at the wrong time, drives the system into an unsafe state?" Unsafe means a violation of this system's reason to exist. Multiple lenses (logic, security, governance) analyze the same control structure for different safety questions: mission failure, deliberate attack, data-processing violations. A finding appearing in multiple lenses is expected and correct.
 
-Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagrams** (one per view) show who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core, and **Unsafe Feedback** covers the dashed arrows: data channels whose absence, staleness, corruption, or spoofing drives a controller into a hazard. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.
-</details>
-
-**Scope.** EmberVM is a Firecracker microVM platform: an Elixir control plane admits and dispatches task, session, serving, and stateful workloads onto brick pods, each run by a privileged Go noded daemon that supervises guest VMs over vsock and dial-homes to register with the control plane. The lifecycle core (admission, generation blessing, delegated leases, orphan destroy, quarantine) is TLA+ verified and fail-closed. Built deployment controls as of this commit: the noded gRPC channel is bearer-token authenticated and NetworkPolicy-scoped to the control plane and enabled in production (#4693); the S3 artifact-store gateway enforces SigV4 identity authentication (#4708), leaving a residual fleet-shared credential tracked as store-credential-unscoped; the ADR embervm/037 brick silence timeout is armed at 21600s in both deploy and dev, bounding how long a partitioned brick keeps exercising node-local authority while preserving warmth fail-open; the #4962 warmth ownership guard writes .alive claims on every brick and reaps only unclaimed pre-heartbeat warmth; shotter readiness requires a real CDP trial capture, closing the formerly designed-only render-proof gap. Still designed-only: mTLS/SPIFFE certificate mutual auth, the node-local activator beyond cold boot, audience-scoped guest tokens, and request-scoped GitHub tool mediation. Per-principal envelope encryption and tuple-authorized restore moved out of this list on 2026-08-23 (#5233): the enforcement flags are armed in deploy and dev values.
-
-<details>
-<summary>Maturity detail</summary>
-
-- **Built:** task/session/serving/stateful/composite lifecycle managers, admission quota gate (fail-closed per-principal when a budget is configured), generation blessing (CP-issued pre-dispatch and checkpoint-abort self-heal via durable checkpoint_dispatched), delegated generation leases (BlessingLease, bounded and monotonic), orphan-destroy reconcile with an ACTIVATOR-origin adoption guard that runs before the destroy pass, S3 warmth GC that aborts the whole sweep on a partial listing, dial-home registration, brick-local egress credential injection scoped by egressTo, the shotter task-class guest (ADR embervm/035): a warm headless Chromium snapshot base behind an in-guest, image-baked, hard-allowlisted egress proxy, whose readiness is now gated on one real trial capture before /shim/ready flips, the noded gRPC control channel, authenticated by a static bearer token and scoped by a CiliumNetworkPolicy to control-plane-only ingress, enabled in production (#4693), SigV4-authenticated access to the S3 artifact store enforced by the gateway (enableAuth: true), enabled in production (#4708); the surviving embervm identity is one credential shared by every brick and the control plane, the brick silence timeout (ADR embervm/037) bounding node-local authority (activator wakes, group wakes, blessing-lease self-advance) once control-plane contact goes stale, armed at 21600s in production and dev, the warmth ownership transition guard (#4962): every brick refreshes a .alive claim per warmth segment and startup GC reaps only unclaimed pre-heartbeat directories or claims older than WarmthStaleAfter, principal-artifact envelope encryption and capability-gated restore in noded, reader path unconditional, writer and enforcement armed in production and dev as of 2026-08 (ADR embervm/033, #4691; status updated 2026-08-23 (#5233))
-- **Designed-only:** mTLS/SPIFFE certificate-based mutual transport auth for noded (#4693 delivered the bearer-token-plus-NetworkPolicy interim), node-local activator for stateful/composite wake beyond cold boot (partially landed, stateful activator currently only cold-boots), audience-scoped guest token, request-scoped GitHub tool mediation replacing host-keyed injection (ADR 055)
-- **Note:** ARCHITECTURE.md:672-674 still marks the brick silence timeout as Planned (#5073); the code (noded/server/server.go silenced/refuseIfSilenced, config.go SilenceTimeoutSeconds, deploy and dev values armed 21600) shipped at commit 248acd648, so this analysis trusts code over the stale doc pending the doc-flip PR. Separately, egress.internal.allowlist remains one global list shared by the sidecar rather than scoped per workload, so shotter destinations stay reachable by every other egress-enabled workload; see hazard shared-egress-allowlist-widening.
+Read top-down: Losses are outcomes we must prevent; Hazards are states leading to loss; diagrams show control structure (solid = control action, dashed = feedback); Unsafe Control Actions table is the core; Unsafe Feedback covers data channels (absent, stale, corrupted, spoofed). Every claim cites path:line; unbuilt elements are marked. Semantic stable IDs mean regenerating changes only findings that changed.
 </details>
 
 ## Control structure
@@ -26,7 +18,7 @@ Read top-down: **Losses** are outcomes we must never cause; **Hazards** are syst
 
 ```mermaid
 flowchart TD
-  subgraph control_plane["control-plane"]
+  subgraph control_plane["control_plane"]
     dispatcher["Admission, quota gate, placement, dispatch"]
     node-registry["Dial-home registry + reconcile inventory"]
     s3-warmth-gc["Artifact TTL sweep (abort on partial listing)"]
@@ -59,7 +51,7 @@ flowchart TD
     shotter-guest-init["Shotter guest-init (PID 1): launches Chromium, hosts the proxy, serves /shim/ready"]
     shotter-proxy["In-guest egress allowlist proxy (image-baked policy)"]
   end
-  subgraph control_plane["control-plane"]
+  subgraph control_plane["control_plane"]
     control-plane["Elixir control plane pod (1 replica, Recreate)"]
   end
   subgraph data["data"]
@@ -83,7 +75,35 @@ flowchart TD
   shotter-guest-init -. "GET /shim/ready 200 (CDP /json/version answered and one real trial capture produced non-empty PNG bytes)" .-> noded
 ```
 
-## Losses
+## Control actions
+
+| ID | View | Control action | Controller → Process | Maturity | Evidence |
+|----|----|----|----|----|----|
+| `api.admit_task` | logical | Admit task workload | `api` → `dispatcher` | built | projects/embervm/control/lib/embervm/router.ex:33 |
+| `control-plane.grpc_command` | physical | gRPC lifecycle command (BuildBase, Prime, Assign, Destroy, DeleteVolume, RestoreArtifact) | `control-plane` → `noded` | built | projects/embervm/proto/embervm/node/v1/node.proto:57 |
+| `dispatcher.quota_gate` | logical | Gate quota on admission | `dispatcher` → `op-log` | built | projects/embervm/control/lib/embervm/dispatcher.ex:258 |
+| `egress-proxy.inject_credential` | physical | Inject credential into request | `egress-proxy` → `external-host` | built | projects/embervm/ARCHITECTURE.md:710 |
+| `node-envoy.dnat_route` | physical | DNAT route to guest | `node-envoy` → `guest-vm` | built | projects/embervm/ARCHITECTURE.md:193 |
+| `noded.artifact_verb` | physical | Access artifact in store (get, put, delete, list, tag) | `noded` → `s3-store` | built | projects/embervm/proto/embervm/node/v1/node.proto:463 |
+| `noded.refuse_if_silenced` | physical | Refuse local authority if control-plane contact stale | `noded` → `noded` | built | projects/embervm/noded/server/server.go:619 |
+| `noded.vsock_dispatch` | physical | vsock dispatch to guest | `noded` → `guest-vm` | built | projects/embervm/ARCHITECTURE.md:234 |
+| `shotter-chromium.fetch_subresource` | physical | Fetch subresource from rendered page | `shotter-chromium` → `shotter-proxy` | built | projects/embervm/runtimes/shotter/guest-init/cmd/main.go:168 |
+| `shotter-proxy.forward_allowed` | physical | Forward request to allowlisted destination | `shotter-proxy` → `egress-proxy` | built | projects/embervm/runtimes/shotter/guest-init/cmd/proxy.go:391-405 |
+| `stateful-manager.bless_generation` | logical | Issue blessed generation | `stateful-manager` → `op-log` | built | projects/embervm/control/lib/embervm/stateful_manager.ex:676 |
+| `stateful-manager.destroy_orphan` | logical | Destroy orphaned VM | `stateful-manager` → `node-registry` | built | projects/embervm/control/lib/embervm/stateful_manager.ex:2027 |
+
+## Lens: logic
+
+**Scope.** EmberVM is a Firecracker microVM platform: an Elixir control plane admits and dispatches task, session, serving, and stateful workloads onto brick pods, each run by a privileged Go noded daemon that supervises guest VMs over vsock and dial-homes to register with the control plane.
+
+<details>
+<summary>Maturity detail</summary>
+
+- **Built:** task/session/serving/stateful/composite lifecycle managers, admission quota gate (fail-closed per-principal when a budget is configured), generation blessing (CP-issued pre-dispatch and checkpoint-abort self-heal via durable checkpoint_dispatched), delegated generation leases (BlessingLease, bounded and monotonic), orphan-destroy reconcile with an ACTIVATOR-origin adoption guard that runs before the destroy pass, S3 warmth GC that aborts the whole sweep on a partial listing, dial-home registration, brick-local egress credential injection scoped by egressTo, the shotter task-class guest (ADR embervm/035): a warm headless Chromium snapshot base behind an in-guest, image-baked, hard-allowlisted egress proxy, whose readiness is now gated on one real trial capture before /shim/ready flips, the noded gRPC control channel, authenticated by a static bearer token and scoped by a CiliumNetworkPolicy to control-plane-only ingress, enabled in production (#4693), SigV4-authenticated access to the S3 artifact store enforced by the gateway (enableAuth: true), enabled in production (#4708); the surviving embervm identity is one credential shared by every brick and the control plane, the brick silence timeout (ADR embervm/037) bounding node-local authority (activator wakes, group wakes, blessing-lease self-advance) once control-plane contact goes stale, armed at 21600s in production and dev, the warmth ownership transition guard (#4962): every brick refreshes a .alive claim per warmth segment and startup GC reaps only unclaimed pre-heartbeat directories or claims older than WarmthStaleAfter, principal-artifact envelope encryption and capability-gated restore in noded, reader path unconditional, writer and enforcement armed in production and dev as of 2026-08 (ADR embervm/033, #4691; status updated 2026-08-23 (#5233))
+- **Designed-only:** mTLS/SPIFFE certificate-based mutual transport auth for noded (#4693 delivered the bearer-token-plus-NetworkPolicy interim), node-local activator for stateful/composite wake beyond cold boot (partially landed, stateful activator currently only cold-boots), audience-scoped guest token, request-scoped GitHub tool mediation replacing host-keyed injection (ADR 055)
+</details>
+
+### Losses
 
 | ID | Loss |
 |----|------|
@@ -94,7 +114,7 @@ flowchart TD
 | `L.silent-incorrectness` | A caller receives a served or resumed result derived from stale, forged, or wrong state with no signal |
 | `L.unauthorized-access` | An actor obtains a capability, credential reach, or execution path beyond its principal or role |
 
-## Hazards
+### Hazards
 
 | ID | View | Hazard (unsafe state) | → Losses | Maturity |
 |----|----|----|----|----|
@@ -108,34 +128,15 @@ flowchart TD
 | `store-credential-unscoped` | physical | the S3 gateway now requires a valid SigV4-signed identity, but the embervm identity's credential is one secret rendered into every noded pod and the control plane, with bucket-wide read/write/list/tag reach over both the embervm and embervm-dev buckets; restore authorization is still storage-ACL-only, not scoped by (principal, lineage, brick, workload, generation, lease), so any brick holding the shared credential can write, substitute, or delete another principal's artifacts, bypassing noded's per-request artifact-verb checks entirely | L.integrity-loss, L.silent-incorrectness | built |
 | `unmodeled-checkpoint-abort` | logical | the interruptible-bank checkpoint commit/abort protocol (generation-advance-then-delete-temp-then-resume ordering, resolve-timeout auto-abort, blessed-vs-self-bump discrimination) governs whether a resumed VM's generation pairing stays trustworthy, but is verified only by code comments, unlike the bank/relight pairing invariant it sits underneath | L.integrity-loss, L.silent-incorrectness | built |
 
-## Control actions
-
-| ID | View | Control action | Controller → Process | Maturity | Evidence |
-|----|----|----|----|----|----|
-| `api.admit_task` | logical |  | `api` → `dispatcher` |  | projects/embervm/control/lib/embervm/router.ex:33 |
-| `control-plane.grpc_command` | physical |  | `control-plane` → `noded` |  | projects/embervm/proto/embervm/node/v1/node.proto:57 |
-| `dispatcher.quota_gate` | logical |  | `dispatcher` → `op-log` |  | projects/embervm/control/lib/embervm/dispatcher.ex:258 |
-| `egress-proxy.inject_credential` | physical |  | `egress-proxy` → `external-host` |  | projects/embervm/ARCHITECTURE.md:710 |
-| `node-envoy.dnat_route` | physical |  | `node-envoy` → `guest-vm` |  | projects/embervm/ARCHITECTURE.md:193 |
-| `noded.artifact_verb` | physical |  | `noded` → `s3-store` |  | projects/embervm/proto/embervm/node/v1/node.proto:463 |
-| `noded.refuse_if_silenced` | physical |  | `noded` → `noded` |  | projects/embervm/noded/server/server.go:619 |
-| `noded.vsock_dispatch` | physical |  | `noded` → `guest-vm` |  | projects/embervm/ARCHITECTURE.md:234 |
-| `shotter-chromium.fetch_subresource` | physical |  | `shotter-chromium` → `shotter-proxy` |  | projects/embervm/runtimes/shotter/guest-init/cmd/main.go:168 |
-| `shotter-proxy.forward_allowed` | physical |  | `shotter-proxy` → `egress-proxy` |  | projects/embervm/runtimes/shotter/guest-init/cmd/proxy.go:391-405 |
-| `stateful-manager.bless_generation` | logical |  | `stateful-manager` → `op-log` |  | projects/embervm/control/lib/embervm/stateful_manager.ex:676 |
-| `stateful-manager.destroy_orphan` | logical |  | `stateful-manager` → `node-registry` |  | projects/embervm/control/lib/embervm/stateful_manager.ex:2027 |
-
-## Unsafe control actions
-
-*The core of the analysis. Each row: a control action made unsafe via one guideword, the hazard/loss it causes, and where in the code it lives.*
+### Unsafe control actions
 
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|----|
-| `egress-proxy.inject_credential.providing` | physical | `null` | providing | the proxy injects a real credential into any request whose destination host is allowlisted, regardless of what the guest-originated request actually asks that host to do, so a prompt-injected guest can direct the credentialed call | medium | host-keyed-credential-overreach | projects/embervm/ARCHITECTURE.md:745 |
+| `egress-proxy.inject_credential.providing` | physical | `egress-proxy.inject_credential` | providing | the proxy injects a real credential into any request whose destination host is allowlisted, regardless of what the guest-originated request actually asks that host to do, so a prompt-injected guest can direct the credentialed call | medium | host-keyed-credential-overreach | projects/embervm/ARCHITECTURE.md:745 |
 
-## Unsafe feedback
+### Unsafe feedback
 
-*Feedback and data channels whose absence, staleness, corruption, or spoofed origin drives a controller into a hazard. This is where data-integrity failures live.*
+*Data channels (absent, stale, corrupted, spoofed) whose failure drives a controller into a hazard.*
 
 | ID | View | Channel | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|----|
@@ -161,8 +162,71 @@ flowchart TD
 - **the noded gRPC control channel accepting BuildBase/Prime/Assign/Destroy/DeleteVolume/RestoreArtifact from any pod-network caller (formerly hazard open-node-control-channel)**: closed in production: the gRPC surface is now bearer-token authenticated (EMBERVM_NODED_BEARER_TOKEN gates unaryAuthInterceptor/streamAuthInterceptor, noded/cmd/main.go:286-293) AND a CiliumNetworkPolicy restricts gRPC-port ingress to only the control-plane pod's own selector labels, excluding noded's own brick labels (chart/templates/noded-networkpolicy.yaml:14-23); both bearerTokenSecret.enabled and networkPolicy.enabled are true in deploy/values.yaml (#4693, closed)
 </details>
 
-## Open questions
+### Open questions
 
 - Whether a chart conformance test should pin the stateful/composite activator port ranges (5400-5419) into noded-networkpolicy.yaml: the 2026-08-22 first enable omitted them and dropped a cold wake to noded:5401 for 14 minutes (deploy/values.yaml:163-166), and nothing structural prevents a repeat edit from doing the same.
 - Whether egress.internal.allowlist should become scoped per egress-enabled workload rather than global to the sidecar (ADR embervm/035 open question 1); shared-egress-allowlist-widening tracks the safety consequence of leaving it global.
 - Whether the store-credential-unscoped residual (a shared, bucket-wide S3 identity) should be re-scoped per principal now that the ADR embervm/033 rollout is armed end to end in production and dev (kekRoot, EMBERVM_ARTIFACT_ENCRYPTION, store.encrypt, requireRestoreCapability; #4691, status updated 2026-08-23 (#5233)): what survives of the residual is write/delete reach and key custody, since reads of encrypted warmth yield ciphertext.
+
+## Lens: security
+
+**Scope.** Deliberate attacks on EmberVM's control structure: an adversary who forges, withholds, or replays control actions or feedback. Same control structure as the logic lens, analyzed for attack rather than honest failure.
+
+<details>
+<summary>Maturity detail</summary>
+
+- **Built:** bearer-token authentication on every unary and streaming gRPC call plus CiliumNetworkPolicy restricting noded ingress to control-plane pod selector labels (#4693); SigV4-authenticated access to S3 artifact store enforced by gateway (#4708); brick dial-home registration bound to the noded pod's projected token claim identity (#4707, closed by #5049); per-principal envelope encryption of mutable state and capability-gated restore authorization (#4691, armed in production and dev 2026-08); the brick silence timeout (ADR embervm/037) bounding node-local authority once control-plane contact goes stale, armed at 21600s in production and dev; warmth ownership transition guard (#4962) refreshing .alive claims and reaping unclaimed pre-heartbeat directories
+- **Designed-only:** mTLS/SPIFFE certificate-based mutual transport auth for noded, request-scoped GitHub tool mediation replacing host-keyed injection (ADR agents/055), digest-verified manifests for restored artifact integrity (ADR embervm/033 decision 3), per-workload egress allowlist scoping (ADR embervm/035)
+</details>
+
+### Losses
+
+| ID | Loss |
+|----|------|
+| `L.capacity-exhaustion` | A malicious tenant or unauthorized actor exhausts shared placement capacity, quota, or concurrency |
+| `L.credential-theft` | Egress credential, store credential, or bearer token is obtained and used by an unauthorized actor |
+| `L.host-compromise` | A brick pod is compromised via a VMM escape or noded vulnerability and holds privileged access, store credential, and bearer token |
+| `L.tenant-data-corruption` | Another tenant's mutable state is written, deleted, or substituted by an unauthorized principal or brick |
+| `L.tenant-data-disclosure` | Another tenant's memory snapshot, session workspace, or state is read by an unauthorized principal |
+
+### Hazards
+
+| ID | View | Hazard (unsafe state) | → Losses | Maturity |
+|----|----|----|----|----|
+| `firecracker-no-jailer` | physical | noded execs the firecracker binary directly, as root, inside a privileged pod; the only per-VM containment added is a mount namespace for vsock isolation. Firecracker's built-in seccomp filter is active, but a VMM escape lands in a process holding /dev/kvm, the fleet-shared store credential, and the noded bearer token | L.host-compromise | built |
+| `host-keyed-credential-overreach` | physical | host-keyed egress credential injection authorizes by destination host only, so a prompt-injected or compromised guest can shape any request to an allowlisted host and have the credential attached to it | L.credential-theft | built |
+| `identity-hijack` | physical | an actor holding the shared noded ServiceAccount token can re-register an existing brick's (node, pod_uid) at an address it controls and become the dial-home source the control plane treats as authoritative for that brick | L.credential-theft, L.host-compromise | built |
+| `shared-egress-allowlist-widening` | physical | egress.internal.allowlist is global to the shared sidecar rather than scoped per workload, so shotter's two new frontend destinations become reachable by every other egress-enabled workload (today the claude runtime, later pi if granted egress) with no per-workload authorization check | L.credential-theft | built |
+| `store-credential-unscoped` | physical | the S3 gateway now requires a valid SigV4-signed identity, but the embervm identity's credential is one secret rendered into every noded pod and the control plane, with bucket-wide read/write/list/tag reach over both the embervm and embervm-dev buckets; restore authorization is still storage-ACL-only, not scoped by (principal, lineage, brick, workload, generation, lease), so any brick holding the shared credential can write, substitute, or delete another principal's artifacts, bypassing noded's per-request artifact-verb checks entirely | L.tenant-data-corruption, L.tenant-data-disclosure | built |
+
+### Unsafe control actions
+
+| ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
+|----|----|----|----|----|----|----|----|----|----|
+| `api.admit_task.cross-principal-artifact` | logical | `api.admit_task` | providing | a malicious principal submits a workload that references another principal's artifact ref or lineage; if accepted, cross-principal read of another tenant's state | high | store-credential-unscoped | built | #4691 | ADR embervm/027 open question 3, ARCHITECTURE.md section 8 |
+| `control-plane.grpc_command.unauthorized-access` | physical | `control-plane.grpc_command` | providing | an attacker on the cluster network calls noded's gRPC surface (BuildBase, Assign, Destroy, RestoreArtifact) directly from anywhere on the pod network without a legitimate identity | high | identity-hijack | enforced-prod | #4693 | projects/embervm/chart/templates/noded-networkpolicy.yaml:14-23 |
+| `egress-proxy.inject_credential.providing` | physical | `egress-proxy.inject_credential` | providing | a prompt-injected guest gets a real credential attached to a request it authored, not one the operator intended | high | host-keyed-credential-overreach | shipped-off | #5255 | projects/embervm/ARCHITECTURE.md:745 |
+| `noded.artifact_verb.wrong-ownership` | physical | `noded.artifact_verb` | providing | a compromised brick or a credential holder can write, evict, or substitute another principal's artifact; the store credential is still bucket-wide and fleet-shared, so a compromised brick can delete or overwrite any principal's artifacts | high | store-credential-unscoped | enforced-prod | #4691 | projects/embervm/chart/templates/_noded-pod.tpl:353 |
+
+### Unsafe feedback
+
+*Data channels (absent, stale, corrupted, spoofed) whose failure drives a controller into a hazard.*
+
+| ID | View | Channel | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
+|----|----|----|----|----|----|----|----|----|----|
+| `dial-home.unauthorized-source` | physical | `noded` → `control-plane`: dial-home registration {node, pod_uid, address, boot_id} + NodeStatus | unauthorized-source | re-registering an existing (node, pod_uid) at a different address is accepted unconditionally and expires the prior instance, so identity is self-asserted under a ServiceAccount shared by every brick rather than bound to the actual brick | high | identity-hijack | enforced-prod | #4707 | projects/embervm/control/lib/embervm/node_registry.ex:1320 |
+| `shotter-egress-policy.unauthorized-source` | physical | `shotter-proxy` → `egress-proxy`: Forward request to allowlisted destination | unauthorized-source | a guest on one egress-enabled workload benefits from a destination that was added to the allowlist for a different workload; the allowlist is global to the sidecar, so widening it for one workload widens it for every other egress-enabled workload | medium | shared-egress-allowlist-widening | shipped-off | #4628 | ADR embervm/035 |
+| `warmth-fetch.unauthorized-source` | physical | `s3-store` → `noded`: fetched artifact bytes on RestoreArtifact | unauthorized-source | a memory snapshot or artifact noded restores as warmth may have been written by any brick holding that shared credential, not necessarily the legitimate owner of the lineage being restored; the credential itself is still one identity with bucket-wide write, list, and delete reach | high | store-credential-unscoped | enforced-prod | #4691 | projects/embervm/chart/templates/_noded-pod.tpl:353 |
+
+<details>
+<summary><b>Not UCAs</b>: 1 examined and rejected</summary>
+
+- **a guest with no cluster credential accessing the store directly**: noded is the sole store client; guests hold no cluster credential by construction, and have no network path to the store (ARCHITECTURE.md section 9)
+</details>
+
+### Open questions
+
+- Whether digest-verified manifests for artifact integrity (ADR embervm/033 decision 3) should be implemented to detect deliberate artifact substitution by a credential holder
+- Whether per-workload egress allowlist scoping (ADR embervm/035 open question 1) should be implemented to prevent shared-egress-allowlist-widening
+- Whether request-scoped GitHub tool mediation (ADR agents/055) should replace host-keyed egress credential injection
+- Whether the firecracker jailer (--jailer flag, #5255) should be enabled to contain a VMM escape

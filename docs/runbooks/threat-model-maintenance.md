@@ -3,6 +3,9 @@
 The aggregate index is [docs/THREAT-MODEL.md](../THREAT-MODEL.md); ADR
 [security/007](../decisions/security/007-aggregate-threat-model-index.md)
 is the rationale. This runbook is the procedure.
+Issue [#5294](https://github.com/jomcgi-org/homelab/issues/5294) moved
+per-domain models into STPA security lenses. ADR security/007 decision 3 is
+superseded, as recorded in the issue, so no new ADR is needed.
 
 ## Add a finding
 
@@ -14,14 +17,15 @@ is the rationale. This runbook is the procedure.
 
    The body states what exists, what an attacker gets, and what done
    means.
-2. If the domain has a `projects/<domain>/THREAT-MODEL.md`, update its
-   attack-table row and section 5 ranking.
+2. Edit `projects/<domain>/stpa/security.json`: add or update the UCA or
+   unsafe-feedback row with `status` and `issue` fields. Re-render `STPA.md`
+   with the `stpa` skill; never hand-edit `STPA.md`.
 3. Re-rank `docs/THREAT-MODEL.md`: bold claim, issue link, one plain
    sentence. Update the "Reviewed against commit" line.
 
 ## Close a finding
 
-Close the issue. Remove the index entry, and move the per-domain row's
+Close the issue. Remove the index entry, and move the security lens row's
 status label in the same PR as the fix when there is one.
 
 ## Verify before writing
@@ -33,18 +37,18 @@ session memory over the code.
   (enforced prod / enforced dev / shipped off / designed / none) means
   you followed the flag to its consumer, not that a values file declares
   it.
-- Grep for an existing `projects/<domain>/THREAT-MODEL.md` before
+- Grep `projects/<domain>/stpa/security.json` before
   writing "none yet".
 - `grep deploy/values.yaml` before any "off by default" claim.
 
-## Write a per-domain model
+## Add a security lens to a domain
 
-Copy the shape of
-[projects/embervm/THREAT-MODEL.md](../../projects/embervm/THREAT-MODEL.md):
-trust boundaries, adversaries, assets, one attack table per adversary
-with status labels, ranked residuals, explicit exclusions. Stamp the
-commit under the H1. Write one when a surface starts taking untrusted
-input the baseline controls do not describe.
+Run the `stpa` skill with the `security` lens for that system. It consumes
+committed `stpa/structure.json`, produces `stpa/security.json`, and renders
+the lens into `STPA.md`. Every security row requires `status`, which must be
+one of `enforced-prod`, `enforced-dev`, `shipped-off`, `designed`, or `none`.
+Add `issue` wherever the row is tracked. Include trust boundaries and
+exclusions only when they map to the lens scope, losses, or hazards.
 
 ## Model review before sharing
 

@@ -119,7 +119,7 @@ Reference `docs/security.md` for baseline. Document any deviations.
 ### Step 3: Register the ADR
 
 ADRs are repo-only. They do not appear on the public docs site. The public site
-publishes `projects/<p>/{README,ARCHITECTURE,STPA,THREAT-MODEL}.md` for the
+publishes `projects/<p>/{README,ARCHITECTURE,STPA}.md` for the
 projects listed in `projects/monolith/knowledge/tools/gen_docs_manifest.py`.
 
 1. **Write the heading first.** The repo-docs knowledge manifest derives the

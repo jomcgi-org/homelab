@@ -1,0 +1,488 @@
+{
+  "system": "monolith",
+  "system_dir": "projects/monolith",
+  "commit": "248acd648",
+  "nodes": [
+    {
+      "key": "console-caller",
+      "label": "Private /agents console (human operator)",
+      "view": "logical",
+      "layer": "actor",
+      "maturity": "built"
+    },
+    {
+      "key": "discord-user",
+      "label": "Discord user",
+      "view": "logical",
+      "layer": "actor",
+      "maturity": "built"
+    },
+    {
+      "key": "mcp-caller",
+      "label": "MCP-authenticated caller (agent)",
+      "view": "logical",
+      "layer": "actor",
+      "maturity": "built"
+    },
+    {
+      "key": "embervm-sandbox",
+      "label": "EmberVM per-language sandbox task guests (see projects/embervm/STPA.md)",
+      "view": "logical",
+      "layer": "boundary",
+      "maturity": "built"
+    },
+    {
+      "key": "embervm-shotter",
+      "label": "EmberVM shotter task guest (see projects/embervm/STPA.md)",
+      "view": "logical",
+      "layer": "boundary",
+      "maturity": "built"
+    },
+    {
+      "key": "agent-runner",
+      "label": "Agent session runner (claim-lease over all replicas)",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "bot",
+      "label": "Discord bot (leader singleton)",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "leader-elector",
+      "label": "Leader elector",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "outbox",
+      "label": "Discord outbox drain",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "scheduler-api",
+      "label": "Scheduler read/trigger API",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "acl",
+      "label": "Feature ACL (grant cache)",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built"
+    },
+    {
+      "key": "principal-mw",
+      "label": "Principal middleware (bearer auth, cached JWKS)",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built"
+    },
+    {
+      "key": "shotter-validate",
+      "label": "Shotter URL/host allowlist (2nd layer)",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built"
+    },
+    {
+      "key": "docs-manifest-gen",
+      "label": "Docs/posts manifest generator (CI Format stage)",
+      "view": "logical",
+      "layer": "publish",
+      "maturity": "built"
+    },
+    {
+      "key": "public-api",
+      "label": "Public backend (read + bounded writes)",
+      "view": "logical",
+      "layer": "serving",
+      "maturity": "built"
+    },
+    {
+      "key": "public-frontend",
+      "label": "Public SSR frontend",
+      "view": "logical",
+      "layer": "serving",
+      "maturity": "built"
+    },
+    {
+      "key": "sandbox-tool",
+      "label": "run_code MCP tool (per-language sandbox broker)",
+      "view": "logical",
+      "layer": "serving",
+      "maturity": "built"
+    },
+    {
+      "key": "shotter-tool",
+      "label": "Shotter screenshot MCP tool",
+      "view": "logical",
+      "layer": "serving",
+      "maturity": "built"
+    },
+    {
+      "key": "postgres",
+      "label": "Postgres (per-domain schemas)",
+      "view": "logical",
+      "layer": "store",
+      "maturity": "built"
+    },
+    {
+      "key": "frontend-ssr",
+      "label": "SvelteKit SSR sidecar",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "private-binary",
+      "label": "monolith (full secrets)",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "public-binary",
+      "label": "monolith-public backend (constrained DB + FaaS access)",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "embervm",
+      "label": "EmberVM / FaaS admission",
+      "view": "physical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "migrations",
+      "label": "Grant migrations",
+      "view": "physical",
+      "layer": "data",
+      "maturity": "built"
+    },
+    {
+      "key": "pg-primary",
+      "label": "CNPG primary (-rw)",
+      "view": "physical",
+      "layer": "data",
+      "maturity": "built"
+    },
+    {
+      "key": "pg-replica",
+      "label": "CNPG hot standby (-ro)",
+      "view": "physical",
+      "layer": "data",
+      "maturity": "built"
+    },
+    {
+      "key": "shotter-store",
+      "label": "SeaweedFS shotter bucket (content-addressed PNGs)",
+      "view": "physical",
+      "layer": "data",
+      "maturity": "built"
+    },
+    {
+      "key": "cf-ingress",
+      "label": "Cloudflare ingress (Envoy Gateway)",
+      "view": "physical",
+      "layer": "ingress",
+      "maturity": "built"
+    },
+    {
+      "key": "k8s-api",
+      "label": "Kubernetes API",
+      "view": "physical",
+      "layer": "secrets",
+      "maturity": "built"
+    },
+    {
+      "key": "onepassword",
+      "label": "1Password operator",
+      "view": "physical",
+      "layer": "secrets",
+      "maturity": "built"
+    }
+  ],
+  "control_actions": [
+    {
+      "key": "acl.check",
+      "label": "Authorize a Discord feature action",
+      "view": "logical",
+      "from": "bot",
+      "to": "acl",
+      "maturity": "built",
+      "evidence": "projects/monolith/chat/acl.py:68"
+    },
+    {
+      "key": "agent.reclaim",
+      "label": "Reclaim stale turn claims left by a crashed replica (leader-owned 5s sweep)",
+      "view": "logical",
+      "from": "leader-elector",
+      "to": "agent-runner",
+      "maturity": "built",
+      "evidence": "projects/monolith/agent_sessions/store.py:772"
+    },
+    {
+      "key": "agent.submit",
+      "label": "Submit a Discord-triggered agent turn to the runner",
+      "view": "logical",
+      "from": "bot",
+      "to": "agent-runner",
+      "maturity": "built",
+      "evidence": "projects/monolith/chat/bot.py:1172"
+    },
+    {
+      "key": "chatpublic.write",
+      "label": "Write a bounded chat_public row to the primary as public_writer",
+      "view": "physical",
+      "from": "public-binary",
+      "to": "pg-primary",
+      "maturity": "built",
+      "evidence": "projects/monolith-public/chart/values.yaml:82"
+    },
+    {
+      "key": "console.submit",
+      "label": "Start or continue an agent session from the private console",
+      "view": "logical",
+      "from": "console-caller",
+      "to": "agent-runner",
+      "maturity": "built",
+      "evidence": "projects/monolith/agent_sessions/router.py:544"
+    },
+    {
+      "key": "docs.publish",
+      "label": "Copy an allowlisted repo doc's full body into the public docs/posts manifest",
+      "view": "logical",
+      "from": "docs-manifest-gen",
+      "to": "public-frontend",
+      "maturity": "built",
+      "evidence": "projects/monolith/knowledge/tools/gen_docs_manifest.py:128"
+    },
+    {
+      "key": "frontend.proxy",
+      "label": "Proxy SSR/API calls from the frontend to the public backend, in-cluster only",
+      "view": "physical",
+      "from": "frontend-ssr",
+      "to": "public-binary",
+      "maturity": "built",
+      "evidence": "projects/monolith-public/chart/templates/httproute-public.yaml:33"
+    },
+    {
+      "key": "grant.public-reader",
+      "label": "Grant public_reader SELECT on a schema/view",
+      "view": "physical",
+      "from": "migrations",
+      "to": "pg-replica",
+      "maturity": "built",
+      "evidence": "projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24"
+    },
+    {
+      "key": "k8s.mutate",
+      "label": "Mutate cluster state via private MCP (ArgoCD sync)",
+      "view": "physical",
+      "from": "private-binary",
+      "to": "k8s-api",
+      "maturity": "built",
+      "evidence": "projects/monolith/cluster/mcp.py:163"
+    },
+    {
+      "key": "leader.acquire",
+      "label": "Acquire/renew/steal the singleton lease",
+      "view": "logical",
+      "from": "leader-elector",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/core/leadership.py:56"
+    },
+    {
+      "key": "lock.reclaim",
+      "label": "Reclaim an expired message-processing lock",
+      "view": "logical",
+      "from": "bot",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/chat/leader.py:109"
+    },
+    {
+      "key": "mcp.authorize",
+      "label": "Verify the bearer token on every MCP message (stateless streamable HTTP)",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "principal-mw",
+      "maturity": "built",
+      "evidence": "projects/monolith/framework/core.py:543"
+    },
+    {
+      "key": "outbox.post",
+      "label": "Drain and post a queued Discord message/edit/reaction",
+      "view": "logical",
+      "from": "outbox",
+      "to": "bot",
+      "maturity": "built",
+      "evidence": "projects/monolith/chat/outbox.py:146"
+    },
+    {
+      "key": "public.health",
+      "label": "Probe the public database as public_reader (SELECT 1)",
+      "view": "logical",
+      "from": "public-api",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/framework/core.py:322"
+    },
+    {
+      "key": "route.public",
+      "label": "Route the public hostname to the frontend SSR (no direct backend route)",
+      "view": "physical",
+      "from": "cf-ingress",
+      "to": "frontend-ssr",
+      "maturity": "built",
+      "evidence": "projects/monolith-public/chart/templates/httproute-public.yaml:13"
+    },
+    {
+      "key": "sandbox.run",
+      "label": "Run short code in a per-language zero-egress guest",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "sandbox-tool",
+      "maturity": "built",
+      "evidence": "projects/monolith/sandbox/mcp.py:14"
+    },
+    {
+      "key": "scheduler.trigger",
+      "label": "Mark a job for immediate run",
+      "view": "logical",
+      "from": "scheduler-api",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/scheduler/service.py:35"
+    },
+    {
+      "key": "secret.deliver-public",
+      "label": "Deliver only the public backend's constrained DB, Turnstile, and signing material",
+      "view": "physical",
+      "from": "onepassword",
+      "to": "public-binary",
+      "maturity": "built",
+      "evidence": "projects/monolith-public/chart/templates/onepassworditem.yaml:1"
+    },
+    {
+      "key": "shotter.capture",
+      "label": "Request a rendered screenshot of a public/private page",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "shotter-tool",
+      "maturity": "built",
+      "evidence": "projects/monolith/shotter/mcp.py:123"
+    },
+    {
+      "key": "shotter.dispatch",
+      "label": "Dispatch a fresh task-class guest to render the URL",
+      "view": "logical",
+      "from": "shotter-tool",
+      "to": "embervm-shotter",
+      "maturity": "built",
+      "evidence": "projects/monolith/shotter/client.py:91"
+    },
+    {
+      "key": "shotter.store",
+      "label": "Best-effort content-addressed upload of the captured PNG",
+      "view": "physical",
+      "from": "private-binary",
+      "to": "shotter-store",
+      "maturity": "built",
+      "evidence": "projects/monolith/shotter/s3.py:83"
+    },
+    {
+      "key": "shotter.validate",
+      "label": "Validate scheme/host/dimensions before dispatch (2nd, defense-in-depth layer)",
+      "view": "logical",
+      "from": "shotter-tool",
+      "to": "shotter-validate",
+      "maturity": "built",
+      "evidence": "projects/monolith/shotter/mcp.py:56"
+    },
+    {
+      "key": "singletons.start",
+      "label": "Start leader-only singletons (bot, ingest, drain, sweep)",
+      "view": "logical",
+      "from": "leader-elector",
+      "to": "bot",
+      "maturity": "built",
+      "evidence": "projects/monolith/framework/core.py:236"
+    }
+  ],
+  "feedback": [
+    {
+      "view": "logical",
+      "from": "embervm-sandbox",
+      "to": "sandbox-tool",
+      "signal": "stdout/stderr/exit_code/files for the run (Idempotency-Key from language+code only)"
+    },
+    {
+      "view": "logical",
+      "from": "embervm-shotter",
+      "to": "shotter-tool",
+      "signal": "captured PNG + render metadata (random per-call Idempotency-Key)"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "acl",
+      "signal": "feature grant rows (30s cached)"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "agent-runner",
+      "signal": "claimed_by_replica + claimed_at lease row"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "leader-elector",
+      "signal": "lease heartbeat freshness"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "public-api",
+      "signal": "observability topology/stats snapshots"
+    },
+    {
+      "view": "logical",
+      "from": "public-frontend",
+      "to": "public-api",
+      "signal": "SSR/API proxy"
+    },
+    {
+      "view": "logical",
+      "from": "shotter-tool",
+      "to": "mcp-caller",
+      "signal": "stored URL + stored flag (_meta) for the captured PNG"
+    },
+    {
+      "view": "physical",
+      "from": "pg-primary",
+      "to": "pg-replica",
+      "signal": "streaming replication lag"
+    },
+    {
+      "view": "physical",
+      "from": "cf-ingress",
+      "to": "agent-runner",
+      "signal": "X-Auth-Email identity header (attribution only, allowlisted senders, not cryptographically bound)"
+    }
+  ]
+}

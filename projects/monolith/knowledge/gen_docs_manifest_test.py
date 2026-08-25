@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from knowledge.tools.gen_docs_manifest import (
+    DOC_KINDS,
     check_public_content,
     build_manifest,
     derive_title,
@@ -60,6 +61,14 @@ def test_make_slug_uses_project_root_for_readme_and_kind_for_other_docs():
     assert make_slug("embervm", "readme") == "embervm"
     assert make_slug("embervm", "architecture") == "embervm/architecture"
     assert make_slug("monolith", "stpa") == "monolith/stpa"
+
+
+def test_doc_kinds_are_three_current_state_documents():
+    assert DOC_KINDS == (
+        ("readme", "README.md", "Readme"),
+        ("architecture", "ARCHITECTURE.md", "Architecture"),
+        ("stpa", "STPA.md", "STPA"),
+    )
 
 
 def test_project_with_only_readme_yields_one_entry(tmp_path: Path):

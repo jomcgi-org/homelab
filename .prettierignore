@@ -20,10 +20,11 @@
 # the sole authority (same rationale as docs-manifest.json above).
 **/chat/orchestrator_bundle.md
 
-# STPA.md files are rendered deterministically by the stpa skill's jq renderer
-# (.claude/skills/stpa). Reformatting would diverge from the renderer output and
+# STPA fragments and rendered output are deterministically produced by the stpa
+# skill's jq renderer. Reformatting would diverge from the renderer output and
 # churn on every scheduled regeneration; the renderer is the sole authority.
 **/STPA.md
+**/stpa/*.json
 
 # Git worktrees have their own formatting
 .claude/worktrees/

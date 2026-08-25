@@ -42,13 +42,13 @@ describe("/docs load", () => {
     expect(cards[0].excerpt).toBe(`${"alpha ".repeat(32)}alpha…`);
     expect(cards[0].excerpt.endsWith("…")).toBe(true);
     expect(cards[0].excerpt).not.toContain("omega");
+    expect(cards[0].tabs).toHaveLength(3);
     expect(
       cards[0].tabs.map((tab) => [tab.kind, tab.slug, tab.disabled]),
     ).toEqual([
       ["readme", "embervm", false],
       ["architecture", "embervm/architecture", false],
       ["stpa", null, true],
-      ["threat-model", null, true],
     ]);
   });
 

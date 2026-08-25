@@ -1,4 +1,4 @@
-# Destination-scoped egress for the public tier (#5142, THREAT-MODEL finding 3).
+# Destination-scoped egress for the public tier (#5142, security finding #5276).
 #
 # cilium-policy.yaml's egress policies grant every public-tier pod
 # `toEntities: [cluster, host, remote-node]`, which is "anything in the cluster":

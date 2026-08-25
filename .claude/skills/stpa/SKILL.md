@@ -1,307 +1,348 @@
 ---
 name: stpa
-description: Generate or refresh the STPA (System-Theoretic Process Analysis, STPA-Sec) safety model for one system in this repo, written colocated as <system>/STPA.md, landing any change as a PR against main that merges (rebase) on green CI. Use when asked to update/regenerate a system's STPA safety analysis, run the STPA routine, audit unsafe control actions or unsafe feedback (data staleness, corruption, provenance drift), or when invoked on a schedule. Takes a `system` argument (the directory to analyze, e.g. projects/monolith). The analysis is deterministic, findings are extracted as JSON (judgment) and the markdown is rendered by an embedded jq renderer (mechanism), so scheduled runs produce small reviewable diffs.
+description: Generate or refresh the STPA safety model for one system and lens (logic/security/governance), written colocated as <system>/stpa/<lens>.json with a merged render as <system>/STPA.md. Takes `system` (directory) and optional `lens` (logic|security|governance, default logic). The analysis is deterministic, findings extracted as JSON, rendered by an embedded jq renderer, so runs produce small reviewable diffs. Use when updating a system's STPA analysis, auditing unsafe control actions, or refreshing on schedule.
 ---
 
-Generate/update the STPA safety model for ONE system in this repository, written
-colocated as `<system>/STPA.md` (e.g. `projects/monolith/STPA.md`), and land any
-change as a PR against `main` that you merge (rebase) once CI is green.
+Generate/update the STPA safety model for ONE system and ONE lens. Findings are
+written to committed JSON fragments under `<system>/stpa/`, and a merged
+`<system>/STPA.md` is rendered deterministically from all present fragments.
 
-The `system` argument is the directory to analyze. If not given, ask which system
-(default `projects/monolith`). The analysis scope is that subtree.
+The `system` argument is the directory to analyze (e.g. `projects/monolith`).
+The `lens` argument is `logic`, `security`, or `governance` (default `logic` if
+not given; ask if ambiguous). The analysis scope is that subtree and the control
+structure it grounds in.
 
-You are a systems-safety analyst applying STPA (System-Theoretic Process Analysis,
-Leveson) in the STPA-Sec tradition: "losses" are security and data-integrity
-violations, not just physical harm. You will EXTRACT findings as JSON (judgment),
-RENDER the document by running BLOCK A verbatim (mechanism), and, only if it
-changed, open/refresh a PR via BLOCK B. Determinism, and therefore small,
-reviewable diffs on every scheduled run, depends on you producing the markdown
-ONLY via the renderer. Do NOT hand-write or reformat the markdown. (`**/STPA.md`
-is in `.prettierignore` so the renderer stays the sole authority.)
+You are a systems-safety analyst applying STPA (System-Theoretic Process Analysis)
+per lens. EXTRACT findings as JSON (judgment), RENDER the document by running
+BLOCK A verbatim (mechanism), and only if it changed, open/refresh a PR via BLOCK B.
+Determinism depends on rendering ONLY via the renderer. Do NOT hand-write markdown.
+(`**/STPA.md` and `**/stpa/*.json` are in `.prettierignore` so the renderer and
+jq pretty-print are sole authorities.)
+
+## Lens framing
+
+All lenses share a control structure (structure.json, owned by the logic lens).
+Per-lens analyses answer different safety questions:
+
+- **logic**: mission-failure STPA. "What unsafe control action or feedback defect
+  drives the system into a loss?" Honest-but-imperfect system, mission violation,
+  guidewords `providing|not-providing|wrong-timing|wrong-duration` for actions and
+  `missing|stale|corrupted|unauthorized-source` for feedback.
+- **security**: deliberate attack. "Who can forge/withhold/replay a control action,
+  and what does it get an adversary?" Same control structure, attacks on purpose.
+  Status (`enforced-prod|enforced-dev|shipped-off|designed|none`) REQUIRED on every
+  UCA and unsafe-feedback row (what safeguard exists now). Issues referenced via
+  `issue` field (label: `security-finding`).
+- **governance**: data-processing safety. "Does data cross visibility boundaries,
+  stay retained too long, process without basis, lose provenance?" Feedback and
+  data channels matter more than control arrows. Same rejection bar.
+
+## Lens ownership and independence
+
+The `logic` lens OWNS structure.json (nodes, control_actions, feedback); it may add,
+update, or remove them (grounded in code), then re-validates every other committed
+fragment. If a fragment references a removed action, that row is dropped with a
+note in the PR body.
+
+`security` and `governance` lenses are READ-ONLY consumers of structure.json. If
+analysis needs an action/node the structure lacks, record it in the fragment's
+`open_questions` (form: "structure gap: ..."), do NOT invent an ID.
+
+Each lens reads ONLY: code + structure.json + its own prior fragment. Not the
+other lens fragments. Independence prevents anchoring and context bloat.
 
 ## Two views: logical and physical
 
 Every finding carries a `view`:
 
-- **logical**: the functional control structure. For an app, that is the
-  request/command flow: routers, domain `public()` functions, schedulers,
-  transactions, the capability/authorization boundaries enforced in the code
-  path. Losses are about governed correctness of data access and provenance.
-- **physical**: the deployment realization. Pods/binaries, namespaces and
-  NetworkPolicy, database schemas and grants, ingress, secret delivery
-  (1Password operator), GitOps sync. Losses are about secret exposure, privilege
-  escalation across boundaries, and ingress/policy bypass.
+- **logical**: functional control structure. Request/command flow: routers, domain
+  functions, schedulers, transactions, authorization boundaries in the code path.
+  Losses about governed correctness and provenance.
+- **physical**: deployment realization. Pods/binaries, namespaces, NetworkPolicy,
+  database schemas, ingress, secret delivery. Losses about exposure and escalation.
 
-A system may legitimately model only one view (e.g. a build system has a rich
-physical/CI-execution view and a thin logical one). Omit the view you cannot
-ground; do not invent one.
-
-────────────────────────────────────────────────────────
-
-## Target invariants per system
-
-Derive the mission and reason-to-exist from the system itself: read its
-`README`, `CLAUDE.md`, design docs, and code. Do not assume an architecture from
-prior knowledge. The reason a system exists defines what "unsafe" means: an
-unsafe state violates the mission, it is not merely a crash.
-
-Seeded example (`projects/monolith`): a single-binary personal platform split
-into domains over per-domain Postgres schemas, deployed as a secret-less
-read-only public binary and a privileged private binary (see
-`docs/decisions/services/010-fastmonolith-modular-framework.md`). Reason to exist
-= governed correctness of data access plus the secret-less public boundary.
-Unsafe states violate those.
-────────────────────────────────────────────────────────
+A system may model only one view; omit ones you cannot ground; do not invent.
 
 ## Steps
 
-1. **Read the prior, if any.** If `<system>/STPA.md` exists, read it: it is your
-   prior analysis. Its tables carry the stable semantic keys (first column),
-   conditions, and evidence. Reuse them to minimize drift.
-2. **Ground yourself in the code.** List the system subtree; read its READMEs,
-   architecture/design docs, AND any "future work / deferred / roadmap" doc
-   (discover by listing, do not assume filenames; it is the authoritative ledger
-   of designed-but-not-built). Read the code units that issue or receive commands
-   (routers, domain functions, schedulers, queues, transactions, worker loops).
-   Trust CODE over docs on conflict; note the conflict in `scope`. Get the
-   commit: `git rev-parse --short HEAD`.
-3. **Analyze (STPA steps 1-3) per view.** Hazards = system states that, worst
-   case, lead to a loss (map to loss keys). Control structure = controllers,
-   controlled processes (nodes), control actions (commands, node to node),
-   feedback (signals, node to node), each tagged `built` or `designed` and a
-   `view`. UCAs = for each control action test four guidewords and keep ONLY
-   genuinely-unsafe ones: `providing`, `not-providing`, `wrong-timing`,
-   `wrong-duration`. A bounded nuisance recovered by a fallback is NOT a UCA, put
-   it in `non_ucas`.
-   Then analyze the FEEDBACK and data channels the same way. A controller acting
-   on a wrong process model is an STPA cause, not a component failure: for each
-   feedback signal, and for each data flow a controller's decisions depend on
-   (caches, mirrors, replicas, fetched policy, queue state, lineage), test four
-   guidewords and keep only genuinely-unsafe ones as `unsafe_feedback`:
-   `missing` (never arrives; the controller acts on absence), `stale` (reflects
-   an old state by the time it is acted on), `corrupted` (wrong content that
-   passes silently), `unauthorized-source` (spoofable or unauthenticated
-   origin). This is where data-integrity failures live: staleness windows, lost
-   updates, cache or mirror drift, provenance divergence. Do NOT restate a data
-   failure as a strained control-action UCA (e.g. a check-then-act staleness
-   window is `<channel>.stale`, not `<action>.wrong-timing`). The same
-   rejection bar applies: a bounded nuisance with a recovery path goes in
-   `non_ucas`.
-4. **Pick a per-run scratch dir first**: `STPA_TMP="$(mktemp -d
-   /tmp/stpa-<system>.XXXXXX)"` and export it. Two concurrent runs of this
-   skill sharing fixed `/tmp` paths have crossed before (one run's PR was
-   created with the other's title and body). Every path below is under it.
-5. **Write your findings** as a single JSON object (schema below) to
-   `$STPA_TMP/stpa.json`. Set `system_dir` to the system directory.
-6. **Render** by running BLOCK A VERBATIM. It renders `$STPA_TMP/STPA.candidate.md`
-   from your JSON deterministically, compares it against what `origin/main`
-   actually has (this checkout may be stale), and prints either
-   `STPA_RESULT=nochange` or `STPA_RESULT=changed`. It does NOT touch the
-   working tree; BLOCK B lands the file from a disposable worktree.
-7. **If `nochange`:** report "no change, STPA.md already current" and STOP. Do not
-   open a PR.
-8. **If `changed`:** prepare the PR text. Run
-   `diff -u /tmp/STPA.prior.md $STPA_TMP/STPA.candidate.md` to see exactly what moved
-   (no prior file means this is the first version). Then:
-   - Write a Conventional-Commits title to `$STPA_TMP/stpa-title.txt`, ONE line, <=72
-     chars, form `docs(stpa): <what changed>` (e.g.
-     `docs(stpa): add queue.dequeue wrong-timing UCA for monolith`; first run:
-     `docs(stpa): add monolith control-plane safety model`).
-   - Write a concise markdown body to `$STPA_TMP/stpa-body.md`, 2-6 bullets naming the
-     UCAs / hazards / control-actions added, removed, or materially changed (by
-     their semantic keys), plus any scope/maturity shift. Summarize, do not paste
-     the diff.
-9. **Open/refresh the PR and merge on green** by running BLOCK B VERBATIM. It
-   commits on a stable per-system branch, force-pushes, opens or updates a PR
-   against `main`, watches CI, and rebase-merges once all checks pass. Report the
-   PR URL and whether it merged or was left open for review.
+1. **Determine system and lens.** If not given, ask (defaults: system =
+   `projects/monolith`, lens = `logic`).
+2. **Check for prior fragments.** If `<system>/stpa/` exists, read them (prior
+   analysis, semantic keys to reuse). If not but `<system>/STPA.md` exists (legacy
+   single-lens), extract structure.json + logic.json from its tables (preserve keys
+   verbatim; minimizes diff).
+3. **Ground in code.** List the system subtree; read READMEs, architecture docs,
+   roadmap. Read code units that issue or receive commands. Get commit:
+   `git rev-parse --short HEAD`.
+4. **Analyze per lens.** STPA steps 1-3: hazards (map to loss keys), control
+   structure (nodes, control_actions, feedback, tagged `built` or `designed`),
+   UCAs (four guidewords, keep ONLY genuinely unsafe; bounded nuisances go to
+   `non_ucas`), unsafe feedback (missing, stale, corrupted, unauthorized; this is
+   where data-integrity failures live).
+5. **Pick scratch dir.** `STPA_TMP="$(mktemp -d /tmp/stpa-<system>-<lens>.XXXXXX)"`,
+   export it. Prevents collisions between concurrent lens runs.
+6. **For logic lens only**: write structure.json to `$STPA_TMP/structure.json`.
+   For all lenses: write lens fragment to `$STPA_TMP/<lens>.json`. Schemas below.
+7. **Render** by running BLOCK A VERBATIM. It assembles all present fragments,
+   validates cross-references, renders `$STPA_TMP/STPA.candidate.md`, compares
+   against origin/main (this checkout may be stale), and prints `STPA_RESULT=`.
+8. **If `nochange`:** report no change, stop, do not open PR.
+9. **If `changed`:** prepare PR text. Use `diff -u` to see what moved. Write
+   Conventional title to `$STPA_TMP/stpa-title.txt`, form `docs(stpa): <lens>:
+   <what changed>` (<=72 chars, e.g. `docs(stpa): security: add login
+   forge-token UCA`). Write concise body to `$STPA_TMP/stpa-body.md` (2-6
+   bullets naming changed findings by semantic key, plus scope/maturity shifts).
+10. **Open/refresh PR** by running BLOCK B VERBATIM. Commits both the fragment
+    and merged STPA.md, force-pushes, opens or updates PR, watches CI, rebase-merges
+    on green. Report PR URL and result.
 
-## Remediation work goes to GitHub Issues (source of truth)
+## Migration: existing single-analysis STPA.md
 
-`STPA.md` is the safety *analysis*, not a work tracker. When the analysis surfaces
-an unmitigated UCA or unsafe-feedback finding that needs code or config work to
-close, file it as a **GitHub issue** (the repo's source of truth for outstanding
-work), titled `<system>: <finding> — STPA <ucaKey>`, labelled `bug` (a broken/unsafe
-control action) or `enhancement` (a missing safeguard), plus `critical` when the loss
-is severe. Reference the issue from the finding's evidence rather than adding a
-checklist to `STPA.md`. Do not open issues for `non_ucas` (bounded nuisances with a
-recovery path) or for findings that already have a mitigation in the control
-structure.
+Existing `<system>/STPA.md` files (no `stpa/` dir) are reverse-extracted: parse the
+tables, emit structure.json + logic.json preserving every semantic key verbatim.
+The logic lens's first run on such a system extracts once, then owns structure
+normally. Minimizes diff churn.
+
+## Remediation work goes to GitHub Issues
+
+File unmitigated UCAs / unsafe-feedback findings as issues (repo's source of truth
+for outstanding work), titled `<system>: <finding> — STPA <key>`, labeled `bug`
+(broken safeguard) or `enhancement` (missing safeguard), plus `critical` for
+severe losses. Security lens findings add label `security-finding`. Reference
+the issue from the finding's evidence, not a STPA.md checklist.
 
 ## Drift minimization (this is an UPDATE, not a rewrite)
 
-The rendered doc is committed and reviewed as a diff, keep churn minimal:
+Rendered docs are committed and reviewed as diffs. Minimize churn:
 
 - REUSE each prior finding's semantic key VERBATIM when the code it cites still
   exists and still means the same thing.
-- KEEP prior `condition`/`statement`/`label`/`scope` wording UNCHANGED unless the
-  underlying code changed. Do not reword for style.
+- KEEP prior `condition`/`statement`/`label`/`scope` wording UNCHANGED unless code
+  changed. Do not reword for style.
 - Update an `evidence` `path:line` only if the referenced code actually moved.
 - But RE-VERIFY, never parrot: open each prior finding's cited code and confirm it
-  still holds. Logic changed -> update it. Cited code deleted -> drop it. New
-  unsafe control action -> add it with a new key.
-  Net: unchanged code => identical finding; changed code => localized change;
-  added/removed code => added/removed finding. Nothing else moves.
+  still holds. Logic changed, update it. Code deleted, drop it. New unsafe action,
+  add it with a new key. Net: unchanged code => identical finding; changed code =>
+  localized change; added/removed code => added/removed finding.
 
-## Semantic keys (what makes diffs stable, the renderer sorts by them)
+## Semantic keys
 
-Derive each `key` from WHAT IT IS, never its position. Lowercase, no spaces.
-
-- nodes: short component slug, NO dots (mermaid id): `acl`, `public-api`,
-  `scheduler`, `postgres`, `public-binary`.
-- losses: `L.unauthorized-access`, `L.integrity-loss`, `L.silent-incorrectness`,
-  `L.provenance-loss`, `L.secret-exposure`, `L.liveness-loss`.
-- control_actions: `<component>.<operation>`: `acl.check`, `public.resolve`,
-  `scheduler.dispatch`, `tx.commit`.
-- hazards: condition slug: `stale-policy`, `partial-atomic-unit`,
-  `secret-in-public-binary`, `cross-schema-grant`.
-- ucas: `<control_action-key>.<guideword>`: `scheduler.dispatch.wrong-timing`.
-- unsafe_feedback: `<channel-slug>.<guideword>` where the channel slug names the
-  signal or data flow itself, never its position: `policy-fetch.stale`,
-  `queue-notify.missing`, `mirror-sync.corrupted`.
-  `from`/`to`/`control_action`/`hazards`/`losses` reference other objects BY KEY.
+Derive each key from WHAT IT IS, never position. Lowercase, no spaces, no dots
+(mermaid ids): nodes: `acl`, `public-api`, `scheduler`; losses: `L.unauthorized-access`,
+`L.secret-exposure`; control_actions: `<node>.<op>`: `acl.check`, `scheduler.dispatch`;
+hazards: condition slug: `stale-policy`, `cross-schema-grant`; ucas:
+`<control_action>.<guideword>`: `scheduler.dispatch.wrong-timing`; unsafe_feedback:
+`<channel>.<guideword>`: `policy-fetch.stale`, `queue-notify.missing`.
+`from`/`to`/`control_action`/`hazards`/`losses` reference other objects BY KEY.
 
 ## Grounding rules (hard)
 
-- Every node, control_action, uca has `evidence`: `path:line` (or `path`); for a
-  doc/comment, also a <=8-word verbatim quote. No evidence -> omit it.
+- Every node, control_action, UCA: `evidence` `path:line` or `path` plus <=8-word
+  verbatim quote for docs/comments. No evidence, omit it.
 - NEVER mark a designed-only element `built`.
-- No invention. Uncertainty -> `open_questions`, not a guessed UCA.
-- Prioritize, do not pad. Keep `condition`/`statement` to ONE line, no `|`, no
-  newlines.
+- No invention. Uncertainty goes to `open_questions`.
+- Prioritize. Keep `condition`/`statement` to ONE line, no `|`, no newlines.
 
-## JSON schema (write to $STPA_TMP/stpa.json; arrays in ANY order, the renderer sorts)
+## JSON schemas
 
+**structure.json** (logic lens writes, others read):
 ```
 {
-  "system": "string (human label, e.g. 'monolith')",
-  "system_dir": "projects/monolith",
-  "commit": "short-sha",
-  "scope": {"summary":"1 sentence headline: the built-vs-designed framing.","built":"what is actually built (comma list)","designed":"what is designed-only (comma list)","note":"OPTIONAL: code-vs-docs conflict or key caveat, OMIT the field entirely if none"},
-  "losses": [ {"key":"L.unauthorized-access","title":"..."}, ... ],
+  "system": "monolith", "system_dir": "projects/monolith", "commit": "abc1234",
   "nodes": [ {"key":"acl","label":"Acl check","view":"logical","layer":"enforcement","maturity":"built"}, ... ],
-  "control_actions": [ {"key":"acl.check","label":"...","view":"logical","from":"public-api","to":"acl","maturity":"built","evidence":"projects/monolith/.../acl.py:126"}, ... ],
-  "feedback": [ {"view":"logical","from":"postgres","to":"scheduler","signal":"NOTIFY wakeup hint"}, ... ],
+  "control_actions": [ {"key":"acl.check","label":"...","view":"logical","from":"public-api","to":"acl","maturity":"built","evidence":"path:line"}, ... ],
+  "feedback": [ {"view":"logical","from":"postgres","to":"scheduler","signal":"NOTIFY wakeup hint"}, ... ]
+}
+```
+
+**<lens>.json** (logic, security, or governance):
+```
+{
+  "lens": "security", "commit": "abc1234",
+  "scope": {"summary":"1-line headline","built":"built things","designed":"designed things","note":"OPTIONAL caveat"},
+  "losses": [ {"key":"L.unauthorized-access","title":"..."}, ... ],
   "hazards": [ {"key":"stale-policy","view":"logical","statement":"...","losses":["L.unauthorized-access"],"maturity":"built"}, ... ],
-  "ucas": [ {"key":"scheduler.dispatch.wrong-timing","view":"logical","control_action":"scheduler.dispatch","guideword":"wrong-timing","condition":"...","severity":"high","hazards":["premature-reclaim"],"evidence":"projects/monolith/.../scheduler.py:153"}, ... ],
-  "unsafe_feedback": [ {"key":"policy-fetch.stale","view":"logical","from":"acl","to":"public-api","signal":"policy rows for subject+target","guideword":"stale","condition":"...","severity":"high","hazards":["stale-policy"],"evidence":"projects/monolith/.../acl.py:126"}, ... ],
-  "non_ucas": [ {"item":"await missed NOTIFY","reason":"bounded by 5s poll fallback (path:line)"}, ... ],
+  "ucas": [ {"key":"scheduler.dispatch.wrong-timing","view":"logical","control_action":"scheduler.dispatch","guideword":"wrong-timing","condition":"...","severity":"high","hazards":["stale-policy"],"evidence":"path:line","status":"enforced-prod","issue":"#1234"}, ... ],
+  "unsafe_feedback": [ {"key":"policy-fetch.stale","view":"logical","from":"acl","to":"public-api","signal":"policy rows","guideword":"stale","condition":"...","severity":"high","hazards":["stale-policy"],"evidence":"path:line","status":"enforced-dev"}, ... ],
+  "non_ucas": [ {"item":"missed NOTIFY","reason":"bounded by 5s fallback (path:line)"}, ... ],
   "open_questions": [ "string", ... ]
 }
 ```
 
-`view` is `logical` or `physical`. `layer` is a free-form subgraph group WITHIN a
-view (e.g. `enforcement`, `control-plane`, `store` for logical; `ingress`,
-`compute`, `data`, `secrets` for physical). `severity` is `high|medium|low`.
-UCA guidewords: `providing|not-providing|wrong-timing|wrong-duration`.
-unsafe_feedback guidewords: `missing|stale|corrupted|unauthorized-source`.
-`unsafe_feedback` is optional: omit the array entirely when no feedback channel
-survives the rejection bar.
+`status` and `issue` are REQUIRED on security-lens UCA/unsafe-feedback rows,
+optional elsewhere. `view`: `logical|physical`. `layer`: free-form subgraph (e.g.
+`enforcement`, `ingress`). `severity`: `high|medium|low`. UCA guidewords:
+`providing|not-providing|wrong-timing|wrong-duration`. Unsafe_feedback guidewords:
+`missing|stale|corrupted|unauthorized-source`. `unsafe_feedback` array optional.
 
-## BLOCK A — render + detect change (run verbatim; never hand-write the .md)
+## BLOCK A — render + detect change (run verbatim; never hand-write .md)
 
 ````bash
 set -euo pipefail
-SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/stpa.json)"
+SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/structure.json 2>/dev/null || echo '')"
+LENS="$(jq -r '.lens' $STPA_TMP/*.json 2>/dev/null | head -1)"
+[ -z "$SYSTEM_DIR" ] && SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/*.json 2>/dev/null | head -1)"
 test -n "$SYSTEM_DIR" -a "$SYSTEM_DIR" != "null"
-cat > $STPA_TMP/stpa-render.jq <<'JQ'
-# Deterministic STPA.md renderer.
-#   input : stpa.json  (semantic-keyed findings, ANY array order)
-#   output: STPA.md    (sorted + templated; a pure function of content)
-# Identical findings render to identical bytes regardless of input order, so a
-# regenerated doc diffs only where the findings actually changed.
 
+git fetch -q origin main 2>/dev/null || true
+STRUCTURE_TMP="$STPA_TMP/structure-assembled.json"
+if [ -f "$STPA_TMP/structure.json" ]; then
+  cp "$STPA_TMP/structure.json" "$STRUCTURE_TMP"
+else
+  git show "origin/main:$SYSTEM_DIR/stpa/structure.json" > "$STRUCTURE_TMP" 2>/dev/null || {
+    echo "STPA_ERROR: no structure.json in this run or origin/main"
+    exit 1
+  }
+fi
+
+FRAG_PATHS=""
+for LENS_NAME in logic security governance; do
+  LENS_FILE="$STPA_TMP/$LENS_NAME.json"
+  FRAG_PATH="$SYSTEM_DIR/stpa/$LENS_NAME.json"
+  FRAG_TMP="$STPA_TMP/$LENS_NAME-src.json"
+  if [ -f "$LENS_FILE" ]; then
+    cp "$LENS_FILE" "$FRAG_TMP"
+    FRAG_PATHS="$FRAG_PATHS $FRAG_TMP"
+  elif git show "origin/main:$FRAG_PATH" > "$FRAG_TMP" 2>/dev/null; then
+    FRAG_PATHS="$FRAG_PATHS $FRAG_TMP"
+  fi
+done
+
+MERGED="$STPA_TMP/merged.json"
+jq -n --slurpfile s "$STRUCTURE_TMP" '{structure: $s[0], lenses: [inputs]}' $FRAG_PATHS > "$MERGED"
+
+cat > $STPA_TMP/validate.jq << 'VJQEOF'
+. as $doc
+| ($doc.structure.control_actions // [] | map(.key)) as $cakeys
+| ($doc.structure.nodes // [] | map(.key)) as $nodekeys
+| [ $doc.lenses[]
+    | .lens as $L
+    | (.hazards // [] | map(.key)) as $hkeys
+    | (.losses // [] | map(.key)) as $lkeys
+    | (
+        (.ucas // [] | .[]
+          | select(.control_action as $ca | ($cakeys | index($ca)) == null)
+          | "\($L): UCA \(.key) references unknown control_action \(.control_action)"),
+        (.unsafe_feedback // [] | .[]
+          | select((.from as $f | ($nodekeys | index($f)) == null)
+                or (.to as $t | ($nodekeys | index($t)) == null))
+          | "\($L): unsafe_feedback \(.key) references unknown node \(.from) or \(.to)"),
+        ((.ucas // []) + (.unsafe_feedback // []) | .[] | .key as $k
+          | (.hazards // [])[]
+          | select(. as $h | ($hkeys | index($h)) == null)
+          | "\($L): \($k) references unknown hazard \(.)"),
+        (.hazards // [] | .[] | .key as $k
+          | (.losses // [])[]
+          | select(. as $l | ($lkeys | index($l)) == null)
+          | "\($L): hazard \($k) references unknown loss \(.)"),
+        (select($L == "security")
+          | (.ucas // []) + (.unsafe_feedback // []) | .[]
+          | select(.status == null)
+          | "security: \(.key) missing required status")
+      )
+  ]
+| if length == 0 then "VALIDATION_OK" else "VALIDATION_ERROR: " + join("; ") end
+VJQEOF
+
+VALIDATION="$(jq -r -f $STPA_TMP/validate.jq "$MERGED")"
+if [ "$VALIDATION" != "VALIDATION_OK" ]; then
+  echo "$VALIDATION"
+  exit 1
+fi
+
+cat > $STPA_TMP/stpa-render.jq << 'JQEOF'
 def esc: (. // "") | gsub("\\|"; "\\|") | gsub("\n"; " ");
-# Sanitize a string for a (quoted) mermaid label: drop chars that break the
-# parser or get read as HTML. Parens are fine once the label is quoted.
 def mlabel: (. // "") | gsub("\n"; " ") | gsub("\""; "'") | gsub("<"; "(") | gsub(">"; ")");
 def mid: gsub("[^a-zA-Z0-9_]"; "_");
 
-# Mermaid flowchart for all nodes/actions/feedback in one view.
 def diagram($v):
-  ([.nodes[]? | select(.view == $v)]) as $ns
-  | ([.control_actions[]? | select(.view == $v)]) as $cas
-  | ([(.feedback // [])[]? | select((.view // $v) == $v)]) as $fbs
-  | if ($ns | length) == 0
-    then "_No \($v) control structure modeled._\n"
-    else "```mermaid\nflowchart TD\n"
-      + ( $ns | sort_by(.layer // "zzz", .key)
-          | group_by(.layer // "zzz")
-          | map( (.[0].layer // "other") as $L
-              | "  subgraph \($L|mid)[\"\($L)\"]\n"
-              + ( map("    \(.key)[\"\(.label|mlabel)\(if .maturity=="designed" then " (designed)" else "" end)\"]") | join("\n") )
-              + "\n  end\n" )
-          | join("") )
-      + ( $cas | sort_by(.key) | map("  \(.from) -- \"\(.key)\" --> \(.to)") | join("\n") )
-      + "\n"
-      + ( $fbs | sort_by("\(.from)|\(.to)|\(.signal)") | map("  \(.from) -. \"\(.signal|mlabel)\" .-> \(.to)") | join("\n") )
-      + "\n```\n"
-    end;
+  ([.structure.nodes[]? | select(.view == $v)]) as $ns
+  | ([.structure.control_actions[]? | select(.view == $v)]) as $cas
+  | ([(.structure.feedback // [])[]? | select((.view // $v) == $v)]) as $fbs
+  | (if ($ns | length) == 0 then "_No \($v) control structure modeled._\n"
+      else ("```mermaid\nflowchart TD\n"
+        + (($ns | sort_by(.layer // "zzz", .key) | group_by(.layer // "zzz")
+           | map((.[0].layer // "other") as $L |
+               "  subgraph \($L|mid)[\"\($L)\"]\n"
+               + (map("    \(.key)[\"\(.label|mlabel)\(if .maturity=="designed" then " (designed)" else "" end)\"]") | join("\n"))
+               + "\n  end\n") | join("")))
+        + (($cas | sort_by(.key) | map("  \(.from) -- \"\(.key)\" --> \(.to)") | join("\n")))
+        + "\n"
+        + (($fbs | sort_by("\(.from)|\(.to)|\(.signal)") | map("  \(.from) -. \"\(.signal|mlabel)\" .-> \(.to)") | join("\n")))
+        + "\n```\n")
+      end);
 
-"# STPA Control Analysis: \(.system) @ \(.commit)\n\n"
-
-+ "_Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there. Two views: logical (functional control flow) and physical (deployment)._\n\n"
-
+"# STPA Control Analysis: \(.structure.system)\n\n"
++ (if (.lenses | length) > 0 then "_\(([.lenses[] | "\(.lens) @ \(.commit)"] | join(" · ")))_\n\n" else "" end)
++ "_Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._\n\n"
 + "<details>\n<summary><b>How to read this</b>: STPA primer and diagram legend</summary>\n\n"
-+ "**STPA** (System-Theoretic Process Analysis) treats the system as *controllers* issuing *control actions* to *controlled processes*, with *feedback* flowing back up. Instead of \"what component can fail,\" it asks \"what control action, given or withheld at the wrong time, drives the system into an unsafe state?\" \"Unsafe\" means a violation of this system's reason to exist, not merely a crash.\n\n"
-+ "Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagrams** (one per view) show who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core, and **Unsafe Feedback** covers the dashed arrows: data channels whose absence, staleness, corruption, or spoofing drives a controller into a hazard. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.\n</details>\n\n"
-
-+ "**Scope.** \(.scope.summary|esc)\n\n"
-+ "<details>\n<summary>Maturity detail</summary>\n\n"
-+ "- **Built:** \(.scope.built|esc)\n"
-+ "- **Designed-only:** \(.scope.designed|esc)\n"
-+ (if (.scope.note // null) then "- **Note:** \(.scope.note|esc)\n" else "" end)
-+ "</details>\n\n"
-
-+ "## Control structure\n\n"
-+ "### Logical view\n\n" + diagram("logical") + "\n"
-+ "### Physical view\n\n" + diagram("physical") + "\n"
-
-+ "## Losses\n\n| ID | Loss |\n|----|------|\n"
-+ ( .losses | sort_by(.key) | map("| `\(.key)` | \(.title|esc) |") | join("\n") ) + "\n\n"
-
-+ "## Hazards\n\n| ID | View | Hazard (unsafe state) | → Losses | Maturity |\n|----|----|----|----|----|\n"
-+ ( .hazards | sort_by(.key) | map("| `\(.key)` | \(.view|esc) | \(.statement|esc) | \((.losses // [])|join(", ")) | \(.maturity|esc) |") | join("\n") ) + "\n\n"
-
++ "**STPA** (System-Theoretic Process Analysis, Leveson) treats the system as controllers issuing control actions to controlled processes, with feedback flowing back. Instead of \"what component fails,\" it asks \"what control action, given or withheld at the wrong time, drives the system into an unsafe state?\" Unsafe means a violation of this system's reason to exist. Multiple lenses (logic, security, governance) analyze the same control structure for different safety questions: mission failure, deliberate attack, data-processing violations. A finding appearing in multiple lenses is expected and correct.\n\n"
++ "Read top-down: Losses are outcomes we must prevent; Hazards are states leading to loss; diagrams show control structure (solid = control action, dashed = feedback); Unsafe Control Actions table is the core; Unsafe Feedback covers data channels (absent, stale, corrupted, spoofed). Every claim cites path:line; unbuilt elements are marked. Semantic stable IDs mean regenerating changes only findings that changed.\n</details>\n\n"
++ "## Control structure\n\n### Logical view\n\n" + diagram("logical") + "\n### Physical view\n\n" + diagram("physical") + "\n"
 + "## Control actions\n\n| ID | View | Control action | Controller → Process | Maturity | Evidence |\n|----|----|----|----|----|----|\n"
-+ ( .control_actions | sort_by(.key) | map("| `\(.key)` | \(.view|esc) | \(.label|esc) | `\(.from)` → `\(.to)` | \(.maturity|esc) | \(.evidence|esc) |") | join("\n") ) + "\n\n"
-
-+ "## Unsafe control actions\n\n*The core of the analysis. Each row: a control action made unsafe via one guideword, the hazard/loss it causes, and where in the code it lives.*\n\n"
-+ "| ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |\n|----|----|----|----|----|----|----|----|\n"
-+ ( .ucas | sort_by(.key) | map("| `\(.key)` | \(.view|esc) | `\(.control_action)` | \(.guideword|esc) | \(.condition|esc) | \(.severity|esc) | \((.hazards // [])|join(", ")) | \(.evidence|esc) |") | join("\n") ) + "\n\n"
-
-+ ( if (.unsafe_feedback // []) | length > 0
-    then "## Unsafe feedback\n\n*Feedback and data channels whose absence, staleness, corruption, or spoofed origin drives a controller into a hazard. This is where data-integrity failures live.*\n\n"
-       + "| ID | View | Channel | Guideword | Unsafe condition | Severity | → Hazards | Evidence |\n|----|----|----|----|----|----|----|----|\n"
-       + ( .unsafe_feedback | sort_by(.key) | map("| `\(.key)` | \(.view|esc) | `\(.from)` → `\(.to)`: \(.signal|esc) | \(.guideword|esc) | \(.condition|esc) | \(.severity|esc) | \((.hazards // [])|join(", ")) | \(.evidence|esc) |") | join("\n") ) + "\n\n"
-    else "" end )
-
-+ ( if (.non_ucas // []) | length > 0
-    then "<details>\n<summary><b>Not UCAs</b>: \(.non_ucas|length) examined and rejected</summary>\n\n"
-       + ( .non_ucas | sort_by("\(.item)|\(.reason)") | map("- **\(.item|esc)**: \(.reason|esc)") | join("\n") )
-       + "\n</details>\n\n"
-    else "" end )
-
-+ ( if (.open_questions // []) | length > 0
-    then "## Open questions\n\n"
-       + ( .open_questions | sort | map("- \(esc)") | join("\n") ) + "\n"
-    else "" end )
-
++ (.structure.control_actions | sort_by(.key) | map("| `\(.key)` | \(.view|esc) | \(.label|esc) | `\(.from)` → `\(.to)` | \(.maturity|esc) | \(.evidence|esc) |") | join("\n"))
++ "\n\n"
++ (.lenses | sort_by(.lens) | map(
+    "## Lens: \(.lens)\n\n"
+    + "**Scope.** \(.scope.summary|esc)\n\n"
+    + "<details>\n<summary>Maturity detail</summary>\n\n"
+    + "- **Built:** \(.scope.built|esc)\n"
+    + "- **Designed-only:** \(.scope.designed|esc)\n"
+    + (if (.scope.note // null) then "- **Note:** \(.scope.note|esc)\n" else "" end)
+    + "</details>\n\n"
+    + "### Losses\n\n| ID | Loss |\n|----|------|\n"
+    + ((.losses // []) | sort_by(.key) | map("| `\(.key)` | \(.title|esc) |") | join("\n"))
+    + "\n\n"
+    + "### Hazards\n\n| ID | View | Hazard (unsafe state) | → Losses | Maturity |\n|----|----|----|----|----|\n"
+    + ((.hazards // []) | sort_by(.key) | map("| `\(.key)` | \(.view|esc) | \(.statement|esc) | \((.losses // [])|join(", ")) | \(.maturity|esc) |") | join("\n"))
+    + "\n\n"
+    + (if ((.ucas // []) | length > 0) then
+        (((.ucas // []) | any(.status != null)) as $has_status |
+         "### Unsafe control actions\n\n| ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards"
+         + (if $has_status then " | Status | Issue" else "" end)
+         + " | Evidence |\n"
+         + "|" + (([range(if $has_status then 10 else 8 end)] | map("----") | join("|"))) + "|\n"
+         + ((.ucas // []) | sort_by(.key) | map(
+             "| `\(.key)` | \(.view|esc) | `\(.control_action)` | \(.guideword|esc) | \(.condition|esc) | \(.severity|esc) | \((.hazards // [])|join(", "))"
+             + (if $has_status then " | \(.status // "" | esc) | \(.issue // "" | esc)" else "" end)
+             + " | \(.evidence|esc) |") | join("\n"))
+         + "\n\n")
+      else "" end)
+    + (if ((.unsafe_feedback // []) | length > 0) then
+        (((.unsafe_feedback // []) | any(.status != null)) as $has_status |
+         "### Unsafe feedback\n\n*Data channels (absent, stale, corrupted, spoofed) whose failure drives a controller into a hazard.*\n\n"
+         + "| ID | View | Channel | Guideword | Unsafe condition | Severity | → Hazards"
+         + (if $has_status then " | Status | Issue" else "" end)
+         + " | Evidence |\n"
+         + "|" + (([range(if $has_status then 10 else 8 end)] | map("----") | join("|"))) + "|\n"
+         + ((.unsafe_feedback // []) | sort_by(.key) | map(
+             "| `\(.key)` | \(.view|esc) | `\(.from)` → `\(.to)`: \(.signal|esc) | \(.guideword|esc) | \(.condition|esc) | \(.severity|esc) | \((.hazards // [])|join(", "))"
+             + (if $has_status then " | \(.status // "" | esc) | \(.issue // "" | esc)" else "" end)
+             + " | \(.evidence|esc) |") | join("\n"))
+         + "\n\n")
+      else "" end)
+    + (if ((.non_ucas // []) | length > 0) then
+        "<details>\n<summary><b>Not UCAs</b>: \(.non_ucas|length) examined and rejected</summary>\n\n"
+        + ((.non_ucas // []) | sort_by("\(.item)|\(.reason)") | map("- **\(.item|esc)**: \(.reason|esc)") | join("\n"))
+        + "\n</details>\n\n"
+      else "" end)
+    + (if ((.open_questions // []) | length > 0) then
+        "### Open questions\n\n" + ((.open_questions // []) | sort | map("- \(esc)") | join("\n")) + "\n\n"
+      else "" end)
+  ) | join(""))
 | sub("\n+$"; "")
-JQ
-LC_ALL=C jq -rf $STPA_TMP/stpa-render.jq $STPA_TMP/stpa.json > $STPA_TMP/STPA.candidate.md
-# Compare against what origin/main actually has: this checkout's working tree
-# may be stale (or mid-task on another branch), and BLOCK B lands from a fresh
-# worktree based on origin/main anyway.
-git fetch -q origin main 2>/dev/null || true
+JQEOF
+
+jq -rf $STPA_TMP/stpa-render.jq "$MERGED" > $STPA_TMP/STPA.candidate.md
+
 if git show "origin/main:$SYSTEM_DIR/STPA.md" > /tmp/STPA.prior.md 2>/dev/null; then
-  if diff -q /tmp/STPA.prior.md $STPA_TMP/STPA.candidate.md >/dev/null; then
+  if diff -q /tmp/STPA.prior.md $STPA_TMP/STPA.candidate.md >/dev/null 2>&1; then
     echo "STPA_RESULT=nochange"
   else
     echo "STPA_RESULT=changed"
   fi
 else
-  rm -f /tmp/STPA.prior.md   # first version: no prior on origin/main
+  rm -f /tmp/STPA.prior.md
   echo "STPA_RESULT=changed"
 fi
 ````
@@ -310,39 +351,37 @@ fi
 
 ```bash
 set -euo pipefail
-SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/stpa.json)"
+SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/structure.json 2>/dev/null || jq -r '.system_dir' $STPA_TMP/*.json 2>/dev/null | head -1)"
+LENS="$(jq -r '.lens' $STPA_TMP/*.json 2>/dev/null | head -1 || echo 'logic')"
 SLUG="$(printf '%s' "$SYSTEM_DIR" | tr '/' '-' | tr -cd 'a-zA-Z0-9-')"
-BRANCH="bot/stpa-$SLUG"
+BRANCH="bot/stpa-$SLUG-$LENS"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-WT="/tmp/claude-worktrees/stpa-$SLUG"
+WT="/tmp/claude-worktrees/stpa-$SLUG-$LENS"
+
 git config --get user.email >/dev/null 2>&1 || git config user.email "stpa-bot@users.noreply.github.com"
 git config --get user.name  >/dev/null 2>&1 || git config user.name  "stpa-bot"
-# Never build the branch in this checkout: it may sit on main (which this repo
-# forbids committing to) and auto-fetches every 60s. Land the rendered file
-# from a disposable worktree based on origin/main instead.
+
 git -C "$REPO_ROOT" worktree remove -f "$WT" 2>/dev/null || true
 git -C "$REPO_ROOT" worktree prune
 git -C "$REPO_ROOT" worktree add -B "$BRANCH" "$WT" origin/main
-mkdir -p "$WT/$SYSTEM_DIR"
+
+mkdir -p "$WT/$SYSTEM_DIR/stpa"
+[ -f "$STPA_TMP/structure.json" ] && cp "$STPA_TMP/structure.json" "$WT/$SYSTEM_DIR/stpa/structure.json"
+[ -f "$STPA_TMP/$LENS.json" ] && jq '.' "$STPA_TMP/$LENS.json" > "$WT/$SYSTEM_DIR/stpa/$LENS.json"
 cp $STPA_TMP/STPA.candidate.md "$WT/$SYSTEM_DIR/STPA.md"
-git -C "$WT" add "$SYSTEM_DIR/STPA.md"
-# The conventional `docs(stpa): ...` title satisfies the commit-msg hook, so we
-# do NOT use --no-verify (the hook is cheap and is the gate we want).
+
+git -C "$WT" add "$SYSTEM_DIR/stpa/" "$SYSTEM_DIR/STPA.md"
 git -C "$WT" commit -m "$(cat $STPA_TMP/stpa-title.txt)" -m "$(cat $STPA_TMP/stpa-body.md)"
 git -C "$WT" push -f -u origin "$BRANCH"
-# Create a PR only when there isn't already an OPEN one for this branch. A
-# closed/merged PR on the branch must NOT count as "exists", else the create is
-# skipped and the later `gh pr merge` targets a dead PR and wedges.
+
 PR_STATE="$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null || echo NONE)"
 if [ "$PR_STATE" != "OPEN" ]; then
   gh pr create --base main --head "$BRANCH" --title "$(cat $STPA_TMP/stpa-title.txt)" --body-file $STPA_TMP/stpa-body.md
 fi
+
 URL="$(gh pr view "$BRANCH" --json url -q .url)"
 echo "PR: $URL"
-# main merges through the GitHub merge queue (rebase only). `gh pr merge
-# --auto --rebase` ENQUEUES; it does not merge. Deleting the branch before the
-# queue finishes yanks the entry and GitHub closes the PR unmerged (#5126), so
-# wait for mergedAt before touching any ref.
+
 gh pr merge "$BRANCH" --auto --rebase || true
 for _ in $(seq 1 60); do
   STATE="$(gh pr view "$BRANCH" --json state -q .state)"
@@ -350,6 +389,7 @@ for _ in $(seq 1 60); do
   [ "$STATE" = "CLOSED" ] && { echo "NOTE: PR closed unmerged: $URL"; exit 1; }
   sleep 60
 done
+
 if [ "$STATE" = "MERGED" ]; then
   git -C "$REPO_ROOT" worktree remove -f "$WT" 2>/dev/null || true
   git -C "$REPO_ROOT" branch -D "$BRANCH" 2>/dev/null || true
