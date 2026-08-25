@@ -18,6 +18,24 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
+# Guard (#5142): render inputs so the guard test can run `helm template` against
+# the REAL values (chart + deploy) and pin the enforced policy shape. Chart.lock
+# plus the charts/ glob are load-bearing: helm aborts when a locked dependency
+# has no packaged tarball on disk. This chart has no migrations/ directory, so
+# there is no migrations glob to carry (unlike projects/monolith/chart).
+filegroup(
+    name = "chart_render_inputs",
+    srcs = [
+        "Chart.yaml",
+        "Chart.lock",
+        "values.yaml",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+    ]),
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # Guard (ADR 005): the Turnstile *secret* must stay in the backend ("web"); the
 # frontend may reference only the public site-key literal. The test asserting
 # this lives in the Python-native //projects/monolith package and reads this

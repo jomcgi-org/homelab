@@ -699,9 +699,11 @@ ciliumPolicy:
     enabled: false
   egress:
     enabled: false
-    # Destination-scoped egress rollout (#5142): "off" or "audit". See
-    # templates/cilium-policy-scoped-egress.yaml for what each does and how to
-    # read the audit. Only meaningful while egress.enabled is true.
+    # Destination-scoped egress rollout (#5142): "off", "audit" or "enforce".
+    # See templates/cilium-policy-scoped-egress.yaml for what each does and how
+    # to read the audit. Only meaningful while egress.enabled is true; in
+    # "enforce" the broad toEntities policies in cilium-policy.yaml stop
+    # rendering entirely and these scoped policies carry the deny.
     scoped: off
     # The public tier's real egress destinations, one selector + port each,
     # rendered as toEndpoints rules by the scoped policies. Selectors mirror the
@@ -740,20 +742,30 @@ ciliumPolicy:
           app.kubernetes.io/name: seaweedfs
           app.kubernetes.io/component: s3
         port: 8333
-      # EMBERVM_URL: the public /functions/<name> router.
+      # EMBERVM_URL: the public /functions router plus the demo-postgres
+      # status/reset calls (the control-plane Deployment's pods).
       embervm:
         namespace: embervm
         matchLabels:
           app.kubernetes.io/name: embervm
           app.kubernetes.io/instance: embervm
         port: 8080
-      # OTEL_EXPORTER_OTLP_ENDPOINT (grpc) from the backend.
-      otelCollector:
-        namespace: signoz
+      # DEMO_POSTGRES_DSN: the ember postgres exhibit's psycopg connect lands on
+      # the SERVING Envoy DaemonSet, whose pods select a DIFFERENT name
+      # (embervm-serving-envoy) from the control plane above, on the demo listen
+      # port 5401 (scratchPostgres.demoListenPort in the monolith chart; inside
+      # the serving chart's statefulTcpPortRange 5400-5409). A policy with only
+      # the control-plane rule black-holes /api/ember/postgres queries.
+      embervmServing:
+        namespace: embervm
         matchLabels:
-          app.kubernetes.io/name: signoz
-          app.kubernetes.io/component: otel-collector
-        port: 4317
+          app.kubernetes.io/name: embervm-serving-envoy
+          app.kubernetes.io/instance: embervm
+        port: 5401
+      # NOTE: deliberately NO otel-collector target. The public binary never
+      # initialises OpenTelemetry (framework/core.py build_app returns for
+      # Tier.PUBLIC before _setup_otel) and no OTEL_* env exists on these pods,
+      # so an allow for the SigNoz collector would be dead surface.
       # OTEL_COLLECTOR_HTTP_URL from the frontend's /otel proxy reaches the
       # hostNetwork SigNoz k8s-infra agent, so it is a host/remote-node entity
       # on this port rather than a pod selector.

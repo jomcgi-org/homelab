@@ -64,20 +64,22 @@ cfIngress:
 #   ingress: gateway -> frontend, frontend -> web (flipped during the window).
 #   egress:  off-cluster default-deny with the single sanctioned Turnstile allow
 #            (challenges.cloudflare.com siteverify, IP-pinned to Cloudflare's
-#            published ranges via toCIDRSet), all in-cluster allowed, DNS at L4.
-#            Flipped in a tested follow-up: hubble showed the only off-cluster
-#            egress is web -> Turnstile; frontend/imgproxy reach nothing
-#            off-cluster (imgproxy sources from in-cluster SeaweedFS).
-# See the chart's templates/cilium-policy.yaml rationale.
+#            published ranges via toCIDRSet), now DESTINATION-SCOPED in-cluster
+#            too: one toEndpoints rule per real dependency (#5142), DNS on 53.
+# See the chart's templates/cilium-policy-scoped-egress.yaml for the ladder and
+# templates/cilium-policy.yaml for the rationale.
 ciliumPolicy:
   ingress:
     enabled: true
   egress:
     enabled: true
     # #5142 step 1: destination-scoped egress policies in AUDIT shape (additive
-    # allows, enforcement unchanged). Flipped here in the same PR as the
-    # template on purpose: the previous chart has no reader for this key, so
-    # the value is inert until the new chart publishes, and nothing misrenders
-    # in between. Read hubble for a day (recipe in the template header) before
-    # the follow-up PR moves to enforcement.
-    scoped: audit
+    # allows, enforcement unchanged). Landed in fc1c213fb (2026-08-22).
+    #
+    # #5142 step 2: ENFORCE. The broad `toEntities: cluster` grants stop
+    # rendering, the scoped policies carry the deny, and the Turnstile allow
+    # moves into the web scoped policy. Anything missing from scopedTargets now
+    # fails as a SILENT DIAL TIMEOUT: if a public path starts timing out, diff
+    # its destination against chart/values.yaml scopedTargets before loosening
+    # anything.
+    scoped: enforce

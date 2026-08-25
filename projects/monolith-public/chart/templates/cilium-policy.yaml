@@ -22,6 +22,13 @@
 #     tested follow-up AFTER the window (watch flows with `hubble observe`), so
 #     an unproven egress deny is not stacked onto the irreversible CNI swap.
 #
+#   ciliumPolicy.egress.scoped   - #5142 destination scoping, with an
+#     off/audit/enforce ladder documented in
+#     templates/cilium-policy-scoped-egress.yaml. While it is "enforce", the
+#     three broad egress policies below DO NOT RENDER AT ALL: the scoped file
+#     owns the whole direction (per-dependency toEndpoints allows, the
+#     Turnstile toCIDRSet, and the default-deny itself).
+#
 # imgproxy note: its INGRESS is deliberately left unrestricted (it has no
 # Linkerd Server today and also answers on private.jomcgi.dev). Its EGRESS is
 # locked down, because the Linkerd EgressNetwork deny is namespace-wide and
@@ -124,6 +131,8 @@ spec:
 {{- end }}
 
 {{- if .Values.ciliumPolicy.egress.enabled }}
+{{- $scopedMode := .Values.ciliumPolicy.egress.scoped | default "off" }}
+{{- if ne $scopedMode "enforce" }}
 {{- if .Values.web.enabled }}
 ---
 # Backend egress: default-deny OFF-cluster (replaces the namespace EgressNetwork
@@ -223,5 +232,6 @@ spec:
         - cluster
         - host
         - remote-node
+{{- end }}
 {{- end }}
 {{- end }}

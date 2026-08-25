@@ -5461,13 +5461,26 @@ py_test(
 )
 
 # Guard (#5142): the public tier's destination-scoped Cilium egress policies
-# must never regain `toEntities: cluster`. Same cross-package data-dep shape as
-# the HTTPRoute guard above.
+# must never regain `toEntities: cluster`, and the ENFORCED render must allow
+# exactly the audited dependency set. Same cross-package data-dep shape as the
+# HTTPRoute guard, plus what `helm template` needs: Chart.lock and the charts/
+# glob (helm aborts when a locked subchart tarball is missing; this chart has
+# no migrations/ directory), the deploy values, and the helm binary.
 py_test(
     name = "public_cilium_scoped_egress_guard_test",
     srcs = ["public_cilium_scoped_egress_guard_test.py"],
-    data = ["//projects/monolith-public/chart:cilium_scoped_egress_template"],
+    data = [
+        "//projects/monolith-public/chart:cilium_scoped_egress_template",
+        "//projects/monolith-public/chart:chart_render_inputs",
+        "//projects/monolith-public/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith-public/deploy:deploy_values)",
+    },
     imports = ["."],
+    deps = ["@pip//pyyaml"],
 )
 
 # Guard: the packaged homelab-library must deploy images by content digest, not
