@@ -92,8 +92,8 @@
     return () => clearInterval(poll);
   });
 
-  // One line per milestone; the full story lives in ARCHITECTURE.md behind
-  // the source link above.
+  // Checkbox and name visible; the sentence sits behind the row's
+  // disclosure, and the full story stays in ARCHITECTURE.md.
   const MILESTONES = [
     {
       done: true,
@@ -223,78 +223,99 @@
         <a class="anchor" href="#classes">What Ember runs</a>
       </h2>
       <p class="body">
-        Every workload is a Kubernetes custom resource, in one of five classes.
-        The three that differ by <b
-          >how much of the machine the guest may touch</b
-        >:
+        Five classes, declared as Kubernetes custom resources, all assuming the
+        guest is hostile.
       </p>
-      <dl class="classes">
-        <div class="class">
-          <dt>task<small>run once</small></dt>
-          <dd>
-            One-shot execution in a fresh or snapshot-restored VM.
-            <b>No network device at all</b>; the guest has one channel to the
-            host daemon and nothing else, then the VM is destroyed.
-          </dd>
-        </div>
-        <div class="class">
-          <dt>session<small>sleep &amp; wake</small></dt>
-          <dd>
-            A stateful sandbox that survives across invocations. Idle sessions
-            are <b>banked</b> (snapshotted to disk) and
-            <b>relit</b> (restored) on the next call, with memory, processes and open
-            files intact. Banked snapshots are offloaded to S3; a session survives
-            the node it slept on.
-          </dd>
-        </div>
-        <div class="class">
-          <dt>serving<small>always answering</small></dt>
-          <dd>
-            A warm HTTP endpoint. Requests reach the guest directly; the control
-            plane is not in the path.
-          </dd>
-        </div>
-      </dl>
-      <p class="body classes-after">
-        Stateful adds a disk that outlives the VM (the database below);
-        composite wakes several VMs as one unit.
-      </p>
+      <div class="classes">
+        <details class="class" name="em-classes">
+          <summary>
+            <span class="cname">task<small>run once</small></span>
+            <span class="cline"
+              >A fresh VM, no network device, destroyed after one job.</span
+            >
+          </summary>
+          <div class="cmore">
+            <p>
+              One-shot execution in a fresh or snapshot-restored VM. The guest
+              can reach exactly one thing: its channel to the host daemon. The
+              scan fleet runs the CI security scanner this way.
+            </p>
+          </div>
+        </details>
+        <details class="class" name="em-classes">
+          <summary>
+            <span class="cname">session<small>sleep &amp; wake</small></span>
+            <span class="cline"
+              >An agent's sandbox, banked between turns, relit with memory
+              intact.</span
+            >
+          </summary>
+          <div class="cmore">
+            <p>
+              Idle sessions are <b>banked</b> (snapshotted to disk) and
+              <b>relit</b> on the next call with memory, processes and open
+              files intact. Snapshots offload to S3, so a session survives the
+              node it slept on. Each AI agent gets its own machine to make a
+              mess in: shell, filesystem, packages,
+              <b>destroyed without ceremony</b>.
+            </p>
+          </div>
+        </details>
+        <details class="class" name="em-classes">
+          <summary>
+            <span class="cname">serving<small>always answering</small></span>
+            <span class="cline"
+              >A warm HTTP endpoint; requests never touch the control
+              plane.</span
+            >
+          </summary>
+          <div class="cmore">
+            <p>
+              Requests reach the guest directly through a node-local Envoy the
+              control plane has already programmed. An image renderer answers
+              real internet traffic this way,
+              <b>rate-limited and quota-capped</b>.
+            </p>
+          </div>
+        </details>
+        <details class="class" name="em-classes">
+          <summary>
+            <span class="cname"
+              >stateful<small>a database that sleeps</small></span
+            >
+            <span class="cline"
+              >Its disk outlives the VM; the next connection wakes it.</span
+            >
+          </summary>
+          <div class="cmore">
+            <p>
+              Postgres banked to disk the moment it goes idle.
+              <b>Zero compute while asleep</b>, and the volume on node NVMe is
+              the authoritative copy.
+              <a class="sig" href="/ember/postgres">see it live →</a>
+            </p>
+          </div>
+        </details>
+        <details class="class" name="em-classes">
+          <summary>
+            <span class="cname">composite<small>wakes as one</small></span>
+            <span class="cline"
+              >Several VMs, one private network, banked and relit
+              together.</span
+            >
+          </summary>
+          <div class="cmore">
+            <p>
+              An all-or-none group. A scratch Kubernetes cluster ran as one
+              composite workload: control plane and workers woke together on
+              the first kubectl.
+            </p>
+          </div>
+        </details>
+      </div>
       <pre class="api">POST /v1/workloads/:name/tasks     → 202 + a task_id
 POST /v1/workloads/:name/sessions  → a session_id, then /v1/sessions/:id/invoke
 serving                            → plain HTTP, straight into the VM</pre>
-    </section>
-
-    <section>
-      <h2 class="h2" id="uses">
-        <a class="anchor" href="#uses">What that lets you run</a>
-      </h2>
-      <p class="body">Every one of these assumes the guest is hostile.</p>
-      <dl class="classes">
-        <div class="class">
-          <dt>an agent's sandbox<small>session</small></dt>
-          <dd>
-            Each AI agent gets its own machine to make a mess in: shell,
-            filesystem, packages. Banked between turns, relit mid-conversation, <b
-              >destroyed without ceremony</b
-            >.
-          </dd>
-        </div>
-        <div class="class">
-          <dt>a database nobody queries at 3am<small>stateful</small></dt>
-          <dd>
-            Postgres banked to disk the moment it goes idle, woken by the next
-            connection. <b>Zero compute while asleep.</b>
-            <a class="sig" href="/ember/postgres">see it live →</a>
-          </dd>
-        </div>
-        <div class="class">
-          <dt>a public function, served warm<small>serving</small></dt>
-          <dd>
-            An image renderer answering real internet traffic from a warm
-            microVM, <b>rate-limited and quota-capped</b>.
-          </dd>
-        </div>
-      </dl>
     </section>
 
     <section>
@@ -498,20 +519,11 @@ serving                            → plain HTTP, straight into the VM</pre>
           >
         </p>
         <p>
-          The task class has <b>no network device at all</b>. The guest can
-          reach exactly one thing: its channel to the host daemon.
+          Task and session guests have <b>no network device at all</b>: one
+          channel to the host daemon.
         </p>
         <p>
           <b>Quotas fail closed.</b> A customer with quota 0 is hard-stopped at submit.
-        </p>
-        <p>
-          The spend tally fails open: a node cut off from the control plane
-          keeps running the work and keeps its own tally.
-        </p>
-        <p>
-          The one public route is scoped at <b>three independent layers</b>: the
-          edge pins host and path, Envoy exact-matches the internal authority,
-          and the guest shim reserves its own control prefix.
         </p>
       </div>
     </section>
@@ -524,10 +536,7 @@ serving                            → plain HTTP, straight into the VM</pre>
         <a class="door" href="/ember/postgres">
           <span class="k">live demo</span>
           <h3>A Postgres that sleeps</h3>
-          <p>
-            A real database banked to disk. Click connect, watch the stopwatch:
-            snapshot restore, disk to answering queries, best wake 78&nbsp;ms.
-          </p>
+          <p>Click connect, watch the stopwatch: best wake 78&nbsp;ms.</p>
           <span class="go">ember/postgres</span>
         </a>
         <a class="door" href="/ember/bazel">
@@ -542,28 +551,19 @@ serving                            → plain HTTP, straight into the VM</pre>
         <a class="door" href="/ember/firecracker">
           <span class="k">explainer</span>
           <h3>How Firecracker resumes a VM</h3>
-          <p>
-            What a microVM snapshot actually contains, and how a full machine
-            (kernel, memory, device state) comes back in ~22&nbsp;ms.
-          </p>
+          <p>What a snapshot contains; a full machine back in ~22&nbsp;ms.</p>
           <span class="go">ember/firecracker</span>
         </a>
         <a class="door" href="/ember/agents">
           <span class="k">explainer</span>
           <h3>One microVM per agent session</h3>
-          <p>
-            The agent lifecycle: restored in 2.5 ms, killed 20 s after the last
-            turn, rebuilt from S3 days later.
-          </p>
+          <p>Restored in 2.5 ms, killed 20 s after the last turn.</p>
           <span class="go">ember/agents</span>
         </a>
         <a class="door" href="/ember/semgrep">
           <span class="k">workload demo</span>
           <h3>Semgrep</h3>
-          <p>
-            The CI security scanner, warm in a microVM, scanning your snippet in
-            about a second.
-          </p>
+          <p>Warm in a microVM, scanning your snippet in about a second.</p>
           <span class="go">ember/semgrep</span>
         </a>
       </div>
@@ -575,12 +575,14 @@ serving                            → plain HTTP, straight into the VM</pre>
       </h2>
       <div class="roadmap">
         {#each MILESTONES as m (m.name)}
-          <div class="milestone">
-            <span class="cb" class:todo={!m.done}>{m.done ? "[x]" : "[ ]"}</span
-            >
-            <span class="rname">{m.name}</span>
+          <details class="milestone" name="em-roadmap">
+            <summary>
+              <span class="cb" class:todo={!m.done}>{m.done ? "[x]" : "[ ]"}</span
+              >
+              <span class="rname">{m.name}</span>
+            </summary>
             <p class="rdesc">{m.desc}</p>
-          </div>
+          </details>
         {/each}
       </div>
     </section>
@@ -883,7 +885,11 @@ serving                            → plain HTTP, straight into the VM</pre>
     color: var(--em-ink);
   }
 
-  /* ---------- ruled definition lists (classes + use cases) ---------- */
+  /* ---------- ruled class rows: one line visible, detail on demand ------
+     The picomq-style accordion, done as native <details name="em-classes">
+     so one row is open at a time with no JS; older browsers just get
+     independent toggles. The affordance is a mono plus that rotates to a
+     multiply: rotation only, per the transform-and-opacity motion rule. */
   .classes {
     display: flex;
     flex-direction: column;
@@ -892,23 +898,32 @@ serving                            → plain HTTP, straight into the VM</pre>
   }
 
   .class {
-    display: grid;
-    grid-template-columns: 210px minmax(0, 1fr);
-    gap: 18px;
-    padding: 16px 4px;
     border-bottom: 1px solid var(--em-line);
   }
 
-  .class dt {
+  .class summary {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr) 18px;
+    gap: 18px;
+    align-items: baseline;
+    padding: 14px 4px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .class summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .cname {
     font-family: var(--em-mono);
     font-size: 14px;
     font-weight: 600;
     line-height: 1.45;
     color: var(--em-ember-deep);
-    margin: 0;
   }
 
-  .class dt small {
+  .cname small {
     display: block;
     font-weight: 400;
     color: var(--em-faint);
@@ -916,14 +931,50 @@ serving                            → plain HTTP, straight into the VM</pre>
     margin-top: 5px;
   }
 
-  .class dd {
+  .cline {
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--em-muted);
+  }
+
+  .class summary::after,
+  .milestone summary::after {
+    content: "+";
+    font-family: var(--em-mono);
+    font-size: 15px;
+    line-height: 1;
+    color: var(--em-faint);
+    justify-self: end;
+    align-self: center;
+  }
+
+  .class[open] summary::after,
+  .milestone[open] summary::after {
+    transform: rotate(45deg);
+  }
+
+  .class summary:hover .cline {
+    color: var(--em-ink);
+  }
+
+  .class summary:focus-visible,
+  .milestone summary:focus-visible {
+    outline: 2px solid var(--em-ember-deep);
+    outline-offset: 3px;
+  }
+
+  .cmore {
+    padding: 0 26px 16px 228px;
+  }
+
+  .cmore p {
     margin: 0;
     font-size: 15px;
     line-height: 1.55;
     color: var(--em-muted);
   }
 
-  .class dd b {
+  .cmore b {
     color: var(--em-ink);
     font-weight: 600;
   }
@@ -1209,16 +1260,25 @@ serving                            → plain HTTP, straight into the VM</pre>
   }
 
   .milestone {
-    display: grid;
-    grid-template-columns: 26px 110px minmax(0, 1fr);
-    gap: 14px;
-    align-items: baseline;
-    padding: 11px 4px;
     border-bottom: 1px solid var(--em-line);
   }
 
   .milestone:first-child {
     border-top: 1px solid var(--eml-line-strong);
+  }
+
+  .milestone summary {
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr) 18px;
+    gap: 14px;
+    align-items: baseline;
+    padding: 11px 4px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .milestone summary::-webkit-details-marker {
+    display: none;
   }
 
   .cb {
@@ -1246,6 +1306,28 @@ serving                            → plain HTTP, straight into the VM</pre>
     line-height: 1.5;
     color: var(--em-muted);
     margin: 0;
+    padding: 0 26px 11px 40px;
+  }
+
+  /* Opening motion is opt-in: absent by default, per the reduced-motion
+     opt-in shape this repo prefers for new work. */
+  @media (prefers-reduced-motion: no-preference) {
+    .class summary::after,
+    .milestone summary::after {
+      transition: transform 0.18s ease;
+    }
+
+    .class[open] .cmore,
+    .milestone[open] .rdesc {
+      animation: em-reveal 0.22s ease;
+    }
+
+    @keyframes em-reveal {
+      from {
+        opacity: 0;
+        transform: translateY(-3px);
+      }
+    }
   }
 
   /* ---------- footer ---------- */
@@ -1296,17 +1378,22 @@ serving                            → plain HTTP, straight into the VM</pre>
   }
 
   @media (max-width: 640px) {
-    .class {
-      grid-template-columns: 1fr;
-      gap: 4px;
+    .class summary {
+      grid-template-columns: minmax(0, 1fr) 18px;
+      gap: 6px 14px;
     }
 
-    .milestone {
-      grid-template-columns: 26px minmax(0, 1fr);
+    .class summary .cline {
+      grid-column: 1;
     }
 
-    .milestone .rdesc {
+    .class summary::after {
+      grid-row: 1;
       grid-column: 2;
+    }
+
+    .cmore {
+      padding-left: 4px;
     }
   }
 
