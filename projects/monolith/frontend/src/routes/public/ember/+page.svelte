@@ -172,9 +172,14 @@
           </summary>
           <div class="cmore">
             <p>
-              A fresh VM per job, <b>no network device</b>, destroyed after. The guest reaches exactly one thing: its channel to the host daemon.
+              A fresh VM per job, <b>no network device</b>, destroyed after. The
+              guest reaches exactly one thing: its channel to the host daemon.
             </p>
-            <p class="sigs"><a class="sig" href="/ember/semgrep">semgrep, live →</a> <a class="sig" href="/ember/bazel">a frozen Bazel brain, live →</a></p>
+            <p class="sigs">
+              <a class="sig" href="/ember/semgrep">semgrep, live →</a>
+              <a class="sig" href="/ember/bazel">a frozen Bazel brain, live →</a
+              >
+            </p>
           </div>
         </details>
         <details class="class" name="em-classes">
@@ -184,9 +189,13 @@
           </summary>
           <div class="cmore">
             <p>
-              An agent's sandbox. <b>Banked</b> between turns, <b>relit</b> with memory, processes and open files intact; snapshots offload to S3, so a session survives its node.
+              An agent's sandbox. <b>Banked</b> between turns, <b>relit</b> with memory,
+              processes and open files intact; snapshots offload to S3, so a session
+              survives its node.
             </p>
-            <p class="sigs"><a class="sig" href="/ember/agents">one microVM per agent →</a></p>
+            <p class="sigs">
+              <a class="sig" href="/ember/agents">one microVM per agent →</a>
+            </p>
           </div>
         </details>
         <details class="class" name="em-classes">
@@ -196,7 +205,10 @@
           </summary>
           <div class="cmore">
             <p>
-              A warm HTTP endpoint. Requests go through a node-local Envoy straight into the VM; <b>the control plane can restart mid-request</b> and traffic notices nothing.
+              A warm HTTP endpoint. Requests go through a node-local Envoy
+              straight into the VM; <b
+                >the control plane can restart mid-request</b
+              > and traffic notices nothing.
             </p>
           </div>
         </details>
@@ -207,9 +219,13 @@
           </summary>
           <div class="cmore">
             <p>
-              Postgres banked to disk when idle, woken by the next connection. <b>Zero compute while asleep</b>, and the disk outlives the VM.
+              Postgres banked to disk when idle, woken by the next connection. <b
+                >Zero compute while asleep</b
+              >, and the disk outlives the VM.
             </p>
-            <p class="sigs"><a class="sig" href="/ember/postgres">wake it yourself →</a></p>
+            <p class="sigs">
+              <a class="sig" href="/ember/postgres">wake it yourself →</a>
+            </p>
           </div>
         </details>
         <details class="class" name="em-classes">
@@ -219,7 +235,8 @@
           </summary>
           <div class="cmore">
             <p>
-              Several VMs, one private network, banked and relit as a unit. A scratch Kubernetes cluster ran as one workload.
+              Several VMs, one private network, banked and relit as a unit. A
+              scratch Kubernetes cluster ran as one workload.
             </p>
           </div>
         </details>
@@ -230,7 +247,11 @@
           </summary>
           <div class="cmore">
             <p>
-              <b>No VM, and nothing it was restored from, is ever shared between two customers.</b> Task and session guests have no network device at all. Quotas fail closed: quota 0 is a hard stop at submit.
+              <b
+                >No VM, and nothing it was restored from, is ever shared between
+                two customers.</b
+              > Task and session guests have no network device at all. Quotas fail
+              closed: quota 0 is a hard stop at submit.
             </p>
           </div>
         </details>
@@ -241,223 +262,305 @@
           </summary>
           <div class="cmore">
             <p>
-              An <b>Elixir control plane</b> manages Firecracker VM lifecycle
-              on Kubernetes; a Go daemon on each node owns the machines.
-              Workloads are declared as Kubernetes custom resources.
+              An <b>Elixir control plane</b> manages Firecracker VM lifecycle on Kubernetes;
+              a Go daemon on each node owns the machines. Workloads are declared as
+              Kubernetes custom resources.
             </p>
-            <pre class="api">POST /v1/workloads/:name/tasks     → 202 + a task_id
+            <pre
+              class="api">POST /v1/workloads/:name/tasks     → 202 + a task_id
 POST /v1/workloads/:name/sessions  → a session_id, then /v1/sessions/:id/invoke
 serving                            → plain HTTP, straight into the VM</pre>
             <div class="arch">
-          <svg
-            viewBox="0 0 720 300"
-            role="img"
-            aria-label="Ember architecture: callers reach the Elixir control plane, which dispatches over gRPC to the Go node daemon driving Firecracker VMs; serving traffic bypasses the control plane entirely via a node-local Envoy programmed over xDS. Snapshots and boot images are banked to S3."
-          >
-            <defs>
-              <marker
-                id="arrow-ember"
-                markerWidth="8"
-                markerHeight="8"
-                refX="7"
-                refY="4"
-                orient="auto"
+              <svg
+                viewBox="0 0 720 300"
+                role="img"
+                aria-label="Ember architecture: callers reach the Elixir control plane, which dispatches over gRPC to the Go node daemon driving Firecracker VMs; serving traffic bypasses the control plane entirely via a node-local Envoy programmed over xDS. Snapshots and boot images are banked to S3."
               >
-                <path class="mk mk-control" d="M1,1 L7,4 L1,7" />
-              </marker>
-              <marker
-                id="arrow-frost"
-                markerWidth="8"
-                markerHeight="8"
-                refX="7"
-                refY="4"
-                orient="auto"
-              >
-                <path class="mk mk-data" d="M1,1 L7,4 L1,7" />
-              </marker>
-              <marker
-                id="arrow-amber"
-                markerWidth="8"
-                markerHeight="8"
-                refX="7"
-                refY="4"
-                orient="auto"
-              >
-                <path class="mk mk-xds" d="M1,1 L7,4 L1,7" />
-              </marker>
-              <marker
-                id="arrow-slate"
-                markerWidth="8"
-                markerHeight="8"
-                refX="7"
-                refY="4"
-                orient="auto"
-              >
-                <path class="mk mk-bank" d="M1,1 L7,4 L1,7" />
-              </marker>
-            </defs>
+                <defs>
+                  <marker
+                    id="arrow-ember"
+                    markerWidth="8"
+                    markerHeight="8"
+                    refX="7"
+                    refY="4"
+                    orient="auto"
+                  >
+                    <path class="mk mk-control" d="M1,1 L7,4 L1,7" />
+                  </marker>
+                  <marker
+                    id="arrow-frost"
+                    markerWidth="8"
+                    markerHeight="8"
+                    refX="7"
+                    refY="4"
+                    orient="auto"
+                  >
+                    <path class="mk mk-data" d="M1,1 L7,4 L1,7" />
+                  </marker>
+                  <marker
+                    id="arrow-amber"
+                    markerWidth="8"
+                    markerHeight="8"
+                    refX="7"
+                    refY="4"
+                    orient="auto"
+                  >
+                    <path class="mk mk-xds" d="M1,1 L7,4 L1,7" />
+                  </marker>
+                  <marker
+                    id="arrow-slate"
+                    markerWidth="8"
+                    markerHeight="8"
+                    refX="7"
+                    refY="4"
+                    orient="auto"
+                  >
+                    <path class="mk mk-bank" d="M1,1 L7,4 L1,7" />
+                  </marker>
+                </defs>
 
-            <rect
-              class="lane"
-              x="150"
-              y="18"
-              width="230"
-              height="264"
-              rx="10"
-            />
-            <text x="162" y="38" class="lane-label"
-              >CONTROL PLANE · ELIXIR/OTP</text
-            >
-            <rect
-              class="lane"
-              x="420"
-              y="18"
-              width="286"
-              height="264"
-              rx="10"
-            />
-            <text x="432" y="38" class="lane-label">EACH FIRECRACKER NODE</text>
+                <rect
+                  class="lane"
+                  x="150"
+                  y="18"
+                  width="230"
+                  height="264"
+                  rx="10"
+                />
+                <text x="162" y="38" class="lane-label"
+                  >CONTROL PLANE · ELIXIR/OTP</text
+                >
+                <rect
+                  class="lane"
+                  x="420"
+                  y="18"
+                  width="286"
+                  height="264"
+                  rx="10"
+                />
+                <text x="432" y="38" class="lane-label"
+                  >EACH FIRECRACKER NODE</text
+                >
 
-            <rect x="14" y="74" width="100" height="44" rx="8" class="box" />
-            <text x="64" y="93" text-anchor="middle" class="node-label"
-              >caller</text
-            >
-            <text x="64" y="107" text-anchor="middle" class="node-sub"
-              >task / session</text
-            >
+                <rect
+                  x="14"
+                  y="74"
+                  width="100"
+                  height="44"
+                  rx="8"
+                  class="box"
+                />
+                <text x="64" y="93" text-anchor="middle" class="node-label"
+                  >caller</text
+                >
+                <text x="64" y="107" text-anchor="middle" class="node-sub"
+                  >task / session</text
+                >
 
-            <rect x="14" y="196" width="100" height="44" rx="8" class="box" />
-            <text x="64" y="215" text-anchor="middle" class="node-label"
-              >edge</text
-            >
-            <text x="64" y="229" text-anchor="middle" class="node-sub"
-              >HTTPRoute</text
-            >
+                <rect
+                  x="14"
+                  y="196"
+                  width="100"
+                  height="44"
+                  rx="8"
+                  class="box"
+                />
+                <text x="64" y="215" text-anchor="middle" class="node-label"
+                  >edge</text
+                >
+                <text x="64" y="229" text-anchor="middle" class="node-sub"
+                  >HTTPRoute</text
+                >
 
-            <rect x="170" y="66" width="120" height="46" rx="8" class="box" />
-            <text x="230" y="86" text-anchor="middle" class="node-label"
-              >HTTP API</text
-            >
-            <text x="230" y="101" text-anchor="middle" class="node-sub"
-              >/v1/workloads</text
-            >
+                <rect
+                  x="170"
+                  y="66"
+                  width="120"
+                  height="46"
+                  rx="8"
+                  class="box"
+                />
+                <text x="230" y="86" text-anchor="middle" class="node-label"
+                  >HTTP API</text
+                >
+                <text x="230" y="101" text-anchor="middle" class="node-sub"
+                  >/v1/workloads</text
+                >
 
-            <rect x="170" y="130" width="120" height="42" rx="8" class="box" />
-            <text x="230" y="149" text-anchor="middle" class="node-label"
-              >op-log</text
-            >
-            <text x="230" y="163" text-anchor="middle" class="node-sub"
-              >Postgres</text
-            >
+                <rect
+                  x="170"
+                  y="130"
+                  width="120"
+                  height="42"
+                  rx="8"
+                  class="box"
+                />
+                <text x="230" y="149" text-anchor="middle" class="node-label"
+                  >op-log</text
+                >
+                <text x="230" y="163" text-anchor="middle" class="node-sub"
+                  >Postgres</text
+                >
 
-            <rect x="170" y="192" width="120" height="42" rx="8" class="box" />
-            <text x="230" y="211" text-anchor="middle" class="node-label"
-              >xDS publisher</text
-            >
-            <text x="230" y="225" text-anchor="middle" class="node-sub"
-              >programs Envoy</text
-            >
+                <rect
+                  x="170"
+                  y="192"
+                  width="120"
+                  height="42"
+                  rx="8"
+                  class="box"
+                />
+                <text x="230" y="211" text-anchor="middle" class="node-label"
+                  >xDS publisher</text
+                >
+                <text x="230" y="225" text-anchor="middle" class="node-sub"
+                  >programs Envoy</text
+                >
 
-            <rect x="436" y="60" width="130" height="46" rx="8" class="box" />
-            <text x="501" y="80" text-anchor="middle" class="node-label"
-              >noded</text
-            >
-            <text x="501" y="95" text-anchor="middle" class="node-sub"
-              >Go daemon</text
-            >
+                <rect
+                  x="436"
+                  y="60"
+                  width="130"
+                  height="46"
+                  rx="8"
+                  class="box"
+                />
+                <text x="501" y="80" text-anchor="middle" class="node-label"
+                  >noded</text
+                >
+                <text x="501" y="95" text-anchor="middle" class="node-sub"
+                  >Go daemon</text
+                >
 
-            <rect x="622" y="60" width="72" height="46" rx="8" class="box" />
-            <text x="658" y="80" text-anchor="middle" class="node-label"
-              >VM</text
-            >
-            <text x="658" y="95" text-anchor="middle" class="node-sub"
-              >vsock only</text
-            >
+                <rect
+                  x="622"
+                  y="60"
+                  width="72"
+                  height="46"
+                  rx="8"
+                  class="box"
+                />
+                <text x="658" y="80" text-anchor="middle" class="node-label"
+                  >VM</text
+                >
+                <text x="658" y="95" text-anchor="middle" class="node-sub"
+                  >vsock only</text
+                >
 
-            <rect x="436" y="136" width="130" height="40" rx="8" class="box" />
-            <text x="501" y="154" text-anchor="middle" class="node-label"
-              >S3</text
-            >
-            <text x="501" y="168" text-anchor="middle" class="node-sub"
-              >snapshots + images</text
-            >
-            <path class="path-bank" d="M494,106 L494,132" />
-            <path class="path-bank" d="M508,132 L508,106" />
-            <text
-              x="548"
-              y="124"
-              text-anchor="middle"
-              class="edge-label el-bank">bank</text
-            >
+                <rect
+                  x="436"
+                  y="136"
+                  width="130"
+                  height="40"
+                  rx="8"
+                  class="box"
+                />
+                <text x="501" y="154" text-anchor="middle" class="node-label"
+                  >S3</text
+                >
+                <text x="501" y="168" text-anchor="middle" class="node-sub"
+                  >snapshots + images</text
+                >
+                <path class="path-bank" d="M494,106 L494,132" />
+                <path class="path-bank" d="M508,132 L508,106" />
+                <text
+                  x="548"
+                  y="124"
+                  text-anchor="middle"
+                  class="edge-label el-bank">bank</text
+                >
 
-            <rect x="436" y="196" width="130" height="46" rx="8" class="box" />
-            <text x="501" y="216" text-anchor="middle" class="node-label"
-              >node Envoy</text
-            >
-            <text x="501" y="231" text-anchor="middle" class="node-sub"
-              >exact-match</text
-            >
+                <rect
+                  x="436"
+                  y="196"
+                  width="130"
+                  height="46"
+                  rx="8"
+                  class="box"
+                />
+                <text x="501" y="216" text-anchor="middle" class="node-label"
+                  >node Envoy</text
+                >
+                <text x="501" y="231" text-anchor="middle" class="node-sub"
+                  >exact-match</text
+                >
 
-            <rect x="622" y="196" width="72" height="46" rx="8" class="box" />
-            <text x="658" y="216" text-anchor="middle" class="node-label"
-              >VM</text
-            >
-            <text x="658" y="231" text-anchor="middle" class="node-sub"
-              >tap NIC</text
-            >
+                <rect
+                  x="622"
+                  y="196"
+                  width="72"
+                  height="46"
+                  rx="8"
+                  class="box"
+                />
+                <text x="658" y="216" text-anchor="middle" class="node-label"
+                  >VM</text
+                >
+                <text x="658" y="231" text-anchor="middle" class="node-sub"
+                  >tap NIC</text
+                >
 
-            <path class="path-control" d="M114,92 L166,90" />
-            <path class="path-control" d="M290,86 L432,83" />
-            <text
-              x="360"
-              y="75"
-              text-anchor="middle"
-              class="edge-label el-control">gRPC</text
-            >
-            <path class="path-control" d="M566,83 L618,83" />
-            <text
-              x="592"
-              y="76"
-              text-anchor="middle"
-              class="edge-label el-control">vsock</text
-            >
+                <path class="path-control" d="M114,92 L166,90" />
+                <path class="path-control" d="M290,86 L432,83" />
+                <text
+                  x="360"
+                  y="75"
+                  text-anchor="middle"
+                  class="edge-label el-control">gRPC</text
+                >
+                <path class="path-control" d="M566,83 L618,83" />
+                <text
+                  x="592"
+                  y="76"
+                  text-anchor="middle"
+                  class="edge-label el-control">vsock</text
+                >
 
-            <path
-              class="path-data"
-              d="M114,222 C 140,222 138,262 170,262 L 350,262 C 400,262 396,222 432,222"
-            />
-            <text
-              x="260"
-              y="277"
-              text-anchor="middle"
-              class="edge-label el-data">bypasses the control plane</text
-            >
-            <path class="path-data" d="M566,219 L618,219" />
-            <text
-              x="592"
-              y="212"
-              text-anchor="middle"
-              class="edge-label el-data">DNAT</text
-            >
+                <path
+                  class="path-data"
+                  d="M114,222 C 140,222 138,262 170,262 L 350,262 C 400,262 396,222 432,222"
+                />
+                <text
+                  x="260"
+                  y="277"
+                  text-anchor="middle"
+                  class="edge-label el-data">bypasses the control plane</text
+                >
+                <path class="path-data" d="M566,219 L618,219" />
+                <text
+                  x="592"
+                  y="212"
+                  text-anchor="middle"
+                  class="edge-label el-data">DNAT</text
+                >
 
-            <path class="path-xds" d="M290,213 C 340,213 380,208 432,207" />
-            <text x="360" y="199" text-anchor="middle" class="edge-label el-xds"
-              >xDS</text
-            >
-          </svg>
-          <div class="legend">
-            <span
-              ><i class="swatch sw-control"></i> control path (tasks &amp; sessions)</span
-            >
-            <span><i class="swatch sw-data"></i> serving data path</span>
-            <span
-              ><i class="swatch sw-xds"></i> configuration, ahead of time</span
-            >
-          </div>
-        </div>
+                <path class="path-xds" d="M290,213 C 340,213 380,208 432,207" />
+                <text
+                  x="360"
+                  y="199"
+                  text-anchor="middle"
+                  class="edge-label el-xds">xDS</text
+                >
+              </svg>
+              <div class="legend">
+                <span
+                  ><i class="swatch sw-control"></i> control path (tasks &amp; sessions)</span
+                >
+                <span><i class="swatch sw-data"></i> serving data path</span>
+                <span
+                  ><i class="swatch sw-xds"></i> configuration, ahead of time</span
+                >
+              </div>
+            </div>
             <p class="sigs">
-              <a class="sig" href="/ember/firecracker">how a VM resumes in 22 ms →</a>
-              <a class="sig" href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md">full architecture →</a>
+              <a class="sig" href="/ember/firecracker"
+                >how a VM resumes in 22 ms →</a
+              >
+              <a
+                class="sig"
+                href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
+                >full architecture →</a
+              >
             </p>
           </div>
         </details>
@@ -651,7 +754,7 @@ serving                            → plain HTTP, straight into the VM</pre>
   .live a:focus-visible,
   .sig:focus-visible,
   .anchor:focus-visible,
-    .foot a:focus-visible {
+  .foot a:focus-visible {
     outline: 2px solid var(--em-ember-deep);
     outline-offset: 3px;
   }
@@ -837,7 +940,6 @@ serving                            → plain HTTP, straight into the VM</pre>
     line-height: 1.45;
     color: var(--em-ember-deep);
   }
-
 
   .ctag {
     font-size: 13.5px;
