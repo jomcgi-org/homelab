@@ -6,13 +6,13 @@ filegroup(
     visibility = ["//projects/monolith:__subpackages__"],
 )
 
-# The prod values under a label that names the file, so the dev Application's
-# render can layer them first (application.yaml valueFiles order is
-# prod values, then dev overrides) and the label-to-path derivation in
-# helm_admissibility_render yields the real workspace path.
-filegroup(
-    name = "values.yaml",
-    srcs = ["values.yaml"],
+# The prod values under their own visible file label, so the dev Application's
+# render can layer them first (application.yaml valueFiles order is prod
+# values, then dev overrides). exports_files rather than a filegroup: a rule
+# named "values.yaml" would shadow the source file of the same name in this
+# package and cycle.
+exports_files(
+    ["values.yaml"],
     visibility = ["//projects/monolith:__subpackages__"],
 )
 
