@@ -98,9 +98,15 @@ py_test(
 py_test(
     name = "cilium_ingress_allowlist_test",
     srcs = ["cilium_ingress_allowlist_test.py"],
+    # Chart.lock plus the vendored charts/ and migrations/ trees are load-bearing
+    # for `helm template`: without them the render aborts on the cf-ingress and
+    # signoz-dashboards subchart dependencies. Same data set as
+    # chart_env_identity_test above, which renders the same chart.
     data = [
+        "Chart.lock",
         "Chart.yaml",
         "values.yaml",
+        "//projects/monolith:module_configs",
         "//projects/monolith/deploy:application",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/dev/deploy:application",
@@ -108,6 +114,8 @@ py_test(
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
     ]),
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
