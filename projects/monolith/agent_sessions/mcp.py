@@ -667,7 +667,7 @@ async def monolith_agent_session_start(
         prompt: The first message for the session.
         model: Optional model, which also pins the session's adapter family.
             Claude family: opus, sonnet, fable. Codex family: luna, terra,
-            sol. Pi family: qwen. Omit for the claude CLI default. Later
+            sol. Pi family: qwen, ox. Omit for the claude CLI default. Later
             sends may only name models within the pinned family.
         repo: owner/repo to check out into the guest workspace, defaulting to
             jomcgi-org/homelab. Must be in the catalog. Pass an empty string for a
@@ -859,7 +859,7 @@ async def monolith_agent_session_send(
         message: The message text for the next turn.
         model: Optional per-turn model within the session's pinned family.
             Claude family: opus, sonnet, fable. Codex family: luna, terra,
-            sol. Pi family: qwen. Defaults to the session's model.
+            sol. Pi family: qwen, ox. Defaults to the session's model.
     """
     row = await asyncio.to_thread(_load_session_row, session_id)
     if row is None:

@@ -5,9 +5,10 @@
 #   "$WORKDIR"/bazel/tools/codex/dispatch.sh <tier> "$WORKDIR" "<task spec>"
 #   echo "<task spec>" | "$WORKDIR"/bazel/tools/codex/dispatch.sh <tier> "$WORKDIR" -
 #
-#   tier:    luna | terra | frontier
-#            frontier/Sol = default (trial, review 2026-08-28); luna =
-#            mechanical bulk; terra = middle rung
+#   tier:    ox | luna | terra | frontier
+#            frontier/Sol = default (trial, review 2026-08-28); ox = free
+#            OpenRouter stealth lane (opencode CLI; rate-limited, prefer for
+#            non-urgent bulk); luna = mechanical bulk; terra = middle rung
 #   workdir: directory the worker may write to (a /tmp/claude-worktrees/* worktree)
 #   spec:    full task spec as one argument, or "-" to read from stdin
 #
@@ -48,18 +49,24 @@ QUOTA_EXIT=42
 BUSY_EXIT=65
 
 usage() {
-	echo "usage: $0 <luna|terra|frontier> <workdir> <spec|-> " >&2
+	echo "usage: $0 <ox|luna|terra|frontier> <workdir> <spec|-> " >&2
 	exit 64
 }
 
 [[ $# -eq 3 ]] || usage
 
 case "$1" in
-luna) MODEL="gpt-5.6-luna" EFFORT="medium" ;;
-terra) MODEL="gpt-5.6-terra" EFFORT="high" ;;
-frontier) MODEL="gpt-5.6-sol" EFFORT="high" ;;
+ox) MODEL="openrouter/stealth/ox-alpha" EFFORT="high" RUNNER="opencode" ;;
+luna) MODEL="gpt-5.6-luna" EFFORT="medium" RUNNER="codex" ;;
+terra) MODEL="gpt-5.6-terra" EFFORT="high" RUNNER="codex" ;;
+frontier) MODEL="gpt-5.6-sol" EFFORT="high" RUNNER="codex" ;;
 *) usage ;;
 esac
+
+if [[ "$RUNNER" == "opencode" ]] && ! command -v opencode >/dev/null 2>&1; then
+	echo "opencode not on PATH; use tier frontier" >&2
+	exit 64
+fi
 
 WORKDIR="$2"
 [[ -d "$WORKDIR" ]] || {
@@ -149,15 +156,24 @@ trap 'cleanup; trap - TERM; exit 143' TERM INT
 rm -f "$LAST"
 set -m
 set +e
-codex exec \
-	--model "$MODEL" \
-	--config model_reasoning_effort="$EFFORT" \
-	--config sandbox_workspace_write.network_access=true \
-	--sandbox workspace-write \
-	--skip-git-repo-check \
-	--output-last-message "$LAST" \
-	-C "$WORKDIR" \
-	"${SPEC}${GUARDRAILS}" >"$LOG" 2>&1 &
+if [[ "$RUNNER" == "opencode" ]]; then
+	opencode run \
+		--dir "$WORKDIR" \
+		-m "$MODEL" \
+		--variant "$EFFORT" \
+		--auto \
+		"${SPEC}${GUARDRAILS}" >"$LOG" 2>&1 &
+else
+	codex exec \
+		--model "$MODEL" \
+		--config model_reasoning_effort="$EFFORT" \
+		--config sandbox_workspace_write.network_access=true \
+		--sandbox workspace-write \
+		--skip-git-repo-check \
+		--output-last-message "$LAST" \
+		-C "$WORKDIR" \
+		"${SPEC}${GUARDRAILS}" >"$LOG" 2>&1 &
+fi
 CHILD=$!
 echo "$CHILD" >"$LOCK/child"
 wait "$CHILD"
@@ -175,8 +191,10 @@ if [[ "$CODE" -ne 0 ]] &&
 	exit "$QUOTA_EXIT"
 fi
 
-echo "--- codex exit $CODE (model=$MODEL, transcript: $LOG) ---"
-if [[ -s "$LAST" ]]; then
+echo "--- $RUNNER exit $CODE (model=$MODEL, transcript: $LOG) ---"
+if [[ "$RUNNER" == "opencode" ]]; then
+	tail -60 "$LOG"
+elif [[ -s "$LAST" ]]; then
 	cat "$LAST"
 else
 	echo "(no final message captured; last 40 transcript lines follow)"

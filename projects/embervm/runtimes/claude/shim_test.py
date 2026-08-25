@@ -308,15 +308,17 @@ if args_path:
         json.dump(sys.argv[1:], stream)
         stream.write("\n")
 assert "--provider" in sys.argv
-assert sys.argv[sys.argv.index("--provider") + 1] == "openai-completions"
-assert sys.argv[sys.argv.index("--model") + 1] == "qwen3.6-27b"
+expected_provider = os.environ.get("FAKE_PI_PROVIDER", "openai-completions")
+expected_model = os.environ.get("FAKE_PI_MODEL_ID", "qwen3.6-27b")
+assert sys.argv[sys.argv.index("--provider") + 1] == expected_provider
+assert sys.argv[sys.argv.index("--model") + 1] == expected_model
 for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
     assert flag in sys.argv
 assert sys.argv[sys.argv.index("--extension") + 1] == "/usr/share/ember-pi/extensions/web-research.ts"
 assert "--tools" not in sys.argv
 assert "disposable Firecracker microVM" in sys.argv[sys.argv.index("--system-prompt") + 1]
 rpc_path = os.environ.get("FAKE_PI_RPC")
-state = {"sessionId": "pi-session", "model": {"id": "qwen3.6-27b"}}
+state = {"sessionId": "pi-session", "model": {"id": expected_model}}
 def record(value):
     if rpc_path:
         with open(rpc_path, "a") as stream:
@@ -741,7 +743,7 @@ def test_pi_resume_uses_session_flag(tmp_path, monkeypatch):
     manager._close_process()
 
 
-def test_manager_routes_qwen_to_pi(tmp_path, monkeypatch):
+def test_manager_routes_known_pi_models_to_pi(tmp_path, monkeypatch):
     manager = shim.ProcessManager(
         tmp_path / "workspace",
         tmp_path / "fake-claude",
@@ -749,6 +751,7 @@ def test_manager_routes_qwen_to_pi(tmp_path, monkeypatch):
         tmp_path / "fake-pi",
     )
     assert manager._adapter("qwen") is manager.pi
+    assert manager._adapter("ox") is manager.pi
     assert manager._adapter("luna") is manager.codex
     assert manager._adapter(None) is manager.claude
 
@@ -4791,6 +4794,45 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
     assert model_dict["maxTokens"] == shim.PI_MAX_OUTPUT_TOKENS
     assert model_dict["reasoning"] is True
 
+    manager._close_process()
+
+
+def test_pi_models_json_configures_ox_openrouter_provider(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = shim.PiProcess(str(workspace))
+    pi_home = workspace / ".pi"
+
+    selected_provider = manager._write_model_config(str(pi_home), "ox")
+
+    models = json.loads((pi_home / "agent" / "models.json").read_text())
+    assert set(models["providers"]) == {"openai-completions", "openrouter"}
+    provider = models["providers"]["openrouter"]
+    model_dict = provider["models"][0]
+    assert selected_provider == "openrouter"
+    assert provider["api"] == "openai-completions"
+    assert provider["baseUrl"] == "https://openrouter.ai/api/v1"
+    assert provider["apiKey"] == "sk-egress"
+    assert provider["compat"] == {
+        "supportsDeveloperRole": False,
+        "supportsReasoningEffort": True,
+    }
+    assert model_dict["id"] == "stealth/ox-alpha"
+    assert model_dict["contextWindow"] == 1048576
+    assert model_dict["maxTokens"] == 32768
+    assert model_dict["reasoning"] is True
+
+
+def test_pi_spawn_selects_ox_provider_and_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_PROVIDER", "openrouter")
+    monkeypatch.setenv("FAKE_PI_MODEL_ID", "stealth/ox-alpha")
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    manager.turn("hello", model="ox")
+
+    argv = json.loads((tmp_path / "pi-args.jsonl").read_text().splitlines()[0])
+    assert argv[argv.index("--provider") + 1] == "openrouter"
+    assert argv[argv.index("--model") + 1] == "stealth/ox-alpha"
     manager._close_process()
 
 

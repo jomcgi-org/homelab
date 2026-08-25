@@ -23,13 +23,25 @@ fi
 exit "${STUB_EXIT:-0}"
 EOF
 chmod +x "$BIN/codex"
+cat >"$BIN/opencode" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'run\n' >>"${STUB_COUNTER:?}"
+printf '%s\n' "$@" >"${STUB_OPENCODE_ARGS:?}"
+sleep "${STUB_SLEEP:-0.1}"
+[[ -z "${STUB_OUTPUT:-}" ]] || printf '%s\n' "$STUB_OUTPUT"
+exit "${STUB_EXIT:-0}"
+EOF
+chmod +x "$BIN/opencode"
 
 run_dispatch() {
 	local workdir="$1"
+	local tier="${2:-luna}"
 	PATH="$BIN:$PATH" STUB_COUNTER="$TMP/counter" \
 		STUB_SLEEP="${STUB_SLEEP:-0.1}" STUB_EXIT="${STUB_EXIT:-0}" \
 		STUB_MESSAGE="${STUB_MESSAGE:-stub final message}" STUB_WRITE_LAST="${STUB_WRITE_LAST:-1}" \
-		STUB_OUTPUT="${STUB_OUTPUT:-}" bash "$SCRIPT" luna "$workdir" test-spec
+		STUB_OUTPUT="${STUB_OUTPUT:-}" STUB_OPENCODE_ARGS="$TMP/opencode-args" \
+		bash "$SCRIPT" "$tier" "$workdir" test-spec
 }
 assert_eq() {
 	[[ "$2" == "$3" ]] || {
@@ -48,8 +60,27 @@ wait_for_file() {
 }
 reset() {
 	: >"$TMP/counter"
+	: >"$TMP/opencode-args"
 	STUB_SLEEP=0.1 STUB_EXIT=0 STUB_MESSAGE="stub final message" STUB_WRITE_LAST=1 STUB_OUTPUT=
 }
+
+set +e
+usage_out=$(bash "$SCRIPT" invalid "$TMP" test-spec 2>&1)
+usage_rc=$?
+set -e
+assert_eq "usage error exit" 64 "$usage_rc"
+grep -q '<ox|luna|terra|frontier>' <<<"$usage_out"
+echo "PASS: usage lists ox"
+
+NO_OPENCODE="$TMP/no-opencode"
+mkdir -p "$NO_OPENCODE"
+set +e
+missing_out=$(PATH="$NO_OPENCODE" /bin/bash "$SCRIPT" ox "$TMP" test-spec 2>&1)
+missing_rc=$?
+set -e
+assert_eq "missing opencode exit" 64 "$missing_rc"
+grep -q 'opencode not on PATH; use tier frontier' <<<"$missing_out"
+echo "PASS: missing opencode fallback"
 
 reset
 WORK="$TMP/happy"
@@ -60,6 +91,22 @@ grep -q "stub final message" <<<"$out"
 log=$(sed -n 's/.*transcript: \([^)]*\).*/\1/p' <<<"$out")
 [[ -f "$log" ]] || exit 1
 echo "PASS: happy output and transcript"
+
+reset
+WORK="$TMP/ox"
+mkdir -p "$WORK"
+out=$(STUB_OUTPUT="opencode final message" run_dispatch "$WORK" ox)
+assert_eq "ox exit" 0 "$?"
+grep -q "opencode final message" <<<"$out"
+assert_eq "ox command" run "$(sed -n '1p' "$TMP/opencode-args")"
+assert_eq "ox workdir flag" --dir "$(sed -n '2p' "$TMP/opencode-args")"
+assert_eq "ox workdir" "$WORK" "$(sed -n '3p' "$TMP/opencode-args")"
+assert_eq "ox model flag" -m "$(sed -n '4p' "$TMP/opencode-args")"
+assert_eq "ox model" openrouter/stealth/ox-alpha "$(sed -n '5p' "$TMP/opencode-args")"
+assert_eq "ox variant flag" --variant "$(sed -n '6p' "$TMP/opencode-args")"
+assert_eq "ox effort" high "$(sed -n '7p' "$TMP/opencode-args")"
+assert_eq "ox auto flag" --auto "$(sed -n '8p' "$TMP/opencode-args")"
+echo "PASS: ox output and invocation"
 
 reset
 WORK="$TMP/held"

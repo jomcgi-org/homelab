@@ -14,7 +14,16 @@ import os
 # dep onto every target that imports chat.bot without one (see the drift test
 # in chat/bot_on_message_test.py). The stdlib os import below is safe: it ships
 # with every interpreter.
-SUPPORTED_MODELS = ("luna", "terra", "sol", "opus", "sonnet", "fable", "qwen")
+SUPPORTED_MODELS = (
+    "luna",
+    "terra",
+    "sol",
+    "opus",
+    "sonnet",
+    "fable",
+    "qwen",
+    "ox",
+)
 
 # Per-env allowlist narrowing what the console picker and the Discord /agent
 # command OFFER (issue #4859). Comma-separated names; empty or unset means
@@ -41,14 +50,15 @@ def offered_models(configured: str | None = None) -> tuple[str, ...]:
 
 def model_family(model: str | None) -> str:
     """Return the adapter family for a supported model name."""
-    if model == "qwen":
+    if model in {"qwen", "ox"}:
         return "pi"
     if model in {"luna", "terra", "sol"}:
         return "codex"
     if model in {None, "opus", "sonnet", "fable"}:
         return "claude"
     raise ValueError(
-        f"Unknown model {model!r}; valid models: opus, sonnet, fable, luna, terra, sol, qwen"
+        f"Unknown model {model!r}; valid models: opus, sonnet, fable, luna, "
+        "terra, sol, qwen, ox"
     )
 
 

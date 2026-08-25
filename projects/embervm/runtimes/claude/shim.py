@@ -410,8 +410,10 @@ PI_MODELS = {
     # values.yaml); a wrong name 404s at the provider ("The model does not
     # exist"), proven live in #4252.
     "qwen": "qwen3.6-27b",
+    "ox": "stealth/ox-alpha",
 }
 DEFAULT_PI_MODEL = "qwen"
+PI_INFERENCE_BASE_URL = "http://inference.inference.svc.cluster.local:8080/v1"
 
 # Pi gets a 120K per-session budget from NInfer's shared 262144-token KV pool.
 # NInfer has two generation lanes, so two full Pi contexts consume 245760
@@ -445,9 +447,44 @@ PI_CONTEXT_SAFETY_TOKENS = 4096
 # the turn with agent_end and no assistant text, and the shim raised
 # "pi turn produced no output" (3 of 5 graded long reps in the #5051
 # baseline). model-bench runs the same model at 16384 and passes 6/7 hard
-# tasks; 12288 still fits alongside pi's fixed safety margin in the compaction
-# reserve.
-PI_MAX_OUTPUT_TOKENS = 12288
+# tasks. 24576 deliberately trades prompt space for output room: usable
+# prompt drops to roughly 94K (window minus this reserve minus the safety
+# margin), which compacts a little earlier, in exchange for reasoning-heavy
+# turns not truncating. The window and the NInfer KV arithmetic are
+# untouched; output tokens spend KV inside the same per-session window.
+PI_MAX_OUTPUT_TOKENS = 24576
+
+PI_MODEL_PROVIDERS = {
+    "qwen": {
+        "provider": "openai-completions",
+        "api": "openai-completions",
+        "baseUrl": PI_INFERENCE_BASE_URL,
+        "apiKey": "sk-noauth",
+        "contextWindow": PI_CONTEXT_WINDOW,
+        "maxTokens": PI_MAX_OUTPUT_TOKENS,
+        "reasoning": True,
+        "compat": {
+            "supportsDeveloperRole": False,
+            "supportsReasoningEffort": False,
+            "thinkingFormat": "qwen-chat-template",
+        },
+    },
+    "ox": {
+        "provider": "openrouter",
+        "api": "openai-completions",
+        "baseUrl": "https://openrouter.ai/api/v1",
+        # Placeholder only. The egress sidecar injects the real Authorization
+        # header for openrouter.ai.
+        "apiKey": "sk-egress",
+        "contextWindow": 1048576,
+        "maxTokens": 32768,
+        "reasoning": True,
+        "compat": {
+            "supportsDeveloperRole": False,
+            "supportsReasoningEffort": True,
+        },
+    },
+}
 
 # Thinking level for the pi lane. "off" makes pi send
 # chat_template_kwargs.enable_thinking=false to the qwen server, which for a
@@ -481,10 +518,10 @@ def _resolve_thinking_level(value):
 # a full response at turn boundaries. pi checks compaction at agent_end and
 # before a prompt, not between tool iterations, so a run that approaches the
 # reserve mid-execution can still produce short replies.
-PI_COMPACTION_RESERVE_TOKENS = 16896
+PI_COMPACTION_RESERVE_TOKENS = 29184
 
 # Tokens to keep after compaction. Keeping 8000 recent tokens preserves the
-# latest tool exchange while leaving ample runway below the 105984-token
+# latest tool exchange while leaving ample runway below the 93696-token
 # compaction trigger. This value must remain less than PI_CONTEXT_WINDOW minus
 # PI_COMPACTION_RESERVE_TOKENS so compaction actually helps when it fires.
 PI_COMPACTION_KEEP_RECENT_TOKENS = 8000
@@ -2710,7 +2747,7 @@ wire_api = "responses"
 class PiProcess:
     """Own one long-lived Pi RPC process and bind sessions lazily."""
 
-    INFERENCE_BASE_URL = "http://inference.inference.svc.cluster.local:8080/v1"
+    INFERENCE_BASE_URL = PI_INFERENCE_BASE_URL
 
     def __init__(self, workspace=None, executable="pi"):
         self.workspace = workspace or os.environ.get(
@@ -2753,33 +2790,31 @@ class PiProcess:
         child_env["PI_CODING_AGENT_DIR"] = os.path.join(pi_home, "agent")
         return child_env
 
-    def _write_model_config(self, pi_home):
+    def _write_model_config(self, pi_home, model=DEFAULT_PI_MODEL):
         agent_dir = os.path.join(pi_home, "agent")
         _ensure_cli_dir(agent_dir)
-        config = {
-            "providers": {
-                "openai-completions": {
-                    "baseUrl": self.INFERENCE_BASE_URL,
-                    "api": "openai-completions",
-                    "apiKey": "sk-noauth",
-                    "compat": {
-                        "supportsDeveloperRole": False,
-                        "supportsReasoningEffort": False,
-                        "thinkingFormat": "qwen-chat-template",
-                    },
-                    "models": [
-                        {
-                            "id": PI_MODELS[DEFAULT_PI_MODEL],
-                            "contextWindow": PI_CONTEXT_WINDOW,
-                            "maxTokens": PI_MAX_OUTPUT_TOKENS,
-                            "reasoning": True,
-                        }
-                    ],
-                }
+        selected_model = model if model in PI_MODEL_PROVIDERS else DEFAULT_PI_MODEL
+        providers = {}
+        for model_alias, provider_config in PI_MODEL_PROVIDERS.items():
+            provider_key = provider_config["provider"]
+            providers[provider_key] = {
+                "baseUrl": provider_config["baseUrl"],
+                "api": provider_config["api"],
+                "apiKey": provider_config["apiKey"],
+                "compat": dict(provider_config["compat"]),
+                "models": [
+                    {
+                        "id": PI_MODELS[model_alias],
+                        "contextWindow": provider_config["contextWindow"],
+                        "maxTokens": provider_config["maxTokens"],
+                        "reasoning": provider_config["reasoning"],
+                    }
+                ],
             }
-        }
+        config = {"providers": providers}
         with open(os.path.join(agent_dir, "models.json"), "w") as stream:
             json.dump(config, stream)
+        return PI_MODEL_PROVIDERS[selected_model]["provider"]
 
     def _write_settings_json(self, pi_home):
         """Write pi's settings.json with managed lane configuration.
@@ -2826,17 +2861,18 @@ class PiProcess:
     def _spawn(self, model, system_prompt=None):
         if not os.path.isdir(self.workspace):
             raise StartupError("workspace does not exist: %s" % self.workspace)
-        model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
+        model_alias = model if model in PI_MODELS else DEFAULT_PI_MODEL
+        model_name = PI_MODELS[model_alias]
         child_env = self._child_env()
         pi_home = child_env["PI_HOME"]
-        self._write_model_config(pi_home)
+        provider_name = self._write_model_config(pi_home, model_alias)
         self._write_settings_json(pi_home)
         command = [
             self.executable,
             "--mode",
             "rpc",
             "--provider",
-            "openai-completions",
+            provider_name,
             "--model",
             model_name,
             "--system-prompt",
@@ -3006,7 +3042,8 @@ class PiProcess:
                 process = self.process
             cli_ready_path = None
             process_was_unbound = not self.session_id
-            model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
+            model_alias = model if model in PI_MODELS else DEFAULT_PI_MODEL
+            model_name = PI_MODELS[model_alias]
             if process is None or process.poll() is not None:
                 self._close_process(kill=False)
                 process = self._spawn(model, system_prompt=system_prompt)
@@ -3019,7 +3056,7 @@ class PiProcess:
                 self._command(
                     {
                         "type": "set_model",
-                        "provider": "openai-completions",
+                        "provider": PI_MODEL_PROVIDERS[model_alias]["provider"],
                         "modelId": model_name,
                     }
                 )
@@ -3738,7 +3775,7 @@ class ProcessManager:
         _emit_elapsed("hydration", hydration_start, status="cloned")
 
     def _adapter(self, model):
-        if model == "qwen":
+        if isinstance(model, str) and model in PI_MODELS:
             return self.pi
         if isinstance(model, str) and model in CODEX_MODELS:
             return self.codex
