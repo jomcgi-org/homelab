@@ -3742,6 +3742,9 @@ class ProcessManager:
             return self.pi
         if isinstance(model, str) and model in CODEX_MODELS:
             return self.codex
+        configured_clis = getattr(self, "_prewarm_clis", ())
+        if "claude" not in configured_clis and len(configured_clis) == 1:
+            return getattr(self, configured_clis[0])
         return self.claude
 
     def ready(self):
