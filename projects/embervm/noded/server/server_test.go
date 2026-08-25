@@ -71,6 +71,8 @@ type fakeDriver struct {
 	restoreMarkers             map[string]string // threadID -> marker
 	sessionsDir                string
 	snapshotSessions           int
+	snapshotSessionStarted     chan struct{}
+	blockSnapshotSession       <-chan struct{}
 	restoreSessions            int
 	lastRestoreTrackDirtyPages bool
 	removeSessions             int
@@ -155,8 +157,21 @@ func (f *fakeDriver) SnapshotBase(_ context.Context, _ substrate.Handle, baseKey
 // the server calls Release, so it does not touch f.live here.
 func (f *fakeDriver) SnapshotSession(_ context.Context, _ substrate.Handle, snapshotRef string) (substrate.SnapshotRef, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.snapshotSessions++
+	started := f.snapshotSessionStarted
+	blocked := f.blockSnapshotSession
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if blocked != nil {
+		<-blocked
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.failSnapshotSession != nil {
 		// Mirror the real driver: a bank error tears the VM down (Release), so the
 		// live count drops even though no bundle is produced.
@@ -170,6 +185,12 @@ func (f *fakeDriver) SnapshotSession(_ context.Context, _ substrate.Handle, snap
 	}
 	f.sessionBundles[snapshotRef] = f.nextBankMarker
 	return substrate.SnapshotRef{ID: snapshotRef, Node: "node-4", Arch: "amd64", SizeBytes: 8192}, nil
+}
+
+func (f *fakeDriver) snapshotSessionCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.snapshotSessions
 }
 
 // RestoreSession relights a fake VM from a banked bundle: the ref must have been
@@ -1962,6 +1983,219 @@ func TestSessionInFlightGuard(t *testing.T) {
 	close(gate) // release the first
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first SessionAssign: %v", err)
+	}
+}
+
+// TestBankAdoptsPrimedVM is the create-to-idle-bank regression: a freshly
+// created session can be banked before its first invoke, while its VM is still
+// in the task registry. Bank adopts it, snapshots it, and tears it down.
+func TestBankAdoptsPrimedVM(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	seedBase(srv, "session__bank01", "sandbox-session")
+	ctx := context.Background()
+
+	pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "session__bank01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	vmID := pr.GetVmId()
+	if primed, _ := srv.vms.capacity(); !contains(primed["sandbox-session"], vmID) {
+		t.Fatalf("primed VM %q not in the task registry before Bank", vmID)
+	}
+
+	resp, err := client.Bank(ctx, &nodev1.BankRequest{
+		VmId:      vmID,
+		SessionId: "s-idle-bank",
+		Trace:     &nodev1.Trace{Workload: "sandbox-session"},
+	})
+	if err != nil {
+		t.Fatalf("Bank primed VM: %v", err)
+	}
+	if resp.GetSnapshotRef() == "" || resp.GetSizeBytes() == 0 {
+		t.Fatalf("Bank resp = %+v, want a ref and non-zero size", resp)
+	}
+	if primed, _ := srv.vms.capacity(); contains(primed["sandbox-session"], vmID) {
+		t.Errorf("banked VM %q still in the task registry", vmID)
+	}
+	if ids := sessionVMIDs(srv.nodeStatus()); len(ids) != 0 {
+		t.Errorf("session_vms = %v, want empty after adopted Bank", ids)
+	}
+	if got := drv.snapshotSessionCount(); got != 1 {
+		t.Errorf("SnapshotSession calls = %d, want 1", got)
+	}
+	if _, releases, removeBundles, _ := drv.counts(); releases != 1 || removeBundles != 1 {
+		t.Errorf("adopted Bank teardown: releases=%d removeBundles=%d, want 1/1", releases, removeBundles)
+	}
+}
+
+func TestBankAdoptWorkloadMismatchRejected(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	seedBase(srv, "other__bank01", "other-workload")
+	ctx := context.Background()
+
+	pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "other__bank01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	_, err = client.Bank(ctx, &nodev1.BankRequest{
+		VmId:      pr.GetVmId(),
+		SessionId: "s-bank-mismatch",
+		Trace:     &nodev1.Trace{Workload: "sandbox-session"},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (workload mismatch)", status.Code(err))
+	}
+	if primed, _ := srv.vms.capacity(); !contains(primed["other-workload"], pr.GetVmId()) {
+		t.Errorf("mismatched-workload primed VM was consumed by a failed Bank adopt")
+	}
+	if got := drv.snapshotSessionCount(); got != 0 {
+		t.Errorf("refused Bank snapshotted %d times, want 0", got)
+	}
+}
+
+func TestBankUnknownVMStillRejected(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, _ := newSessionTestServer(t, drv, tr, 8)
+
+	_, err := client.Bank(context.Background(), &nodev1.BankRequest{
+		VmId:      "vm-nope",
+		SessionId: "s-nope",
+		Trace:     &nodev1.Trace{Workload: "sandbox-session"},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", status.Code(err))
+	}
+	want := `noded: session vm "vm-nope" not bankable (unknown, task-class, or a call is already in flight)`
+	if got := status.Convert(err).Message(); got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+	if got := drv.snapshotSessionCount(); got != 0 {
+		t.Errorf("unknown Bank snapshotted %d times, want 0", got)
+	}
+}
+
+func TestBankAlreadyAdoptedVMStillSucceeds(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-adopted", "echo", "sref-adopted", "")
+
+	resp, err := client.Bank(context.Background(), &nodev1.BankRequest{
+		VmId:      vmID,
+		SessionId: "s-adopted",
+		Trace:     &nodev1.Trace{Workload: "echo"},
+	})
+	if err != nil {
+		t.Fatalf("Bank already-adopted VM: %v", err)
+	}
+	if resp.GetSnapshotRef() == "" || resp.GetSizeBytes() == 0 {
+		t.Fatalf("Bank resp = %+v, want a ref and non-zero size", resp)
+	}
+	if got := drv.snapshotSessionCount(); got != 1 {
+		t.Errorf("SnapshotSession calls = %d, want 1", got)
+	}
+}
+
+func TestBankAdoptedVMInFlightGuardRefusesConcurrentBank(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	drv := &fakeDriver{snapshotSessionStarted: started, blockSnapshotSession: release}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	seedBase(srv, "session__guard01", "sandbox-session")
+	ctx := context.Background()
+
+	pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "session__guard01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := client.Bank(ctx, &nodev1.BankRequest{
+			VmId:      pr.GetVmId(),
+			SessionId: "s-bank-guard",
+			Trace:     &nodev1.Trace{Workload: "sandbox-session"},
+		})
+		firstDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Bank never entered SnapshotSession")
+	}
+	_, err = client.Bank(ctx, &nodev1.BankRequest{
+		VmId:      pr.GetVmId(),
+		SessionId: "s-bank-guard",
+		Trace:     &nodev1.Trace{Workload: "sandbox-session"},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("concurrent Bank code = %v, want FailedPrecondition", status.Code(err))
+	}
+	if got := drv.snapshotSessionCount(); got != 1 {
+		t.Errorf("SnapshotSession calls = %d, want 1 while first Bank holds the guard", got)
+	}
+
+	unblock()
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Bank: %v", err)
+	}
+}
+
+func TestBankAdoptedSnapshotFailureRemovesEntryAndCancelsEgress(t *testing.T) {
+	drv := &fakeDriver{failSnapshotSession: context.Canceled}
+	tr := &fakeTransport{}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	seedBase(srv, "session__failure01", "sandbox-session")
+	ctx := context.Background()
+
+	pr, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "session__failure01"})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	vmID := pr.GetVmId()
+	egressCanceled := make(chan struct{}, 1)
+	srv.vms.mu.Lock()
+	srv.vms.vms[vmID].egressCancel = func() {
+		select {
+		case egressCanceled <- struct{}{}:
+		default:
+		}
+	}
+	srv.vms.mu.Unlock()
+
+	_, err = client.Bank(ctx, &nodev1.BankRequest{
+		VmId:      vmID,
+		SessionId: "s-bank-failure",
+		Trace:     &nodev1.Trace{Workload: "sandbox-session"},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("failed adopted Bank error = %v, want FailedPrecondition", err)
+	}
+	select {
+	case <-egressCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("failed adopted Bank did not cancel the inherited egress forwarder")
+	}
+	if primed, _ := srv.vms.capacity(); contains(primed["sandbox-session"], vmID) {
+		t.Errorf("failed adopted Bank left VM %q in the task registry", vmID)
+	}
+	if ids := sessionVMIDs(srv.nodeStatus()); len(ids) != 0 {
+		t.Errorf("session_vms = %v, want empty after failed adopted Bank", ids)
+	}
+	if drv.LiveCount() != 0 {
+		t.Errorf("LiveCount after failed adopted Bank = %d, want 0", drv.LiveCount())
+	}
+	if _, ok := srv.sessionVMs.beginInFlight(vmID); ok {
+		t.Fatal("failed adopted Bank left a session registry entry or in-flight guard")
 	}
 }
 
