@@ -1005,11 +1005,18 @@ func TestBuildBaseUnknownImage(t *testing.T) {
 // instead of spending a multi-minute rebuild that would collide at publish.
 func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 	build := &fakeDriver{}
+	// The backing rootfs must EXIST: adoption declines a bundle whose recorded
+	// rootfs is missing (it could not restore), so a nonexistent path here would
+	// silently exercise the decline path instead of the adoption path.
+	rootfs := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(rootfs, []byte("rootfs"), 0o600); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
 	s := New(Options{
 		Config: config.Config{
 			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
 			BootReadyTimeout: time.Second,
-			Images:           map[string]config.Image{"img:1": {RootfsPath: "/rootfs.ext4"}},
+			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
 		},
 		Driver:         &fakeDriver{},
 		Transport:      &fakeTransport{},
@@ -1061,7 +1068,7 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 	if !ok || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		t.Errorf("registry entry = %+v ok=%v, want READY", entry, ok)
 	} else {
-		if entry.imageDigest != "img:1" || entry.rootfsPath != "/rootfs.ext4" || entry.workload != "echo" {
+		if entry.imageDigest != "img:1" || entry.rootfsPath != rootfs || entry.workload != "echo" {
 			t.Errorf("registry entry identity = %+v, want request-derived values", entry)
 		}
 	}
@@ -1080,11 +1087,18 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 // cleared by the driver at publish time (covered driver-side).
 func TestBuildBaseIncompleteBundleFallsThroughToBuild(t *testing.T) {
 	build := &fakeDriver{}
+	// The backing rootfs must EXIST: adoption declines a bundle whose recorded
+	// rootfs is missing (it could not restore), so a nonexistent path here would
+	// silently exercise the decline path instead of the adoption path.
+	rootfs := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(rootfs, []byte("rootfs"), 0o600); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
 	s := New(Options{
 		Config: config.Config{
 			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
 			BootReadyTimeout: time.Second,
-			Images:           map[string]config.Image{"img:1": {RootfsPath: "/rootfs.ext4"}},
+			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
 		},
 		Driver:         &fakeDriver{},
 		Transport:      &fakeTransport{},
