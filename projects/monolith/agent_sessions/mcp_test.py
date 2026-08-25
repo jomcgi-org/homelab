@@ -1532,6 +1532,23 @@ def test_terminal_notification_uses_the_agent_sessions_channel(monkeypatch):
     assert seen["channel"] == "sessions-chan"
 
 
+def test_drainer_session_suppresses_generic_terminal_notification(monkeypatch):
+    async def unexpected_notify(*_args, **_kwargs):
+        raise AssertionError("the drainer sends its own failure notification")
+
+    monkeypatch.setattr(mcp.agent_api, "notify", unexpected_notify)
+    row = AgentSession(
+        local_session_id="drainer-session",
+        workspace="<guest>",
+        branch="main",
+        node_key="qwen-drain",
+    )
+
+    asyncio.run(
+        mcp._notify_terminal(_completed_turn("hi"), "summary", "completed", row)
+    )
+
+
 def test_agent_sessions_channel_unset_falls_back_to_default(monkeypatch):
     """An unset channel must fall through to notify()'s default, not crash."""
     monkeypatch.delenv(

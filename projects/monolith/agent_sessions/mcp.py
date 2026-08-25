@@ -262,6 +262,10 @@ def _chunk_for_discord(text: str) -> list[str]:
 async def _notify_terminal(
     turn: Turn, summary: str, status: str, row: AgentSession | None = None
 ) -> None:
+    # The drainer owns its failure notification and suppresses successful jobs.
+    # Skipping this generic session post keeps each failed job to one alert.
+    if row is not None and row.node_key == "qwen-drain":
+        return
     if turn.permission_denials or status == "needs_input":
         level = "warn"  # Needs user action
     elif status == "completed":

@@ -8,9 +8,15 @@ _dbos = None
 _launched = False
 
 
+def _enabled() -> bool:
+    from agent.config import drainer_enabled
+
+    return config.enabled() or drainer_enabled()
+
+
 def init_dbos():
     global _dbos
-    if _dbos is not None or not config.enabled():
+    if _dbos is not None or not _enabled():
         return _dbos
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
@@ -48,7 +54,7 @@ def launch() -> None:
 
 def shutdown() -> None:
     global _dbos, _launched
-    if _dbos is not None and config.enabled() and os.environ.get("DATABASE_URL"):
+    if _dbos is not None and _enabled() and os.environ.get("DATABASE_URL"):
         _dbos.destroy()
         _dbos = None
         _launched = False

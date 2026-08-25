@@ -19,6 +19,16 @@ class AgentSettings:
     discord_default_channel_id: str
 
 
+@dataclass(frozen=True)
+class DrainerSettings:
+    enabled: bool
+    max_jobs_per_cycle: int
+    turn_timeout_seconds: int
+    job_kind: str
+    repo: str
+    branch: str
+
+
 def load_settings() -> AgentSettings:
     return AgentSettings(
         discord_default_server_id=os.environ[
@@ -27,6 +37,23 @@ def load_settings() -> AgentSettings:
         discord_default_channel_id=os.environ[
             "MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID"
         ],
+    )
+
+
+def drainer_enabled() -> bool:
+    return os.environ.get("DRAINER_ENABLED", "false").lower() == "true"
+
+
+def load_drainer_settings() -> DrainerSettings:
+    return DrainerSettings(
+        enabled=drainer_enabled(),
+        max_jobs_per_cycle=int(os.environ.get("DRAINER_MAX_JOBS_PER_CYCLE", "3")),
+        turn_timeout_seconds=int(
+            os.environ.get("DRAINER_TURN_TIMEOUT_SECONDS", "1800")
+        ),
+        job_kind=os.environ.get("DRAINER_JOB_KIND", "qwen-drain"),
+        repo=os.environ.get("DRAINER_REPO", "jomcgi-org/homelab"),
+        branch=os.environ.get("DRAINER_BRANCH", "main"),
     )
 
 

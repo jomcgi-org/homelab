@@ -1312,6 +1312,7 @@ py_library(
         ":agent_sessions_rationale",
         ":pkg_agent_sessions",
         ":pkg_core",
+        ":pkg_cyclegroup",
         ":pkg_framework",
         "@pip//certifi",
         "@pip//dbos",
@@ -4220,6 +4221,29 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_drainer_router_test",
+    srcs = ["swarm/drainer_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "swarm_drainer_test",
+    srcs = ["swarm/drainer_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_swarm",
+        "@pip//pytest",
     ],
 )
 

@@ -73,16 +73,35 @@ class TestRegisterAndList:
 
 class TestClaimByName:
     def test_specific_claim_then_second_returns_none(self, agent_db: Session):
-        routine_jobs.register_job(name="targeted", kind="check", next_run_at=_now_utc())
+        routine_jobs.register_job(
+            name="targeted",
+            kind="check",
+            payload={"prompt": "check the queue", "reasoning": True},
+            next_run_at=_now_utc(),
+        )
 
         first = routine_jobs.claim_job(holder="r1", ttl_secs=60, name="targeted")
         assert first is not None
         assert first["name"] == "targeted"
         assert first["locked_by"] == "r1"
         assert first["ttl_secs"] == 60
+        assert first["payload"] == {
+            "prompt": "check the queue",
+            "reasoning": True,
+        }
 
         second = routine_jobs.claim_job(holder="r2", ttl_secs=60, name="targeted")
         assert second is None
+
+        assert routine_jobs.complete_job(
+            name="targeted", status="ok", summary="drained"
+        )
+        completed = next(
+            row for row in routine_jobs.list_jobs() if row["name"] == "targeted"
+        )
+        assert completed["last_status"] == "ok"
+        assert completed["last_summary"] == "drained"
+        assert completed["locked_by"] is None
 
 
 class TestClaimNextDue:
