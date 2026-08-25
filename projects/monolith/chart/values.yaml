@@ -1532,3 +1532,12 @@ ciliumPolicy:
   # allowlist covers every live caller.
   ingress:
     enabled: false
+    # Pod label of the Context Forge gateway Deployment in the mcp namespace,
+    # the only mcp workload the ingress allowlist admits to the API port
+    # (issue #4660). Stamped by the bundled mcp-stack subchart as
+    # `app: <fullname>-mcpgateway` with fullname `<releaseName>-mcp-stack`;
+    # releaseName is context-forge-gateway
+    # (projects/mcp/context-forge-gateway/deploy/application.yaml).
+    # tokenReplayDeny.gatewayPodLabel names the SAME pod; the chart test fails
+    # if the two copies of that fact drift apart.
+    mcpGatewayPodLabel: context-forge-gateway-mcp-stack-mcpgateway

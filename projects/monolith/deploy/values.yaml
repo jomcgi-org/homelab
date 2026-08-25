@@ -401,6 +401,13 @@ scratchPostgres:
 # -> 8000 (no inbound message). Absence of traffic is not evidence they are
 # wrong, and dropping them would break those paths the next time they run.
 #
+# Narrowed since arming (#4660): the envoy-gateway-system grant now matches only
+# the gateway's envoy proxy pods, and mcp only Context Forge's gateway
+# Deployment, instead of those whole namespaces. Provenance per entry, including
+# the envoy relabel failure mode and its rollback, lives in
+# chart/templates/cilium-ingress-policy.yaml; the #4659 SigNoz alert is the
+# tripwire if a selector stops matching.
+#
 # If something was still missed it fails as a SILENT dial timeout, not a
 # readable deny (PR #4294). First check on any post-merge weirdness:
 #   kubectl -n kube-system exec <cilium-pod> -c cilium-agent -- \
