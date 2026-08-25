@@ -8,3 +8,4 @@ resources:
   - signoz-httpcheck-alert.yaml
   - jomcgi-dev-httpcheck-alert.yaml
   - public-health-httpcheck-alert.yaml
+  - hubble-monolith-policy-drops-alert.yaml

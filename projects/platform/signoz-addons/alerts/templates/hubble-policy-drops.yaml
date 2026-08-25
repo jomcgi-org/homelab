@@ -26,7 +26,7 @@ data:
       },
       "annotations": {
         "summary": "Cilium is dropping traffic due to a NetworkPolicy denial",
-        "description": "hubble_drop_total{reason=\"POLICY_DENIED\"} increased in the last 5 minutes, meaning a CiliumNetworkPolicy is denying traffic (protocol {{ "{{" }} $labels.protocol {{ "}}" }}). This metric has no source/destination workload labels; investigate with `hubble observe --verdict DROPPED` to find what is being blocked."
+        "description": "hubble_drop_total{reason=\"POLICY_DENIED\"} increased in the last 5 minutes, meaning a CiliumNetworkPolicy is denying traffic somewhere in the cluster (protocol {{ "{{" }} $labels.protocol {{ "}}" }}). Node-wide catch-all: it cannot tell you WHAT was denied, so treat it as a pointer. For the monolith specifically the scoped critical alert (hubble-monolith-policy-drops-alert) watches policy-denied ingress drops to that namespace; investigate either with `hubble observe --verdict DROPPED` while the window is still live (the ring buffer is only minutes deep)."
       },
       "condition": {
         "compositeQuery": {

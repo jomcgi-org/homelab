@@ -92,10 +92,19 @@ cilium:
     # hubble_httpv2_requests_total, which the error-rate alert reads. Context is
     # workload+namespace only: no path/URL label (PII + cardinality). This list
     # MUST match bootstrap/cilium-helmchart.yaml or a node reboot reverts it.
+    #
+    # drop carries context labels (#4659) because bare hubble_drop_total is
+    # node-wide and cumulative, so policy-denied drops cannot be attributed to
+    # a destination. The hubble ring buffer is only minutes deep, so drops are
+    # also unanswerable retroactively; the labeled counter series scraped into
+    # SigNoz is the durable record the monolith policy-deny alert reads.
+    # labelsContext keys are exact per metric (no combined "ns/workload"
+    # source/destination label), keeping cardinality to one series per
+    # (reason, protocol, namespace-pair, direction) tuple on this small cluster.
     metrics:
       enabled:
         - dns
-        - drop
+        - "drop:labelsContext=source_namespace,destination_namespace,destination_workload,traffic_direction"
         - tcp
         - flow
         - "httpV2:sourceContext=workload;destinationContext=workload;labelsContext=source_namespace,destination_namespace"

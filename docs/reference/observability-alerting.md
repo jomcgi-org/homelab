@@ -1,16 +1,18 @@
 # Observability & Alerting
 
-The homelab has a complete observability stack (SigNoz v0.113, OTel, Cilium) with a fully operational alerting pipeline. 22 alert rules monitor infrastructure health, application availability, and GitOps state. Alerts are synced to SigNoz via the signoz-dashboard-sidecar and notify through Incident.io.
+The homelab has a complete observability stack (SigNoz v0.113, OTel, Cilium) with a fully operational alerting pipeline. 33 alert rules monitor infrastructure health, application availability, network policy enforcement, EmberVM safety properties, and GitOps state. Alerts are synced to SigNoz via the signoz-dashboard-sidecar and notify through Incident.io.
 
 ## Current State
 
-**What works:** 22 alert rules are synced, evaluating, and generating alert history in SigNoz v0.113. The signoz-dashboard-sidecar reconciles alert ConfigMaps every 5 minutes, creating or updating rules via the SigNoz API. Incident.io notification channel (`incidentio`) is configured via webhook, with Bearer token auth sourced from 1Password.
+**What works:** 33 alert rules are synced, evaluating, and generating alert history in SigNoz v0.113. The signoz-dashboard-sidecar reconciles alert ConfigMaps every 5 minutes, creating or updating rules via the SigNoz API. Incident.io notification channel (`incidentio`) is configured via webhook, with Bearer token auth sourced from 1Password.
 
 **Alert inventory:**
 
-- 11 HTTPCheck alerts — monitor service availability via `httpcheck.status` metric
-- 7 Kubernetes health alerts — node conditions (disk/memory/PID pressure, readiness), pod health (OOMKilled, pending, restart rate)
-- 4 ArgoCD app state alerts — degraded, missing, out-of-sync, suspended
+- 5 HTTPCheck alerts: monitor service availability via `httpcheck.status` metric
+- 7 Kubernetes health alerts: node conditions (disk/memory/PID pressure, readiness), pod health (OOMKilled, pending, restart rate)
+- 4 ArgoCD app state alerts: degraded, missing, out-of-sync, suspended
+- 14 EmberVM alerts: guest lifecycle, banking, parking, and store-reachability safety properties
+- 3 Hubble/Cilium network alerts: node-wide policy-deny drops (warning), fc-invoke L7 5xx rate (warning), monolith policy-denied ingress drops (critical, #4659)
 
 **Remaining gaps:**
 
@@ -27,7 +29,7 @@ All alerts are Kubernetes ConfigMaps with the `signoz.io/alert: "true"` label, d
 ```json
 {
   "alert": "Alert Name",
-  "alertType": "METRICS_BASED_ALERT",
+  "alertType": "METRIC_BASED_ALERT",
   "ruleType": "threshold_rule",
   "version": "v5",
   "broadcastToAll": false,
@@ -175,6 +177,18 @@ Located in `projects/platform/signoz-addons/alerts/`:
 - `pod-oomkilled.yaml` — `increase(k8s.container.restarts)` where `last_terminated_reason = OOMKilled` > 0 once (critical). Uses `increase` time aggregation to detect new OOM events, not cumulative lifetime count.
 - `pod-pending.yaml` — `k8s.pod.phase` == 1 (Pending) for 5 consecutive over 15min (warning)
 - `pod-restart-rate.yaml` — `increase(k8s.container.restarts)` > 3 once in 15min (warning). Uses `increase` time aggregation to detect restarts within the eval window, not cumulative lifetime count.
+
+### Network Policy Denial Alerts
+
+Monitor Cilium policy enforcement via Hubble drop metrics. Every `ingress:` CiliumNetworkPolicy in this repo fails closed as a **silent dial timeout**: the denied caller gets no readable error, and the hubble ring buffer is only minutes deep, so drops cannot be audited retroactively (#4659). The labeled `hubble_drop_total` counter series scraped into SigNoz is the durable record. The drop metric carries destination context only because `projects/platform/cilium/values.yaml` requests it (`drop:labelsContext=source_namespace,destination_namespace,destination_workload,traffic_direction`); that list must stay identical to `projects/platform/cilium/bootstrap/cilium-helmchart.yaml` or a node reboot reverts it.
+
+Located in `projects/platform/signoz-addons/alerts/templates/`:
+
+- `hubble-policy-drops.yaml`: node-wide catch-all, `increase(hubble_drop_total)` where `reason = 'POLICY_DENIED'` > 0 once in 5min (warning). Cannot attribute drops; points at live investigation.
+
+Located in `projects/platform/signoz/`:
+
+- `hubble-monolith-policy-drops-alert.yaml`: scoped critical alert (#4659), `increase(hubble_drop_total)` where `reason = 'POLICY_DENIED' AND destination_namespace = 'monolith' AND traffic_direction = 'ingress'`, > 0 for 10 consecutive evaluations over 10min. Namespace-scoped rather than endpoint-scoped because only the monolith app pod carries an ingress CNP in that namespace today; `destination_workload` exists on the series for tightening later once confirmed against a live scrape. Fires only on sustained denial (a rate increase each minute for 10 minutes), never on a single blip.
 
 ### SLO-Based Alerts
 
