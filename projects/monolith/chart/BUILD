@@ -165,6 +165,7 @@ semgrep_test(
         "sqlmodel-datetime-without-factory",
         "tainted-fastapi-http-request-httpx",
         "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
