@@ -40,6 +40,18 @@ This has recurred at least three times: whenever git values and the OCI chart di
 
 **Fix:** since ADR platform/009 decision 1 there is no bump PR to open, because PRs carry no chart version. The version is computed and published on main and then committed back by `chart-version-bot`. If a merge has not deployed, check whether that write-back commit landed: `git log --author=chart-version-bot -3 origin/main`. If main CI's publish went green but the write-back did not, the chart is in the registry and main simply does not reference it yet, so re-run the action rather than opening a bump PR. Another sync is not the fix in either case.
 
+## Deploy killed by the workflow wall clock before the publish
+
+**Symptom:** a merged commit never deploys, and its `deploy` invocation reports `Failed` after running for almost exactly one hour. Every `image.push` child invocation is green; there is no chart publish output after them and no `chart-version-bot` write-back commit (`git log --author=chart-version-bot -3 origin/main` shows nothing for the merge).
+
+**Cause:** the third documented way a merge can end up deployed-but-for-nothing or not-deployed-at-all (alongside the same-version republish wedge above and the ruleset-refused write-back in `write-back-versions.sh`): the deploy action hit BuildBuddy's default workflow wall clock BEFORE reaching the publish stage. The ordering runs the expensive, retryable work first (image builds) and the cheap, must-not-be-skipped work last (chart publish plus write-back), so a wide apko rebuild that fills the budget loses exactly the part that cannot be lost. Any change invalidating many apko images at once has this shape: a Renovate lock refresh, a base image bump.
+
+First seen on 1e63fee7 (invocation 06feb469): #4862 refreshed 14 apko locks, all 14 images rebuilt cold, the pushes spanned ~52 green minutes, and the action was killed at 3600s with the publish never started.
+
+**Fix:** re-run the deploy (an empty `ci:` retrigger commit or a re-run from the BuildBuddy UI). Every stage is idempotent: `push-changed.sh` skips content-identical images, `push.sh.tpl` skips versions already published, and the next clean run computes and writes back. If a kill lands MID-publish instead of before it, the result is charts in the registry with no write-back; check whether the highest published `charts/*` version outruns main's `Chart.yaml` and simply re-run to converge.
+
+`deploy` now sets an explicit `timeout: "2h"` in `buildbuddy.yaml`, sized for a 14-image cold rebuild plus publish, so recurrence needs a wider rebuild than that. If runs STILL die at almost exactly one hour, the cap is BuildBuddy-side (plan tier, or a remote_runner_default_timeout experiment clamping explicit requests), not the YAML field, and only BuildBuddy can lift it.
+
 ## Duplicate env var name in a container
 
 **Symptom:** permanent phantom OutOfSync that never converges, even after repeated syncs.
