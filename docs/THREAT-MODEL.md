@@ -1,6 +1,6 @@
 # Homelab Threat Model
 
-_Reviewed against commit 23bcbca65._
+_Reviewed against commit 1a61e7d5d._
 
 Open security findings across everything the cluster hosts, ranked.
 The live list is the
@@ -8,7 +8,8 @@ The live list is the
 ADR [security/007](decisions/security/007-aggregate-threat-model-index.md)
 records why this page exists, and the
 [maintenance runbook](runbooks/threat-model-maintenance.md) is the
-procedure for updating it.
+procedure for updating it. A project's deep model is the security lens in
+that project's STPA.md.
 
 ## Assets
 
@@ -41,10 +42,10 @@ graph LR
 
 | Surface | Untrusted input | Deep model |
 | --- | --- | --- |
-| Public tier | Anyone on the internet | [monolith model](../projects/monolith/THREAT-MODEL.md); [public-tier checklist](runbooks/public-tier-checklist.md) |
-| Private tier | Signed-in humans, service tokens, GitHub webhooks (HMAC-gated) | [monolith model](../projects/monolith/THREAT-MODEL.md) |
-| MCP gateway | Agents, including prompt-injected ones | [monolith model](../projects/monolith/THREAT-MODEL.md) |
-| EmberVM | Untrusted code, by design | [embervm model](../projects/embervm/THREAT-MODEL.md) |
+| Public tier | Anyone on the internet | [monolith STPA, security lens](../projects/monolith/STPA.md); [public-tier checklist](runbooks/public-tier-checklist.md) |
+| Private tier | Signed-in humans, service tokens, GitHub webhooks (HMAC-gated) | [monolith STPA, security lens](../projects/monolith/STPA.md) |
+| MCP gateway | Agents, including prompt-injected ones | [monolith STPA, security lens](../projects/monolith/STPA.md) |
+| EmberVM | Untrusted code, by design | [embervm STPA, security lens](../projects/embervm/STPA.md) |
 | Supply chain and CI | PRs, dependencies, base images | None yet |
 | Cluster baseline | Everything above sits on it | [security.md](security.md) |
 
@@ -63,7 +64,7 @@ Ranked by what an attacker gets. Each issue holds the detail.
    ([#4569](https://github.com/jomcgi-org/homelab/issues/4569)).
    The monolith verifies who is calling; no tool then checks whether
    that caller should reach it. Finding 1 of the
-   [monolith model](../projects/monolith/THREAT-MODEL.md).
+   [monolith STPA security lens](../projects/monolith/STPA.md).
 4. **A compromised public-tier pod can reach every in-cluster endpoint**
    ([#5276](https://github.com/jomcgi-org/homelab/issues/5276)).
    Its egress policy allows the whole cluster, while its own comment
@@ -86,6 +87,11 @@ Ranked by what an attacker gets. Each issue holds the detail.
    Promotion waits for rollout health and a short soak, and only
    EmberVM runs a conformance test first. A change that deploys
    cleanly but misbehaves promotes.
-9. **Swarm run budgets are never enforced**
+9. **`run_code` can silently return a stale result for different inputs**
+   ([#5304](https://github.com/jomcgi-org/homelab/issues/5304)).
+   The dedupe key hashes language and code but not input files, so a
+   resubmission within the result-cache TTL returns output computed
+   against someone else's files.
+10. **Swarm run budgets are never enforced**
    ([#4784](https://github.com/jomcgi-org/homelab/issues/4784)).
    Recorded and reported only.

@@ -1,10 +1,11 @@
 """Generate the public docs manifest baked into the monolith-public frontend.
 
 The public docs surface contains a fixed set of projects and, for each project,
-up to four current-state documents: README, architecture, STPA, and threat
-model. Only the exact project/document pairs listed below are published. The
-generator uses ``git ls-files`` so untracked files, nested READMEs, ADRs, and
-other repository documentation never enter the manifest.
+up to three current-state documents: README, architecture, and STPA (STPA now
+carries per-lens sections including security). Only the exact project/document
+pairs listed below are published. The generator uses ``git ls-files`` so
+untracked files, nested READMEs, ADRs, and other repository documentation never
+enter the manifest.
 
 The committed JSON manifest stores full bodies inline at
 ``projects/monolith/frontend/src/lib/public/docs/docs-manifest.json``. The
@@ -48,7 +49,6 @@ DOC_KINDS = (
     ("readme", "README.md", "Readme"),
     ("architecture", "ARCHITECTURE.md", "Architecture"),
     ("stpa", "STPA.md", "STPA"),
-    ("threat-model", "THREAT-MODEL.md", "Threat model"),
 )
 
 MANIFEST_REL = "projects/monolith/frontend/src/lib/public/docs/docs-manifest.json"

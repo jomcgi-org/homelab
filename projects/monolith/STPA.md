@@ -1,22 +1,15 @@
-# STPA Control Analysis: monolith @ 248acd648
+# STPA Control Analysis: monolith
 
-_Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there. Two views: logical (functional control flow) and physical (deployment)._
+_logic @ 248acd648 · security @ 34d4f1816_
+
+_Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._
 
 <details>
 <summary><b>How to read this</b>: STPA primer and diagram legend</summary>
 
-**STPA** (System-Theoretic Process Analysis) treats the system as *controllers* issuing *control actions* to *controlled processes*, with *feedback* flowing back up. Instead of "what component can fail," it asks "what control action, given or withheld at the wrong time, drives the system into an unsafe state?" "Unsafe" means a violation of this system's reason to exist, not merely a crash.
+**STPA** (System-Theoretic Process Analysis, Leveson) treats the system as controllers issuing control actions to controlled processes, with feedback flowing back. Instead of "what component fails," it asks "what control action, given or withheld at the wrong time, drives the system into an unsafe state?" Unsafe means a violation of this system's reason to exist. Multiple lenses (logic, security, governance) analyze the same control structure for different safety questions: mission failure, deliberate attack, data-processing violations. A finding appearing in multiple lenses is expected and correct.
 
-Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagrams** (one per view) show who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core, and **Unsafe Feedback** covers the dashed arrows: data channels whose absence, staleness, corruption, or spoofing drives a controller into a hazard. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.
-</details>
-
-**Scope.** A single Postgres-backed personal platform served as two composed binaries: a private read-write binary (full app capabilities, private.jomcgi.dev) and an isolated public binary (jomcgi.dev via the separate monolith-public chart). The public binary is read-only for public datasets with two constrained write/invocation paths, the private binary now also serves an agent-session console, a six-language code sandbox, a screenshot tool, and MCP over native streamable HTTP; safety is governed data access, bounded public capabilities, the secret boundary, and correct claim/lease ownership of queued agent work.
-
-<details>
-<summary>Maturity detail</summary>
-
-- **Built:** framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site.
-- **Designed-only:** Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.
+Read top-down: Losses are outcomes we must prevent; Hazards are states leading to loss; diagrams show control structure (solid = control action, dashed = feedback); Unsafe Control Actions table is the core; Unsafe Feedback covers data channels (absent, stale, corrupted, spoofed). Every claim cites path:line; unbuilt elements are marked. Semantic stable IDs mean regenerating changes only findings that changed.
 </details>
 
 ## Control structure
@@ -120,40 +113,6 @@ flowchart TD
   pg-primary -. "streaming replication lag" .-> pg-replica
 ```
 
-## Losses
-
-| ID | Loss |
-|----|------|
-| `L.integrity-loss` | Data is corrupted, or a side-effecting action (Discord post, agent run, chat_public write) is duplicated or forged |
-| `L.liveness-loss` | A queued turn or locked message never makes progress |
-| `L.provenance-loss` | An agent acts on incomplete or misattributed context, losing lineage of what it was told |
-| `L.secret-exposure` | A secret or token reaches a tier or surface that must not hold it |
-| `L.silent-incorrectness` | A controller serves stale or wrong data while believing it correct |
-| `L.unauthorized-access` | Anonymous or public-tier caller reads data it is not entitled to (private rows, ungoverned paths) |
-
-## Hazards
-
-| ID | View | Hazard (unsafe state) | → Losses | Maturity |
-|----|----|----|----|----|
-| `duplicate-agent-run` | logical | An agent turn runs twice: a stale-claim sweep reclaims a lease still held by an actively-executing replica, or a manual resubmission overlaps a guest-side invoke the monolith timed out on without confirming it stopped | L.integrity-loss | built |
-| `header-authz-drift` | physical | X-Auth-Email is forwarded by several allowlisted in-cluster senders (gateway, MCP gateway, Argo job pods, the WhatsApp gateway, the EmberVM progress-ingest sidecar) that do not all cryptographically bind the claim to a verified caller; today it is read only for attribution (agent_sessions triggered_by), but nothing stops a future authorization decision from keying on it without also verifying the caller's JWT | L.unauthorized-access | built |
-| `over-broad-public-grant` | physical | public_reader is granted on a schema or view that includes non-public rows | L.unauthorized-access, L.secret-exposure | built |
-| `phantom-stored-artifact` | logical | A caller treats the returned content-addressed URL as a durable reference when the SeaweedFS write actually failed, because the URL is computed from the content hash before the upload is attempted and is returned either way | L.silent-incorrectness | built |
-| `private-capture-retained` | physical | A captured screenshot, including of the private tier, is written to SeaweedFS with no expiry policy and persists indefinitely at a stable content-addressed URL after the request that produced it | L.unauthorized-access | built |
-| `public-route-exposes-private-path` | physical | The public HTTPRoute forwards an internal or unfiltered path to a served handler | L.unauthorized-access | built |
-| `public-write-admission-bypass` | physical | The internet-adjacent public tier can write outside the intended chat_public path, or bypasses Turnstile, per-session limits, and the cluster-wide inference cap | L.integrity-loss | built control; hazard remains if miswired |
-| `sandbox-credential-egress` | logical | The scratch-Postgres feature, when enabled, injects a database DSN into the executed code's own process environment, so a Python run in the advertised zero-network sandbox gains credentialed, in-cluster network reach to a shared datastore; the tool's own docstring still claims there is no network at all | L.secret-exposure, L.unauthorized-access | built; feature disabled in production today (scratchPostgres.enabled: false) |
-| `second-layer-validation-gap` | logical | The monolith-side host/scheme allowlist is weakened, widened without an ADR amendment, or bypassed, letting an out-of-policy top-level URL reach the EmberVM dispatch call; the guest-side in-guest proxy allowlist (projects/embervm/STPA.md) is the actual control on what gets fetched, so this alone does not open egress | L.unauthorized-access | built |
-| `secret-in-wrong-tier` | physical | A private secret or a K8s token is delivered to the public or frontend tier | L.secret-exposure | built |
-| `split-brain-singletons` | logical | Two replicas both believe they are leader and run duplicate bot/ingest/drain | L.integrity-loss | built |
-| `stale-authz` | logical | A revoked feature grant keeps authorizing an action from the 30s ACL cache | L.unauthorized-access | built |
-| `stale-public-snapshot` | logical | The public stats endpoint serves an old observability snapshot after the rollup job stops | L.silent-incorrectness | built, bounded by route behavior |
-| `stale-sandbox-result` | logical | A caller re-invoking run_code with the same code but different input files receives a cached result computed against a prior submission's files instead of a fresh run | L.silent-incorrectness | built |
-| `unbounded-capture-queueing` | logical | No rate limit gates shotter.capture or sandbox.run, so a caller can queue captures/runs faster than the workload's own cap admits, consuming brick memMib capacity shared with other task-class workloads | L.liveness-loss | built |
-| `unredacted-public-doc` | logical | The docs/posts manifest generators copy an allowlisted document's full body into the public site verbatim, gating only on which path may be published, never on what the content contains, so an internal-only identifier (a cluster-internal hostname, a secret env var name) left in a published project's README/ARCHITECTURE/STPA/THREAT-MODEL reaches the public docs route | L.secret-exposure | built |
-| `unrestricted-tool-visibility` | logical | PrincipalMiddleware authenticates every MCP message (a valid authentik bearer token is required), but no monolith tool authorizes on the resulting Principal: the Context Forge tool-visibility reconcile pass that would scope who may call a given tool is still designed, not built (#4569), so any authenticated caller, not only ones entitled to the private tier, can invoke shotter.capture, sandbox.run, or k8s_sync_argocd_app | L.unauthorized-access | built |
-| `wedged-turn` | logical | A queued agent turn never progresses because no replica ever holds leadership to run the stale-claim sweep, and the replica that would have executed it directly crashed or restarted before claiming it | L.liveness-loss | built |
-
 ## Control actions
 
 | ID | View | Control action | Controller → Process | Maturity | Evidence |
@@ -163,7 +122,7 @@ flowchart TD
 | `agent.submit` | logical | Submit a Discord-triggered agent turn to the runner | `bot` → `agent-runner` | built | projects/monolith/chat/bot.py:1172 |
 | `chatpublic.write` | physical | Write a bounded chat_public row to the primary as public_writer | `public-binary` → `pg-primary` | built | projects/monolith-public/chart/values.yaml:82 |
 | `console.submit` | logical | Start or continue an agent session from the private console | `console-caller` → `agent-runner` | built | projects/monolith/agent_sessions/router.py:544 |
-| `docs.publish` | logical | Copy an allowlisted repo doc's full body into the public docs/posts manifest | `docs-manifest-gen` → `public-frontend` | built | projects/monolith/knowledge/tools/gen_docs_manifest.py:123 |
+| `docs.publish` | logical | Copy an allowlisted repo doc's full body into the public docs/posts manifest | `docs-manifest-gen` → `public-frontend` | built | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
 | `frontend.proxy` | physical | Proxy SSR/API calls from the frontend to the public backend, in-cluster only | `frontend-ssr` → `public-binary` | built | projects/monolith-public/chart/templates/httproute-public.yaml:33 |
 | `grant.public-reader` | physical | Grant public_reader SELECT on a schema/view | `migrations` → `pg-replica` | built | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
 | `k8s.mutate` | physical | Mutate cluster state via private MCP (ArgoCD sync) | `private-binary` → `k8s-api` | built | projects/monolith/cluster/mcp.py:163 |
@@ -182,28 +141,71 @@ flowchart TD
 | `shotter.validate` | logical | Validate scheme/host/dimensions before dispatch (2nd, defense-in-depth layer) | `shotter-tool` → `shotter-validate` | built | projects/monolith/shotter/mcp.py:56 |
 | `singletons.start` | logical | Start leader-only singletons (bot, ingest, drain, sweep) | `leader-elector` → `bot` | built | projects/monolith/framework/core.py:236 |
 
-## Unsafe control actions
+## Lens: logic
 
-*The core of the analysis. Each row: a control action made unsafe via one guideword, the hazard/loss it causes, and where in the code it lives.*
+**Scope.** A single Postgres-backed personal platform served as two composed binaries: a private read-write binary (full app capabilities, private.jomcgi.dev) and an isolated public binary (jomcgi.dev via the separate monolith-public chart). The public binary is read-only for public datasets with two constrained write/invocation paths, the private binary now also serves an agent-session console, a six-language code sandbox, a screenshot tool, and MCP over native streamable HTTP; safety is governed data access, bounded public capabilities, the secret boundary, and correct claim/lease ownership of queued agent work.
+
+<details>
+<summary>Maturity detail</summary>
+
+- **Built:** framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site.
+- **Designed-only:** Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.
+</details>
+
+### Losses
+
+| ID | Loss |
+|----|------|
+| `L.integrity-loss` | Data is corrupted, or a side-effecting action (Discord post, agent run, chat_public write) is duplicated or forged |
+| `L.liveness-loss` | A queued turn or locked message never makes progress |
+| `L.provenance-loss` | An agent acts on incomplete or misattributed context, losing lineage of what it was told |
+| `L.secret-exposure` | A secret or token reaches a tier or surface that must not hold it |
+| `L.silent-incorrectness` | A controller serves stale or wrong data while believing it correct |
+| `L.unauthorized-access` | Anonymous or public-tier caller reads data it is not entitled to (private rows, ungoverned paths) |
+
+### Hazards
+
+| ID | View | Hazard (unsafe state) | → Losses | Maturity |
+|----|----|----|----|----|
+| `duplicate-agent-run` | logical | An agent turn runs twice: a stale-claim sweep reclaims a lease still held by an actively-executing replica, or a manual resubmission overlaps a guest-side invoke the monolith timed out on without confirming it stopped | L.integrity-loss | built |
+| `header-authz-drift` | physical | X-Auth-Email is forwarded by several allowlisted in-cluster senders (gateway, MCP gateway, Argo job pods, the WhatsApp gateway, the EmberVM progress-ingest sidecar) that do not all cryptographically bind the claim to a verified caller; today it is read only for attribution (agent_sessions triggered_by), but nothing stops a future authorization decision from keying on it without also verifying the caller's JWT | L.unauthorized-access | built |
+| `over-broad-public-grant` | physical | public_reader is granted on a schema or view that includes non-public rows | L.unauthorized-access, L.secret-exposure | built |
+| `phantom-stored-artifact` | logical | A caller treats the returned content-addressed URL as a durable reference when the SeaweedFS write actually failed, because the URL is computed from the content hash before the upload is attempted and is returned either way | L.silent-incorrectness | built |
+| `private-capture-retained` | physical | A captured screenshot, including of the private tier, is written to SeaweedFS with no expiry policy and persists indefinitely at a stable content-addressed URL after the request that produced it | L.unauthorized-access | built |
+| `public-route-exposes-private-path` | physical | The public HTTPRoute forwards an internal or unfiltered path to a served handler | L.unauthorized-access | built |
+| `public-write-admission-bypass` | physical | The internet-adjacent public tier can write outside the intended chat_public path, or bypasses Turnstile, per-session limits, and the cluster-wide inference cap | L.integrity-loss | built |
+| `sandbox-credential-egress` | logical | The scratch-Postgres feature, when enabled, injects a database DSN into the executed code's own process environment, so a Python run in the advertised zero-network sandbox gains credentialed, in-cluster network reach to a shared datastore; the tool's own docstring still claims there is no network at all | L.secret-exposure, L.unauthorized-access | built |
+| `second-layer-validation-gap` | logical | The monolith-side host/scheme allowlist is weakened, widened without an ADR amendment, or bypassed, letting an out-of-policy top-level URL reach the EmberVM dispatch call; the guest-side in-guest proxy allowlist (projects/embervm/STPA.md) is the actual control on what gets fetched, so this alone does not open egress | L.unauthorized-access | built |
+| `secret-in-wrong-tier` | physical | A private secret or a K8s token is delivered to the public or frontend tier | L.secret-exposure | built |
+| `split-brain-singletons` | logical | Two replicas both believe they are leader and run duplicate bot/ingest/drain | L.integrity-loss | built |
+| `stale-authz` | logical | A revoked feature grant keeps authorizing an action from the 30s ACL cache | L.unauthorized-access | built |
+| `stale-public-snapshot` | logical | The public stats endpoint serves an old observability snapshot after the rollup job stops | L.silent-incorrectness | built |
+| `stale-sandbox-result` | logical | A caller re-invoking run_code with the same code but different input files receives a cached result computed against a prior submission's files instead of a fresh run | L.silent-incorrectness | built |
+| `unbounded-capture-queueing` | logical | No rate limit gates shotter.capture or sandbox.run, so a caller can queue captures/runs faster than the workload's own cap admits, consuming brick memMib capacity shared with other task-class workloads | L.liveness-loss | built |
+| `unredacted-public-doc` | logical | The docs/posts manifest generators copy an allowlisted document's full body into the public site verbatim, gating only on which path may be published, never on what the content contains, so an internal-only identifier (a cluster-internal hostname, a secret env var name) left in a published project's README/ARCHITECTURE/STPA reaches the public docs route | L.secret-exposure | built |
+| `unrestricted-tool-visibility` | logical | PrincipalMiddleware authenticates every MCP message (a valid authentik bearer token is required), but no monolith tool authorizes on the resulting Principal: the Context Forge tool-visibility reconcile pass that would scope who may call a given tool is still designed, not built (#4569), so any authenticated caller, not only ones entitled to the private tier, can invoke shotter.capture, sandbox.run, or k8s_sync_argocd_app | L.unauthorized-access | built |
+| `wedged-turn` | logical | A queued agent turn never progresses because no replica ever holds leadership to run the stale-claim sweep, and the replica that would have executed it directly crashed or restarted before claiming it | L.liveness-loss | built |
+
+### Unsafe control actions
 
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|----|
-| `agent.reclaim.wrong-timing` | logical | `agent.reclaim` | wrong-timing | The reclaim lease and the local heartbeat check are computed from two different clocks (the lease cutoff from the pod's own monotonic-adjacent wall clock, the claimed_at write from the database's); a pod running ahead of the database clock reclaims a lease that is still being actively refreshed elsewhere, and the reclaiming replica's own self-check ("claim was stolen") only protects the replica that LOST the claim, not the window before the next 10s heartbeat catches it, so both replicas can execute the same turn concurrently for up to that window | medium | duplicate-agent-run, split-brain-singletons | projects/monolith/agent_sessions/store.py:791 |
+| `agent.reclaim.wrong-timing` | logical | `agent.reclaim` | wrong-timing | The reclaim lease and the local heartbeat check are computed from two different clocks (the lease cutoff from the pod's own monotonic-adjacent wall clock, the claimed_at write from the database's); a pod running ahead of the database clock reclaims a lease that is still being actively refreshed elsewhere, and the reclaiming replica's own self-check ('claim was stolen') only protects the replica that LOST the claim, not the window before the next 10s heartbeat catches it, so both replicas can execute the same turn concurrently for up to that window | medium | duplicate-agent-run, split-brain-singletons | projects/monolith/agent_sessions/store.py:791 |
 | `chatpublic.write.providing` | physical | `chatpublic.write` | providing | The public tier accepts a write without the Turnstile/IP-hash admission gate or writes outside the constrained chat_public schema, poisoning or escaping the public boundary | high | public-write-admission-bypass | projects/monolith-public/chart/values.yaml:146 |
-| `docs.publish.providing` | logical | `docs.publish` | providing | The generator's only gate is an exact repo-path allowlist (seven projects times four doc kinds); it performs no content scan, so an internal-only identifier committed into one of those documents is published to the internet on the next regeneration with no reviewer prompt beyond an ordinary PR diff, and the currently-live manifest already carries a cluster-internal hostname from a prior STPA.md revision | medium | unredacted-public-doc | projects/monolith/knowledge/tools/gen_docs_manifest.py:123 |
+| `docs.publish.providing` | logical | `docs.publish` | providing | The generator's only gate is an exact repo-path allowlist (seven projects times three doc kinds); it performs no content scan, so an internal-only identifier committed into one of those documents is published to the internet on the next regeneration with no reviewer prompt beyond an ordinary PR diff, and the currently-live manifest already carries a cluster-internal hostname from a prior STPA.md revision | medium | unredacted-public-doc | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
 | `grant.public-reader.providing` | physical | `grant.public-reader` | providing | A grant on ALL TABLES or a view lacking the visibility filter exposes private rows to the anonymous tier | high | over-broad-public-grant | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
 | `k8s.mutate.providing` | physical | `k8s.mutate` | providing | An MCP caller with a valid bearer token issues an ArgoCD sync or resource mutation with no additional per-tool authorization of which Principal may trigger it; the delegation seam (#4940) exists but this tool does not consume it | medium | unrestricted-tool-visibility, secret-in-wrong-tier | projects/monolith/cluster/mcp.py:163 |
 | `lock.reclaim.wrong-timing` | logical | `lock.reclaim` | wrong-timing | A slow handler still processing past the 30s TTL is reclaimed and the message is reprocessed concurrently | medium | duplicate-agent-run | projects/monolith/chat/leader.py:109 |
 | `route.public.providing` | physical | `route.public` | providing | A public HTTPRoute sends an unapproved backend path to the internet, or the frontend SSR proxy exposes a private-only route | high | public-route-exposes-private-path | projects/monolith-public/chart/templates/httproute-public.yaml:20 |
-| `sandbox.run.providing` | logical | `sandbox.run` | providing | When the scratch-Postgres feature is enabled, run_code's own docstring still advertises "there is no network at all" for every language while the Python path silently gains a credentialed connection string to an in-cluster datastore, so a caller relies on an isolation guarantee the tool does not actually provide for that one language | medium | sandbox-credential-egress | projects/monolith/sandbox/client.py:40 |
+| `sandbox.run.providing` | logical | `sandbox.run` | providing | When the scratch-Postgres feature is enabled, run_code's own docstring still advertises 'there is no network at all' for every language while the Python path silently gains a credentialed connection string to an in-cluster datastore, so a caller relies on an isolation guarantee the tool does not actually provide for that one language | medium | sandbox-credential-egress | projects/monolith/sandbox/client.py:40 |
 | `secret.deliver-public.providing` | physical | `secret.deliver-public` | providing | A private credential, Kubernetes API-capable token, or Turnstile secret is wired into the public frontend or public backend beyond its explicitly constrained use | high | secret-in-wrong-tier | projects/monolith/public_turnstile_secret_isolation_test.py:76 |
 | `shotter.capture.providing` | logical | `shotter.capture` | providing | PrincipalMiddleware verifies the caller holds a valid authentik-issued token, but no per-tool authorization scopes who may invoke shotter.capture: any authenticated MCP caller, not only ones entitled to the private tier, can render private.jomcgi.dev pages | high | unrestricted-tool-visibility | projects/monolith/shotter/mcp.py:120 |
 | `shotter.store.wrong-duration` | physical | `shotter.store` | wrong-duration | The stored PNG is retained indefinitely with no expiry policy, so a private-tier capture remains fetchable at its content-addressed URL by anything that can reach the SeaweedFS S3 endpoint and obtain the hash, long after the request that produced it | medium | private-capture-retained | projects/monolith/shotter/s3.py:99 |
 | `shotter.validate.not-providing` | logical | `shotter.validate` | not-providing | HOST_SERVICE_MAP is widened past its documented exactly-two-entries invariant, or validate_screenshot_url is bypassed, without an accompanying ADR amendment; the two allowlists (monolith host map, guest-side hard allowlist) are not tied by any build-time invariant, so they can drift independently | low | second-layer-validation-gap | projects/monolith/shotter/hosts.py:20 |
 
-## Unsafe feedback
+### Unsafe feedback
 
-*Feedback and data channels whose absence, staleness, corruption, or spoofed origin drives a controller into a hazard. This is where data-integrity failures live.*
+*Data channels (absent, stale, corrupted, spoofed) whose failure drives a controller into a hazard.*
 
 | ID | View | Channel | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|----|
@@ -231,7 +233,7 @@ flowchart TD
 - **two replicas racing to claim the same pending message**: claim_pending_message_for_session_sync is a single atomic UPDATE ... WHERE claimed_by_replica IS NULL, so only one of two concurrent claimants can succeed (projects/monolith/agent_sessions/store.py:634)
 </details>
 
-## Open questions
+### Open questions
 
 - ADR 059 is still Draft: does the full Context Forge removal change anything about the ingestion allowlist in cilium-ingress-policy.yaml (the mcp entry), or does the direct-mount path simply add a second ingress source alongside it?
 - Does any workload other than shotter and the six sandbox languages share the same EmberVM Idempotency-Key-from-request-parameters pattern, and if so does its key cover every parameter that affects the result?
@@ -243,3 +245,82 @@ flowchart TD
 - The private chart enables HPA from 1 to 3 replicas; verify claim-lease behavior under real scale-out and termination, especially whether a terminating pod's in-flight claims are released promptly enough for the 30s lease to matter in practice.
 - The public backend has a deliberate primary write path and public FaaS invocation path. Confirm production Cilium/EmberVM policy matches the chart claims: public_writer must remain limited to chat_public, and the public service account must remain identity-only with no Kubernetes RBAC.
 - When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?
+
+## Lens: security
+
+**Scope.** Adversarial abuse of the monolith's control structure: an attacker who deliberately forges or withholds identity, reaches a tool the entitlement model does not yet gate, or crosses a tier boundary in the control structure.
+
+<details>
+<summary>Maturity detail</summary>
+
+- **Built:** Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation to the private pod.
+- **Designed-only:** Per-tool authorization on the monolith's MCP surface (ADR 059 to route through delegation-consuming broker, #4569 tool-visibility reconcile pass), default-deny egress CiliumNetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.
+</details>
+
+### Losses
+
+| ID | Loss |
+|----|------|
+| `L.capacity-exhaustion` | Attacker exhausts shared compute (GPU, sandbox, shotter) or causes denial of service |
+| `L.integrity-loss` | Attacker-controlled data corrupts a durable record (trust ledger, database state, published document) |
+| `L.secret-exposure` | A secret, credential, or token reaches an attacker or a tier that must not hold it |
+| `L.silent-incorrectness` | Attacker receives stale or wrong data while believing it current |
+| `L.unauthorized-access` | An attacker accesses data or capability it is not entitled to (private pages, cluster mutation, tool invocation) |
+
+### Hazards
+
+| ID | View | Hazard (unsafe state) | → Losses | Maturity |
+|----|----|----|----|----|
+| `no-egress-policy` | physical | The private monolith pod carries no default-deny egress CiliumNetworkPolicy, so a compromised pod has open-ended cluster and internet reach | L.unauthorized-access, L.secret-exposure | designed |
+| `over-broad-public-grant` | physical | public_reader is granted on a schema or view that includes non-public rows | L.unauthorized-access, L.secret-exposure | built |
+| `private-capture-retained` | physical | A captured screenshot, including of the private tier, is written to SeaweedFS with no expiry policy and persists indefinitely at a stable content-addressed URL after the request that produced it | L.unauthorized-access | built |
+| `public-route-exposes-private-path` | physical | The public HTTPRoute forwards an internal or unfiltered path to a served handler | L.unauthorized-access | built |
+| `public-tier-broad-cluster-reach` | physical | The public tier's CiliumNetworkPolicy scopes by 'in-cluster or not' (toEntities: cluster), allowing every in-cluster pod endpoint rather than only the intended four (Postgres, vLLM, embeddings, SeaweedFS) | L.unauthorized-access | built |
+| `public-write-admission-bypass` | physical | The internet-adjacent public tier can write outside the intended chat_public path, or bypasses Turnstile, per-session limits, and the cluster-wide inference cap | L.integrity-loss, L.capacity-exhaustion | built |
+| `sandbox-credential-egress` | logical | The scratch-Postgres feature, when enabled, injects a database DSN into the executed code's own process environment, so a Python run in the advertised zero-network sandbox gains credentialed, in-cluster network reach to a shared datastore; the tool's own docstring still claims there is no network at all | L.secret-exposure, L.unauthorized-access | built |
+| `secret-in-wrong-tier` | physical | A private secret or a K8s token is delivered to the public or frontend tier | L.secret-exposure | built |
+| `stale-sandbox-result` | logical | A caller re-invoking run_code with the same code but different input files receives a cached result computed against a prior submission's files instead of a fresh run | L.silent-incorrectness | built |
+| `unredacted-public-doc` | logical | The docs/posts manifest generators copy an allowlisted document's full body into the public site verbatim, gating only on which path may be published, never on what the content contains, so an internal-only identifier (a cluster-internal hostname, a secret env var name) left in a published project's README/ARCHITECTURE/STPA reaches the public docs route | L.secret-exposure | built |
+| `unrestricted-tool-visibility` | logical | PrincipalMiddleware authenticates every MCP message (a valid authentik bearer token is required), but no monolith tool authorizes on the resulting Principal: the Context Forge tool-visibility reconcile pass that would scope who may call a given tool is still designed, not built (#4569), so any authenticated caller, not only ones entitled to the private tier, can invoke shotter.capture, sandbox.run, or k8s_sync_argocd_app | L.unauthorized-access | built |
+
+### Unsafe control actions
+
+| ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
+|----|----|----|----|----|----|----|----|----|----|
+| `chatpublic.write.providing` | physical | `chatpublic.write` | providing | Anonymous attacker bypasses Turnstile, per-session limits, or the cluster-wide inference cap to write outside chat_public or exhaust shared GPU | high | public-write-admission-bypass | enforced-prod | #5275 | projects/monolith-public/chart/values.yaml:146 |
+| `docs.publish.providing` | logical | `docs.publish` | providing | Attacker or an automated process commits an internal identifier to an allowlisted document; the generator republishes it unreviewed, disclosing internal topology | medium | unredacted-public-doc | none | #5275 | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
+| `grant.public-reader.providing` | physical | `grant.public-reader` | providing | A schema-wide grant or a missing visibility filter serves a private row through a public route, disclosing private knowledge-graph content directly | high | over-broad-public-grant | enforced-prod | #5276 | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
+| `k8s.mutate.providing` | physical | `k8s.mutate` | providing | Any authenticated MCP caller triggers ArgoCD sync/prune on any Application or performs cluster-wide pod/log/configmap/event read with an unentitled token | high | unrestricted-tool-visibility | none | #4569 | projects/monolith/cluster/mcp.py:163 |
+| `monolith_agent_session_start.providing` | logical | `console.submit` | providing | Any authenticated MCP caller starts or drives a full agent session, inheriting every tool that session can reach and compounding every other unentitled-tool row | high | unrestricted-tool-visibility | none | #4569 | projects/monolith/agent_sessions/mcp.py:660 |
+| `monolith_chat_trust_pardon.providing` | logical | `agent.submit` | providing | An MCP caller with no Discord-side privilege calls monolith_chat_trust_pardon, resetting any locked-out user's score and flipping their labels, undoing the ledger's containment of an active red-team session from a different trust boundary | high | unrestricted-tool-visibility | none | #4569 | projects/monolith/agent/mcp.py:338 |
+| `route.public.providing` | physical | `route.public` | providing | Attacker reaches a private or internal path via the public HTTPRoute or the SSR proxy, reading private data or invoking an internal handler | high | public-route-exposes-private-path | enforced-prod | #5274 | projects/monolith-public/chart/templates/httproute-public.yaml:13 |
+| `sandbox.run.providing` | logical | `sandbox.run` | providing | Any authenticated MCP caller spends zero-egress compute or, when scratch feature is enabled, reaches the in-cluster scratch database with credentialed DSN | medium | unrestricted-tool-visibility, sandbox-credential-egress | none | #4569 | projects/monolith/sandbox/mcp.py:14 |
+| `secret.deliver-public.providing` | physical | `secret.deliver-public` | providing | A private credential, Kubernetes API-capable token, or Turnstile secret is wired into the public frontend or public backend beyond its explicitly constrained use | high | secret-in-wrong-tier | enforced-prod | #5277 | projects/monolith/public_turnstile_secret_isolation_test.py:76 |
+| `shotter.capture.providing` | logical | `shotter.capture` | providing | Any authenticated MCP caller (not entitled to private tier) calls the screenshot tool for private.jomcgi.dev pages, disclosing private-tier page content retained indefinitely at a guessable URL | high | unrestricted-tool-visibility, private-capture-retained | none | #4569 | projects/monolith/shotter/mcp.py:120 |
+
+### Unsafe feedback
+
+*Data channels (absent, stale, corrupted, spoofed) whose failure drives a controller into a hazard.*
+
+| ID | View | Channel | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
+|----|----|----|----|----|----|----|----|----|----|
+| `docs-publish.unauthorized-source` | logical | `docs-manifest-gen` → `public-frontend`: allowlisted document content published to public site | unauthorized-source | Path allowlist only, no content review for internal identifiers; projects/mcp/README.md is live and names cluster-internal MCP gateway service hostname | medium | unredacted-public-doc | none | #5275 | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
+| `sandbox-dedupe.stale` | logical | `embervm-sandbox` → `sandbox-tool`: stdout/stderr/exit_code/files for a (language, code) key | stale | Idempotency-Key is (language, code) only, not input files; resubmit with same code but different files within result-cache TTL receives stale output from prior submission | medium | stale-sandbox-result | none | #5304 | projects/monolith/sandbox/client.py:97 |
+
+<details>
+<summary><b>Not UCAs</b>: 6 examined and rejected</summary>
+
+- **Authentik and Kubernetes control-plane compromise**: Assumed not to hold
+- **Cluster layers below the monolith**: Ingress tunnel, CNI policy, admission control, secret operator are owned by docs/security.md
+- **Cluster-wide capacity exhaustion outside modeled admission and budget gates**: Not analyzed here
+- **Discord platform account compromise**: Outside the trust ledger's design
+- **EmberVM guest and hypervisor isolation**: Covered in projects/embervm/STPA.md (logic and security lenses); this document covers only monolith-side broker
+- **Supply chain of the monolith's own image build**: Not analyzed here
+</details>
+
+### Open questions
+
+- Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?
+- When #4569's tool-visibility reconcile pass lands, will it gate shotter.capture, sandbox.run, k8s_sync_argocd_app, and agent-session tools by Principal scope, or only by coarser tool-granular ACL?
+- When will the default-deny egress CiliumNetworkPolicy (#5277) land for the private pod's open-ended cluster and internet reach?
+- Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?

@@ -1,0 +1,274 @@
+{
+  "system": "embervm",
+  "system_dir": "projects/embervm",
+  "commit": "b1514fe38",
+  "nodes": [
+    {
+      "key": "dispatcher",
+      "label": "Admission, quota gate, placement, dispatch",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "node-registry",
+      "label": "Dial-home registry + reconcile inventory",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "s3-warmth-gc",
+      "label": "Artifact TTL sweep (abort on partial listing)",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "stateful-manager",
+      "label": "Stateful wake/bank/blessing/quarantine lifecycle",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "api",
+      "label": "HTTP API + TokenReview auth",
+      "view": "logical",
+      "layer": "ingress",
+      "maturity": "built"
+    },
+    {
+      "key": "op-log",
+      "label": "Durable ordered journal (book of record)",
+      "view": "logical",
+      "layer": "store",
+      "maturity": "built"
+    },
+    {
+      "key": "egress-proxy",
+      "label": "Brick-local egress credential proxy",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "guest-vm",
+      "label": "Firecracker guest VM",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "node-envoy",
+      "label": "node Envoy serving relay (DNAT)",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "noded",
+      "label": "noded brick daemon (privileged, /dev/kvm)",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "shotter-chromium",
+      "label": "Headless Chromium (content-driven fetches)",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "shotter-guest-init",
+      "label": "Shotter guest-init (PID 1): launches Chromium, hosts the proxy, serves /shim/ready",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "shotter-proxy",
+      "label": "In-guest egress allowlist proxy (image-baked policy)",
+      "view": "physical",
+      "layer": "compute",
+      "maturity": "built"
+    },
+    {
+      "key": "control-plane",
+      "label": "Elixir control plane pod (1 replica, Recreate)",
+      "view": "physical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "s3-store",
+      "label": "S3-compatible object store (SeaweedFS gateway)",
+      "view": "physical",
+      "layer": "data",
+      "maturity": "built"
+    },
+    {
+      "key": "caller",
+      "label": "External task/session/serving caller",
+      "view": "physical",
+      "layer": "external",
+      "maturity": "built"
+    },
+    {
+      "key": "external-host",
+      "label": "External destination (e.g. GitHub API)",
+      "view": "physical",
+      "layer": "external",
+      "maturity": "built"
+    }
+  ],
+  "control_actions": [
+    {
+      "key": "api.admit_task",
+      "label": "Admit task workload",
+      "view": "logical",
+      "from": "api",
+      "to": "dispatcher",
+      "maturity": "built",
+      "evidence": "projects/embervm/control/lib/embervm/router.ex:33"
+    },
+    {
+      "key": "dispatcher.quota_gate",
+      "label": "Gate quota on admission",
+      "view": "logical",
+      "from": "dispatcher",
+      "to": "op-log",
+      "maturity": "built",
+      "evidence": "projects/embervm/control/lib/embervm/dispatcher.ex:258"
+    },
+    {
+      "key": "stateful-manager.bless_generation",
+      "label": "Issue blessed generation",
+      "view": "logical",
+      "from": "stateful-manager",
+      "to": "op-log",
+      "maturity": "built",
+      "evidence": "projects/embervm/control/lib/embervm/stateful_manager.ex:676"
+    },
+    {
+      "key": "stateful-manager.destroy_orphan",
+      "label": "Destroy orphaned VM",
+      "view": "logical",
+      "from": "stateful-manager",
+      "to": "node-registry",
+      "maturity": "built",
+      "evidence": "projects/embervm/control/lib/embervm/stateful_manager.ex:2027"
+    },
+    {
+      "key": "control-plane.grpc_command",
+      "label": "gRPC lifecycle command (BuildBase, Prime, Assign, Destroy, DeleteVolume, RestoreArtifact)",
+      "view": "physical",
+      "from": "control-plane",
+      "to": "noded",
+      "maturity": "built",
+      "evidence": "projects/embervm/proto/embervm/node/v1/node.proto:57"
+    },
+    {
+      "key": "egress-proxy.inject_credential",
+      "label": "Inject credential into request",
+      "view": "physical",
+      "from": "egress-proxy",
+      "to": "external-host",
+      "maturity": "built",
+      "evidence": "projects/embervm/ARCHITECTURE.md:710"
+    },
+    {
+      "key": "node-envoy.dnat_route",
+      "label": "DNAT route to guest",
+      "view": "physical",
+      "from": "node-envoy",
+      "to": "guest-vm",
+      "maturity": "built",
+      "evidence": "projects/embervm/ARCHITECTURE.md:193"
+    },
+    {
+      "key": "noded.artifact_verb",
+      "label": "Access artifact in store (get, put, delete, list, tag)",
+      "view": "physical",
+      "from": "noded",
+      "to": "s3-store",
+      "maturity": "built",
+      "evidence": "projects/embervm/proto/embervm/node/v1/node.proto:463"
+    },
+    {
+      "key": "noded.refuse_if_silenced",
+      "label": "Refuse local authority if control-plane contact stale",
+      "view": "physical",
+      "from": "noded",
+      "to": "noded",
+      "maturity": "built",
+      "evidence": "projects/embervm/noded/server/server.go:619"
+    },
+    {
+      "key": "noded.vsock_dispatch",
+      "label": "vsock dispatch to guest",
+      "view": "physical",
+      "from": "noded",
+      "to": "guest-vm",
+      "maturity": "built",
+      "evidence": "projects/embervm/ARCHITECTURE.md:234"
+    },
+    {
+      "key": "shotter-chromium.fetch_subresource",
+      "label": "Fetch subresource from rendered page",
+      "view": "physical",
+      "from": "shotter-chromium",
+      "to": "shotter-proxy",
+      "maturity": "built",
+      "evidence": "projects/embervm/runtimes/shotter/guest-init/cmd/main.go:168"
+    },
+    {
+      "key": "shotter-proxy.forward_allowed",
+      "label": "Forward request to allowlisted destination",
+      "view": "physical",
+      "from": "shotter-proxy",
+      "to": "egress-proxy",
+      "maturity": "built",
+      "evidence": "projects/embervm/runtimes/shotter/guest-init/cmd/proxy.go:391-405"
+    }
+  ],
+  "feedback": [
+    {
+      "view": "logical",
+      "from": "node-registry",
+      "to": "dispatcher",
+      "signal": "reported primed pool inventory (adopt_inventory)"
+    },
+    {
+      "view": "logical",
+      "from": "node-registry",
+      "to": "stateful-manager",
+      "signal": "reported stateful VM inventory (dial-home NodeStatus), authoritative per invariant 5"
+    },
+    {
+      "view": "physical",
+      "from": "control-plane",
+      "to": "noded",
+      "signal": "contact signal behind the silence gate: a 2xx dial-home Register response and every successful WatchNode NodeStatus send refresh lastContact, which refuseIfSilenced compares against the 21600s bound"
+    },
+    {
+      "view": "physical",
+      "from": "noded",
+      "to": "control-plane",
+      "signal": "dial-home registration {node, pod_uid, address, boot_id} + NodeStatus"
+    },
+    {
+      "view": "physical",
+      "from": "s3-store",
+      "to": "noded",
+      "signal": "fetched artifact bytes on RestoreArtifact"
+    },
+    {
+      "view": "physical",
+      "from": "shotter-guest-init",
+      "to": "noded",
+      "signal": "GET /shim/ready 200 (CDP /json/version answered and one real trial capture produced non-empty PNG bytes)"
+    }
+  ]
+}
