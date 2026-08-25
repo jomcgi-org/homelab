@@ -753,6 +753,48 @@ def test_manager_routes_qwen_to_pi(tmp_path, monkeypatch):
     assert manager._adapter(None) is manager.claude
 
 
+def _adapter_manager(prewarm_clis):
+    manager = _new_process_manager()
+    manager._prewarm_clis = prewarm_clis
+    manager.claude = object()
+    manager.codex = object()
+    manager.pi = object()
+    return manager
+
+
+def test_manager_routes_unspecified_model_to_only_configured_cli():
+    manager = _adapter_manager(("pi",))
+
+    assert manager._adapter(None) is manager.pi
+
+
+def test_manager_routes_unspecified_model_to_claude_when_configured():
+    manager = _adapter_manager(("claude", "codex", "pi"))
+
+    assert manager._adapter(None) is manager.claude
+
+
+@pytest.mark.parametrize("prewarm_clis", [("pi",), ("claude", "codex", "pi")])
+def test_manager_explicit_model_routing_precedes_cli_fallback(prewarm_clis):
+    manager = _adapter_manager(prewarm_clis)
+    codex_model = next(iter(shim.CODEX_MODELS))
+
+    assert manager._adapter("qwen") is manager.pi
+    assert manager._adapter(codex_model) is manager.codex
+
+
+def test_manager_empty_configured_clis_fall_back_to_claude():
+    manager = _adapter_manager(())
+
+    assert manager._adapter(None) is manager.claude
+
+
+def test_manager_ambiguous_configured_clis_fall_back_to_claude():
+    manager = _adapter_manager(("codex", "pi"))
+
+    assert manager._adapter(None) is manager.claude
+
+
 def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
     manager = _codex_manager(tmp_path, monkeypatch)
     record = manager.turn("first", model="luna")
@@ -1236,6 +1278,7 @@ def _manager(tmp_path, monkeypatch, api_key="none"):
 
 def _new_process_manager():
     manager = object.__new__(shim.ProcessManager)
+    manager._prewarm_clis = ()
     manager._mount_lock = threading.Lock()
     manager._thread_factory = threading.Thread
     return manager
