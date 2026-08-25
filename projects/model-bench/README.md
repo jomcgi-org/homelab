@@ -26,7 +26,7 @@ An agentic task graded by the repo's own tests works like SWE-bench:
 
 For example, `hikes-walkhighlands-dom-01` and `hikes-walkhighlands-duration-01` are both
 agentic tasks against the hikes doability model (DOM scraping and duration-aware doability,
-respectively). The pack currently has 9 agentic and 4 single-shot tasks in total; `tasks/`
+respectively). The pack currently has 12 agentic and 3 single-shot tasks in total; `tasks/`
 is the source of truth for the full, current list.
 
 ## Setup
@@ -62,6 +62,23 @@ Each model in `models.yaml` has a `provider`:
 
 An anchors-only run (`--model claude`) needs no `OPENROUTER_API_KEY` at all.
 
+### In-cluster llama.cpp (self-hosted qwen)
+
+`bench run --base-url <url>/v1` points the OpenRouter client at any OpenAI-compatible
+endpoint instead, skipping the API key and OpenRouter pricing (cost records as 0). Two
+routes reach the in-cluster llama.cpp:
+
+- on-cluster: `kubectl -n inference port-forward svc/inference 18080:8080` and
+  `--base-url http://127.0.0.1:18080/v1`;
+- off-cluster: `--base-url https://private.jomcgi.dev/llm/v1` plus
+  `--header "CF-Access-Client-Id: ..." --header "CF-Access-Client-Secret: ..."`.
+  Cloudflare Access authenticates on those two headers only and ignores `Authorization`.
+
+The `qwen/qwen3.8-27b` entry in `models.yaml` is the self-hosted row: it is
+`status: experimental` so a bare `bench run` never sends that slug to OpenRouter, and its
+`api_model` is the alias llama.cpp actually serves. The comments on that entry are
+canonical for how it is reached.
+
 ## Result cells (billed output — kept out of the worktree)
 
 Each run writes one JSON cell per (task, model) under a **durable per-user cache dir**,
@@ -70,7 +87,9 @@ Each run writes one JSON cell per (task, model) under a **durable per-user cache
 so a `git worktree remove` would delete them and force a full paid re-run. The cache is
 keyed on prompt + fixture + verifier + model + budget, so re-running skips unchanged
 cells; only the committed `reports/leaderboard.md` and the page's `leaderboard.json` are
-version-controlled.
+version-controlled. `bench report --json-out` writes the JSON; the committed copy the
+public page reads lives at
+`projects/monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json`.
 
 ## Commands
 
@@ -79,11 +98,15 @@ python3 -m bench snapshot                    # materialize all task fixtures
 python3 -m bench run                          # run every active (task, model) cell
 python3 -m bench run --task worldcup-swing-settled-01 --model qwen3-coder-30b  # one cell, cheap
 python3 -m bench report                       # regenerate reports/leaderboard.md
+python3 -m bench list                         # models and their status/role
+python3 -m bench drop <id> --reason "..."     # retire a model in models.yaml
+python3 -m bench prune                        # delete result cells for retired models
 ```
 
 The leaderboard uses a **gate model**. Each task carries a difficulty `tier`
-(`easy` / `standard` / `hard`): easy + standard form the qualification **floor**, so a
-model must pass all of them to be viable (else it is disqualified), and the `hard` tasks
+(`easy` / `standard` / `hard`): easy + standard form the qualification **floor**. A model
+may miss at most one floor task and stay viable (`FLOOR_MISS_TOLERANCE` in `bench/cli.py`,
+so a single flaky miss does not exclude it); missing more disqualifies it. The `hard` tasks
 differentiate the qualified. Among the qualified, ranking is hard-task pass, then cost.
 
 It reads on two lenses. The **self-host** lens (hard-task pass, median tokens/turns,
@@ -91,3 +114,10 @@ tool-use reliability) is model-intrinsic and carries over to local hardware. The
 lens (median wall-time, cost, cost-per-solve) is the real time and money to rent the model
 via OpenRouter, versus the Claude anchor rows. Remote wall-time reflects a typical cloud
 request, not local GPU throughput.
+
+## Probing the live qwen lane
+
+`probe/` is a separate CLI that runs the same tasks through the monolith's agent-session
+API on the in-cluster qwen and pi lane, recording wall time, diff, verifier result and a
+SigNoz span breakdown. It measures the lane, not the model, and is the harness for the
+#5051 efficiency loop. See [`probe/README.md`](probe/README.md).
