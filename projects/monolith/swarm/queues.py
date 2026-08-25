@@ -13,6 +13,7 @@ def get_queues():
         _queues = (
             Queue("codex", concurrency=config.codex_concurrency()),
             Queue("merge", concurrency=1),
+            Queue("drainer", concurrency=1),
         )
     return _queues
 
@@ -23,6 +24,10 @@ def codex_queue():
 
 def merge_queue():
     return get_queues()[1]
+
+
+def drainer_queue():
+    return get_queues()[2]
 
 
 # The merge queue is declared but not used yet: ADR 027's merge gate does not

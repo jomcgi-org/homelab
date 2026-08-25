@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import swarm.drainer as drainer
 
 
@@ -25,7 +27,6 @@ def _run(monkeypatch, jobs, await_turn=None, start_session=None):
     destroys = []
     queued = iter([*jobs, None])
 
-    monkeypatch.setattr(drainer.agent_config, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: SETTINGS.copy())
     monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
 
@@ -40,7 +41,7 @@ def _run(monkeypatch, jobs, await_turn=None, start_session=None):
         return 100 + len(starts)
 
     monkeypatch.setattr(drainer, "claim_drainer_job", claim)
-    monkeypatch.setattr(drainer, "start_drainer_session", start)
+    monkeypatch.setattr(drainer, "start_agent_session", start)
     monkeypatch.setattr(
         drainer,
         "_await_turn",
@@ -83,9 +84,12 @@ def test_drain_cycle_claims_then_completes(monkeypatch):
         (
             "workflow-1:qwen-drain:job-1",
             "do work",
+            "qwen",
             "jomcgi-org/homelab",
             "main",
             "workflow-1",
+            "qwen-drain",
+            None,
             True,
         )
     ]
@@ -105,13 +109,25 @@ def test_empty_queue_exits_immediately(monkeypatch):
     assert destroys == []
 
 
-def test_missing_prompt_completes_error_without_notification(monkeypatch):
-    job = {"name": "bad-payload", "payload": {"repo": "weave-hand/loom"}}
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (None, "missing usable prompt in payload"),
+        ({"repo": "weave-hand/loom"}, "missing usable prompt in payload"),
+        ({"prompt": "work", "repo": ""}, "repo must be a non-empty string"),
+        ({"prompt": "work", "branch": 7}, "branch must be a non-empty string"),
+        ({"prompt": "work", "reasoning": "yes"}, "reasoning must be a boolean"),
+    ],
+)
+def test_malformed_payload_completes_error_without_notification(
+    monkeypatch, payload, message
+):
+    job = {"name": "bad-payload", "payload": payload}
 
     result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
 
     assert result == {"status": "complete", "processed": 1}
-    assert completions == [("bad-payload", "error", "missing usable prompt in payload")]
+    assert completions == [("bad-payload", "error", message)]
     assert starts == []
     assert notifications == []
     assert destroys == []
@@ -185,12 +201,14 @@ def test_timeout_completes_error_notifies_once_and_destroys(monkeypatch):
 
 
 def test_disabled_cycle_is_noop(monkeypatch):
-    monkeypatch.setattr(drainer.agent_config, "drainer_enabled", lambda: False)
     monkeypatch.setattr(
-        drainer,
-        "pin_drainer_settings",
-        lambda: (_ for _ in ()).throw(AssertionError("settings must not be read")),
+        drainer.agent_config,
+        "drainer_enabled",
+        lambda: (_ for _ in ()).throw(AssertionError("env must not be re-read")),
     )
+    settings = SETTINGS.copy()
+    settings["enabled"] = False
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings)
 
     assert drainer.drain_cycle.__wrapped__() == {
         "status": "disabled",
@@ -198,34 +216,10 @@ def test_disabled_cycle_is_noop(monkeypatch):
     }
 
 
-def test_session_idempotency_key_is_stable_across_step_retry(monkeypatch):
-    from agent_sessions import api
-
-    calls = []
-    monkeypatch.setattr(
-        api,
-        "start_session_for_swarm",
-        lambda *args, **kwargs: calls.append((args, kwargs)) or 7,
+def test_session_idempotency_key_is_stable():
+    assert drainer._session_key("workflow-1", "job-1") == (
+        "workflow-1:qwen-drain:job-1"
     )
-    key = drainer._session_key("workflow-1", "job-1")
-
-    for _ in range(2):
-        assert (
-            drainer.start_drainer_session.__wrapped__(
-                key,
-                "prompt",
-                "jomcgi-org/homelab",
-                "main",
-                "workflow-1",
-                False,
-            )
-            == 7
-        )
-
-    assert [call[0][0] for call in calls] == [
-        "workflow-1:qwen-drain:job-1",
-        "workflow-1:qwen-drain:job-1",
-    ]
 
 
 def test_success_summary_is_capped(monkeypatch):

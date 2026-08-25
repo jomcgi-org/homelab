@@ -59,10 +59,10 @@ def ember_qwen_synthetic_trigger() -> None:
 @app.command("agent-drain-trigger")
 def agent_drain_trigger() -> None:
     """Trigger one asynchronous qwen work-queue drain cycle."""
-    _post_internal("/internal/agent/drain", "agent-drain-trigger")
+    _post_internal("/internal/agent/drain", "agent-drain-trigger", timeout=90)
 
 
-def _post_internal(path: str, name: str) -> None:
+def _post_internal(path: str, name: str, timeout: int = 180) -> None:
     import httpx
 
     configure_logging()
@@ -70,7 +70,7 @@ def _post_internal(path: str, name: str) -> None:
     if not url:
         raise RuntimeError("MONOLITH_INTERNAL_URL is not set")
     logger.info("%s: POST %s%s", name, url, path)
-    resp = httpx.post(f"{url}{path}", timeout=180)
+    resp = httpx.post(f"{url}{path}", timeout=timeout)
     resp.raise_for_status()
     logger.info("%s: %s", name, resp.json())
 

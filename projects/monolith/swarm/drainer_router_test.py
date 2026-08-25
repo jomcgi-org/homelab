@@ -29,22 +29,27 @@ def test_dbos_not_launched_returns_503(monkeypatch):
     assert "not launched" in response.json()["detail"]
 
 
-def test_launched_starts_workflow_and_returns_202(monkeypatch):
-    started = []
+def test_launched_enqueues_workflow_on_drainer_queue(monkeypatch):
+    enqueued = []
 
     class FakeDBOS:
-        def start_workflow(self, workflow):
-            started.append(workflow)
+        def start_workflow(self, _workflow):
+            raise AssertionError("drain cycle must be queued")
+
+    class FakeQueue:
+        def enqueue(self, workflow):
+            enqueued.append(workflow)
 
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
 
     response = _client().post("/internal/agent/drain")
 
     assert response.status_code == 202
     assert response.json() == {"status": "started"}
-    assert started == [drainer_router.drain_cycle]
+    assert enqueued == [drainer_router.drain_cycle]
 
 
 def test_drainer_flag_enables_shared_dbos_runtime(monkeypatch):

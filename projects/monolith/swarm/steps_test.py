@@ -80,7 +80,7 @@ def test_read_branch_head_raises_on_server_error(monkeypatch):
         steps.read_branch_head.__wrapped__("jomcgi/homelab", "swarm/wf-1")
 
 
-def test_start_agent_session_forwards_workflow_id(monkeypatch):
+def test_start_agent_session_forwards_workflow_fields(monkeypatch):
     import agent_sessions.api as api
 
     calls = []
@@ -92,7 +92,14 @@ def test_start_agent_session_forwards_workflow_id(monkeypatch):
     monkeypatch.setattr(api, "start_session_for_swarm", fake_start_session)
 
     result = steps.start_agent_session.__wrapped__(
-        "test-key", "prompt", "luna", "jomcgi/homelab", "main", workflow_id="wf-abc"
+        "test-key",
+        "prompt",
+        "luna",
+        "jomcgi/homelab",
+        "main",
+        workflow_id="wf-abc",
+        node_key="qwen-drain",
+        reasoning=True,
     )
 
     assert result == 101
@@ -101,8 +108,9 @@ def test_start_agent_session_forwards_workflow_id(monkeypatch):
             ("test-key", "prompt", "luna", "jomcgi/homelab", "main"),
             {
                 "workflow_id": "wf-abc",
-                "node_key": None,
+                "node_key": "qwen-drain",
                 "node_attempt": None,
+                "reasoning": True,
             },
         )
     ]

@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from core.github import GITHUB_REPO
+
 
 @dataclass(frozen=True)
 class AgentSettings:
@@ -52,7 +54,7 @@ def load_drainer_settings() -> DrainerSettings:
             os.environ.get("DRAINER_TURN_TIMEOUT_SECONDS", "1800")
         ),
         job_kind=os.environ.get("DRAINER_JOB_KIND", "qwen-drain"),
-        repo=os.environ.get("DRAINER_REPO", "jomcgi-org/homelab"),
+        repo=os.environ.get("DRAINER_REPO", GITHUB_REPO),
         branch=os.environ.get("DRAINER_BRANCH", "main"),
     )
 

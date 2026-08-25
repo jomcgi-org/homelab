@@ -7,14 +7,18 @@ import logging
 from dbos import DBOS
 
 from agent import config as agent_config
-from swarm.workflows import _await_turn
+from agent_sessions.constants import CLEAN_TERMINAL_REASONS, DRAINER_NODE_KEY
+from swarm.steps import start_agent_session
 
 logger = logging.getLogger(__name__)
 
 CLAIM_HOLDER = "qwen-drainer"
 CLAIM_TTL_MARGIN_SECONDS = 300
 SUMMARY_MAX_CHARS = 2000
-CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop"}
+
+
+class MalformedPayload(ValueError):
+    """A routine job payload failed validation before session creation."""
 
 
 @DBOS.step()
@@ -27,29 +31,6 @@ def claim_drainer_job(ttl_secs: int, kind: str) -> dict | None:
     from agent.routine_jobs import claim_job
 
     return claim_job(holder=CLAIM_HOLDER, ttl_secs=ttl_secs, kind=kind)
-
-
-@DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
-def start_drainer_session(
-    local_session_id: str,
-    prompt: str,
-    repo: str,
-    branch: str,
-    workflow_id: str,
-    reasoning: bool,
-) -> int:
-    from agent_sessions.api import start_session_for_swarm
-
-    return start_session_for_swarm(
-        local_session_id,
-        prompt,
-        "qwen",
-        repo,
-        branch,
-        workflow_id=workflow_id,
-        node_key="qwen-drain",
-        reasoning=reasoning,
-    )
 
 
 @DBOS.step()
@@ -144,24 +125,30 @@ def _workflow_id() -> str:
 
 
 def _session_key(workflow_id: str, job_name: str) -> str:
-    return f"{workflow_id}:qwen-drain:{job_name}"
+    return f"{workflow_id}:{DRAINER_NODE_KEY}:{job_name}"
+
+
+def _await_turn(session_id: int, after_seq: int, timeout_seconds: int) -> dict | None:
+    from swarm.workflows import _await_turn as await_turn
+
+    return await_turn(session_id, after_seq, timeout_seconds)
 
 
 def _payload_values(payload: object, settings: dict) -> tuple[str, str, str, bool]:
     if not isinstance(payload, dict):
-        raise ValueError("missing usable prompt in payload")
+        raise MalformedPayload("missing usable prompt in payload")
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
-        raise ValueError("missing usable prompt in payload")
+        raise MalformedPayload("missing usable prompt in payload")
     repo = payload.get("repo", settings["repo"])
     branch = payload.get("branch", settings["branch"])
     reasoning = payload.get("reasoning", False)
     if not isinstance(repo, str) or not repo.strip():
-        raise ValueError("repo must be a non-empty string")
+        raise MalformedPayload("repo must be a non-empty string")
     if not isinstance(branch, str) or not branch.strip():
-        raise ValueError("branch must be a non-empty string")
+        raise MalformedPayload("branch must be a non-empty string")
     if not isinstance(reasoning, bool):
-        raise ValueError("reasoning must be a boolean")
+        raise MalformedPayload("reasoning must be a boolean")
     return prompt.strip(), repo.strip(), branch.strip(), reasoning
 
 
@@ -181,10 +168,10 @@ def _completed_output(turn: dict) -> str:
 
 @DBOS.workflow()
 def drain_cycle() -> dict:
-    if not agent_config.drainer_enabled():
+    settings = pin_drainer_settings()
+    if not settings["enabled"]:
         return {"status": "disabled", "processed": 0}
 
-    settings = pin_drainer_settings()
     workflow_id = _workflow_id()
     processed = 0
     ttl_secs = settings["turn_timeout_seconds"] + CLAIM_TTL_MARGIN_SECONDS
@@ -204,12 +191,15 @@ def drain_cycle() -> dict:
                 job.get("payload"), settings
             )
             start_attempted = True
-            session_id = start_drainer_session(
+            session_id = start_agent_session(
                 local_session_id,
                 prompt,
+                "qwen",
                 repo,
                 branch,
                 workflow_id,
+                DRAINER_NODE_KEY,
+                None,
                 reasoning,
             )
             turn = _await_turn(session_id, 0, settings["turn_timeout_seconds"])
@@ -218,11 +208,12 @@ def drain_cycle() -> dict:
                     f"turn timed out after {settings['turn_timeout_seconds']} seconds"
                 )
             finish_drainer_job(name, "ok", _completed_output(turn))
+        except MalformedPayload as exc:
+            error = _summary(exc)
+            finish_drainer_job(name, "error", error)
         except Exception as exc:  # noqa: BLE001 - one failed job must not stop the cycle
             error = _summary(exc)
             finish_drainer_job(name, "error", error)
-            if error == "missing usable prompt in payload":
-                continue
             try:
                 notify_drainer_failure(name, error)
             except Exception:  # noqa: BLE001 - notification is best effort

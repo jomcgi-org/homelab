@@ -117,6 +117,7 @@ def start_agent_session(
     workflow_id: str,
     node_key: str | None = None,
     node_attempt: int | None = None,
+    reasoning: bool = False,
 ) -> int:
     """Start (or re-attach to) one agent session.
 
@@ -136,6 +137,7 @@ def start_agent_session(
         workflow_id=workflow_id,
         node_key=node_key,
         node_attempt=node_attempt,
+        reasoning=reasoning,
     )
 
 
