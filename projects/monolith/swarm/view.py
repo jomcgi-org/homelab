@@ -620,6 +620,22 @@ def compose_master(
     else:
         kwargs.update(limit=limit, sort_desc=True)
     statuses = list(dbos.list_workflows(**kwargs) or [])
+
+    # The DBOS registry also holds non-run workflows (the qwen drain_cycle),
+    # whose input has none of the run shape compose_run assumes. A workflow
+    # that names itself something other than implement_then_review is not a
+    # swarm run; one with no name at all is kept and the per-run shape guard
+    # below decides.
+    def _workflow_name(workflow):
+        status = _status(workflow)
+        return str(_value(status, "name", _value(status, "function_name", "")))
+
+    statuses = [
+        workflow
+        for workflow in statuses
+        if not _workflow_name(workflow)
+        or "implement_then_review" in _workflow_name(workflow)
+    ]
     workflow_ids = [
         _value(_status(workflow), "workflow_id", _value(workflow, "workflow_id"))
         for workflow in statuses
@@ -634,7 +650,7 @@ def compose_master(
         run = compose_run(
             dbos, wf_id, rows, server_app_version, decisions.get(wf_id, [])
         )
-        if not run:
+        if not run or not run["nodes"] or not run["task"]["text"]:
             continue
         current = next(
             (

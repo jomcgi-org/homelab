@@ -918,3 +918,35 @@ def test_composed_prose_carries_no_machine_formatting():
         for where, value in _composed_prose(run):
             assert not iso.search(value), f"{where} carries a raw timestamp: {value}"
             assert not enum.fullmatch(value.strip()), f"{where} is a raw enum: {value}"
+
+
+def test_compose_master_skips_non_run_workflows():
+    """A drain_cycle workflow in the registry must not 500 the master view.
+
+    Regression for the qwen drainer rollout: drain_cycle rows are top-level
+    DBOS workflows with an empty input, and compose_master's title line
+    (`task.text.splitlines()[0]`) raised IndexError on them, taking down
+    GET /api/swarm/runs entirely.
+    """
+    run_status = Status(
+        "wf-run", "PENDING", ["task", "repo", "main"], name="implement_then_review"
+    )
+    drain_status = Status("wf-drain", "PENDING", [], name="drain_cycle")
+
+    class ListingDBOS(DBOS):
+        def list_workflows(self, **kwargs):
+            return [Workflow(drain_status), self.workflow]
+
+        def retrieve_workflow(self, workflow_id):
+            if workflow_id == run_status.workflow_id:
+                return self.workflow
+            return Workflow(drain_status)
+
+    result = compose_master(
+        ListingDBOS(Workflow(run_status, {"plan": FX4_EXPECTED_PLAN})),
+        True,
+        {run_status.workflow_id: []},
+        "unknown",
+    )
+
+    assert [run["workflow_id"] for run in result["runs"]] == ["wf-run"]
