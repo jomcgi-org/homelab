@@ -1,8 +1,9 @@
 <script>
-  // /ember: the landing page for the Ember mini-site, set as a typeset
-  // README: one column, ruled lists, an SVG architecture diagram, checkbox
-  // roadmap. Copy voice follows the project README (blunt mechanism
-  // sentences, no rhetoric). Visual language is the shared ember token
+  // /ember: the landing page for the Ember mini-site. Narrative order is
+  // what is it (masthead) -> is it useful to me (class rows) -> how does it
+  // do that (diagram + isolation) -> see it run (demo doors); depth sits
+  // behind accordion rows so the visible words stay few. Copy voice follows
+  // the project README (blunt mechanism sentences, no rhetoric). Visual language is the shared ember token
   // sheet (lib/public/ember/ember.css) plus landing-only tokens in
   // ./landing.css; hex never appears in this <style> block.
   //
@@ -92,70 +93,6 @@
     return () => clearInterval(poll);
   });
 
-  // Checkbox and name visible; the sentence sits behind the row's
-  // disclosure, and the full story stays in ARCHITECTURE.md.
-  const MILESTONES = [
-    {
-      done: true,
-      name: "R0 tasks",
-      desc: "Dispatch, fair pooling, metering, quotas.",
-    },
-    {
-      done: true,
-      name: "R1 functions",
-      desc: "Zip functions; the first public function live.",
-    },
-    {
-      done: true,
-      name: "R2 sessions",
-      desc: "Bank/relight; adoption across control-plane restarts.",
-    },
-    {
-      done: true,
-      name: "R3 serving",
-      desc: "Per-node Envoy; the control plane leaves the hot path.",
-    },
-    {
-      done: true,
-      name: "R4 stateful",
-      desc: "A database that sleeps and wakes on connect. The demo above.",
-    },
-    {
-      done: true,
-      name: "R5 composite",
-      desc: "A scratch Kubernetes cluster as one workload.",
-    },
-    {
-      done: true,
-      name: "R6 continuity",
-      desc: "Snapshots and boot images recorded to S3.",
-    },
-    {
-      done: false,
-      name: "R7 distribution",
-      desc: "A wake restores onto whichever node has room.",
-    },
-    {
-      done: true,
-      name: "R8 consumers",
-      desc: "The agent platform runs on sessions.",
-    },
-    {
-      done: false,
-      name: "R9 packaging",
-      desc: "A standalone artifact somebody else could run.",
-    },
-    {
-      done: true,
-      name: "transport auth",
-      desc: "Bearer token behind an ingress policy; mTLS is the upgrade path.",
-    },
-    {
-      done: true,
-      name: "encryption at rest",
-      desc: "Envelope encryption with capability-gated restore.",
-    },
-  ];
 </script>
 
 <svelte:head>
@@ -220,7 +157,7 @@
 
     <section>
       <h2 class="h2" id="classes">
-        <a class="anchor" href="#classes">What Ember runs</a>
+        <a class="anchor" href="#classes">What you'd run on it</a>
       </h2>
       <p class="body">
         Five classes, declared as Kubernetes custom resources, all assuming the
@@ -318,7 +255,7 @@ serving                            → plain HTTP, straight into the VM</pre>
 
     <section>
       <h2 class="h2" id="arch">
-        <a class="anchor" href="#arch">Architecture</a>
+        <a class="anchor" href="#arch">How it works</a>
       </h2>
       <div class="arch">
         <svg
@@ -505,10 +442,6 @@ serving                            → plain HTTP, straight into the VM</pre>
         goes straight into the VM. The control plane can restart mid-request; serving
         traffic notices nothing.
       </p>
-    </section>
-
-    <section>
-      <h2 class="h2" id="iso"><a class="anchor" href="#iso">Isolation</a></h2>
       <div class="iso">
         <p>
           <b
@@ -567,29 +500,10 @@ serving                            → plain HTTP, straight into the VM</pre>
       </div>
     </section>
 
-    <section>
-      <h2 class="h2" id="roadmap">
-        <a class="anchor" href="#roadmap">Roadmap</a>
-      </h2>
-      <div class="roadmap">
-        {#each MILESTONES as m (m.name)}
-          <details class="milestone" name="em-roadmap">
-            <summary>
-              <span class="cb" class:todo={!m.done}
-                >{m.done ? "[x]" : "[ ]"}</span
-              >
-              <span class="rname">{m.name}</span>
-            </summary>
-            <p class="rdesc">{m.desc}</p>
-          </details>
-        {/each}
-      </div>
-    </section>
-
     <footer class="foot">
       <span
-        >Elixir/OTP control plane · Go node daemon · Firecracker microVMs ·
-        running on this cluster</span
+        >Elixir/OTP control plane · Go node daemon · 10 of 12 roadmap
+        milestones shipped</span
       >
       <span class="foot-links">
         <a href="https://github.com/jomcgi/homelab/tree/main/projects/embervm"
@@ -874,8 +788,7 @@ serving                            → plain HTTP, straight into the VM</pre>
     overflow-x: auto;
   }
 
-  .classes code,
-  .rdesc code {
+  .classes code {
     font-family: var(--em-mono);
     font-size: 0.88em;
     background: var(--em-track);
@@ -936,8 +849,7 @@ serving                            → plain HTTP, straight into the VM</pre>
     color: var(--em-muted);
   }
 
-  .class summary::after,
-  .milestone summary::after {
+  .class summary::after {
     content: "+";
     font-family: var(--em-mono);
     font-size: 15px;
@@ -947,8 +859,7 @@ serving                            → plain HTTP, straight into the VM</pre>
     align-self: center;
   }
 
-  .class[open] summary::after,
-  .milestone[open] summary::after {
+  .class[open] summary::after {
     transform: rotate(45deg);
   }
 
@@ -956,8 +867,7 @@ serving                            → plain HTTP, straight into the VM</pre>
     color: var(--em-ink);
   }
 
-  .class summary:focus-visible,
-  .milestone summary:focus-visible {
+  .class summary:focus-visible {
     outline: 2px solid var(--em-ember-deep);
     outline-offset: 3px;
   }
@@ -1252,72 +1162,14 @@ serving                            → plain HTTP, straight into the VM</pre>
     transform: translateX(4px);
   }
 
-  /* ---------- roadmap ---------- */
-  .roadmap {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .milestone {
-    border-bottom: 1px solid var(--em-line);
-  }
-
-  .milestone:first-child {
-    border-top: 1px solid var(--eml-line-strong);
-  }
-
-  .milestone summary {
-    display: grid;
-    grid-template-columns: 26px minmax(0, 1fr) 18px;
-    gap: 14px;
-    align-items: baseline;
-    padding: 11px 4px;
-    cursor: pointer;
-    list-style: none;
-  }
-
-  .milestone summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .cb {
-    font-family: var(--em-mono);
-    font-size: 14px;
-    line-height: 1.4;
-    color: var(--em-ember-deep);
-    font-weight: 600;
-  }
-
-  .cb.todo {
-    color: var(--em-faint);
-    font-weight: 400;
-  }
-
-  .rname {
-    font-family: var(--em-mono);
-    font-size: 13px;
-    color: var(--em-ink);
-    font-weight: 600;
-  }
-
-  .rdesc {
-    font-size: 14.5px;
-    line-height: 1.5;
-    color: var(--em-muted);
-    margin: 0;
-    padding: 0 26px 11px 40px;
-  }
-
   /* Opening motion is opt-in: absent by default, per the reduced-motion
      opt-in shape this repo prefers for new work. */
   @media (prefers-reduced-motion: no-preference) {
-    .class summary::after,
-    .milestone summary::after {
+    .class summary::after {
       transition: transform 0.18s ease;
     }
 
-    .class[open] .cmore,
-    .milestone[open] .rdesc {
+    .class[open] .cmore {
       animation: em-reveal 0.22s ease;
     }
 
