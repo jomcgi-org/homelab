@@ -232,6 +232,22 @@ signoz:
       # Health probes are exempt and stay on /api/v1/health at the root.
       signoz_global_external__url: https://private.jomcgi.dev/app/signoz
   clickhouse:
+    # PINNED to the version that last started cleanly. Chart 0.135.1 moved this
+    # default 25.5.6 -> 25.12.5; the chart README calls that "a significant
+    # ClickHouse version jump" and says to read the upgrade guide first. It was
+    # not read. The pod adopted the new image 16 days after the chart bump, on
+    # 2026-08-24T00:55, and has crashlooped ever since: 25.12.5 cannot load the
+    # parts 25.5.6 wrote, and aborts startup on signoz_logs.logs_v2 with
+    # "Suspiciously many (133 parts, 0.00 B in total) broken parts".
+    #
+    # The alternative fix, raising max_suspicious_broken_parts past 133, starts
+    # the server by DISCARDING those 133 parts of real log data. This pin is
+    # reversible and destroys nothing, so it comes first.
+    #
+    # Removing this pin without performing the documented 25.5 -> 25.12 data
+    # migration reproduces the outage. See #5298 and the un-pin issue it links.
+    image:
+      tag: 25.5.6
     # 7-day SigNoz working_set ~6.4Gi, growing, against the old 8Gi limit (~80%).
     # Raised request 5 -> 6.5 to reserve real usage and limit 8 -> 10 for headroom
     # (node-4 has ample room). The telemetry store is the binding signoz tenant.
