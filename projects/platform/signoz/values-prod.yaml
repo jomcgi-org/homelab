@@ -245,7 +245,8 @@ signoz:
     # reversible and destroys nothing, so it comes first.
     #
     # Removing this pin without performing the documented 25.5 -> 25.12 data
-    # migration reproduces the outage. See #5298 and the un-pin issue it links.
+    # migration reproduces the outage. See #5298 for the outage and #5308
+    # for the un-pin work.
     image:
       tag: 25.5.6
     # 7-day SigNoz working_set ~6.4Gi, growing, against the old 8Gi limit (~80%).
