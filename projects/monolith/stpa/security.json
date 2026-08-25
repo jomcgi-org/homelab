@@ -8,16 +8,16 @@
   },
   "losses": [
     {
+      "key": "L.integrity-loss",
+      "title": "Data is corrupted, or a side-effecting action (Discord post, agent run, chat_public write) is duplicated or forged"
+    },
+    {
       "key": "L.unauthorized-access",
-      "title": "An attacker accesses data or capability it is not entitled to (private pages, cluster mutation, tool invocation)"
+      "title": "Anonymous or public-tier caller reads data it is not entitled to (private rows, ungoverned paths)"
     },
     {
       "key": "L.secret-exposure",
-      "title": "A secret, credential, or token reaches an attacker or a tier that must not hold it"
-    },
-    {
-      "key": "L.integrity-loss",
-      "title": "Attacker-controlled data corrupts a durable record (trust ledger, database state, published document)"
+      "title": "A secret or token reaches a tier or surface that must not hold it"
     },
     {
       "key": "L.capacity-exhaustion",
@@ -25,7 +25,7 @@
     },
     {
       "key": "L.silent-incorrectness",
-      "title": "Attacker receives stale or wrong data while believing it current"
+      "title": "A controller serves stale or wrong data while believing it correct"
     }
   ],
   "hazards": [
@@ -112,7 +112,9 @@
         "L.unauthorized-access",
         "L.secret-exposure"
       ],
-      "maturity": "designed"
+      "maturity": "designed",
+      "status": "none",
+      "issue": "#5277"
     },
     {
       "key": "public-tier-broad-cluster-reach",
@@ -121,7 +123,9 @@
       "losses": [
         "L.unauthorized-access"
       ],
-      "maturity": "built"
+      "maturity": "built",
+      "status": "none",
+      "issue": "#5276"
     },
     {
       "key": "stale-sandbox-result",
@@ -145,7 +149,6 @@
         "public-route-exposes-private-path"
       ],
       "status": "enforced-prod",
-      "issue": "#5274",
       "evidence": "projects/monolith-public/chart/templates/httproute-public.yaml:13"
     },
     {
@@ -159,7 +162,6 @@
         "public-write-admission-bypass"
       ],
       "status": "enforced-prod",
-      "issue": "#5275",
       "evidence": "projects/monolith-public/chart/values.yaml:146"
     },
     {
@@ -173,7 +175,6 @@
         "over-broad-public-grant"
       ],
       "status": "enforced-prod",
-      "issue": "#5276",
       "evidence": "projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24"
     },
     {
@@ -181,12 +182,12 @@
       "view": "logical",
       "control_action": "docs.publish",
       "guideword": "providing",
-      "condition": "Attacker or an automated process commits an internal identifier to an allowlisted document; the generator republishes it unreviewed, disclosing internal topology",
+      "condition": "A document is added to an allowlisted path and the generator publishes it unreviewed for certain markers (in-cluster hostnames, 1Password refs, private IPs, node/brick names, S3 URIs, .internal domains, secret env assignments); internal identifiers not matching these markers still pass through",
       "severity": "medium",
       "hazards": [
         "unredacted-public-doc"
       ],
-      "status": "none",
+      "status": "enforced-prod",
       "issue": "#5275",
       "evidence": "projects/monolith/knowledge/tools/gen_docs_manifest.py:128"
     },
@@ -235,9 +236,9 @@
       "evidence": "projects/monolith/cluster/mcp.py:163"
     },
     {
-      "key": "monolith_agent_session_start.providing",
+      "key": "mcp.agent-session.providing",
       "view": "logical",
-      "control_action": "console.submit",
+      "control_action": "mcp.agent-session",
       "guideword": "providing",
       "condition": "Any authenticated MCP caller starts or drives a full agent session, inheriting every tool that session can reach and compounding every other unentitled-tool row",
       "severity": "high",
@@ -249,9 +250,9 @@
       "evidence": "projects/monolith/agent_sessions/mcp.py:660"
     },
     {
-      "key": "monolith_chat_trust_pardon.providing",
+      "key": "mcp.chat-pardon.providing",
       "view": "logical",
-      "control_action": "agent.submit",
+      "control_action": "mcp.chat-pardon",
       "guideword": "providing",
       "condition": "An MCP caller with no Discord-side privilege calls monolith_chat_trust_pardon, resetting any locked-out user's score and flipping their labels, undoing the ledger's containment of an active red-team session from a different trust boundary",
       "severity": "high",
@@ -273,7 +274,6 @@
         "secret-in-wrong-tier"
       ],
       "status": "enforced-prod",
-      "issue": "#5277",
       "evidence": "projects/monolith/public_turnstile_secret_isolation_test.py:76"
     }
   ],
@@ -285,12 +285,12 @@
       "to": "public-frontend",
       "signal": "allowlisted document content published to public site",
       "guideword": "unauthorized-source",
-      "condition": "Path allowlist only, no content review for internal identifiers; projects/mcp/README.md is live and names cluster-internal MCP gateway service hostname",
+      "condition": "A document is added to an allowlisted path and the generator publishes it unreviewed for certain markers (in-cluster hostnames, 1Password refs, private IPs, node/brick names, S3 URIs, .internal domains, secret env assignments); internal identifiers not matching these markers still pass through",
       "severity": "medium",
       "hazards": [
         "unredacted-public-doc"
       ],
-      "status": "none",
+      "status": "enforced-prod",
       "issue": "#5275",
       "evidence": "projects/monolith/knowledge/tools/gen_docs_manifest.py:128"
     },
@@ -342,5 +342,6 @@
     "When will the default-deny egress CiliumNetworkPolicy (#5277) land for the private pod's open-ended cluster and internet reach?",
     "Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?",
     "Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?"
-  ]
+  ],
+  "system_dir": "projects/monolith"
 }

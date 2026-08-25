@@ -78,20 +78,30 @@ Ranked by what an attacker gets. Each issue holds the detail.
    Encryption stops reads of tenant state; shared base images stay
    plaintext, and deletes and overwrites are open to every holder of
    the shared credential.
-7. **The public docs site publishes committed docs verbatim**
+7. **The egress allowlist is shared across every EmberVM workload**
+   ([#5320](https://github.com/jomcgi-org/homelab/issues/5320)).
+   A destination added for one workload is reachable, with injected
+   credentials, from every egress-enabled workload.
+8. **The public docs guard is a fixed marker list, not redaction**
    ([#5275](https://github.com/jomcgi-org/homelab/issues/5275)).
-   A path allowlist with no redaction; an internal service hostname
-   is published today.
-8. **Production promotion has no functional check**
+   `check_public_content` fails CI on known internal markers; an
+   internal identifier that matches no marker still publishes
+   verbatim.
+9. **Production promotion has no functional check**
    ([#4745](https://github.com/jomcgi-org/homelab/issues/4745)).
    Promotion waits for rollout health and a short soak, and only
    EmberVM runs a conformance test first. A change that deploys
    cleanly but misbehaves promotes.
-9. **`run_code` can silently return a stale result for different inputs**
+10. **`run_code` can silently return a stale result for different inputs**
    ([#5304](https://github.com/jomcgi-org/homelab/issues/5304)).
    The dedupe key hashes language and code but not input files, so a
    resubmission within the result-cache TTL returns output computed
    against someone else's files.
-10. **Swarm run budgets are never enforced**
+11. **Swarm run budgets are never enforced**
    ([#4784](https://github.com/jomcgi-org/homelab/issues/4784)).
    Recorded and reported only.
+12. **The auth domain has no delegated workload identity**
+   ([#4940](https://github.com/jomcgi-org/homelab/issues/4940)).
+   The design umbrella behind finding 3: authentik issues standing
+   identity, and the monolith-side attenuation that would scope it per
+   tool is designed, not built.

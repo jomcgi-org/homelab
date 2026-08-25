@@ -102,7 +102,7 @@ security findings.
 
 | Resource | Relevance |
 | --- | --- |
-| `projects/embervm/THREAT-MODEL.md` | The per-domain shape this ADR generalizes, and the staleness evidence behind decision 1 |
+| `projects/embervm/STPA.md` (security lens; formerly `THREAT-MODEL.md`, absorbed by #5294) | The per-domain shape this ADR generalizes, and the staleness evidence behind decision 1 |
 | `docs/security.md` | Baseline layers this index sits above; the document the aggregate index closes the residual-tracking gap in |
 | [Security 004: Public Read-Only Service Isolation](004-public-read-only-service-isolation.md) | The prior example of a security decision that reasons explicitly about the public-repo cost |
 | `stpa` skill (`.claude/skills/stpa/`) | Source of the judgment-and-mechanism (JSON extraction plus jq render) pattern considered and deferred in this ADR |

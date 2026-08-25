@@ -106,7 +106,7 @@ normally. Minimizes diff churn.
 ## Remediation work goes to GitHub Issues
 
 File unmitigated UCAs / unsafe-feedback findings as issues (repo's source of truth
-for outstanding work), titled `<system>: <finding> — STPA <key>`, labeled `bug`
+for outstanding work), titled `<system>: <finding> (STPA <key>)`, labeled `bug`
 (broken safeguard) or `enhancement` (missing safeguard), plus `critical` for
 severe losses. Security lens findings add label `security-finding`. Reference
 the issue from the finding's evidence, not a STPA.md checklist.
@@ -158,10 +158,10 @@ hazards: condition slug: `stale-policy`, `cross-schema-grant`; ucas:
 **<lens>.json** (logic, security, or governance):
 ```
 {
-  "lens": "security", "commit": "abc1234",
+  "lens": "security", "system_dir": "projects/monolith", "commit": "abc1234",
   "scope": {"summary":"1-line headline","built":"built things","designed":"designed things","note":"OPTIONAL caveat"},
   "losses": [ {"key":"L.unauthorized-access","title":"..."}, ... ],
-  "hazards": [ {"key":"stale-policy","view":"logical","statement":"...","losses":["L.unauthorized-access"],"maturity":"built"}, ... ],
+  "hazards": [ {"key":"stale-policy","view":"logical","statement":"...","losses":["L.unauthorized-access"],"maturity":"built","status":"none","issue":"#5277"}, ... ],
   "ucas": [ {"key":"scheduler.dispatch.wrong-timing","view":"logical","control_action":"scheduler.dispatch","guideword":"wrong-timing","condition":"...","severity":"high","hazards":["stale-policy"],"evidence":"path:line","status":"enforced-prod","issue":"#1234"}, ... ],
   "unsafe_feedback": [ {"key":"policy-fetch.stale","view":"logical","from":"acl","to":"public-api","signal":"policy rows","guideword":"stale","condition":"...","severity":"high","hazards":["stale-policy"],"evidence":"path:line","status":"enforced-dev"}, ... ],
   "non_ucas": [ {"item":"missed NOTIFY","reason":"bounded by 5s fallback (path:line)"}, ... ],
@@ -169,19 +169,33 @@ hazards: condition slug: `stale-policy`, `cross-schema-grant`; ucas:
 }
 ```
 
-`status` and `issue` are REQUIRED on security-lens UCA/unsafe-feedback rows,
-optional elsewhere. `view`: `logical|physical`. `layer`: free-form subgraph (e.g.
-`enforcement`, `ingress`). `severity`: `high|medium|low`. UCA guidewords:
+Every fragment carries `system_dir` so a lens-only run can locate the committed
+structure. `status` is REQUIRED on security-lens UCA/unsafe-feedback rows and
+optional elsewhere; any `status` must be one of
+`enforced-prod|enforced-dev|shipped-off|designed|none`, and a security-lens row
+or hazard with `status: none` MUST carry a tracking `issue` (GitHub Issues are
+the source of truth for unmitigated findings). The validator enforces all
+three. Hazards MAY carry `status`/`issue` too: a tracked unsafe STATE with no
+single attacking control action (a missing egress policy, an absent jailer)
+lives on the hazard row rather than being forced onto an unrelated action.
+A UCA `key` must be exactly `<control_action>.<guideword>` (validated). `view`:
+`logical|physical`. `layer`: free-form subgraph (e.g. `enforcement`, `ingress`).
+`severity`: `high|medium|low`. UCA guidewords:
 `providing|not-providing|wrong-timing|wrong-duration`. Unsafe_feedback guidewords:
 `missing|stale|corrupted|unauthorized-source`. `unsafe_feedback` array optional.
+The rendered commit-stamp line lists every lens, so two lens PRs in flight touch
+the same line and the second gets ejected from the merge queue on rebase: land
+concurrent lens runs serially.
 
-## BLOCK A — render + detect change (run verbatim; never hand-write .md)
+## BLOCK A: render + detect change (run verbatim; never hand-write .md)
 
 ````bash
 set -euo pipefail
 SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/structure.json 2>/dev/null || echo '')"
-LENS="$(jq -r '.lens' $STPA_TMP/*.json 2>/dev/null | head -1)"
-[ -z "$SYSTEM_DIR" ] && SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/*.json 2>/dev/null | head -1)"
+LENS="$(jq -r '.lens // empty' $STPA_TMP/*.json 2>/dev/null | head -1)"
+[ -z "$LENS" ] && LENS="logic"
+printf '%s' "$LENS" > "$STPA_TMP/lens.txt"
+[ -z "$SYSTEM_DIR" -o "$SYSTEM_DIR" = "null" ] && SYSTEM_DIR="$(jq -r '.system_dir // empty' $STPA_TMP/*.json 2>/dev/null | head -1)"
 test -n "$SYSTEM_DIR" -a "$SYSTEM_DIR" != "null"
 
 git fetch -q origin main 2>/dev/null || true
@@ -238,7 +252,18 @@ cat > $STPA_TMP/validate.jq << 'VJQEOF'
         (select($L == "security")
           | (.ucas // []) + (.unsafe_feedback // []) | .[]
           | select(.status == null)
-          | "security: \(.key) missing required status")
+          | "security: \(.key) missing required status"),
+        (select($L == "security")
+          | (.ucas // []) + (.unsafe_feedback // []) + (.hazards // []) | .[]
+          | select(.status == "none" and .issue == null)
+          | "security: \(.key) is unmitigated (status none) with no tracking issue"),
+        ((.ucas // []) + (.unsafe_feedback // []) + (.hazards // []) | .[]
+          | select(.status != null and
+              (.status as $s | (["enforced-prod","enforced-dev","shipped-off","designed","none"] | index($s)) == null))
+          | "\($L): \(.key) status \(.status) not in enforced-prod|enforced-dev|shipped-off|designed|none"),
+        (.ucas // [] | .[]
+          | select(.key != "\(.control_action).\(.guideword)")
+          | "\($L): UCA key \(.key) must be \(.control_action).\(.guideword)")
       )
   ]
 | if length == 0 then "VALIDATION_OK" else "VALIDATION_ERROR: " + join("; ") end
@@ -293,9 +318,16 @@ def diagram($v):
     + "### Losses\n\n| ID | Loss |\n|----|------|\n"
     + ((.losses // []) | sort_by(.key) | map("| `\(.key)` | \(.title|esc) |") | join("\n"))
     + "\n\n"
-    + "### Hazards\n\n| ID | View | Hazard (unsafe state) | → Losses | Maturity |\n|----|----|----|----|----|\n"
-    + ((.hazards // []) | sort_by(.key) | map("| `\(.key)` | \(.view|esc) | \(.statement|esc) | \((.losses // [])|join(", ")) | \(.maturity|esc) |") | join("\n"))
-    + "\n\n"
+    + (((.hazards // []) | any(.status != null or .issue != null)) as $hz |
+       "### Hazards\n\n| ID | View | Hazard (unsafe state) | → Losses | Maturity"
+       + (if $hz then " | Status | Issue" else "" end)
+       + " |\n"
+       + "|" + (([range(if $hz then 7 else 5 end)] | map("----") | join("|"))) + "|\n"
+       + ((.hazards // []) | sort_by(.key) | map(
+           "| `\(.key)` | \(.view|esc) | \(.statement|esc) | \((.losses // [])|join(", ")) | \(.maturity|esc)"
+           + (if $hz then " | \(.status // "" | esc) | \(.issue // "" | esc)" else "" end)
+           + " |") | join("\n"))
+       + "\n\n")
     + (if ((.ucas // []) | length > 0) then
         (((.ucas // []) | any(.status != null)) as $has_status |
          "### Unsafe control actions\n\n| ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards"
@@ -335,24 +367,24 @@ JQEOF
 
 jq -rf $STPA_TMP/stpa-render.jq "$MERGED" > $STPA_TMP/STPA.candidate.md
 
-if git show "origin/main:$SYSTEM_DIR/STPA.md" > /tmp/STPA.prior.md 2>/dev/null; then
-  if diff -q /tmp/STPA.prior.md $STPA_TMP/STPA.candidate.md >/dev/null 2>&1; then
+if git show "origin/main:$SYSTEM_DIR/STPA.md" > $STPA_TMP/STPA.prior.md 2>/dev/null; then
+  if diff -q $STPA_TMP/STPA.prior.md $STPA_TMP/STPA.candidate.md >/dev/null 2>&1; then
     echo "STPA_RESULT=nochange"
   else
     echo "STPA_RESULT=changed"
   fi
 else
-  rm -f /tmp/STPA.prior.md
+  rm -f $STPA_TMP/STPA.prior.md
   echo "STPA_RESULT=changed"
 fi
 ````
 
-## BLOCK B — commit, PR, watch CI, merge on green (run verbatim; ONLY when STPA_RESULT=changed)
+## BLOCK B: commit, PR, watch CI, merge on green (run verbatim; ONLY when STPA_RESULT=changed)
 
 ```bash
 set -euo pipefail
-SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/structure.json 2>/dev/null || jq -r '.system_dir' $STPA_TMP/*.json 2>/dev/null | head -1)"
-LENS="$(jq -r '.lens' $STPA_TMP/*.json 2>/dev/null | head -1 || echo 'logic')"
+SYSTEM_DIR="$(jq -r '.system_dir' $STPA_TMP/structure.json 2>/dev/null || jq -r '.system_dir // empty' $STPA_TMP/*.json 2>/dev/null | head -1)"
+LENS="$(cat "$STPA_TMP/lens.txt" 2>/dev/null || echo 'logic')"
 SLUG="$(printf '%s' "$SYSTEM_DIR" | tr '/' '-' | tr -cd 'a-zA-Z0-9-')"
 BRANCH="bot/stpa-$SLUG-$LENS"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -366,7 +398,7 @@ git -C "$REPO_ROOT" worktree prune
 git -C "$REPO_ROOT" worktree add -B "$BRANCH" "$WT" origin/main
 
 mkdir -p "$WT/$SYSTEM_DIR/stpa"
-[ -f "$STPA_TMP/structure.json" ] && cp "$STPA_TMP/structure.json" "$WT/$SYSTEM_DIR/stpa/structure.json"
+[ -f "$STPA_TMP/structure.json" ] && jq '.' "$STPA_TMP/structure.json" > "$WT/$SYSTEM_DIR/stpa/structure.json"
 [ -f "$STPA_TMP/$LENS.json" ] && jq '.' "$STPA_TMP/$LENS.json" > "$WT/$SYSTEM_DIR/stpa/$LENS.json"
 cp $STPA_TMP/STPA.candidate.md "$WT/$SYSTEM_DIR/STPA.md"
 

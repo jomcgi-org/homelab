@@ -40,4 +40,4 @@ The path, deltas as added/changed/removed hazards or constraints by semantic key
 and an explicit note if this lens surfaced a hazard the change does not yet mitigate.
 That is the finding most worth escalating.
 
-Do not commit or push.
+Commit, push, and PR only through the skill's BLOCK B; never by hand.

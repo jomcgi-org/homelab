@@ -17,9 +17,13 @@ superseded, as recorded in the issue, so no new ADR is needed.
 
    The body states what exists, what an attacker gets, and what done
    means.
-2. Edit `projects/<domain>/stpa/security.json`: add or update the UCA or
-   unsafe-feedback row with `status` and `issue` fields. Re-render `STPA.md`
-   with the `stpa` skill; never hand-edit `STPA.md`.
+2. Update the domain's security lens: copy `projects/<domain>/stpa/*.json`
+   into a fresh `$STPA_TMP`, add or update the UCA, unsafe-feedback, or
+   hazard row there (`status` and `issue` on every security row; a tracked
+   unsafe state with no single attacking action goes on the hazard row),
+   then run the `stpa` skill's BLOCK A and BLOCK B. The skill only reads
+   fragments from `$STPA_TMP` or `origin/main`, so an edit left in the
+   working tree is never picked up. Never hand-edit `STPA.md`.
 3. Re-rank `docs/THREAT-MODEL.md`: bold claim, issue link, one plain
    sentence. Update the "Reviewed against commit" line.
 

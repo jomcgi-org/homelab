@@ -229,7 +229,7 @@
       "view": "logical",
       "control_action": "docs.publish",
       "guideword": "providing",
-      "condition": "The generator's only gate is an exact repo-path allowlist (seven projects times three doc kinds); it performs no content scan, so an internal-only identifier committed into one of those documents is published to the internet on the next regeneration with no reviewer prompt beyond an ordinary PR diff, and the currently-live manifest already carries a cluster-internal hostname from a prior STPA.md revision",
+      "condition": "The generator's only gate is an exact repo-path allowlist; it checks documents for certain markers (in-cluster hostnames, 1Password refs, private IPs, node/brick names, S3 URIs, .internal domains, secret env assignments) but internal identifiers not matching these patterns pass through unreviewed",
       "severity": "medium",
       "hazards": [
         "unredacted-public-doc"
@@ -513,5 +513,6 @@
     "The private chart enables HPA from 1 to 3 replicas; verify claim-lease behavior under real scale-out and termination, especially whether a terminating pod's in-flight claims are released promptly enough for the 30s lease to matter in practice.",
     "The public backend has a deliberate primary write path and public FaaS invocation path. Confirm production Cilium/EmberVM policy matches the chart claims: public_writer must remain limited to chat_public, and the public service account must remain identity-only with no Kubernetes RBAC.",
     "When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?"
-  ]
+  ],
+  "system_dir": "projects/monolith"
 }
