@@ -43,7 +43,8 @@
 #
 # Integration with buildbuddy.yaml (pr-checks action):
 #   - Queue candidates (gh-readonly-queue/* branches) run //... (full gate)
-#   - Main pushes run //... (full snapshot seed for fast PR fallbacks)
+#   - Main pushes run //... (full gate; the same run publishes and refreshes
+#     the fallback snapshot)
 #   - PR branches use this script to run only affected targets (fast feedback)
 #   - Local ci test runs use this script inside one hosted Linux runner
 

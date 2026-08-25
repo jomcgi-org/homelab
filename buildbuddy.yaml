@@ -1,6 +1,9 @@
 actions:
-  # pr-checks — the ONLY gating action on a PR. Formatting, tests, image builds
-  # and the pre-merge missed-chart-bump guard all run on ONE runner.
+  # pr-checks is the ONLY action in the workflow: the gating status check on a
+  # PR, the full gate for merge-queue candidates, AND main's deploy. Formatting,
+  # tests, image builds, the pre-merge missed-chart-bump guard, and the
+  # main-only publish (images, charts, version write-back) all run on ONE
+  # runner.
   #
   # Why one action and not four: 99% of this repo's CI_RUNNER download is cold
   # starts, a VM snapshot restored out of the cache at spin-up. Cold rate tracks
@@ -9,6 +12,16 @@ actions:
   # 62%, because each kept its OWN bazel output_base warm and the big ones are
   # likelier to be evicted AND dearer to restore. One shared workspace is
   # touched every time instead of a third of the time.
+  #
+  # Why one action and not two (#4824, folding "deploy" into here): a runner
+  # snapshot's key includes the ACTION NAME
+  # (enterprise/server/workflow/service/service.go), so pr-checks and deploy
+  # occupied DISJOINT snapshot namespaces despite identical container_image and
+  # resource_requests. #4823 worked around that with a tests-only pr-checks
+  # stage on main, costing one duplicated `bazel test //...` per main push
+  # (~158/week). One action fed by both trigger sets gives a single namespace
+  # every main push refreshes, deletes the duplicated run, and halves the
+  # per-main-push snapshot save traffic.
   #
   # REQUIRED status check. Renaming it breaks the GitHub ruleset, which matches
   # by exact name; change both together or every PR blocks.
@@ -32,27 +45,29 @@ actions:
       cpu: "8"
       memory: "10GB"
       disk: "120GB"
-    # Full history, and the SAME depth on both actions. 0 means unlimited; the
-    # runner otherwise fetches --depth=1 (ci_runner.go, `fetchDepth := 1`).
+    # Full history. 0 means unlimited; the runner otherwise fetches --depth=1
+    # (ci_runner.go, `fetchDepth := 1`).
     #
-    # deploy needs it because the publish derives every chart version from a
-    # walk over the conventional commits since the commit that last set that
-    # version (chart-version.sh). In a shallow clone that walk is not merely
-    # short, it is EMPTY: at the graft boundary every file reads as newly
-    # added, so the `-S"version: X"` search matches the boundary commit itself,
-    # and at depth 1 that is HEAD, whose exclusive HEAD..HEAD range contains
-    # nothing. Every chart then computes "no bump needed" and either silently
-    # skips its deploy or fails the action outright, which took main's deploy
-    # down on 2026-08-10 (60ebba4, and inertly on 2000bae before it). A bounded
-    # depth is not a fix either: at depth 10 this repo computes embervm 0.2.8
-    # where full history gives 0.2.30, trading a stuck version for a wrong one.
+    # The publish stage below needs it because it derives every chart version
+    # from a walk over the conventional commits since the commit that last set
+    # that version (chart-version.sh). In a shallow clone that walk is not
+    # merely short, it is EMPTY: at the graft boundary every file reads as
+    # newly added, so the `-S"version: X"` search matches the boundary commit
+    # itself, and at depth 1 that is HEAD, whose exclusive HEAD..HEAD range
+    # contains nothing. Every chart then computes "no bump needed" and either
+    # silently skips its deploy or fails the action outright, which took main's
+    # deploy down on 2026-08-10 (60ebba4, and inertly on 2000bae before it). A
+    # bounded depth is not a fix either: at depth 10 this repo computes embervm
+    # 0.2.8 where full history gives 0.2.30, trading a stuck version for a
+    # wrong one.
     #
-    # pr-checks carries it so the two agree. It is not decoration: a runner
-    # snapshot persists the clone, so once these two share a snapshot (#4824) a
-    # divergent depth would make PR runs deep when restored from main and
-    # shallow when booted cold, and check-commit-msg-ascii.sh --all branches on
-    # exactly that. Aligning also makes CI's git history match a local clone,
-    # which is the assumption most history logic here is written against.
+    # Depth must also NEVER diverge between runs that share a snapshot: a
+    # snapshot persists the clone, so a bounded value would make runs restored
+    # from an old snapshot shallow where cold boots are deep, and
+    # check-commit-msg-ascii.sh --all branches on exactly that. Staying at 0
+    # also makes CI's git history match a local clone, which is the assumption
+    # most history logic here is written against. (While deploy was a separate
+    # action both carried this field and had to agree; #4824 made it one.)
     #
     # Cost is a cold-fetch-only ~152MB (12M -> 164M for this repo's 12k commits
     # under the default blob:none filter), and the snapshot carries it after.
@@ -60,6 +75,49 @@ actions:
     # deploy's steps: the runner does the same thing, including the
     # sticky-depth check, and does it fatally rather than with a warning.
     git_fetch_depth: 0
+    # Explicit wall clock, sized for a wide cold apko rebuild plus the publish.
+    # Carried over from the former deploy action (PR #5326): the publish stages
+    # now live in THIS action (#4824), so this ceiling protects them wherever
+    # they run.
+    #
+    # With no timeout here, the action runs under BuildBuddy's platform
+    # default, which is how main's deploy for 1e63fee7 died (invocation
+    # 06feb469): killed at exactly 3600s after #4862 refreshed all 14 apko
+    # locks and forced every image to rebuild cold. All 14 image.push children
+    # were GREEN, spanning ~52 minutes; what never ran is everything after
+    # push-changed.sh, i.e. the chart publish and the write-back that makes a
+    # deploy happen. The images shipped and nothing deployed
+    # (docs/runbooks/argocd-outofsync.md, third "merged but not deployed"
+    # cause).
+    #
+    # Sizing. The image stage dominates: ~52 minutes of wall clock for those
+    # 14 cold apko builds and pushes, against single-digit minutes for the
+    # full main test suite before it (warm snapshot) and for push_charts,
+    # write-back and the format stage after it. A worst-case wide rebuild is
+    # therefore roughly 10 + 55 + 15 minutes, and 2h leaves headroom above
+    # that. The headroom is deliberately generous rather than tight: a kill
+    # landing DURING the publish is strictly worse than a long run (charts can
+    # reach the registry without the write-back commit, which wedges future
+    # publishes), while an oversized ceiling costs queue latency only on a
+    # genuinely wedged run. Every publish stage here is idempotent
+    # (push-changed.sh skips content-identical images, push.sh.tpl skips
+    # versions already published), so a re-run after any truncation converges
+    # instead of duplicating.
+    #
+    # The ceiling necessarily applies to PR and merge-queue runs too: there is
+    # no per-stage timeout, and splitting the action again would recreate the
+    # disjoint snapshot namespaces #4824 just removed. A wedged PR run now
+    # occupies a runner up to 2h instead of 1h; that costs queue latency on an
+    # already-broken run, nothing else.
+    #
+    # Caveat before trusting this number: BuildBuddy honours an explicit
+    # request verbatim UNLESS the org carries a
+    # remote_execution.remote_runner_default_timeout experiment, in which case
+    # requests AT OR ABOVE its value are clamped back down to it
+    # (ci_runner_util.go RunnerTimeout). If a post-change wide rebuild still
+    # dies at almost exactly one hour, the cap is that experiment or the plan
+    # tier, not this field, and only BuildBuddy can lift it.
+    timeout: "2h"
     triggers:
       pull_request:
         branches:
@@ -77,9 +135,14 @@ actions:
       # pull_request run, which is the opposite of why the queue is being
       # enabled.
       #
-      # `main` is here to seed this action's fallback snapshot, NOT to gate or
-      # publish anything: see the main-only stage at the top of the steps below
-      # for why, and for what it deliberately does not run.
+      # `main` is here to GATE and PUBLISH, not merely to seed: a push to the
+      # default branch runs this same action through the publish stages below
+      # (the ON_MAIN branch), which is what makes a merge actually deploy.
+      # Running the full action on main also keeps the fallback snapshot
+      # continuously refreshed: the default save policy snapshots EVERY
+      # default-branch run, so new branches restore a recent main snapshot.
+      # That was #4823's goal, achieved inherently instead of by a duplicated
+      # tests-only stage (#4824 deleted it).
       push:
         branches:
           - "gh-readonly-queue/*"
@@ -96,7 +159,7 @@ actions:
 
           # Disk high-water sampling. `disk: 120GB` above was set in 2026-07
           # (db9ea2ce0) for actions that no longer exist in that shape, and
-          # nothing has measured what these two runners actually use since.
+          # nothing has measured what this runner actually uses since.
           # Costs nothing: no bytes, no cache traffic, two lines of log.
           #
           # These are BETWEEN-STAGE samples, so they UNDERSTATE the true peak,
@@ -116,47 +179,28 @@ actions:
             echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${DOCKERHUB_USERNAME:-}" --password-stdin
           fi
 
-          # ---- 0. main: seed this action's fallback snapshot ---------------
-          # A runner snapshot's key is (repo URL, ACTION NAME, instance suffix,
-          # git_clean_exclude), so pr-checks and deploy occupy DISJOINT snapshot
-          # namespaces even though their container_image and resource_requests
-          # are identical. A run with no snapshot for its own branch falls back
-          # to the PR's base branch and then to the repo's default branch, but
-          # pr-checks had never once run on main, so that fallback found nothing
-          # and every new branch booted a VM from scratch.
+          # ---- 0. is this run a push to the default branch? ---------------
+          # Everything main-only below keys off this one decision: the image
+          # and chart publish, the version write-back, and failing rather than
+          # auto-committing format drift. On a PR or merge-queue run these are
+          # skipped entirely; on main they ARE the deploy.
           #
-          # Measured over the 7 days to 2026-08-14: 128 of 647 CI `test //...`
-          # invocations were cold, median 413s against 68s warm, about 736
-          # minutes of wall clock a week. 62 of 94 new branches started cold.
-          #
-          # The save policy compounds it. The default, first-non-default-ref,
-          # saves a snapshot only on the FIRST run of a non-default ref but on
-          # EVERY run of a default one. So a branch's snapshot is frozen at its
-          # first push and never refreshed, which is why 30% of later pushes to
-          # an already-seen branch were cold too. main saving on every push is
-          # what turns the fallback from one-shot into continuously refreshed.
-          #
-          # This stage exists ONLY to leave that warm snapshot behind. It runs
-          # the tests and stops: deploy owns publishing on main, and running the
-          # stages below here would double a chart publish and push a
-          # ci-format-bot commit straight to main. GIT_BRANCH and
-          # GIT_REPO_DEFAULT_BRANCH are set by the workflow service on every
-          # run; compare them rather than hardcoding "main" so this keeps
-          # working if the default branch is ever renamed.
+          # GIT_BRANCH and GIT_REPO_DEFAULT_BRANCH are set by the workflow
+          # service on every run; compare them rather than hardcoding "main" so
+          # this keeps working if the default branch is ever renamed.
           #
           # GIT_PR_NUMBER is in the condition to close a hole, not for tidiness.
           # On a pull_request event GIT_BRANCH is the PR's HEAD branch, so a PR
           # opened from a fork's own `main` would match a branch-name-only test
-          # and skip every gate below while still reporting the required check
-          # green. The workflow service formats that variable with %d, so a push
-          # is exactly "0" and any PR is non-zero.
+          # and publish straight from that PR. The workflow service formats
+          # that variable with %d, so a push is exactly "0" and any PR is
+          # non-zero (#4824 scope; same guard as the deleted seeding stage).
+          ON_MAIN=false
           if [ -n "${GIT_BRANCH:-}" ] &&
              [ "${GIT_BRANCH:-}" = "${GIT_REPO_DEFAULT_BRANCH:-}" ] &&
              [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
-            echo "On ${GIT_BRANCH}: seeding the pr-checks fallback snapshot, tests only."
-            bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
-            echo "DISK pr-checks seed end:"; df -h /
-            exit 0
+            ON_MAIN=true
+            echo "On ${GIT_BRANCH}: full gate plus publish."
           fi
 
           # ORDER IS LOAD-BEARING: everything that analyses //... runs BEFORE the
@@ -172,14 +216,16 @@ actions:
           # -future excludes future-feature BDD specs (executable specs for
           # not-yet-built features): those are intentionally red.
           # The PR run uses affected-targets to query a global test-only
-          # dependency universe, making PR feedback cheap. The queue candidate on
-          # gh-readonly-queue/* runs the full //... as the exact gate. This
-          # fallback set (BUILD files, dependency locks, bazel/ tooling,
-          # deleted files) is handled by affected-targets.sh and triggers
-          # //... when the graph shape changes.
+          # dependency universe, making PR feedback cheap. Merge-queue
+          # candidates on gh-readonly-queue/* AND pushes to main run the full
+          # //...: the queue candidate is the exact pre-merge gate, and main's
+          # tests must gate the publish below. This fallback set (BUILD files,
+          # dependency locks, bazel/ tooling, deleted files) is handled by
+          # affected-targets.sh and triggers //... when the graph shape
+          # changes.
           #
-          # Local ci test and PRs both use affected targets. The queue candidate
-          # is the sole authoritative full //... gate.
+          # Local ci test and PRs both use affected targets. Queue candidates
+          # and main are the authoritative full //... gates.
           if [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
             bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
           else
@@ -203,35 +249,124 @@ actions:
             fi
           fi
 
-          # ---- 2. images build, and the missed-chart-bump guard -----------
-          # PR branches publish nothing. `bazel build` proves the images build
-          # while --remote_download_minimal leaves the layers at rest in CAS;
-          # `bazel run` would stage all ~24 images' runfiles on the runner
-          # before any command executes, which was 3.5 TB/week (PR #4586).
-          bazel build //bazel/images:push_all --config=ci
+          # ---- 2. images: publish on main, prove on everything else -------
+          #
+          # PUBLISH BEFORE THE FORMAT CHECK, deliberately. Under `set -e` a
+          # formatter hiccup aborts everything after it, and on 2026-08-09 that
+          # took main's first consolidated deploy down before it pushed
+          # anything: a cold runner could not materialise prettier or rustfmt
+          # ("entry_point '.../prettier.cjs' not found", "cannot locate binary
+          # ...rustfmt"). Formatting is the flakiest stage here, because it
+          # shells out to a pile of external tools, and it is the one with no
+          # bearing on whether the images are correct.
+          #
+          # The old layout got this right by accident: "Format check" and
+          # "Push images" were separate actions, so a formatter failure never
+          # blocked a deploy. Publishing before the final format stage restores
+          # that property while keeping the check FATAL, so unformatted main
+          # still turns the action red. Tests above still gate the publish,
+          # which is deliberate: bad code must not ship, whereas a missing
+          # formatter binary must not stop a good build from shipping.
+          if [ "$ON_MAIN" = true ]; then
+            # ---- 2a. main: publish, then write versions back --------------
+            # Image push stays CI-only on merge to main; PR and queue branches
+            # take the else branch and publish nothing.
+            #
+            # push.sh.tpl decides per chart whether to publish, and skips a
+            # version already in the registry, so a re-run is idempotent.
+            #
+            # The chart version is computed HERE rather than carried on the PR
+            # branch (ADR platform/009 decision 1). Each chart records the
+            # version it published into .chart-version-records/ instead of
+            # committing it itself: push_all is a multirun with `jobs = 0`, so
+            # ~24 of these run concurrently and cannot each touch the git index
+            # or race main's ref. write-back-versions.sh then lands all of them
+            # in ONE commit.
+            #
+            # The record path is derived from BUILD_WORKSPACE_DIRECTORY inside
+            # push.sh.tpl rather than exported here on purpose: an env var that
+            # failed to reach the `bazel run` target would silently record
+            # nothing, and "nothing to write back" is indistinguishable from
+            # "nothing needed publishing", so every chart would stop deploying
+            # with the action still green.
+            #
+            # NOT `bazel run //bazel/images:push_all`. That materialises every
+            # command's runfiles on this runner before the first command
+            # executes, so it drags all ~24 dual-arch images out of CAS on every
+            # commit to main even when every action is a cache hit. Measured
+            # 2026-08-10 that made `deploy` 488 GB/day of BuildBuddy download,
+            # 29.6% of everything this repo moves and its largest single source.
+            # PR #4586 already fixed the same problem on PR branches;
+            # push-changed.sh is the main-branch half. It builds the images
+            # (proving they build, layers at rest in CAS), reads each one's
+            # content digest out of the build, and runs only the pushes whose
+            # content is not already published. Charts still publish through
+            # push_charts, now strictly after the images rather than
+            # concurrently with them.
+            ./bazel/images/push/push-changed.sh
 
-          # No `bazel run //bazel/images:push_charts --config=ci --stamp` here
-          # any more. On a PR branch push.sh.tpl retires the missed-bump guard
-          # (ADR platform/009: PRs carry no version) and pushes an ephemeral
-          # 0.0.0-dev chart nothing consumes, so the step proved nothing that
-          # `bazel build push_all` above does not. What it DID do was flip
-          # --stamp, which discards the whole analysis cache (see .bazelrc),
-          # and the snapshot is saved in that state: every later run re-loaded
-          # ~3000 packages / ~75k targets, about 2 of a warm run's 5.8 minutes
-          # (candidate a97c763d, 2026-08-22). main's deploy still runs
-          # push_charts through push-changed.sh, with --stamp, where the guard
-          # is the digest authority.
+            # Push the write-back as jomcgi, not as the runner's own identity.
+            #
+            # main carries the `lets-not-delete-everything` ruleset, whose
+            # required_status_checks rule expects `pr-checks` on every push and
+            # whose only bypass is RepositoryRole 5 (admin). BuildBuddy's
+            # injected credentials are not an admin, so the write-back
+            # authenticated fine and was still refused:
+            #
+            #   remote: error: GH013: Repository rule violations found
+            #   remote: - Required status check "pr-checks" is expected.
+            #
+            # That left the charts published and main still pointing at the old
+            # versions, so nothing deployed. Reusing GHCR_TOKEN, which is
+            # already in this action for the docker login above, makes the push
+            # come from the repository owner and satisfy the EXISTING bypass.
+            # The ruleset is deliberately left alone: granting CI a standing
+            # bypass would weaken the guarantee for every push, not just this
+            # one.
+            #
+            # (pr-checks' own auto-commit below does exactly this too.)
+            git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi-org/homelab.git"
+            ./bazel/helm/write-back-versions.sh .chart-version-records
+          else
+            # ---- 2b. PR and merge-queue: prove the build, publish nothing --
+            # `bazel build` proves the images build while
+            # --remote_download_minimal leaves the layers at rest in CAS;
+            # `bazel run` would stage all ~24 images' runfiles on the runner
+            # before any command executes, which was 3.5 TB/week (PR #4586).
+            bazel build //bazel/images:push_all --config=ci
 
-          # After the build, which is where the workspace is fattest.
-          echo "DISK pr-checks after build:"; df -h /
+            # No `bazel run //bazel/images:push_charts --config=ci --stamp`
+            # here any more. On a PR branch push.sh.tpl retires the missed-bump
+            # guard (ADR platform/009: PRs carry no version) and pushes an
+            # ephemeral 0.0.0-dev chart nothing consumes, so the step proved
+            # nothing that the `bazel build push_all` above does not. What it
+            # DID do was flip --stamp, which discards the whole analysis cache
+            # (see .bazelrc), and the snapshot was saved in that state: every
+            # later run re-loaded ~3000 packages / ~75k targets, about 2 of a
+            # warm run's 5.8 minutes (candidate a97c763d, 2026-08-22). Main
+            # publishes charts through push-changed.sh above, with --stamp,
+            # where the guard is the digest authority.
+            #
+            # Shared-snapshot note (#4824): a main run ends having flipped
+            # --stamp inside push-changed.sh, and main saves on every run, so
+            # the freshest snapshot in this namespace is post-stamp. A
+            # brand-new branch restoring it pays one re-analysis (~2 min) on
+            # its first run, before its own unstamped snapshot is saved.
+            # Accepted at #4824: it buys the deduplicated main run, and the
+            # alternative is keeping a separate deploy action, which is the
+            # disjoint-namespace problem this fold exists to remove.
 
-          # ---- 3. rendered-manifest diff PR comment -----------------------
-          # Hard-fails on newly introduced duplicate env var names within a
-          # container (the phantom-OutOfSync class: the API server collapses
-          # duplicates on apply, so the ArgoCD diff never converges).
-          ./bazel/helm/ci-diff-manifests.sh
+            # Hard-fails on newly introduced duplicate env var names within a
+            # container (the phantom-OutOfSync class: the API server collapses
+            # duplicates on apply, so the ArgoCD diff never converges).
+            ./bazel/helm/ci-diff-manifests.sh
+          fi
 
-          # ---- 4. format, generators, drift auto-commit -------------------
+          # After whichever image stage ran, which is where the workspace is
+          # fattest.
+          echo "DISK pr-checks after images:"; df -h /
+
+          # ---- 3. format, generators, drift -------------------------------
           # The ci-format-bot guard skips THIS STAGE ONLY, never the run. The
           # old standalone action could `exit 0` here because that ended only
           # the format check; doing the same now would skip the tests, and the
@@ -256,7 +391,10 @@ actions:
             ./bazel/tools/format/check-migration-ordering.sh
 
             # Wrangler Pages (Cloudflare) fails with error 8000111 when commits
-            # in the deployed branch contain non-ASCII characters.
+            # in the deployed branch contain non-ASCII characters. Near-vacuous
+            # on main (origin/main is at or behind HEAD, and a bad message
+            # would have failed the PR), but kept so the merge stays purely
+            # structural rather than quietly dropping a guard.
             ./bazel/tools/git/check-commit-msg-ascii.sh --all origin/main
 
             # Hook scripts referenced from .claude/settings.json must exist and
@@ -288,6 +426,15 @@ actions:
 
             if git diff --exit-code; then
               echo "All files formatted correctly"
+            elif [ "$ON_MAIN" = true ]; then
+              # No auto-commit on main: fail with the fix instead. The old
+              # deploy action had exactly this behaviour, and merging must not
+              # change it: a bot commit landing on the default branch without
+              # review is the failure mode the ruleset exists to prevent.
+              echo "ERROR: Code not formatted or BUILD files out of sync."
+              echo "Run 'format' locally to fix."
+              git --no-pager diff
+              exit 1
             else
               # Auto-commit the drift. The push makes a new head, which runs a
               # fresh pr-checks; this one is finished either way.
@@ -322,168 +469,6 @@ actions:
           fi
 
           echo "DISK pr-checks end:"; df -h /
-
-  # deploy — main only. Same one-runner reasoning as pr-checks.
-  #
-  # Ordering is deliberate: formatting, then tests, then publish. Tests GATE the
-  # push, which is a behaviour change. Previously "Test" and "Push images" ran
-  # in parallel on main, so a red or flaky test did not stop a deploy. Shipping
-  # code whose tests failed is the worse failure mode, so a flake here should be
-  # handled by re-running the action, not by making the result advisory.
-  - name: "deploy"
-    container_image: "ubuntu-24.04"
-    max_retries: 1
-    resource_requests:
-      # See pr-checks for why 8 and for the snapshot-invalidation cost.
-      cpu: "8"
-      memory: "10GB"
-      disk: "120GB"
-    # See pr-checks. Both actions MUST carry the same value.
-    git_fetch_depth: 0
-    triggers:
-      push:
-        branches:
-          - "main"
-    steps:
-      - run: |
-          # See pr-checks: errexit is load-bearing, and here it is what stops a
-          # failed test from publishing images anyway.
-          set -eu
-
-          # See pr-checks for what these samples are and are not good for.
-          # deploy is the more interesting of the two: it no longer stages all
-          # ~24 images' runfiles, so its footprint should have dropped and the
-          # 120GB reservation is the least evidence-based number here.
-          echo "DISK deploy start:"; df -h /
-
-          echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
-
-          if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-            echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${DOCKERHUB_USERNAME:-}" --password-stdin
-          fi
-
-          # Same ordering rule as pr-checks: bazel test //... runs BEFORE the
-          # format stage, because gazelle inside :format writes untracked BUILD
-          # files that do not all analyse. The format check still gates the
-          # publish below, which is the only ordering constraint that matters
-          # here.
-          # ---- 1. tests ---------------------------------------------------
-          bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
-
-          # The clone is deep because `git_fetch_depth: 0` asks for it, not
-          # because a step deepens it. See that field on both actions above for
-          # why the publish needs full history.
-
-          # PUBLISH BEFORE THE FORMAT CHECK, deliberately. Under `set -e` a
-          # formatter hiccup aborts everything after it, and on 2026-08-09 that
-          # took main's first consolidated deploy down before it pushed
-          # anything: a cold runner could not materialise prettier or rustfmt
-          # ("entry_point '.../prettier.cjs' not found", "cannot locate binary
-          # ...rustfmt"). Formatting is the flakiest stage here, because it
-          # shells out to a pile of external tools, and it is the one with no
-          # bearing on whether the images are correct.
-          #
-          # The old layout got this right by accident: "Format check" and
-          # "Push images" were separate actions, so a formatter failure never
-          # blocked a deploy. Publishing first restores that property while
-          # keeping the check FATAL, so unformatted main still turns the action
-          # red. Tests still gate the publish, which is deliberate: bad code
-          # must not ship, whereas a missing formatter binary must not stop a
-          # good build from shipping.
-          # ---- 2. publish -------------------------------------------------
-          # push.sh.tpl decides per chart whether to publish, and skips a
-          # version already in the registry, so a re-run is idempotent.
-          #
-          # The chart version is now computed HERE rather than carried on the PR
-          # branch (ADR platform/009 decision 1). Each chart records the version
-          # it published into .chart-version-records/ instead of committing it
-          # itself: push_all is a multirun with `jobs = 0`, so ~24 of these run
-          # concurrently and cannot each touch the git index or race main's ref.
-          # write-back-versions.sh then lands all of them in ONE commit.
-          #
-          # The record path is derived from BUILD_WORKSPACE_DIRECTORY inside
-          # push.sh.tpl rather than exported here on purpose: an env var that
-          # failed to reach the `bazel run` target would silently record
-          # nothing, and "nothing to write back" is indistinguishable from
-          # "nothing needed publishing", so every chart would stop deploying
-          # with the action still green.
-          #
-          # NOT `bazel run //bazel/images:push_all`. That materialises every
-          # command's runfiles on this runner before the first command executes,
-          # so it drags all ~24 dual-arch images out of CAS on every commit to
-          # main even when every action is a cache hit. Measured 2026-08-10 that
-          # made `deploy` 488 GB/day of BuildBuddy download, 29.6% of everything
-          # this repo moves and its largest single source. PR #4586 already fixed
-          # the same problem on PR branches; push-changed.sh is the main-branch
-          # half. It builds the images (proving they build, layers at rest in
-          # CAS), reads each one's content digest out of the build, and runs only
-          # the pushes whose content is not already published. Charts still
-          # publish through push_charts, now strictly after the images rather
-          # than concurrently with them.
-          ./bazel/images/push/push-changed.sh
-
-          # After the build and the pushes, the fattest point in this action.
-          echo "DISK deploy after publish:"; df -h /
-
-          # Push the write-back as jomcgi, not as the runner's own identity.
-          #
-          # main carries the `lets-not-delete-everything` ruleset, whose
-          # required_status_checks rule expects `pr-checks` on every push and
-          # whose only bypass is RepositoryRole 5 (admin). BuildBuddy's injected
-          # credentials are not an admin, so the write-back authenticated fine
-          # and was still refused:
-          #
-          #   remote: error: GH013: Repository rule violations found
-          #   remote: - Required status check "pr-checks" is expected.
-          #
-          # That left the charts published and main still pointing at the old
-          # versions, so nothing deployed. Reusing GHCR_TOKEN, which is already
-          # in this action for the docker login above, makes the push come from
-          # the repository owner and satisfy the EXISTING bypass. The ruleset is
-          # deliberately left alone: granting CI a standing bypass would weaken
-          # the guarantee for every push, not just this one.
-          #
-          # pr-checks does exactly this for the ci-format-bot commit.
-          git remote set-url origin "https://x-access-token:${GHCR_TOKEN}@github.com/jomcgi-org/homelab.git"
-          ./bazel/helm/write-back-versions.sh .chart-version-records
-
-          # ---- 3. formatting must already be correct ----------------------
-          # No auto-commit on main: fail with the fix instead.
-          AUTHOR="$(git log -1 --format='%an')"
-          if [ "$AUTHOR" = "ci-format-bot" ]; then
-            echo "HEAD is the ci-format-bot commit; formatting just ran, going straight to tests."
-          else
-            bazel run //bazel/tools/format:format --config=ci
-            ./bazel/images/validate-generate-scripts.sh
-            ./bazel/tools/format/check-migration-ordering.sh
-            # Near-vacuous on main (origin/main is at or behind HEAD, and a bad
-            # message would have failed the PR), but kept so this change stays
-            # purely structural rather than quietly dropping a guard.
-            ./bazel/tools/git/check-commit-msg-ascii.sh --all origin/main
-            ./bazel/tools/hooks/validate-hooks-executable.sh
-            python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
-            python3 ./bazel/tools/format/doc_links/check_doc_links.py
-
-            # Two Helm invariants that fail silently and deploy the wrong
-            # thing: a vendored charts/*.tgz gone stale against its file://
-            # source (the tarball is what bazel ships, so the source fix never
-            # deploys), and a chart pinning a bazel-built image by its
-            # build-timestamped tag (push-changed.sh skips content-identical
-            # images, so that tag is often never pushed: ImagePullBackOff).
-            # Read-only here on purpose: sync-helm-deps.sh needs the helm CLI,
-            # which this runner does not have, so CI reports and the human
-            # fixes locally. Pure logic pinned by a bazel test.
-            python3 ./bazel/tools/format/helm_deps/check_helm_deps.py
-
-            if ! git diff --exit-code; then
-              echo "ERROR: Code not formatted or BUILD files out of sync."
-              echo "Run 'format' locally to fix."
-              git --no-pager diff
-              exit 1
-            fi
-          fi
-
-          echo "DISK deploy end:"; df -h /
 
   # TEMPORARILY DISABLED 2026-08-09: BuildBuddy asked us to cut Workflows cache
   # traffic, and this action is pure runner cost. It normally no-ops (no
@@ -558,13 +543,11 @@ actions:
   #         bazel test $TARGETS --config=ci --deleted_packages=bazel/tools/python
 
 
-  # Push images — runs in parallel with Test (no dependency).
-  # Images are pushed on main only. PR branches build them (verifying the build
-  # before merge) and push only the charts; see the step below for why.
-  # REQUIRED status check: on PR branches each helm push runs the pre-merge
-  # missed-chart-bump guard (bazel/helm/check-missed-bump.sh), so a chart whose
-  # images changed without a version bump cannot merge. Do NOT rename this
-  # action: it is a required check in the GitHub ruleset by this exact name.
+  # Historical note: "Push images", the last separate publish action, ran in
+  # parallel with Test until 2026-08-09 and was later folded into pr-checks
+  # (then briefly into deploy, and back into pr-checks by #4824). Publishing
+  # lives in pr-checks' ON_MAIN stage now; PR and merge-queue branches build
+  # images and publish nothing.
 
   # TEMPORARILY DISABLED 2026-08-09: same reason as "BDD future features". This
   # action already early-exits on PRs when nothing under buck2/** changed, but
