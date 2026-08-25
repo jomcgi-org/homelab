@@ -162,7 +162,7 @@
   <title>Ember · a workload orchestrator on Firecracker microVMs</title>
   <meta
     name="description"
-    content="A private Lambda on metal you own: untrusted code in hardware-isolated Firecracker microVMs. Services sleep as snapshots and wake on demand, disk to answering queries in {servingWakeMs} ms. Includes a live Postgres you can wake yourself."
+    content="Ember runs untrusted code in hardware-isolated Firecracker microVMs, one VM per workload. Services sleep as snapshots and wake on demand, disk to answering queries in {servingWakeMs} ms. Includes a live Postgres you can wake yourself."
   />
 </svelte:head>
 
@@ -182,8 +182,8 @@
     <header class="masthead">
       <h1><span class="word">Ember</span></h1>
       <p class="lede">
-        A private Lambda, on metal you own. Ember runs untrusted code in
-        hardware-isolated <b>Firecracker microVMs</b>, built from scratch on
+        Ember runs untrusted code in hardware-isolated
+        <b>Firecracker microVMs</b>, one VM per workload, built from scratch on
         this cluster. Services sleep as snapshots and wake on demand,
         <b>disk to answering queries in 78&nbsp;ms</b>.
       </p>
