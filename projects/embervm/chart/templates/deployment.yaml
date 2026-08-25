@@ -575,6 +575,36 @@ spec:
             - name: EMBERVM_WARMTH_S3_GC_INTERVAL_MS
               value: {{ .Values.warmthS3Gc.intervalMs | quote }}
             {{- end }}
+            {{- if .Values.durabilityHealth.enabled }}
+            # Durability health detector (#4338, ADR embervm/031): BOTH tiers
+            # (export-failure streaks; gc-manifests age vs 24h + sweep
+            # interval) surface on GET /v1/health/durability. Unset keeps the
+            # detector dark: no evaluation runs and the route 404s. See the
+            # durabilityHealth block in values for the flip procedure.
+            - name: EMBERVM_DURABILITY_HEALTH
+              value: {{ .Values.durabilityHealth.enabled | quote }}
+            {{- end }}
+            {{- if .Values.durabilityHealth.expectedNodes }}
+            # Tier 1's fleet contract: every listed node must report fresh
+            # capacity facts or tier 1 reads unknown (never green). Empty =
+            # tier 1 always unknown.
+            - name: EMBERVM_DURABILITY_EXPECTED_NODES
+              value: {{ join "," .Values.durabilityHealth.expectedNodes | quote }}
+            {{- end }}
+            {{- if .Values.durabilityHealth.roundIntervalMs }}
+            - name: EMBERVM_DURABILITY_ROUND_INTERVAL_MS
+              value: {{ .Values.durabilityHealth.roundIntervalMs | quote }}
+            {{- end }}
+            {{- if .Values.durabilityHealth.streakThreshold }}
+            - name: EMBERVM_DURABILITY_STREAK_THRESHOLD
+              value: {{ .Values.durabilityHealth.streakThreshold | quote }}
+            {{- end }}
+            {{- if .Values.durabilityHealth.gcSweepIntervalMs }}
+            # Must match warmthS3Gc.intervalMs so the tier-2 stall bound (24h +
+            # sweep interval) tracks the GC cadence instead of drifting from it.
+            - name: EMBERVM_DURABILITY_GC_SWEEP_INTERVAL_MS
+              value: {{ .Values.durabilityHealth.gcSweepIntervalMs | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

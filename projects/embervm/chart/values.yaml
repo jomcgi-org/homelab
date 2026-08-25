@@ -1105,6 +1105,28 @@ warmthS3Gc:
   groupSetTtlMs: ""
   intervalMs: ""
 
+# Durability health surface (#4338, ADR embervm/031): the CP-side detector
+# behind GET /v1/health/durability. Tier 1 latches unhealthy on a sustained
+# per-kind artifact-export failure streak read from node capacity facts
+# (~minutes, not hours); tier 2 degrades when the newest gc-manifests/ object
+# exceeds 24h + sweepIntervalMs. BOTH tiers end in the health surface (the
+# monolith ember-durability component reads this endpoint); missing data reads
+# unknown, never green. DARK by default per the standing rule that a
+# health-affecting detector lands suspend:true and flips on only after live
+# verification: enabled "" means no evaluation runs and the route answers 404.
+# Flip to "1" only after verifying against live fleet facts; flipping back to
+# "" is the entire rollback lever. expectedNodes is the fleet contract for
+# tier 1's freshness check (empty = tier 1 always unknown), roundIntervalMs /
+# streakThreshold tune the streak window (module defaults 30000ms x 10 rounds,
+# i.e. ~5 minutes sustained), and gcSweepIntervalMs must match warmthS3Gc
+# intervalMs so the stall bound tracks the GC cadence.
+durabilityHealth:
+  enabled: ""
+  expectedNodes: []
+  roundIntervalMs: ""
+  streakThreshold: ""
+  gcSweepIntervalMs: ""
+
 # The rootfs-builder tool image (crane + e2fsprogs + bash) that bakes each
 # workload's guest OCI image into an ext4 base rootfs at pod init. Reuses the
 # fc-invoke rootfs-builder image; Bazel pins repository:tag from its .info.
