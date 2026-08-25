@@ -266,183 +266,211 @@ serving                            → plain HTTP, straight into the VM</pre>
       <details class="fold">
         <summary><span class="fold-label">the moving parts</span></summary>
         <div class="arch">
-        <svg
-          viewBox="0 0 720 300"
-          role="img"
-          aria-label="Ember architecture: callers reach the Elixir control plane, which dispatches over gRPC to the Go node daemon driving Firecracker VMs; serving traffic bypasses the control plane entirely via a node-local Envoy programmed over xDS. Snapshots and boot images are banked to S3."
-        >
-          <defs>
-            <marker
-              id="arrow-ember"
-              markerWidth="8"
-              markerHeight="8"
-              refX="7"
-              refY="4"
-              orient="auto"
+          <svg
+            viewBox="0 0 720 300"
+            role="img"
+            aria-label="Ember architecture: callers reach the Elixir control plane, which dispatches over gRPC to the Go node daemon driving Firecracker VMs; serving traffic bypasses the control plane entirely via a node-local Envoy programmed over xDS. Snapshots and boot images are banked to S3."
+          >
+            <defs>
+              <marker
+                id="arrow-ember"
+                markerWidth="8"
+                markerHeight="8"
+                refX="7"
+                refY="4"
+                orient="auto"
+              >
+                <path class="mk mk-control" d="M1,1 L7,4 L1,7" />
+              </marker>
+              <marker
+                id="arrow-frost"
+                markerWidth="8"
+                markerHeight="8"
+                refX="7"
+                refY="4"
+                orient="auto"
+              >
+                <path class="mk mk-data" d="M1,1 L7,4 L1,7" />
+              </marker>
+              <marker
+                id="arrow-amber"
+                markerWidth="8"
+                markerHeight="8"
+                refX="7"
+                refY="4"
+                orient="auto"
+              >
+                <path class="mk mk-xds" d="M1,1 L7,4 L1,7" />
+              </marker>
+              <marker
+                id="arrow-slate"
+                markerWidth="8"
+                markerHeight="8"
+                refX="7"
+                refY="4"
+                orient="auto"
+              >
+                <path class="mk mk-bank" d="M1,1 L7,4 L1,7" />
+              </marker>
+            </defs>
+
+            <rect
+              class="lane"
+              x="150"
+              y="18"
+              width="230"
+              height="264"
+              rx="10"
+            />
+            <text x="162" y="38" class="lane-label"
+              >CONTROL PLANE · ELIXIR/OTP</text
             >
-              <path class="mk mk-control" d="M1,1 L7,4 L1,7" />
-            </marker>
-            <marker
-              id="arrow-frost"
-              markerWidth="8"
-              markerHeight="8"
-              refX="7"
-              refY="4"
-              orient="auto"
+            <rect
+              class="lane"
+              x="420"
+              y="18"
+              width="286"
+              height="264"
+              rx="10"
+            />
+            <text x="432" y="38" class="lane-label">EACH FIRECRACKER NODE</text>
+
+            <rect x="14" y="74" width="100" height="44" rx="8" class="box" />
+            <text x="64" y="93" text-anchor="middle" class="node-label"
+              >caller</text
             >
-              <path class="mk mk-data" d="M1,1 L7,4 L1,7" />
-            </marker>
-            <marker
-              id="arrow-amber"
-              markerWidth="8"
-              markerHeight="8"
-              refX="7"
-              refY="4"
-              orient="auto"
+            <text x="64" y="107" text-anchor="middle" class="node-sub"
+              >task / session</text
             >
-              <path class="mk mk-xds" d="M1,1 L7,4 L1,7" />
-            </marker>
-            <marker
-              id="arrow-slate"
-              markerWidth="8"
-              markerHeight="8"
-              refX="7"
-              refY="4"
-              orient="auto"
+
+            <rect x="14" y="196" width="100" height="44" rx="8" class="box" />
+            <text x="64" y="215" text-anchor="middle" class="node-label"
+              >edge</text
             >
-              <path class="mk mk-bank" d="M1,1 L7,4 L1,7" />
-            </marker>
-          </defs>
+            <text x="64" y="229" text-anchor="middle" class="node-sub"
+              >HTTPRoute</text
+            >
 
-          <rect class="lane" x="150" y="18" width="230" height="264" rx="10" />
-          <text x="162" y="38" class="lane-label"
-            >CONTROL PLANE · ELIXIR/OTP</text
-          >
-          <rect class="lane" x="420" y="18" width="286" height="264" rx="10" />
-          <text x="432" y="38" class="lane-label">EACH FIRECRACKER NODE</text>
+            <rect x="170" y="66" width="120" height="46" rx="8" class="box" />
+            <text x="230" y="86" text-anchor="middle" class="node-label"
+              >HTTP API</text
+            >
+            <text x="230" y="101" text-anchor="middle" class="node-sub"
+              >/v1/workloads</text
+            >
 
-          <rect x="14" y="74" width="100" height="44" rx="8" class="box" />
-          <text x="64" y="93" text-anchor="middle" class="node-label"
-            >caller</text
-          >
-          <text x="64" y="107" text-anchor="middle" class="node-sub"
-            >task / session</text
-          >
+            <rect x="170" y="130" width="120" height="42" rx="8" class="box" />
+            <text x="230" y="149" text-anchor="middle" class="node-label"
+              >op-log</text
+            >
+            <text x="230" y="163" text-anchor="middle" class="node-sub"
+              >Postgres</text
+            >
 
-          <rect x="14" y="196" width="100" height="44" rx="8" class="box" />
-          <text x="64" y="215" text-anchor="middle" class="node-label"
-            >edge</text
-          >
-          <text x="64" y="229" text-anchor="middle" class="node-sub"
-            >HTTPRoute</text
-          >
+            <rect x="170" y="192" width="120" height="42" rx="8" class="box" />
+            <text x="230" y="211" text-anchor="middle" class="node-label"
+              >xDS publisher</text
+            >
+            <text x="230" y="225" text-anchor="middle" class="node-sub"
+              >programs Envoy</text
+            >
 
-          <rect x="170" y="66" width="120" height="46" rx="8" class="box" />
-          <text x="230" y="86" text-anchor="middle" class="node-label"
-            >HTTP API</text
-          >
-          <text x="230" y="101" text-anchor="middle" class="node-sub"
-            >/v1/workloads</text
-          >
+            <rect x="436" y="60" width="130" height="46" rx="8" class="box" />
+            <text x="501" y="80" text-anchor="middle" class="node-label"
+              >noded</text
+            >
+            <text x="501" y="95" text-anchor="middle" class="node-sub"
+              >Go daemon</text
+            >
 
-          <rect x="170" y="130" width="120" height="42" rx="8" class="box" />
-          <text x="230" y="149" text-anchor="middle" class="node-label"
-            >op-log</text
-          >
-          <text x="230" y="163" text-anchor="middle" class="node-sub"
-            >Postgres</text
-          >
+            <rect x="622" y="60" width="72" height="46" rx="8" class="box" />
+            <text x="658" y="80" text-anchor="middle" class="node-label"
+              >VM</text
+            >
+            <text x="658" y="95" text-anchor="middle" class="node-sub"
+              >vsock only</text
+            >
 
-          <rect x="170" y="192" width="120" height="42" rx="8" class="box" />
-          <text x="230" y="211" text-anchor="middle" class="node-label"
-            >xDS publisher</text
-          >
-          <text x="230" y="225" text-anchor="middle" class="node-sub"
-            >programs Envoy</text
-          >
+            <rect x="436" y="136" width="130" height="40" rx="8" class="box" />
+            <text x="501" y="154" text-anchor="middle" class="node-label"
+              >S3</text
+            >
+            <text x="501" y="168" text-anchor="middle" class="node-sub"
+              >snapshots + images</text
+            >
+            <path class="path-bank" d="M494,106 L494,132" />
+            <path class="path-bank" d="M508,132 L508,106" />
+            <text
+              x="548"
+              y="124"
+              text-anchor="middle"
+              class="edge-label el-bank">bank</text
+            >
 
-          <rect x="436" y="60" width="130" height="46" rx="8" class="box" />
-          <text x="501" y="80" text-anchor="middle" class="node-label"
-            >noded</text
-          >
-          <text x="501" y="95" text-anchor="middle" class="node-sub"
-            >Go daemon</text
-          >
+            <rect x="436" y="196" width="130" height="46" rx="8" class="box" />
+            <text x="501" y="216" text-anchor="middle" class="node-label"
+              >node Envoy</text
+            >
+            <text x="501" y="231" text-anchor="middle" class="node-sub"
+              >exact-match</text
+            >
 
-          <rect x="622" y="60" width="72" height="46" rx="8" class="box" />
-          <text x="658" y="80" text-anchor="middle" class="node-label">VM</text>
-          <text x="658" y="95" text-anchor="middle" class="node-sub"
-            >vsock only</text
-          >
+            <rect x="622" y="196" width="72" height="46" rx="8" class="box" />
+            <text x="658" y="216" text-anchor="middle" class="node-label"
+              >VM</text
+            >
+            <text x="658" y="231" text-anchor="middle" class="node-sub"
+              >tap NIC</text
+            >
 
-          <rect x="436" y="136" width="130" height="40" rx="8" class="box" />
-          <text x="501" y="154" text-anchor="middle" class="node-label">S3</text
-          >
-          <text x="501" y="168" text-anchor="middle" class="node-sub"
-            >snapshots + images</text
-          >
-          <path class="path-bank" d="M494,106 L494,132" />
-          <path class="path-bank" d="M508,132 L508,106" />
-          <text x="548" y="124" text-anchor="middle" class="edge-label el-bank"
-            >bank</text
-          >
+            <path class="path-control" d="M114,92 L166,90" />
+            <path class="path-control" d="M290,86 L432,83" />
+            <text
+              x="360"
+              y="75"
+              text-anchor="middle"
+              class="edge-label el-control">gRPC</text
+            >
+            <path class="path-control" d="M566,83 L618,83" />
+            <text
+              x="592"
+              y="76"
+              text-anchor="middle"
+              class="edge-label el-control">vsock</text
+            >
 
-          <rect x="436" y="196" width="130" height="46" rx="8" class="box" />
-          <text x="501" y="216" text-anchor="middle" class="node-label"
-            >node Envoy</text
-          >
-          <text x="501" y="231" text-anchor="middle" class="node-sub"
-            >exact-match</text
-          >
+            <path
+              class="path-data"
+              d="M114,222 C 140,222 138,262 170,262 L 350,262 C 400,262 396,222 432,222"
+            />
+            <text
+              x="260"
+              y="277"
+              text-anchor="middle"
+              class="edge-label el-data">bypasses the control plane</text
+            >
+            <path class="path-data" d="M566,219 L618,219" />
+            <text
+              x="592"
+              y="212"
+              text-anchor="middle"
+              class="edge-label el-data">DNAT</text
+            >
 
-          <rect x="622" y="196" width="72" height="46" rx="8" class="box" />
-          <text x="658" y="216" text-anchor="middle" class="node-label">VM</text
-          >
-          <text x="658" y="231" text-anchor="middle" class="node-sub"
-            >tap NIC</text
-          >
-
-          <path class="path-control" d="M114,92 L166,90" />
-          <path class="path-control" d="M290,86 L432,83" />
-          <text
-            x="360"
-            y="75"
-            text-anchor="middle"
-            class="edge-label el-control">gRPC</text
-          >
-          <path class="path-control" d="M566,83 L618,83" />
-          <text
-            x="592"
-            y="76"
-            text-anchor="middle"
-            class="edge-label el-control">vsock</text
-          >
-
-          <path
-            class="path-data"
-            d="M114,222 C 140,222 138,262 170,262 L 350,262 C 400,262 396,222 432,222"
-          />
-          <text x="260" y="277" text-anchor="middle" class="edge-label el-data"
-            >bypasses the control plane</text
-          >
-          <path class="path-data" d="M566,219 L618,219" />
-          <text x="592" y="212" text-anchor="middle" class="edge-label el-data"
-            >DNAT</text
-          >
-
-          <path class="path-xds" d="M290,213 C 340,213 380,208 432,207" />
-          <text x="360" y="199" text-anchor="middle" class="edge-label el-xds"
-            >xDS</text
-          >
-        </svg>
-        <div class="legend">
-          <span
-            ><i class="swatch sw-control"></i> control path (tasks &amp; sessions)</span
-          >
-          <span><i class="swatch sw-data"></i> serving data path</span>
-          <span><i class="swatch sw-xds"></i> configuration, ahead of time</span
-          >
-        </div>
+            <path class="path-xds" d="M290,213 C 340,213 380,208 432,207" />
+            <text x="360" y="199" text-anchor="middle" class="edge-label el-xds"
+              >xDS</text
+            >
+          </svg>
+          <div class="legend">
+            <span
+              ><i class="swatch sw-control"></i> control path (tasks &amp; sessions)</span
+            >
+            <span><i class="swatch sw-data"></i> serving data path</span>
+            <span
+              ><i class="swatch sw-xds"></i> configuration, ahead of time</span
+            >
+          </div>
         </div>
       </details>
       <div class="iso">
