@@ -252,6 +252,15 @@ goosecracker:
 swarm:
   enabled: true
 
+# Arms the qwen work-queue drainer (ADR agents/061, #5301): the agent-drain
+# CronWorkflow tick stops no-opping and drain_cycle starts claiming due
+# qwen-drain routine jobs. Serial by design; all other knobs stay on chart
+# defaults. Suspending the CronWorkflow or reverting this line are the two
+# kill switches.
+agents:
+  drainer:
+    enabled: true
+
 # Taken offline 2026-06-14 for the ADR 006 Phase 4 transition: with the
 # gardener paused, the raw export / file moves can be done as a controlled
 # one-off, and the gardener stays down until the CLI-based version (Phase 4a-ii)
