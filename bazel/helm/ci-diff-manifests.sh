@@ -31,21 +31,87 @@ main() {
 	# (.bazelrc `build:ci --disk_cache=`). BuildBuddy's workflow pool is
 	# mixed-arch, so a plain build pulls a wrong-arch helm/dyff/gh out of that
 	# cross-arch-contaminated disk cache and it dies with "cannot execute binary
-	# file: Exec format error" (why the manifest comment never posted). Read the
-	# output path from the bazel-bin convenience symlink, NOT `bazel info
-	# bazel-bin --config=ci` (that fails to resolve @@buildbuddy_toolchain).
-	bazel build @multitool//tools/helm @multitool//tools/dyff @multitool//tools/gh @multitool//tools/yq --config=ci 2>&1 | tail -1
+	# file: Exec format error" (why the manifest comment never posted).
+	#
+	# Capture the whole build log instead of piping into `tail -1` (#4749):
+	# one line of a bazel failure is rarely the useful line, and a failed
+	# build must be reported AS a build failure, never fall through to the
+	# missing-tool error below.
+	TOOL_BUILD_LOG="$TMPDIR_BASE/tool-build.log"
+	if ! bazel build @multitool//tools/helm @multitool//tools/dyff @multitool//tools/gh @multitool//tools/yq --config=ci >"$TOOL_BUILD_LOG" 2>&1; then
+		echo "ERROR: tool build FAILED (bazel exited non-zero), full output:"
+		cat "$TOOL_BUILD_LOG"
+		exit 1
+	fi
+	tail -1 "$TOOL_BUILD_LOG"
 	BAZEL_BIN="$(git rev-parse --show-toplevel)/bazel-bin"
 
-	HELM=$(find -L "$BAZEL_BIN/external" -name "helm" -type f -perm /111 2>/dev/null | head -1)
-	DYFF=$(find -L "$BAZEL_BIN/external" -name "dyff" -type f -perm /111 2>/dev/null | head -1)
-	GH=$(find -L "$BAZEL_BIN/external" -name "gh" -type f -perm /111 2>/dev/null | head -1)
-	YQ=$(find -L "$BAZEL_BIN/external" -name "yq" -type f -perm /111 2>/dev/null | head -1)
+	# Resolve tool paths from the build that just ran (#4749). Walking the
+	# bazel-bin convenience symlink can miss freshly built tools when the
+	# symlink points at a different output base than --config=ci wrote to,
+	# which surfaced as "DYFF not found in bazel-bin" after a SUCCESSFUL
+	# build. cquery reports the artifacts that build produced; its paths are
+	# exec-root-relative, so resolve them against the exec root derived from
+	# the symlink chain, then workspace-relative (bazel-out/... resolves via
+	# the bazel-out symlink).
+	EXEC_ROOT=""
+	if [ -L "$BAZEL_BIN" ]; then
+		# <ws>/bazel-bin -> <output_base>/execroot/<ws>/bazel-out/<cfg>/bin,
+		# so the exec root sits two directory levels up the link target.
+		EXEC_ROOT="$(dirname "$(dirname "$(readlink "$BAZEL_BIN")")")"
+	fi
+
+	resolve_tool() {
+		local label="$1" rel
+		while IFS= read -r rel; do
+			[ -n "$rel" ] || continue
+			case "$rel" in
+			/*)
+				if [ -f "$rel" ] && [ -x "$rel" ]; then
+					printf '%s\n' "$rel"
+					return 0
+				fi
+				;;
+			*)
+				if [ -n "$EXEC_ROOT" ] && [ -f "$EXEC_ROOT/$rel" ] && [ -x "$EXEC_ROOT/$rel" ]; then
+					printf '%s\n' "$EXEC_ROOT/$rel"
+					return 0
+				fi
+				if [ -f "$REPO_ROOT/$rel" ] && [ -x "$REPO_ROOT/$rel" ]; then
+					printf '%s\n' "$REPO_ROOT/$rel"
+					return 0
+				fi
+				;;
+			esac
+		done < <(bazel cquery --config=ci --output=files "$label" 2>/dev/null || true)
+		return 1
+	}
+
+	# Legacy fallback, kept only as insurance in case cquery misbehaves where
+	# `bazel info` already does in this environment. Same walk as pre-#4749.
+	fallback_find_tool() {
+		find -L "$BAZEL_BIN/external" -name "$1" -type f -perm /111 2>/dev/null | head -1
+	}
+
+	HELM=$(resolve_tool "@multitool//tools/helm" || true)
+	DYFF=$(resolve_tool "@multitool//tools/dyff" || true)
+	GH=$(resolve_tool "@multitool//tools/gh" || true)
+	YQ=$(resolve_tool "@multitool//tools/yq" || true)
+	if [ -z "$HELM" ]; then HELM=$(fallback_find_tool "helm"); fi
+	if [ -z "$DYFF" ]; then DYFF=$(fallback_find_tool "dyff"); fi
+	if [ -z "$GH" ]; then GH=$(fallback_find_tool "gh"); fi
+	if [ -z "$YQ" ]; then YQ=$(fallback_find_tool "yq"); fi
 
 	for tool_name in HELM DYFF GH YQ; do
 		tool_path="${!tool_name}"
 		if [ -z "$tool_path" ]; then
-			echo "ERROR: $tool_name not found in bazel-bin"
+			lower_name="$(printf '%s' "$tool_name" | tr '[:upper:]' '[:lower:]')"
+			echo "ERROR: $tool_name not found after a successful tool build"
+			echo "(lookup failure, NOT a build failure; see #4749)"
+			ls -la "$BAZEL_BIN" || true
+			find -L "$BAZEL_BIN/external" -maxdepth 3 -name "*$lower_name*" || true
+			echo "--- cquery said ---"
+			bazel cquery --config=ci --output=files "@multitool//tools/$lower_name" || true
 			exit 1
 		fi
 		echo "  $tool_name: $tool_path"
