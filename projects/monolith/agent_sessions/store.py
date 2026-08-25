@@ -11,6 +11,7 @@ from sqlalchemy import func, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from agent_sessions.constants import QWEN_SYNTHETIC_PROMPT, SYNTHETIC_SESSION_PREFIX
 from agent_sessions.models import (
     AgentSession,
     AgentTurn,
@@ -455,10 +456,23 @@ def lexical_search(session: Session, query_text: str, limit: int = 20) -> list[d
         "FROM agent_sessions.agent_turns t "
         "JOIN agent_sessions.agent_sessions s ON t.session_id = s.id, q "
         "WHERE t.fts_vector @@ q.q "
+        "AND s.local_session_id NOT LIKE :synthetic_prefix "
+        "AND NOT (COALESCE(s.model, '') = 'qwen' AND COALESCE(("
+        "SELECT first_turn.prompt FROM agent_sessions.agent_turns first_turn "
+        "WHERE first_turn.session_id = s.id ORDER BY first_turn.seq LIMIT 1"
+        "), '') = :qwen_synthetic_prompt) "
         "ORDER BY rank DESC, t.created_at DESC LIMIT :limit"
         ") AS ranked"
     )
-    result = session.exec(sql, params={"q": query_text, "limit": limit})
+    result = session.exec(
+        sql,
+        params={
+            "q": query_text,
+            "limit": limit,
+            "synthetic_prefix": f"{SYNTHETIC_SESSION_PREFIX}%",
+            "qwen_synthetic_prompt": QWEN_SYNTHETIC_PROMPT,
+        },
+    )
     keys = (
         "session_id",
         "local_session_id",

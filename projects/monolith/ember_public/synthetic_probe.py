@@ -279,9 +279,10 @@ async def probe_qwen() -> dict:
     started = perf_counter()
     try:
         from agent_sessions.api import run_synthetic_session
+        from agent_sessions.constants import QWEN_SYNTHETIC_PROMPT
 
         turn = await run_synthetic_session(
-            "Reply with exactly: qwen synthetic ok",
+            QWEN_SYNTHETIC_PROMPT,
             model="qwen",
         )
         if turn.terminal_reason not in {"completed", "stop"}:

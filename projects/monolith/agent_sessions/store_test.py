@@ -7,7 +7,24 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent_sessions import store
+from agent_sessions.constants import QWEN_SYNTHETIC_PROMPT, SYNTHETIC_SESSION_PREFIX
 from agent_sessions.models import AgentSession, PendingMessage
+
+
+def test_lexical_search_excludes_synthetic_sessions():
+    captured = {}
+
+    class FakeSession:
+        def exec(self, statement, params):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+            return []
+
+    assert store.lexical_search(FakeSession(), "qwen") == []
+    assert "s.local_session_id NOT LIKE :synthetic_prefix" in captured["sql"]
+    assert "first_turn.session_id = s.id" in captured["sql"]
+    assert captured["params"]["synthetic_prefix"] == (f"{SYNTHETIC_SESSION_PREFIX}%")
+    assert captured["params"]["qwen_synthetic_prompt"] == QWEN_SYNTHETIC_PROMPT
 
 
 def _database(monkeypatch, tmp_path):

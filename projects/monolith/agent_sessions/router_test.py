@@ -14,6 +14,7 @@ from agent_sessions import mcp
 from agent_sessions import transport
 import agent_sessions.router as agent_router
 from agent_sessions.codex_login import codex_login_gate
+from agent_sessions.constants import QWEN_SYNTHETIC_PROMPT, SYNTHETIC_SESSION_PREFIX
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.router import router
 from core.db import get_session
@@ -108,6 +109,56 @@ def test_list_sessions_with_status_filter(client, session):
 
     body = client.get("/api/agents/sessions?status=completed").json()
     assert [item["local_session_id"] for item in body] == ["done"]
+
+
+def test_list_sessions_excludes_qwen_synthetics(client, session):
+    completed = _session(session, "legacy-completed", model="qwen")
+    pending = _session(session, "legacy-pending", model="qwen")
+    _session(
+        session,
+        f"{SYNTHETIC_SESSION_PREFIX}new",
+        model="qwen",
+        title="A changed future probe prompt",
+    )
+    ordinary_qwen = _session(session, "ordinary-qwen", model="qwen")
+    same_prompt_other_model = _session(session, "ordinary-luna", model="luna")
+    session.add_all(
+        [
+            AgentTurn(
+                session_id=completed.id,
+                seq=1,
+                prompt=QWEN_SYNTHETIC_PROMPT,
+                result_text="qwen synthetic ok",
+            ),
+            PendingMessage(
+                session_id=pending.id,
+                seq=1,
+                message_text=QWEN_SYNTHETIC_PROMPT,
+                model="qwen",
+            ),
+            AgentTurn(
+                session_id=ordinary_qwen.id,
+                seq=1,
+                prompt="Help with an ordinary task",
+                result_text="done",
+            ),
+            AgentTurn(
+                session_id=same_prompt_other_model.id,
+                seq=1,
+                prompt=QWEN_SYNTHETIC_PROMPT,
+                result_text="done",
+            ),
+        ]
+    )
+    session.commit()
+
+    body = client.get("/api/agents/sessions").json()
+
+    assert {item["local_session_id"] for item in body} == {
+        "ordinary-qwen",
+        "ordinary-luna",
+    }
+    assert client.get(f"/api/agents/sessions/{completed.id}").status_code == 200
 
 
 def test_models_endpoint_offers_everything_when_env_unset(client, monkeypatch):

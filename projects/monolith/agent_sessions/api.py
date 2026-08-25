@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from agent_sessions import model_family, store
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
+from agent_sessions.constants import SYNTHETIC_SESSION_PREFIX
 from agent_sessions.mcp import (
     _append_rationale_trailer,
     _clear_ember_bindings_for,
@@ -44,7 +45,7 @@ async def run_synthetic_session(prompt: str, model: str = "qwen"):
     model_family(model)
     row = await asyncio.to_thread(
         _persist_session,
-        str(uuid4()),
+        f"{SYNTHETIC_SESSION_PREFIX}{uuid4()}",
         "<guest>",
         "main",
         model,
