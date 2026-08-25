@@ -232,6 +232,24 @@ signoz:
       # Health probes are exempt and stay on /api/v1/health at the root.
       signoz_global_external__url: https://private.jomcgi.dev/app/signoz
   clickhouse:
+    # TEMPORARY, REMOVE ONCE CLICKHOUSE IS SERVING. Default is 100.
+    #
+    # A storage event on 2026-08-24 left 133 part directories in
+    # signoz_logs.logs_v2 where every file is zero length: data.bin, columns.txt,
+    # checksums.txt, count.txt, primary.cidx, all 0 bytes. ClickHouse refuses to
+    # start rather than silently discard more than 100 broken parts, so SigNoz
+    # has been down since. The parts hold nothing, so dropping them costs only
+    # what was in flight at 00:58 that morning.
+    #
+    # Raised to 200 for margin over 133. ClickHouse aborts at the first table
+    # over the ceiling, so if another table is also affected it will surface as
+    # a new failure with its own count rather than being masked by this.
+    #
+    # This disarms a real guardrail. Restore the default as soon as the server
+    # is up and the empty parts are gone: see #5317.
+    settings:
+      merge_tree/max_suspicious_broken_parts: 200
+
     # DO NOT PIN BACK TO 25.5.6. Tried in #5307 and reverted here: 25.5.6
     # cannot read what 25.12.5 wrote. It fails to attach
     # signoz_metrics.samples_v4_agg_5m with "Unknown version of serialization
