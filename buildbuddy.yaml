@@ -340,6 +340,40 @@ actions:
       disk: "120GB"
     # See pr-checks. Both actions MUST carry the same value.
     git_fetch_depth: 0
+    # Explicit wall clock, sized for a 14-image cold rebuild plus publish.
+    #
+    # With no timeout here, deploy runs under BuildBuddy's platform default,
+    # which is how main's deploy for 1e63fee7 died (invocation 06feb469):
+    # killed at exactly 3600s after #4862 refreshed all 14 apko locks and
+    # forced every image to rebuild cold. All 14 image.push children were
+    # GREEN, spanning ~52 minutes; what never ran is everything after
+    # push-changed.sh, i.e. the chart publish and the write-back that makes a
+    # deploy happen. The images shipped and nothing deployed
+    # (docs/runbooks/argocd-outofsync.md, third "merged but not deployed"
+    # cause).
+    #
+    # Sizing. The image stage dominates: ~52 minutes of wall clock for those
+    # 14 cold apko builds and pushes, against single-digit minutes for the
+    # full main test suite before it (warm snapshot) and for push_charts,
+    # write-back and the format stage after it. A worst-case wide rebuild is
+    # therefore roughly 10 + 55 + 15 minutes, and 2h leaves headroom above
+    # that. The headroom is deliberately generous rather than tight: a kill
+    # landing DURING the publish is strictly worse than a long run (charts can
+    # reach the registry without the write-back commit, which wedges future
+    # publishes), while an oversized ceiling costs queue latency only on a
+    # genuinely wedged run. Every stage here is idempotent (push-changed.sh
+    # skips content-identical images, push.sh.tpl skips versions already
+    # published), so a re-run after any truncation converges instead of
+    # duplicating.
+    #
+    # Caveat before trusting this number: BuildBuddy honours an explicit
+    # request verbatim UNLESS the org carries a
+    # remote_execution.remote_runner_default_timeout experiment, in which case
+    # requests AT OR ABOVE its value are clamped back down to it
+    # (ci_runner_util.go RunnerTimeout). If a post-change wide rebuild still
+    # dies at almost exactly one hour, the cap is that experiment or the plan
+    # tier, not this field, and only BuildBuddy can lift it.
+    timeout: "2h"
     triggers:
       push:
         branches:
