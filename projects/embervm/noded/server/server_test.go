@@ -997,6 +997,129 @@ func TestBuildBaseUnknownImage(t *testing.T) {
 	}
 }
 
+// TestBuildBaseAdoptsSiblingBundleFromDisk proves the #4866 adoption gate: a
+// co-located sibling brick shares this node's scratch dir but not this
+// process's base registry, so its completed build is invisible to the registry
+// short-circuit. A COMPLETE bundle at this request's derived key must be
+// adopted READY and reported already_built WITHOUT booting a build guest,
+// instead of spending a multi-minute rebuild that would collide at publish.
+func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
+	build := &fakeDriver{}
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+			BootReadyTimeout: time.Second,
+			Images:           map[string]config.Image{"img:1": {RootfsPath: "/rootfs.ext4"}},
+		},
+		Driver:         &fakeDriver{},
+		Transport:      &fakeTransport{},
+		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
+	memBytes := strings.Repeat("m", 100)
+	snapBytes := strings.Repeat("s", 50)
+	for name, content := range map[string]string{
+		"imageref": "img:1",
+		"memfile":  memBytes,
+		"snapfile": snapBytes,
+	} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir bundle dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatalf("write sibling %s: %v", name, err)
+		}
+	}
+
+	resp, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		Trace:            &nodev1.Trace{Workload: "echo"},
+		ImageRef:         "img:1",
+		WorkloadRevision: "r1",
+		ReadyPath:        "/shim/ready",
+	})
+	if err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	if !resp.GetAlreadyBuilt() || resp.GetSnapshotRef() != baseKey {
+		t.Errorf("resp = %+v, want already_built=true with ref %q", resp, baseKey)
+	}
+	if resp.GetImageDigest() != "img:1" {
+		t.Errorf("image_digest = %q, want img:1 from the request identity", resp.GetImageDigest())
+	}
+	if resp.GetBaseSizeBytes() != uint64(len(memBytes)+len(snapBytes)) {
+		t.Errorf("base_size_bytes = %d, want %d", resp.GetBaseSizeBytes(), len(memBytes)+len(snapBytes))
+	}
+	// No build guest was ever booted.
+	if claims, _, _, _ := build.counts(); claims != 0 || build.snapshots != 0 {
+		t.Errorf("build driver claims=%d snapshots=%d, want 0/0 (no guest booted)", claims, build.snapshots)
+	}
+	// The adopted bundle is registered READY so WatchNode advertises it and the
+	// registry short-circuit serves later repeats without re-touching disk.
+	entry, ok := s.bases.get(baseKey)
+	if !ok || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Errorf("registry entry = %+v ok=%v, want READY", entry, ok)
+	} else {
+		if entry.imageDigest != "img:1" || entry.rootfsPath != "/rootfs.ext4" || entry.workload != "echo" {
+			t.Errorf("registry entry identity = %+v, want request-derived values", entry)
+		}
+	}
+	// The sibling's bytes were adopted, not disturbed.
+	for name, content := range map[string]string{"imageref": "img:1", "memfile": memBytes, "snapfile": snapBytes} {
+		got, rerr := os.ReadFile(filepath.Join(dir, name))
+		if rerr != nil || string(got) != content {
+			t.Errorf("bundle %s = %q (%v), want untouched %q", name, got, rerr, content)
+		}
+	}
+}
+
+// TestBuildBaseIncompleteBundleFallsThroughToBuild proves an INCOMPLETE on-disk
+// bundle never adopts (#4866 acceptance): a dir missing its snapfile fails the
+// completeness rule, so the build proceeds normally. The stale debris itself is
+// cleared by the driver at publish time (covered driver-side).
+func TestBuildBaseIncompleteBundleFallsThroughToBuild(t *testing.T) {
+	build := &fakeDriver{}
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+			BootReadyTimeout: time.Second,
+			Images:           map[string]config.Image{"img:1": {RootfsPath: "/rootfs.ext4"}},
+		},
+		Driver:         &fakeDriver{},
+		Transport:      &fakeTransport{},
+		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir stale dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memfile"), []byte("STALE"), 0o600); err != nil {
+		t.Fatalf("write stale memfile: %v", err)
+	}
+
+	resp, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		Trace:            &nodev1.Trace{Workload: "echo"},
+		ImageRef:         "img:1",
+		WorkloadRevision: "r1",
+		ReadyPath:        "/shim/ready",
+	})
+	if err != nil {
+		t.Fatalf("BuildBase: %v", err)
+	}
+	if resp.GetAlreadyBuilt() {
+		t.Errorf("resp = %+v, want a fresh build (already_built=false)", resp)
+	}
+	if claims, _, _, _ := build.counts(); claims != 1 || build.snapshots != 1 {
+		t.Errorf("build driver claims=%d snapshots=%d, want 1/1 (stale dir must not adopt)", claims, build.snapshots)
+	}
+	if entry, ok := s.bases.get(baseKey); !ok || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Errorf("registry entry = %+v ok=%v, want READY after the build", entry, ok)
+	}
+}
+
 // newZipTestServer wires a Server for the zip lane: a build driver recorder, a
 // fake transport (the hydrate seam), a fake archive HTTP server serving
 // archiveBytes, and the runtime image provisioned in the config table. Returns the

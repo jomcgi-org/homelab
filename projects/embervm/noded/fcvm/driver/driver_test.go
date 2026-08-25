@@ -790,6 +790,107 @@ func TestDriverClaimFromMissingBaseErrors(t *testing.T) {
 	}
 }
 
+// TestDriverSnapshotBaseAdoptsSiblingBundle proves the #4866 publish-collision
+// adoption: when a co-located sibling brick published the SAME base bundle
+// while this process was building, the rename collision is resolved as ADOPTION
+// (success against the sibling's bytes), never a permanent "file exists"
+// failure. The sibling's imageref sidecar is deliberately omitted from the
+// just-published subtest: the server writes it only after SnapshotBase returns,
+// so a complete memfile+snapfile pair alone must count as published.
+func TestDriverSnapshotBaseAdoptsSiblingBundle(t *testing.T) {
+	for _, tc := range []struct{ name string }{
+		{"published"},
+		{"just-published-no-imageref-yet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			d := testDriver(t)
+			h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "wedge"})
+			if err != nil {
+				t.Fatalf("Claim: %v", err)
+			}
+
+			const key = "wl__sibling00"
+			siblingDir := d.baseDir(key)
+			if err := os.MkdirAll(siblingDir, 0o750); err != nil {
+				t.Fatalf("mkdir sibling dir: %v", err)
+			}
+			files := map[string]string{"memfile": "SIBLING-mem", "snapfile": "SIBLING-snap"}
+			if tc.name == "published" {
+				files["imageref"] = "img:1"
+			}
+			for name, content := range files {
+				if err := os.WriteFile(filepath.Join(siblingDir, name), []byte(content), 0o600); err != nil {
+					t.Fatalf("write sibling %s: %v", name, err)
+				}
+			}
+
+			ref, err := d.SnapshotBase(ctx, h, key)
+			if err != nil {
+				t.Fatalf("SnapshotBase must adopt the sibling bundle, got error: %v", err)
+			}
+			if !ref.Base || ref.ID != key || ref.SizeBytes == 0 {
+				t.Errorf("adopted ref = %+v, want Base with the key and a size", ref)
+			}
+			if _, err := os.Stat(siblingDir + ".building"); !os.IsNotExist(err) {
+				t.Errorf("redundant staging dir still exists, stat err=%v", err)
+			}
+			for _, f := range []string{"memfile", "snapfile"} {
+				got, rerr := os.ReadFile(filepath.Join(siblingDir, f))
+				if rerr != nil || string(got) != files[f] {
+					t.Errorf("sibling %s = %q (%v), want untouched %q", f, got, rerr, files[f])
+				}
+			}
+			if err := d.Release(ctx, h); err != nil {
+				t.Fatalf("Release: %v", err)
+			}
+		})
+	}
+}
+
+// TestDriverSnapshotBaseClearsStaleDestinationAndPublishes proves the other
+// #4866 collision branch: an INCOMPLETE destination (debris from an older
+// incarnation or a crashed publish) is removed and the publish proceeds, so a
+// stale dir never wedges a legitimate build at the rename.
+func TestDriverSnapshotBaseClearsStaleDestinationAndPublishes(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "wedge-stale"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	const key = "wl__stale00001"
+	staleDir := d.baseDir(key)
+	if err := os.MkdirAll(staleDir, 0o750); err != nil {
+		t.Fatalf("mkdir stale dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(staleDir, "memfile"), []byte("STALE"), 0o600); err != nil {
+		t.Fatalf("write stale memfile: %v", err)
+	}
+
+	ref, err := d.SnapshotBase(ctx, h, key)
+	if err != nil {
+		t.Fatalf("SnapshotBase must clear the stale destination and publish, got error: %v", err)
+	}
+	if !ref.Base || ref.ID != key || ref.SizeBytes == 0 {
+		t.Errorf("ref = %+v, want Base with the key and a size", ref)
+	}
+	gotMem, merr := os.ReadFile(filepath.Join(staleDir, "memfile"))
+	if merr != nil || string(gotMem) != "mem-image-bytes" {
+		t.Errorf("final memfile = %q (%v), want the fresh publish", gotMem, merr)
+	}
+	if _, serr := os.Stat(filepath.Join(staleDir, "snapfile")); serr != nil {
+		t.Errorf("final snapfile missing: %v", serr)
+	}
+	if _, serr := os.Stat(staleDir + ".building"); !os.IsNotExist(serr) {
+		t.Errorf("staging dir still exists, stat err=%v", serr)
+	}
+	if err := d.Release(ctx, h); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+}
+
 // TestDriverSessionSnapshotRestoreRoundTrip proves the R2 session bank/relight
 // mechanic on the real driver: snapshot a live session VM into a self-contained
 // bundle under sessions/<ref> (SnapshotSession, no resume, so the caller destroys),

@@ -781,6 +781,14 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 			AlreadyBuilt:  true,
 		}, nil
 	}
+	// #4866: a co-located sibling brick shares this scratch dir but not this
+	// per-process registry, so ITS completed build is invisible above. Adopt a
+	// complete bundle for this exact key from disk BEFORE booting anything: a
+	// rebuild would spend a full multi-minute build guest only to collide with
+	// the same bundle at the publish rename.
+	if resp, ok := s.adoptSiblingBaseBundle(baseKey, workload, imageDigest, img.RootfsPath, readyPath); ok {
+		return resp, nil
+	}
 	// Serialize builds per key. A concurrent duplicate is rejected rather than
 	// double-booting a build guest.
 	if !s.bases.beginBuild(baseKey, workload, img.RootfsPath, readyPath) {
@@ -877,6 +885,66 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		AlreadyBuilt:    false,
 		ServingImageRef: servingImageRef,
 	}, nil
+}
+
+// adoptSiblingBaseBundle adopts a COMPLETE base bundle published on shared
+// scratch by a co-located sibling brick (#4866) and reports it as an
+// AlreadyBuilt hit. The baseKey is a pure function of (workload, image identity,
+// revision, vendor), so a complete bundle at that key IS this build's output:
+// the request's imageDigest and rootfsPath are exactly what the sibling recorded.
+// Adoption registers READY (as ReconcileBasesFromDisk would) and returns true;
+// false means "no complete bundle" or "complete but not adoptable HERE", and the
+// caller proceeds with a normal build. The checks mirror reconcile's adoption
+// gates: the same completeness rule as the inventory scan (isCompleteBase), the
+// register-time snapshot-format validation (#4407: never adopt a snapshot this
+// node cannot load), and the rootfs rule (a recorded-but-missing backing rootfs
+// cannot restore; an unrecorded path stays adoptable).
+func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPath, readyPath string) (*nodev1.BuildBaseResponse, bool) {
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
+	if !isCompleteBase(dir, nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED) {
+		return nil, false
+	}
+	snapfile := filepath.Join(dir, "snapfile")
+	if refusal := s.snapshotFormatRefusal(snapfile); refusal != "" {
+		s.logger.Warn("noded: declining to adopt sibling base bundle with unusable snapshot format",
+			"base", baseKey, "reason", refusal)
+		return nil, false
+	}
+	if rootfsPath != "" {
+		if _, err := os.Stat(rootfsPath); err != nil {
+			s.logger.Warn("noded: declining to adopt sibling base bundle with missing rootfs",
+				"base", baseKey, "rootfs", rootfsPath, "err", err)
+			return nil, false
+		}
+	}
+	fi, err := os.Stat(snapfile)
+	if err != nil {
+		return nil, false
+	}
+	size := fi.Size()
+	if mfi, err := os.Stat(filepath.Join(dir, "memfile")); err == nil {
+		size += mfi.Size()
+	}
+	s.bases.register(baseEntry{
+		snapshotRef:     baseKey,
+		workload:        workload,
+		imageDigest:     imageDigest,
+		rootfsPath:      rootfsPath,
+		readyPath:       readyPath,
+		sizeBytes:       size,
+		createdAtUnixMs: baseCreatedAtUnixMs(dir),
+		state:           nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
+	})
+	s.signalChange()
+	s.logger.Info("noded: adopted sibling-published base bundle",
+		"base", baseKey, "size_bytes", size)
+	return &nodev1.BuildBaseResponse{
+		SnapshotRef:   baseKey,
+		ImageDigest:   imageDigest,
+		BaseSizeBytes: uint64(size),
+		Arch:          s.cfg.Arch,
+		AlreadyBuilt:  true,
+	}, true
 }
 
 // runBuild cold-boots a build guest, (for the zip lane) hydrates it with the
