@@ -1,9 +1,9 @@
 <script>
-  // /ember: the landing page for the Ember mini-site. Narrative order is
-  // what is it (masthead) -> is it useful to me (class rows) -> how does it
-  // do that (diagram + isolation) -> see it run (demo doors); depth sits
-  // behind accordion rows so the visible words stay few. Copy voice follows
-  // the project README (blunt mechanism sentences, no rhetoric). Visual language is the shared ember token
+  // /ember: the landing page for the Ember mini-site, picomq-shaped: a
+  // hero with the live status line and two CTAs, then one label-only
+  // accordion (the five classes, isolation, the moving parts). All depth
+  // sits behind the rows or in ARCHITECTURE.md. Copy voice follows the
+  // project README (blunt mechanism sentences, no rhetoric). Visual language is the shared ember token
   // sheet (lib/public/ember/ember.css) plus landing-only tokens in
   // ./landing.css; hex never appears in this <style> block.
   //
@@ -118,11 +118,9 @@
     <header class="masthead">
       <h1><span class="word">Ember</span></h1>
       <p class="lede">
-        Ember gives every job its own tiny virtual machine. Some run once and
-        are destroyed. Some sleep as snapshots and wake on demand,
-        <b>disk to answering queries in 78&nbsp;ms</b>. Some keep a disk that
-        outlives the VM. Built from scratch on this cluster, on
-        <b>Firecracker</b>.
+        Every job gets its own tiny virtual machine. Idle ones sleep as
+        snapshots; <b>disk to answering queries in 78&nbsp;ms</b>. Built from
+        scratch on this cluster.
       </p>
       <p class="live">
         <span class="dot {dotClass}"></span>
@@ -152,120 +150,105 @@
           >source</a
         >
       </p>
+      <p class="ctas">
+        <a class="cta cta-primary" href="/ember/postgres">wake the database</a>
+        <a
+          class="cta"
+          href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
+          >read the docs</a
+        >
+      </p>
     </header>
 
     <section>
       <h2 class="h2" id="classes">
-        <a class="anchor" href="#classes">What you'd run on it</a>
+        <a class="anchor" href="#classes">What it runs</a>
       </h2>
-      <p class="body">
-        Five classes, declared as Kubernetes custom resources, all assuming the
-        guest is hostile.
-      </p>
       <div class="classes">
         <details class="class" name="em-classes">
           <summary>
-            <span class="cname">task<small>run once</small></span>
-            <span class="cline"
-              >A fresh VM, no network device, destroyed after one job.</span
-            >
+            <span class="cname">task</span>
+            <span class="ctag">run once</span>
           </summary>
           <div class="cmore">
             <p>
-              One-shot execution in a fresh or snapshot-restored VM. The guest
-              can reach exactly one thing: its channel to the host daemon. The
-              scan fleet runs the CI security scanner this way.
+              A fresh VM per job, <b>no network device</b>, destroyed after. The guest reaches exactly one thing: its channel to the host daemon.
+            </p>
+            <p class="sigs"><a class="sig" href="/ember/semgrep">semgrep, live →</a> <a class="sig" href="/ember/bazel">a frozen Bazel brain, live →</a></p>
+          </div>
+        </details>
+        <details class="class" name="em-classes">
+          <summary>
+            <span class="cname">session</span>
+            <span class="ctag">sleep &amp; wake</span>
+          </summary>
+          <div class="cmore">
+            <p>
+              An agent's sandbox. <b>Banked</b> between turns, <b>relit</b> with memory, processes and open files intact; snapshots offload to S3, so a session survives its node.
+            </p>
+            <p class="sigs"><a class="sig" href="/ember/agents">one microVM per agent →</a></p>
+          </div>
+        </details>
+        <details class="class" name="em-classes">
+          <summary>
+            <span class="cname">serving</span>
+            <span class="ctag">always answering</span>
+          </summary>
+          <div class="cmore">
+            <p>
+              A warm HTTP endpoint. Requests go through a node-local Envoy straight into the VM; <b>the control plane can restart mid-request</b> and traffic notices nothing.
             </p>
           </div>
         </details>
         <details class="class" name="em-classes">
           <summary>
-            <span class="cname">session<small>sleep &amp; wake</small></span>
-            <span class="cline"
-              >An agent's sandbox, banked between turns, relit with memory
-              intact.</span
-            >
+            <span class="cname">stateful</span>
+            <span class="ctag">a database that sleeps</span>
           </summary>
           <div class="cmore">
             <p>
-              Idle sessions are <b>banked</b> (snapshotted to disk) and
-              <b>relit</b> on the next call with memory, processes and open
-              files intact. Snapshots offload to S3, so a session survives the
-              node it slept on. Each AI agent gets its own machine to make a
-              mess in: shell, filesystem, packages,
-              <b>destroyed without ceremony</b>.
+              Postgres banked to disk when idle, woken by the next connection. <b>Zero compute while asleep</b>, and the disk outlives the VM.
+            </p>
+            <p class="sigs"><a class="sig" href="/ember/postgres">wake it yourself →</a></p>
+          </div>
+        </details>
+        <details class="class" name="em-classes">
+          <summary>
+            <span class="cname">composite</span>
+            <span class="ctag">wakes as one</span>
+          </summary>
+          <div class="cmore">
+            <p>
+              Several VMs, one private network, banked and relit as a unit. A scratch Kubernetes cluster ran as one workload.
             </p>
           </div>
         </details>
         <details class="class" name="em-classes">
           <summary>
-            <span class="cname">serving<small>always answering</small></span>
-            <span class="cline"
-              >A warm HTTP endpoint; requests never touch the control plane.</span
-            >
+            <span class="cname">isolation</span>
+            <span class="ctag">hostile by default</span>
           </summary>
           <div class="cmore">
             <p>
-              Requests reach the guest directly through a node-local Envoy the
-              control plane has already programmed. An image renderer answers
-              real internet traffic this way,
-              <b>rate-limited and quota-capped</b>.
+              <b>No VM, and nothing it was restored from, is ever shared between two customers.</b> Task and session guests have no network device at all. Quotas fail closed: quota 0 is a hard stop at submit.
             </p>
           </div>
         </details>
         <details class="class" name="em-classes">
           <summary>
-            <span class="cname"
-              >stateful<small>a database that sleeps</small></span
-            >
-            <span class="cline"
-              >Its disk outlives the VM; the next connection wakes it.</span
-            >
+            <span class="cname">the moving parts</span>
+            <span class="ctag">how it fits together</span>
           </summary>
           <div class="cmore">
             <p>
-              Postgres banked to disk the moment it goes idle.
-              <b>Zero compute while asleep</b>, and the volume on node NVMe is
-              the authoritative copy.
-              <a class="sig" href="/ember/postgres">see it live →</a>
+              An <b>Elixir control plane</b> manages Firecracker VM lifecycle
+              on Kubernetes; a Go daemon on each node owns the machines.
+              Workloads are declared as Kubernetes custom resources.
             </p>
-          </div>
-        </details>
-        <details class="class" name="em-classes">
-          <summary>
-            <span class="cname">composite<small>wakes as one</small></span>
-            <span class="cline"
-              >Several VMs, one private network, banked and relit together.</span
-            >
-          </summary>
-          <div class="cmore">
-            <p>
-              An all-or-none group. A scratch Kubernetes cluster ran as one
-              composite workload: control plane and workers woke together on the
-              first kubectl.
-            </p>
-          </div>
-        </details>
-      </div>
-      <pre class="api">POST /v1/workloads/:name/tasks     → 202 + a task_id
+            <pre class="api">POST /v1/workloads/:name/tasks     → 202 + a task_id
 POST /v1/workloads/:name/sessions  → a session_id, then /v1/sessions/:id/invoke
 serving                            → plain HTTP, straight into the VM</pre>
-    </section>
-
-    <section>
-      <h2 class="h2" id="arch">
-        <a class="anchor" href="#arch">How it works</a>
-      </h2>
-      <p class="body">
-        An <b>Elixir control plane</b> manages Firecracker VM lifecycle on
-        Kubernetes; a Go daemon on each node owns the machines.
-        <b>Serving requests never touch the control plane</b>: the edge routes
-        through a node-local Envoy straight into the VM, so the control plane
-        can restart mid-request and traffic notices nothing.
-      </p>
-      <details class="fold">
-        <summary><span class="fold-label">the moving parts</span></summary>
-        <div class="arch">
+            <div class="arch">
           <svg
             viewBox="0 0 720 300"
             role="img"
@@ -472,69 +455,19 @@ serving                            → plain HTTP, straight into the VM</pre>
             >
           </div>
         </div>
-      </details>
-      <div class="iso">
-        <p>
-          <b
-            >No VM, and nothing it was restored from, is ever shared between two
-            customers.</b
-          >
-        </p>
-        <p>
-          Task and session guests have <b>no network device at all</b>: one
-          channel to the host daemon.
-        </p>
-        <p>
-          <b>Quotas fail closed.</b> A customer with quota 0 is hard-stopped at submit.
-        </p>
-      </div>
-    </section>
-
-    <section>
-      <h2 class="h2" id="live-exhibits">
-        <a class="anchor" href="#live-exhibits">See it run</a>
-      </h2>
-      <div class="doors">
-        <a class="door" href="/ember/postgres">
-          <span class="k">live demo</span>
-          <h3>A Postgres that sleeps</h3>
-          <p>Click connect, watch the stopwatch: best wake 78&nbsp;ms.</p>
-          <span class="go">ember/postgres</span>
-        </a>
-        <a class="door" href="/ember/bazel">
-          <span class="k">live demo</span>
-          <h3>Query a frozen Bazel brain</h3>
-          <p>
-            Each query runs in a disposable clone of a snapshotted warm Bazel
-            server.
-          </p>
-          <span class="go">ember/bazel</span>
-        </a>
-        <a class="door" href="/ember/firecracker">
-          <span class="k">explainer</span>
-          <h3>How Firecracker resumes a VM</h3>
-          <p>What a snapshot contains; a full machine back in ~22&nbsp;ms.</p>
-          <span class="go">ember/firecracker</span>
-        </a>
-        <a class="door" href="/ember/agents">
-          <span class="k">explainer</span>
-          <h3>One microVM per agent session</h3>
-          <p>Restored in 2.5 ms, killed 20 s after the last turn.</p>
-          <span class="go">ember/agents</span>
-        </a>
-        <a class="door" href="/ember/semgrep">
-          <span class="k">workload demo</span>
-          <h3>Semgrep</h3>
-          <p>Warm in a microVM, scanning your snippet in about a second.</p>
-          <span class="go">ember/semgrep</span>
-        </a>
+            <p class="sigs">
+              <a class="sig" href="/ember/firecracker">how a VM resumes in 22 ms →</a>
+              <a class="sig" href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md">full architecture →</a>
+            </p>
+          </div>
+        </details>
       </div>
     </section>
 
     <footer class="foot">
       <span
-        >Elixir/OTP control plane · Go node daemon · 10 of 12 roadmap milestones
-        shipped</span
+        >Elixir/OTP control plane · Go node daemon · Firecracker microVMs · 10
+        of 12 roadmap milestones shipped</span
       >
       <span class="foot-links">
         <a href="https://github.com/jomcgi/homelab/tree/main/projects/embervm"
@@ -718,8 +651,7 @@ serving                            → plain HTTP, straight into the VM</pre>
   .live a:focus-visible,
   .sig:focus-visible,
   .anchor:focus-visible,
-  .door:focus-visible,
-  .foot a:focus-visible {
+    .foot a:focus-visible {
     outline: 2px solid var(--em-ember-deep);
     outline-offset: 3px;
   }
@@ -757,6 +689,46 @@ serving                            → plain HTTP, straight into the VM</pre>
   }
 
   .stats .src:focus-visible {
+    outline: 2px solid var(--em-ember-deep);
+    outline-offset: 3px;
+  }
+
+  /* ---------- hero CTAs, picomq-style pair ---------- */
+  .ctas {
+    margin: 22px 0 0;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .cta {
+    font-family: var(--em-mono);
+    font-size: 13px;
+    padding: 10px 18px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--em-ink);
+    border: 1px solid var(--eml-line-strong);
+    background: var(--eml-panel-warm);
+    box-shadow: var(--em-shadow-soft);
+    transition:
+      box-shadow 0.18s ease,
+      transform 0.18s ease;
+  }
+
+  .cta:hover {
+    box-shadow: var(--em-shadow);
+    transform: translateY(-1px);
+  }
+
+  /* Ground-on-ember text: the deep ember passes AA at this size. */
+  .cta-primary {
+    background: var(--em-ember-deep);
+    border-color: var(--em-ember-deep);
+    color: var(--em-ground);
+  }
+
+  .cta:focus-visible {
     outline: 2px solid var(--em-ember-deep);
     outline-offset: 3px;
   }
@@ -866,18 +838,10 @@ serving                            → plain HTTP, straight into the VM</pre>
     color: var(--em-ember-deep);
   }
 
-  .cname small {
-    display: block;
-    font-weight: 400;
-    color: var(--em-faint);
-    font-size: 11px;
-    margin-top: 5px;
-  }
 
-  .cline {
-    font-size: 15px;
-    line-height: 1.55;
-    color: var(--em-muted);
+  .ctag {
+    font-size: 13.5px;
+    color: var(--em-faint);
   }
 
   .class summary::after {
@@ -894,8 +858,8 @@ serving                            → plain HTTP, straight into the VM</pre>
     transform: rotate(45deg);
   }
 
-  .class summary:hover .cline {
-    color: var(--em-ink);
+  .class summary:hover .ctag {
+    color: var(--em-muted);
   }
 
   .class summary:focus-visible {
@@ -919,6 +883,17 @@ serving                            → plain HTTP, straight into the VM</pre>
     font-weight: 600;
   }
 
+  .sigs {
+    margin: 12px 0 0;
+    display: flex;
+    gap: 8px 18px;
+    flex-wrap: wrap;
+  }
+
+  .cmore .arch {
+    margin-top: 14px;
+  }
+
   .sig {
     font-family: var(--em-mono);
     font-size: 12.5px;
@@ -931,60 +906,6 @@ serving                            → plain HTTP, straight into the VM</pre>
 
   .sig:hover {
     border-bottom-color: var(--em-ember-deep);
-  }
-
-  /* ---------- diagram fold: same disclosure language as the class rows ---- */
-  .fold {
-    border-top: 1px solid var(--eml-line-strong);
-    border-bottom: 1px solid var(--em-line);
-    margin-bottom: 16px;
-  }
-
-  .fold summary {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 18px;
-    align-items: center;
-    padding: 12px 4px;
-    cursor: pointer;
-    list-style: none;
-  }
-
-  .fold summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .fold-label {
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--em-faint);
-  }
-
-  .fold summary::after {
-    content: "+";
-    font-family: var(--em-mono);
-    font-size: 15px;
-    line-height: 1;
-    color: var(--em-faint);
-    justify-self: end;
-  }
-
-  .fold[open] summary::after {
-    transform: rotate(45deg);
-  }
-
-  .fold summary:hover .fold-label {
-    color: var(--em-muted);
-  }
-
-  .fold summary:focus-visible {
-    outline: 2px solid var(--em-ember-deep);
-    outline-offset: 3px;
-  }
-
-  .fold .arch {
-    margin-bottom: 14px;
   }
 
   /* ---------- architecture ---------- */
@@ -1143,120 +1064,6 @@ serving                            → plain HTTP, straight into the VM</pre>
     border-top-style: dashed;
   }
 
-  /* ---------- isolation ---------- */
-  .iso {
-    display: flex;
-    flex-direction: column;
-    border-top: 1px solid var(--eml-line-strong);
-  }
-
-  .iso p {
-    margin: 0;
-    padding: 13px 4px;
-    border-bottom: 1px solid var(--em-line);
-    font-size: 16px;
-    line-height: 1.55;
-    color: var(--em-muted);
-  }
-
-  .iso p b {
-    color: var(--em-ink);
-    font-weight: 650;
-  }
-
-  /* ---------- doors ---------- */
-  .doors {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px;
-  }
-
-  .door {
-    display: block;
-    text-decoration: none;
-    background: var(--eml-panel-warm);
-    border: 1px solid var(--em-line);
-    border-radius: 12px;
-    padding: 20px 22px 18px;
-    box-shadow: var(--em-shadow-soft);
-    transition:
-      border-color 0.18s ease,
-      box-shadow 0.18s ease,
-      transform 0.18s ease;
-  }
-
-  .door:hover {
-    border-color: var(--em-ember-dim);
-    box-shadow: var(--em-shadow);
-    transform: translateY(-2px);
-  }
-
-  .door .k {
-    font-family: var(--em-mono);
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    color: var(--em-faint);
-    text-transform: uppercase;
-  }
-
-  .door h3 {
-    margin: 6px 0;
-    font-size: 19px;
-    font-weight: 700;
-    color: var(--em-ink);
-    letter-spacing: -0.01em;
-  }
-
-  .door:hover h3 {
-    color: var(--em-ember-deep);
-  }
-
-  .door p {
-    margin: 0;
-    font-size: 14px;
-    line-height: 1.5;
-    color: var(--em-muted);
-  }
-
-  .door .go {
-    display: inline-block;
-    margin-top: 12px;
-    font-family: var(--em-mono);
-    font-size: 12.5px;
-    color: var(--em-ember-deep);
-  }
-
-  .door .go::after {
-    content: " →";
-    transition: transform 0.18s ease;
-    display: inline-block;
-  }
-
-  .door:hover .go::after {
-    transform: translateX(4px);
-  }
-
-  /* Opening motion is opt-in: absent by default, per the reduced-motion
-     opt-in shape this repo prefers for new work. */
-  @media (prefers-reduced-motion: no-preference) {
-    .class summary::after,
-    .fold summary::after {
-      transition: transform 0.18s ease;
-    }
-
-    .class[open] .cmore,
-    .fold[open] .arch {
-      animation: em-reveal 0.22s ease;
-    }
-
-    @keyframes em-reveal {
-      from {
-        opacity: 0;
-        transform: translateY(-3px);
-      }
-    }
-  }
-
   /* ---------- footer ---------- */
   .foot {
     margin-top: 70px;
@@ -1298,19 +1105,13 @@ serving                            → plain HTTP, straight into the VM</pre>
     }
   }
 
-  @media (max-width: 700px) {
-    .doors {
-      grid-template-columns: 1fr;
-    }
-  }
-
   @media (max-width: 640px) {
     .class summary {
       grid-template-columns: minmax(0, 1fr) 18px;
       gap: 6px 14px;
     }
 
-    .class summary .cline {
+    .class summary .ctag {
       grid-column: 1;
     }
 
@@ -1326,8 +1127,7 @@ serving                            → plain HTTP, straight into the VM</pre>
 
   @media (prefers-reduced-motion: reduce) {
     .dot,
-    .door,
-    .door .go::after {
+    .cta {
       transition: none;
     }
 
