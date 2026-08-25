@@ -86,7 +86,12 @@ helm_chart(
         "conformance.image": "//projects/embervm/conformance:image.info",
     },
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    # //overlays packages diff and promote this chart; the embervm deploy
+    # packages render it for the chart_admissibility_test (#4831).
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/embervm:__subpackages__",
+    ],
 )
 
 # Exposed so the ENOSPC-reclaim guard in the claude runtime package can read the

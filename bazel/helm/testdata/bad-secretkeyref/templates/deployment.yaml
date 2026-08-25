@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bad-secretkeyref
+  namespace: default
+  labels:
+    app: bad-secretkeyref
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bad-secretkeyref
+  template:
+    metadata:
+      labels:
+        app: bad-secretkeyref
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/jomcgi/homelab/tools/image:latest
+          env:
+            # The #4830 shape exactly: a values-layer duplicate key made this
+            # render as `key:` with no value, i.e. null. Structurally valid
+            # YAML, inadmissible object.
+            - name: GITHUB_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: monolith-dev-chat-secrets
+                  key:

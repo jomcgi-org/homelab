@@ -1,0 +1,12 @@
+apiVersion: v2
+name: bad-secretkeyref
+description: |
+  Regression fixture for #4830: a secretKeyRef whose key renders as null.
+  helm template accepts this output because it is structurally valid YAML,
+  but the API server rejects every sync of it
+  (secretKeyRef.key: Required value). //bazel/helm:chart_admissibility_test
+  feeds this chart through kubeconform and requires it to be REJECTED;
+  if it ever passes, the admissibility gate has gone blind.
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
