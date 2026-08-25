@@ -29,13 +29,27 @@ readiness probe on api every 5s and liveness every 10s; progress-ingest has
 liveness on progress every 20s.
 
 Provenance of each allowlist entry:
-  - envoy-gateway-system to 3000 AND 8000: the monolith-private HTTPRoute has
-    backendRefs to both monolith:3000 and monolith:8000, and monolith-github-webhook
-    routes to monolith:8000. The 8000 entry is easy to miss because the private
-    console reaches the backend over API_BASE=http://localhost:8000 (same pod,
-    so it never crosses a Cilium boundary) and short Hubble windows therefore
-    show no gateway traffic to 8000 at all.
-  - mcp to 8000: Context Forge federates to the monolith API. Observed live.
+  - envoy-gateway-system to 3000 AND 8000, NARROWED to the envoy proxy pods
+    (#4660): the monolith-private HTTPRoute has backendRefs to both
+    monolith:3000 and monolith:8000, and monolith-github-webhook routes to
+    monolith:8000. The 8000 entry is easy to miss because the private console
+    reaches the backend over API_BASE=http://localhost:8000 (same pod, so it
+    never crosses a Cilium boundary) and short Hubble windows therefore show no
+    gateway traffic to 8000 at all.
+
+    The namespace itself is NOT the selector. It also holds four cloudflared
+    pods and the gateway control plane, neither of which has a legitimate path
+    to this pod: cloudflared's only origin is the envoy service on :80
+    (cloudflare-gateway values-prod catchAll), and the control plane only
+    watches the API server. A direct cloudflared-to-monolith grant would buy
+    nothing and cost something specific: X-Auth-Email stripping runs at the
+    envoy LISTENER (the gateway-wide ClientTrafficPolicy), so a direct
+    pod-to-port path bypasses HTTPRoute routing AND that strip.
+  - mcp to 8000, NARROWED to Context Forge's gateway Deployment (#4660):
+    federation runs gateway -> monolith API (observed live; the monolith
+    registration lives in CF's Postgres, projects/mcp/ARCHITECTURE.md). The
+    rest of the namespace (CF's redis, its postgres, the cron jobs) has no
+    reason to dial this pod and now gets nothing.
   - jobs.workflowNamespace to 8000, RESTRICTED to this chart's own job pods:
     Argo Workflows POST to MONOLITH_INTERNAL_URL
     (http://monolith.monolith.svc.cluster.local:8000), set in chart/values.yaml.
@@ -96,18 +110,39 @@ spec:
       app.kubernetes.io/instance: {{ .Release.Name }}
       app.kubernetes.io/component: app
   ingress:
+    # Pod-scoped on purpose (#4660), and the one grant here that can break by
+    # surprise. The labels below are stamped on the managed proxy pods by Envoy
+    # Gateway itself (upstream v1.8.3,
+    # internal/infrastructure/kubernetes/proxy/resource.go, EnvoyAppLabel():
+    # name=envoy, component=proxy, managed-by=envoy-gateway), not by a chart
+    # this repo renders, so unlike the workflows rule below, selector and
+    # labels CAN drift apart across an envoy-gateway upgrade. If that happens,
+    # every route through the gateway dies as a silent dial timeout.
+    #
+    # The failure is not silent any more: the #4659 SigNoz alert fires on
+    # policy-denied ingress drops to this pod. Rollback: revert the two
+    # app.kubernetes.io label keys, which restores the namespace-wide grant
+    # until the relabel is understood.
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: envoy-gateway-system
+            app.kubernetes.io/name: envoy
+            app.kubernetes.io/component: proxy
       toPorts:
         - ports:
             - port: "3000"
               protocol: TCP
             - port: "8000"
               protocol: TCP
+    # Context Forge's gateway pod only (issue #4660). The app label is stamped
+    # by the bundled mcp-stack subchart as `app: <fullname>-mcpgateway`, with
+    # fullname `<releaseName>-mcp-stack`; it is carried in values rather than
+    # inlined here because it names a pod THIS chart does not render, and a
+    # release rename must be a values change, not a template edit.
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: mcp
+            app: {{ .Values.ciliumPolicy.ingress.mcpGatewayPodLabel }}
       toPorts:
         - ports:
             - port: "8000"
