@@ -38,11 +38,10 @@ tunnel:
   protocol: http2
 
   ingress:
-    routes:
-      # argocd, longhorn, and signoz retired: they now serve under
-      # private.jomcgi.dev/app/<app> via the cloudflare-ingress gateway
-      # (HTTPRoutes in each chart). Their old subdomains fall through to
-      # catchAll, which has no matching gateway route, so they stop resolving.
+    # argocd, longhorn, and signoz retired: they now serve under
+    # private.jomcgi.dev/app/<app> via the cloudflare-ingress gateway
+    # (HTTPRoutes in each chart). Their old subdomains fall through to
+    # catchAll, which has no matching gateway route, so they stop resolving.
     catchAll:
       service: http://cloudflare-ingress.envoy-gateway-system.svc.cluster.local:80
 

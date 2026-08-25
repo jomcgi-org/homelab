@@ -13,12 +13,12 @@ data:
     {{- end }}
     no-autoupdate: {{ .Values.tunnel.noAutoupdate }}
     ingress:
-    {{- range .Values.tunnel.ingress.routes }}
-    - hostname: {{ .hostname }}
-      service: {{ .service }}
-      {{- if .originRequest }}
-      originRequest:
-        {{- toYaml .originRequest | nindent 8 }}
-      {{- end }}
-    {{- end }}
+    {{- /*
+      Every hostname falls through to catchAll, which hands traffic to the
+      cloudflare-ingress Envoy gateway. Per-hostname routes here would bypass
+      that gateway, and nothing needs to, so the tunnel does no host routing.
+      Kept as a template comment: anything inside the config.yaml literal
+      changes the ConfigMap checksum and rolls cloudflared, which is a brief
+      total ingress outage.
+    */}}
     - service: {{ .Values.tunnel.ingress.catchAll.service }}

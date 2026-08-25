@@ -82,7 +82,6 @@ tunnel:
       credentialsJson: ""
 
   ingress:
-    routes: []
     catchAll:
       service: http_status:404
 
