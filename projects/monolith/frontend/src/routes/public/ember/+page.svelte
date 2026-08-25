@@ -92,66 +92,68 @@
     return () => clearInterval(poll);
   });
 
+  // One line per milestone; the full story lives in ARCHITECTURE.md behind
+  // the source link above.
   const MILESTONES = [
     {
       done: true,
       name: "R0 tasks",
-      desc: "Dispatch, fair round-robin pooling, metering and quotas, tracing. Untrusted code runs and every run counts against a quota.",
+      desc: "Dispatch, fair pooling, metering, quotas.",
     },
     {
       done: true,
       name: "R1 functions",
-      desc: "Function registry and zip-lane hydration over vsock. The first public function goes live.",
+      desc: "Zip functions; the first public function live.",
     },
     {
       done: true,
       name: "R2 sessions",
-      desc: "Bank/relight, and primed-VM adoption across control-plane restarts.",
+      desc: "Bank/relight; adoption across control-plane restarts.",
     },
     {
       done: true,
       name: "R3 serving",
-      desc: "xDS endpoint publishing, per-node Envoy, the DNAT data path. The control plane leaves the hot path.",
+      desc: "Per-node Envoy; the control plane leaves the hot path.",
     },
     {
       done: true,
       name: "R4 stateful",
-      desc: "A database that sleeps as a snapshot and wakes on connect, with its disk as the authoritative copy. The live demo above.",
+      desc: "A database that sleeps and wakes on connect. The demo above.",
     },
     {
       done: true,
       name: "R5 composite",
-      desc: "A scratch Kubernetes cluster as one composite workload: control plane and workers woke together on the first kubectl.",
+      desc: "A scratch Kubernetes cluster as one workload.",
     },
     {
       done: true,
       name: "R6 continuity",
-      desc: "Snapshots and built boot images are recorded to S3: sessions restore after preemption, and a new node pulls ready images instead of rebuilding them.",
+      desc: "Snapshots and boot images recorded to S3.",
     },
     {
       done: false,
       name: "R7 distribution",
-      desc: "Workloads stop belonging to one machine: a wake restores the snapshot onto whichever node has room, and capacity is pre-provisioned across the fleet ahead of demand. Needs a second warm-capable node to matter.",
+      desc: "A wake restores onto whichever node has room.",
     },
     {
       done: true,
       name: "R8 consumers",
-      desc: "The agent platform runs on sessions as a first-class consumer, and the older per-agent daemon it grew out of is retired. Dogfooding was the acceptance test.",
+      desc: "The agent platform runs on sessions.",
     },
     {
       done: false,
       name: "R9 packaging",
-      desc: "Ember becomes a standalone artifact somebody else could run: no dependency on the rest of this cluster.",
+      desc: "A standalone artifact somebody else could run.",
     },
     {
       done: true,
       name: "transport auth",
-      desc: "The control-plane-to-daemon lane authenticates with a bearer token behind an ingress policy, enabled in production; per-node mTLS stays the upgrade path.",
+      desc: "Bearer token behind an ingress policy; mTLS is the upgrade path.",
     },
     {
       done: true,
       name: "encryption at rest",
-      desc: "Each principal's snapshots and workspaces use envelope encryption with capability-gated restore.",
+      desc: "Envelope encryption with capability-gated restore.",
     },
   ];
 </script>
@@ -160,7 +162,7 @@
   <title>Ember · a workload orchestrator on Firecracker microVMs</title>
   <meta
     name="description"
-    content="A workload orchestrator that runs untrusted code in hardware-isolated Firecracker microVMs. Services sleep as snapshots and wake on demand, disk to answering queries in {servingWakeMs} ms. Includes a live Postgres you can wake yourself."
+    content="A private Lambda on metal you own: untrusted code in hardware-isolated Firecracker microVMs. Services sleep as snapshots and wake on demand, disk to answering queries in {servingWakeMs} ms. Includes a live Postgres you can wake yourself."
   />
 </svelte:head>
 
@@ -180,9 +182,9 @@
     <header class="masthead">
       <h1><span class="word">Ember</span></h1>
       <p class="lede">
-        A workload orchestrator that runs untrusted code in hardware-isolated
-        <b>Firecracker microVMs</b>, built from scratch on this cluster.
-        Services sleep as snapshots and wake on demand,
+        A private Lambda, on metal you own. Ember runs untrusted code in
+        hardware-isolated <b>Firecracker microVMs</b>, built from scratch on
+        this cluster. Services sleep as snapshots and wake on demand,
         <b>disk to answering queries in 78&nbsp;ms</b>.
       </p>
       <p class="live">
@@ -220,12 +222,10 @@
         <a class="anchor" href="#classes">What Ember runs</a>
       </h2>
       <p class="body">
-        Everything Ember runs is declared as a Kubernetes custom resource. There
-        are five workload classes: task, session, serving, stateful, and
-        composite. Three of them differ by <b
-          >how much of the machine the guest is allowed to touch</b
-        >. Stateful adds a disk that outlives the VM (the database below), and
-        composite groups several VMs into one unit that wakes together.
+        Every workload is a Kubernetes custom resource, in one of five classes.
+        The three that differ by <b
+          >how much of the machine the guest may touch</b
+        >:
       </p>
       <dl class="classes">
         <div class="class">
@@ -254,16 +254,20 @@
           </dd>
         </div>
       </dl>
+      <p class="body classes-after">
+        Stateful adds a disk that outlives the VM (the database below);
+        composite wakes several VMs as one unit.
+      </p>
+      <pre class="api">POST /v1/workloads/:name/tasks     → 202 + a task_id
+POST /v1/workloads/:name/sessions  → a session_id, then /v1/sessions/:id/invoke
+serving                            → plain HTTP, straight into the VM</pre>
     </section>
 
     <section>
       <h2 class="h2" id="uses">
         <a class="anchor" href="#uses">What that lets you run</a>
       </h2>
-      <p class="body">
-        Three of the five have examples below. Every one of these assumes the
-        guest is hostile.
-      </p>
+      <p class="body">Every one of these assumes the guest is hostile.</p>
       <dl class="classes">
         <div class="class">
           <dt>an agent's sandbox<small>session</small></dt>
@@ -651,7 +655,7 @@
 
   /* ---------- masthead ---------- */
   .masthead {
-    padding: 40px 0 8px;
+    padding: 56px 0 8px;
   }
 
   .masthead h1 {
@@ -669,6 +673,9 @@
 
   .lede {
     margin: 0;
+    /* Capped measure: the doc column is 880px, too wide for comfortable
+       reading at this size. Air is part of the say-less pass. */
+    max-width: 30em;
     font-size: clamp(17px, 2.1vw, 21px);
     line-height: 1.5;
     color: var(--em-ink);
@@ -835,6 +842,7 @@
 
   .body {
     margin: 0 0 14px;
+    max-width: 46em;
     font-size: 15.5px;
     line-height: 1.55;
     color: var(--em-muted);
@@ -843,6 +851,25 @@
   .body b {
     color: var(--em-ink);
     font-weight: 600;
+  }
+
+  .classes-after {
+    margin: 14px 0 0;
+  }
+
+  /* The invocation surface, shown rather than described. Mono on the shared
+     track tint; same soft-border language as the arch panel. */
+  .api {
+    margin: 16px 0 0;
+    padding: 13px 16px;
+    background: var(--em-track);
+    border: 1px solid var(--em-line);
+    border-radius: 8px;
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    line-height: 1.8;
+    color: var(--em-muted);
+    overflow-x: auto;
   }
 
   .classes code,
