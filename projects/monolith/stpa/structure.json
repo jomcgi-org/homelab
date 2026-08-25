@@ -421,6 +421,24 @@
       "to": "bot",
       "maturity": "built",
       "evidence": "projects/monolith/framework/core.py:236"
+    },
+    {
+      "key": "mcp.agent-session",
+      "label": "Start or drive an agent session via MCP",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "agent-runner",
+      "maturity": "built",
+      "evidence": "projects/monolith/agent_sessions/mcp.py:660"
+    },
+    {
+      "key": "mcp.chat-pardon",
+      "label": "Reset a Discord user trust score via MCP",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "bot",
+      "maturity": "built",
+      "evidence": "projects/monolith/agent/mcp.py:338"
     }
   ],
   "feedback": [

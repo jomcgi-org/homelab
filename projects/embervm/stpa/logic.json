@@ -239,5 +239,6 @@
     "Whether a chart conformance test should pin the stateful/composite activator port ranges (5400-5419) into noded-networkpolicy.yaml: the 2026-08-22 first enable omitted them and dropped a cold wake to noded:5401 for 14 minutes (deploy/values.yaml:163-166), and nothing structural prevents a repeat edit from doing the same.",
     "Whether egress.internal.allowlist should become scoped per egress-enabled workload rather than global to the sidecar (ADR embervm/035 open question 1); shared-egress-allowlist-widening tracks the safety consequence of leaving it global.",
     "Whether the store-credential-unscoped residual (a shared, bucket-wide S3 identity) should be re-scoped per principal now that the ADR embervm/033 rollout is armed end to end in production and dev (kekRoot, EMBERVM_ARTIFACT_ENCRYPTION, store.encrypt, requireRestoreCapability; #4691, status updated 2026-08-23 (#5233)): what survives of the residual is write/delete reach and key custody, since reads of encrypted warmth yield ciphertext."
-  ]
+  ],
+  "system_dir": "projects/embervm"
 }
