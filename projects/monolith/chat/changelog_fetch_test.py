@@ -125,3 +125,57 @@ class TestFetchCommitsSince:
 
         params = client.get.call_args[1]["params"]
         assert params["per_page"] == 100
+
+
+class TestRedirectFollowing:
+    """The repo moved orgs, so GitHub answers the old slug with a 301.
+
+    These use a real httpx.AsyncClient over MockTransport rather than the
+    AsyncMock above. A mocked client cannot exercise redirect handling at all,
+    which is why the org move broke the hourly changelog job in production
+    while this suite stayed green.
+    """
+
+    @staticmethod
+    def _transport(commits):
+        def handle(request: httpx.Request) -> httpx.Response:
+            if "/repos/jomcgi/homelab/" in str(request.url):
+                return httpx.Response(
+                    301,
+                    headers={
+                        "Location": "https://api.github.com/repos/jomcgi-org/homelab/commits"
+                    },
+                    json={"message": "Moved Permanently"},
+                )
+            return httpx.Response(200, json=commits)
+
+        return httpx.MockTransport(handle)
+
+    @pytest.mark.asyncio
+    async def test_follows_the_org_move_redirect(self):
+        """With follow_redirects the 301 resolves to the real commit list."""
+        commits = [{"sha": "abc123", "commit": {"message": "feat: new thing"}}]
+        async with httpx.AsyncClient(
+            transport=self._transport(commits), follow_redirects=True
+        ) as client:
+            result = await _fetch_commits_since(
+                client, "jomcgi/homelab", "token", datetime.now(timezone.utc)
+            )
+        assert result == commits
+
+    @pytest.mark.asyncio
+    async def test_without_following_the_redirect_raises(self):
+        """Pin the production failure mode.
+
+        raise_for_status() returns early only on is_success, so a 301 raises
+        HTTPStatusError rather than passing a redirect body downstream. That
+        exception is what exited the hourly job with code 1.
+        """
+        async with httpx.AsyncClient(
+            transport=self._transport([]), follow_redirects=False
+        ) as client:
+            with pytest.raises(httpx.HTTPStatusError) as excinfo:
+                await _fetch_commits_since(
+                    client, "jomcgi/homelab", "token", datetime.now(timezone.utc)
+                )
+        assert excinfo.value.response.status_code == 301

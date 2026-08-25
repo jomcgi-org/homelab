@@ -169,7 +169,7 @@ chat:
   changelogs:
     - name: "homelab"
       channelId: "1491186550472708117"
-      githubRepo: "jomcgi/homelab"
+      githubRepo: "jomcgi-org/homelab"
       prompt: "professional"
       embedTitle: "Joe - Homelab"
       embedColor: "0x2ECC71"
