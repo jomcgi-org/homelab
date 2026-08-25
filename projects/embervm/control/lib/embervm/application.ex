@@ -440,6 +440,16 @@ defmodule Embervm.Application do
       # process performs no listing or writing until a bounded rotation window
       # is explicitly armed. It never raises epoch floors or retires roots.
       {Embervm.EnvelopeRewrapSweeper, envelope_rewrap_sweeper_opts()},
+      # The durability health detector (#4338, ADR embervm/031): Tier 1
+      # aggregates per-kind artifact-export failure streaks from the
+      # NodeCapacity projections; Tier 2 measures the age of the newest
+      # gc-manifests object against 24h + sweep interval. Both tiers end in
+      # GET /v1/health/durability. Placed AFTER NodeRegistry/S3WarmthGc (it
+      # reads their state) and BEFORE Bandit (which serves its surface). It is
+      # a measurement process: it writes nothing and holds no durable state,
+      # so under :rest_for_one a crash restarts only the HTTP surface behind
+      # it, and it lands DARK (enabled defaults false) until live verification.
+      {Embervm.Durability, durability_opts()},
       # The op-log sweeper (ADR embervm/002): scheduled bounded-batch compaction of
       # the durable projection tables + ops-journal prefix. Placed LATE, right before
       # Bandit: it depends ONLY on the op-log (which starts early), so under
@@ -871,6 +881,47 @@ defmodule Embervm.Application do
     }
     |> Enum.reject(fn {_kind, ttl} -> is_nil(ttl) end)
     |> Map.new()
+  end
+
+  # The durability health detector (#4338, ADR embervm/031). The gate defaults
+  # DARK (suspend:true): EMBERVM_DURABILITY_HEALTH unset means the supervised
+  # process holds no timer, evaluates nothing, and /v1/health/durability 404s.
+  # The store credentials are the shared noded/S3WarmthGc source of truth (tier
+  # 2 reads gc-manifests from the same bucket); an empty endpoint leaves the
+  # tier-2 seam nil and the tier reads unknown (never green). expected_nodes is
+  # the same fleet-contract idea as the GC's: EMPTY means tier 1 always reads
+  # unknown, so arming requires naming the fleet.
+  defp durability_opts do
+    [
+      enabled: durability_health_enabled(),
+      endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
+      bucket: store_bucket(),
+      access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
+      secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY"),
+      expected_nodes: durability_expected_nodes(),
+      round_interval_ms: int_env_or_nil("EMBERVM_DURABILITY_ROUND_INTERVAL_MS"),
+      streak_threshold: int_env_or_nil("EMBERVM_DURABILITY_STREAK_THRESHOLD"),
+      sweep_interval_ms: int_env_or_nil("EMBERVM_DURABILITY_GC_SWEEP_INTERVAL_MS")
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  @doc false
+  def durability_health_enabled do
+    case trimmed_env("EMBERVM_DURABILITY_HEALTH") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  # Comma-separated fleet contract (EMBERVM_DURABILITY_EXPECTED_NODES), parsed
+  # exactly like the GC's EMBERVM_WARMTH_S3_GC_EXPECTED_NODES.
+  @doc false
+  def durability_expected_nodes do
+    trimmed_env("EMBERVM_DURABILITY_EXPECTED_NODES")
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
   end
 
   defp store_bucket do
