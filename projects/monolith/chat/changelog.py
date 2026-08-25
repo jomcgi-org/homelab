@@ -174,7 +174,9 @@ async def run_changelog_iteration(
 
     since = datetime.now(timezone.utc) - timedelta(hours=config.interval_hours)
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(600.0), follow_redirects=True
+    ) as client:
         commits = await _fetch_commits_since(
             client, config.github_repo, github_token, since
         )
@@ -281,7 +283,9 @@ async def run_changelog_for_config(
         return
 
     since = datetime.now(timezone.utc) - timedelta(hours=config.interval_hours)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(600.0), follow_redirects=True
+    ) as client:
         commits = await _fetch_commits_since(
             client, config.github_repo, github_token, since
         )
