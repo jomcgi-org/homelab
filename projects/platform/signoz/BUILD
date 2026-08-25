@@ -62,8 +62,8 @@ py_test(
     name = "hubble_monolith_policy_drops_test",
     srcs = ["hubble_monolith_policy_drops_test.py"],
     data = glob(["*.yaml"]) + [
-        "//projects/platform/cilium:values.yaml",
         "//projects/platform/cilium:bootstrap/cilium-helmchart.yaml",
+        "//projects/platform/cilium:values.yaml",
     ],
     deps = [
         "@pip//pytest",
