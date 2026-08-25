@@ -256,7 +256,16 @@ serving                            → plain HTTP, straight into the VM</pre>
       <h2 class="h2" id="arch">
         <a class="anchor" href="#arch">How it works</a>
       </h2>
-      <div class="arch">
+      <p class="body">
+        An <b>Elixir control plane</b> manages Firecracker VM lifecycle on
+        Kubernetes; a Go daemon on each node owns the machines.
+        <b>Serving requests never touch the control plane</b>: the edge routes
+        through a node-local Envoy straight into the VM, so the control plane
+        can restart mid-request and traffic notices nothing.
+      </p>
+      <details class="fold">
+        <summary><span class="fold-label">the moving parts</span></summary>
+        <div class="arch">
         <svg
           viewBox="0 0 720 300"
           role="img"
@@ -434,13 +443,8 @@ serving                            → plain HTTP, straight into the VM</pre>
           <span><i class="swatch sw-xds"></i> configuration, ahead of time</span
           >
         </div>
-      </div>
-      <p class="arch-punch">
-        <b>Serving requests never touch the control plane.</b> The edge routes to
-        a node-local Envoy the control plane has already programmed, and the connection
-        goes straight into the VM. The control plane can restart mid-request; serving
-        traffic notices nothing.
-      </p>
+        </div>
+      </details>
       <div class="iso">
         <p>
           <b
@@ -901,6 +905,60 @@ serving                            → plain HTTP, straight into the VM</pre>
     border-bottom-color: var(--em-ember-deep);
   }
 
+  /* ---------- diagram fold: same disclosure language as the class rows ---- */
+  .fold {
+    border-top: 1px solid var(--eml-line-strong);
+    border-bottom: 1px solid var(--em-line);
+    margin-bottom: 16px;
+  }
+
+  .fold summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 18px;
+    align-items: center;
+    padding: 12px 4px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .fold summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .fold-label {
+    font-family: var(--em-mono);
+    font-size: 12.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--em-faint);
+  }
+
+  .fold summary::after {
+    content: "+";
+    font-family: var(--em-mono);
+    font-size: 15px;
+    line-height: 1;
+    color: var(--em-faint);
+    justify-self: end;
+  }
+
+  .fold[open] summary::after {
+    transform: rotate(45deg);
+  }
+
+  .fold summary:hover .fold-label {
+    color: var(--em-muted);
+  }
+
+  .fold summary:focus-visible {
+    outline: 2px solid var(--em-ember-deep);
+    outline-offset: 3px;
+  }
+
+  .fold .arch {
+    margin-bottom: 14px;
+  }
+
   /* ---------- architecture ---------- */
   .arch {
     background: var(--eml-panel-warm);
@@ -1057,17 +1115,6 @@ serving                            → plain HTTP, straight into the VM</pre>
     border-top-style: dashed;
   }
 
-  .arch-punch {
-    margin: 14px 2px 0;
-    font-size: 15px;
-    line-height: 1.55;
-    color: var(--em-muted);
-  }
-
-  .arch-punch b {
-    color: var(--em-ink);
-  }
-
   /* ---------- isolation ---------- */
   .iso {
     display: flex;
@@ -1164,11 +1211,13 @@ serving                            → plain HTTP, straight into the VM</pre>
   /* Opening motion is opt-in: absent by default, per the reduced-motion
      opt-in shape this repo prefers for new work. */
   @media (prefers-reduced-motion: no-preference) {
-    .class summary::after {
+    .class summary::after,
+    .fold summary::after {
       transition: transform 0.18s ease;
     }
 
-    .class[open] .cmore {
+    .class[open] .cmore,
+    .fold[open] .arch {
       animation: em-reveal 0.22s ease;
     }
 
