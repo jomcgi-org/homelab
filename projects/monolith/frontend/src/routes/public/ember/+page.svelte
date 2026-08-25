@@ -162,7 +162,7 @@
   <title>Ember · a workload orchestrator on Firecracker microVMs</title>
   <meta
     name="description"
-    content="Ember orchestrates Firecracker microVMs for untrusted code: short-lived tasks, services that sleep as snapshots and wake, disk to answering queries in {servingWakeMs} ms, and disks that outlive their VM. Includes a live Postgres you can wake yourself."
+    content="Ember gives every job its own tiny virtual machine: run once and destroyed, slept as a snapshot and woken in {servingWakeMs} ms, or paired with a disk that outlives the VM. Includes a live Postgres you can wake yourself."
   />
 </svelte:head>
 
@@ -182,10 +182,11 @@
     <header class="masthead">
       <h1><span class="word">Ember</span></h1>
       <p class="lede">
-        Ember orchestrates <b>Firecracker microVMs</b> for untrusted code:
-        short-lived tasks, services that sleep as snapshots and wake,
-        <b>disk to answering queries in 78&nbsp;ms</b>, and disks that outlive
-        their VM. Built from scratch on this cluster.
+        Ember gives every job its own tiny virtual machine. Some run once and
+        are destroyed. Some sleep as snapshots and wake on demand,
+        <b>disk to answering queries in 78&nbsp;ms</b>. Some keep a disk that
+        outlives the VM. Built from scratch on this cluster, on
+        <b>Firecracker</b>.
       </p>
       <p class="live">
         <span class="dot {dotClass}"></span>
