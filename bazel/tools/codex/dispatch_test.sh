@@ -203,4 +203,19 @@ framed_rc=$?
 set -e
 assert_eq "framed 429 is quota" 42 "$framed_rc"
 echo "PASS: quota regex"
+
+reset
+WORK="$TMP/ox-quota"
+mkdir -p "$WORK"
+set +e
+STUB_EXIT=1 STUB_OUTPUT="429 Too Many Requests" run_dispatch "$WORK" ox >"$TMP/ox-framed.out" 2>&1
+ox_framed_rc=$?
+set -e
+assert_eq "ox framed 429 is quota" 42 "$ox_framed_rc"
+set +e
+STUB_EXIT=0 STUB_OUTPUT="429 Too Many Requests" run_dispatch "$WORK" ox >"$TMP/ox-zero.out" 2>&1
+ox_zero_rc=$?
+set -e
+assert_eq "ox zero-exit 429 is not quota" 0 "$ox_zero_rc"
+echo "PASS: ox quota regex"
 echo "All dispatch tests passed"

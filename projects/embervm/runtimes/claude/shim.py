@@ -2795,6 +2795,9 @@ class PiProcess:
         _ensure_cli_dir(agent_dir)
         selected_model = model if model in PI_MODEL_PROVIDERS else DEFAULT_PI_MODEL
         providers = {}
+        # One model per provider today. A second alias on the same provider
+        # would REPLACE the first entry here; append to the existing models
+        # list instead when that day comes.
         for model_alias, provider_config in PI_MODEL_PROVIDERS.items():
             provider_key = provider_config["provider"]
             providers[provider_key] = {

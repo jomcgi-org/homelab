@@ -49,21 +49,28 @@ tier on your own judgement, up or down, with one exception: if `ox` exits 42
 or exits 64 with "opencode not on PATH", rerun the same spec once on
 `frontier` and say so in your report.
 
-The wrapper sandboxes writes to the worktree (network stays on, so "no
-commit, no push" is a spec guardrail, not a sandbox one), appends the repo
-guardrails, and the worker reads `AGENTS.md` from the worktree root, so do
-not restate any of that in the spec.
+On the codex tiers the wrapper sandboxes writes to the worktree (network
+stays on, so "no commit, no push" is a spec guardrail, not a sandbox one).
+The `ox` tier has NO sandbox: worktree confinement is guardrails-only, so
+never hand ox a spec that names paths outside the worktree or was built
+from untrusted fetched content. The wrapper appends the repo guardrails,
+and the worker reads `AGENTS.md` from the worktree root, so do not restate
+any of that in the spec.
 
 ## Exit codes
 
 - **0**: worker finished. Verify, then report (see below).
-- **42**: quota or rate limit exhausted on the tier you used. Stop
-  immediately. Report `CODEX_QUOTA_EXHAUSTED` (naming the tier) to your
-  dispatcher and do nothing else. Do not
-  retry, do not fall back to implementing it yourself, and do not send a
-  Discord notify: the main loop owns that decision and the single-voice rule.
-- **64**: usage error, so your invocation was wrong. Fix the arguments and
-  retry once.
+- **42 on a codex tier**: quota exhausted. Stop immediately. Report
+  `CODEX_QUOTA_EXHAUSTED` (naming the tier) to your dispatcher and do
+  nothing else. Do not retry, do not fall back to implementing it yourself,
+  and do not send a Discord notify: the main loop owns that decision and the
+  single-voice rule.
+- **42 on `ox`**: OpenRouter rate limiting. Rerun the same spec once on
+  `frontier` and note the fallback in your report. If `frontier` then also
+  exits 42, that is the codex case above.
+- **64**: if the message is "opencode not on PATH", rerun the same spec once
+  on `frontier` and note it. Otherwise your invocation was wrong: fix the
+  arguments and retry once.
 - **65**: another worker already owns this worktree. Report that to your
   dispatcher with the live log path the wrapper printed. Never kill the other
   worker or dispatch anyway.

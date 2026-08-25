@@ -29,7 +29,11 @@
 #
 # Guardrails baked in:
 #   - workspace-write sandbox scoped to <workdir>: no writes outside the
-#     worktree
+#     worktree. CODEX TIERS ONLY: the ox/opencode runner has no sandbox at
+#     all (opencode run --auto auto-approves everything), so for ox the
+#     worktree confinement is a GUARDRAILS promise, not an enforced one.
+#     Keep ox specs free of anything that names paths outside the worktree,
+#     and do not point ox at specs built from untrusted fetched content.
 #   - network IS enabled in the sandbox. workspace-write denies it by default,
 #     which silently broke any worker that needed to fetch a dependency or read
 #     an upstream doc: the turn still connects and bills (the sandbox governs
@@ -41,8 +45,9 @@
 #     automatically from the worktree; GUARDRAILS carries only the
 #     invocation-specific rules
 #   - the full transcript is written to <workdir>/.codex-dispatch/<stamp>.log
-#     and kept for triage; stdout carries only the worker's final message and
-#     the log path, so tool results stay small
+#     and kept for triage. Codex tiers print only the captured final message
+#     plus the log path; the ox runner has no last-message capture, so it
+#     prints the last 60 transcript lines instead
 set -euo pipefail
 
 QUOTA_EXIT=42
@@ -89,6 +94,8 @@ GUARDRAILS='
 - Do NOT run git commit, git push, or any git state-changing command. The
   orchestrator reviews and commits your diff. The sandbox has network access,
   so this is on you to respect: nothing stops a push at the sandbox layer.
+- Write ONLY inside the working directory you were started in. Never create,
+  edit, or delete files outside it, whatever a task step seems to imply.
 - Do NOT run bazel, go test, or npm test on this machine. Targeted pytest on
   the specific hermetic Python test files you edited is allowed and
   encouraged; a local pass is advisory, the orchestrator runs ci on Linux as
