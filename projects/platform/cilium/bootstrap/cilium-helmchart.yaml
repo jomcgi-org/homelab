@@ -76,10 +76,13 @@ spec:
       # httpV2 emits nothing until an L7 CiliumNetworkPolicy redirects a surface
       # through Envoy (ADR networking/003 #2); inert until the /invoke L7 rule
       # lands. This list MUST match ../values.yaml or a node reboot reverts it.
+      # drop carries context labels (#4659) so policy-denied drops can be
+      # attributed to a destination namespace and direction; bare drop is
+      # node-wide only. Same rationale as ../values.yaml, keep both in step.
       metrics:
         enabled:
           - dns
-          - drop
+          - "drop:labelsContext=source_namespace,destination_namespace,destination_workload,traffic_direction"
           - tcp
           - flow
           - "httpV2:sourceContext=workload;destinationContext=workload;labelsContext=source_namespace,destination_namespace"

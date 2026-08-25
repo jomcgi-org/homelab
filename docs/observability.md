@@ -100,6 +100,10 @@ The following diagram shows how observability is automatically added to every po
 - The Cilium eBPF datapath sees all pod traffic; no proxy sidecars, no injection
 - Hubble exports flow and HTTP metrics (e.g. `hubble_httpv2_requests_total`),
   which SigNoz scrapes and the error-rate alerts read
+- Drop metrics carry destination context (`destination_namespace`,
+  `traffic_direction`, requested via `labelsContext` on the `drop` metric), so
+  policy-denied drops are attributable per destination and the policy-deny
+  alerts can watch a single namespace instead of node-wide noise (#4659)
 - WireGuard encrypts pod-to-pod traffic transparently at the same layer
 - **Configuration:** `projects/platform/cilium/values.yaml`
 

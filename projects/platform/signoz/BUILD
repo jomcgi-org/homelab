@@ -53,3 +53,26 @@ semgrep_test(
     srcs = ["signoz_alerts_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
+
+# Hand-written test target (no gazelle here): guards the #4659 chain, where the
+# alert is only as good as the metric underneath it. Besides this package's
+# YAML it reads the Cilium values and bootstrap HelmChart (the drop metric's
+# context labels live there), hence the cross-package data deps.
+py_test(
+    name = "hubble_monolith_policy_drops_test",
+    srcs = ["hubble_monolith_policy_drops_test.py"],
+    data = glob(["*.yaml"]) + [
+        "../cilium/values.yaml",
+        "../cilium/bootstrap/cilium-helmchart.yaml",
+    ],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+semgrep_test(
+    name = "hubble_monolith_policy_drops_test_semgrep_test",
+    srcs = ["hubble_monolith_policy_drops_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
