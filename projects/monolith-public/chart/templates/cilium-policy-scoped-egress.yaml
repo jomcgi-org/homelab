@@ -5,17 +5,18 @@
 # a compromised public pod can dial any pod on any port. These policies replace
 # that with one `toEndpoints` rule per real dependency, on its real port.
 #
-# ROLLOUT IS TWO STEPS, gated by ciliumPolicy.egress.scoped in deploy/values:
+# ROLLOUT MODES, gated by ciliumPolicy.egress.scoped in deploy/values:
 #
-#   "off"      this file renders nothing.
-#   "audit"    these policies render with `enableDefaultDeny.egress: false`, so
-#              they ADD allows and never switch an endpoint to default-deny on
-#              their own. Enforcement is unchanged: the broad policies in
-#              cilium-policy.yaml still carry the deny and the `cluster` allow.
-#              What changes is Hubble's policy correlation: every allowed egress
-#              flow now names every policy that allowed it, so a flow allowed
-#              ONLY by the broad policy is a dependency this file missed.
-#              Read it for a day of public traffic:
+#   "off"      this file renders nothing. The broad policies in
+#              cilium-policy.yaml carry the deny and the wide `cluster` allow.
+#   "audit"    these policies render ADDITIVELY (`enableDefaultDeny.egress:
+#              false`), so they never switch an endpoint to default-deny on
+#              their own; enforcement is unchanged and the broad policies keep
+#              carrying both the deny and the `cluster` allow. What changes is
+#              Hubble's policy correlation: every allowed egress flow now names
+#              every policy that allowed it, so a flow allowed ONLY by the broad
+#              policy is a dependency this file missed. Read it for a day of
+#              public traffic:
 #
 #                hubble observe --from-namespace monolith-public --type policy-verdict -o json \
 #                  | jq -c 'select(.flow.egress_allowed_by != null)
@@ -23,40 +24,66 @@
 #                           | {src: .flow.source.pod_name, dst: .flow.destination, l4: .flow.l4}'
 #
 #              An empty result over the window means the list below is complete.
-#   "enforce"  NOT IN THIS CHART YET. The follow-up PR adds it: the broad
-#              `toEntities: cluster` rules come out of cilium-policy.yaml, the
-#              Turnstile allow moves here, and these policies carry the deny. A
-#              dependency still missing at that point fails as a SILENT DIAL
-#              TIMEOUT, which is why the audit window comes first.
+#   "enforce"  the broad `toEntities: cluster` rules do NOT render at all (see
+#              cilium-policy.yaml), these policies omit enableDefaultDeny and so
+#              carry the default-deny themselves, and the ONE sanctioned
+#              off-cluster allow (Turnstile siteverify, IP-pinned to Cloudflare's
+#              published ranges) renders inside the web policy here. A dependency
+#              missing from the list now fails as a SILENT DIAL TIMEOUT, which is
+#              why the audit window comes first: only flip enforce after it came
+#              back empty.
 #
 # Not a true Cilium audit mode: that is an agent-wide flag (policy-audit-mode)
 # that would stop enforcing every policy in the cluster, or an imperative
 # per-endpoint `cilium endpoint config` that GitOps cannot carry. The
 # additive-policy shape above is the one the cluster can express declaratively.
 #
-# Why these destinations (each is an env var on the live pod, or observed in
-# hubble): the backend reads and writes the CNPG cluster directly (monolith-pg-ro
-# and -rw select the instance pods, there is no pooler), calls inference and
-# embeddings, signs and serves S3 objects from SeaweedFS, invokes EmberVM for
-# the public /functions router, and exports OTLP to the SigNoz collector. The
-# frontend calls only the backend and forwards browser traces to the
-# host-networked SigNoz agent, which Cilium classifies as `host` on the same
-# node and `remote-node` elsewhere: that is the ONLY reason those two entities
-# survive, and they are pinned to 4318. imgproxy fetches from SeaweedFS alone.
+# Why these destinations (each names the env var that proves it on the live pod,
+# or the one sanctioned external call):
+#
+#   web       Postgres RO and RW via DATABASE_URL / PUBLIC_WRITER_DATABASE_URL:
+#             both Services select the CNPG instance pods directly (label
+#             cnpg.io/cluster), there is no pooler. vLLM inference via
+#             CHAT_PUBLIC_INFERENCE_URL, embeddings via EMBEDDING_URL (both in
+#             the inference namespace), SeaweedFS S3 via SEAWEEDFS_S3_ENDPOINT
+#             (stars/trips/artifact/knowledge reads), the EmberVM control plane
+#             via EMBERVM_URL (the public /functions router plus demo-postgres
+#             status/reset), and the EmberVM SERVING Envoy DaemonSet via
+#             DEMO_POSTGRES_DSN: the demo postgres exhibit's psycopg connect
+#             lands on embervm-embervm-serving:5401, whose pods select
+#             app.kubernetes.io/name: embervm-serving-envoy, a DIFFERENT
+#             selector AND port from the control plane above. Omitting either
+#             EmberVM rule black-holes a live public path as a silent dial
+#             timeout. Finally Cloudflare Turnstile siteverify
+#             (challenges.cloudflare.com) on 443, the only OFF-CLUSTER
+#             destination, IP-pinned to Cloudflare's published CIDR list.
+#             There is deliberately NO otel-collector rule: the public binary
+#             never initialises OpenTelemetry (framework/core.py build_app
+#             returns for Tier.PUBLIC before _setup_otel) and no OTEL_* env is
+#             set on these pods, so a collector allow would be dead surface.
+#   frontend  the backend only (API_BASE / CHAT_API_BASE), plus browser traces
+#             forwarded by the same-origin /otel proxy to the SigNoz k8s-infra
+#             agent (OTEL_COLLECTOR_HTTP_URL). That agent is a hostNetwork
+#             DaemonSet (projects/platform/signoz/application.yaml), so Cilium
+#             classifies the destination as the node itself: `host` on the same
+#             node, `remote-node` elsewhere. That is the ONLY reason those two
+#             entities survive here, pinned to the OTLP/HTTP port 4318.
+#   imgproxy  SeaweedFS alone (IMGPROXY_S3_ENDPOINT).
+#
 # Every pod resolves through kube-dns. The apiserver is absent because the
-# public tier holds no RBAC. FC_INVOKE_URL in chart/values.yaml points at a
-# Service that no longer exists, so it gets no rule.
+# public tier holds no RBAC (its SA token is identity-only: presented TO
+# EmberVM, which does the TokenReview).
 #
 # Kept as separate objects rather than extra rules on the existing policies on
 # purpose: Hubble correlates by policy NAME, so the audit only works if the
 # scoped allows live in their own objects.
 
 {{- $mode := .Values.ciliumPolicy.egress.scoped | default "off" }}
-{{- if not (has $mode (list "off" "audit")) }}
-{{- fail (printf "ciliumPolicy.egress.scoped must be off or audit (enforce lands with the follow-up to #5142); got %q" $mode) }}
+{{- if not (has $mode (list "off" "audit" "enforce")) }}
+{{- fail (printf "ciliumPolicy.egress.scoped must be off, audit or enforce; got %q" $mode) }}
 {{- end }}
-{{- if and .Values.ciliumPolicy.egress.enabled (eq $mode "audit") }}
-{{- $audit := true }}
+{{- if .Values.ciliumPolicy.egress.enabled }}
+{{- if ne $mode "off" }}
 {{- $dns := .Values.ciliumPolicy.egress.scopedTargets.dns }}
 {{- $t := .Values.ciliumPolicy.egress.scopedTargets }}
 {{- if .Values.web.enabled }}
@@ -72,7 +99,7 @@ spec:
     matchLabels:
       {{- include "monolith-public.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: web
-  {{- if $audit }}
+  {{- if eq $mode "audit" }}
   enableDefaultDeny:
     egress: false
   {{- end }}
@@ -87,7 +114,7 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    {{- range $dep := list $t.postgres $t.inference $t.embeddings $t.seaweedfs $t.embervm $t.otelCollector }}
+    {{- range $dep := list $t.postgres $t.inference $t.embeddings $t.seaweedfs $t.embervm $t.embervmServing }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $dep.namespace }}
@@ -95,6 +122,23 @@ spec:
       toPorts:
         - ports:
             - port: {{ $dep.port | quote }}
+              protocol: TCP
+    {{- end }}
+    {{- if eq $mode "enforce" }}
+    # THE ONE SANCTIONED OFF-CLUSTER EGRESS (ADR 005, Public Chat V3): Cloudflare
+    # Turnstile siteverify (challenges.cloudflare.com) on 443. Pinned to
+    # Cloudflare's published IP ranges rather than a toFQDNs hostname match:
+    # Turnstile's ~42s DNS TTL over a rotating anycast pool made a toFQDNs allow
+    # race and intermittently DROP live connections, failing closed -> 5xx. In
+    # audit mode this rule lives in the broad web policy instead (it carries
+    # enforcement until this file does), so it renders here only when enforcing.
+    - toCIDRSet:
+        {{- range .Values.ciliumPolicy.egress.turnstileCidrs }}
+        - cidr: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
               protocol: TCP
     {{- end }}
 {{- end }}
@@ -111,7 +155,7 @@ spec:
     matchLabels:
       {{- include "monolith-public.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: frontend
-  {{- if $audit }}
+  {{- if eq $mode "audit" }}
   enableDefaultDeny:
     egress: false
   {{- end }}
@@ -158,7 +202,7 @@ spec:
     matchLabels:
       {{- include "monolith-public.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: imgproxy
-  {{- if $audit }}
+  {{- if eq $mode "audit" }}
   enableDefaultDeny:
     egress: false
   {{- end }}
@@ -181,5 +225,6 @@ spec:
         - ports:
             - port: {{ $t.seaweedfs.port | quote }}
               protocol: TCP
+{{- end }}
 {{- end }}
 {{- end }}
