@@ -1316,17 +1316,17 @@ func (s *Server) slotsExhausted() bool {
 // ---- Session verbs (R2) ----------------------------------------------------
 
 // adoptPrimedSession promotes a primed VM from the task registry into the session
-// registry on a session's FIRST invoke. The session-create path primes/claims the
-// VM through the shared warm pool (Prime always lands it in the task registry), so
-// something has to move it into the session registry before SessionAssign can serve
-// it; doing that lazily on first invoke (rather than via a separate create-time
-// verb) keeps create a single round-trip and mirrors how Relight registers a relit
-// VM. It returns the new session entry with the in-flight guard ALREADY held (so a
-// racing second SessionAssign gets rejected until this one finishes), or (nil,false)
-// when vmID is not a primed task VM (unknown, already assigned/adopted, destroyed),
-// which SessionAssign maps to FAILED_PRECONDITION. The physical VM is already a
-// session-base VM (restored from the session workload's base, running the persistent
-// kernel); only its registry bookkeeping changes.
+// registry on a session's FIRST operation. The session-create path primes/claims
+// the VM through the shared warm pool (Prime always lands it in the task registry),
+// so something has to move it into the session registry before SessionAssign can
+// serve it or Bank can snapshot it; doing that lazily on first use (rather than via
+// a separate create-time verb) keeps create a single round-trip and mirrors how
+// Relight registers a relit VM. It returns the new session entry with the in-flight
+// guard ALREADY held (so a racing operation gets rejected until this one finishes),
+// or (nil,false) when vmID is not a primed task VM (unknown, already
+// assigned/adopted, destroyed), which the caller maps to FAILED_PRECONDITION. The
+// physical VM is already a session-base VM (restored from the session workload's
+// base, running the persistent kernel); only its registry bookkeeping changes.
 func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionEntry, bool) {
 	ve, ok := s.vms.claimForSession(vmID, workload)
 	if !ok {
@@ -1344,7 +1344,7 @@ func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionE
 		// collide on the same unix socket, and dropping the cancel would leak the
 		// goroutine past the session's teardown.
 		egressCancel: ve.egressCancel,
-		inFlight:     true, // held for the SessionAssign that triggered this adoption
+		inFlight:     true, // held for the operation that triggered this adoption
 	}
 	s.sessionVMs.add(se)
 	s.signalChange() // the VM moved primed -> session-live; refresh NodeStatus
@@ -1460,7 +1460,17 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	// VM, and while the guard is held no new SessionAssign can start.
 	e, ok := s.sessionVMs.beginInFlight(vmID)
 	if !ok {
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not bankable (unknown, task-class, or a call is already in flight)", vmID)
+		// Not (yet) in the session registry. A freshly CREATED session's VM was
+		// primed/claimed through the shared warm pool, so it still lives in the task
+		// registry until its first invoke. An idle Bank can precede that invoke, so
+		// adopt the VM into the session registry now. adoptPrimedSession returns with
+		// the in-flight guard already held; Bank must not acquire it again, and its
+		// existing success and failure paths both remove the guarded entry.
+		adopted, ok2 := s.adoptPrimedSession(vmID, req.GetSessionId(), req.GetTrace().GetWorkload())
+		if !ok2 {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: session vm %q not bankable (unknown, task-class, or a call is already in flight)", vmID)
+		}
+		e = adopted
 	}
 	// The Bank destroys the VM either way: on success the entry is removed and the
 	// paused VM reaped below; on failure SnapshotSession has already torn the VM
