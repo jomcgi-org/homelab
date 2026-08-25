@@ -1437,7 +1437,21 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish base snapfile: %w", err)
 	}
 	if err := os.Rename(buildingDir, finalDir); err != nil {
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: publish base bundle: %w", err)
+		// #4866: co-located bricks share this scratch dir but not their
+		// per-process base registries, so two bricks can be handed the SAME
+		// BuildBase while only one wins the publish. Resolve the collision
+		// instead of wedging on it (every control-plane retry would otherwise
+		// burn a full multi-minute build VM and die at this same rename).
+		adopted, cerr := resolveBasePublishCollision(buildingDir, finalDir)
+		if cerr != nil {
+			return substrate.SnapshotRef{}, fmt.Errorf("driver: publish base bundle: %w", errors.Join(err, cerr))
+		}
+		if !adopted {
+			// The destination was cleared as stale; retry the publish once.
+			if rerr := os.Rename(buildingDir, finalDir); rerr != nil {
+				return substrate.SnapshotRef{}, fmt.Errorf("driver: publish base bundle: %w", rerr)
+			}
+		}
 	}
 	return substrate.SnapshotRef{
 		ID:        baseKey,
@@ -1448,6 +1462,54 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		Base:      true,
 		SizeBytes: bundleSize(filepath.Join(finalDir, "snapfile"), filepath.Join(finalDir, "memfile")),
 	}, nil
+}
+
+// baseBundlePublished reports whether dir holds a fully published base bundle:
+// BOTH memfile and snapfile present as regular files. The publish discipline
+// writes memfile before snapfile and the directory itself only after both (a
+// restore reads the snapfile to locate the memfile), so their co-presence under
+// a final dir is exactly the "this bundle finished publishing" marker. imageref
+// is deliberately NOT required: the server writes it AFTER SnapshotBase returns,
+// so a sibling's just-published bundle can legitimately lack it for a moment;
+// requiring it here would misclassify that bundle as stale and destroy a
+// sibling's work (#4866).
+func baseBundlePublished(dir string) bool {
+	for _, name := range []string{"memfile", "snapfile"} {
+		fi, err := os.Lstat(filepath.Join(dir, name))
+		if err != nil || fi.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveBasePublishCollision resolves rename(buildingDir, finalDir) failing
+// because finalDir already exists (#4866). It returns adopted=true when the
+// destination is a COMPLETE sibling bundle this build should adopt: the caller
+// then discards its redundant staging copy and reports success against the
+// sibling's bytes (same baseKey means same image+revision+vendor, so the two
+// bundles are interchangeable). An incomplete destination is stale debris from
+// an older incarnation or a crashed publish; it is removed so the caller's
+// retry can succeed, never wedged on. A missing or non-dir destination means
+// the original error was not an occupancy collision at all: it is returned so
+// the caller surfaces it unchanged.
+func resolveBasePublishCollision(buildingDir, finalDir string) (adopted bool, err error) {
+	fi, statErr := os.Lstat(finalDir)
+	if statErr != nil || !fi.IsDir() {
+		return false, statErr
+	}
+	if baseBundlePublished(finalDir) {
+		if rmErr := os.RemoveAll(buildingDir); rmErr != nil {
+			return false, fmt.Errorf("discard redundant staging bundle: %w", rmErr)
+		}
+		slog.Info("driver: adopting sibling-published base bundle",
+			"base", filepath.Base(finalDir))
+		return true, nil
+	}
+	if rmErr := os.RemoveAll(finalDir); rmErr != nil {
+		return false, fmt.Errorf("remove stale destination bundle: %w", rmErr)
+	}
+	return false, nil
 }
 
 // RemoveBaseBundle deletes a warm base's on-disk bundle (when a base is
