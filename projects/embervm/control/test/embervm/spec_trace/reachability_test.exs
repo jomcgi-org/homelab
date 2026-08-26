@@ -112,19 +112,47 @@ defmodule Embervm.SpecTrace.ReachabilityTest do
       # longer scenario, never a smaller K: shrinking the bound to fit the test
       # is how a liveness gate ratchets itself into never firing.
       pass: [
-        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}}},
-        {"adoption", "dispatch_warm", %{"vm_id" => "vm-pass"}},
-        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}}},
-        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}}}
+        {"adoption", "checkpoint", %{
+          "queued_tasks" => [%{"task_id" => "task-pass", "workload" => "workload"}],
+          "node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}
+        }},
+        {"adoption", "dispatch_warm", %{"task_id" => "task-pass", "vm_id" => "vm-pass"}},
+        {"adoption", "checkpoint", %{
+          "queued_tasks" => [%{"task_id" => "task-pass", "workload" => "workload"}],
+          "node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}
+        }},
+        {"adoption", "checkpoint", %{
+          "queued_tasks" => [%{"task_id" => "task-pass", "workload" => "workload"}],
+          "node_workload_vm_ids" => %{"node:workload" => ["vm-pass"]}
+        }}
       ],
       fail: [
-        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}}},
-        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}}},
-        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}}}
+        {"adoption", "checkpoint", %{
+          "queued_tasks" => [%{"task_id" => "task-fail", "workload" => "workload"}],
+          "node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}
+        }},
+        {"adoption", "checkpoint", %{
+          "queued_tasks" => [%{"task_id" => "task-fail", "workload" => "workload"}],
+          "node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}
+        }},
+        {"adoption", "checkpoint", %{
+          "queued_tasks" => [%{"task_id" => "task-fail", "workload" => "workload"}],
+          "node_workload_vm_ids" => %{"node:workload" => ["vm-fail"]}
+        }}
       ],
       vacuous: [
-        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{}}},
-        {"adoption", "checkpoint", %{"node_workload_vm_ids" => %{}}}
+        {"adoption", "checkpoint", %{
+          "queued_tasks" => [%{"task_id" => "task-vacuous", "workload" => "workload"}],
+          "node_workload_vm_ids" => %{}
+        }},
+        {"adoption", "checkpoint", %{
+          "queued_tasks" => [%{"task_id" => "task-vacuous", "workload" => "workload"}],
+          "node_workload_vm_ids" => %{}
+        }},
+        {"adoption", "checkpoint", %{
+          "queued_tasks" => [%{"task_id" => "task-vacuous", "workload" => "workload"}],
+          "node_workload_vm_ids" => %{}
+        }}
       ]
     },
     inventory_reconciled: %{

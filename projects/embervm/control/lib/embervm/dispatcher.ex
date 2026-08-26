@@ -114,6 +114,7 @@ defmodule Embervm.Dispatcher do
 
   @stale_after_ms 15_000
   @queue_depth_cap 10_000
+  @spec_trace_queued_tasks_limit 256
   @sweep_interval_ms 5_000
   @assign_watchdog_margin_ms 15_000
   @assign_watchdog_ms nil
@@ -1360,6 +1361,23 @@ defmodule Embervm.Dispatcher do
         {"#{node_id}:#{workload}", :queue.to_list(queue)}
       end
 
+    queued_tasks =
+      state.queues
+      |> Enum.sort_by(fn {workload, _fq} -> workload end)
+      |> Stream.flat_map(fn {workload, fq} ->
+        fq.fifos
+        |> Enum.sort_by(fn {principal, _fifo} -> principal end)
+        |> Stream.flat_map(fn {_principal, fifo} ->
+          fifo
+          |> :queue.to_list()
+          |> Stream.map(&%{"task_id" => &1, "workload" => workload})
+        end)
+      end)
+      |> Enum.take(@spec_trace_queued_tasks_limit + 1)
+
+    queued_tasks_truncated = length(queued_tasks) > @spec_trace_queued_tasks_limit
+    queued_tasks = Enum.take(queued_tasks, @spec_trace_queued_tasks_limit)
+
     reserved_vm_ids =
       state.workers
       |> Map.values()
@@ -1381,6 +1399,8 @@ defmodule Embervm.Dispatcher do
 
     Embervm.SpecTrace.emit(:adoption, :checkpoint, %{
       "node_workload_vm_ids" => node_workload_vm_ids,
+      "queued_tasks" => queued_tasks,
+      "queued_tasks_truncated" => queued_tasks_truncated,
       "reserved_vm_ids" => reserved_vm_ids,
       "node_health" => safe_node_health(),
       "node_reported" => node_reported

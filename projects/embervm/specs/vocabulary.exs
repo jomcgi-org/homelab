@@ -281,7 +281,9 @@
         "adoption.tla at all. It is a periodic state observation invented for " <>
         "the trace, emitted every sweep even when nothing else fires, because " <>
         "absence of progress is invisible in an event stream and a wedge is " <>
-        "precisely the CP failing to act.",
+        "precisely the CP failing to act. It carries bounded queued task and " <>
+        "workload testimony plus an explicit truncation flag, so the queued " <>
+        "antecedent is observed as a level without unbounded trace growth.",
     begin_destroy:
       "a REFINEMENT of Succeed(t), not an action of its own. adoption.tla has " <>
         "no BeginDestroy action: Succeed both completes the task and appends " <>
