@@ -105,6 +105,10 @@ sh_test(
         "@multitool//tools/kubeconform",
         "//bazel/helm:testdata/bad-secretkeyref/Chart.yaml",
         ":k8s_schemas",
+        # The anchor file is named directly by a $(rootpath) above, and
+        # $(rootpath) resolves only against DECLARED prerequisites: the
+        # filegroup carrying it is not enough.
+        "k8s-schemas/v1.35.8-standalone-strict/configmap-v1.json",
     ] + glob(["testdata/bad-secretkeyref/templates/**"]) + MANIFEST_SETS,
     timeout = "long",
 )
