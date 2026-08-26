@@ -96,13 +96,16 @@ agents:
     # following the values-versus-template rollout rule.
     enabled: false
     # Jobs are deliberately serial so one qwen lane remains free for chat and
-    # health probes. This only bounds how much backlog one tick may consume.
-    maxJobsPerCycle: 3
+    # health probes. This only bounds how much backlog one tick may consume;
+    # 15 makes a deep queue drain continuously (one cycle keeps claiming until
+    # the queue is empty or the bound is hit) instead of idling between ticks.
+    maxJobsPerCycle: 15
     turnTimeoutSeconds: 1800
-    # The threshold must exceed tickInterval * ceil(backlog/maxJobsPerCycle)
-    # headroom. A burst of more than ~9 due jobs (3 per tick, every 15 minutes)
-    # can legitimately exceed 2700s and report stalled; that is accepted for
-    # an advisory.
+    # A deliberately deep backlog (a queued overnight wave) exceeds this from
+    # the moment it is registered, so the advisory reads stalled while the
+    # drainer works as designed. Accepted for an advisory signal: it clears as
+    # the queue drains, and a REAL stall keeps it latched with no completions
+    # moving.
     stallThresholdSeconds: 2700
     jobKind: "qwen-drain"
     repo: "jomcgi-org/homelab"
