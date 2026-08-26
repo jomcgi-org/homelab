@@ -658,7 +658,23 @@ egress:
 # falls back to its credentialed GitHub clone for repos this list does not
 # carry, so catalog drift degrades to today's path instead of failed sessions.
 gitMirror:
-  enabled: true
+  # FALSE for the 0.41.7 to 0.47.x jump (#5224), to be re-enabled as its own
+  # single-change roll once prod has settled.
+  #
+  # This flag has been true here for a while but has never rendered anything:
+  # chart 0.41.7 carries no template for it. The moment the chart moves, every
+  # noded pod gains a THIRD container that has run nowhere. Dev cannot have
+  # exercised it either, since dev runs no egress-proxy and the sidecar is
+  # gated on `and egress.enabled gitMirror.enabled`, so dev's noded pod has a
+  # single container.
+  #
+  # That would ride in on the largest rollout this pipeline has attempted (13
+  # of 14 guest base digests rebuilding on every node). Landing an unexercised
+  # sidecar and a full-fleet guest rebuild together means a failure in either
+  # one is diagnosed against both. Flipping it here is values-only and deploys
+  # on HEAD, so it takes effect BEFORE the chart moves, which is the whole
+  # point of the flag existing.
+  enabled: false
   port: 9419
   refreshIntervalSeconds: 60
   # The MCP agent tool defaults every session to jomcgi/homelab (#4473), which

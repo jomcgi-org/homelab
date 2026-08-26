@@ -292,6 +292,23 @@ auth:
 # above so the runner can exercise the management API with its projected token.
 conformance:
   enabled: true
+  # RAISED from the chart's 15m for the 0.41.7 to 0.47.x jump (#5224).
+  #
+  # The runner rolls with the chart, so on a roll that rebuilds guest bases it
+  # starts while its own brick is still baking. That jump moves 13 of 14 base
+  # digests, which is 10 to 25m of init-container bake here, so a 15m wait
+  # expires mid-bake and the runner writes an S0 FAIL for the new chart version.
+  # Kargo's dev verdict poll reads that through its failure expression and the
+  # promotion fails; prod autoPromotion fires on NEW Freight rather than on
+  # failure, so the Freight then sits unverified with no poller on the next
+  # healthy cycle.
+  #
+  # Must stay strictly BELOW the dev stage's verdictTimeout in
+  # projects/platform/kargo/values.yaml (40m0s), which also has to cover the
+  # roughly 4m suite after this wait ends. It is a bound on waiting for bricks,
+  # not a budget for the suite, so a fast roll is unaffected: readiness is
+  # polled, not slept.
+  readyWait: 30m0s
 
 usageAdmins:
   - system:serviceaccount:embervm-dev:embervm-dev-embervm
