@@ -1,5 +1,7 @@
 from framework import Module as _Module
 
+from swarm.health import drainer_health
+
 
 def register(app) -> None:
     from swarm.drainer_router import router as drainer_router
@@ -16,4 +18,9 @@ async def _leader_start(app):
     return []
 
 
-MODULE = _Module(name="swarm", register=register, leader_start=_leader_start)
+MODULE = _Module(
+    name="swarm",
+    register=register,
+    leader_start=_leader_start,
+    register_health_advisory={"drainer": drainer_health},
+)

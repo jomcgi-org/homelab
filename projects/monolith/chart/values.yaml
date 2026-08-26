@@ -99,6 +99,7 @@ agents:
     # health probes. This only bounds how much backlog one tick may consume.
     maxJobsPerCycle: 3
     turnTimeoutSeconds: 1800
+    stallThresholdSeconds: 2700
     jobKind: "qwen-drain"
     repo: "jomcgi-org/homelab"
     branch: "main"

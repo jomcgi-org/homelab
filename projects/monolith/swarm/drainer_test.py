@@ -149,6 +149,30 @@ def test_failure_notifies_once_and_destroys_session(monkeypatch):
     assert destroys == [(101, "workflow-1:qwen-drain:fails")]
 
 
+def test_terminal_session_completes_error_with_state(monkeypatch):
+    job = {"name": "dead-session", "payload": {"prompt": "run"}}
+
+    def terminal_session(*_args):
+        raise RuntimeError("agent session 101 entered terminal state warn")
+
+    result, _, _, completions, notifications, destroys = _run(
+        monkeypatch, [job], await_turn=terminal_session
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    assert completions == [
+        (
+            "dead-session",
+            "error",
+            "agent session 101 entered terminal state warn",
+        )
+    ]
+    assert notifications == [
+        ("dead-session", "agent session 101 entered terminal state warn")
+    ]
+    assert destroys == [(101, "workflow-1:qwen-drain:dead-session")]
+
+
 def test_start_failure_cleans_up_by_stable_session_key(monkeypatch):
     job = {"name": "start-fails", "payload": {"prompt": "run"}}
 
