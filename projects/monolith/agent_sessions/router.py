@@ -283,15 +283,41 @@ async def codex_login_start(grant: str = Query(default="codex-cluster")):
         raise HTTPException(status_code=400, detail="invalid grant name") from exc
     try:
         data = await mcp._broker_request("POST", f"/grants/{grant}/login/start")
-    except Exception:
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status == 409:
+            try:
+                pending_data = exc.response.json()
+            except Exception:
+                pending_data = {}
+            if isinstance(pending_data, dict) and pending_data.get("user_code"):
+                return {
+                    "verification_url": pending_data.get("verification_url"),
+                    "user_code": pending_data.get("user_code"),
+                    "expires_in": pending_data.get("expires_in"),
+                    "pending": True,
+                }
         return JSONResponse(
             status_code=502,
-            content={"error": "Codex login broker unavailable"},
+            content={
+                "error": "Codex login broker unavailable",
+                "status": status,
+            },
+        )
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": "Codex login broker unavailable",
+                "status": getattr(response, "status_code", None),
+            },
         )
     return {
         "verification_url": data.get("verification_url"),
         "user_code": data.get("user_code"),
         "expires_in": data.get("expires_in"),
+        "pending": False,
     }
 
 

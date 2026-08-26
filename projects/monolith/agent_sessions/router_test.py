@@ -247,19 +247,113 @@ def test_codex_login_start_proxies_broker(client, monkeypatch):
         "verification_url": "https://example.test/device",
         "user_code": "CODE-123",
         "expires_in": 900,
+        "pending": False,
     }
     assert calls == [("POST", "/grants/codex-cluster/login/start")]
 
 
+def test_codex_login_start_returns_in_flight_broker_login(client, monkeypatch):
+    async def broker_request(*_args):
+        response = httpx.Response(
+            409,
+            request=httpx.Request("POST", "https://broker/login/start"),
+            json={
+                "verification_url": "https://example.test/device",
+                "user_code": "PENDING-123",
+                "expires_in": 600,
+                "ignored": "not exposed",
+            },
+        )
+        raise httpx.HTTPStatusError(
+            "login pending", request=response.request, response=response
+        )
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    response = client.post("/api/agents/codex-login/start")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "verification_url": "https://example.test/device",
+        "user_code": "PENDING-123",
+        "expires_in": 600,
+        "pending": True,
+    }
+
+
 @pytest.mark.parametrize(
-    ("method", "path"),
+    "response_kwargs",
     [
-        ("get", "/api/agents/codex-login/status"),
-        ("post", "/api/agents/codex-login/start"),
+        {"json": {"verification_url": "https://example.test/device"}},
+        {"json": ["not", "a", "login"]},
+        {
+            "content": b"not JSON",
+            "headers": {"Content-Type": "application/json"},
+        },
+    ],
+)
+def test_codex_login_start_rejects_unusable_pending_body(
+    client, monkeypatch, response_kwargs
+):
+    async def broker_request(*_args):
+        response = httpx.Response(
+            409,
+            request=httpx.Request("POST", "https://broker/login/start"),
+            **response_kwargs,
+        )
+        raise httpx.HTTPStatusError(
+            "login pending", request=response.request, response=response
+        )
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    response = client.post("/api/agents/codex-login/start")
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "Codex login broker unavailable",
+        "status": 409,
+    }
+
+
+def test_codex_login_start_carries_non_conflict_upstream_status(client, monkeypatch):
+    async def broker_request(*_args):
+        response = httpx.Response(
+            503,
+            request=httpx.Request("POST", "https://broker/login/start"),
+        )
+        raise httpx.HTTPStatusError(
+            "broker unavailable", request=response.request, response=response
+        )
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    response = client.post("/api/agents/codex-login/start")
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "Codex login broker unavailable",
+        "status": 503,
+    }
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "expected"),
+    [
+        (
+            "get",
+            "/api/agents/codex-login/status",
+            {"error": "Codex login broker unavailable"},
+        ),
+        (
+            "post",
+            "/api/agents/codex-login/start",
+            {"error": "Codex login broker unavailable", "status": None},
+        ),
     ],
 )
 def test_codex_login_endpoints_return_json_502_when_broker_unreachable(
-    client, monkeypatch, method, path
+    client, monkeypatch, method, path, expected
 ):
     async def broker_request(*_args):
         raise httpx.ConnectError("offline")
@@ -270,7 +364,7 @@ def test_codex_login_endpoints_return_json_502_when_broker_unreachable(
 
     assert response.status_code == 502
     assert response.headers["content-type"] == "application/json"
-    assert response.json() == {"error": "Codex login broker unavailable"}
+    assert response.json() == expected
 
 
 def test_codex_login_endpoints_validate_grant(client, monkeypatch):

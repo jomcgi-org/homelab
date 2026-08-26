@@ -1917,6 +1917,7 @@
                   invalidResponseLabel={P.labels.codexLoginInvalidResponse}
                   codeLabel={P.labels.codexLoginCode}
                   openLinkLabel={P.labels.codexLoginOpenLink}
+                  requestNewCodeLabel={P.labels.codexLoginRequestNewCode}
                   initialUserCode={selectedCodexLoginCode}
                   initialVerificationUrl={selectedCodexLoginUrl}
                   onError={(message) => (errorMessage = message)}

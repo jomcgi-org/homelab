@@ -6,7 +6,7 @@ import { RUN_LEXICON as P } from "./run-lexicon.js";
 
 const mounted = [];
 
-async function render(onError = vi.fn()) {
+async function render(onError = vi.fn(), props = {}) {
   const target = document.createElement("div");
   document.body.append(target);
   const component = mount(CodexLogin, {
@@ -19,7 +19,9 @@ async function render(onError = vi.fn()) {
       invalidResponseLabel: P.labels.codexLoginInvalidResponse,
       codeLabel: P.labels.codexLoginCode,
       openLinkLabel: P.labels.codexLoginOpenLink,
+      requestNewCodeLabel: P.labels.codexLoginRequestNewCode,
       onError,
+      ...props,
     },
   });
   mounted.push({ component, target });
@@ -37,6 +39,32 @@ afterEach(async () => {
 });
 
 describe("Codex authorization", () => {
+  test("renders authorize as the only control before a code exists", async () => {
+    const { target } = await render();
+
+    const controls = target.querySelectorAll("a, button");
+    expect(controls).toHaveLength(1);
+    expect(controls[0].tagName).toBe("BUTTON");
+    expect(controls[0].classList.contains("primary-action")).toBe(true);
+    expect(controls[0].textContent.trim()).toBe(P.labels.authorizeCodex);
+    expect(target.querySelector("code")).toBeNull();
+  });
+
+  test("makes the login link primary and requesting a new code secondary", async () => {
+    const { target } = await render(vi.fn(), {
+      initialUserCode: "READY-123",
+      initialVerificationUrl: "https://example.test/device",
+    });
+
+    const link = target.querySelector("a.primary-action");
+    const button = target.querySelector("button.secondary-action");
+    expect(link?.textContent.trim()).toBe(P.labels.codexLoginOpenLink);
+    expect(link?.getAttribute("href")).toBe("https://example.test/device");
+    expect(target.querySelector("code")?.textContent).toBe("READY-123");
+    expect(button?.textContent.trim()).toBe(P.labels.codexLoginRequestNewCode);
+    expect(target.querySelectorAll("a, button")).toHaveLength(2);
+  });
+
   test("posts once, copies the code, and opens the verification URL", async () => {
     const writeText = vi.fn(async () => {});
     vi.stubGlobal("navigator", { clipboard: { writeText } });
@@ -121,6 +149,54 @@ describe("Codex authorization", () => {
     );
     expect(target.querySelector("button").disabled).toBe(false);
     expect(target.querySelector("code")).toBeNull();
+  });
+
+  test("includes the HTTP status when an error response has no message", async () => {
+    vi.stubGlobal("navigator", {});
+    globalThis.fetch = vi.fn(async () => new Response("", { status: 503 }));
+    vi.spyOn(window, "open").mockImplementation(() => null);
+    const { target, onError } = await render();
+
+    target.querySelector("button").click();
+
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenLastCalledWith(
+        `${P.labels.codexLoginUnavailable} (HTTP 503)`,
+      ),
+    );
+    expect(target.querySelector("button").disabled).toBe(false);
+  });
+
+  test("accepts an identical pending code without reopening the login page", async () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            verification_url: "https://example.test/device",
+            user_code: "PENDING-123",
+            expires_in: 600,
+            pending: true,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const onError = vi.fn();
+    const { target } = await render(onError, {
+      initialUserCode: "PENDING-123",
+      initialVerificationUrl: "https://example.test/device",
+    });
+
+    target.querySelector("button.secondary-action").click();
+
+    await vi.waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith("PENDING-123"),
+    );
+    expect(onError).toHaveBeenLastCalledWith(null);
+    expect(open).not.toHaveBeenCalled();
+    expect(target.querySelector("code")?.textContent).toBe("PENDING-123");
   });
 
   test("renders the verification URL as a link when the popup is blocked", async () => {
