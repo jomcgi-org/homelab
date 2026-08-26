@@ -133,6 +133,23 @@ describe("launcher submit path", () => {
     );
   });
 
+  test("the page refreshes paused sessions instead of throwing login responses", () => {
+    const pageSource = pageSurface();
+
+    expect(pageSource).toContain("if (body.login_required) {");
+    expect(pageSource).toContain("await loadSessions();");
+    expect(pageSource).toContain(
+      "errorMessage = body.message || P.labels.codexLoginRequired;",
+    );
+    expect(pageSource).toContain(
+      "errorMessage = body.login_message || P.labels.codexLoginRequired;",
+    );
+    expect(pageSource).toContain(
+      'statusClass(selectedSession) === "awaiting_login"',
+    );
+    expect(pageSource).toContain("<CodexLogin");
+  });
+
   test("loads branches for a selected repo and submits the chosen branch", async () => {
     const createTask = vi.fn();
     const onLoadBranches = vi.fn();

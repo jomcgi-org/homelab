@@ -10,11 +10,12 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
 from agent_sessions import (
+    mcp,
     model_family,
     offered_models,
     store,
@@ -256,6 +257,41 @@ def list_offered_models() -> dict:
         "models": [
             {"name": model, "family": model_family(model)} for model in offered_models()
         ]
+    }
+
+
+@router.get("/codex-login/status")
+async def codex_login_status(grant: str = Query(default="codex-cluster")):
+    try:
+        grant = mcp._grant_or_raise(grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid grant name") from exc
+    try:
+        return await mcp._broker_request("GET", f"/grants/{grant}/login/status")
+    except Exception:
+        return JSONResponse(
+            status_code=502,
+            content={"error": "Codex login broker unavailable"},
+        )
+
+
+@router.post("/codex-login/start")
+async def codex_login_start(grant: str = Query(default="codex-cluster")):
+    try:
+        grant = mcp._grant_or_raise(grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid grant name") from exc
+    try:
+        data = await mcp._broker_request("POST", f"/grants/{grant}/login/start")
+    except Exception:
+        return JSONResponse(
+            status_code=502,
+            content={"error": "Codex login broker unavailable"},
+        )
+    return {
+        "verification_url": data.get("verification_url"),
+        "user_code": data.get("user_code"),
+        "expires_in": data.get("expires_in"),
     }
 
 
@@ -612,6 +648,7 @@ async def start_session(request: Request, start_request: StartRequest) -> dict:
     _mark_ui_originated(row.id, turn)
     login = await codex_login_gate(start_request.model)
     if login is not None:
+        await asyncio.to_thread(_set_session_status, row.id, "awaiting_login")
 
         async def resume() -> None:
             await asyncio.to_thread(_set_session_status, row.id, "running")
@@ -738,14 +775,26 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
             ),
         }
     effective_model = request.model or row.model
-    login = await codex_login_gate(effective_model)
-    if login is not None:
-        return {"accepted": False, **login}
     turn = await asyncio.to_thread(
         _persist_pending_message, session_id, request.prompt, effective_model
     )
     # Queued from the UI, so its result does not get echoed to Discord.
     _mark_ui_originated(session_id, turn)
+    login = await codex_login_gate(effective_model)
+    if login is not None:
+        await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
+
+        async def resume() -> None:
+            await asyncio.to_thread(_set_session_status, session_id, "running")
+            _schedule_next_message(session_id)
+
+        watch_for_login(login.get("grant", "codex-cluster"), resume)
+        return {
+            "accepted": False,
+            **login,
+            "session_id": session_id,
+            "turn": turn,
+        }
     await asyncio.to_thread(_set_session_status, session_id, "running")
     _schedule_next_message(session_id)
     return {"accepted": True, "session_id": session_id, "turn": turn}

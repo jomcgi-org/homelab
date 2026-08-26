@@ -40,6 +40,21 @@ describe("inbox groups", () => {
     ]);
   });
 
+  test("keeps sessions awaiting login in the needs-you group", () => {
+    const groups = inboxGroups(
+      [],
+      [
+        session("session-login", "2026-08-21T11:00:00Z", {
+          status: "awaiting_login",
+        }),
+      ],
+      {},
+    );
+
+    expect(groups.needsYou.map(({ id }) => id)).toEqual(["session-login"]);
+    expect(groups.running).toEqual([]);
+  });
+
   test("sorts running runs and sessions newest first", () => {
     const groups = inboxGroups(
       [run("run-middle", "2026-08-21T11:00:00Z")],

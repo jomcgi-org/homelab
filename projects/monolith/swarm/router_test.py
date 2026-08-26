@@ -256,6 +256,11 @@ def test_planned_without_repo_returns_needs_input(monkeypatch):
         "workflow_id": None,
         "kind": "needs_input",
         "needs_input": {"repo": True, "branch": True},
+        "login_required": False,
+        "verification_url": None,
+        "user_code": None,
+        "grant": None,
+        "login_message": None,
     }
     assert recorded
 
@@ -319,6 +324,7 @@ def test_one_shot_without_repo_starts_session(monkeypatch):
         return {"session_id": 42}
 
     monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr("swarm.models.mint_task_id", lambda: "task-session")
     monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
     monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
     monkeypatch.setattr("agent_sessions.router.start_session", start_session)
@@ -332,8 +338,64 @@ def test_one_shot_without_repo_starts_session(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["kind"] == "session"
-    assert response.json()["session_id"] == 42
+    assert response.json() == {
+        "task_id": "task-session",
+        "classification": "one_shot",
+        "session_id": 42,
+        "workflow_id": None,
+        "kind": "session",
+        "needs_input": None,
+        "login_required": False,
+        "verification_url": None,
+        "user_code": None,
+        "grant": None,
+        "login_message": None,
+    }
+
+
+def test_one_shot_preserves_codex_login_payload(monkeypatch):
+    async def classify(_task):
+        return "one_shot", 1, "success", None
+
+    async def start_session(_request, _body):
+        return {
+            "accepted": False,
+            "session_id": 42,
+            "login_required": True,
+            "verification_url": "https://example.test/device",
+            "user_code": "CODE-123",
+            "grant": "codex-cluster",
+            "message": "Approve the Codex login in your browser.",
+        }
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr("swarm.models.mint_task_id", lambda: "task-login")
+    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
+    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
+    monkeypatch.setattr("agent_sessions.router.start_session", start_session)
+    monkeypatch.setattr(
+        swarm_router, "_set_task_link_sync", lambda *args, **kwargs: None
+    )
+
+    response = client().post(
+        "/api/swarm/classify-and-start",
+        json={"task": "explain", "model": "luna"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "task_id": "task-login",
+        "classification": "one_shot",
+        "session_id": 42,
+        "workflow_id": None,
+        "kind": "session",
+        "needs_input": None,
+        "login_required": True,
+        "verification_url": "https://example.test/device",
+        "user_code": "CODE-123",
+        "grant": "codex-cluster",
+        "login_message": "Approve the Codex login in your browser.",
+    }
 
 
 def test_promote_session_carries_model(monkeypatch):

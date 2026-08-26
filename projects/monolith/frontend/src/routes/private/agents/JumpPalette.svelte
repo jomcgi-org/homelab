@@ -464,7 +464,8 @@
   .jump-mark .dot.working {
     background: var(--ok);
   }
-  .jump-mark .dot.needs_input {
+  .jump-mark .dot.needs_input,
+  .jump-mark .dot.awaiting_login {
     background: var(--attn);
   }
   .jump-mark .dot.warn {

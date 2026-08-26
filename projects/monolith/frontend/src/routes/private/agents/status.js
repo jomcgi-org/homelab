@@ -4,6 +4,7 @@ export function statusClass(session) {
   }
   if (session?.status === "warn") return "warn";
   if (session?.status === "needs_input") return "needs_input";
+  if (session?.status === "awaiting_login") return "awaiting_login";
   return "completed";
 }
 
@@ -12,6 +13,7 @@ export function statusLabel(session) {
     return Number(session?.pending_count) > 0 ? "working" : "running";
   }
   if (session?.status === "needs_input") return "needs input";
+  if (session?.status === "awaiting_login") return "awaiting login";
   if (session?.status === "completed") return "completed";
   if (session?.status === "warn") return "warn";
   return "completed";
