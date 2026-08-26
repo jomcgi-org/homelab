@@ -129,9 +129,11 @@
     font: 600 12px var(--font-mono);
     text-decoration: none;
   }
+  /* Keep the filled treatment on hover. Swapping to --hover here flips a
+     solid dark button to a pale chip mid-gesture, which reads as the control
+     losing its state rather than responding to the pointer. */
   .primary-action:hover:not(:disabled) {
-    color: var(--text);
-    background: var(--hover);
+    opacity: 0.85;
   }
   .secondary-action {
     min-height: 28px;
