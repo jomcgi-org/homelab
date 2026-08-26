@@ -228,7 +228,21 @@ promotion:
       # This bound is still not the detector: progressDeadlineSeconds trips the
       # Application to Degraded first and argocd-wait fails fast on that. It
       # only catches a workload that never reaches a terminal state at all.
-      waitTimeout: 30m0s
+      #
+      # RAISED to 60m0s for the 0.41.7 to 0.47.x jump (#5224). The 30m0s above
+      # was measured on a roll where the guest base refs did NOT move, which is
+      # the common case and the one the paragraph above describes. That jump
+      # moves 13 of 14 base digests (a renovate apko lock refresh rewrote every
+      # runtime lock), so every brick pod bakes ~7.5 GB of rootfs in its init
+      # containers before it reports Ready. At the measured bake rate that is
+      # 10 to 25m per pod, and maxSurge 0 / maxUnavailable 1 over 4 replicas
+      # serializes them.
+      #
+      # Left at 60m0s afterwards rather than reverted: undershooting fails a
+      # HEALTHY roll, which the comment above calls the worst thing a gate can
+      # do, while overshooting only delays the report of a roll that was never
+      # going to finish. progressDeadlineSeconds is still the real detector.
+      waitTimeout: 60m0s
       stages:
         - name: dev
           application: embervm-dev
@@ -239,11 +253,25 @@ promotion:
           # for THIS chart version. The runner rolls with the chart, waits up
           # to 15m for a ready brick, then runs a suite budgeted at about 4m
           # (task cold boot, session create / bank / relight / destroy,
-          # create-after-destroy, control-plane invariants). 20m0s covers the
+          # create-after-destroy, control-plane invariants). 20m0s covered the
           # runner's own wait plus the suite plus one retry; a wedged brick
           # rebuild already failed argocd-wait before this step runs.
+          #
+          # RAISED to 40m0s alongside the dev readyWait going to 30m for the
+          # 0.41.7 to 0.47.x jump (#5224). Both old numbers assumed a roll that
+          # does not rebuild guest bases. On that jump the dev brick bakes the
+          # same 13 changed digests the prod fleet does, so the runner's own
+          # wait has to outlast the bake or it writes an S0 FAIL for the new
+          # chart version, this poll reads that verdict through its failure
+          # expression, and the dev promotion fails. Prod autoPromotion fires on
+          # NEW Freight rather than on failure, so that Freight would then sit
+          # unverified with no poller on the next healthy cycle.
+          #
+          # This must stay strictly greater than conformance.readyWait plus the
+          # suite budget, or the poll gives up while the runner is still
+          # legitimately waiting for its bricks.
           verdictURL: http://embervm-dev-embervm-conformance.embervm-dev.svc.cluster.local:8080/verdict
-          verdictTimeout: 20m0s
+          verdictTimeout: 40m0s
         - name: prod
           application: embervm
           upstream:
