@@ -35,6 +35,7 @@
   import { nextStatus, streamAge } from "./vm-stream-status.js";
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import PaneHeader from "./PaneHeader.svelte";
+  import CodexLogin from "./CodexLogin.svelte";
   import WalkthroughNarrative from "./WalkthroughNarrative.svelte";
   import JumpPalette from "./JumpPalette.svelte";
   import Turns from "./Turns.svelte";
@@ -139,6 +140,7 @@
   let prompt = $state("");
   let composerModelOverride = $state(null);
   let sending = $state(false);
+  let codexLoginHint = $state(null);
   let creating = $state(false);
   let needsInputState = $state(false);
   let pendingTaskId = $state(null);
@@ -202,6 +204,16 @@
     sessions.find((session) => String(session.id) === String(selectedId)) ??
       detail?.session ??
       null,
+  );
+  const selectedCodexLoginCode = $derived(
+    String(codexLoginHint?.sessionId) === String(selectedSession?.id)
+      ? codexLoginHint?.userCode
+      : null,
+  );
+  const selectedCodexLoginUrl = $derived(
+    String(codexLoginHint?.sessionId) === String(selectedSession?.id)
+      ? codexLoginHint?.verificationUrl
+      : null,
   );
   // The composer defaults to the selected session's model until the picker
   // overrides it. Derived rather than assigned in the selection effect: that
@@ -819,6 +831,23 @@
       },
     );
     const body = await response.json();
+    if (body.login_required) {
+      codexLoginHint = {
+        sessionId: session_id,
+        verificationUrl: body.verification_url ?? null,
+        userCode: body.user_code ?? null,
+        grant: body.grant ?? null,
+      };
+      await loadSessions();
+      if (String(selectedId) === String(session_id)) {
+        await loadDetail(session_id, requestSequence, true);
+      }
+      if (String(voiceStage.attachedSessionId) === String(session_id)) {
+        await loadVoiceSession(session_id);
+      }
+      errorMessage = body.message || P.labels.codexLoginRequired;
+      return;
+    }
     if (!response.ok || body.accepted === false) {
       throw new Error(body.error || "Message was not accepted");
     }
@@ -927,7 +956,21 @@
       needsInputState = false;
       pendingTaskId = null;
       if (body.kind === "run" && body.workflow_id) selectRun(body.workflow_id);
-      else if (body.session_id) selectSession(body.session_id);
+      else if (body.session_id) {
+        if (body.login_required) {
+          codexLoginHint = {
+            sessionId: body.session_id,
+            verificationUrl: body.verification_url ?? null,
+            userCode: body.user_code ?? null,
+            grant: body.grant ?? null,
+          };
+          await loadSessions();
+        }
+        selectSession(body.session_id);
+        if (body.login_required) {
+          errorMessage = body.login_message || P.labels.codexLoginRequired;
+        }
+      }
       // Released only after navigation, not before it. Clearing this on the
       // line after the fetch resolved re-enabled the button while the panel
       // was still on screen, which is a wide enough window on a phone to
@@ -1858,10 +1901,26 @@
               {#if formatRepoContext(selectedSession)}
                 <span class="pill">{formatRepoContext(selectedSession)}</span>
               {/if}
-              {#if ["needs_input", "warn"].includes(statusClass(selectedSession))}
+              {#if ["needs_input", "warn", "awaiting_login"].includes(statusClass(selectedSession))}
                 <span class={`pill state-pill ${statusClass(selectedSession)}`}
-                  >{statusLabel(selectedSession)}</span
+                  >{statusClass(selectedSession) === "awaiting_login"
+                    ? P.labels.awaitingLogin
+                    : statusLabel(selectedSession)}</span
                 >
+              {/if}
+              {#if statusClass(selectedSession) === "awaiting_login"}
+                <CodexLogin
+                  authorizeLabel={P.labels.authorizeCodex}
+                  authorizingLabel={P.labels.authorizingCodex}
+                  copiedLabel={P.labels.copied}
+                  unavailableLabel={P.labels.codexLoginUnavailable}
+                  invalidResponseLabel={P.labels.codexLoginInvalidResponse}
+                  codeLabel={P.labels.codexLoginCode}
+                  openLinkLabel={P.labels.codexLoginOpenLink}
+                  initialUserCode={selectedCodexLoginCode}
+                  initialVerificationUrl={selectedCodexLoginUrl}
+                  onError={(message) => (errorMessage = message)}
+                />
               {/if}
               <span
                 class="seg"
@@ -2690,7 +2749,8 @@
   .dot.working {
     background: var(--ok);
   }
-  .dot.needs_input {
+  .dot.needs_input,
+  .dot.awaiting_login {
     background: var(--attn);
   }
   .dot.warn {
@@ -2872,6 +2932,9 @@
     outline: none;
   }
   .state-pill.needs_input {
+    color: var(--attn-text);
+  }
+  .state-pill.awaiting_login {
     color: var(--attn-text);
   }
   .state-pill.warn {

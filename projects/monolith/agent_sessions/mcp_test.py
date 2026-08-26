@@ -919,14 +919,18 @@ def test_send_with_live_binding_ignores_prior_lineage(monkeypatch, session):
     assert store.get_pending_message(session, row.id, pending_seq) is None
 
 
-def test_startup_sweep_lists_orphaned_messages(session):
-    row = store.create_session(session, "sid-123", "/workspace", "main")
-    store.create_pending_message(session, row.id, "orphaned message")
+def test_startup_sweep_skips_sessions_awaiting_login(session):
+    running = store.create_session(session, "sid-running", "/workspace", "main")
+    awaiting = store.create_session(session, "sid-awaiting", "/workspace", "main")
+    store.update_session_status(session, awaiting.id, "awaiting_login")
+    store.create_pending_message(session, running.id, "ready message")
+    store.create_pending_message(session, awaiting.id, "paused message")
 
     orphaned = store.get_all_pending_messages_sync()
 
     assert len(orphaned) == 1
-    assert orphaned[0].message_text == "orphaned message"
+    assert orphaned[0].message_text == "ready message"
+    assert orphaned[0].session_id == running.id
 
 
 def test_two_sends_are_serialized(monkeypatch, session):

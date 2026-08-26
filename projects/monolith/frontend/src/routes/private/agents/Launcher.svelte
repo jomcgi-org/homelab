@@ -414,7 +414,8 @@
   .dot.working {
     background: var(--ok);
   }
-  .dot.needs_input {
+  .dot.needs_input,
+  .dot.awaiting_login {
     background: var(--attn);
   }
   .dot.warn {

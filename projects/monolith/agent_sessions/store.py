@@ -861,4 +861,10 @@ def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
 def get_all_pending_messages_sync() -> list[PendingMessage]:
     """Fetch all pending messages using a fresh synchronous database session."""
     with Session(get_engine()) as session:
-        return list(session.exec(select(PendingMessage)).all())
+        return list(
+            session.exec(
+                select(PendingMessage)
+                .join(AgentSession, AgentSession.id == PendingMessage.session_id)
+                .where(AgentSession.status != "awaiting_login")
+            ).all()
+        )

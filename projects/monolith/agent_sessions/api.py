@@ -228,6 +228,8 @@ async def start_session_for_thread(
     await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     login = await codex_login_gate(model)
     if login is not None:
+        await asyncio.to_thread(_set_session_status, row.id, "awaiting_login")
+
         # Keep the thread binding and original prompt durable while the owner
         # approves the device code. The watcher starts this exact pending turn
         # once the broker reports granted.
@@ -264,9 +266,6 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
     if row is None:
         return None
     model_family(row.model)
-    login = await codex_login_gate(row.model)
-    if login is not None:
-        return login
     # row.model, NOT None. None is not "unset", it resolves to the CLAUDE family
     # (model_family(None) == "claude"), so a None here ran the claude adapter
     # against a session whose CLI transcript belongs to codex and died with
@@ -275,6 +274,16 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
     turn = await asyncio.to_thread(
         _persist_pending_message, session_id, message, row.model
     )
+    login = await codex_login_gate(row.model)
+    if login is not None:
+        await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
+
+        async def resume() -> None:
+            await asyncio.to_thread(_set_session_status, session_id, "running")
+            _schedule_next_message(session_id)
+
+        watch_for_login(login.get("grant", "codex-cluster"), resume)
+        return login
     await asyncio.to_thread(_set_session_status, session_id, "running")
     _schedule_next_message(session_id)
     return {"action": "queued", "session_id": session_id, "turn": turn}

@@ -60,6 +60,11 @@ class ClassifyAndStartResponse(BaseModel):
     workflow_id: str | None = None
     kind: str
     needs_input: dict[str, bool] | None = None
+    login_required: bool = False
+    verification_url: str | None = None
+    user_code: str | None = None
+    grant: str | None = None
+    login_message: str | None = None
 
 
 class PromoteSessionRequest(BaseModel):
@@ -475,12 +480,19 @@ async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
     await asyncio.to_thread(
         _set_task_link_sync, task_id, session_id=result["session_id"]
     )
-    return ClassifyAndStartResponse(
+    response = ClassifyAndStartResponse(
         task_id=task_id,
         classification=classification,
         session_id=result["session_id"],
         kind="session",
     )
+    if result.get("login_required"):
+        response.login_required = True
+        response.verification_url = result.get("verification_url")
+        response.user_code = result.get("user_code")
+        response.grant = result.get("grant")
+        response.login_message = result.get("message")
+    return response
 
 
 @router.put("/promote-session", response_model=PromoteSessionResponse)

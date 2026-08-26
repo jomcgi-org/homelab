@@ -80,7 +80,9 @@ export function inboxGroups(runs = [], sessions = [], vms = {}) {
         (item) =>
           Boolean(item.value.needs) || Boolean(humanDecision(item.value)),
       ),
-      ...sessionItems.filter((item) => item.value.status === "needs_input"),
+      ...sessionItems.filter((item) =>
+        ["needs_input", "awaiting_login"].includes(item.value.status),
+      ),
     ].sort(newestFirst),
     running: [
       ...runItems.filter(

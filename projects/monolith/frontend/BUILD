@@ -228,6 +228,8 @@ vitest_bin.vitest_test(
     chdir = package_name(),
     data = [
         "BUILD",
+        # Compile Svelte templates whenever the frontend test target runs.
+        ":build",
         ":src",
         ":test_lib",
     ],

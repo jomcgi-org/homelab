@@ -210,6 +210,81 @@ def test_models_endpoint_empty_config_renders_visibly_empty(client, monkeypatch)
     assert client.get("/api/agents/models").json() == {"models": []}
 
 
+def test_codex_login_status_proxies_broker(client, monkeypatch):
+    calls = []
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        return {"state": "pending"}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    response = client.get("/api/agents/codex-login/status?grant=codex-dev")
+
+    assert response.status_code == 200
+    assert response.json() == {"state": "pending"}
+    assert calls == [("GET", "/grants/codex-dev/login/status")]
+
+
+def test_codex_login_start_proxies_broker(client, monkeypatch):
+    calls = []
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        return {
+            "verification_url": "https://example.test/device",
+            "user_code": "CODE-123",
+            "expires_in": 900,
+            "ignored": "not exposed",
+        }
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    response = client.post("/api/agents/codex-login/start")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "verification_url": "https://example.test/device",
+        "user_code": "CODE-123",
+        "expires_in": 900,
+    }
+    assert calls == [("POST", "/grants/codex-cluster/login/start")]
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/agents/codex-login/status"),
+        ("post", "/api/agents/codex-login/start"),
+    ],
+)
+def test_codex_login_endpoints_return_json_502_when_broker_unreachable(
+    client, monkeypatch, method, path
+):
+    async def broker_request(*_args):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    response = getattr(client, method)(path)
+
+    assert response.status_code == 502
+    assert response.headers["content-type"] == "application/json"
+    assert response.json() == {"error": "Codex login broker unavailable"}
+
+
+def test_codex_login_endpoints_validate_grant(client, monkeypatch):
+    async def broker_request(*_args):
+        raise AssertionError("invalid grants must not reach the broker")
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    response = client.get("/api/agents/codex-login/status?grant=INVALID-CODE")
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid grant name"}
+
+
 def test_list_sessions_ordering(client, session):
     # A NULL last_turn_at is unrepresentable: the column is NOT NULL DEFAULT
     # NOW() in Postgres, and the model's default_factory backfills an explicit
@@ -1027,6 +1102,7 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
 ):
     calls = []
     watched = []
+    scheduled = []
 
     async def broker_request(method, path):
         calls.append((method, path))
@@ -1051,6 +1127,15 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
         "agent_sessions.router.watch_for_login",
         lambda grant, callback: watched.append((grant, callback)),
     )
+    monkeypatch.setattr(
+        "agent_sessions.router._set_session_status",
+        lambda session_id, status: store.update_session_status(
+            session, session_id, status
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._schedule_next_message", scheduled.append
+    )
 
     body = client.post(
         "/api/agents/sessions", json={"prompt": "Hello", "model": "luna"}
@@ -1064,11 +1149,70 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
     assert body["turn"] == 1
     row = store.get_session(session, body["session_id"])
     assert row.discord_thread is None
+    assert row.status == "awaiting_login"
     assert watched and watched[0][0] == "codex-cluster"
+    assert scheduled == []
     assert calls == [
         ("GET", "/grants/codex-cluster/login/status"),
         ("POST", "/grants/codex-cluster/login/start"),
     ]
+
+    asyncio.run(watched[0][1]())
+    assert store.get_session(session, body["session_id"]).status == "running"
+    assert scheduled == [body["session_id"]]
+
+
+def test_send_message_login_required_persists_and_watches(client, session, monkeypatch):
+    row = _session(session, "send-login", model="luna", status="completed")
+    watched = []
+    scheduled = []
+
+    async def fake_gate(_model):
+        return {
+            "login_required": True,
+            "grant": "codex-cluster",
+            "message": "Authorize Codex",
+        }
+
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr("agent_sessions.router.codex_login_gate", fake_gate)
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._set_session_status",
+        lambda session_id, status: store.update_session_status(
+            session, session_id, status
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router.watch_for_login",
+        lambda grant, callback: watched.append((grant, callback)),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._schedule_next_message", scheduled.append
+    )
+
+    body = client.post(
+        f"/api/agents/sessions/{row.id}/messages",
+        json={"prompt": "keep this prompt"},
+    ).json()
+
+    assert body["accepted"] is False
+    assert body["login_required"] is True
+    assert body["turn"] == 1
+    pending = store.get_pending_message(session, row.id, body["turn"])
+    assert pending.message_text == "keep this prompt"
+    assert store.get_session(session, row.id).status == "awaiting_login"
+    assert watched[0][0] == "codex-cluster"
+    assert scheduled == []
+
+    asyncio.run(watched[0][1]())
+    assert store.get_session(session, row.id).status == "running"
+    assert scheduled == [row.id]
 
 
 def test_send_message_session_not_found(client, monkeypatch):
@@ -1231,6 +1375,58 @@ def test_send_to_thread_session_queues_without_broker_for_non_codex(
     assert result["action"] == "queued"
     assert result["turn"] == 1
     assert calls == []
+
+
+def test_send_to_thread_session_login_required_persists_and_watches(
+    session, monkeypatch
+):
+    row = _session(session, "thread-login", model="luna", status="completed")
+    watched = []
+    scheduled = []
+
+    async def fake_gate(_model):
+        return {
+            "login_required": True,
+            "grant": "codex-cluster",
+            "message": "Authorize Codex",
+        }
+
+    monkeypatch.setattr(api, "session_id_for_thread", lambda _: row.id)
+    monkeypatch.setattr(api, "_load_session_row", lambda _: row)
+    monkeypatch.setattr(api, "codex_login_gate", fake_gate)
+    monkeypatch.setattr(
+        api,
+        "_persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr(
+        api,
+        "_set_session_status",
+        lambda session_id, status: store.update_session_status(
+            session, session_id, status
+        ),
+    )
+    monkeypatch.setattr(
+        api,
+        "watch_for_login",
+        lambda grant, callback: watched.append((grant, callback)),
+    )
+    monkeypatch.setattr(api, "_schedule_next_message", scheduled.append)
+
+    result = asyncio.run(api.send_to_thread_session("thread-1", "keep this"))
+
+    assert result["login_required"] is True
+    pending = store.get_pending_message(session, row.id, 1)
+    assert pending.message_text == "keep this"
+    assert store.get_session(session, row.id).status == "awaiting_login"
+    assert watched[0][0] == "codex-cluster"
+    assert scheduled == []
+
+    asyncio.run(watched[0][1]())
+    assert store.get_session(session, row.id).status == "running"
+    assert scheduled == [row.id]
 
 
 def test_send_message_marks_message_ui_originated(client, session, monkeypatch):

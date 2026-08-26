@@ -611,7 +611,9 @@ async def _sweep_orphaned_pending_messages() -> None:
         reclaimed = await asyncio.to_thread(_reclaim_stale_claims_sync)
         if reclaimed > 0:
             logger.info("Reclaimed %d stale claims from crashed replicas", reclaimed)
-        # Execute all unclaimed messages
+        # Skip sessions paused for device login; a persisted prompt must not
+        # execute until the grant is live, else the turn fails with opaque 422
+        # within 5 seconds.
         rows = await asyncio.to_thread(_get_all_pending_messages_sync)
         for row in rows:
             if row.claimed_by_replica is None:
