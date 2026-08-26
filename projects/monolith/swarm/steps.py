@@ -177,21 +177,6 @@ def poll_turn(session_id: int, after_seq: int) -> dict | None:
 
 
 @DBOS.step()
-def poll_session_status(session_id: int) -> str:
-    """Read the durable lifecycle state paired with ``poll_turn``."""
-    from sqlmodel import Session
-
-    from agent_sessions import store
-    from core.db import get_engine
-
-    with Session(get_engine()) as session:
-        row = store.get_session(session, session_id)
-        if row is None:
-            return "missing"
-        return row.status
-
-
-@DBOS.step()
 def update_turn_shas(
     session_id: int, turn_seq: int, base_sha: str | None, commit_sha: str | None
 ) -> bool:
