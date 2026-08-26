@@ -319,13 +319,17 @@ signoz:
           cpu: 1
           memory: 1.5Gi
   otelCollector:
-    # 7-day SigNoz peak RSS 667Mi / working_set 680Mi: the old 2Gi request / 4Gi
-    # limit reserved ~3x the real peak. Trimmed to 768Mi / 1.5Gi (above the 680Mi
-    # peak with ~2x burst headroom for incident-time telemetry spikes).
+    # 7-day SigNoz peak RSS 667Mi / working_set 680Mi, so 768Mi request sits above
+    # the steady-state peak. The limit is sized for recovery, not steady state:
+    # the pipeline has no memory_limiter processor, so when the collector comes
+    # back after an outage every agent drains its buffer at once with nothing
+    # applying backpressure. At a 1.5Gi ceiling that drain OOMKilled the pod in
+    # ~114s on a loop (262 restarts on 2026-08-26) even with ClickHouse healthy.
+    # 3Gi absorbs the drain. Adding memory_limiter is the durable fix.
     resources:
       requests:
         cpu: 200m
         memory: 768Mi
       limits:
         cpu: 2
-        memory: 1.5Gi
+        memory: 3Gi
