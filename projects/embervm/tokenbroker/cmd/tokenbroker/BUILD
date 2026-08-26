@@ -34,4 +34,3 @@ go_test(
         "//projects/embervm/tokenbroker/internal/store",
     ],
 )
-
