@@ -305,7 +305,9 @@ conformance:
   #
   # Must stay strictly BELOW the dev stage's verdictTimeout in
   # projects/platform/kargo/values.yaml (40m0s), which also has to cover the
-  # roughly 4m suite after this wait ends. It is a bound on waiting for bricks,
+  # 5m10s suite after this wait ends (s1 60s + s2 180s + s3 60s + s4 10s,
+  # summed as totalBudget in conformance/main.go). 30m plus 5m10s leaves about
+  # 5m of real margin at 40m0s. It is a bound on waiting for bricks,
   # not a budget for the suite, so a fast roll is unaffected: readiness is
   # polled, not slept.
   readyWait: 30m0s
