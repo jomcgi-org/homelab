@@ -242,7 +242,8 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 | Rolling a domain's ADRs up into `ARCHITECTURE.md` | `docs/runbooks/rollup-architecture-docs.md` |
 
 **Skills** (`.claude/skills/`, auto-matched): `ship`, `adr`, `stpa`,
-`codex-implement`, `pr-workflow`, `ci-triage`, `improve-buildbuddy-usage`.
+`codex-implement`, `pr-workflow`, `ci-triage`, `improve-buildbuddy-usage`,
+`qwen-queue`.
 
 **Agents** (`.claude/agents/`): `implementer` (Sol), `reviewer` (Opus),
 `adr-author` and `stpa-analyst` (Sonnet), `escalation` (Fable). Dispatch work to
