@@ -661,12 +661,20 @@ gitMirror:
   # FALSE for the 0.41.7 to 0.47.x jump (#5224), to be re-enabled as its own
   # single-change roll once prod has settled.
   #
-  # This flag has been true here for a while but has never rendered anything:
-  # chart 0.41.7 carries no template for it. The moment the chart moves, every
-  # noded pod gains a THIRD container that has run nowhere. Dev cannot have
-  # exercised it either, since dev runs no egress-proxy and the sidecar is
-  # gated on `and egress.enabled gitMirror.enabled`, so dev's noded pod has a
-  # single container.
+  # This flag arrived true on 2026-08-24 (e01071c77, the same commit that added
+  # the template, chart 0.45.3) and has never rendered anything, because prod
+  # has been pinned at 0.41.7 which carries no template for it. The moment the
+  # chart moves, every noded pod gains a THIRD container that has run nowhere.
+  # Dev cannot have exercised it either, since dev runs no egress-proxy and the
+  # sidecar is gated on `and egress.enabled gitMirror.enabled`, so dev's noded
+  # pod has a single container.
+  #
+  # This stops the SIDECAR, not the guest half. The shim defaults to
+  # http://git-mirror.egress.internal:9419 and EMBER_GIT_MIRROR_URL is set by
+  # nothing, so on 0.47.x every session hydration tries the mirror first, is
+  # denied by the egress proxy (the reserved host resolves nowhere with the
+  # seam off), and falls back to its GitHub clone. Fast and safe, but expect
+  # mirror-named lines in hydration logs during the jump.
   #
   # That would ride in on the largest rollout this pipeline has attempted (13
   # of 14 guest base digests rebuilding on every node). Landing an unexercised
