@@ -11,7 +11,7 @@ have been retired. Their implementation remains available in git history.
 - Private routes live under `/api/grimoire` in `router.py`.
 - Read-only public routes use the same prefix through `router_public.py`.
 - The Svelte frontend lives in `projects/monolith/frontend/src/lib/grimoire`
-  and `projects/monolith/frontend/src/routes/app/grimoire`.
+  and `projects/monolith/frontend/src/routes/public/app/grimoire`.
 - Persistent state lives in the Monolith Postgres cluster. There is no separate
   Grimoire deployment or datastore.
 
