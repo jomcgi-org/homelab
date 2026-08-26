@@ -55,9 +55,9 @@ defmodule Embervm.SpecTrace.Checker do
      destroy only after the node confirmed it by teardown or by absence.
      Vacuous when every confirmation took the gate-off path.
 
-  8. **EventuallyDispatched** (bounded liveness) — a task queued at checkpoint
-     N must be assigned or succeeded by checkpoint N+K if inventory persists
-     across the window.
+  8. **EventuallyDispatched** (bounded liveness): every window of K+1
+     consecutive checkpoints in which a task stays queued must contain its
+     dispatch or success when inventory for that task's workload persists.
 
   9. **InventoryReconciled**: at a checkpoint, a dispatchable node instance
      reporting `live_vms > 0` must not have an empty control-plane inventory.
@@ -532,77 +532,226 @@ defmodule Embervm.SpecTrace.Checker do
   end
 
   defp check_eventually_dispatched(records) do
-    checkpoints = Enum.filter(records, &(&1["action"] == "checkpoint"))
-    dispatches = Enum.filter(records, &(&1["action"] in ["dispatch_warm", "dispatch_miss"]))
+    checkpoints =
+      records
+      |> Enum.filter(&(&1["action"] == "checkpoint"))
+      |> Enum.sort_by(& &1["mono"])
+
+    progress = Enum.filter(records, &(&1["action"] in ["dispatch_warm", "dispatch_miss", "succeed"]))
 
     cond do
-      checkpoints == [] ->
-        eventually_dispatched_vacuous(0, "no checkpoint records in trace")
-
-      # NO early return on `dispatches == []`. That would short-circuit the
-      # single most important case this invariant exists for: a control plane
-      # that wedges from boot has inventory and ZERO dispatches for its whole
-      # trace, and reporting that vacuous is the safety-property failure all
-      # over again. Zero dispatches with persistent inventory is the wedge, and
-      # the window scan below is what says so. Zero dispatches with NO inventory
-      # is idle, and the empty-window guard reports that vacuous.
-
-      length(checkpoints) < @eventually_dispatched_k + 1 ->
-        # VACUOUS, not pass. A dispatch somewhere in a too-short trace is not
-        # evidence that liveness held: the window this invariant is defined over
-        # cannot be formed, so nothing was checked. Reporting pass here with
-        # `coverage: 0` is precisely the verdict-without-a-denominator overclaim
-        # the moduledoc forbids.
+      not Enum.any?(checkpoints, &checkpoint_has_queued_tasks?/1) ->
         eventually_dispatched_vacuous(
           0,
-          "fewer than #{@eventually_dispatched_k + 1} checkpoints, so no bounded window could be formed"
+          "no checkpoint carried queued_tasks (old-format trace)"
         )
 
       true ->
-        parsed = Enum.map(checkpoints, fn checkpoint ->
-          {checkpoint, elem(checkpoint_vm_ids(checkpoint), 1)}
-        end)
+        # NO early return on `progress == []`. Demand is read as a level at every
+        # checkpoint, so a wedged control plane with durable queued work still
+        # shows the antecedent in every sweep and still fails when its workload
+        # has persistent inventory. A task that drains between sweeps is genuinely
+        # not a wedge, so its absence from K+1 consecutive checkpoints is honest
+        # vacuousness rather than a coverage shortfall.
+        task_ids =
+          checkpoints
+          |> Enum.flat_map(&checkpoint_queued_tasks/1)
+          |> Enum.map(& &1["task_id"])
+          |> Enum.filter(&is_binary/1)
+          |> Enum.uniq()
+          |> Enum.sort()
 
-        windows = Enum.chunk_every(parsed, @eventually_dispatched_k + 1, 1, :discard)
-
-        examined = Enum.filter(windows, fn window ->
-          Enum.all?(window, fn {_checkpoint, vm_ids} -> vm_ids != [] end)
-        end)
-
-        violations = Enum.filter(examined, fn window ->
-          [first | _] = window
-          {last, _last_vm_ids} = List.last(window)
-          first_mono = elem(first, 0)["mono"]
-          last_mono = last["mono"]
-
-          not Enum.any?(dispatches, fn dispatch ->
-            dispatch["mono"] >= first_mono and dispatch["mono"] <= last_mono
+        results =
+          Enum.map(task_ids, fn task_id ->
+            eventually_dispatched_task_result(task_id, checkpoints, progress)
           end)
-        end)
 
-        cond do
-          examined == [] ->
-            eventually_dispatched_vacuous(length(windows), "no window had persistent inventory")
+        eventually_dispatched_verdict(results, checkpoints)
+    end
+  end
 
-          violations != [] ->
-            %{
-              invariant: :eventually_dispatched,
-              verdict: :fail,
-              coverage: length(examined),
-              oracle: :trace_only,
-              detail: "#{length(violations)} of #{length(examined)} persistent-inventory windows had no dispatch"
-            }
+  defp eventually_dispatched_task_result(task_id, checkpoints, progress) do
+    window_results =
+      checkpoints
+      |> Enum.chunk_every(@eventually_dispatched_k + 1, 1, :discard)
+      |> Enum.map(&eventually_dispatched_window(task_id, &1, progress))
 
-          true ->
-            %{
-              invariant: :eventually_dispatched,
-              verdict: :pass,
-              coverage: length(examined),
-              oracle: :trace_only,
-              detail: "every persistent-inventory window contained a dispatch"
-            }
+    cond do
+      Enum.any?(window_results, &(&1 == :violation)) ->
+        %{task_id: task_id, status: :violation}
+
+      Enum.any?(window_results, &(&1 == :pass)) ->
+        %{task_id: task_id, status: :pass}
+
+      true ->
+        unjudged = Enum.filter(window_results, &match?({:unjudged, _, _}, &1))
+
+        if unjudged == [] do
+          %{
+            task_id: task_id,
+            status: :unjudged,
+            reasons: MapSet.new([:insufficient_window]),
+            detail: "not queued across #{@eventually_dispatched_k + 1} consecutive checkpoints"
+          }
+        else
+          reasons = unjudged |> Enum.map(&elem(&1, 1)) |> MapSet.new()
+          detail = unjudged |> Enum.map(&elem(&1, 2)) |> Enum.uniq() |> Enum.join("; ")
+          %{task_id: task_id, status: :unjudged, reasons: reasons, detail: detail}
         end
     end
+  end
+
+  defp eventually_dispatched_window(task_id, window, progress) do
+    queued = Enum.map(window, &checkpoint_task_status(&1, task_id))
+
+    cond do
+      Enum.any?(queued, &(&1 == :not_queued)) ->
+        :not_queued
+
+      Enum.any?(queued, &(&1 == :old_format)) ->
+        {:unjudged, :old_format, "an old-format checkpoint had no queued_tasks information"}
+
+      Enum.any?(queued, &(&1 == :truncated)) ->
+        {:unjudged, :truncated, "queued_tasks truncation hid the task at a checkpoint"}
+
+      true ->
+        first_mono = hd(window)["mono"]
+        last_mono = List.last(window)["mono"]
+
+        progressed? =
+          Enum.any?(progress, fn record ->
+            get_in(record, ["vars", "task_id"]) == task_id and
+              record["mono"] >= first_mono and record["mono"] <= last_mono
+          end)
+
+        cond do
+          progressed? ->
+            :pass
+
+          true ->
+            empty_workloads =
+              window
+              |> Enum.zip(queued)
+              |> Enum.reject(fn {checkpoint, {:queued, workload}} ->
+                checkpoint_workload_inventory?(checkpoint, workload)
+              end)
+              |> Enum.map(fn {_checkpoint, {:queued, workload}} -> workload end)
+              |> Enum.uniq()
+
+            if empty_workloads == [] do
+              :violation
+            else
+              {:unjudged, :inventory,
+               "empty inventory for workload(s) #{Enum.map_join(empty_workloads, ", ", &inspect/1)}"}
+            end
+        end
+    end
+  end
+
+  defp eventually_dispatched_verdict(results, checkpoints) do
+    judged = Enum.reject(results, &(&1.status == :unjudged))
+    violations = Enum.filter(judged, &(&1.status == :violation))
+    unjudged = Enum.filter(results, &(&1.status == :unjudged))
+
+    cond do
+      violations != [] ->
+        task_ids = Enum.map_join(violations, ", ", &inspect(&1.task_id))
+
+        %{
+          invariant: :eventually_dispatched,
+          verdict: :fail,
+          coverage: length(judged),
+          oracle: :trace_only,
+          detail: "violating task_ids: #{task_ids}"
+        }
+
+      judged != [] ->
+        %{
+          invariant: :eventually_dispatched,
+          verdict: :pass,
+          coverage: length(judged),
+          oracle: :trace_only,
+          detail:
+            "judged #{length(judged)} queued task(s); unjudged tasks: #{eventually_dispatched_unjudged_detail(unjudged)}"
+        }
+
+      Enum.any?(checkpoints, &checkpoint_queued_tasks_truncated?/1) and results == [] ->
+        eventually_dispatched_vacuous(0, "queued_tasks truncation prevented judgement")
+
+      results == [] or Enum.all?(results, &MapSet.member?(&1.reasons, :insufficient_window)) ->
+        eventually_dispatched_vacuous(
+          0,
+          "no task was queued across #{@eventually_dispatched_k + 1} consecutive checkpoints"
+        )
+
+      Enum.any?(results, &MapSet.member?(&1.reasons, :truncated)) ->
+        eventually_dispatched_vacuous(
+          0,
+          "queued_tasks truncation prevented judgement; unjudged tasks: #{eventually_dispatched_unjudged_detail(unjudged)}"
+        )
+
+      Enum.any?(results, &MapSet.member?(&1.reasons, :old_format)) ->
+        eventually_dispatched_vacuous(
+          0,
+          "old-format checkpoints prevented judgement; unjudged tasks: #{eventually_dispatched_unjudged_detail(unjudged)}"
+        )
+
+      true ->
+        eventually_dispatched_vacuous(
+          0,
+          "no task had a persistent-inventory window; unjudged tasks: #{eventually_dispatched_unjudged_detail(unjudged)}"
+        )
+    end
+  end
+
+  defp checkpoint_has_queued_tasks?(checkpoint) do
+    vars = checkpoint["vars"]
+    is_map(vars) and Map.has_key?(vars, "queued_tasks")
+  end
+
+  defp checkpoint_queued_tasks(checkpoint) do
+    case get_in(checkpoint, ["vars", "queued_tasks"]) do
+      tasks when is_list(tasks) -> Enum.filter(tasks, &is_map/1)
+      _ -> []
+    end
+  end
+
+  defp checkpoint_queued_tasks_truncated?(checkpoint) do
+    get_in(checkpoint, ["vars", "queued_tasks_truncated"]) == true
+  end
+
+  defp checkpoint_task_status(checkpoint, task_id) do
+    if checkpoint_has_queued_tasks?(checkpoint) do
+      case Enum.find(checkpoint_queued_tasks(checkpoint), &(&1["task_id"] == task_id)) do
+        nil -> if checkpoint_queued_tasks_truncated?(checkpoint), do: :truncated, else: :not_queued
+        task -> {:queued, task["workload"]}
+      end
+    else
+      :old_format
+    end
+  end
+
+  defp checkpoint_workload_inventory?(checkpoint, workload) when is_binary(workload) do
+    case get_in(checkpoint, ["vars", "node_workload_vm_ids"]) do
+      inventory when is_map(inventory) ->
+        Enum.any?(inventory, fn {node_workload, vm_ids} ->
+          String.ends_with?(to_string(node_workload), ":#{workload}") and
+            is_list(vm_ids) and vm_ids != []
+        end)
+
+      _ ->
+        false
+    end
+  end
+
+  defp checkpoint_workload_inventory?(_checkpoint, _workload), do: false
+
+  defp eventually_dispatched_unjudged_detail([]), do: "none"
+
+  defp eventually_dispatched_unjudged_detail(unjudged) do
+    Enum.map_join(unjudged, ", ", fn result ->
+      "#{inspect(result.task_id)} (#{result.detail})"
+    end)
   end
 
   defp check_inventory_reconciled(records) do

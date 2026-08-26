@@ -111,14 +111,14 @@ defmodule Embervm.RestartWedgeScenarioTest do
     put_capacity(cap_table, [])
     start_dispatcher(dispatcher_name, store, cap_table, catalog_table, depth_table, dispatched)
 
-    _wedge_task = submit(store)
+    _wedge_task_id = submit(store)
     refute eventually(fn -> Agent.get(dispatched, & &1) == 2 end, 5_000)
 
     # Force enough sweeps to FORM a liveness window. `eventually_dispatched` is
     # bounded at K=2, so it needs K+1 checkpoints before it can say anything, and
-    # a checkpoint is emitted once per sweep. Without these the scenario returns
-    # vacuous ("fewer than 3 checkpoints, so no bounded window could be formed"),
-    # which is the checker being honest about a trace too short to judge.
+    # a checkpoint is emitted once per sweep. The level predicate may still find
+    # no queued window if the task leaves queued before these sweeps, but it needs
+    # the checkpoints to distinguish that from a trace too short to scan.
     #
     # The fix belongs here rather than in K. Shrinking the bound so a thin
     # scenario passes is how a liveness gate ratchets itself into never firing,
@@ -149,8 +149,8 @@ defmodule Embervm.RestartWedgeScenarioTest do
 
     verdicts = Checker.run(TraceSQLite, trace_store)
 
-    # The liveness invariant should identify the persistent inventory with no
-    # dispatch as a bounded wedge.
+    # The liveness invariant should identify why the suppress-primed wedge task
+    # cannot be judged from control-plane testimony.
     # Assert on the invariants that could plausibly see a wedge, NOT on the whole
     # verdict list.
     #
@@ -177,13 +177,14 @@ defmodule Embervm.RestartWedgeScenarioTest do
     wedge_verdict = Enum.find(verdicts, &(&1.invariant == :eventually_dispatched))
     assert wedge_verdict, "eventually_dispatched returned no verdict on wedge scenario"
 
-    # VACUOUS, and this is the finding rather than a shortfall.
-    #
     # A suppress-primed wedge means noded stops reporting its VMs, so the control
-    # plane's inventory genuinely EMPTIES. From inside the trace that is
-    # byte-identical to an idle control plane with nothing to dispatch: empty
-    # checkpoints, no dispatches. `oracle: :trace_only` is exactly this
-    # limitation, the control plane testifying about itself.
+    # plane's warm inventory genuinely EMPTIES. Capacity still advertises a ready
+    # base, so this scenario takes the cold-miss path. Its test prime_fun returns
+    # :not_expected and max_attempts is one, which removes the task from queued
+    # before it occupies K+1 checkpoints. The healthy pre-wedge task also drains
+    # between sweeps. With no persistent queued level, the invariant is vacuous
+    # for insufficient window coverage, not for inventory. `oracle: :trace_only`
+    # is exactly this limitation, the control plane testifying about itself.
     #
     # Distinguishing "the node hid its VMs" from "there are no VMs" requires
     # asking the NODE, which is the tier-3 reconciliation against /v1/nodes that
@@ -195,12 +196,13 @@ defmodule Embervm.RestartWedgeScenarioTest do
     # fail scenario proves that direction, and it is the one a dispatcher bug
     # produces.
     assert wedge_verdict.verdict == :vacuous,
-           "expected vacuous (empty inventory is indistinguishable from idle at trace level), " <>
+           "expected vacuous because no task stayed queued for K+1 checkpoints, " <>
              "got #{inspect(wedge_verdict.verdict)}: #{inspect(wedge_verdict.detail)}"
 
-    assert wedge_verdict.detail =~ "inventory",
-           "the vacuous reason must name inventory, so an operator can tell this from " <>
-             "a trace too short to judge: #{inspect(wedge_verdict.detail)}"
+    assert wedge_verdict.coverage == 0
+
+    assert wedge_verdict.detail =~ "3 consecutive checkpoints"
+    refute wedge_verdict.detail =~ "inventory"
 
     pre_wedge_checkpoints = Enum.filter(records, &(&1["action"] == "checkpoint")) |> Enum.take(2)
     pre_wedge_dispatches = Enum.filter(records, &(&1["action"] in ["dispatch_warm", "dispatch_miss"])) |> Enum.take(1)

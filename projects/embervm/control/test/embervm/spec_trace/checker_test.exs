@@ -367,6 +367,139 @@ defmodule Embervm.SpecTrace.CheckerTest do
     end
   end
 
+  describe "eventually_dispatched" do
+    test "a dispatch before a later queued wedge does not satisfy the wedge", %{store: store} do
+      task_id = "task-requeued-wedge"
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_queue_edge(1, task_id, "W"),
+          eventually_progress(10, "dispatch_warm", task_id),
+          eventually_queue_edge(49, task_id, "W"),
+          eventually_checkpoint(50, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(60, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(70, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]})
+        ])
+
+      assert verdict.verdict == :fail
+      assert verdict.coverage == 1
+      assert verdict.detail =~ task_id
+    end
+
+    test "a boot cohort slides past its first empty-inventory checkpoint", %{store: store} do
+      task_id = "task-boot-wedge"
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_queue_edge(1, task_id, "W"),
+          eventually_checkpoint(10, [queued_task(task_id, "W")], %{}),
+          eventually_checkpoint(20, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(30, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(40, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]})
+        ])
+
+      assert verdict.verdict == :fail
+      assert verdict.coverage == 1
+      assert verdict.detail =~ task_id
+    end
+
+    test "progress strictly before a queued window does not satisfy the window", %{store: store} do
+      task_id = "task-old-progress"
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_queue_edge(1, task_id, "W"),
+          eventually_progress(10, "dispatch_miss", task_id),
+          eventually_checkpoint(20, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(30, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(40, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]})
+        ])
+
+      assert verdict.verdict == :fail
+      assert verdict.detail =~ task_id
+    end
+
+    test "a dispatch inside a persistent queued window passes", %{store: store} do
+      task_id = "task-progress"
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_checkpoint(10, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_progress(20, "dispatch_warm", task_id),
+          eventually_checkpoint(30, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(40, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]})
+        ])
+
+      assert verdict.verdict == :pass
+      assert verdict.coverage == 1
+    end
+
+    test "inventory for an unrelated workload leaves the task unjudged", %{store: store} do
+      task_id = "task-workload-w"
+
+      checkpoints =
+        for mono <- [10, 20, 30] do
+          eventually_checkpoint(
+            mono,
+            [queued_task(task_id, "W")],
+            %{"node:V" => ["vm-v"]}
+          )
+        end
+
+      verdict = eventually_dispatched_verdict(store, checkpoints)
+
+      assert verdict.verdict == :vacuous
+      assert verdict.coverage == 0
+      assert verdict.detail =~ "inventory"
+      assert verdict.detail =~ "W"
+    end
+
+    test "a task omitted from a truncated checkpoint is unjudged", %{store: store} do
+      task_id = "task-truncated"
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_checkpoint(10, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(20, [], %{"node:W" => ["vm-w"]}, truncated: true),
+          eventually_checkpoint(30, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]})
+        ])
+
+      assert verdict.verdict == :vacuous
+      assert verdict.coverage == 0
+      assert verdict.detail =~ "truncation"
+      assert verdict.detail =~ task_id
+    end
+
+    test "checkpoints without queued testimony are old-format vacuous", %{store: store} do
+      checkpoints =
+        for mono <- [10, 20, 30] do
+          eventually_checkpoint(mono, :absent, %{"node:W" => ["vm-w"]})
+        end
+
+      verdict = eventually_dispatched_verdict(store, checkpoints)
+
+      assert verdict.verdict == :vacuous
+      assert verdict.coverage == 0
+      assert verdict.detail =~ "old-format"
+      refute verdict.detail =~ "3 consecutive"
+    end
+
+    test "a task queued for only K checkpoints has no bounded window", %{store: store} do
+      task_id = "task-short"
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_checkpoint(10, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(20, [queued_task(task_id, "W")], %{"node:W" => ["vm-w"]}),
+          eventually_checkpoint(30, [], %{"node:W" => ["vm-w"]})
+        ])
+
+      assert verdict.verdict == :vacuous
+      assert verdict.coverage == 0
+      assert verdict.detail =~ "3 consecutive checkpoints"
+    end
+  end
+
   describe "vacuous verdicts" do
     test "all invariants return :vacuous on empty trace", %{store: store} do
       # Write no adoption records at all
@@ -729,6 +862,55 @@ defmodule Embervm.SpecTrace.CheckerTest do
 
   defp inventory_verdict(verdicts) do
     Enum.find(verdicts, &(&1[:invariant] == :inventory_reconciled))
+  end
+
+  defp eventually_dispatched_verdict(store, records) do
+    :ok = SQLite.write(store, records)
+
+    Checker.run(SQLite, store)
+    |> Enum.find(&(&1.invariant == :eventually_dispatched))
+  end
+
+  defp eventually_checkpoint(mono, queued_tasks, inventory, opts \\ []) do
+    vars = %{"node_workload_vm_ids" => inventory}
+
+    vars =
+      if queued_tasks == :absent do
+        vars
+      else
+        Map.put(vars, "queued_tasks", queued_tasks)
+      end
+
+    vars =
+      if Keyword.get(opts, :truncated, false) do
+        Map.put(vars, "queued_tasks_truncated", true)
+      else
+        vars
+      end
+
+    eventually_record("checkpoint", mono, vars)
+  end
+
+  defp eventually_progress(mono, action, task_id) do
+    eventually_record(action, mono, %{"task_id" => task_id})
+  end
+
+  defp eventually_queue_edge(mono, task_id, workload) do
+    eventually_record("queue_task", mono, %{"task_id" => task_id, "workload" => workload})
+  end
+
+  defp queued_task(task_id, workload), do: %{"task_id" => task_id, "workload" => workload}
+
+  defp eventually_record(action, mono, vars) do
+    %{
+      "run_id" => "test-run-eventually-dispatched",
+      "seq" => mono,
+      "mono" => mono,
+      "ts" => mono * 10,
+      "spec" => "adoption",
+      "action" => action,
+      "vars" => vars
+    }
   end
 
   defp inventory_checkpoint(run_id, mono, inventory, node_reported) do
