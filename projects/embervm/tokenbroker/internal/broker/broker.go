@@ -29,8 +29,30 @@ type grantState struct {
 	lastErr       error
 	lastAccess    string
 	lastExpiry    time.Time
+	needsLogin    bool
 	authoritative *store.Grant
 }
+
+func (b *Broker) NeedsLogin(grantName string) bool {
+	s, err := b.state(grantName)
+	if err != nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.needsLogin
+}
+
+func (b *Broker) ClearNeedsLogin(grantName string) {
+	s, err := b.state(grantName)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	s.needsLogin = false
+	s.mu.Unlock()
+}
+
 type Broker struct {
 	adapters       map[string]provider.Adapter
 	store          Store
@@ -145,6 +167,11 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 		}
 	}
 	if err != nil {
+		if errors.Is(err, provider.ErrInvalidGrant) {
+			s.mu.Lock()
+			s.needsLogin = true
+			s.mu.Unlock()
+		}
 		b.metrics.RefreshFailures.Inc()
 		b.logger.Error("tokenbroker refresh failed", "grant", grantName, "err", err)
 		return "", time.Time{}, err
@@ -167,12 +194,14 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 			if stored.TokenBundle.AccessToken == "" {
 				return "", time.Time{}, ErrNoGrant
 			}
+			b.ClearNeedsLogin(grantName)
 			return stored.TokenBundle.AccessToken, stored.TokenBundle.ExpiresAt, nil
 		}
 		b.metrics.RefreshFailures.Inc()
 		b.logger.Error("tokenbroker rotated grant persistence failed", "grant", grantName, "err", err)
 		return "", time.Time{}, err
 	}
+	b.ClearNeedsLogin(grantName)
 	return grant.TokenBundle.AccessToken, grant.TokenBundle.ExpiresAt, nil
 }
 

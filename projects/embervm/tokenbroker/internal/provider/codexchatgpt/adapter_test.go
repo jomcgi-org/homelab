@@ -3,12 +3,15 @@ package codexchatgpt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
 )
 
 func TestDeviceFlowAndExchange(t *testing.T) {
@@ -72,5 +75,22 @@ func TestRefreshTokenReused(t *testing.T) {
 	_, err := c.RefreshToken(context.Background(), "old")
 	if err == nil || !strings.Contains(err.Error(), "refresh_token_reused") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestInvalidGrantErrorsRequireLogin(t *testing.T) {
+	for _, responseError := range []string{"invalid_grant", "invalid_request", "expired_token"} {
+		t.Run(responseError, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": responseError})
+			}))
+			defer ts.Close()
+			c := &Adapter{Issuer: ts.URL, HTTPClient: ts.Client()}
+			_, err := c.RefreshToken(context.Background(), "dead")
+			if !errors.Is(err, provider.ErrInvalidGrant) {
+				t.Fatalf("error = %v, want ErrInvalidGrant", err)
+			}
+		})
 	}
 }

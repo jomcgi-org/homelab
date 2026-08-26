@@ -7046,6 +7046,7 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         "@pip//fastmcp",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],

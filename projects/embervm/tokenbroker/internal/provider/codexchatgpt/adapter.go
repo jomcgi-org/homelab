@@ -132,6 +132,9 @@ func (c *Adapter) tokenRequestBody(ctx context.Context, body string) (provider.T
 			if out.Error == "refresh_token_reused" {
 				return out, fmt.Errorf("oauth token request: %w", provider.ErrRefreshTokenReused)
 			}
+			if out.Error == "invalid_grant" || out.Error == "invalid_request" || out.Error == "expired_token" {
+				return out, fmt.Errorf("oauth token request: %s: %w", out.Error, provider.ErrInvalidGrant)
+			}
 			return out, fmt.Errorf("oauth token request: %s", out.Error)
 		}
 		return out, fmt.Errorf("oauth token request returned %s", resp.Status)

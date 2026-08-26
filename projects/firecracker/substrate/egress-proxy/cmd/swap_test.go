@@ -861,6 +861,155 @@ func TestSwapPumpInjectsOnThePlaintextLane(t *testing.T) {
 	}
 }
 
+func runSwapResponse(p *proxy, sec *secretEntry, status int, body string) (string, error) {
+	upClient, upOrigin := net.Pipe()
+	defer upClient.Close()
+	originErr := make(chan error, 1)
+	go func() {
+		defer upOrigin.Close()
+		if _, err := http.ReadRequest(bufio.NewReader(upOrigin)); err != nil {
+			originErr <- err
+			return
+		}
+		_, err := fmt.Fprintf(upOrigin, "HTTP/1.1 %d %s\r\nX-Upstream: preserved\r\nContent-Length: %d\r\n\r\n%s", status, http.StatusText(status), len(body), body)
+		originErr <- err
+	}()
+	guest := "POST http://api.example.com/v1/messages HTTP/1.1\r\n" +
+		"Host: api.example.com\r\n" +
+		"Authorization: Bearer guest-login-gate-dummy\r\n" +
+		"Content-Length: 0\r\n" +
+		"Connection: close\r\n\r\n"
+	var back bytes.Buffer
+	p.swapPump(bufio.NewReader(strings.NewReader(guest)), &back, nil, upClient, "api.example.com", sec)
+	return back.String(), <-originErr
+}
+
+func TestSwapPumpUnauthorizedInvalidatesBrokerCredentialAndForcesRefreshOnce(t *testing.T) {
+	var countMu sync.Mutex
+	refreshes := 0
+	refreshed := make(chan struct{}, 1)
+	brokerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/grants/codex-cluster/refresh" {
+			t.Errorf("refresh request = %s %s", r.Method, r.URL.Path)
+		}
+		countMu.Lock()
+		refreshes++
+		countMu.Unlock()
+		select {
+		case refreshed <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer brokerServer.Close()
+
+	b := newTokenBroker(brokerServer.URL)
+	bState := b.state("codex-cluster")
+	bState.token, bState.expiresAt = "dead-token", time.Now().Add(time.Hour)
+	sec := &secretEntry{Header: "Authorization", ValuePrefix: "Bearer ", BrokerGrant: "codex-cluster", value: "dead-token", expiresAt: time.Now().Add(time.Hour), broker: b, mu: &sync.RWMutex{}}
+	p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	const callers = 6
+	responses := make([]string, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			responses[index], errs[index] = runSwapResponse(p, sec, http.StatusUnauthorized, "token expired")
+		}(i)
+	}
+	wg.Wait()
+	select {
+	case <-refreshed:
+	case <-time.After(time.Second):
+		t.Fatal("broker did not receive force refresh")
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	countMu.Lock()
+	gotRefreshes := refreshes
+	countMu.Unlock()
+	if gotRefreshes != 1 {
+		t.Fatalf("refresh POSTs = %d, want 1", gotRefreshes)
+	}
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("caller %d origin error: %v", i, err)
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(responses[i])), nil)
+		if err != nil {
+			t.Fatalf("caller %d response parse: %v", i, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("X-Upstream") != "preserved" || string(body) != "token expired" {
+			t.Fatalf("caller %d response = %d %q %#v", i, resp.StatusCode, body, resp.Header)
+		}
+	}
+	bState.mu.Lock()
+	brokerToken, brokerExpiry := bState.token, bState.expiresAt
+	bState.mu.Unlock()
+	if brokerToken != "" || !brokerExpiry.IsZero() {
+		t.Fatalf("broker cache = %q %v, want empty", brokerToken, brokerExpiry)
+	}
+	if sec.live() {
+		t.Fatal("secret entry remained live after upstream 401")
+	}
+}
+
+func TestSwapPumpRefreshesOnlyBrokerCredentialsOnUnauthorized(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		brokerGrant string
+	}{
+		{name: "forbidden broker credential", status: http.StatusForbidden, brokerGrant: "codex-cluster"},
+		{name: "unauthorized environment credential", status: http.StatusUnauthorized},
+		{name: "successful broker credential", status: http.StatusOK, brokerGrant: "codex-cluster"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var countMu sync.Mutex
+			refreshes := 0
+			brokerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				countMu.Lock()
+				refreshes++
+				countMu.Unlock()
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer brokerServer.Close()
+			b := newTokenBroker(brokerServer.URL)
+			sec := &secretEntry{Header: "Authorization", ValuePrefix: "Bearer ", Env: "TOKEN", BrokerGrant: tt.brokerGrant, value: "credential", expiresAt: time.Now().Add(time.Hour), broker: b, mu: &sync.RWMutex{}}
+			p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+			response, err := runSwapResponse(p, sec, tt.status, "upstream response")
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := http.ReadResponse(bufio.NewReader(strings.NewReader(response)), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = parsed.Body.Close()
+			if parsed.StatusCode != tt.status {
+				t.Fatalf("guest status = %d, want %d", parsed.StatusCode, tt.status)
+			}
+			time.Sleep(50 * time.Millisecond)
+			countMu.Lock()
+			gotRefreshes := refreshes
+			countMu.Unlock()
+			if gotRefreshes != 0 {
+				t.Fatalf("refresh POSTs = %d, want 0", gotRefreshes)
+			}
+			if !sec.live() {
+				t.Fatal("credential was invalidated outside broker-backed 401 handling")
+			}
+		})
+	}
+}
+
 // git over HTTPS and the GitHub API want the SAME token in two shapes. Verified
 // against github.com with a real PAT: git-receive-pack 401s on Bearer and 200s
 // on Basic, while api.github.com 200s on Bearer. Encoding in the sidecar keeps

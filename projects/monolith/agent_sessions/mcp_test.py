@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
@@ -1310,6 +1311,67 @@ def test_broker_login_status_granted_notifies(monkeypatch):
     result = asyncio.run(mcp.monolith_codex_broker_login_status())
     assert result["state"] == "granted"
     assert notified and notified[0][1] == "info"
+
+
+def test_broker_refresh_cooldown_returns_noncredential_status(monkeypatch):
+    async def fake_request(method, path):
+        response = httpx.Response(
+            httpx.codes.TOO_MANY_REQUESTS,
+            json={"reason": "cooldown"},
+            request=httpx.Request(method, "http://broker" + path),
+        )
+        response.raise_for_status()
+
+    monkeypatch.setattr(mcp, "_broker_request", fake_request)
+    result = asyncio.run(mcp.monolith_codex_broker_refresh())
+    assert result == {"refreshed": False, "reason": "cooldown"}
+
+
+def test_broker_refresh_success_strips_any_credential(monkeypatch):
+    async def fake_request(method, path):
+        assert (method, path) == ("POST", "/grants/codex-cluster/refresh")
+        return {
+            "refreshed": True,
+            "expires_at": "2026-08-26T12:00:00Z",
+            "access_token": "must-not-reach-transcript",
+        }
+
+    monkeypatch.setattr(mcp, "_broker_request", fake_request)
+    result = asyncio.run(mcp.monolith_codex_broker_refresh())
+    assert result == {
+        "refreshed": True,
+        "expires_at": "2026-08-26T12:00:00Z",
+    }
+
+
+def test_broker_refresh_needs_login_returns_status_and_notifies(monkeypatch):
+    notified = []
+
+    async def fake_request(method, path):
+        response = httpx.Response(
+            httpx.codes.SERVICE_UNAVAILABLE,
+            json={
+                "reason": "refresh_failed",
+                "needs_login": True,
+                "access_token": "must-not-reach-transcript",
+            },
+            request=httpx.Request(method, "http://broker" + path),
+        )
+        response.raise_for_status()
+
+    async def fake_notify(message, level="info"):
+        notified.append((message, level))
+
+    monkeypatch.setattr(mcp, "_broker_request", fake_request)
+    monkeypatch.setattr(mcp.agent_api, "notify", fake_notify)
+    result = asyncio.run(mcp.monolith_codex_broker_refresh())
+    assert result == {
+        "reason": "refresh_failed",
+        "needs_login": True,
+        "refreshed": False,
+    }
+    assert "device login" in notified[0][0]
+    assert notified[0][1] == "warn"
 
 
 def test_session_vms_returns_transport_payload(monkeypatch):
