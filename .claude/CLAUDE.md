@@ -72,20 +72,23 @@ preference, it is how the budget lasts. Three lanes:
   gets downgraded to save quota.
 - **Sol implements, and that should be around 99% of implementation.** Dispatch
   through the `codex-implement` skill (`bazel/tools/codex/dispatch.sh`, tier
-  `frontier`), which bills OpenAI instead of the Claude weekly limit. This is a
-  trial (#4913, review by 2026-08-28, judged on correction rounds per PR,
-  OpenAI quota burn, and exit-42 events): the bet is that Sol one-shots more
-  specs, and every correction round Luna needed was spending Opus review and
-  respec tokens on the Claude side. Luna stays the rung for trivially
-  mechanical bulk or if quota tightens; Terra stays the middle rung; there is
-  no rung above Sol, so a spec Sol fails twice gets fixed or stays on Opus as
-  the exception. The autonomous work queue (`implementerModel` in
-  `projects/monolith/chart/values.yaml`) deliberately stays on `luna` until
-  `budget_usd` enforcement lands (#4784): do not flip it to chase this bullet.
-  Sonnet only when Codex is unavailable or the work genuinely needs
-  Claude-side skills, MCP, or session context. On exit 42 (quota exhausted),
-  send one `warn` notify and fall back to Sonnet: no retry loop, no second
-  notify.
+  `frontier`), which bills OpenAI instead of the Claude weekly limit. This is
+  a trial (#4913, review by 2026-08-28, judged on correction rounds per PR,
+  OpenAI quota burn, and exit-42 events). The `ox` tier
+  (`openrouter/stealth/ox-alpha` via the opencode CLI) is a free stealth lane
+  worth preferring for non-urgent bulk when it is responsive: it bills
+  nothing, but it is rate-limited, a promo that can vanish without notice,
+  and the provider logs and trains on traffic, so never put secrets or
+  private prose in an ox spec. On ox exit 42 fall back to `frontier`
+  silently, no Discord notify: nothing paid was exhausted. Luna stays the
+  rung for trivially mechanical bulk; Terra stays the middle rung; a spec Sol
+  fails twice gets fixed or stays on Opus as the exception. The autonomous
+  work queue (`implementerModel` in `projects/monolith/chart/values.yaml`)
+  deliberately stays on `luna` until `budget_usd` enforcement lands (#4784):
+  do not flip it to chase this bullet. Sonnet only when Codex is unavailable
+  or the work genuinely needs Claude-side skills, MCP, or session context. On
+  Codex exit 42 (quota exhausted), send one `warn` notify and fall back to
+  Sonnet: no retry loop, no second notify.
 - **Fable is a last-resort escalation for context window, not for quality.**
   Open it when Opus has stalled and the blocker is running out of context, not
   when the problem is merely hard.
@@ -104,8 +107,9 @@ only hand the spec to a Codex worker, so the routing holds by construction
 rather than by memory. Give it the full spec and a worktree; it returns the
 diff. If it reports `CODEX_QUOTA_EXHAUSTED`, that is the exit 42 path above.
 
-If a session has no `codex` on PATH, dispatch is unavailable: use that session
-for orchestration, review, and triage rather than quietly implementing on Opus.
+If a session has neither `opencode` nor `codex` on PATH, dispatch is
+unavailable: use that session for orchestration, review, and triage rather
+than quietly implementing on Opus.
 
 Context is the other half of the same budget:
 

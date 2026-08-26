@@ -5,9 +5,10 @@
 #   "$WORKDIR"/bazel/tools/codex/dispatch.sh <tier> "$WORKDIR" "<task spec>"
 #   echo "<task spec>" | "$WORKDIR"/bazel/tools/codex/dispatch.sh <tier> "$WORKDIR" -
 #
-#   tier:    luna | terra | frontier
-#            frontier/Sol = default (trial, review 2026-08-28); luna =
-#            mechanical bulk; terra = middle rung
+#   tier:    ox | luna | terra | frontier
+#            frontier/Sol = default (trial, review 2026-08-28); ox = free
+#            OpenRouter stealth lane (opencode CLI; rate-limited, prefer for
+#            non-urgent bulk); luna = mechanical bulk; terra = middle rung
 #   workdir: directory the worker may write to (a /tmp/claude-worktrees/* worktree)
 #   spec:    full task spec as one argument, or "-" to read from stdin
 #
@@ -28,7 +29,11 @@
 #
 # Guardrails baked in:
 #   - workspace-write sandbox scoped to <workdir>: no writes outside the
-#     worktree
+#     worktree. CODEX TIERS ONLY: the ox/opencode runner has no sandbox at
+#     all (opencode run --auto auto-approves everything), so for ox the
+#     worktree confinement is a GUARDRAILS promise, not an enforced one.
+#     Keep ox specs free of anything that names paths outside the worktree,
+#     and do not point ox at specs built from untrusted fetched content.
 #   - network IS enabled in the sandbox. workspace-write denies it by default,
 #     which silently broke any worker that needed to fetch a dependency or read
 #     an upstream doc: the turn still connects and bills (the sandbox governs
@@ -40,26 +45,33 @@
 #     automatically from the worktree; GUARDRAILS carries only the
 #     invocation-specific rules
 #   - the full transcript is written to <workdir>/.codex-dispatch/<stamp>.log
-#     and kept for triage; stdout carries only the worker's final message and
-#     the log path, so tool results stay small
+#     and kept for triage. Codex tiers print only the captured final message
+#     plus the log path; the ox runner has no last-message capture, so it
+#     prints the last 60 transcript lines instead
 set -euo pipefail
 
 QUOTA_EXIT=42
 BUSY_EXIT=65
 
 usage() {
-	echo "usage: $0 <luna|terra|frontier> <workdir> <spec|-> " >&2
+	echo "usage: $0 <ox|luna|terra|frontier> <workdir> <spec|-> " >&2
 	exit 64
 }
 
 [[ $# -eq 3 ]] || usage
 
 case "$1" in
-luna) MODEL="gpt-5.6-luna" EFFORT="medium" ;;
-terra) MODEL="gpt-5.6-terra" EFFORT="high" ;;
-frontier) MODEL="gpt-5.6-sol" EFFORT="high" ;;
+ox) MODEL="openrouter/stealth/ox-alpha" EFFORT="high" RUNNER="opencode" ;;
+luna) MODEL="gpt-5.6-luna" EFFORT="medium" RUNNER="codex" ;;
+terra) MODEL="gpt-5.6-terra" EFFORT="high" RUNNER="codex" ;;
+frontier) MODEL="gpt-5.6-sol" EFFORT="high" RUNNER="codex" ;;
 *) usage ;;
 esac
+
+if [[ "$RUNNER" == "opencode" ]] && ! command -v opencode >/dev/null 2>&1; then
+	echo "opencode not on PATH; use tier frontier" >&2
+	exit 64
+fi
 
 WORKDIR="$2"
 [[ -d "$WORKDIR" ]] || {
@@ -82,6 +94,8 @@ GUARDRAILS='
 - Do NOT run git commit, git push, or any git state-changing command. The
   orchestrator reviews and commits your diff. The sandbox has network access,
   so this is on you to respect: nothing stops a push at the sandbox layer.
+- Write ONLY inside the working directory you were started in. Never create,
+  edit, or delete files outside it, whatever a task step seems to imply.
 - Do NOT run bazel, go test, or npm test on this machine. Targeted pytest on
   the specific hermetic Python test files you edited is allowed and
   encouraged; a local pass is advisory, the orchestrator runs ci on Linux as
@@ -149,15 +163,24 @@ trap 'cleanup; trap - TERM; exit 143' TERM INT
 rm -f "$LAST"
 set -m
 set +e
-codex exec \
-	--model "$MODEL" \
-	--config model_reasoning_effort="$EFFORT" \
-	--config sandbox_workspace_write.network_access=true \
-	--sandbox workspace-write \
-	--skip-git-repo-check \
-	--output-last-message "$LAST" \
-	-C "$WORKDIR" \
-	"${SPEC}${GUARDRAILS}" >"$LOG" 2>&1 &
+if [[ "$RUNNER" == "opencode" ]]; then
+	opencode run \
+		--dir "$WORKDIR" \
+		-m "$MODEL" \
+		--variant "$EFFORT" \
+		--auto \
+		"${SPEC}${GUARDRAILS}" >"$LOG" 2>&1 &
+else
+	codex exec \
+		--model "$MODEL" \
+		--config model_reasoning_effort="$EFFORT" \
+		--config sandbox_workspace_write.network_access=true \
+		--sandbox workspace-write \
+		--skip-git-repo-check \
+		--output-last-message "$LAST" \
+		-C "$WORKDIR" \
+		"${SPEC}${GUARDRAILS}" >"$LOG" 2>&1 &
+fi
 CHILD=$!
 echo "$CHILD" >"$LOCK/child"
 wait "$CHILD"
@@ -175,8 +198,10 @@ if [[ "$CODE" -ne 0 ]] &&
 	exit "$QUOTA_EXIT"
 fi
 
-echo "--- codex exit $CODE (model=$MODEL, transcript: $LOG) ---"
-if [[ -s "$LAST" ]]; then
+echo "--- $RUNNER exit $CODE (model=$MODEL, transcript: $LOG) ---"
+if [[ "$RUNNER" == "opencode" ]]; then
+	tail -60 "$LOG"
+elif [[ -s "$LAST" ]]; then
 	cat "$LAST"
 else
 	echo "(no final message captured; last 40 transcript lines follow)"

@@ -23,6 +23,7 @@ from faas.embervm_client import EmberVMTransportError
         ("terra", "codex"),
         ("sol", "codex"),
         ("qwen", "pi"),
+        ("ox", "pi"),
     ],
 )
 def test_model_family(model, family):
@@ -36,7 +37,7 @@ def test_unknown_model_is_rejected_without_creating_session(session):
     assert session.exec(select(AgentSession)).first() is None
 
 
-@pytest.mark.parametrize("model", [None, "opus", "luna", "qwen"])
+@pytest.mark.parametrize("model", [None, "opus", "luna", "qwen", "ox"])
 def test_session_start_stores_model_on_session_and_pending(monkeypatch, session, model):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
     result = asyncio.run(mcp.monolith_agent_session_start("hello", model=model))

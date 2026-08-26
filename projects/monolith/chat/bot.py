@@ -59,7 +59,16 @@ DEFAULT_AGENT_MODEL = "luna"
 # supported_models) in a target that already depends on both, and the filter
 # below mirroring agent_sessions.offered_models, which the same test checks
 # for behavioural equality across env settings.
-_ALL_AGENT_MODEL_CHOICES = ("luna", "terra", "sol", "opus", "sonnet", "fable", "qwen")
+_ALL_AGENT_MODEL_CHOICES = (
+    "luna",
+    "terra",
+    "sol",
+    "opus",
+    "sonnet",
+    "fable",
+    "qwen",
+    "ox",
+)
 
 
 def _filter_agent_models(models, configured: str) -> tuple:

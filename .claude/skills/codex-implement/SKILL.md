@@ -1,18 +1,22 @@
 ---
 name: codex-implement
 description: >
-  Dispatch implementation work to the Codex CLI (OpenAI subscription) via
-  bazel/tools/codex/dispatch.sh so bulk work bills OpenAI instead of the Claude
-  weekly limit. Default to Sol (`frontier` tier, on trial). Use when executing
-  locally-verifiable tasks, when implementers would otherwise be Sonnet, or when
-  the user says "use codex", "dispatch to codex", or "/codex-implement".
+  Dispatch implementation work to CLI workers via
+  bazel/tools/codex/dispatch.sh so bulk work bills OpenAI (or, on the ox
+  tier, nothing) instead of the Claude weekly limit. Default to Sol
+  (`frontier` tier, on trial); prefer ox (free OpenRouter stealth lane via
+  opencode) for non-urgent bulk when it is responsive. Use when executing
+  locally-verifiable tasks, when implementers would otherwise be Sonnet, or
+  when the user says "use codex", "dispatch to codex", or "/codex-implement".
 ---
 
 # Codex Implement
 
-Dispatch well-specified implementation tasks to Codex CLI workers. House style:
-**Sol (`frontier`) first**, on trial until 2026-08-28; Luna for trivially
-mechanical bulk or quota pressure, Terra as the middle rung. Opus 5 reviews
+Dispatch well-specified implementation tasks to CLI workers. House style:
+**Sol (`frontier`) is the default**, on trial until 2026-08-28; **ox** (free
+OpenRouter stealth lane, `stealth/ox-alpha` via the opencode CLI) is worth
+preferring for non-urgent bulk when it is responsive, since it bills nothing;
+Luna for trivially mechanical bulk, Terra as the middle rung. Opus 5 reviews
 diffs. Verification is **`ci`** (bb remote Test 1:1 with Workflows), not bare
 Mac `bazel`.
 
@@ -52,20 +56,25 @@ and leaves a partial diff that reads as a wrong implementation at review. The
 full transcript lands in `<worktree>/.codex-dispatch/<stamp>.log`; stdout is
 just the worker's final message.
 
-| Tier           | Model         | Effort | Use for |
-| -------------- | ------------- | ------ | ------- |
-| **`frontier`** | gpt-5.6-sol   | high   | **Default, on trial until 2026-08-28.** Judged on correction rounds per PR, OpenAI quota burn, and exit-42 events |
-| `luna`         | gpt-5.6-luna  | medium | Trivially mechanical bulk, or the fallback default if the trial ends badly |
-| `terra`        | gpt-5.6-terra | high   | Middle rung; largely idle during the trial |
+| Tier           | Model                     | Effort | Use for |
+| -------------- | ------------------------- | ------ | ------- |
+| **`frontier`** | gpt-5.6-sol               | high   | **Default, on trial until 2026-08-28.** Judged on correction rounds per PR, OpenAI quota burn, and exit-42 events |
+| `ox`           | openrouter/stealth/ox-alpha | high | Free stealth lane via the opencode CLI. Prefer for non-urgent bulk when responsive; rate-limited and can vanish without notice |
+| `luna`         | gpt-5.6-luna              | medium | Trivially mechanical bulk, or the fallback default if the trial ends badly |
+| `terra`        | gpt-5.6-terra             | high   | Middle rung; largely idle during the trial |
 
 Rules:
 
-1. **Default to Sol (`frontier`).** Do not drop to Luna or Terra to save quota
-   without cause: the trial (#4913) is measuring Sol's one-shot rate, and mixed
-   tiers muddy the numbers. There is no rung above `frontier`: if Sol fails the
-   same spec after one batched respec, the task is under-specified or
-   CI-only-verifiable, so fix the spec or keep that task on Opus as the
-   exception.
+1. **Default to Sol (`frontier`); take ox when it is free AND responsive.**
+   ox bills nothing, so route non-urgent bulk there when it is answering, but
+   it is rate-limited: a 429'd dispatch wastes minutes before failing, so
+   anything time-sensitive or already once-429'd goes to `frontier`. On ox
+   exit 42 fall back to `frontier` silently (no Discord notify: nothing paid
+   was exhausted). If ox fails a spec on its merits after one batched respec,
+   escalate to `frontier`; if Sol also fails it, the task is under-specified
+   or CI-only-verifiable, so fix the spec or keep that task on Opus as the
+   exception. Never put secrets or private prose in an ox spec; the provider
+   logs and trains on traffic.
 2. **One worktree per worker, one worker per worktree.** The wrapper enforces
    the second half (exit 65) because concurrent workers interleave edits.
 3. **Full spec up front** (see the template below).
@@ -117,6 +126,10 @@ them, one spec.
   dispatch (see When to Use).
 
 ## Quota Exhaustion (exit code 42)
+
+ox exit 42 (OpenRouter rate limiting) is not an event: fall back to
+`frontier` silently and move on. The steps below are for the paid Codex
+tiers only.
 
 1. One Discord `monolith-monolith-agent-notify` (level `warn`, main-loop only).
 2. Fall back to Sonnet implementers for remaining tasks.

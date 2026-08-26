@@ -577,6 +577,14 @@ egress:
       secretRef:
         name: embervm-embervm-egress
         key: CLAUDE_AUTH_TOKEN
+    - header: Authorization
+      valuePrefix: "Bearer "
+      env: EMBER_OPENROUTER_API_KEY
+      egressTo:
+        - openrouter.ai
+      secretRef:
+        name: embervm-embervm-egress
+        key: OPENROUTER_API_KEY
     # Note: credential field absent (deferred); fails closed until 1Password
     # operator fills vaults/k8s-homelab/items/litellm-claude-auth. Co-location
     # caveat: this item is also read by monolith gardener; adding a field is
