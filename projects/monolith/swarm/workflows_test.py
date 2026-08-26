@@ -294,22 +294,6 @@ def test_missing_dbos_workflow_id_fails_visibly(monkeypatch):
         workflow("task", "jomcgi/homelab", "main")
 
 
-def test_await_turn_gives_up_on_terminal_session_without_sleep(monkeypatch):
-    sleeps = []
-    monkeypatch.setattr(workflows, "poll_turn", lambda *_: None)
-    monkeypatch.setattr(workflows, "poll_session_status", lambda *_: "warn")
-    monkeypatch.setattr(
-        workflows,
-        "DBOS",
-        type("FakeDBOS", (), {"sleep": staticmethod(sleeps.append)}),
-    )
-
-    with pytest.raises(RuntimeError, match="terminal state warn"):
-        workflows._await_turn(101, 0, 1800)
-
-    assert sleeps == []
-
-
 def test_attributes_write_failure_does_not_kill_the_run(monkeypatch):
     # The authoritative pin is pin_plan's step record; the attributes copy is a
     # convenience for the run endpoint. A convenience write must not be able to

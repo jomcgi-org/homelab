@@ -22,7 +22,6 @@ from swarm.steps import (
     get_open_decision,
     open_decision,
     pin_plan,
-    poll_session_status,
     poll_turn,
     read_branch_head,
     start_agent_session,
@@ -117,11 +116,6 @@ def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
         turn = poll_turn(session_id, after_seq)
         if turn is not None:
             return turn
-        status = poll_session_status(session_id)
-        if status != "running":
-            raise RuntimeError(
-                f"agent session {session_id} entered terminal state {status}"
-            )
         DBOS.sleep(POLL_INTERVAL_SECONDS)
         waited += POLL_INTERVAL_SECONDS
     return None

@@ -99,6 +99,10 @@ agents:
     # health probes. This only bounds how much backlog one tick may consume.
     maxJobsPerCycle: 3
     turnTimeoutSeconds: 1800
+    # The threshold must exceed tickInterval * ceil(backlog/maxJobsPerCycle)
+    # headroom. A burst of more than ~9 due jobs (3 per tick, every 15 minutes)
+    # can legitimately exceed 2700s and report stalled; that is accepted for
+    # an advisory.
     stallThresholdSeconds: 2700
     jobKind: "qwen-drain"
     repo: "jomcgi-org/homelab"
