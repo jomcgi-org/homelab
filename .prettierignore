@@ -34,6 +34,12 @@
 # into the goosecracker guest image at /opt/impeccable/.
 **/vendor/impeccable/**
 
+# Vendored Kubernetes JSON schemas (bazel/helm/k8s-schemas): byte-pinned to
+# yannh/kubernetes-json-schema at the commit named in its README, with per-file
+# sha256s enforced by //bazel/helm:chart_admissibility_test. Reformatting would
+# break every pin and diverge from upstream.
+bazel/helm/k8s-schemas/**
+
 # Prose (Markdown) and YAML: Prettier owns CODE, not prose. The CI formatter
 # (//bazel/tools/format:format_code) wires prettier to the `javascript` language
 # slot ONLY, so CI never reformats .md or .yaml. The local fast-format.sh runs a

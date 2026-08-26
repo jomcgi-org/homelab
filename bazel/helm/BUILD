@@ -79,20 +79,32 @@ MANIFEST_SETS = [
     "//projects/platform/signoz-addons/dashboard-sidecar:manifests/all.yaml",
 ]
 
+# Vendored Kubernetes JSON schemas for the admissibility gate (#4831): the
+# standalone-strict set for the cluster's 1.35 line, pruned to the built-in
+# kinds the rendered manifests actually use. See k8s-schemas/README.md for
+# provenance and the pinned upstream commit.
+filegroup(
+    name = "k8s_schemas",
+    srcs = glob(["k8s-schemas/**"]),
+)
+
 sh_test(
     name = "chart_admissibility_test",
     srcs = ["admissibility-test.sh"],
-    # kubeconform downloads JSON schemas over the network on cache miss.
-    tags = ["requires-network"],
+    # Fully hermetic: schemas come from //bazel/helm:k8s_schemas, kubeconform
+    # runs with a local -schema-location, no network calls happen at test time.
     args = [
         "$(rootpath @multitool//tools/helm)",
         "$(rootpath @multitool//tools/kubeconform)",
         "$(rootpath //bazel/helm:testdata/bad-secretkeyref/Chart.yaml)",
+        # Anchor inside the vendored schema tree; the script derives the root.
+        "$(rootpath //bazel/helm:k8s-schemas/v1.35.8-standalone-strict/configmap-v1.json)",
     ] + ["$(rootpath {})".format(m) for m in MANIFEST_SETS],
     data = [
         "@multitool//tools/helm",
         "@multitool//tools/kubeconform",
         "//bazel/helm:testdata/bad-secretkeyref/Chart.yaml",
+        ":k8s_schemas",
     ] + glob(["testdata/bad-secretkeyref/templates/**"]) + MANIFEST_SETS,
     timeout = "long",
 )
