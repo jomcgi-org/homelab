@@ -2,4 +2,4 @@ apiVersion: v2
 name: embervm
 description: EmberVM control plane — durable, fair, retried task execution over the Firecracker fleet (BEAM/Go control plane; GET /healthz on :8080)
 type: application
-version: 0.47.9
+version: 0.47.11
