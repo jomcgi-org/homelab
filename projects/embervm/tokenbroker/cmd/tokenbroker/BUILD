@@ -34,3 +34,14 @@ go_test(
         "//projects/embervm/tokenbroker/internal/store",
     ],
 )
+
+go_test(
+    name = "tokenbroker_test",
+    srcs = ["main_test.go"],
+    embed = [":tokenbroker_lib"],
+    deps = [
+        "//projects/embervm/tokenbroker/internal/broker",
+        "//projects/embervm/tokenbroker/internal/provider",
+        "//projects/embervm/tokenbroker/internal/store",
+    ],
+)
