@@ -1,7 +1,7 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
-    name = "cmd_lib",
+    name = "tokenbroker_lib",
     srcs = ["main.go"],
     importpath = "github.com/jomcgi/homelab/projects/embervm/tokenbroker/cmd/tokenbroker",
     visibility = ["//visibility:private"],
@@ -20,19 +20,8 @@ go_library(
 
 go_binary(
     name = "tokenbroker",
-    embed = [":cmd_lib"],
+    embed = [":tokenbroker_lib"],
     visibility = ["//projects/embervm/tokenbroker:__subpackages__"],
-)
-
-go_test(
-    name = "cmd_test",
-    srcs = ["main_test.go"],
-    embed = [":cmd_lib"],
-    deps = [
-        "//projects/embervm/tokenbroker/internal/broker",
-        "//projects/embervm/tokenbroker/internal/provider",
-        "//projects/embervm/tokenbroker/internal/store",
-    ],
 )
 
 go_test(
@@ -45,3 +34,4 @@ go_test(
         "//projects/embervm/tokenbroker/internal/store",
     ],
 )
+
