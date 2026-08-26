@@ -171,6 +171,8 @@ spec:
               value: {{ .maxJobsPerCycle | quote }}
             - name: DRAINER_TURN_TIMEOUT_SECONDS
               value: {{ .turnTimeoutSeconds | quote }}
+            - name: DRAINER_STALL_THRESHOLD_SECONDS
+              value: {{ .stallThresholdSeconds | quote }}
             - name: DRAINER_JOB_KIND
               value: {{ .jobKind | quote }}
             - name: DRAINER_REPO

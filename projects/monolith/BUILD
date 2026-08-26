@@ -4248,6 +4248,18 @@ py_test(
 )
 
 py_test(
+    name = "swarm_health_test",
+    srcs = ["swarm/health_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_compare_router_test",
     srcs = ["swarm/compare_router_test.py"],
     imports = ["."],

@@ -163,3 +163,23 @@ def test_poll_turn_includes_rationale(monkeypatch):
         "deviations": [],
         "parser_version": 1,
     }
+
+
+def test_poll_session_status_reads_session_row(monkeypatch):
+    import sqlmodel
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(sqlmodel, "Session", lambda engine: Session())
+    monkeypatch.setattr("core.db.get_engine", lambda: object())
+    monkeypatch.setattr(
+        "agent_sessions.store.get_session",
+        lambda session, session_id: type("Row", (), {"status": "warn"})(),
+    )
+
+    assert steps.poll_session_status.__wrapped__(101) == "warn"

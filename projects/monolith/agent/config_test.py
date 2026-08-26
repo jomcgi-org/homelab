@@ -33,6 +33,7 @@ def test_drainer_defaults(monkeypatch):
         "DRAINER_ENABLED",
         "DRAINER_MAX_JOBS_PER_CYCLE",
         "DRAINER_TURN_TIMEOUT_SECONDS",
+        "DRAINER_STALL_THRESHOLD_SECONDS",
         "DRAINER_JOB_KIND",
         "DRAINER_REPO",
         "DRAINER_BRANCH",
@@ -44,6 +45,7 @@ def test_drainer_defaults(monkeypatch):
     assert settings.enabled is False
     assert settings.max_jobs_per_cycle == 3
     assert settings.turn_timeout_seconds == 1800
+    assert settings.stall_threshold_seconds == 2700
     assert settings.job_kind == "qwen-drain"
     assert settings.repo == GITHUB_REPO
     assert settings.repo in REPO_CATALOG
@@ -54,6 +56,7 @@ def test_drainer_environment_overrides(monkeypatch):
     monkeypatch.setenv("DRAINER_ENABLED", "true")
     monkeypatch.setenv("DRAINER_MAX_JOBS_PER_CYCLE", "5")
     monkeypatch.setenv("DRAINER_TURN_TIMEOUT_SECONDS", "42")
+    monkeypatch.setenv("DRAINER_STALL_THRESHOLD_SECONDS", "84")
     monkeypatch.setenv("DRAINER_JOB_KIND", "custom-drain")
     monkeypatch.setenv("DRAINER_REPO", "weave-hand/loom")
     monkeypatch.setenv("DRAINER_BRANCH", "work")
@@ -63,6 +66,7 @@ def test_drainer_environment_overrides(monkeypatch):
     assert settings.enabled is True
     assert settings.max_jobs_per_cycle == 5
     assert settings.turn_timeout_seconds == 42
+    assert settings.stall_threshold_seconds == 84
     assert settings.job_kind == "custom-drain"
     assert settings.repo == "weave-hand/loom"
     assert settings.branch == "work"
