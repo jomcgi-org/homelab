@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-var ErrRefreshTokenReused = errors.New("refresh_token_reused")
+var (
+	ErrInvalidGrant       = errors.New("invalid_grant")
+	ErrRefreshTokenReused = errors.New("refresh_token_reused")
+)
 
 // FlexInt tolerates providers that serialize numbers as JSON strings: the
 // live auth.openai.com device endpoint returns interval as "5" (observed on

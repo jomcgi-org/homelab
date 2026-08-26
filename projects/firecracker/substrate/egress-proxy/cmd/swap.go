@@ -39,7 +39,10 @@ import (
 	"time"
 )
 
-const brokerRefreshMargin = 60 * time.Second
+const (
+	brokerRefreshMargin        = 60 * time.Second
+	brokerForceRefreshCooldown = 30 * time.Second
+)
 
 const maxHeaderBytes = 64 << 10
 
@@ -61,11 +64,12 @@ type tokenBroker struct {
 	client  *http.Client
 	mu      sync.Mutex
 	grants  map[string]*brokerGrantState
+	forced  map[string]time.Time
 }
 
 func newTokenBroker(rawURL string) *tokenBroker {
 	if rawURL == "" {
-		return &tokenBroker{grants: make(map[string]*brokerGrantState)}
+		return &tokenBroker{grants: make(map[string]*brokerGrantState), forced: make(map[string]time.Time)}
 	}
 	if !strings.Contains(rawURL, "://") {
 		rawURL = "http://" + rawURL
@@ -74,7 +78,55 @@ func newTokenBroker(rawURL string) *tokenBroker {
 		baseURL: strings.TrimRight(rawURL, "/"),
 		client:  &http.Client{Timeout: 10 * time.Second},
 		grants:  make(map[string]*brokerGrantState),
+		forced:  make(map[string]time.Time),
 	}
+}
+
+func (b *tokenBroker) invalidate(grant string) {
+	if b == nil {
+		return
+	}
+	state := b.state(grant)
+	state.mu.Lock()
+	state.token, state.expiresAt = "", time.Time{}
+	state.mu.Unlock()
+}
+
+func (b *tokenBroker) forceRefresh(grant string) error {
+	if b == nil || b.baseURL == "" {
+		return fmt.Errorf("token broker URL is empty")
+	}
+	if b.client == nil {
+		return fmt.Errorf("token broker client is nil")
+	}
+	b.mu.Lock()
+	if b.forced == nil {
+		b.forced = make(map[string]time.Time)
+	}
+	if last := b.forced[grant]; !last.IsZero() && time.Since(last) < brokerForceRefreshCooldown {
+		b.mu.Unlock()
+		return nil
+	}
+	b.forced[grant] = time.Now()
+	b.mu.Unlock()
+
+	endpoint := b.baseURL + "/grants/" + url.PathEscape(grant) + "/refresh"
+	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("force refresh grant %q: %w", grant, err)
+	}
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("force refresh grant %q: %w", grant, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("force refresh grant %q: broker returned %s", grant, resp.Status)
+	}
+	return nil
 }
 
 func (b *tokenBroker) state(grant string) *brokerGrantState {
@@ -233,6 +285,15 @@ func (e *secretEntry) resolve() error {
 	e.value, e.expiresAt = token, expiresAt
 	e.mu.Unlock()
 	return nil
+}
+
+func (e *secretEntry) invalidate() {
+	if e.mu == nil {
+		e.mu = &sync.RWMutex{}
+	}
+	e.mu.Lock()
+	e.value, e.expiresAt = "", time.Time{}
+	e.mu.Unlock()
 }
 
 // headerValue renders what the sidecar SETS on the request: Basic when the
@@ -566,6 +627,21 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline i
 		if err != nil {
 			p.logger.Warn("egress swap: read response", "dest", host, "err", err)
 			return
+		}
+		if resp.StatusCode == http.StatusUnauthorized && sec.BrokerGrant != "" {
+			// The destination can invalidate a grant server-side long before its
+			// stored expires_at. Without invalidation, the sidecar keeps injecting
+			// that dead token until the false expiry. Relay this 401 instead of
+			// replaying: the request body is already upstream, and buffering every
+			// credentialed request costs more than the one failed turn it would save.
+			sec.broker.invalidate(sec.BrokerGrant)
+			sec.invalidate()
+			p.logger.Warn("egress swap: upstream rejected broker credential; cache invalidated and refresh scheduled", "dest", host, "grant", sec.BrokerGrant)
+			go func(b *tokenBroker, grant string) {
+				if refreshErr := b.forceRefresh(grant); refreshErr != nil {
+					p.logger.Warn("egress swap: broker force refresh failed", "dest", host, "grant", grant, "err", refreshErr)
+				}
+			}(sec.broker, sec.BrokerGrant)
 		}
 		err = resp.Write(guestW)
 		_ = resp.Body.Close()

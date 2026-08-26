@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -38,6 +39,7 @@ type testAdapter struct {
 	refreshInput []string
 	delay        time.Duration
 	firstReused  bool
+	refreshErr   error
 	onFirst      func()
 }
 
@@ -62,6 +64,7 @@ func (a *testAdapter) refreshToken(refreshToken string) (provider.TokenResponse,
 	a.calls++
 	a.refreshInput = append(a.refreshInput, refreshToken)
 	first := a.calls == 1 && a.firstReused
+	refreshErr := a.refreshErr
 	a.mu.Unlock()
 	if first {
 		if a.onFirst != nil {
@@ -69,8 +72,33 @@ func (a *testAdapter) refreshToken(refreshToken string) (provider.TokenResponse,
 		}
 		return provider.TokenResponse{}, provider.ErrRefreshTokenReused
 	}
+	if refreshErr != nil {
+		return provider.TokenResponse{}, refreshErr
+	}
 	time.Sleep(a.delay)
 	return provider.TokenResponse{AccessToken: jwt(time.Now().Add(time.Hour)), RefreshToken: "new", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func TestInvalidGrantMarksNeedsLoginUntilSuccessfulRefresh(t *testing.T) {
+	now := time.Now().UTC()
+	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{RefreshToken: "old"}}}}
+	adapter := &testAdapter{refreshErr: fmt.Errorf("provider rejected grant: %w", provider.ErrInvalidGrant)}
+	b := New(st, map[string]provider.Adapter{"test": adapter}, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+	if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrInvalidGrant) {
+		t.Fatalf("refresh error = %v, want ErrInvalidGrant", err)
+	}
+	if !b.NeedsLogin("one") {
+		t.Fatal("NeedsLogin = false after invalid grant")
+	}
+	adapter.mu.Lock()
+	adapter.refreshErr = nil
+	adapter.mu.Unlock()
+	if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if b.NeedsLogin("one") {
+		t.Fatal("NeedsLogin = true after successful refresh")
+	}
 }
 
 func jwt(exp time.Time) string {

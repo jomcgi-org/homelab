@@ -12,4 +12,5 @@ go_test(
     name = "codexchatgpt_test",
     srcs = ["adapter_test.go"],
     embed = [":codexchatgpt"],
+    deps = ["//projects/embervm/tokenbroker/internal/provider"],
 )

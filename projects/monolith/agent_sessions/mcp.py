@@ -1034,6 +1034,39 @@ async def monolith_codex_broker_login_start(grant: str = _DEFAULT_GRANT) -> dict
 
 
 @mcp.tool
+async def monolith_codex_broker_refresh(grant: str = _DEFAULT_GRANT) -> dict:
+    """Force the token broker to rotate an OAuth grant's access token.
+
+    This bypasses the normal freshness windows for a token that a destination
+    invalidated before its stored expiry. The response contains rotation status
+    only and never returns the access token.
+
+    Args:
+        grant: Grant name registered in the broker. Defaults to codex-cluster.
+    """
+    grant = _grant_or_raise(grant)
+    try:
+        data = await _broker_request("POST", f"/grants/{grant}/refresh")
+        data.pop("access_token", None)
+        return data
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == httpx.codes.TOO_MANY_REQUESTS:
+            return {"refreshed": False, "reason": "cooldown"}
+        if exc.response.status_code == httpx.codes.SERVICE_UNAVAILABLE:
+            data = exc.response.json()
+            data.pop("access_token", None)
+            data["refreshed"] = False
+            if data.get("needs_login"):
+                await agent_api.notify(
+                    "codex broker grant %s requires a device login before it can refresh."
+                    % grant,
+                    level="warn",
+                )
+            return data
+        raise
+
+
+@mcp.tool
 async def monolith_codex_broker_login_status(grant: str = _DEFAULT_GRANT) -> dict:
     """Report the token broker login state for an OAuth grant.
 
