@@ -1497,15 +1497,24 @@ bricks:
   #
   # RAISED to 3600 for the 0.41.7 to 0.47.x jump (#5224), and derived from a
   # measurement as the paragraph above insists. That jump moves 13 of 14 guest
-  # base digests, so a pod bakes ~7.5 GB of rootfs in its init containers before
-  # it is Ready. At the measured rate (about 8.2s per 100 MB, from two real cold
-  # bakes) that is roughly 20m per pod, and node-3 runs TWO noded pods whose
-  # Deployments roll at the same time on one 34 GB device, so they contend.
-  # 2400 would sit exactly on a 2x error; 3600 does not.
+  # base digests, so a node bakes ~7.5 GB of rootfs in init containers before
+  # its brick pods are Ready. At the measured rate (about 8.2s per 100 MB, from
+  # two real cold bakes) that is 10 to 13m for a node's cold bake.
   #
-  # Deliberately still far below the promotion budget (now 60m0s), preserving
+  # The cost is per NODE, not per pod: the builder is content addressed by guest
+  # digest into the shared node hostPath, so a second pod on an already-baked
+  # node is a hardlink cache hit. Class and floor bricks also sit in different
+  # sync waves, so two pods on one node never bake concurrently.
+  #
+  # 3600 keeps the same roughly 5x-over-worst-case ratio the 1200 above was
+  # sized at, against the new 10 to 13m worst case rather than the old one.
+  #
+  # Still below the promotion budget (now 90m0s) by a real margin, preserving
   # the ordering the paragraph above depends on: this trips first and fails
-  # argocd-wait fast, rather than letting the budget expire.
+  # argocd-wait fast, rather than letting the budget expire. The margin has to
+  # be REAL rather than nominal, because the two clocks do not start together:
+  # the budget starts at the argocd-update step, this starts only when the
+  # brick's sync wave is reached.
   progressDeadlineSeconds: 3600
   # Per-class DESIRED replica count the Embervm.BrickController reconciles the
   # brick Deployments to (and the value each renders at first create). A MAP keyed

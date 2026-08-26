@@ -229,20 +229,34 @@ promotion:
       # Application to Degraded first and argocd-wait fails fast on that. It
       # only catches a workload that never reaches a terminal state at all.
       #
-      # RAISED to 60m0s for the 0.41.7 to 0.47.x jump (#5224). The 30m0s above
+      # RAISED to 90m0s for the 0.41.7 to 0.47.x jump (#5224). The 30m0s above
       # was measured on a roll where the guest base refs did NOT move, which is
       # the common case and the one the paragraph above describes. That jump
       # moves 13 of 14 base digests (a renovate apko lock refresh rewrote every
-      # runtime lock), so every brick pod bakes ~7.5 GB of rootfs in its init
-      # containers before it reports Ready. At the measured bake rate that is
-      # 10 to 25m per pod, and maxSurge 0 / maxUnavailable 1 over 4 replicas
-      # serializes them.
+      # runtime lock), so a node bakes ~7.5 GB of rootfs before its brick pods
+      # report Ready.
       #
-      # Left at 60m0s afterwards rather than reverted: undershooting fails a
+      # The cost is PER NODE, not per pod: the builder is content addressed by
+      # guest digest into the shared node hostPath, so a second pod landing on
+      # a node that already baked is a hardlink cache hit. Four nodes need a
+      # cold bake, three of them serialized inside the 2gi class wave by
+      # maxUnavailable 1. At the measured rate that is roughly 40m.
+      #
+      # 90m0s rather than 60m0s because this MUST stay above
+      # bricks.progressDeadlineSeconds (3600s) by a real margin, or the ordering
+      # the paragraph above depends on inverts. The two clocks do not start
+      # together: this budget starts when the argocd-update step starts, while a
+      # brick's Progressing clock starts only once its sync wave is reached,
+      # which is minutes to tens of minutes later. At 60m0s the detector could
+      # never win the race, and a wedged brick would surface as an
+      # uninformative "step timed out" at the full budget instead of a
+      # ProgressDeadlineExceeded naming the Deployment.
+      #
+      # Left at 90m0s afterwards rather than reverted: undershooting fails a
       # HEALTHY roll, which the comment above calls the worst thing a gate can
       # do, while overshooting only delays the report of a roll that was never
-      # going to finish. progressDeadlineSeconds is still the real detector.
-      waitTimeout: 60m0s
+      # going to finish. progressDeadlineSeconds stays the real detector.
+      waitTimeout: 90m0s
       stages:
         - name: dev
           application: embervm-dev
@@ -254,8 +268,11 @@ promotion:
           # to 15m for a ready brick, then runs a suite budgeted at about 4m
           # (task cold boot, session create / bank / relight / destroy,
           # create-after-destroy, control-plane invariants). 20m0s covered the
-          # runner's own wait plus the suite plus one retry; a wedged brick
-          # rebuild already failed argocd-wait before this step runs.
+          # runner's own wait plus that suite; a wedged brick rebuild already
+          # failed argocd-wait before this step runs. It never covered a retry
+          # and neither does the raised value: runInterval is 30m, so a failed
+          # cycle's next verdict lands a full interval later. Do not re-derive
+          # either number from a retry that does not fit.
           #
           # RAISED to 40m0s alongside the dev readyWait going to 30m for the
           # 0.41.7 to 0.47.x jump (#5224). Both old numbers assumed a roll that
@@ -269,7 +286,10 @@ promotion:
           #
           # This must stay strictly greater than conformance.readyWait plus the
           # suite budget, or the poll gives up while the runner is still
-          # legitimately waiting for its bricks.
+          # legitimately waiting for its bricks. The suite budget is 5m10s (s1
+          # 60s + s2 180s + s3 60s + s4 10s, summed as totalBudget in
+          # conformance/main.go), so 30m readyWait puts the worst case at
+          # 35m10s against this 40m0s: about 5m of real margin.
           verdictURL: http://embervm-dev-embervm-conformance.embervm-dev.svc.cluster.local:8080/verdict
           verdictTimeout: 40m0s
         - name: prod
