@@ -129,9 +129,10 @@ func httpErrorDetail(method, path string, response apiResponse) string {
 	return fmt.Sprintf("%s %s status=%d body=%q", method, path, response.status, string(prefix))
 }
 
-func waitForReady(ctx context.Context, client *controlPlaneClient, taskWorkload string) error {
+func waitForReady(ctx context.Context, client *controlPlaneClient, workloads ...string) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	unready := append([]string(nil), workloads...)
 	for {
 		healthRequest, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, client.baseURL+"/healthz", nil)
 		var health *http.Response
@@ -148,24 +149,40 @@ func waitForReady(ctx context.Context, client *controlPlaneClient, taskWorkload 
 		if healthOK {
 			view, err := getNodes(ctx, client)
 			if err == nil {
-				for _, node := range view.Nodes {
-					if node.Facts == nil {
-						continue
-					}
-					workload, ok := node.Facts.Workloads[taskWorkload]
-					if node.Dispatchable && !node.Draining && ok && workload.BaseState == "BASE_BUILD_STATE_READY" && workload.SnapshotRef != "" {
-						return nil
-					}
+				unready = unreadyWorkloads(view, workloads)
+				if len(unready) == 0 {
+					return nil
 				}
 			}
 		}
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("workloads not ready: %s: %w", strings.Join(unready, ", "), ctx.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func unreadyWorkloads(view nodesView, workloads []string) []string {
+	unready := make([]string, 0, len(workloads))
+	for _, workloadName := range workloads {
+		ready := false
+		for _, node := range view.Nodes {
+			if node.Facts == nil {
+				continue
+			}
+			workload, ok := node.Facts.Workloads[workloadName]
+			if node.Dispatchable && !node.Draining && ok && workload.BaseState == "BASE_BUILD_STATE_READY" && workload.SnapshotRef != "" {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			unready = append(unready, workloadName)
+		}
+	}
+	return unready
 }
 
 func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, started time.Time) []scenarioVerdict {

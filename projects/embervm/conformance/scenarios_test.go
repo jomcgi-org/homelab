@@ -36,7 +36,7 @@ func TestClassifyInvokeResponse(t *testing.T) {
 	}
 }
 
-func TestWaitForReadyWaitsForDispatchableReadyTaskBase(t *testing.T) {
+func TestWaitForReadyWaitsForBothDispatchableReadyBases(t *testing.T) {
 	tokenFile := t.TempDir() + "/token"
 	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -52,10 +52,10 @@ func TestWaitForReadyWaitsForDispatchableReadyTaskBase(t *testing.T) {
 				return
 			}
 			if nodeRequests.Add(1) == 1 {
-				_, _ = w.Write([]byte(`{"nodes":[{"dispatchable":true,"draining":false,"facts":{"workloads":{"sandbox-python":{"base_state":"BASE_BUILD_STATE_BUILDING","snapshot_ref":""}}}}]}`))
+				_, _ = w.Write([]byte(`{"nodes":[{"dispatchable":true,"draining":false,"facts":{"workloads":{"sandbox-python":{"base_state":"BASE_BUILD_STATE_READY","snapshot_ref":"task-base"},"pi-runtime":{"base_state":"BASE_BUILD_STATE_BUILDING","snapshot_ref":""}}}}]}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"nodes":[{"dispatchable":true,"draining":false,"facts":{"workloads":{"sandbox-python":{"base_state":"BASE_BUILD_STATE_READY","snapshot_ref":"base-1"}}}}]}`))
+			_, _ = w.Write([]byte(`{"nodes":[{"dispatchable":true,"draining":false,"facts":{"workloads":{"sandbox-python":{"base_state":"BASE_BUILD_STATE_READY","snapshot_ref":"task-base"},"pi-runtime":{"base_state":"BASE_BUILD_STATE_READY","snapshot_ref":"session-base"}}}}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -65,11 +65,75 @@ func TestWaitForReadyWaitsForDispatchableReadyTaskBase(t *testing.T) {
 	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := waitForReady(ctx, client, "sandbox-python"); err != nil {
+	if err := waitForReady(ctx, client, "sandbox-python", "pi-runtime"); err != nil {
 		t.Fatalf("waitForReady: %v", err)
 	}
 	if got := nodeRequests.Load(); got < 2 {
 		t.Fatalf("node requests = %d, want at least 2", got)
+	}
+}
+
+func TestWaitForReadyAllowsWorkloadsOnDifferentNodes(t *testing.T) {
+	tokenFile := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/nodes":
+			_, _ = w.Write([]byte(`{"nodes":[{"dispatchable":true,"draining":false,"facts":{"workloads":{"sandbox-python":{"base_state":"BASE_BUILD_STATE_READY","snapshot_ref":"task-base"}}}},{"dispatchable":true,"draining":false,"facts":{"workloads":{"pi-runtime":{"base_state":"BASE_BUILD_STATE_READY","snapshot_ref":"session-base"}}}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitForReady(ctx, client, "sandbox-python", "pi-runtime"); err != nil {
+		t.Fatalf("waitForReady: %v", err)
+	}
+}
+
+func TestRunLoopFailsS0WhenOnlyTaskWorkloadIsReady(t *testing.T) {
+	tokenFile := t.TempDir() + "/token"
+	if err := os.WriteFile(tokenFile, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/nodes":
+			_, _ = w.Write([]byte(`{"nodes":[{"dispatchable":true,"draining":false,"facts":{"workloads":{"sandbox-python":{"base_state":"BASE_BUILD_STATE_READY","snapshot_ref":"task-base"}}}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := config{
+		chartVersion:    "test",
+		readyWait:       20 * time.Millisecond,
+		runInterval:     time.Hour,
+		taskWorkload:    "sandbox-python",
+		sessionWorkload: "pi-runtime",
+	}
+	client := &controlPlaneClient{baseURL: server.URL, tokenFile: tokenFile, http: server.Client()}
+	store := newVerdictStore(cfg.chartVersion)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	runLoop(ctx, cfg, client, store)
+
+	got := store.snapshot()
+	if len(got.Scenarios) != 1 || got.Scenarios[0].ID != "S0" {
+		t.Fatalf("scenarios = %#v, want only S0", got.Scenarios)
+	}
+	if !strings.Contains(got.Scenarios[0].Detail, cfg.sessionWorkload) {
+		t.Fatalf("S0 detail = %q, want unready workload %q", got.Scenarios[0].Detail, cfg.sessionWorkload)
 	}
 }
 
