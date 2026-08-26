@@ -9,6 +9,7 @@
     invalidResponseLabel,
     codeLabel,
     openLinkLabel,
+    requestNewCodeLabel,
     initialUserCode = null,
     initialVerificationUrl = null,
     onError = () => {},
@@ -38,7 +39,11 @@
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(body.error || body.detail || unavailableLabel);
+        throw new Error(
+          body?.error ||
+            body?.detail ||
+            `${unavailableLabel} (HTTP ${response.status})`,
+        );
       }
       if (
         typeof body.user_code !== "string" ||
@@ -47,18 +52,21 @@
         throw new Error(invalidResponseLabel);
       }
 
+      const previousUserCode = userCode;
       requestedUserCode = body.user_code;
       requestedVerificationUrl = body.verification_url;
       if (navigator.clipboard?.writeText) {
         try {
-          await navigator.clipboard.writeText(userCode);
+          await navigator.clipboard.writeText(body.user_code);
           copied = true;
           copiedTimer = setTimeout(() => (copied = false), 1200);
         } catch {
           copied = false;
         }
       }
-      window.open(body.verification_url, "_blank", "noopener,noreferrer");
+      if (body.pending !== true || body.user_code !== previousUserCode) {
+        window.open(body.verification_url, "_blank", "noopener,noreferrer");
+      }
     } catch (error) {
       onError(error instanceof Error ? error.message : unavailableLabel);
     } finally {
@@ -67,37 +75,75 @@
   }
 </script>
 
-<div class="codex-login-control">
-  <button type="button" disabled={authorizing} onclick={authorize}>
+{#if userCode}
+  <div class="codex-login-control">
+    {#if verificationUrl}
+      <a
+        class="primary-action"
+        href={verificationUrl}
+        target="_blank"
+        rel="noopener noreferrer">{openLinkLabel}</a
+      >
+    {/if}
+    <code aria-label={codeLabel} tabindex="0">{userCode}</code>
+    <button
+      class="secondary-action"
+      type="button"
+      disabled={authorizing}
+      onclick={authorize}
+    >
+      {authorizing ? authorizingLabel : requestNewCodeLabel}
+    </button>
+    {#if copied}<span class="copied" role="status">{copiedLabel}</span>{/if}
+  </div>
+{:else}
+  <button
+    class="primary-action"
+    type="button"
+    disabled={authorizing}
+    onclick={authorize}
+  >
     {authorizing ? authorizingLabel : authorizeLabel}
   </button>
-  {#if userCode}
-    <code aria-label={codeLabel} tabindex="0">{userCode}</code>
-  {/if}
-  {#if verificationUrl}
-    <a href={verificationUrl} target="_blank" rel="noopener noreferrer"
-      >{openLinkLabel}</a
-    >
-  {/if}
-  {#if copied}<span class="copied" role="status">{copiedLabel}</span>{/if}
-</div>
+{/if}
 
 <style>
   .codex-login-control {
     display: inline-flex;
     align-items: center;
     gap: 7px;
+    padding: 6px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    background: var(--panel-bg);
   }
-  button {
+  .primary-action {
+    display: inline-flex;
+    align-items: center;
     min-height: 28px;
     padding: 0 9px;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-md);
-    color: var(--text);
-    background: var(--panel-bg);
+    color: var(--panel-bg);
+    background: var(--text);
     font: 600 12px var(--font-mono);
+    text-decoration: none;
   }
-  button:hover:not(:disabled) {
+  .primary-action:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .secondary-action {
+    min-height: 28px;
+    padding: 0 5px;
+    border: 0;
+    color: var(--muted);
+    background: var(--panel-bg);
+    font: 500 11px var(--font-mono);
+    text-decoration: underline;
+  }
+  .secondary-action:hover:not(:disabled) {
+    color: var(--text);
     background: var(--hover);
   }
   button:disabled {
@@ -108,10 +154,6 @@
     color: var(--attn-text);
     font: 600 12px var(--font-mono);
     user-select: text;
-  }
-  a {
-    color: var(--attn-text);
-    font-size: 11px;
   }
   .copied {
     color: var(--muted);

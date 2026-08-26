@@ -71,6 +71,8 @@ describe("Codex login proxies", () => {
 
     expect(response.status).toBe(502);
     expect(response.headers.get("content-type")).toBe("application/json");
-    expect((await response.json()).error).toContain("Codex login");
+    const body = await response.json();
+    expect(body.error).toContain("Codex login");
+    expect(body.status).toBe(502);
   });
 });

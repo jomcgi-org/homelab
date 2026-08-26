@@ -14,7 +14,10 @@ export async function GET({ url }) {
     });
   } catch {
     return new Response(
-      JSON.stringify({ error: "Codex login status unavailable" }),
+      JSON.stringify({
+        error: "Codex login status unavailable",
+        status: 502,
+      }),
       {
         status: 502,
         headers: { "Content-Type": "application/json" },
