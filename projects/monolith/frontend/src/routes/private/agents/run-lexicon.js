@@ -104,6 +104,7 @@ export const RUN_LEXICON = {
     codexLoginCode: "Codex device code",
     codexLoginOpenLink: "open login page",
     codexLoginRequestNewCode: "request a new code",
+    codexLoginStarting: "device flow is starting, try again shortly…",
     codexLoginUnavailable: "Codex login is unavailable",
     codexLoginInvalidResponse: "Codex login returned an invalid response",
     codexLoginRequired: "Codex login is required before this turn can start.",

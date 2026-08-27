@@ -19,6 +19,7 @@ async function render(onError = vi.fn(), props = {}, mutable = false) {
     codeLabel: P.labels.codexLoginCode,
     openLinkLabel: P.labels.codexLoginOpenLink,
     requestNewCodeLabel: P.labels.codexLoginRequestNewCode,
+    startingLabel: P.labels.codexLoginStarting,
     onError,
     ...props,
   };
@@ -157,6 +158,31 @@ describe("Codex authorization", () => {
 
     await vi.waitFor(() =>
       expect(onError).toHaveBeenLastCalledWith("broker unavailable"),
+    );
+    expect(target.querySelector("button").disabled).toBe(false);
+    expect(target.querySelector("code")).toBeNull();
+  });
+
+  test("surfaces device flow startup as a retriable state", async () => {
+    vi.stubGlobal("navigator", {});
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            retry_after: 10,
+            message: "Device flow is starting, try again shortly.",
+            pending: false,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.spyOn(window, "open").mockImplementation(() => null);
+    const { target, onError } = await render();
+
+    target.querySelector("button").click();
+
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenLastCalledWith(P.labels.codexLoginStarting),
     );
     expect(target.querySelector("button").disabled).toBe(false);
     expect(target.querySelector("code")).toBeNull();

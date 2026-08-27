@@ -252,17 +252,21 @@ def test_codex_login_start_proxies_broker(client, monkeypatch):
     assert calls == [("POST", "/grants/codex-cluster/login/start")]
 
 
-def test_codex_login_start_returns_in_flight_broker_login(client, monkeypatch):
+@pytest.mark.parametrize("reason", [None, "login_pending"])
+def test_codex_login_start_returns_in_flight_broker_login(client, monkeypatch, reason):
     async def broker_request(*_args):
+        body = {
+            "verification_url": "https://example.test/device",
+            "user_code": "PENDING-123",
+            "expires_in": 600,
+            "ignored": "not exposed",
+        }
+        if reason is not None:
+            body["reason"] = reason
         response = httpx.Response(
             409,
             request=httpx.Request("POST", "https://broker/login/start"),
-            json={
-                "verification_url": "https://example.test/device",
-                "user_code": "PENDING-123",
-                "expires_in": 600,
-                "ignored": "not exposed",
-            },
+            json=body,
         )
         raise httpx.HTTPStatusError(
             "login pending", request=response.request, response=response
@@ -278,6 +282,34 @@ def test_codex_login_start_returns_in_flight_broker_login(client, monkeypatch):
         "user_code": "PENDING-123",
         "expires_in": 600,
         "pending": True,
+    }
+
+
+def test_codex_login_start_returns_retry_when_broker_is_starting(client, monkeypatch):
+    async def broker_request(*_args):
+        response = httpx.Response(
+            409,
+            request=httpx.Request("POST", "https://broker/login/start"),
+            json={
+                "reason": "login_starting",
+                "verification_url": "",
+                "user_code": "",
+                "expires_in": 0,
+            },
+        )
+        raise httpx.HTTPStatusError(
+            "login starting", request=response.request, response=response
+        )
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    response = client.post("/api/agents/codex-login/start")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "retry_after": 10,
+        "message": "Device flow is starting, try again shortly.",
+        "pending": False,
     }
 
 

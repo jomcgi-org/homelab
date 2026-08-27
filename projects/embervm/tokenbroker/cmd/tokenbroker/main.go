@@ -30,6 +30,7 @@ type loginState struct {
 	mu            sync.RWMutex
 	state, detail string
 	code          *provider.DeviceCodeResponse
+	ready         chan struct{}
 }
 type forceRefreshState struct {
 	mu         sync.Mutex
@@ -45,7 +46,11 @@ type server struct {
 	logger   *slog.Logger
 }
 
-const forceRefreshCooldown = 60 * time.Second
+const (
+	forceRefreshCooldown = 60 * time.Second
+	// loginStartWaitTimeout bounds one OAuth device-code round-trip.
+	loginStartWaitTimeout = 10 * time.Second
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -166,22 +171,49 @@ func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request)
 	state := value.(*loginState)
 	state.mu.Lock()
 	if state.state == "pending" {
-		response := map[string]any{"reason": "login_pending", "verification_url": "", "user_code": "", "expires_in": provider.FlexInt(0)}
 		if state.code != nil {
-			response["verification_url"] = state.code.VerificationURL
-			response["user_code"] = state.code.UserCode
-			response["expires_in"] = state.code.ExpiresIn
+			response := map[string]any{
+				"reason":           "login_pending",
+				"verification_url": state.code.VerificationURL,
+				"user_code":        state.code.UserCode,
+				"expires_in":       state.code.ExpiresIn,
+			}
+			state.mu.Unlock()
+			writeJSON(w, http.StatusConflict, response)
+			return
 		}
+		readyChan := state.ready
 		state.mu.Unlock()
-		writeJSON(w, http.StatusConflict, response)
+		select {
+		case <-readyChan:
+			state.mu.RLock()
+			if state.code != nil {
+				response := map[string]any{
+					"reason":           "login_pending",
+					"verification_url": state.code.VerificationURL,
+					"user_code":        state.code.UserCode,
+					"expires_in":       state.code.ExpiresIn,
+				}
+				state.mu.RUnlock()
+				writeJSON(w, http.StatusConflict, response)
+				return
+			}
+			state.mu.RUnlock()
+		case <-r.Context().Done():
+		case <-time.After(loginStartWaitTimeout):
+		}
+		writeJSON(w, http.StatusConflict, map[string]string{"reason": "login_starting"})
 		return
 	}
 	state.state, state.detail, state.code = "pending", "approval required", nil
+	state.ready = make(chan struct{})
+	readyChan := state.ready
 	state.mu.Unlock()
 	adapter := s.adapters[s.configs[name].ProviderName]
 	code, err := adapter.StartDeviceFlow(r.Context())
 	if err != nil {
 		s.setLogin(name, "failed", err.Error())
+		close(readyChan)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"reason": "device_code_failed"})
 		return
 	}
@@ -189,6 +221,7 @@ func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request)
 	codeCopy := code
 	state.code = &codeCopy
 	state.mu.Unlock()
+	close(readyChan)
 	go s.pollLogin(name, adapter, code)
 	writeJSON(w, http.StatusOK, map[string]any{"verification_url": code.VerificationURL, "user_code": code.UserCode, "expires_in": code.ExpiresIn})
 }
