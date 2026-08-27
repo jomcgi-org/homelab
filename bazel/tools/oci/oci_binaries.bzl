@@ -121,6 +121,27 @@ def _extract_layers(rctx, layer_paths, staging_dir):
                     err = result.stderr,
                 ))
 
+def _od_bytes(out):
+    """Parse `od -A n -t u1 -v` output into a list of byte values.
+
+    Starlark's `split` REQUIRES an explicit separator (unlike Python, it has no
+    whitespace-splitting default), and `od -A n` pads each line with leading
+    spaces and aligns columns with runs of them, so this splits on a single
+    space and drops the empties that produces.
+
+    Args:
+        out: The stdout of an `od -A n -t u1 -v` invocation.
+
+    Returns:
+        List of ints, each 0-255, in file order.
+    """
+    values = []
+    for line in out.splitlines():
+        for token in line.split(" "):
+            if token:
+                values.append(int(token))
+    return values
+
 def _assert_static_elf(rctx, path, rel):
     """Fail unless `path` is a statically linked ELF executable.
 
@@ -139,7 +160,7 @@ def _assert_static_elf(rctx, path, rel):
     result = rctx.execute(["od", "-A", "n", "-t", "u1", "-v", "-N", "64", path], timeout = 30)
     if result.return_code != 0:
         fail("Could not read ELF header of {rel}: {err}".format(rel = rel, err = result.stderr))
-    header = [int(b) for b in result.stdout.split()]
+    header = _od_bytes(result.stdout)
     if len(header) < 64:
         fail("{rel} is too short to be an ELF binary".format(rel = rel))
     if header[0:4] != [0x7F, 69, 76, 70]:  # \x7fELF
@@ -162,7 +183,7 @@ def _assert_static_elf(rctx, path, rel):
     )
     if result.return_code != 0:
         fail("Could not read program headers of {rel}: {err}".format(rel = rel, err = result.stderr))
-    phdrs = [int(b) for b in result.stdout.split()]
+    phdrs = _od_bytes(result.stdout)
     for i in range(e_phnum):
         offset = i * e_phentsize
         if offset + 4 > len(phdrs):
