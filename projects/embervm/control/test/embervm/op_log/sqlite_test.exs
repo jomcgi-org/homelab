@@ -7,14 +7,22 @@ defmodule Embervm.OpLog.SQLiteTest do
   """
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Embervm.OpLog.Op
   alias Embervm.OpLog.SQLite
   alias Exqlite.Sqlite3
 
   setup do
-    path = Path.join(System.tmp_dir!(), "embervm_oplog_test_#{System.unique_integer([:positive, :monotonic])}.db")
-    on_exit(fn -> File.rm_rf!(path) end)
-    %{path: path}
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "embervm_oplog_test_#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    %{dir: dir, path: Path.join(dir, "oplog.db")}
   end
 
   # name: nil: tests run async and each needs its own unnamed, PID-addressed
@@ -24,6 +32,96 @@ defmodule Embervm.OpLog.SQLiteTest do
     opts = Keyword.merge([path: path, name: nil], extra_opts)
     {:ok, pid} = SQLite.start_link(opts)
     pid
+  end
+
+  test "an unopenable database is quarantined and the supervised store starts with fresh history", %{
+    path: path
+  } do
+    original = "not a sqlite database\nforensic bytes\n"
+    wal = "original wal bytes"
+    shm = "original shm bytes"
+    File.write!(path, original)
+    File.write!(path <> "-wal", wal)
+    File.write!(path <> "-shm", shm)
+
+    log =
+      capture_log(fn ->
+        {:ok, supervisor} =
+          Supervisor.start_link(
+            [{SQLite, path: path, name: nil}],
+            strategy: :one_for_one
+          )
+
+        assert Process.alive?(supervisor)
+        [{_, server, :worker, [SQLite]}] = Supervisor.which_children(supervisor)
+
+        assert {:ok, 1} =
+                 SQLite.append(server, %Op{
+                   kind: :denied,
+                   tenant: "t1",
+                   ts: 100,
+                   payload: %{reason: "quota"}
+                 })
+
+        assert File.regular?(path)
+        :ok = Supervisor.stop(supervisor)
+      end)
+
+    [quarantined] =
+      path
+      |> then(&Path.wildcard(&1 <> ".quarantined-*"))
+      |> Enum.reject(&(String.ends_with?(&1, "-wal") or String.ends_with?(&1, "-shm")))
+
+    quarantined_wal = quarantined <> "-wal"
+    quarantined_shm = quarantined <> "-shm"
+
+    assert File.read!(quarantined) == original
+    assert File.read!(quarantined_wal) == wal
+    assert File.read!(quarantined_shm) == shm
+    assert log =~ "SQLite op-log open failed"
+    assert log =~ "path=#{inspect(path)}"
+    assert log =~ "file_size_bytes=#{byte_size(original)}"
+    assert log =~ "filesystem_free_bytes="
+    assert log =~ "history was quarantined"
+    assert log =~ "reason="
+    assert log =~ "running degraded with a fresh database"
+  end
+
+  test "a healthy existing database opens without quarantine and keeps its rows", %{path: path} do
+    server = start_server(path)
+
+    assert {:ok, 1} =
+             SQLite.append(server, %Op{
+               kind: :denied,
+               tenant: "t1",
+               ts: 100,
+               payload: %{reason: "quota"}
+             })
+
+    :ok = GenServer.stop(server)
+    reopened = start_server(path)
+
+    assert {:ok, [%{seq: 1, kind: :denied, tenant: "t1"}]} = SQLite.read_from(reopened, 0)
+    assert Path.wildcard(path <> ".quarantined-*") == []
+
+    :ok = GenServer.stop(reopened)
+  end
+
+  test "a second consecutive open failure fails hard after one retry", %{dir: dir} do
+    blocker = Path.join(dir, "not-a-directory")
+    File.write!(blocker, "blocking parent")
+    path = Path.join(blocker, "oplog.db")
+    Process.flag(:trap_exit, true)
+
+    log =
+      capture_log(fn ->
+        assert {:error, {:open_failed, _reason}} = SQLite.start_link(path: path, name: nil)
+      end)
+
+    assert log =~ "SQLite op-log open failed"
+    assert log =~ "recreate failed after one quarantine retry"
+    assert log =~ "failing hard"
+    assert length(Regex.scan(~r/SQLite op-log recreate failed after one quarantine retry/, log)) == 1
   end
 
   test "monotonic seq under concurrent interleaving, survives reopen", %{path: path} do
