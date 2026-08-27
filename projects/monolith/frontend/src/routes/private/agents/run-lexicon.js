@@ -101,7 +101,6 @@ export const RUN_LEXICON = {
     awaitingLogin: "awaiting login",
     authorizeCodex: "Authorize Codex",
     authorizingCodex: "authorizing…",
-    codexLoginCode: "Codex device code",
     codexLoginOpenLink: "open login page",
     codexLoginRequestNewCode: "request a new code",
     codexLoginStarting: "device flow is starting, try again shortly…",

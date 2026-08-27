@@ -185,6 +185,7 @@
   let errorMessage = $state(
     data.error ? "Unable to load agent sessions" : null,
   );
+  let noticeMessage = $state(null);
   let searchController = null;
   let requestSequence = 0;
   let renderedPending = $state({});
@@ -1915,13 +1916,13 @@
                   copiedLabel={P.labels.copied}
                   unavailableLabel={P.labels.codexLoginUnavailable}
                   invalidResponseLabel={P.labels.codexLoginInvalidResponse}
-                  codeLabel={P.labels.codexLoginCode}
                   openLinkLabel={P.labels.codexLoginOpenLink}
                   requestNewCodeLabel={P.labels.codexLoginRequestNewCode}
                   startingLabel={P.labels.codexLoginStarting}
                   initialUserCode={selectedCodexLoginCode}
                   initialVerificationUrl={selectedCodexLoginUrl}
                   onError={(message) => (errorMessage = message)}
+                  onNotice={(message) => (noticeMessage = message)}
                 />
               {/if}
               <span
@@ -2202,9 +2203,16 @@
     onOpenVoice={openVoiceMode}
   />
 
-  {#if errorMessage}<div class="error-banner" role="status">
-      {errorMessage}
-    </div>{/if}
+  {#if noticeMessage || errorMessage}
+    <div class="message-banners">
+      {#if noticeMessage}<div class="notice-banner" role="status">
+          {noticeMessage}
+        </div>{/if}
+      {#if errorMessage}<div class="error-banner" role="status">
+          {errorMessage}
+        </div>{/if}
+    </div>
+  {/if}
 </main>
 
 {#snippet inboxRow(item, attention)}
@@ -3124,17 +3132,29 @@
   .transcript-empty {
     padding: 32px 0;
   }
-  .error-banner {
+  .message-banners {
     position: fixed;
     right: 16px;
     bottom: 16px;
+    display: grid;
+    gap: 8px;
     max-width: 420px;
+  }
+  .notice-banner,
+  .error-banner {
     padding: 8px 12px;
-    border: 1px solid var(--err-line);
     border-radius: var(--radius-lg);
+    font-size: var(--size-detail);
+  }
+  .notice-banner {
+    border: 1px solid var(--line-strong);
+    color: var(--text);
+    background: var(--panel-bg);
+  }
+  .error-banner {
+    border: 1px solid var(--err-line);
     color: var(--err);
     background: var(--err-bg);
-    font-size: var(--size-detail);
   }
   @media (prefers-reduced-motion: no-preference) {
     .dot.working {

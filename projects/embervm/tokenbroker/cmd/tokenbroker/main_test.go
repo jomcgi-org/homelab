@@ -45,6 +45,7 @@ type fakeAdapter struct {
 	refreshErr  error
 	deviceCode  provider.DeviceCodeResponse
 	deviceErr   error
+	startPanic  any
 	startWait   <-chan struct{}
 	startCalled chan struct{}
 	startOnce   sync.Once
@@ -52,6 +53,9 @@ type fakeAdapter struct {
 }
 
 func (a *fakeAdapter) StartDeviceFlow(ctx context.Context) (provider.DeviceCodeResponse, error) {
+	if a.startPanic != nil {
+		panic(a.startPanic)
+	}
 	if a.startCalled != nil {
 		a.startOnce.Do(func() { close(a.startCalled) })
 	}
@@ -93,7 +97,7 @@ func newTestServer(st *fakeStore, adapter *fakeAdapter) *server {
 	adapters := map[string]provider.Adapter{"test": adapter}
 	configs := map[string]grantConfig{"codex-cluster": {Name: "codex-cluster", ProviderName: "test"}}
 	b := broker.New(st, adapters, []broker.GrantConfig{{Name: "codex-cluster", ProviderName: "test"}}, logger, nil)
-	return &server{broker: b, store: st, adapters: adapters, configs: configs, logger: logger}
+	return &server{broker: b, store: st, adapters: adapters, configs: configs, logger: logger, startWaitTimeout: loginStartWaitTimeout}
 }
 
 func requestGrant(t *testing.T, s *server, method, path string) *httptest.ResponseRecorder {
@@ -136,6 +140,18 @@ func requestGrantAsync(s *server, ctx context.Context) <-chan *httptest.Response
 		result <- recorder
 	}()
 	return result
+}
+
+func receiveWithin[T any](t *testing.T, ch <-chan T, description string) T {
+	t.Helper()
+	select {
+	case value := <-ch:
+		return value
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+		var zero T
+		return zero
+	}
 }
 
 func TestForceRefreshReturnsMetadataWithoutCredentialAndEnforcesCooldown(t *testing.T) {
@@ -236,18 +252,18 @@ func TestConcurrentLoginStartWaitsForDeviceCode(t *testing.T) {
 	s := newTestServer(&fakeStore{grants: make(map[string]store.Grant)}, adapter)
 
 	firstResult := requestGrantAsync(s, context.Background())
-	<-startCalled
+	receiveWithin(t, startCalled, "first caller to start the device flow")
 	waiting := make(chan time.Time, 1)
 	secondResult := requestGrantAsync(s, &signalingContext{Context: context.Background(), entered: waiting})
-	<-waiting
+	receiveWithin(t, waiting, "second caller to enter the wait")
 	close(startWait)
 
-	first := <-firstResult
+	first := receiveWithin(t, firstResult, "first login response")
 	firstBody := decodeBody(t, first)
 	if first.Code != http.StatusOK || firstBody["verification_url"] != "https://auth.example/device" || firstBody["user_code"] != "ABCD-EFGH" || firstBody["expires_in"] != float64(900) {
 		t.Fatalf("first = %d %#v", first.Code, firstBody)
 	}
-	second := <-secondResult
+	second := receiveWithin(t, secondResult, "second login response")
 	secondBody := decodeBody(t, second)
 	if second.Code != http.StatusConflict || secondBody["reason"] != "login_pending" || secondBody["verification_url"] != "https://auth.example/device" || secondBody["user_code"] != "ABCD-EFGH" || secondBody["expires_in"] != float64(900) {
 		t.Fatalf("second = %d %#v", second.Code, secondBody)
@@ -265,17 +281,17 @@ func TestConcurrentLoginStartReportsStartingWhenDeviceCodeFails(t *testing.T) {
 	s := newTestServer(&fakeStore{grants: make(map[string]store.Grant)}, adapter)
 
 	firstResult := requestGrantAsync(s, context.Background())
-	<-startCalled
+	receiveWithin(t, startCalled, "first caller to start the device flow")
 	waiting := make(chan time.Time, 1)
 	secondResult := requestGrantAsync(s, &signalingContext{Context: context.Background(), entered: waiting})
-	<-waiting
+	receiveWithin(t, waiting, "second caller to enter the wait")
 	close(startWait)
 
-	first := <-firstResult
+	first := receiveWithin(t, firstResult, "first login response")
 	if first.Code != http.StatusBadGateway || decodeBody(t, first)["reason"] != "device_code_failed" {
 		t.Fatalf("first = %d %s", first.Code, first.Body.String())
 	}
-	second := <-secondResult
+	second := receiveWithin(t, secondResult, "second login response")
 	secondBody := decodeBody(t, second)
 	if second.Code != http.StatusConflict || len(secondBody) != 1 || secondBody["reason"] != "login_starting" {
 		t.Fatalf("second = %d %#v", second.Code, secondBody)
@@ -291,16 +307,17 @@ func TestConcurrentLoginStartTimesOutWaitingForDeviceCode(t *testing.T) {
 		startCalled: startCalled,
 	}
 	s := newTestServer(&fakeStore{grants: make(map[string]store.Grant)}, adapter)
+	s.startWaitTimeout = time.Millisecond
 
 	firstResult := requestGrantAsync(s, context.Background())
-	<-startCalled
+	receiveWithin(t, startCalled, "first caller to start the device flow")
 	waiting := make(chan time.Time, 1)
 	secondResult := requestGrantAsync(s, &signalingContext{Context: context.Background(), entered: waiting})
-	startedAt := <-waiting
-	second := <-secondResult
+	startedAt := receiveWithin(t, waiting, "second caller to enter the wait")
+	second := receiveWithin(t, secondResult, "second login response")
 	elapsed := time.Since(startedAt)
-	if elapsed < loginStartWaitTimeout || elapsed > loginStartWaitTimeout+5*time.Second {
-		t.Fatalf("wait duration = %s, want about %s", elapsed, loginStartWaitTimeout)
+	if elapsed < s.startWaitTimeout || elapsed > s.startWaitTimeout+time.Second {
+		t.Fatalf("wait duration = %s, want about %s", elapsed, s.startWaitTimeout)
 	}
 	secondBody := decodeBody(t, second)
 	if second.Code != http.StatusConflict || len(secondBody) != 1 || secondBody["reason"] != "login_starting" {
@@ -308,5 +325,34 @@ func TestConcurrentLoginStartTimesOutWaitingForDeviceCode(t *testing.T) {
 	}
 
 	close(startWait)
-	<-firstResult
+	receiveWithin(t, firstResult, "first login response")
+}
+
+func TestLoginStartClosesReadyChannelWhenDeviceFlowPanics(t *testing.T) {
+	s := newTestServer(
+		&fakeStore{grants: make(map[string]store.Grant)},
+		&fakeAdapter{startPanic: "device flow panic"},
+	)
+	s.startWaitTimeout = 500 * time.Millisecond
+
+	panicked := false
+	func() {
+		defer func() {
+			panicked = recover() != nil
+		}()
+		requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/login/start")
+	}()
+	if !panicked {
+		t.Fatal("StartDeviceFlow did not panic")
+	}
+
+	startedAt := time.Now()
+	response := requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/login/start")
+	if elapsed := time.Since(startedAt); elapsed >= s.startWaitTimeout {
+		t.Fatalf("response after panic waited %s", elapsed)
+	}
+	body := decodeBody(t, response)
+	if response.Code != http.StatusConflict || len(body) != 1 || body["reason"] != "login_starting" {
+		t.Fatalf("response after panic = %d %#v", response.Code, body)
+	}
 }

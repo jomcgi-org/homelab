@@ -37,19 +37,22 @@ type forceRefreshState struct {
 	lastForced time.Time
 }
 type server struct {
-	broker   *broker.Broker
-	store    store.Store
-	adapters map[string]provider.Adapter
-	configs  map[string]grantConfig
-	logins   sync.Map
-	forced   sync.Map
-	logger   *slog.Logger
+	broker           *broker.Broker
+	store            store.Store
+	adapters         map[string]provider.Adapter
+	configs          map[string]grantConfig
+	logins           sync.Map
+	forced           sync.Map
+	logger           *slog.Logger
+	startWaitTimeout time.Duration
 }
 
 const (
 	forceRefreshCooldown = 60 * time.Second
-	// loginStartWaitTimeout bounds one OAuth device-code round-trip.
-	loginStartWaitTimeout = 10 * time.Second
+	// loginStartWaitTimeout is coupled to the 10-second client-side proxy budget in
+	// projects/monolith/frontend/src/routes/private/agents/codex-login/start/+server.js.
+	// Do not raise either timeout in isolation. Preserve headroom for monolith latency.
+	loginStartWaitTimeout = 5 * time.Second
 )
 
 func main() {
@@ -76,7 +79,7 @@ func main() {
 	}
 	m := metrics.New()
 	m.Register(prometheus.DefaultRegisterer)
-	s := &server{store: st, adapters: adapters, configs: configMap, logger: logger}
+	s := &server{store: st, adapters: adapters, configs: configMap, logger: logger, startWaitTimeout: loginStartWaitTimeout}
 	s.broker = broker.New(st, adapters, brokerConfigs, logger, m)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
@@ -184,23 +187,25 @@ func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request)
 		}
 		readyChan := state.ready
 		state.mu.Unlock()
-		select {
-		case <-readyChan:
-			state.mu.RLock()
-			if state.code != nil {
-				response := map[string]any{
-					"reason":           "login_pending",
-					"verification_url": state.code.VerificationURL,
-					"user_code":        state.code.UserCode,
-					"expires_in":       state.code.ExpiresIn,
+		if readyChan != nil {
+			select {
+			case <-readyChan:
+				state.mu.RLock()
+				if state.code != nil {
+					response := map[string]any{
+						"reason":           "login_pending",
+						"verification_url": state.code.VerificationURL,
+						"user_code":        state.code.UserCode,
+						"expires_in":       state.code.ExpiresIn,
+					}
+					state.mu.RUnlock()
+					writeJSON(w, http.StatusConflict, response)
+					return
 				}
 				state.mu.RUnlock()
-				writeJSON(w, http.StatusConflict, response)
-				return
+			case <-r.Context().Done():
+			case <-time.After(s.startWaitTimeout):
 			}
-			state.mu.RUnlock()
-		case <-r.Context().Done():
-		case <-time.After(loginStartWaitTimeout):
 		}
 		writeJSON(w, http.StatusConflict, map[string]string{"reason": "login_starting"})
 		return
@@ -209,11 +214,18 @@ func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request)
 	state.ready = make(chan struct{})
 	readyChan := state.ready
 	state.mu.Unlock()
+	defer func() {
+		state.mu.Lock()
+		close(readyChan)
+		if state.ready == readyChan {
+			state.ready = nil
+		}
+		state.mu.Unlock()
+	}()
 	adapter := s.adapters[s.configs[name].ProviderName]
 	code, err := adapter.StartDeviceFlow(r.Context())
 	if err != nil {
 		s.setLogin(name, "failed", err.Error())
-		close(readyChan)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"reason": "device_code_failed"})
 		return
 	}
@@ -221,7 +233,6 @@ func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request)
 	codeCopy := code
 	state.code = &codeCopy
 	state.mu.Unlock()
-	close(readyChan)
 	go s.pollLogin(name, adapter, code)
 	writeJSON(w, http.StatusOK, map[string]any{"verification_url": code.VerificationURL, "user_code": code.UserCode, "expires_in": code.ExpiresIn})
 }
