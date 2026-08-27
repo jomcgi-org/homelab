@@ -1,0 +1,11 @@
+onepassword:
+  enabled: true
+  itemPath: "vaults/k8s-homelab/items/honeycomb-ingest"
+
+httpcheck:
+  enabled: true
+  # Deliberately short to start, new targets are a one-line addition.
+  targets:
+    - "https://jomcgi.dev/health"
+    - "https://jomcgi.dev/"
+    - "http://monolith.monolith.svc.cluster.local:8000/healthz"

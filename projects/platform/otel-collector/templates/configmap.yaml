@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "otel-collector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+data:
+  collector.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      {{- if .Values.httpcheck.enabled }}
+      # Component type is http_check, not httpcheck. The receiver was renamed to
+      # match snake_case; httpcheck still resolves but only as a deprecated
+      # alias that logs a warning, so it is not safe to depend on.
+      http_check:
+        collection_interval: {{ .Values.httpcheck.intervalSeconds }}s
+        targets:
+          {{- range .Values.httpcheck.targets }}
+          - endpoint: {{ . | quote }}
+            method: GET
+          {{- end }}
+      {{- end }}
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+      tail_sampling:
+        decision_wait: {{ .Values.sampling.decisionWaitSeconds }}s
+        num_traces: {{ .Values.sampling.numTraces }}
+        policies:
+          - name: errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: slow-traces
+            type: latency
+            latency:
+              threshold_ms: {{ .Values.sampling.latencyThresholdMs }}
+          - name: baseline
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: {{ .Values.sampling.probabilisticPercentage }}
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+
+    exporters:
+      # The otlp exporter requires a bare host:port endpoint. A URL scheme breaks it.
+      otlp/honeycomb:
+        endpoint: {{ .Values.honeycomb.endpoint | quote }}
+        headers:
+          x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, tail_sampling, batch]
+          exporters: [otlp/honeycomb]
+        metrics:
+          receivers: [otlp{{- if .Values.httpcheck.enabled }}, http_check{{- end }}]
+          processors: [memory_limiter, batch]
+          exporters: [otlp/honeycomb]
