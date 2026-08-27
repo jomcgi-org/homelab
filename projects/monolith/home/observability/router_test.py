@@ -1,8 +1,8 @@
 """Tests for the observability read endpoints.
 
-After ADR 004 Layer 4 the endpoints no longer call ClickHouse: they read a
+After ADR 004 Layer 4 the endpoints no longer call external metrics services: they read a
 precomputed snapshot row from Postgres. These tests override the DB session so
-they assert the read-and-return behaviour without a database. The ClickHouse
+they assert the read-and-return behaviour without a database. The metrics
 build logic is covered by stats_test / slo_test, and the write + grant
 round-trip by observability_snapshot_grants_test (real Postgres).
 """

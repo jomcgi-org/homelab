@@ -1,6 +1,5 @@
 backend:
   replicas: 1
-  clickhouseUrl: "http://chi-signoz-clickhouse-cluster-0-0.signoz.svc.cluster.local:8123"
   otelEndpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318/v1/traces"
   resources:
     requests:
@@ -81,10 +80,6 @@ postgres:
 onepassword:
   enabled: true
   itemPath: "vaults/k8s-homelab/items/private-homepage"
-
-clickhouse:
-  onepassword:
-    itemPath: "vaults/k8s-homelab/items/signoz-clickhouse"
 
 # Sign /img imgproxy URLs for grimoire reader illustrations; same 1Password
 # item as monolith-public so signatures validate against the shared imgproxy.
@@ -365,9 +360,6 @@ agent:
     # Owner allowlist for /goosecracker (ADR 024 Task 4) is OWNER_DISCORD_USER_ID,
     # synced from the discord-bot 1Password item into monolith-chat-secrets and
     # sourced via secretKeyRef in the deployment (not a plain value here).
-  signoz:
-    url: "http://signoz.signoz.svc.cluster.local:8080/app/signoz"
-
 # EmberVM R4 scale-to-zero scratch-postgres (ADR embervm/001, D-R4.PR-11.1).
 # DISABLED 2026-08 alongside the embervm Workload CR (its only real consumer,
 # the loom deployment, is decommissioned): SCRATCH_POSTGRES_DSN is unrendered,
@@ -414,8 +406,9 @@ scratchPostgres:
 # the gateway's envoy proxy pods, and mcp only Context Forge's gateway
 # Deployment, instead of those whole namespaces. Provenance per entry, including
 # the envoy relabel failure mode and its rollback, lives in
-# chart/templates/cilium-ingress-policy.yaml; the #4659 SigNoz alert is the
-# tripwire if a selector stops matching.
+# chart/templates/cilium-ingress-policy.yaml. The #4659 tripwire for a selector
+# that stops matching was a SigNoz alert, removed with SigNoz (#5362), so there
+# is no automated tripwire until the replacement monitoring lands.
 #
 # If something was still missed it fails as a SILENT dial timeout, not a
 # readable deny (PR #4294). First check on any post-merge weirdness:

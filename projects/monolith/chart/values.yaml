@@ -197,7 +197,7 @@ jobs:
     # stats_rollup counts cluster resources via the in-cluster K8s API, so it
     # runs under the dedicated least-privilege monolith-stats SA (defined in the
     # argo-workflows platform chart) instead of the shared executor SA. Also
-    # needs ClickHouse for GPU metrics. 5-min cadence (was 2-min, originally
+    # scrapes the DCGM exporter for GPU metrics. 5-min cadence (was 2-min, originally
     # 120s): a rollup of counters nobody reads sub-minute did not justify 720
     # pods/day at ~10s per-run overhead. Deadline widened 120 -> 240s because
     # the old 120 was only ~6-12x a normal 10-20s run, so a brief upstream
@@ -213,14 +213,7 @@ jobs:
       suspend: false
       serviceAccountName: monolith-stats
       env:
-        CLICKHOUSE_URL: "http://chi-signoz-clickhouse-cluster-0-0.signoz.svc.cluster.local:8123"
-      secretEnv:
-        CLICKHOUSE_USER:
-          secretName: monolith-clickhouse
-          key: USER
-        CLICKHOUSE_PASSWORD:
-          secretName: monolith-clickhouse
-          key: PASSWORD
+        DCGM_EXPORTER_URL: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400"
       resources:
         requests:
           cpu: 250m
@@ -443,12 +436,11 @@ jobs:
         limits:
           memory: 256Mi
     # home.cluster_snapshot_refresh: scans the cluster health rollup (deployments,
-    # statefulsets, daemonsets, pods, ArgoCD apps via the in-cluster K8s API) plus
-    # firing SigNoz alerts, and upserts one home.cluster_snapshot row so the
-    # private dashboard reads a single row instead of doing a live ~235-resource
-    # scan on every request. Cluster reads run under the dedicated least-privilege
-    # monolith-stats SA (same as observability-stats-rollup). SIGNOZ_API_KEY is the
-    # 1Password key cloned into monolith-workflows by Kyverno.
+    # statefulsets, daemonsets, pods, ArgoCD apps via the in-cluster K8s API) and
+    # upserts one home.cluster_snapshot row so the private dashboard reads a
+    # single row instead of doing a live ~235-resource scan on every request.
+    # Cluster reads run under the dedicated least-privilege monolith-stats SA
+    # (same as observability-stats-rollup).
     #
     # 2-min cadence (was every minute). The binding constraint is NOT the
     # frontend's 60s poll (private/+page.svelte) but cluster_snapshot.py's
@@ -473,12 +465,6 @@ jobs:
       activeDeadlineSeconds: 240
       suspend: false
       serviceAccountName: monolith-stats
-      env:
-        SIGNOZ_URL: "http://signoz.signoz.svc.cluster.local:8080/app/signoz"
-      secretEnv:
-        SIGNOZ_API_KEY:
-          secretName: signoz-api-key
-          key: api-key
       resources:
         requests:
           cpu: 250m
@@ -1045,10 +1031,6 @@ securityContext:
 onepassword:
   enabled: false
   itemPath: ""
-
-clickhouse:
-  onepassword:
-    itemPath: ""
 
 knowledge:
   enabled: false

@@ -280,7 +280,7 @@
   {#if timedOut}
     <div class="notice notice--warn" role="alert">
       Stopped polling after 150s without the run finishing. It may still be
-      running server-side; reopen the page or check SigNoz.
+      running server-side; reopen the page to check again.
     </div>
   {/if}
 

@@ -26,9 +26,6 @@ async def test_build_dashboard_isolates_a_failing_section():
             AsyncMock(side_effect=RuntimeError("k8s down")),
         ),
         patch.object(
-            dashboard, "_collect_alerts", AsyncMock(return_value={"firing": []})
-        ),
-        patch.object(
             dashboard,
             "_collect_github",
             AsyncMock(return_value={"open_prs": [], "recent_merges": []}),
@@ -40,7 +37,6 @@ async def test_build_dashboard_isolates_a_failing_section():
         result = await dashboard.build_dashboard(session=MagicMock())
 
     assert result["health"] == {"error": "k8s down"}
-    assert result["alerts"] == {"firing": []}
     assert result["github"] == {"open_prs": [], "recent_merges": []}
     assert result["today"] == {"events": []}
     assert "cached_at" in result
@@ -53,9 +49,6 @@ async def test_build_dashboard_all_sections_healthy():
             dashboard, "_collect_health", AsyncMock(return_value={"healthy": True})
         ),
         patch.object(
-            dashboard, "_collect_alerts", AsyncMock(return_value={"firing": []})
-        ),
-        patch.object(
             dashboard,
             "_collect_github",
             AsyncMock(return_value={"open_prs": [], "recent_merges": []}),
@@ -66,7 +59,7 @@ async def test_build_dashboard_all_sections_healthy():
     ):
         result = await dashboard.build_dashboard(session=MagicMock())
 
-    for section in ("health", "alerts", "github", "today"):
+    for section in ("health", "github", "today"):
         assert "error" not in result[section]
 
 
@@ -79,12 +72,9 @@ async def test_build_dashboard_multiple_sections_fail_independently():
             AsyncMock(side_effect=RuntimeError("k8s down")),
         ),
         patch.object(
-            dashboard, "_collect_alerts", AsyncMock(side_effect=KeyError("SIGNOZ_URL"))
-        ),
-        patch.object(
             dashboard,
             "_collect_github",
-            AsyncMock(return_value={"open_prs": [], "recent_merges": []}),
+            AsyncMock(side_effect=RuntimeError("github down")),
         ),
         patch.object(
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
@@ -93,8 +83,7 @@ async def test_build_dashboard_multiple_sections_fail_independently():
         result = await dashboard.build_dashboard(session=MagicMock())
 
     assert "error" in result["health"]
-    assert "error" in result["alerts"]
-    assert "error" not in result["github"]
+    assert "error" in result["github"]
     assert "error" not in result["today"]
 
 

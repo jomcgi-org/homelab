@@ -1,6 +1,6 @@
 <script>
-  // Renders the real SigNoz trace for a firecracker invocation as a plain
-  // CSS div waterfall (no chart lib): this is a private tool page and the
+  // Renders the trace for a firecracker invocation as a plain CSS div
+  // waterfall (no chart lib): this is a private tool page and the
   // whole waterfall is a small amount of arithmetic, not worth an SSR
   // dependency.
   //
@@ -8,7 +8,7 @@
   //   traceId: string | null. When it changes, polling restarts cleanly.
   //
   // Polling: GET /api/demos/firecracker/trace/{traceId} every ~1000ms.
-  // SigNoz ingests spans incrementally (they arrive over several seconds),
+  // Spans arrive incrementally over several seconds,
   // so the backend's `complete` flag only means "at least one span has
   // landed", not "fully ingested": treating it as terminal was the bug that
   // made the page get stuck "loading" or show a partial waterfall. Instead
@@ -242,16 +242,6 @@
 <div class="waterfall">
   <div class="waterfall-header">
     <h3 class="waterfall-title">Trace waterfall</h3>
-    {#if traceId}
-      <a
-        class="signoz-link"
-        href={`https://private.jomcgi.dev/app/signoz/trace/${traceId}`}
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        View in SigNoz
-      </a>
-    {/if}
   </div>
 
   {#if setupMs != null}
@@ -275,8 +265,8 @@
     </p>
   {:else if spans.length === 0 && status === "done"}
     <p class="waterfall-empty">
-      No spans landed for this trace within 60s. It may not have been sampled,
-      or ingestion is lagging. Try "View in SigNoz" above.
+      No spans landed for this trace within 60s. The replacement span store is
+      not connected yet.
     </p>
   {:else if spans.length === 0}
     <div class="waterfall-waiting">
@@ -390,17 +380,6 @@
     letter-spacing: 0.12em;
     color: var(--ink);
     margin: 0;
-  }
-
-  .signoz-link {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--accent);
-    text-decoration: none;
-  }
-
-  .signoz-link:hover {
-    text-decoration: underline;
   }
 
   /* The setup metric is the headline number this trace exists to expose, so it

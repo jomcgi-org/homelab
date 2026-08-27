@@ -11,8 +11,6 @@ Routine can pull one signal at a time without a wrapping aggregate.
 - ``check_dead_letters``  : ``knowledge.atom_raw_provenance`` rows
                             indicating a raw input that exhausted all
                             retry attempts (mirrors ``GET /api/knowledge/dead-letter``).
-- ``check_firing_alerts`` : SigNoz ``/api/v1/rules`` rules whose state is
-                            ``firing``.
 - ``trigger_job``         : kick a ``scheduler.scheduled_jobs`` row to
                             run on the next tick by setting
                             ``next_run_at = now()``.
@@ -20,9 +18,6 @@ Routine can pull one signal at a time without a wrapping aggregate.
 
 from __future__ import annotations
 
-import os
-
-import httpx
 from sqlalchemy import text
 from sqlmodel import Session
 
@@ -138,51 +133,6 @@ def check_dead_letters(limit: int = 20) -> list[dict]:
             "last_failed_at": r[5],
         }
         for r in rows
-    ]
-
-
-async def check_firing_alerts(
-    transport: httpx.AsyncBaseTransport | None = None,
-) -> list[dict]:
-    """Return SigNoz alert rules whose ``state`` is ``firing``.
-
-    Queries the SigNoz ``/api/v1/rules`` endpoint, authenticating with the
-    ``SIGNOZ-API-KEY`` header, and filters the returned rules down to those
-    with ``state == "firing"``. Reads ``SIGNOZ_URL`` and (optional)
-    ``SIGNOZ_API_KEY`` from the environment.
-
-    The optional ``transport`` arg exists only for tests; production
-    callers always omit it.
-    """
-    base_url = os.environ["SIGNOZ_URL"]
-    token = os.environ.get("SIGNOZ_API_KEY", "")
-
-    headers = {"SIGNOZ-API-KEY": token} if token else {}
-    extra: dict = {}
-    if transport is not None:
-        extra["transport"] = transport
-
-    async with httpx.AsyncClient(
-        base_url=base_url,
-        headers=headers,
-        timeout=httpx.Timeout(30.0),
-        **extra,
-    ) as client:
-        resp = await client.get("/api/v1/rules")
-        resp.raise_for_status()
-        data = resp.json()
-
-    rules = data.get("data", {}).get("rules", []) or []
-    return [
-        {
-            "id": rule.get("id"),
-            "name": rule.get("alert"),
-            "state": rule.get("state"),
-            "severity": (rule.get("labels") or {}).get("severity"),
-            "labels": rule.get("labels") or {},
-        }
-        for rule in rules
-        if rule.get("state") == "firing"
     ]
 
 

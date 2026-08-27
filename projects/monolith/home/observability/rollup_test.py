@@ -36,7 +36,7 @@ async def test_prime_snapshots_swallows_errors():
     with patch(
         "home.observability.rollup.stats_rollup",
         new_callable=AsyncMock,
-        side_effect=Exception("clickhouse down"),
+        side_effect=Exception("dcgm exporter down"),
     ):
         # Must not raise: a failed prime is logged and the scheduler retries.
         await rollup.prime_snapshots()

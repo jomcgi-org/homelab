@@ -109,7 +109,7 @@
   }
 
   // Cap the poll so a stuck agent run does not spin forever. ~3 min at
-  // 1.5s; after that we hand off to SigNoz rather than blocking the page.
+  // 1.5s; after that we stop blocking the page.
   const MAX_GOOSE_POLLS = 120;
 
   function pollGoose(threadId) {
@@ -138,7 +138,7 @@
           return;
         }
         if (attempts >= MAX_GOOSE_POLLS) {
-          gooseStatus = "still running, check the trace in SigNoz";
+          gooseStatus = "still running in the background";
           resolve();
           return;
         }

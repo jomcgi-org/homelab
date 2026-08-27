@@ -1,10 +1,10 @@
 """Scheduled rollup that snapshots the public stats payload into Postgres
 (ADR 004 Layer 4).
 
-The private monolith is the only ClickHouse / Kubernetes caller: this job builds
+The private monolith is the only DCGM exporter and Kubernetes caller: this job builds
 the full payload with ``build_stats`` and upserts it into the ``observability``
 schema. The read endpoint (and the Phase 5 public service) then reads the snapshot
-row, so nothing queries ClickHouse or the K8s API at request time.
+row, so nothing scrapes DCGM or queries the K8s API at request time.
 
 Follows the monolith scheduled-handler rule: do the network I/O with ``await`` first,
 then delegate the synchronous DB write to a worker thread with its own session.
@@ -45,7 +45,7 @@ def _write_stats_snapshot(payload: dict) -> None:
 
 
 async def stats_rollup() -> None:
-    """Build the stats payload (ClickHouse + K8s) and snapshot it to Postgres."""
+    """Build the stats payload (DCGM + K8s) and snapshot it to Postgres."""
     payload = await build_stats()
     await asyncio.to_thread(_write_stats_snapshot, payload)
     logger.info("Stats snapshot refreshed")

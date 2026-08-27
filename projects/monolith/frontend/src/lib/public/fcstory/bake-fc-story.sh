@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Inoperative pending #5363, which will connect the replacement span store.
+# Keep this script for the future data refresh workflow.
 # Bake real fc-invoke trace data for the public /ember/firecracker explainer.
 #
 # Restores: triggers real Python-sandbox runs through the private demos API

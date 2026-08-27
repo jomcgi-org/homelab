@@ -7,8 +7,7 @@ Other domains must import from ``agent.api`` (enforced by
 
 from __future__ import annotations
 
-from agent.checks import check_firing_alerts  # re-exported
 from agent.config import agent_sessions_channel_id  # re-exported
 from agent.notify import notify  # re-exported
 
-__all__ = ["notify", "check_firing_alerts", "agent_sessions_channel_id"]
+__all__ = ["notify", "agent_sessions_channel_id"]

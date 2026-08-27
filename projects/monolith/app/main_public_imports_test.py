@@ -1,7 +1,7 @@
 """Import-closure guard for the public app (ADR 004 Layer 1+4).
 
 The public service must ship a pruned image that does NOT contain the private
-write-path modules or the ClickHouse client/creds. This test imports
+write-path modules or their credentials. This test imports
 ``app.main_public`` in a FRESH subprocess (so module state leaked into
 ``sys.modules`` by other tests in the same process cannot mask a regression) and
 asserts that none of the forbidden private modules ended up in the child's
@@ -62,8 +62,7 @@ FORBIDDEN_MODULES = [
     # the public closure.
     "knowledge.service",
     "knowledge.layout",
-    # ClickHouse client + writer path + private home paths.
-    "home.observability.clickhouse",
+    # Observability writer path and private home paths.
     "home.observability.slo",
     "home.observability.rollup",
     "home.observability.stats",

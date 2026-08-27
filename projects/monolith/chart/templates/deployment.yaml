@@ -72,22 +72,6 @@ spec:
                   name: {{ include "monolith.fullname" . }}-secrets
                   key: ICAL_FEED_URL
             {{- end }}
-            {{- if .Values.backend.clickhouseUrl }}
-            - name: CLICKHOUSE_URL
-              value: {{ .Values.backend.clickhouseUrl | quote }}
-            {{- end }}
-            {{- if .Values.clickhouse.onepassword.itemPath }}
-            - name: CLICKHOUSE_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-clickhouse
-                  key: USER
-            - name: CLICKHOUSE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-clickhouse
-                  key: PASSWORD
-            {{- end }}
             {{- if .Values.marine.enabled }}
             - name: AISSTREAM_API_KEY
               valueFrom:
@@ -426,19 +410,6 @@ spec:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-chat-secrets
                   key: OWNER_DISCORD_USER_ID
-            - name: SIGNOZ_URL
-              value: {{ .Values.agent.signoz.url | quote }}
-            # SIGNOZ_API_KEY authenticates the dashboard's firing-alerts fetch.
-            # The signoz-api-key Secret is cloned from the signoz namespace by
-            # Kyverno; optional so a not-yet-cloned key degrades to an
-            # unauthenticated 401 (the prior behaviour) rather than wedging pod
-            # startup on a missing secret.
-            - name: SIGNOZ_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: signoz-api-key
-                  key: api-key
-                  optional: true
             {{- end }}
             {{- if .Values.stars }}
             - name: SEAWEEDFS_S3_ENDPOINT

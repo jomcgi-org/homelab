@@ -47,7 +47,7 @@
   // "Every sandbox since" is a claim about all restores, not just run #1, so
   // the hero and static fallback use the mean snapshot_restore duration
   // across every baked run (22.46 ms over the 12 runs, rendered as 22 ms;
-  // the mockup's "23 milliseconds" was the rounded 180-run ClickHouse average).
+  // the mockup's "23 milliseconds" was the rounded 180-run trace average).
   // Derived once in metrics.js, the single source of truth for this figure
   // across the whole public site.
   const meanSnapshotRestoreMs = sandboxRestoreMs;
