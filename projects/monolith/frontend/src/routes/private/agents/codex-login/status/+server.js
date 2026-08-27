@@ -16,7 +16,6 @@ export async function GET({ url }) {
     return new Response(
       JSON.stringify({
         error: "Codex login status unavailable",
-        status: 502,
       }),
       {
         status: 502,

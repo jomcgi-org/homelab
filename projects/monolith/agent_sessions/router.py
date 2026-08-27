@@ -284,8 +284,7 @@ async def codex_login_start(grant: str = Query(default="codex-cluster")):
     try:
         data = await mcp._broker_request("POST", f"/grants/{grant}/login/start")
     except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code
-        if status == 409:
+        if exc.response.status_code == 409:
             try:
                 pending_data = exc.response.json()
             except Exception:
@@ -299,19 +298,12 @@ async def codex_login_start(grant: str = Query(default="codex-cluster")):
                 }
         return JSONResponse(
             status_code=502,
-            content={
-                "error": "Codex login broker unavailable",
-                "status": status,
-            },
+            content={"error": "Codex login broker unavailable"},
         )
-    except Exception as exc:
-        response = getattr(exc, "response", None)
+    except Exception:
         return JSONResponse(
             status_code=502,
-            content={
-                "error": "Codex login broker unavailable",
-                "status": getattr(response, "status_code", None),
-            },
+            content={"error": "Codex login broker unavailable"},
         )
     return {
         "verification_url": data.get("verification_url"),
