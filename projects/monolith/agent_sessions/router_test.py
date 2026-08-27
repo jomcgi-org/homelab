@@ -310,13 +310,12 @@ def test_codex_login_start_rejects_unusable_pending_body(
     response = client.post("/api/agents/codex-login/start")
 
     assert response.status_code == 502
-    assert response.json() == {
-        "error": "Codex login broker unavailable",
-        "status": 409,
-    }
+    assert response.json() == {"error": "Codex login broker unavailable"}
 
 
-def test_codex_login_start_carries_non_conflict_upstream_status(client, monkeypatch):
+def test_codex_login_start_returns_502_for_non_conflict_upstream_error(
+    client, monkeypatch
+):
     async def broker_request(*_args):
         response = httpx.Response(
             503,
@@ -331,10 +330,7 @@ def test_codex_login_start_carries_non_conflict_upstream_status(client, monkeypa
     response = client.post("/api/agents/codex-login/start")
 
     assert response.status_code == 502
-    assert response.json() == {
-        "error": "Codex login broker unavailable",
-        "status": 503,
-    }
+    assert response.json() == {"error": "Codex login broker unavailable"}
 
 
 @pytest.mark.parametrize(
@@ -348,7 +344,7 @@ def test_codex_login_start_carries_non_conflict_upstream_status(client, monkeypa
         (
             "post",
             "/api/agents/codex-login/start",
-            {"error": "Codex login broker unavailable", "status": None},
+            {"error": "Codex login broker unavailable"},
         ),
     ],
 )

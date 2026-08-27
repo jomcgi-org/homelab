@@ -25,6 +25,12 @@
   );
   let copiedTimer;
 
+  $effect(() => {
+    initialUserCode;
+    requestedUserCode = null;
+    requestedVerificationUrl = null;
+  });
+
   onDestroy(() => clearTimeout(copiedTimer));
 
   async function authorize() {
@@ -77,15 +83,16 @@
 
 {#if userCode}
   <div class="codex-login-control">
+    <code id="codex-device-code" tabindex="0">{userCode}</code>
     {#if verificationUrl}
       <a
         class="primary-action"
         href={verificationUrl}
         target="_blank"
+        aria-describedby="codex-device-code"
         rel="noopener noreferrer">{openLinkLabel}</a
       >
     {/if}
-    <code aria-label={codeLabel} tabindex="0">{userCode}</code>
     <button
       class="secondary-action"
       type="button"
@@ -124,10 +131,14 @@
     padding: 0 9px;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-md);
-    color: var(--panel-bg);
-    background: var(--text);
+    color: var(--ink-text);
+    background: var(--ink);
     font: 600 12px var(--font-mono);
     text-decoration: none;
+  }
+  .primary-action:focus-visible {
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
   }
   /* Keep the filled treatment on hover. Swapping to --hover here flips a
      solid dark button to a pale chip mid-gesture, which reads as the control
@@ -137,20 +148,25 @@
   }
   .secondary-action {
     min-height: 28px;
-    padding: 0 5px;
-    border: 0;
-    color: var(--muted);
+    padding: 0 7px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    color: var(--text);
     background: var(--panel-bg);
     font: 500 11px var(--font-mono);
-    text-decoration: underline;
   }
   .secondary-action:hover:not(:disabled) {
     color: var(--text);
     background: var(--hover);
   }
-  button:disabled {
+  button:not(.primary-action):disabled {
     color: var(--muted);
     cursor: wait;
+  }
+  button.primary-action:disabled {
+    color: var(--ink-text);
+    cursor: wait;
+    opacity: 0.62;
   }
   code {
     color: var(--attn-text);

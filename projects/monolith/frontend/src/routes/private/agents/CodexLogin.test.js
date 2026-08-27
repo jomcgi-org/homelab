@@ -1,37 +1,43 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { createClassComponent } from "svelte/legacy";
 import CodexLogin from "./CodexLogin.svelte";
 import { RUN_LEXICON as P } from "./run-lexicon.js";
 
 const mounted = [];
 
-async function render(onError = vi.fn(), props = {}) {
+async function render(onError = vi.fn(), props = {}, mutable = false) {
   const target = document.createElement("div");
   document.body.append(target);
-  const component = mount(CodexLogin, {
-    target,
-    props: {
-      authorizeLabel: P.labels.authorizeCodex,
-      authorizingLabel: P.labels.authorizingCodex,
-      copiedLabel: P.labels.copied,
-      unavailableLabel: P.labels.codexLoginUnavailable,
-      invalidResponseLabel: P.labels.codexLoginInvalidResponse,
-      codeLabel: P.labels.codexLoginCode,
-      openLinkLabel: P.labels.codexLoginOpenLink,
-      requestNewCodeLabel: P.labels.codexLoginRequestNewCode,
-      onError,
-      ...props,
-    },
-  });
-  mounted.push({ component, target });
+  const componentProps = {
+    authorizeLabel: P.labels.authorizeCodex,
+    authorizingLabel: P.labels.authorizingCodex,
+    copiedLabel: P.labels.copied,
+    unavailableLabel: P.labels.codexLoginUnavailable,
+    invalidResponseLabel: P.labels.codexLoginInvalidResponse,
+    codeLabel: P.labels.codexLoginCode,
+    openLinkLabel: P.labels.codexLoginOpenLink,
+    requestNewCodeLabel: P.labels.codexLoginRequestNewCode,
+    onError,
+    ...props,
+  };
+  const component = mutable
+    ? createClassComponent({
+        component: CodexLogin,
+        target,
+        props: componentProps,
+      })
+    : mount(CodexLogin, { target, props: componentProps });
+  mounted.push({ component, target, mutable });
   await tick();
-  return { target, onError };
+  return { component, target, onError };
 }
 
 afterEach(async () => {
-  for (const { component, target } of mounted.splice(0)) {
-    await unmount(component);
+  for (const { component, target, mutable } of mounted.splice(0)) {
+    if (mutable) component.$destroy();
+    else await unmount(component);
     target.remove();
   }
   vi.restoreAllMocks();
@@ -63,6 +69,11 @@ describe("Codex authorization", () => {
     expect(target.querySelector("code")?.textContent).toBe("READY-123");
     expect(button?.textContent.trim()).toBe(P.labels.codexLoginRequestNewCode);
     expect(target.querySelectorAll("a, button")).toHaveLength(2);
+    expect(target.querySelector("code")?.nextElementSibling).toBe(link);
+    expect(link?.getAttribute("aria-describedby")).toBe("codex-device-code");
+    expect(target.querySelector("code")?.hasAttribute("aria-label")).toBe(
+      false,
+    );
   });
 
   test("posts once, copies the code, and opens the verification URL", async () => {
@@ -197,6 +208,74 @@ describe("Codex authorization", () => {
     expect(onError).toHaveBeenLastCalledWith(null);
     expect(open).not.toHaveBeenCalled();
     expect(target.querySelector("code")?.textContent).toBe("PENDING-123");
+  });
+
+  test("opens a new pending flow when no prior code exists", async () => {
+    vi.stubGlobal("navigator", {});
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            verification_url: "https://example.test/device",
+            user_code: "NEW-CODE",
+            expires_in: 600,
+            pending: true,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const { target } = await render();
+
+    target.querySelector("button.primary-action").click();
+
+    await vi.waitFor(() =>
+      expect(target.querySelector("code")?.textContent).toBe("NEW-CODE"),
+    );
+    expect(open).toHaveBeenCalledWith(
+      "https://example.test/device",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  });
+
+  test("replaces stale code when initialUserCode prop changes", async () => {
+    vi.stubGlobal("navigator", {});
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            verification_url: "https://example.test/requested",
+            user_code: "REQUESTED-X",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.spyOn(window, "open").mockImplementation(() => null);
+    const { component, target } = await render(
+      vi.fn(),
+      {
+        initialUserCode: "INITIAL-X",
+        initialVerificationUrl: "https://example.test/initial",
+      },
+      true,
+    );
+
+    target.querySelector("button.secondary-action").click();
+    await vi.waitFor(() =>
+      expect(target.querySelector("code")?.textContent).toBe("REQUESTED-X"),
+    );
+
+    component.$set({
+      initialUserCode: "INITIAL-Y",
+      initialVerificationUrl: "https://example.test/next",
+    });
+    await tick();
+
+    expect(target.querySelector("code")?.textContent).toBe("INITIAL-Y");
+    expect(target.querySelector("a")?.getAttribute("href")).toBe(
+      "https://example.test/next",
+    );
   });
 
   test("renders the verification URL as a link when the popup is blocked", async () => {

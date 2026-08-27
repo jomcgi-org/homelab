@@ -17,7 +17,6 @@ export async function POST({ url }) {
     return new Response(
       JSON.stringify({
         error: "Codex login start unavailable",
-        status: 502,
       }),
       {
         status: 502,
