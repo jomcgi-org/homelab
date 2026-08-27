@@ -58,6 +58,9 @@ type fakeDriver struct {
 	// an archive drive (it hydrates over vsock), so a test asserts the build guest
 	// claimed with only its rootfs (no extra drive fields exist on ClaimSpec now).
 	lastClaim substrate.ClaimSpec
+	// vsockDir relocates fake guest sockets under a test-owned temporary
+	// directory. Empty preserves the historical /tmp path.
+	vsockDir string
 
 	// Session-driver seam (R2). sessionBundles is the in-memory stand-in for the
 	// on-disk sessions/ dir: a Bank writes a ref -> marker entry (the "state" the
@@ -123,7 +126,12 @@ func (f *fakeDriver) RemoveBundle(_ string) error {
 	return nil
 }
 
-func (f *fakeDriver) VsockUDSPath(threadID string) string { return "/tmp/" + threadID + ".sock" }
+func (f *fakeDriver) VsockUDSPath(threadID string) string {
+	if f.vsockDir != "" {
+		return filepath.Join(f.vsockDir, threadID+".sock")
+	}
+	return "/tmp/" + threadID + ".sock"
+}
 
 func (f *fakeDriver) Stats(_ substrate.Handle) (substrate.GuestStats, error) {
 	f.mu.Lock()
@@ -247,10 +255,12 @@ func (f *fakeDriver) counts() (claims, releases, removeBundles, statsCalls int) 
 // fakeTransport is an in-memory transport. RoundTrip echoes "ok:"+body unless
 // roundTripErr is set.
 type fakeTransport struct {
-	mu           sync.Mutex
-	roundTrips   int
-	waitReadyErr error
-	roundTripErr error
+	mu                sync.Mutex
+	roundTrips        int
+	waitReadyErr      error
+	waitReadyStarted  chan string
+	waitReadyContinue <-chan struct{}
+	roundTripErr      error
 	// hydrate capture: hydrates counts the calls, hydrateBytes records the last
 	// archive delivered so a zip test can assert the exact bytes were hydrated, and
 	// hydrateErr injects a hydrate failure (a bad archive) to fail the build.
@@ -273,8 +283,27 @@ type fakeTransport struct {
 	blockRoundTrip chan struct{}
 }
 
-func (f *fakeTransport) WaitReady(_ context.Context, _, _ string) error {
-	return f.waitReadyErr // nosemgrep: no-bare-error-return
+func (f *fakeTransport) WaitReady(ctx context.Context, udsPath, _ string) error {
+	f.mu.Lock()
+	started := f.waitReadyStarted
+	continueCh := f.waitReadyContinue
+	waitErr := f.waitReadyErr
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- udsPath:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if continueCh != nil {
+		select {
+		case <-continueCh:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return waitErr // nosemgrep: no-bare-error-return
 }
 func (f *fakeTransport) Prime(_ context.Context, _ string) error { return nil }
 

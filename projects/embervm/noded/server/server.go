@@ -817,7 +817,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		MemMib:      int(res.GetMemMib()),
 	})
 
-	sizeBytes, err := s.runBuild(buildCtx, bd, baseKey, readyPath, archive)
+	sizeBytes, err := s.runBuild(buildCtx, bd, baseKey, workload, readyPath, archive)
 	if err != nil {
 		s.bases.failBuild(baseKey, err.Error())
 		s.signalChange()
@@ -956,13 +956,15 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 // Sequence: Claim (cold boot) -> Prime (drain the vsock path via /shim/healthz)
 // -> Hydrate (POST the archive; zip lane only) -> WaitReady (/shim/ready flips 200
 // only after the shim unpacks + imports the handler) -> SnapshotBase.
-func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, readyPath string, archive []byte) (int64, error) {
+func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload, readyPath string, archive []byte) (int64, error) {
 	spec := substrate.ClaimSpec{Arch: s.cfg.Arch, ThreadID: newID("build")}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
 		return 0, fmt.Errorf("cold boot: %w", err)
 	}
+	egressCancel := func() {}
 	defer func() {
+		egressCancel()
 		if rerr := bd.Release(context.Background(), h); rerr != nil {
 			s.logger.Warn("noded: release build guest", "base", baseKey, "err", rerr)
 		}
@@ -972,6 +974,7 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, readyPat
 	}()
 
 	uds := bd.VsockUDSPath(h.ThreadID)
+	egressCancel = s.startEgress(uds, h.ID, workload)
 
 	// Zip lane: prime the vsock path open, then hydrate the shim with the archive
 	// BEFORE the readiness wait. The shim serves /shim/healthz immediately but stays
