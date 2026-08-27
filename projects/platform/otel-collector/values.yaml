@@ -10,20 +10,57 @@ onepassword:
   enabled: false
   itemPath: ""
   secretName: honeycomb-ingest
-  # Key within the 1Password item holding the Honeycomb ingest key.
-  apiKeyKey: api-key
+  # Field within the 1Password item holding the Honeycomb ingest key SECRET.
+  # Honeycomb ingest keys have two parts: a key id, which is a public
+  # identifier used to find and revoke the key, and a key secret, which is the
+  # value the x-honeycomb-team header carries. Only the secret authenticates.
+  apiKeySecretKey: honeycomb-key-secret
+  # The key id is not a credential. It is surfaced as an env var purely so the
+  # running pod can say which key it is using when a 401 needs diagnosing.
+  apiKeyIdKey: honeycomb-key-id
 
 honeycomb:
   endpoint: "api.honeycomb.io:443"
 
-# Tail sampling keeps everything interesting and a small slice of the rest.
+# Services permitted to send traces, matched on resource attribute
+# service.name.
+#
+# This is the opt-in list, and it is enforced rather than advertised. While it
+# is empty the chart renders NO otlp receiver and NO traces pipeline at all, so
+# the collector does not listen on 4317 or 4318 and no service can send traces
+# even if it is pointed here. That is deliberate: quota is the binding
+# constraint, so the default has to be that nothing gets through.
+#
+# Adding a service is a one-line edit that shows up in a PR diff.
+allowedServices: []
+
+# Tail sampling. Only rendered when allowedServices is non-empty.
 sampling:
   decisionWaitSeconds: 10
   numTraces: 50000
   latencyThresholdMs: 2000
   probabilisticPercentage: 5
+  # Hard ceiling on what leaves the cluster, enforced by a composite policy.
+  #
+  # A rate_limiting policy listed alongside the others would NOT cap anything:
+  # tail_sampling ORs its policies, so a trace is kept when ANY policy says
+  # keep, and a peer rate_limiting policy only ever ADMITS more traces. The
+  # composite policy is the primitive that actually bounds total volume, by
+  # allocating a spans-per-second budget across its sub-policies in priority
+  # order and dropping what does not fit.
+  maxTotalSpansPerSecond: 200
+  # Budget split across the sub-policies, in the same order. Errors are the
+  # most valuable per span, so they get first call on the budget.
+  rateAllocation:
+    errorsPercent: 50
+    slowPercent: 30
+    baselinePercent: 20
 
-# URLs the httpcheck receiver probes. Empty by default.
+# URLs the http_check receiver probes. Empty by default.
+#
+# These probes are the only signal that leaves the cluster while
+# allowedServices is empty, and they are what replaces the SigNoz synthetic
+# monitors.
 httpcheck:
   enabled: false
   intervalSeconds: 60

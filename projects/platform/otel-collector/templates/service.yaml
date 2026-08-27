@@ -9,6 +9,10 @@ metadata:
 spec:
   type: ClusterIP
   ports:
+    {{- if .Values.allowedServices }}
+    # Exposed only when at least one service is allowed to send traces. With an
+    # empty allowlist the collector has no otlp receiver, so advertising these
+    # would point at a port nothing listens on.
     - name: otlp-grpc
       port: 4317
       targetPort: otlp-grpc
@@ -17,6 +21,7 @@ spec:
       port: 4318
       targetPort: otlp-http
       protocol: TCP
+    {{- end }}
     - name: health
       port: 13133
       targetPort: health
