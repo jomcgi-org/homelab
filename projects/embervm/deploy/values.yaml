@@ -371,6 +371,32 @@ scratchPostgres:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
 
+# Apache Iggy, the R4 stateful message-streaming consumer (ADR embervm/039).
+# Shipped wired but INERT: turning it on is a two-line flip in this block, and
+# both lines are needed.
+#
+#   1. enabled: true            renders the Workload CR and the OnePasswordItem.
+#   2. drop guestImage.repository: ""  lets the base BUILDER render.
+#
+# The empty repository is here because the base builder is gated separately from
+# the Workload CR, so leaving the chart default set would have every production
+# node mkfs and hold a multi-GB base rootfs for a workload nothing is using yet.
+# scratch-postgres keeps its repository set only because demo-postgres shares
+# that base; nothing shares this one.
+#
+# BEFORE flipping either line, create the 1Password item below with a field
+# named exactly IGGY_ROOT_PASSWORD. Iggy does not fail without a root password
+# and does not fall back to a fixed default: it generates a random one and
+# prints it to stdout exactly once, on a first boot that happens once per volume
+# ever. ember-iggy-init therefore refuses that boot outright, so a missing item
+# is a wedged wake rather than a silently unusable broker.
+iggy:
+  enabled: false
+  guestImage:
+    repository: ""
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/iggy"
+
 # Demo-postgres (private demos page sleep/wake exhibit): a second stateful
 # Postgres on 5401 with a 1s idle window, so the demo can show the VM banking
 # itself moments after a query and relighting on the next connection. Reuses the

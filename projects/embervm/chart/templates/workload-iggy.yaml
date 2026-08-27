@@ -1,0 +1,105 @@
+{{- if .Values.iggy.enabled }}
+# The R4 named stateful consumer for message streaming (ADR embervm/039): a
+# scale-to-zero Apache Iggy. One long-lived microVM owns one writable volume
+# (message segments, stream/topic metadata, and the state log on the volume;
+# warmth in the snapshot); it banks when idle and wakes on the next inbound TCP
+# connection. The guest image ref is the SAME Bazel-pinned value the noded
+# rootfs-builder bakes and the control-plane-pushed image identity
+# (EMBERVM_NODE_IMAGE_IDENTITY) carries (iggy.guestImage), so BaseBuilder's
+# BuildBase(ref) resolves on the node.
+#
+# Unlike scratch-postgres there is no initdb-equivalent step: iggy-server writes
+# its own system info, root user, and empty stream set on a first boot and loads
+# them on every later cold boot. What the first boot DOES need is the root
+# password from the secretRef -> mmds-lite boot-args seam; without it the server
+# would autogenerate one and print it once, so ember-iggy-init refuses the boot
+# instead (see runtimes/iggy/guest-init/cmd/iggy.go requireRootPassword).
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: iggy
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # Apply after the CRD (wave 0) establishes, like the other workloads.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  class: stateful
+  source:
+    image:
+      # Must match the top-level iggy.guestImage exactly (the pushed image
+      # identity + rootfs-builder GUEST_IMAGE use the same value).
+      ref: "{{ .Values.iggy.guestImage.repository }}@{{ .Values.iggy.guestImage.digest }}"
+      # The vsock health/ready contract used at BASE BUILD time (the warm-base
+      # cold boot health-gates over vsock at readyPath; the guest-init answers
+      # /shim/ready there). The RUNTIME health is a TCP connect to stateful.port
+      # (8090) over the tap, a separate probe.
+      port: 1027
+      readyPath: /shim/ready
+      # Baked guest env; part of the base signature (base_builder signature/1
+      # includes sorted init_env), so the shared hypervisor epoch re-keys this
+      # base whenever the vendored Firecracker binary moves: a new hypervisor
+      # must never try to load a previous version's snapshot (#4389).
+      initEnv:
+        EMBER_HYPERVISOR_EPOCH: {{ .Values.hypervisorEpoch | quote }}
+  resources:
+    # 512Mi sizes the warm peak. An idle iggy-server measures ~47 MiB RSS, but
+    # the peak is set by its per-shard buffers (one shard per vCPU) and the
+    # message pool, both of which grow with traffic; the fc-base sizing coupling
+    # sizes memMib to the warm peak (D-R3.11.1 / the fc-base-build-sizing-coupling
+    # note), so this is deliberately well above idle.
+    vcpus: 1
+    # MEMORY COUPLING: iggy-server derives its shard count from the CPU topology
+    # it sees, so vcpus above is also the shard count, and raising vcpus
+    # multiplies the per-shard buffers this number has to cover. Move the two
+    # together.
+    memMib: 512
+  # No concurrency block: the stateful class is a singleton (exactly one live
+  # VM), so spec.concurrency is forbidden by the watcher.
+  stateful:
+    # The port the Iggy binary protocol listens on inside the VM (upstream's own
+    # default). Health is a TCP connect here. HTTP (3000) and QUIC (8080) are
+    # disabled in the guest: the stateful class exposes exactly one port, so
+    # nothing should listen that the Envoy listener cannot route to.
+    port: 8090
+    # The node Envoy TCP listener port this workload is exposed on cluster-
+    # internally (a client connects to embervm-serving:<listenPort>). Must fall
+    # in the chart's stateful range (5400-5409) and be unique across stateful
+    # workloads. From values so a range change is one knob.
+    listenPort: {{ .Values.iggy.listenPort }}
+    # Sparse cap of the raw volume file, in GiB. Immutable in v1.
+    volumeSizeGiB: {{ .Values.iggy.volumeSizeGiB }}
+    # Guest path the volume is mounted at (guest-init mkfs+mounts a blank device;
+    # the server's data root lives at <mount>/iggy).
+    volumeMountPath: /data
+    # Bank after 2 minutes idle; a live connection is never severed. Matches
+    # scratch-postgres: short enough that the bank COMPLETES inside a consumer's
+    # quiet window before its next reconnect. Note that Iggy's own message saver
+    # runs every 30s but only writes when there are buffered messages, so an
+    # idle broker does stay idle.
+    idleBankSeconds: 120
+    # Version-convergence bound (1 week): the instance rides its birth image
+    # until this expires; convergence is destroy-and-cold-boot against the volume.
+    maxLifetimeSeconds: 604800
+    # A banked bundle untouched 30 days is GC'd off node disk; the VOLUME is never
+    # GC'd (data outlives the bundle).
+    bankedTtlSeconds: 2592000
+    # Wake deadline. Generous, but Iggy's cold boot is cheaper than Postgres's
+    # (no initdb, no WAL replay): it reads its state log and opens segments.
+    wakeTimeoutSeconds: 60
+    # Opt in to the two-phase interruptible bank (ADR embervm/008). Off by default
+    # until the mode is vetted under real tenant traffic (the atomic bank is
+    # unchanged when false); plumbed from values so enabling it is a one-line flip
+    # once proven on demo-postgres.
+    interruptibleBank: {{ .Values.iggy.interruptibleBank }}
+    # The K8s Secret in THIS namespace whose keys become the guest's first-boot
+    # env (IGGY_ROOT_PASSWORD). Created by the OnePasswordItem alongside this CR.
+    # The control plane reads it into StartStateful.mmds_env on a FRESH/COLD wake
+    # only, never on RELIGHT.
+    secretRef: {{ include "embervm.fullname" . }}-iggy
+    # Node-local activator (ADR embervm/018 Phase 2): the brick relights this
+    # scaled-to-zero workload on the first connection so it survives a
+    # control-plane Recreate. meteringFailOpen names the wake-unmetered-during-gap
+    # policy for this workload.
+    nodeLocalWake: {{ .Values.iggy.nodeLocalWake }}
+    meteringFailOpen: {{ .Values.iggy.meteringFailOpen }}
+{{- end }}
