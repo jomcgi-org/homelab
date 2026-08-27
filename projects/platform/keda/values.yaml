@@ -33,8 +33,16 @@ keda:
       port: 8080
 
   # Pre-populate the Kyverno OTEL annotation to match the cluster mutation
-  # (prevents ArgoCD drift) and add prometheus.io/scrape annotations so SigNoz
-  # autodiscovers the metrics endpoints (port 8080, path /metrics).
+  # (prevents ArgoCD drift).
+  #
+  # The prometheus.io/* scrape annotations are deliberately NOT set here.
+  # When prometheus.metricServer.enabled is true, the upstream chart already
+  # renders its own prometheus.io/scrape, port and path annotations on the
+  # metrics-apiserver Deployment; adding the same keys under
+  # podAnnotations.metricsAdapter produced a rendered manifest with duplicate
+  # YAML keys in one annotations map, which the API server rejects
+  # (caught by the chart_admissibility_test, #4831). SigNoz autodiscovers the
+  # metrics endpoints from upstream's own annotations.
   podAnnotations:
     keda:
       otel.injected-by: kyverno/inject-otel-env-vars
@@ -43,9 +51,6 @@ keda:
       prometheus.io/path: "/metrics"
     metricsAdapter:
       otel.injected-by: kyverno/inject-otel-env-vars
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "8080"
-      prometheus.io/path: "/metrics"
     webhooks:
       otel.injected-by: kyverno/inject-otel-env-vars
       prometheus.io/scrape: "true"

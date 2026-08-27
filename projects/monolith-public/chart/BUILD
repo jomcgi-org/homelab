@@ -67,5 +67,10 @@ helm_chart(
     },
     lint = False,
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    # //overlays packages diff and promote this chart; the monolith-public
+    # deploy package renders it for the chart_admissibility_test (#4831).
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/monolith-public:__subpackages__",
+    ],
 )

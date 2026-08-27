@@ -38,6 +38,81 @@ sh_test(
     data = [":push.sh.tpl"],
 )
 
+# Every chart's rendered manifests, validated against Kubernetes API schemas
+# by admissibility-test.sh (#4831). Platform charts render via argocd_app;
+# first-party applications render via helm_admissibility_render. A chart is
+# added here by adding it to one of those two, never by hand-editing this
+# list. Library charts (cf-ingress-library, signoz-dashboards-library,
+# homelab-library) render no objects and are excluded; cloudnative-pg and
+# atlas-operator pull upstream charts by repoURL and have no vendored chart
+# to validate.
+MANIFEST_SETS = [
+    # First-party applications.
+    "//projects/embervm/deploy:manifests/all.yaml",
+    "//projects/embervm/dev/deploy:manifests/all.yaml",
+    "//projects/monolith/deploy:manifests/all.yaml",
+    "//projects/monolith/dev/deploy:manifests/all.yaml",
+    "//projects/monolith-public/deploy:manifests/all.yaml",
+    "//projects/inference/deploy:manifests/all.yaml",
+    "//projects/mcp/context-forge-gateway/deploy:manifests/all.yaml",
+    "//projects/operators/oci-model-cache/deploy:manifests/all.yaml",
+    # Platform charts.
+    "//projects/platform/argo-workflows:manifests/all.yaml",
+    "//projects/platform/argocd:manifests/all.yaml",
+    "//projects/platform/authentik:manifests/all.yaml",
+    "//projects/platform/cert-manager:manifests/all.yaml",
+    "//projects/platform/cilium:manifests/all.yaml",
+    "//projects/platform/coredns:manifests/all.yaml",
+    "//projects/platform/kargo:manifests/all.yaml",
+    "//projects/platform/keda:manifests/all.yaml",
+    "//projects/platform/kyverno:manifests/all.yaml",
+    "//projects/platform/longhorn:manifests/all.yaml",
+    "//projects/platform/nvidia-gpu-operator:manifests/all.yaml",
+    "//projects/platform/opentelemetry-operator:manifests/all.yaml",
+    "//projects/platform/priority-classes:manifests/all.yaml",
+    "//projects/platform/renovate:manifests/all.yaml",
+    "//projects/platform/seaweedfs:manifests/all.yaml",
+    "//projects/platform/seaweedfs-node4:manifests/all.yaml",
+    "//projects/platform/seaweedfs-node4b:manifests/all.yaml",
+    "//projects/platform/signoz:manifests/all.yaml",
+    "//projects/platform/signoz-addons/alerts:manifests/all.yaml",
+    "//projects/platform/signoz-addons/dashboard-sidecar:manifests/all.yaml",
+]
+
+# Vendored Kubernetes JSON schemas for the admissibility gate (#4831): the
+# standalone-strict set for the cluster's 1.35 line, pruned to the built-in
+# kinds the rendered manifests actually use. See k8s-schemas/README.md for
+# provenance and the pinned upstream commit.
+filegroup(
+    name = "k8s_schemas",
+    srcs = glob(["k8s-schemas/**"]),
+)
+
+sh_test(
+    name = "chart_admissibility_test",
+    srcs = ["admissibility-test.sh"],
+    # Fully hermetic: schemas come from //bazel/helm:k8s_schemas, kubeconform
+    # runs with a local -schema-location, no network calls happen at test time.
+    args = [
+        "$(rootpath @multitool//tools/helm)",
+        "$(rootpath @multitool//tools/kubeconform)",
+        "$(rootpath //bazel/helm:testdata/bad-secretkeyref/Chart.yaml)",
+        # Anchor inside the vendored schema tree; the script derives the root.
+        "$(rootpath //bazel/helm:k8s-schemas/v1.35.8-standalone-strict/configmap-v1.json)",
+    ] + ["$(rootpath {})".format(m) for m in MANIFEST_SETS],
+    data = [
+        "@multitool//tools/helm",
+        "@multitool//tools/kubeconform",
+        "//bazel/helm:testdata/bad-secretkeyref/Chart.yaml",
+        ":k8s_schemas",
+        # The anchor file is named directly by a $(rootpath) above, and
+        # $(rootpath) resolves only against DECLARED prerequisites: the
+        # filegroup carrying it is not enough.
+        "k8s-schemas/v1.35.8-standalone-strict/configmap-v1.json",
+    ] + glob(["testdata/bad-secretkeyref/templates/**"]) + MANIFEST_SETS,
+    timeout = "long",
+)
+
 sh_binary(
     name = "validate_manifests",
     srcs = ["ci-validate-manifests.sh"],
@@ -61,6 +136,7 @@ sh_binary(
 bzl_library(
     name = "defs",
     srcs = [
+        "admissibility.bzl",  # keep
         "app.bzl",  # keep
         "chart.bzl",  # keep
         "defs.bzl",  # keep

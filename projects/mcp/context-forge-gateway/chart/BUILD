@@ -11,7 +11,12 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 helm_chart(
     name = "chart",
     lint = False,
-    visibility = ["//overlays:__subpackages__"],
+    # //overlays packages diff and promote this chart; the mcp deploy package
+    # renders it for the chart_admissibility_test (#4831).
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/mcp:__subpackages__",
+    ],
 )
 
 # The team-mapping reconciler is shipped inside the chart (files/) and mounted

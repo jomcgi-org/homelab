@@ -6,5 +6,10 @@ helm_chart(
         "controllerManager.image": "//projects/operators/oci-model-cache:image.info",
     },
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    # //overlays packages diff and promote this chart; the oci-model-cache
+    # deploy package renders it for the chart_admissibility_test (#4831).
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/operators:__subpackages__",
+    ],
 )
