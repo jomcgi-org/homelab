@@ -27,19 +27,29 @@ spec:
             - --config=/conf/collector.yaml
           {{- if .Values.onepassword.enabled }}
           env:
+            # Only the key secret authenticates. The key id is a public
+            # identifier, carried here so a 401 can be traced to a specific
+            # key without opening 1Password.
             - name: HONEYCOMB_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.onepassword.secretName }}
-                  key: {{ .Values.onepassword.apiKeyKey }}
+                  key: {{ .Values.onepassword.apiKeySecretKey }}
+            - name: HONEYCOMB_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.onepassword.secretName }}
+                  key: {{ .Values.onepassword.apiKeyIdKey }}
           {{- end }}
           ports:
+            {{- if .Values.allowedServices }}
             - name: otlp-grpc
               containerPort: 4317
               protocol: TCP
             - name: otlp-http
               containerPort: 4318
               protocol: TCP
+            {{- end }}
             - name: health
               containerPort: 13133
               protocol: TCP

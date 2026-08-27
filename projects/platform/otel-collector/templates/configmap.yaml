@@ -12,12 +12,17 @@ data:
         endpoint: 0.0.0.0:13133
 
     receivers:
+      {{- if .Values.allowedServices }}
+      # Rendered only when at least one service is allowed to send traces.
+      # With an empty allowlist the collector does not listen on 4317 or 4318
+      # at all, so an unlisted service cannot send even by accident.
       otlp:
         protocols:
           grpc:
             endpoint: 0.0.0.0:4317
           http:
             endpoint: 0.0.0.0:4318
+      {{- end }}
       {{- if .Values.httpcheck.enabled }}
       # Component type is http_check, not httpcheck. The receiver was renamed to
       # match snake_case; httpcheck still resolves but only as a deprecated
@@ -32,32 +37,65 @@ data:
       {{- end }}
 
     processors:
+      # memory_limiter runs FIRST in every pipeline. Without one, a collector
+      # OOMs on a recovery drain rather than at steady peak, and presents as
+      # repeated restarts with no export errors to explain them.
       memory_limiter:
         check_interval: 1s
         limit_percentage: 80
         spike_limit_percentage: 20
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+      {{- if .Values.allowedServices }}
+      # Enforces the opt-in list. The filter processor DROPS spans matching a
+      # condition, so these conditions describe what is not allowed: a span
+      # with no service.name, or one whose service.name is not in the list.
+      filter/allowlist:
+        error_mode: ignore
+        traces:
+          span:
+            - 'resource.attributes["service.name"] == nil'
+            - '{{ range $i, $s := .Values.allowedServices }}{{ if $i }} and {{ end }}resource.attributes["service.name"] != {{ $s | quote }}{{ end }}'
       tail_sampling:
         decision_wait: {{ .Values.sampling.decisionWaitSeconds }}s
         num_traces: {{ .Values.sampling.numTraces }}
         policies:
-          - name: errors
-            type: status_code
-            status_code:
-              status_codes: [ERROR]
-          - name: slow-traces
-            type: latency
-            latency:
-              threshold_ms: {{ .Values.sampling.latencyThresholdMs }}
-          - name: baseline
-            type: probabilistic
-            probabilistic:
-              sampling_percentage: {{ .Values.sampling.probabilisticPercentage }}
-      batch:
-        timeout: 1s
-        send_batch_size: 1024
+          # One composite policy, not three peer policies. tail_sampling ORs
+          # its policies, so peers can only ever admit more traces; composite
+          # is what imposes a ceiling. It walks policy_order and spends the
+          # spans-per-second budget in that order, dropping the overflow.
+          - name: capped
+            type: composite
+            composite:
+              max_total_spans_per_second: {{ .Values.sampling.maxTotalSpansPerSecond }}
+              policy_order: [errors, slow-traces, baseline]
+              composite_sub_policy:
+                - name: errors
+                  type: status_code
+                  status_code:
+                    status_codes: [ERROR]
+                - name: slow-traces
+                  type: latency
+                  latency:
+                    threshold_ms: {{ .Values.sampling.latencyThresholdMs }}
+                - name: baseline
+                  type: probabilistic
+                  probabilistic:
+                    sampling_percentage: {{ .Values.sampling.probabilisticPercentage }}
+              rate_allocation:
+                - policy: errors
+                  percent: {{ .Values.sampling.rateAllocation.errorsPercent }}
+                - policy: slow-traces
+                  percent: {{ .Values.sampling.rateAllocation.slowPercent }}
+                - policy: baseline
+                  percent: {{ .Values.sampling.rateAllocation.baselinePercent }}
+      {{- end }}
 
     exporters:
-      # The otlp exporter requires a bare host:port endpoint. A URL scheme breaks it.
+      # The otlp exporter requires a bare host:port endpoint. A URL scheme
+      # breaks it, and otlphttp takes the opposite syntax, so the two are not
+      # interchangeable. Getting this wrong drops telemetry silently.
       otlp/honeycomb:
         endpoint: {{ .Values.honeycomb.endpoint | quote }}
         headers:
@@ -66,11 +104,18 @@ data:
     service:
       extensions: [health_check]
       pipelines:
+        {{- if .Values.allowedServices }}
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, tail_sampling, batch]
+          processors: [memory_limiter, filter/allowlist, tail_sampling, batch]
           exporters: [otlp/honeycomb]
+        {{- end }}
+        {{- if .Values.httpcheck.enabled }}
+        # http_check only. The otlp receiver is deliberately absent here: an
+        # opted-in service sends traces, not arbitrary metrics, and unbounded
+        # metric events are the easiest way to burn the quota by accident.
         metrics:
-          receivers: [otlp{{- if .Values.httpcheck.enabled }}, http_check{{- end }}]
+          receivers: [http_check]
           processors: [memory_limiter, batch]
           exporters: [otlp/honeycomb]
+        {{- end }}
