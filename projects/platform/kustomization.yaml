@@ -17,6 +17,7 @@ resources:
   - ./longhorn
   - ./nvidia-gpu-operator
   - ./opentelemetry-operator
+  - ./otel-collector
   - ./priority-classes # Cluster-scoped PriorityClasses (ADR platform/010)
   - ./renovate # Self-hosted dependency updates on Argo Workflows
   - ./seaweedfs

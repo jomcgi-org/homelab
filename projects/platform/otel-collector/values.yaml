@@ -1,0 +1,37 @@
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.159.0"
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+onepassword:
+  # Disabled by default so the chart renders inert outside prod.
+  enabled: false
+  itemPath: ""
+  secretName: honeycomb-ingest
+  # Key within the 1Password item holding the Honeycomb ingest key.
+  apiKeyKey: api-key
+
+honeycomb:
+  endpoint: "api.honeycomb.io:443"
+
+# Tail sampling keeps everything interesting and a small slice of the rest.
+sampling:
+  decisionWaitSeconds: 10
+  numTraces: 50000
+  latencyThresholdMs: 2000
+  probabilisticPercentage: 5
+
+# URLs the httpcheck receiver probes. Empty by default.
+httpcheck:
+  enabled: false
+  intervalSeconds: 60
+  targets: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi

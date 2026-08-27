@@ -1,0 +1,10 @@
+apiVersion: v2
+name: otel-collector
+description: Minimal OpenTelemetry Collector exporting telemetry to Honeycomb
+type: application
+version: 0.1.0
+appVersion: "0.159.0"
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"
