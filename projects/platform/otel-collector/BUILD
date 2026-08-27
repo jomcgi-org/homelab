@@ -34,8 +34,8 @@ py_test(
     srcs = ["collector_optin_test.py"],
     data = [
         "Chart.yaml",
-        "values-prod.yaml",
         "values.yaml",
+        "values-prod.yaml",
         "@multitool//tools/helm",
     ] + glob(["templates/**/*"]),
     env = {
