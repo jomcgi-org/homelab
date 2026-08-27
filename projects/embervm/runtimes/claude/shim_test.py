@@ -28,6 +28,15 @@ import pytest
 import shim
 
 
+EGRESS_CA_TRUST_ENV_KEYS = (
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "GIT_SSL_CAINFO",
+    "NODE_EXTRA_CA_CERTS",
+)
+
+
 FAKE_CLI = r"""#!/usr/bin/env python3
 import json
 import os
@@ -51,6 +60,22 @@ if egress_env_path:
                     "https_proxy",
                     "http_proxy",
                     "no_proxy",
+                )
+            },
+            stream,
+        )
+trust_env_path = os.environ.get("FAKE_TRUST_ENV")
+if trust_env_path:
+    with open(trust_env_path, "w") as stream:
+        json.dump(
+            {
+                key: os.environ.get(key)
+                for key in (
+                    "SSL_CERT_FILE",
+                    "REQUESTS_CA_BUNDLE",
+                    "CURL_CA_BUNDLE",
+                    "GIT_SSL_CAINFO",
+                    "NODE_EXTRA_CA_CERTS",
                 )
             },
             stream,
@@ -1369,7 +1394,7 @@ def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
         process = _FakeLiveProcess()
 
         def _spawn(self, **kwargs):
-            calls.append(kwargs)
+            calls.append(("spawn", kwargs))
 
         def ready(self):
             return True
@@ -1383,6 +1408,9 @@ def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
     temp_b.turn_lock = threading.Lock()
     manager.pi = temp_b
     manager._close_process = lambda **_kwargs: None
+    monkeypatch.setattr(
+        shim, "apply_egress_ca_trust", lambda: calls.append(("trust", None))
+    )
     manager.prewarm()
 
     # Mock the external state checks so ready() returns True.
@@ -1390,19 +1418,23 @@ def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
     monkeypatch.setattr(shim, "_volume_has_ext4", lambda: False)
 
     assert calls == [
-        {
-            "session_id": None,
-            "first_message": None,
-            "model": None,
-            "init_timeout": 30,
-        }
+        ("trust", None),
+        (
+            "spawn",
+            {
+                "session_id": None,
+                "first_message": None,
+                "model": None,
+                "init_timeout": 60,
+            },
+        ),
     ]
     assert manager.claude.session_id is None
     assert manager._prewarm_complete
     assert manager.ready()
 
 
-def test_process_manager_prewarm_failure_is_not_ready(tmp_path):
+def test_process_manager_prewarm_failure_is_not_ready(tmp_path, monkeypatch):
     manager = _new_process_manager()
     manager._prewarm_clis = ("claude",)
     manager._prewarm_complete = False
@@ -1427,13 +1459,16 @@ def test_process_manager_prewarm_failure_is_not_ready(tmp_path):
     temp_b.turn_lock = threading.Lock()
     manager.pi = temp_b
     manager._close_process = lambda **_kwargs: None
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
     manager.prewarm()
 
     assert not manager.ready()
     assert "CLI prewarm failed" in manager.fatal_error
 
 
-def test_process_manager_prewarm_spawns_every_configured_family_parked(tmp_path):
+def test_process_manager_prewarm_spawns_every_configured_family_parked(
+    tmp_path, monkeypatch
+):
     """#4423: codex and pi park like claude, each per its own init profile.
 
     Claude parks with no session identity (init emits a throwaway id), codex
@@ -1469,6 +1504,7 @@ def test_process_manager_prewarm_spawns_every_configured_family_parked(tmp_path)
         adapter.turn_lock = threading.Lock()
         setattr(manager, name, adapter)
     manager._close_process = lambda **_kwargs: None
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
     manager.prewarm()
 
     assert calls["claude"] == (
@@ -1477,7 +1513,7 @@ def test_process_manager_prewarm_spawns_every_configured_family_parked(tmp_path)
             "session_id": None,
             "first_message": None,
             "model": None,
-            "init_timeout": 30,
+            "init_timeout": 60,
         },
     )
     # Codex's whole init is the app-server spawn plus initialize handshake:
@@ -1492,7 +1528,7 @@ def test_process_manager_prewarm_spawns_every_configured_family_parked(tmp_path)
     assert manager._prewarm_complete
 
 
-def test_process_manager_prewarm_failure_closes_every_cli(tmp_path):
+def test_process_manager_prewarm_failure_closes_every_cli(tmp_path, monkeypatch):
     """A half-prewarmed guest must not hold resident CLIs while unready."""
     workspace = tmp_path / "workspace" / "src"
     workspace.mkdir(parents=True)
@@ -1531,6 +1567,7 @@ def test_process_manager_prewarm_failure_closes_every_cli(tmp_path):
             getattr(manager, name)._close_process(kill=kill)
 
     manager._close_process = close_all
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
     manager.prewarm()
 
     assert "CLI prewarm failed" in manager.fatal_error
@@ -1539,7 +1576,70 @@ def test_process_manager_prewarm_failure_closes_every_cli(tmp_path):
         assert getattr(manager, name).closed is True
 
 
-def test_process_manager_turn_always_ensures_workspace_volume(monkeypatch):
+def test_process_manager_prewarm_without_egress_ca_spawns_untrusted_cli(
+    tmp_path, monkeypatch
+):
+    trust_env_path = tmp_path / "trust-env.json"
+    monkeypatch.setenv("FAKE_TRUST_ENV", str(trust_env_path))
+    for key in EGRESS_CA_TRUST_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(shim, "fetch_egress_ca", lambda: None)
+
+    manager = _new_process_manager()
+    manager._prewarm_clis = ("claude",)
+    manager._prewarm_complete = False
+    manager.fatal_error = None
+    manager.claude = _manager(tmp_path, monkeypatch)
+
+    try:
+        manager.prewarm()
+
+        assert manager.fatal_error is None
+        assert manager._prewarm_complete
+        assert json.loads(trust_env_path.read_text()) == {
+            key: None for key in EGRESS_CA_TRUST_ENV_KEYS
+        }
+    finally:
+        manager.claude._close_process(kill=True)
+
+
+def test_process_manager_prewarm_child_inherits_fetched_egress_ca_trust(
+    tmp_path, monkeypatch
+):
+    trust_env_path = tmp_path / "trust-env.json"
+    bundle = tmp_path / "ember-ca-bundle.crt"
+    system_bundle = tmp_path / "system-ca-bundle.crt"
+    system_bundle.write_bytes(b"system certificate\n")
+    monkeypatch.setenv("FAKE_TRUST_ENV", str(trust_env_path))
+    for key in EGRESS_CA_TRUST_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(shim, "CA_BUNDLE_PATH", str(bundle))
+    monkeypatch.setattr(shim, "SYSTEM_CA_BUNDLE", str(system_bundle))
+    monkeypatch.setattr(
+        shim,
+        "fetch_egress_ca",
+        lambda: b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
+    )
+
+    manager = _new_process_manager()
+    manager._prewarm_clis = ("claude",)
+    manager._prewarm_complete = False
+    manager.fatal_error = None
+    manager.claude = _manager(tmp_path, monkeypatch)
+
+    try:
+        manager.prewarm()
+
+        assert manager.fatal_error is None
+        assert manager._prewarm_complete
+        assert json.loads(trust_env_path.read_text()) == {
+            key: str(bundle) for key in EGRESS_CA_TRUST_ENV_KEYS
+        }
+    finally:
+        manager.claude._close_process(kill=True)
+
+
+def test_process_manager_turn_applies_per_turn_trust_after_volume(monkeypatch):
     manager = _new_process_manager()
     calls = []
 
@@ -1556,11 +1656,14 @@ def test_process_manager_turn_always_ensures_workspace_volume(monkeypatch):
     temp_b = Adapter()
     temp_b.turn_lock = threading.Lock()
     manager.pi = temp_b
-    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: calls.append(True))
+    monkeypatch.setattr(
+        shim, "ensure_workspace_volume", lambda: calls.append("workspace")
+    )
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: calls.append("trust"))
     monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
 
     assert manager.turn("hello") == {"ok": True}
-    assert calls == [True]
+    assert calls == ["workspace", "trust"]
 
 
 @pytest.mark.parametrize("checkout_state", ["missing", "git_failure"])

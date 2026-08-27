@@ -690,17 +690,14 @@ def fetch_egress_ca(timeout=EGRESS_VSOCK_CONNECT_TIMEOUT_SECONDS):
 def apply_egress_ca_trust():
     """Fetch + install the egress CA and export the trust variables.
 
-    Called PER TURN, not at startup. A session guest is restored from a shared
-    snapshot, so its process memory is cloned with main() long since finished:
-    anything done there runs once, at base-build time, on a different machine,
-    and can never run again for a real session. At base-build time the egress
-    lane is not open either, so the fetch there fails with ECONNRESET and the
-    trust is simply absent for every session that base ever serves.
+    Since #5358 the egress lane is open during base builds. Prewarm applies the
+    trust once before spawning any CLI, so the resulting snapshot carries both
+    the installed bundle and these environment variables into every session.
 
-    A turn is the first moment that is guaranteed to be post-restore with the
-    lane live, which is why ensure_workspace_volume() is called from the same
-    place. Re-running is cheap (one vsock round trip) and is what keeps a CA
-    rotation from needing a fleet base rebuild.
+    A session guest is restored from that shared snapshot, so the per-turn call
+    remains necessary for CA rotation without a fleet base rebuild. Re-running
+    is cheap (one vsock round trip) and updates the environment before a turn
+    can lazily spawn a new CLI.
     """
     bundle = install_egress_ca()
     if not bundle:
@@ -3467,6 +3464,7 @@ class ProcessManager:
     def prewarm(self):
         """Start configured CLIs and leave them ready for the first turn."""
         try:
+            apply_egress_ca_trust()
             _ensure_cli_dir(self.claude.workspace)
             for cli in self._prewarm_clis:
                 if cli == "claude":
@@ -3474,7 +3472,10 @@ class ProcessManager:
                         session_id=None,
                         first_message=None,
                         model=None,
-                        init_timeout=30,
+                        # Base build also pays for the CA fetch while the node
+                        # may be baking other guests, so allow a cold init more
+                        # room than an ordinary lazy session spawn.
+                        init_timeout=60,
                     )
                     # Claude emits a generated id in init, but a parked process
                     # has not adopted a session until its first user message.
@@ -3862,9 +3863,8 @@ class ProcessManager:
         total_start = _turn_timing_now()
         with self._mount_lock:
             ensure_workspace_volume()
-        # Per turn, for the same reason ensure_workspace_volume is: this is the
-        # first point guaranteed to be post-restore with the egress lane live.
-        # Doing it at startup put it at base-build time, where the lane is shut.
+        # Re-apply per turn so a restored guest picks up CA rotation without a
+        # fleet base rebuild. Prewarm already applied the build-time CA once.
         apply_egress_ca_trust()
         if getattr(self.claude, "workspace", None):
             _ensure_cli_dir(self.claude.workspace)
