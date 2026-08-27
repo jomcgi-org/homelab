@@ -72,6 +72,14 @@ spec:
                   name: {{ include "monolith.fullname" . }}-secrets
                   key: ICAL_FEED_URL
             {{- end }}
+            {{- if .Values.backend.dcgmExporterUrl }}
+            # home.module's startup primes the stats snapshot on every replica,
+            # which scrapes GPU metrics, so the backend needs this as well as
+            # the observability-stats-rollup CronWorkflow. Without it a restart
+            # overwrites the good row with a null GPU block.
+            - name: DCGM_EXPORTER_URL
+              value: {{ .Values.backend.dcgmExporterUrl | quote }}
+            {{- end }}
             {{- if .Values.marine.enabled }}
             - name: AISSTREAM_API_KEY
               valueFrom:

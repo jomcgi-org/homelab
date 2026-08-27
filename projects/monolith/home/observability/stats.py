@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 from datetime import datetime, timezone
 
@@ -132,7 +133,22 @@ async def _query_gpu() -> dict:
                     suffix = suffix[label_end + 1 :]
                 fields = suffix.split()
                 if fields:
-                    samples[name].append(float(fields[0]))
+                    # Parse per line, not per scrape. The old ClickHouse path
+                    # queried each metric independently, so one bad value could
+                    # not take the others down, and that stays true here: a
+                    # malformed sample drops only its own line.
+                    #
+                    # isfinite also rejects NaN and inf, which float() accepts
+                    # happily. A NaN would survive round(), then json.dumps
+                    # would emit the bare token NaN, which the jsonb column
+                    # rejects: one bad GPU sample would fail the write for the
+                    # whole stats snapshot, cluster counts included.
+                    try:
+                        value = float(fields[0])
+                    except ValueError:
+                        break
+                    if math.isfinite(value):
+                        samples[name].append(value)
                 break
 
         def _average(name: str) -> float | None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -323,6 +324,69 @@ async def test_query_gpu_connection_error_returns_none_utilization():
         patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
         _mock_dcgm(handler),
     ):
+        result = await stats._query_gpu()
+
+    assert result == {"utilization_pct": None}
+
+
+@pytest.mark.asyncio
+async def test_query_gpu_malformed_value_drops_only_its_own_line():
+    """One unparseable sample must not discard the metrics that did parse.
+
+    The ClickHouse path queried each metric independently, so a bad value could
+    only ever affect its own metric. That property has to survive the move to a
+    single scrape.
+    """
+    body = """\
+DCGM_FI_DEV_GPU_UTIL{gpu="0"} 50
+DCGM_FI_DEV_FB_USED{gpu="0"} oops
+DCGM_FI_DEV_FB_FREE{gpu="0"} 100
+"""
+
+    with (
+        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
+        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
+    ):
+        result = await stats._query_gpu()
+
+    # Utilization survives; the memory keys are omitted because FB_USED had no
+    # usable sample, exactly as when the metric is absent entirely.
+    assert result == {"utilization_pct": 50.0}
+
+
+@pytest.mark.asyncio
+async def test_query_gpu_non_finite_value_is_discarded():
+    """NaN and inf must never reach the payload.
+
+    float() accepts both, round() preserves them, and json.dumps then emits a
+    bare NaN token that the jsonb column rejects. That would fail the write for
+    the entire stats snapshot, not just the GPU block.
+    """
+    body = """\
+DCGM_FI_DEV_GPU_UTIL{gpu="0"} NaN
+DCGM_FI_DEV_FB_USED{gpu="0"} +Inf
+DCGM_FI_DEV_FB_FREE{gpu="0"} 100
+"""
+
+    with (
+        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
+        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
+    ):
+        result = await stats._query_gpu()
+
+    assert result == {"utilization_pct": None}
+    # Serializable is the actual requirement being protected here.
+    json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_query_gpu_unset_url_returns_none_utilization():
+    """An unset DCGM_EXPORTER_URL must fail soft, not raise.
+
+    Every consumer of build_stats writes its result straight into the snapshot
+    row, so a raise here would take down the whole rollup.
+    """
+    with patch.dict("os.environ", {"DCGM_EXPORTER_URL": ""}):
         result = await stats._query_gpu()
 
     assert result == {"utilization_pct": None}
