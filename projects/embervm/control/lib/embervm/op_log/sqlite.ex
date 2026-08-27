@@ -113,6 +113,7 @@ defmodule Embervm.OpLog.SQLite do
   @default_compact_batch_size 500
   # The meta key the durable ops-journal prefix marker lives at; absent reads 0.
   @marker_key "compacted_through_seq"
+  @sqlite_header "SQLite format 3\0"
 
   @ddl [
     """
@@ -448,11 +449,154 @@ defmodule Embervm.OpLog.SQLite do
   # get an unnamed, PID-addressed process.
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
+    opts = Keyword.put(opts, :path, Keyword.get(opts, :path) || default_path())
+
+    case start_gen_server(opts) do
+      {:error, {:open_failed, reason}} -> recover_open_failure(opts, reason)
+      result -> result
+    end
+  end
+
+  defp start_gen_server(opts) do
     case Keyword.get(opts, :name, __MODULE__) do
       nil -> GenServer.start_link(__MODULE__, opts)
       name -> GenServer.start_link(__MODULE__, opts, name: name)
     end
   end
+
+  # GenServer.start_link/3 waits for init/1, so an init error is still available
+  # here before start_link/1 returns it to the application supervisor. Keep the
+  # recovery at this boundary: init/1 cannot quarantine and then raise without
+  # letting that failure escape the child start contract.
+  defp recover_open_failure(opts, reason) do
+    path = Keyword.fetch!(opts, :path)
+    diagnostics = open_failure_diagnostics(path)
+
+    Logger.error(
+      "embervm SQLite op-log open failed: path=#{inspect(path)} reason=#{inspect(reason)} " <>
+        "file_size_bytes=#{format_diagnostic(diagnostics.file_size_bytes)} " <>
+        "filesystem_free_bytes=#{format_diagnostic(diagnostics.filesystem_free_bytes)}"
+    )
+
+    case quarantine_database(path) do
+      {:ok, quarantined} -> retry_after_quarantine(opts, path, reason, quarantined)
+
+      {:error, quarantine_reason} ->
+        Logger.error(
+          "embervm SQLite op-log quarantine failed: path=#{inspect(path)} " <>
+            "open_reason=#{inspect(reason)} quarantine_reason=#{inspect(quarantine_reason)}; failing hard"
+        )
+
+        {:error, {:open_failed, reason}}
+    end
+  end
+
+  defp retry_after_quarantine(opts, path, first_reason, quarantined) do
+    case start_gen_server(opts) do
+      {:ok, pid} ->
+        Logger.error(
+          "embervm SQLite op-log history was quarantined after open failure; " <>
+            "running degraded with a fresh database: path=#{inspect(path)} " <>
+            "reason=#{inspect(first_reason)} quarantined=#{inspect(quarantined)}"
+        )
+
+        {:ok, pid}
+
+      {:error, second_reason} = error ->
+        Logger.error(
+          "embervm SQLite op-log recreate failed after one quarantine retry: " <>
+            "path=#{inspect(path)} first_reason=#{inspect(first_reason)} " <>
+            "second_reason=#{inspect(second_reason)}; failing hard"
+        )
+
+        error
+    end
+  end
+
+  defp quarantine_database(path) do
+    suffix = ".quarantined-#{quarantine_timestamp()}-#{System.unique_integer([:positive])}"
+    quarantine_path = path <> suffix
+
+    [
+      {path, quarantine_path},
+      {path <> "-wal", quarantine_path <> "-wal"},
+      {path <> "-shm", quarantine_path <> "-shm"}
+    ]
+    |> Enum.filter(fn {source, _destination} -> File.regular?(source) end)
+    |> Enum.reduce_while({:ok, []}, fn {source, destination}, {:ok, quarantined} ->
+      case File.rename(source, destination) do
+        :ok -> {:cont, {:ok, [destination | quarantined]}}
+        {:error, reason} -> {:halt, {:error, {source, destination, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, quarantined} -> {:ok, Enum.reverse(quarantined)}
+      error -> error
+    end
+  end
+
+  defp quarantine_timestamp do
+    DateTime.utc_now()
+    |> Calendar.strftime("%Y%m%dT%H%M%SZ")
+  end
+
+  defp open_failure_diagnostics(path) do
+    %{
+      file_size_bytes: file_size(path),
+      filesystem_free_bytes: filesystem_free_bytes(path)
+    }
+  end
+
+  defp file_size(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} -> size
+      {:error, :enoent} -> :missing
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Elixir and Erlang expose file metadata but not statvfs. POSIX df -P gives a
+  # stable available-blocks column on both the Linux runtime and developer
+  # systems. Probe the nearest existing parent so diagnostics still work when
+  # the database path itself could not be created.
+  defp filesystem_free_bytes(path) do
+    probe_path = path |> Path.expand() |> Path.dirname() |> nearest_existing_directory()
+
+    try do
+      case System.cmd("df", ["-Pk", probe_path], stderr_to_stdout: true) do
+        {output, 0} -> parse_df_available_bytes(output)
+        {output, status} -> {:error, {:df_failed, status, String.trim(output)}}
+      end
+    rescue
+      error -> {:error, {:df_unavailable, Exception.message(error)}}
+    end
+  end
+
+  defp nearest_existing_directory(path) do
+    cond do
+      File.dir?(path) -> path
+      Path.dirname(path) == path -> path
+      true -> path |> Path.dirname() |> nearest_existing_directory()
+    end
+  end
+
+  defp parse_df_available_bytes(output) do
+    lines =
+      output
+      |> String.split("\n", trim: true)
+
+    with line when is_binary(line) <- List.last(lines),
+         fields <- String.split(line, ~r/\s+/, trim: true),
+         available_kib when is_binary(available_kib) <- Enum.at(fields, 3),
+         {value, ""} <- Integer.parse(available_kib) do
+      value * 1024
+    else
+      _ -> {:error, {:unexpected_df_output, String.trim(output)}}
+    end
+  end
+
+  defp format_diagnostic(value) when is_integer(value), do: Integer.to_string(value)
+  defp format_diagnostic(value), do: inspect(value)
 
   @impl Embervm.OpLog
   def append(server \\ __MODULE__, %Op{} = op) do
@@ -567,10 +711,7 @@ defmodule Embervm.OpLog.SQLite do
     journal_horizon_ms = Keyword.get(opts, :journal_horizon_ms, @default_journal_horizon_ms)
     compact_batch_size = Keyword.get(opts, :compact_batch_size, @default_compact_batch_size)
 
-    with {:ok, conn} <- Sqlite3.open(path),
-         :ok <- apply_pragmas(conn),
-         :ok <- apply_ddl(conn),
-         :ok <- apply_migrations(conn) do
+    with {:ok, conn} <- open_database(path) do
       Logger.info("embervm op-log opened at #{path}")
 
       {:ok,
@@ -583,6 +724,42 @@ defmodule Embervm.OpLog.SQLite do
        }}
     else
       {:error, reason} -> {:stop, {:open_failed, reason}}
+    end
+  end
+
+  defp open_database(path) do
+    with :ok <- validate_existing_database_header(path),
+         {:ok, conn} <- Sqlite3.open(path) do
+      case initialize_database(conn) do
+        :ok ->
+          {:ok, conn}
+
+        {:error, reason} ->
+          _ = Sqlite3.close(conn)
+          {:error, reason}
+      end
+    end
+  end
+
+  # Reject an obviously non-SQLite file before the SQLite library can inspect
+  # its sidecars. Some invalid header probes remove unusable WAL/SHM files, which
+  # would destroy forensic evidence before the one-shot quarantine can rename it.
+  # Missing and zero-byte files are valid SQLite create paths.
+  defp validate_existing_database_header(path) do
+    case File.open(path, [:read, :binary], fn file -> IO.binread(file, byte_size(@sqlite_header)) end) do
+      {:ok, @sqlite_header} -> :ok
+      {:ok, :eof} -> :ok
+      {:ok, _invalid_header} -> {:error, :invalid_database_header}
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, {:file_read_failed, reason}}
+    end
+  end
+
+  defp initialize_database(conn) do
+    with :ok <- apply_pragmas(conn),
+         :ok <- apply_ddl(conn),
+         :ok <- apply_migrations(conn) do
+      :ok
     end
   end
 
