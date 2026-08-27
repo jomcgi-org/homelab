@@ -5,7 +5,18 @@ onepassword:
 httpcheck:
   enabled: true
   # Deliberately short to start, new targets are a one-line addition.
+  #
+  # PUBLIC URLs ONLY, for now. An in-cluster target needs a matching Cilium
+  # ingress rule on the destination or the probe reports a permanent outage
+  # that is not happening, which is worse than having no probe. monolith's
+  # CiliumNetworkPolicy monolith-api-ingress allowlists port 8000 from
+  # envoy-gateway-system, mcp, and monolith-workflows only, so a probe of
+  # monolith.monolith.svc:8000/healthz from this namespace is dropped after
+  # DNAT as a silent timeout. Adding one means adding the collector's
+  # namespace to that policy in the same change.
+  #
+  # jomcgi.dev/health already reaches the monolith backend through the public
+  # path, so nothing is unmonitored meanwhile.
   targets:
     - "https://jomcgi.dev/health"
     - "https://jomcgi.dev/"
-    - "http://monolith.monolith.svc.cluster.local:8000/healthz"
