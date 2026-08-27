@@ -9,8 +9,7 @@ underscores; FastMCP's wire identifiers use the dashed form
 
   Locks    : acquire_lock, extend_lock, release_lock, list_locks
   Notify   : notify
-  Check    : check_stuck_jobs, check_orphan_jobs, check_dead_letters,
-             check_firing_alerts
+  Check    : check_stuck_jobs, check_orphan_jobs, check_dead_letters
   Trigger  : trigger_job  (scheduler.scheduled_jobs)
   Routine  : list_routine_jobs, claim_routine_job, complete_routine_job,
              register_routine_job, deregister_routine_job,
@@ -157,13 +156,6 @@ async def monolith_agent_check_dead_letters(limit: int = 20) -> dict:
     """Raw inputs that exhausted all gardener retry attempts."""
     rows = checks.check_dead_letters(limit)
     return {"raws": [_serialize_dead_letter(r) for r in rows]}
-
-
-@mcp.tool
-async def monolith_agent_check_firing_alerts() -> dict:
-    """SigNoz alert rules currently in the ``firing`` state."""
-    rows = await checks.check_firing_alerts()
-    return {"alerts": rows}
 
 
 # --- Trigger (scheduler.scheduled_jobs) ----------------------------------

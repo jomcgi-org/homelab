@@ -45,7 +45,7 @@ def _one_tool_call_model(tool_name: str, args: dict) -> FunctionModel:
 
 
 class TestToolRegistration:
-    def test_agent_registers_six_read_only_tools(self):
+    def test_agent_registers_five_read_only_tools(self):
         agent = create_cluster_agent()
         tool_names = set(agent._function_toolset.tools.keys())
         assert tool_names == {
@@ -54,7 +54,6 @@ class TestToolRegistration:
             "get_resource",
             "pod_logs",
             "get_events",
-            "firing_alerts",
         }
 
     def test_no_argocd_sync_tool_registered(self):
@@ -138,19 +137,6 @@ class TestErrorWrapping:
 
         assert result.startswith("error:")
 
-    @pytest.mark.anyio
-    async def test_firing_alerts_wraps_error(self):
-        from chat import cluster_agent
-
-        with patch.object(
-            cluster_agent,
-            "check_firing_alerts",
-            AsyncMock(side_effect=RuntimeError("no signoz")),
-        ):
-            result = await cluster_agent._firing_alerts()
-
-        assert result == "error: no signoz"
-
 
 class TestToolCallEvent:
     @pytest.mark.anyio
@@ -202,26 +188,3 @@ class TestToolCallEvent:
         assert tool_calls[0]["data"]["tool"] == "list_resources"
         assert tool_calls[0]["data"]["args"]["kind"] == "pods"
         assert tool_calls[0]["data"]["args"]["namespace"] == "default"
-
-    @pytest.mark.anyio
-    async def test_firing_alerts_emits_tool_call_before_running(self):
-        from chat import cluster_agent
-
-        agent = create_cluster_agent()
-        emitter = SSEEmitter()
-        deps = ClusterDeps(emitter=emitter)
-
-        with (
-            patch.object(
-                cluster_agent,
-                "_firing_alerts",
-                AsyncMock(return_value='{"count": 0, "alerts": []}'),
-            ),
-            agent.override(model=_one_tool_call_model("firing_alerts", {})),
-        ):
-            await agent.run("any alerts firing?", deps=deps)
-
-        events = await _drain(emitter)
-        tool_calls = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_calls) == 1
-        assert tool_calls[0]["data"]["tool"] == "firing_alerts"

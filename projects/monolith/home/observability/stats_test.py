@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from home.observability import stats
@@ -28,24 +29,17 @@ def _mock_k8s_client():
     return mock
 
 
-def _mock_ch_client():
-    """Mock ClickHouseClient that returns canned GPU values."""
-    mock = MagicMock()
-    queries = {
-        "DCGM_FI_DEV_GPU_UTIL": 73.5,
-        "DCGM_FI_DEV_FB_USED": 18432.0,  # 18 GiB in MiB
-        "DCGM_FI_DEV_FB_FREE": 6144.0,  # 6 GiB in MiB
-    }
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
 
-    async def query_scalar(sql):
-        for marker, value in queries.items():
-            if marker in sql:
-                return value
-        return None
 
-    mock.query_scalar = AsyncMock(side_effect=query_scalar)
-    mock.close = AsyncMock()
-    return mock
+def _mock_dcgm(handler):
+    """Patch the stats client to use an httpx MockTransport."""
+    transport = httpx.MockTransport(handler)
+    return patch.object(
+        stats.httpx,
+        "AsyncClient",
+        side_effect=lambda **kwargs: _REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    )
 
 
 def _mock_session():
@@ -68,12 +62,19 @@ def _mock_session():
 @pytest.mark.asyncio
 async def test_build_stats_returns_expected_shape():
     mock_client = _mock_k8s_client()
-    mock_ch = _mock_ch_client()
     mock_session = _mock_session()
 
     with (
         patch("home.observability.stats.KubernetesClient", return_value=mock_client),
-        patch("home.observability.stats.ClickHouseClient", return_value=mock_ch),
+        patch(
+            "home.observability.stats._query_gpu",
+            new_callable=AsyncMock,
+            return_value={
+                "utilization_pct": 73.5,
+                "memory_used_gb": 18.0,
+                "memory_total_gb": 24.0,
+            },
+        ),
         patch("home.observability.stats.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
         patch(
@@ -208,79 +209,105 @@ async def test_cluster_counts_handles_k8s_errors():
 
 @pytest.mark.asyncio
 async def test_query_gpu_returns_correct_values():
-    """Happy path: utilization_pct + memory values divided by 1024, rounded."""
-    mock_ch = _mock_ch_client()
+    """One GPU produces the exact ticker keys and rounded values."""
+    body = """\
+# HELP DCGM_FI_DEV_GPU_UTIL GPU utilization.
+# TYPE DCGM_FI_DEV_GPU_UTIL gauge
+DCGM_FI_DEV_GPU_UTIL{gpu="0",modelName="NVIDIA GeForce RTX 4090"} 73.54
+DCGM_FI_DEV_FB_USED{gpu="0"} 18432.2
+DCGM_FI_DEV_FB_FREE{gpu="0"} 6143.6
+"""
 
-    with patch("home.observability.stats.ClickHouseClient", return_value=mock_ch):
+    def handler(request):
+        assert request.url == "http://dcgm.test:9400/metrics"
+        return httpx.Response(200, text=body)
+
+    with (
+        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
+        _mock_dcgm(handler),
+    ):
         result = await stats._query_gpu()
 
-    assert result["utilization_pct"] == 73.5
-    # 18432 MiB / 1024 = 18.0 GiB
-    assert result["memory_used_gb"] == 18.0
-    # (18432 + 6144) MiB / 1024 = 24.0 GiB
-    assert result["memory_total_gb"] == 24.0
+    assert result == {
+        "utilization_pct": 73.5,
+        "memory_used_gb": 18.0,
+        "memory_total_gb": 24.0,
+    }
 
 
 @pytest.mark.asyncio
-async def test_query_gpu_memory_rounding():
-    """memory_used_gb and memory_total_gb are rounded to 1 decimal place."""
-    mock_ch = MagicMock()
+async def test_query_gpu_averages_two_gpus_before_rounding():
+    body = """\
+DCGM_FI_DEV_GPU_UTIL{gpu="0"} 10.04
+DCGM_FI_DEV_GPU_UTIL{gpu="1"} 20.07
+DCGM_FI_DEV_FB_USED{gpu="0"} 1100.2
+DCGM_FI_DEV_FB_USED{gpu="1"} 1101.6
+DCGM_FI_DEV_FB_FREE{gpu="0"} 500.2
+DCGM_FI_DEV_FB_FREE{gpu="1"} 501.6
+DCGM_FI_DEV_FB_USED_TOTAL{gpu="0"} 999999
+"""
 
-    # 1100 MiB used, 500 MiB free
-    # used_gb = round(1100/1024, 1) = round(1.07421..., 1) = 1.1
-    # total_gb = round(1600/1024, 1) = round(1.5625, 1) = 1.6
-    async def query_scalar(sql):
-        if "DCGM_FI_DEV_GPU_UTIL" in sql:
-            return 55.0
-        if "DCGM_FI_DEV_FB_USED" in sql:
-            return 1100.0
-        if "DCGM_FI_DEV_FB_FREE" in sql:
-            return 500.0
-        return None
-
-    mock_ch.query_scalar = AsyncMock(side_effect=query_scalar)
-    mock_ch.close = AsyncMock()
-
-    with patch("home.observability.stats.ClickHouseClient", return_value=mock_ch):
+    with (
+        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
+        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
+    ):
         result = await stats._query_gpu()
 
-    assert result["memory_used_gb"] == round(1100 / 1024, 1)
-    assert result["memory_total_gb"] == round(1600 / 1024, 1)
+    assert result == {
+        "utilization_pct": 15.1,
+        "memory_used_gb": 1.1,
+        "memory_total_gb": 1.6,
+    }
 
 
 @pytest.mark.asyncio
-async def test_query_gpu_partial_failure_omits_memory():
-    """If one memory query raises, memory keys are absent but utilization_pct is kept."""
-    mock_ch = MagicMock()
+async def test_query_gpu_skips_help_and_type_lines():
+    body = """\
+# HELP DCGM_FI_DEV_GPU_UTIL GPU utilization.
+# TYPE DCGM_FI_DEV_GPU_UTIL gauge
+DCGM_FI_DEV_GPU_UTIL 40
+# HELP DCGM_FI_DEV_FB_USED Frame buffer used.
+# TYPE DCGM_FI_DEV_FB_USED gauge
+DCGM_FI_DEV_FB_USED 2048
+# HELP DCGM_FI_DEV_FB_FREE Frame buffer free.
+# TYPE DCGM_FI_DEV_FB_FREE gauge
+DCGM_FI_DEV_FB_FREE 6144
+"""
 
-    async def query_scalar(sql):
-        if "DCGM_FI_DEV_GPU_UTIL" in sql:
-            return 60.0
-        if "DCGM_FI_DEV_FB_USED" in sql:
-            raise RuntimeError("ClickHouse timeout")
-        if "DCGM_FI_DEV_FB_FREE" in sql:
-            return 4096.0
-        return None
-
-    mock_ch.query_scalar = AsyncMock(side_effect=query_scalar)
-    mock_ch.close = AsyncMock()
-
-    with patch("home.observability.stats.ClickHouseClient", return_value=mock_ch):
+    with (
+        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
+        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
+    ):
         result = await stats._query_gpu()
 
-    # utilization_pct should still be present from the successful query
-    assert result["utilization_pct"] == 60.0
-    # memory keys require both fb_used and fb_free — partial failure drops them
-    assert "memory_used_gb" not in result
-    assert "memory_total_gb" not in result
+    assert result == {
+        "utilization_pct": 40.0,
+        "memory_used_gb": 2.0,
+        "memory_total_gb": 8.0,
+    }
 
 
 @pytest.mark.asyncio
-async def test_query_gpu_total_failure_returns_none_utilization():
-    """If the outer ClickHouseClient construction itself explodes, returns sentinel."""
-    with patch(
-        "home.observability.stats.ClickHouseClient",
-        side_effect=Exception("connection refused"),
+async def test_query_gpu_missing_metric_omits_memory_keys():
+    body = """\
+DCGM_FI_DEV_GPU_UTIL{gpu="0"} 60
+DCGM_FI_DEV_FB_FREE{gpu="0"} 4096
+"""
+
+    with (
+        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
+        _mock_dcgm(lambda request: httpx.Response(200, text=body)),
+    ):
+        result = await stats._query_gpu()
+
+    assert result == {"utilization_pct": 60.0}
+
+
+@pytest.mark.asyncio
+async def test_query_gpu_non_200_returns_none_utilization():
+    with (
+        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
+        _mock_dcgm(lambda request: httpx.Response(503, text="unavailable")),
     ):
         result = await stats._query_gpu()
 
@@ -288,18 +315,17 @@ async def test_query_gpu_total_failure_returns_none_utilization():
 
 
 @pytest.mark.asyncio
-async def test_query_gpu_all_queries_fail_returns_none_utilization():
-    """If every scalar query raises, utilization_pct is None and memory absent."""
-    mock_ch = MagicMock()
-    mock_ch.query_scalar = AsyncMock(side_effect=Exception("ClickHouse unavailable"))
-    mock_ch.close = AsyncMock()
+async def test_query_gpu_connection_error_returns_none_utilization():
+    def handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
 
-    with patch("home.observability.stats.ClickHouseClient", return_value=mock_ch):
+    with (
+        patch.dict("os.environ", {"DCGM_EXPORTER_URL": "http://dcgm.test:9400"}),
+        _mock_dcgm(handler),
+    ):
         result = await stats._query_gpu()
 
-    assert result["utilization_pct"] is None
-    assert "memory_used_gb" not in result
-    assert "memory_total_gb" not in result
+    assert result == {"utilization_pct": None}
 
 
 # ---------------------------------------------------------------------------

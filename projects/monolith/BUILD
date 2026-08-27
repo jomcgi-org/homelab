@@ -1602,7 +1602,7 @@ py3_image(
 # app/main_public.py. It deliberately excludes every private write-path domain
 # (agent/chat/scheduler/trips), the private entrypoints (app/main.py,
 # app/mcp_app.py), the private knowledge routers/write internals, and the
-# private home/observability writer + ClickHouse paths. Those modules are
+# private home/observability writer paths. Those modules are
 # PROVEN absent from app.main_public's runtime closure by
 # app/main_public_imports_test.py, so excluding their FILES cannot break the
 # public binary. Everything else (knowledge read API/store/models/public
@@ -1691,10 +1691,9 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "knowledge/mcp.py",
     "knowledge/service.py",
     "knowledge/layout.py",
-    # Private home scheduling + observability writer/ClickHouse paths.
+    # Private home scheduling + observability writer paths.
     "home/schedule.py",
     "home/schedule_router.py",
-    "home/observability/clickhouse.py",
     "home/observability/slo.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
@@ -6415,18 +6414,6 @@ py_test(
 )
 
 py_test(
-    name = "home_observability_clickhouse_test",
-    srcs = ["home/observability/clickhouse_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
     name = "home_observability_slo_test",
     srcs = ["home/observability/slo_test.py"],
     imports = ["."],
@@ -6507,6 +6494,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
@@ -6976,18 +6964,6 @@ py_test(
     deps = [
         ":pkg_cyclegroup",
         "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "agent_checks_firing_alerts_test",
-    srcs = ["agent/checks_firing_alerts_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
     ],
 )
 

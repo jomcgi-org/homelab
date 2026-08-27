@@ -19,7 +19,7 @@ class TestDashboardAPI:
         r = httpx.get(f"{live_server}/api/home/dashboard")
         assert r.status_code == 200
         data = r.json()
-        for section in ("health", "alerts", "github", "today"):
+        for section in ("health", "github", "today"):
             assert section in data
         assert "cached_at" in data
 

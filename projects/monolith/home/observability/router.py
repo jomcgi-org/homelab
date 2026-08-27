@@ -1,10 +1,10 @@
 """Public, read-only observability endpoint (``/stats``).
 
 The endpoint serves a precomputed snapshot row out of the ``observability``
-schema: it never touches ClickHouse or the K8s API, so this module stays free of
-the ClickHouse client and SLO math. The writer that fills the stats snapshot
+schema: it never touches DCGM or the K8s API, so this module stays free of
+external metrics clients and SLO math. The writer that fills the stats snapshot
 runs only on the private monolith via ``home.observability.rollup``. Keeping this
-split lets the public service mount this route without the ClickHouse import
+split lets the public service mount this route without private metrics imports
 closure (ADR 004 Layer 1+4).
 """
 
@@ -26,7 +26,7 @@ def get_stats(session: Session = Depends(get_session)):
     """Return the latest precomputed stats snapshot (ADR 004).
 
     The snapshot is refreshed by observability.stats_rollup; this read never
-    touches ClickHouse or the K8s API, so the public service can serve it from
+    touches DCGM or the K8s API, so the public service can serve it from
     the read replica with no extra credentials.
     """
     row = session.execute(

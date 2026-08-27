@@ -33,9 +33,6 @@
   let health = $derived(
     dash?.health && !dash.health.error ? dash.health : null,
   );
-  let alerts = $derived(
-    dash?.alerts && !dash.alerts.error ? (dash.alerts.firing ?? []) : null,
-  );
   let github = $derived(
     dash?.github && !dash.github.error ? dash.github : null,
   );
@@ -45,9 +42,7 @@
   let unhealthyCount = $derived(
     unhealthyKinds.reduce((n, [, rows]) => n + (rows?.length ?? 0), 0),
   );
-  let allClear = $derived(
-    health?.healthy === true && (alerts == null || alerts.length === 0),
-  );
+  let allClear = $derived(health?.healthy === true);
 
   // ── Schedule past/active logic ───────────────
   function timeToMinutes(timeStr) {
@@ -191,21 +186,15 @@
     </header>
 
     <!-- Cluster pulse ribbon -->
-    <section
-      class="pulse"
-      class:pulse--bad={health != null &&
-        (!health.healthy || (alerts?.length ?? 0) > 0)}
-    >
-      {#if health == null && alerts == null}
+    <section class="pulse" class:pulse--bad={health != null && !health.healthy}>
+      {#if health == null}
         <span class="pulse-dot pulse-dot--unknown"></span>
         <span class="pulse-text">cluster status unavailable</span>
       {:else if allClear}
         <span class="pulse-dot pulse-dot--ok"></span>
         <span class="pulse-text">
           All quiet on the cluster
-          <span class="pulse-sub"
-            >{health?.scanned ?? 0} workloads scanned · no alerts firing</span
-          >
+          <span class="pulse-sub">{health.scanned ?? 0} workloads scanned</span>
         </span>
       {:else}
         <div class="pulse-head">
@@ -221,11 +210,6 @@
             {:else if health}
               workloads healthy
             {/if}
-            {#if alerts && alerts.length > 0}
-              <span class="pulse-sub"
-                >{alerts.length} alert{alerts.length === 1 ? "" : "s"} firing</span
-              >
-            {/if}
           </span>
         </div>
         {#if health && !health.healthy}
@@ -239,15 +223,6 @@
                   >
                 </li>
               {/each}
-            {/each}
-          </ul>
-        {/if}
-        {#if alerts && alerts.length > 0}
-          <ul class="pulse-list">
-            {#each alerts as alert}
-              <li class="pulse-item pulse-item--alert">
-                {alert.name}{alert.severity ? ` (${alert.severity})` : ""}
-              </li>
             {/each}
           </ul>
         {/if}
@@ -594,10 +569,6 @@
     color: var(--ink-3);
     font-size: 12px;
     margin-right: 6px;
-  }
-
-  .pulse-item--alert {
-    color: var(--bad);
   }
 
   @media (prefers-reduced-motion: no-preference) {

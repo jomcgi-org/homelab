@@ -1,16 +1,16 @@
-"""Public stats endpoint — exposes non-sensitive cluster and knowledge metrics.
+"""Public stats endpoint exposing non-sensitive cluster and knowledge metrics.
 
 Gathers data from four sources:
 1. Kubernetes API — node, deployment, pod, ArgoCD application counts
    plus aggregate CPU/memory usage and capacity from the metrics API,
    and the monolith ArgoCD Application's last sync time.
-2. ClickHouse (SigNoz) — DCGM GPU utilization and frame buffer usage.
+2. DCGM exporter Prometheus text, GPU utilization and frame buffer usage.
 3. PostgreSQL — knowledge.notes, knowledge.chunks, knowledge.raw_inputs counts.
 4. GitHub API — latest commit on main (unauthenticated; public repo).
 
 build_stats() assembles the payload; the observability.stats_rollup job snapshots
-it into Postgres (ADR 004) so the read endpoint never calls ClickHouse or the K8s
-API. Kept here because it is the only ClickHouse/K8s caller for stats.
+it into Postgres (ADR 004) so the read endpoint never calls external metrics or
+the K8s API. Kept here because it is the only DCGM/K8s caller for stats.
 """
 
 from __future__ import annotations
@@ -26,30 +26,17 @@ from sqlalchemy import text
 from cluster.api import KubernetesClient
 from core.db import get_engine
 from core.github import GITHUB_API, GITHUB_REPO
-from home.observability.clickhouse import ClickHouseClient
 
 ARGOCD_APP_NAME = "monolith"
 
 logger = logging.getLogger(__name__)
 
 
-_GPU_UTIL_QUERY = """\
-SELECT round(avg(value), 1) AS value
-FROM signoz_metrics.distributed_samples_v4
-WHERE metric_name = 'DCGM_FI_DEV_GPU_UTIL'
-  AND unix_milli >= toUnixTimestamp(now() - INTERVAL 5 MINUTE) * 1000"""
-
-_GPU_FB_USED_QUERY = """\
-SELECT round(avg(value), 0) AS value
-FROM signoz_metrics.distributed_samples_v4
-WHERE metric_name = 'DCGM_FI_DEV_FB_USED'
-  AND unix_milli >= toUnixTimestamp(now() - INTERVAL 5 MINUTE) * 1000"""
-
-_GPU_FB_FREE_QUERY = """\
-SELECT round(avg(value), 0) AS value
-FROM signoz_metrics.distributed_samples_v4
-WHERE metric_name = 'DCGM_FI_DEV_FB_FREE'
-  AND unix_milli >= toUnixTimestamp(now() - INTERVAL 5 MINUTE) * 1000"""
+_GPU_METRICS = (
+    "DCGM_FI_DEV_GPU_UTIL",
+    "DCGM_FI_DEV_FB_USED",
+    "DCGM_FI_DEV_FB_FREE",
+)
 
 
 async def _query_knowledge_counts(engine) -> dict:
@@ -118,38 +105,55 @@ async def _query_cluster_counts() -> dict:
 
 
 async def _query_gpu() -> dict:
-    """Query DCGM GPU utilization and frame buffer usage from ClickHouse."""
-    client = None
+    """Scrape DCGM GPU utilization and frame buffer usage."""
+    # The old query averaged samples over five minutes. This instantaneous
+    # exporter scrape is a deliberate behavior change.
     try:
-        client = ClickHouseClient(
-            base_url=os.environ.get("CLICKHOUSE_URL", ""),
-            user=os.environ.get("CLICKHOUSE_USER", ""),
-            password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
-        )
-        util, fb_used_mib, fb_free_mib = await asyncio.gather(
-            client.query_scalar(_GPU_UTIL_QUERY),
-            client.query_scalar(_GPU_FB_USED_QUERY),
-            client.query_scalar(_GPU_FB_FREE_QUERY),
-            return_exceptions=True,
-        )
+        base_url = os.environ.get("DCGM_EXPORTER_URL", "")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{base_url}/metrics")
+            response.raise_for_status()
 
-        def _ok(v):
-            return None if isinstance(v, Exception) else v
+        samples: dict[str, list[float]] = {name: [] for name in _GPU_METRICS}
+        for raw_line in response.text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            for name in _GPU_METRICS:
+                if not line.startswith(name):
+                    continue
+                suffix = line[len(name) :]
+                if not suffix or suffix[0] not in "{ \t":
+                    continue
+                if suffix.startswith("{"):
+                    label_end = suffix.rfind("}")
+                    if label_end < 0:
+                        continue
+                    suffix = suffix[label_end + 1 :]
+                fields = suffix.split()
+                if fields:
+                    samples[name].append(float(fields[0]))
+                break
 
-        util_v = _ok(util)
-        used_v = _ok(fb_used_mib)
-        free_v = _ok(fb_free_mib)
-        result: dict = {"utilization_pct": util_v}
+        def _average(name: str) -> float | None:
+            values = samples[name]
+            return sum(values) / len(values) if values else None
+
+        util_v = _average("DCGM_FI_DEV_GPU_UTIL")
+        used_v = _average("DCGM_FI_DEV_FB_USED")
+        free_v = _average("DCGM_FI_DEV_FB_FREE")
+        result: dict = {
+            "utilization_pct": round(util_v, 1) if util_v is not None else None
+        }
         if used_v is not None and free_v is not None:
+            used_v = round(used_v, 0)
+            free_v = round(free_v, 0)
             result["memory_used_gb"] = round(used_v / 1024, 1)
             result["memory_total_gb"] = round((used_v + free_v) / 1024, 1)
         return result
     except Exception:
-        logger.exception("GPU query failed")
+        logger.exception("GPU scrape failed")
         return {"utilization_pct": None}
-    finally:
-        if client is not None:
-            await client.close()
 
 
 async def _query_github_latest_commit() -> dict | None:

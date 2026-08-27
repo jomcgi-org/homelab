@@ -1,12 +1,13 @@
-"""Background snapshot of the cluster health rollup + firing SigNoz alerts.
+"""Background snapshot of the cluster health rollup.
 
-The private dashboard's ``health`` and ``alerts`` sections used to recompute on
-every request: a live scan of every pod/deployment/statefulset/daemonset/ArgoCD
-app across all namespaces (~235 objects), plus a SigNoz ``/api/v1/rules`` fetch,
-uncached. A cold page load blocked on the whole scan. This module moves that
-work to a scheduled job (``home.cluster_snapshot_refresh``) that upserts a
-single ``home.cluster_snapshot`` row, so the dashboard read path (see
-``home.dashboard``) becomes a one-row lookup.
+The private dashboard's ``health`` section used to recompute on every request:
+a live scan of every pod/deployment/statefulset/daemonset/ArgoCD app across all
+namespaces (~235 objects), uncached. A cold page load blocked on the whole scan.
+This module moves that work to a scheduled job
+(``home.cluster_snapshot_refresh``) that upserts a single
+``home.cluster_snapshot`` row, so the dashboard read path (see
+``home.dashboard``) becomes a one-row lookup. The retained alerts column is
+written as an empty object for schema compatibility.
 """
 
 from __future__ import annotations
@@ -54,13 +55,6 @@ async def scan_health_live() -> dict:
         await k8s.close()
 
 
-async def fetch_alerts_live() -> dict:
-    """Fetch firing SigNoz alert rules (the live path)."""
-    from agent.api import check_firing_alerts
-
-    return {"firing": await check_firing_alerts()}
-
-
 def _write_cluster_snapshot(health: dict, alerts: dict) -> None:
     """Upsert the single snapshot row. Opens its own session so it can run in a
     worker thread off the event loop."""
@@ -84,22 +78,17 @@ def _write_cluster_snapshot(health: dict, alerts: dict) -> None:
 
 
 async def refresh_cluster_snapshot() -> None:
-    """Scan health + fetch alerts concurrently and upsert the snapshot row.
+    """Scan health and upsert the snapshot row with an empty alerts object.
 
-    Fail-soft per section: if the health scan fails the alerts are still
-    persisted (and vice versa), each failed section stored as {"error": ...} so
-    a flaky SigNoz never blanks health and a K8s API blip never blanks alerts.
+    If the health scan fails, persist an error marker so the scheduled job
+    remains fail-soft and the read path can report the failure.
     """
-    health, alerts = await asyncio.gather(
-        scan_health_live(), fetch_alerts_live(), return_exceptions=True
-    )
-    if isinstance(health, Exception):
-        logger.warning("cluster snapshot: health scan failed: %s", health)
-        health = {"error": str(health)}
-    if isinstance(alerts, Exception):
-        logger.warning("cluster snapshot: alerts fetch failed: %s", alerts)
-        alerts = {"error": str(alerts)}
-    await asyncio.to_thread(_write_cluster_snapshot, health, alerts)
+    try:
+        health = await scan_health_live()
+    except Exception as exc:
+        logger.warning("cluster snapshot: health scan failed: %s", exc)
+        health = {"error": str(exc)}
+    await asyncio.to_thread(_write_cluster_snapshot, health, {})
     logger.info("cluster snapshot refreshed (scanned=%s)", health.get("scanned"))
 
 

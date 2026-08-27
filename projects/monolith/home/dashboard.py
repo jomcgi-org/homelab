@@ -1,13 +1,12 @@
 """Dashboard aggregation for the private landing page.
 
-Fans out to cluster health, firing alerts, GitHub PR/CI status, and today's
-calendar events. Each collector is fail-soft: a failure in one section is
+Fans out to cluster health, GitHub PR/CI status, and today's calendar events.
+Each collector is fail-soft: a failure in one section is
 caught and reported as {"error": str(exc)} for that section only, so a single
-flaky upstream (SigNoz, GitHub, the K8s API) never blanks the whole dashboard.
+flaky upstream (GitHub or the K8s API) never blanks the whole dashboard.
 
 Private-tier only (registered in home.register, not home.register_public):
-the GitHub token, SigNoz alerts and cluster health rollup are not meant for
-the public surface.
+the GitHub token and cluster health rollup are not meant for the public surface.
 """
 
 from __future__ import annotations
@@ -150,19 +149,6 @@ async def _collect_health(session) -> dict:
     return await scan_health_live()
 
 
-async def _collect_alerts(session) -> dict:
-    """Firing SigNoz alert rules, served from the background snapshot when fresh.
-
-    Falls back to a live SigNoz fetch only when no fresh snapshot exists (see
-    _collect_health for when that happens)."""
-    from home.cluster_snapshot import fetch_alerts_live, read_cluster_snapshot
-
-    snap = read_cluster_snapshot(session)
-    if snap is not None:
-        return snap["alerts"]
-    return await fetch_alerts_live()
-
-
 async def _collect_today(session) -> dict:
     """Today's calendar events (same-domain, home.schedule)."""
     from home.schedule import get_today_events
@@ -177,10 +163,9 @@ async def build_dashboard(session) -> dict:
     {"error": str(exc)} for that section rather than failing the whole
     response.
     """
-    names = ("health", "alerts", "github", "today")
+    names = ("health", "github", "today")
     results = await asyncio.gather(
         _collect_health(session),
-        _collect_alerts(session),
         _collect_github(),
         _collect_today(session),
         return_exceptions=True,

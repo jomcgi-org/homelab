@@ -29,7 +29,7 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
 // Top-level routes that intentionally live outside /public and /private.
 // The browser OTEL exporter posts to same-origin /otel/v1/traces and the
-// handler proxies to the cluster-internal SigNoz collector, so it must
+// handler proxies to the cluster-internal telemetry collector, so it must
 // not be swept under a subdomain prefix.
 const PASSTHROUGH_PREFIXES = ["/otel/"];
 

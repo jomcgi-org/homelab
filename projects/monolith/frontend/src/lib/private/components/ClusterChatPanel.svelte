@@ -104,7 +104,7 @@
   <div class="chat-log" bind:this={logEl}>
     {#if messages.length === 0}
       <p class="chat-empty">
-        ask about pods, deploys, alerts, logs... the agent reads the cluster
+        ask about pods, deploys, events, logs... the agent reads the cluster
         live
       </p>
     {/if}

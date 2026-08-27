@@ -16,7 +16,6 @@ from pydantic_ai import Agent, ModelSettings, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from agent.api import check_firing_alerts
 from chat.sse import SSEEmitter
 from cluster.api import (
     KubernetesClient,
@@ -32,14 +31,14 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 You are the homelab cluster assistant on Joe's private dashboard. You inspect a
-Kubernetes homelab (GitOps via ArgoCD, observability via SigNoz) with read-only
-tools and answer operational questions plainly.
+Kubernetes homelab (GitOps via ArgoCD) with read-only tools and answer
+operational questions plainly.
 
 Workflow: start with health_summary for "what's broken" questions; use
 list_resources/get_resource to drill in; use pod_logs and get_events for root
-cause; use firing_alerts for alert state. Quote concrete evidence (restart
-counts, log lines, event messages) in your answer. Be concise: a few sentences,
-not a report. Never invent resources you did not observe."""
+cause. Quote concrete evidence (restart counts, log lines, event messages) in
+your answer. Be concise: a few sentences, not a report. Never invent resources
+you did not observe."""
 
 # Workload kinds scanned by the health rollup (mirrors cluster/mcp.py).
 _HEALTH_KINDS = ("deployments", "statefulsets", "daemonsets", "pods", "applications")
@@ -159,12 +158,6 @@ def create_cluster_agent() -> Agent[ClusterDeps]:
         )
         return await _get_events(namespace, involved_object)
 
-    @agent.tool
-    async def firing_alerts(ctx: RunContext[ClusterDeps]) -> str:
-        """List SigNoz alert rules currently in a firing state."""
-        ctx.deps.emitter.emit("tool_call", {"tool": "firing_alerts", "args": {}})
-        return await _firing_alerts()
-
     return agent
 
 
@@ -246,12 +239,3 @@ async def _get_events(namespace: str | None, involved_object: str | None) -> str
         return f"error: {exc}"
     finally:
         await k8s.close()
-
-
-async def _firing_alerts() -> str:
-    try:
-        alerts = await check_firing_alerts()
-        return json.dumps({"count": len(alerts), "alerts": alerts})
-    except Exception as exc:
-        logger.exception("cluster_agent: firing_alerts failed")
-        return f"error: {exc}"

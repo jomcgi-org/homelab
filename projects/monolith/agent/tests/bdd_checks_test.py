@@ -7,10 +7,6 @@ intentionally does not clean — its contract is "agent tables only."
 This file owns its own ``checks_db`` fixture that layers per-test
 seed/cleanup for the cluster tables on top of ``agent_db``'s env and
 engine setup, so the two fixtures stay decoupled.
-
-``check_firing_alerts`` is HTTP-only and is tested in
-``agent/checks_firing_alerts_test.py`` instead — it does not need
-Postgres.
 """
 
 from __future__ import annotations

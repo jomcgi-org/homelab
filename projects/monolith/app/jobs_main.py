@@ -136,7 +136,7 @@ def observability_stats_rollup() -> None:
     One-shot form of ``observability.stats_rollup``. build_stats counts cluster
     resources via the in-cluster K8s API, so this job runs under a dedicated
     least-privilege SA (monolith-stats) rather than the shared executor SA. Also
-    needs CLICKHOUSE_URL + USER/PASSWORD for the GPU metrics queries. No session
+    needs DCGM_EXPORTER_URL for the GPU metrics scrape. No session
     (the snapshot writer opens its own)."""
     from home.observability.rollup import stats_rollup
 
@@ -148,15 +148,14 @@ def observability_stats_rollup() -> None:
 
 @app.command("home-cluster-snapshot-refresh")
 def home_cluster_snapshot_refresh() -> None:
-    """Snapshot the cluster health rollup + firing alerts as a one-shot.
+    """Snapshot the cluster health rollup as a one-shot.
 
     One-shot form of the retired in-process refresh. refresh_cluster_snapshot
     scans deployments/statefulsets/daemonsets/pods/ArgoCD-apps via the in-cluster
     K8s API, so this job runs under the dedicated least-privilege monolith-stats
-    SA (same as observability-stats-rollup), and fetches firing SigNoz alerts
-    (SIGNOZ_URL + SIGNOZ_API_KEY). It upserts one home.cluster_snapshot row so the
-    dashboard read path is a single-row lookup instead of a live per-request scan.
-    Fail-soft per section; the writer opens its own session."""
+    SA (same as observability-stats-rollup). It upserts one
+    home.cluster_snapshot row so the dashboard read path is a single-row lookup
+    instead of a live per-request scan. The writer opens its own session."""
     from home.cluster_snapshot import refresh_cluster_snapshot
 
     configure_logging()
