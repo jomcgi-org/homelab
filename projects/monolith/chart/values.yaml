@@ -6,6 +6,10 @@ backend:
   # resume prod's in-flight agent runs. See framework/core.py.
   leaderSingletons: true
   replicas: 1
+  # DCGM exporter scraped for the public stats ticker's GPU block. Empty here so
+  # the chart stays inert; set per environment in deploy/values.yaml. The
+  # observability-stats-rollup job carries its own copy under jobs.
+  dcgmExporterUrl: ""
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/backend
     tag: main

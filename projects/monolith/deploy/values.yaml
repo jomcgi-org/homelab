@@ -1,5 +1,6 @@
 backend:
   replicas: 1
+  dcgmExporterUrl: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400"
   otelEndpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318/v1/traces"
   resources:
     requests:

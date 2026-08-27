@@ -11,6 +11,11 @@ from __future__ import annotations
 import re
 
 # Trace IDs are 32 lowercase hexadecimal characters.
+#
+# Retained deliberately for #5363 and currently referenced by nothing: both
+# fetch helpers return before validating anything. Do not read this as live
+# input validation, and do not delete it either, since the replacement store
+# will need the same guard before interpolating a trace id into a query.
 _TRACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 

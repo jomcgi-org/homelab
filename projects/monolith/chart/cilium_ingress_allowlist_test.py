@@ -196,9 +196,11 @@ def test_envoy_grant_is_proxy_pods_only(prod):
         f"k8s:{_NS_KEY}": "envoy-gateway-system",
         # Stamped by Envoy Gateway itself, upstream v1.8.3,
         # internal/infrastructure/kubernetes/proxy/resource.go EnvoyAppLabel().
-        # These keys CAN drift across an envoy-gateway upgrade; the #4659
-        # SigNoz alert on policy-denied drops is the tripwire, and the
-        # rollback is reverting these two keys in the template.
+        # These keys CAN drift across an envoy-gateway upgrade. The #4659
+        # tripwire that caught that on policy-denied drops was a SigNoz alert,
+        # removed with SigNoz (#5362), so this assertion is now the only guard
+        # until replacement monitoring lands. The rollback is reverting these
+        # two keys in the template.
         "app.kubernetes.io/name": "envoy",
         "app.kubernetes.io/component": "proxy",
     }

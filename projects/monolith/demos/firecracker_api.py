@@ -75,7 +75,9 @@ _tracer = trace.get_tracer("demos.firecracker")
 def _current_trace_id() -> str:
     """Return the active span's trace id as 32 lowercase hex chars.
 
-    Matches SigNoz's traceID FixedString(32) and the fetch_trace_spans regex.
+    W3C trace ids are 32 hex chars. fetch_trace_spans used to validate against
+    the same shape, but returns no spans at all until the replacement store
+    lands (#5363), so nothing downstream checks this today.
     An invalid/absent span yields 32 zeros, which is still well-formed hex.
     """
     span = trace.get_current_span()
