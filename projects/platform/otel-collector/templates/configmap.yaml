@@ -63,8 +63,22 @@ data:
         policies:
           # One composite policy, not three peer policies. tail_sampling ORs
           # its policies, so peers can only ever admit more traces; composite
-          # is what imposes a ceiling. It walks policy_order and spends the
-          # spans-per-second budget in that order, dropping the overflow.
+          # is what imposes a ceiling, by giving each sub-policy a slice of a
+          # spans-per-second budget and dropping what does not fit.
+          #
+          # Priority comes from the ORDER OF composite_sub_policy below, not
+          # from policy_order. policy_order parses and is then ignored by the
+          # processor, so reordering it changes nothing: reorder the
+          # composite_sub_policy list instead. It is kept only because the
+          # config shape includes it.
+          #
+          # Sharp edge worth knowing before opting a service in: the budget is
+          # checked per trace against the MATCHING sub-policy alone. A trace
+          # whose span count exceeds that sub-policy's allocation is dropped
+          # outright and does NOT fall through to a later sub-policy, even on
+          # an idle collector. So maxTotalSpansPerSecond has to comfortably
+          # exceed the largest single trace you expect, or large error traces
+          # go missing precisely because they are large.
           - name: capped
             type: composite
             composite:

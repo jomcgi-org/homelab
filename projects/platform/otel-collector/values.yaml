@@ -46,11 +46,24 @@ sampling:
   # tail_sampling ORs its policies, so a trace is kept when ANY policy says
   # keep, and a peer rate_limiting policy only ever ADMITS more traces. The
   # composite policy is the primitive that actually bounds total volume, by
-  # allocating a spans-per-second budget across its sub-policies in priority
-  # order and dropping what does not fit.
-  maxTotalSpansPerSecond: 200
-  # Budget split across the sub-policies, in the same order. Errors are the
-  # most valuable per span, so they get first call on the budget.
+  # allocating a spans-per-second budget across its sub-policies and dropping
+  # what does not fit.
+  #
+  # Set generously relative to a single trace, not just to steady-state volume.
+  # The budget is checked per trace against the matching sub-policy's own
+  # allocation, and a trace bigger than that allocation is dropped outright
+  # rather than falling through to another sub-policy. At 1000 the errors slice
+  # is 500 spans/sec, so a 500-span error trace still fits. Tune this against
+  # real trace sizes when the first service opts in.
+  maxTotalSpansPerSecond: 1000
+  # Budget split across the sub-policies. Errors are the most valuable per span,
+  # so they get the largest slice.
+  #
+  # These do NOT have to sum to 100 and nothing validates them, so a sum over
+  # 100 quietly raises the real ceiling above maxTotalSpansPerSecond. A
+  # sub-policy missing or misspelled here silently falls back to an equal
+  # share rather than erroring, so keep the names in step with the
+  # composite_sub_policy entries in the ConfigMap template.
   rateAllocation:
     errorsPercent: 50
     slowPercent: 30
