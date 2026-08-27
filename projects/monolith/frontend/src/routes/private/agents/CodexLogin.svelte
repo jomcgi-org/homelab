@@ -7,13 +7,13 @@
     copiedLabel,
     unavailableLabel,
     invalidResponseLabel,
-    codeLabel,
     openLinkLabel,
     requestNewCodeLabel,
     startingLabel,
     initialUserCode = null,
     initialVerificationUrl = null,
     onError = () => {},
+    onNotice = () => {},
   } = $props();
 
   let authorizing = $state(false);
@@ -27,7 +27,7 @@
   let copiedTimer;
 
   $effect(() => {
-    initialUserCode;
+    if (!initialUserCode) return;
     requestedUserCode = null;
     requestedVerificationUrl = null;
   });
@@ -40,6 +40,7 @@
     copied = false;
     clearTimeout(copiedTimer);
     onError(null);
+    onNotice(null);
     try {
       const response = await fetch("/private/agents/codex-login/start", {
         method: "POST",
@@ -53,7 +54,8 @@
         );
       }
       if (typeof body.retry_after === "number" && body.retry_after > 0) {
-        throw new Error(startingLabel);
+        onNotice(startingLabel);
+        return;
       }
       if (
         typeof body.user_code !== "string" ||
@@ -87,7 +89,7 @@
 
 {#if userCode}
   <div class="codex-login-control">
-    <code id="codex-device-code" tabindex="0">{userCode}</code>
+    <code id="codex-device-code">{userCode}</code>
     {#if verificationUrl}
       <a
         class="primary-action"

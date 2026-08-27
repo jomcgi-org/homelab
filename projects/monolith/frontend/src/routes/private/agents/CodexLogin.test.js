@@ -10,17 +10,18 @@ const mounted = [];
 async function render(onError = vi.fn(), props = {}, mutable = false) {
   const target = document.createElement("div");
   document.body.append(target);
+  const onNotice = props.onNotice ?? vi.fn();
   const componentProps = {
     authorizeLabel: P.labels.authorizeCodex,
     authorizingLabel: P.labels.authorizingCodex,
     copiedLabel: P.labels.copied,
     unavailableLabel: P.labels.codexLoginUnavailable,
     invalidResponseLabel: P.labels.codexLoginInvalidResponse,
-    codeLabel: P.labels.codexLoginCode,
     openLinkLabel: P.labels.codexLoginOpenLink,
     requestNewCodeLabel: P.labels.codexLoginRequestNewCode,
     startingLabel: P.labels.codexLoginStarting,
     onError,
+    onNotice,
     ...props,
   };
   const component = mutable
@@ -32,7 +33,7 @@ async function render(onError = vi.fn(), props = {}, mutable = false) {
     : mount(CodexLogin, { target, props: componentProps });
   mounted.push({ component, target, mutable });
   await tick();
-  return { component, target, onError };
+  return { component, target, onError, onNotice };
 }
 
 afterEach(async () => {
@@ -139,7 +140,7 @@ describe("Codex authorization", () => {
       expect(target.querySelector("code")?.textContent).toBe("FALL-BACK"),
     );
     expect(open).toHaveBeenCalledTimes(1);
-    expect(target.querySelector("code").getAttribute("tabindex")).toBe("0");
+    expect(target.querySelector("code").hasAttribute("tabindex")).toBe(false);
   });
 
   test("surfaces endpoint failures and re-enables the button", async () => {
@@ -163,27 +164,37 @@ describe("Codex authorization", () => {
     expect(target.querySelector("code")).toBeNull();
   });
 
-  test("surfaces device flow startup as a retriable state", async () => {
+  test("reports device flow startup as a notice", async () => {
     vi.stubGlobal("navigator", {});
+    let resolveResponse;
     globalThis.fetch = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            retry_after: 10,
-            message: "Device flow is starting, try again shortly.",
-            pending: false,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
+      () =>
+        new Promise((resolve) => {
+          resolveResponse = resolve;
+        }),
     );
     vi.spyOn(window, "open").mockImplementation(() => null);
-    const { target, onError } = await render();
+    const { target, onError, onNotice } = await render();
 
     target.querySelector("button").click();
+    expect(onError).toHaveBeenCalledWith(null);
+    onError.mockClear();
+    resolveResponse(
+      new Response(
+        JSON.stringify({
+          retry_after: 10,
+          message: "Device flow is starting, try again shortly.",
+          pending: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
 
     await vi.waitFor(() =>
-      expect(onError).toHaveBeenLastCalledWith(P.labels.codexLoginStarting),
+      expect(onNotice).toHaveBeenLastCalledWith(P.labels.codexLoginStarting),
     );
+    expect(onNotice).toHaveBeenNthCalledWith(1, null);
+    expect(onError).not.toHaveBeenCalled();
     expect(target.querySelector("button").disabled).toBe(false);
     expect(target.querySelector("code")).toBeNull();
   });
@@ -301,6 +312,45 @@ describe("Codex authorization", () => {
     expect(target.querySelector("code")?.textContent).toBe("INITIAL-Y");
     expect(target.querySelector("a")?.getAttribute("href")).toBe(
       "https://example.test/next",
+    );
+  });
+
+  test("keeps a requested code when initialUserCode changes to null", async () => {
+    vi.stubGlobal("navigator", {});
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            verification_url: "https://example.test/requested",
+            user_code: "REQUESTED-X",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.spyOn(window, "open").mockImplementation(() => null);
+    const { component, target } = await render(
+      vi.fn(),
+      {
+        initialUserCode: "INITIAL-X",
+        initialVerificationUrl: "https://example.test/initial",
+      },
+      true,
+    );
+
+    target.querySelector("button.secondary-action").click();
+    await vi.waitFor(() =>
+      expect(target.querySelector("code")?.textContent).toBe("REQUESTED-X"),
+    );
+
+    component.$set({
+      initialUserCode: null,
+      initialVerificationUrl: null,
+    });
+    await tick();
+
+    expect(target.querySelector("code")?.textContent).toBe("REQUESTED-X");
+    expect(target.querySelector("a")?.getAttribute("href")).toBe(
+      "https://example.test/requested",
     );
   });
 

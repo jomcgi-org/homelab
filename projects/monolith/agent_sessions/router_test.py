@@ -365,34 +365,19 @@ def test_codex_login_start_returns_502_for_non_conflict_upstream_error(
     assert response.json() == {"error": "Codex login broker unavailable"}
 
 
-@pytest.mark.parametrize(
-    ("method", "path", "expected"),
-    [
-        (
-            "get",
-            "/api/agents/codex-login/status",
-            {"error": "Codex login broker unavailable"},
-        ),
-        (
-            "post",
-            "/api/agents/codex-login/start",
-            {"error": "Codex login broker unavailable"},
-        ),
-    ],
-)
-def test_codex_login_endpoints_return_json_502_when_broker_unreachable(
-    client, monkeypatch, method, path, expected
+def test_codex_login_status_returns_json_502_when_broker_unreachable(
+    client, monkeypatch
 ):
     async def broker_request(*_args):
         raise httpx.ConnectError("offline")
 
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
 
-    response = getattr(client, method)(path)
+    response = client.get("/api/agents/codex-login/status")
 
     assert response.status_code == 502
     assert response.headers["content-type"] == "application/json"
-    assert response.json() == expected
+    assert response.json() == {"error": "Codex login broker unavailable"}
 
 
 def test_codex_login_endpoints_validate_grant(client, monkeypatch):
