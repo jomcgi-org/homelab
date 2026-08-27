@@ -10,6 +10,7 @@
     codeLabel,
     openLinkLabel,
     requestNewCodeLabel,
+    startingLabel,
     initialUserCode = null,
     initialVerificationUrl = null,
     onError = () => {},
@@ -50,6 +51,9 @@
             body?.detail ||
             `${unavailableLabel} (HTTP ${response.status})`,
         );
+      }
+      if (typeof body.retry_after === "number" && body.retry_after > 0) {
+        throw new Error(startingLabel);
       }
       if (
         typeof body.user_code !== "string" ||

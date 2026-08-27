@@ -1918,6 +1918,7 @@
                   codeLabel={P.labels.codexLoginCode}
                   openLinkLabel={P.labels.codexLoginOpenLink}
                   requestNewCodeLabel={P.labels.codexLoginRequestNewCode}
+                  startingLabel={P.labels.codexLoginStarting}
                   initialUserCode={selectedCodexLoginCode}
                   initialVerificationUrl={selectedCodexLoginUrl}
                   onError={(message) => (errorMessage = message)}

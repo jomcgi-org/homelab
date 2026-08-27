@@ -42,13 +42,27 @@ func (s *fakeStore) SaveGrantIfNewer(grant store.Grant) error {
 }
 
 type fakeAdapter struct {
-	refreshErr error
-	deviceCode provider.DeviceCodeResponse
-	pollWait   <-chan struct{}
+	refreshErr  error
+	deviceCode  provider.DeviceCodeResponse
+	deviceErr   error
+	startWait   <-chan struct{}
+	startCalled chan struct{}
+	startOnce   sync.Once
+	pollWait    <-chan struct{}
 }
 
-func (a *fakeAdapter) StartDeviceFlow(context.Context) (provider.DeviceCodeResponse, error) {
-	return a.deviceCode, nil
+func (a *fakeAdapter) StartDeviceFlow(ctx context.Context) (provider.DeviceCodeResponse, error) {
+	if a.startCalled != nil {
+		a.startOnce.Do(func() { close(a.startCalled) })
+	}
+	if a.startWait != nil {
+		select {
+		case <-a.startWait:
+		case <-ctx.Done():
+			return provider.DeviceCodeResponse{}, ctx.Err()
+		}
+	}
+	return a.deviceCode, a.deviceErr
 }
 
 func (a *fakeAdapter) PollForAuthorization(ctx context.Context, _ provider.DeviceCodeResponse) (provider.AuthorizationCodeResponse, error) {
@@ -97,6 +111,31 @@ func decodeBody(t *testing.T, recorder *httptest.ResponseRecorder) map[string]an
 		t.Fatal(err)
 	}
 	return body
+}
+
+type signalingContext struct {
+	context.Context
+	entered chan time.Time
+	once    sync.Once
+}
+
+func (c *signalingContext) Done() <-chan struct{} {
+	c.once.Do(func() {
+		c.entered <- time.Now()
+		close(c.entered)
+	})
+	return c.Context.Done()
+}
+
+func requestGrantAsync(s *server, ctx context.Context) <-chan *httptest.ResponseRecorder {
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/grants/codex-cluster/login/start", nil).WithContext(ctx)
+		recorder := httptest.NewRecorder()
+		s.grants(recorder, req)
+		result <- recorder
+	}()
+	return result
 }
 
 func TestForceRefreshReturnsMetadataWithoutCredentialAndEnforcesCooldown(t *testing.T) {
@@ -181,4 +220,93 @@ func TestPendingLoginStatusAndConflictRepeatLiveDeviceCode(t *testing.T) {
 	if conflict.Code != http.StatusConflict || conflictBody["reason"] != "login_pending" || conflictBody["verification_url"] != "https://auth.example/device" || conflictBody["user_code"] != "ABCD-EFGH" || conflictBody["expires_in"] != float64(900) {
 		t.Fatalf("conflict = %d %#v", conflict.Code, conflictBody)
 	}
+}
+
+func TestConcurrentLoginStartWaitsForDeviceCode(t *testing.T) {
+	startWait := make(chan struct{})
+	startCalled := make(chan struct{})
+	pollWait := make(chan struct{})
+	defer close(pollWait)
+	adapter := &fakeAdapter{
+		deviceCode:  provider.DeviceCodeResponse{VerificationURL: "https://auth.example/device", UserCode: "ABCD-EFGH", ExpiresIn: 900},
+		startWait:   startWait,
+		startCalled: startCalled,
+		pollWait:    pollWait,
+	}
+	s := newTestServer(&fakeStore{grants: make(map[string]store.Grant)}, adapter)
+
+	firstResult := requestGrantAsync(s, context.Background())
+	<-startCalled
+	waiting := make(chan time.Time, 1)
+	secondResult := requestGrantAsync(s, &signalingContext{Context: context.Background(), entered: waiting})
+	<-waiting
+	close(startWait)
+
+	first := <-firstResult
+	firstBody := decodeBody(t, first)
+	if first.Code != http.StatusOK || firstBody["verification_url"] != "https://auth.example/device" || firstBody["user_code"] != "ABCD-EFGH" || firstBody["expires_in"] != float64(900) {
+		t.Fatalf("first = %d %#v", first.Code, firstBody)
+	}
+	second := <-secondResult
+	secondBody := decodeBody(t, second)
+	if second.Code != http.StatusConflict || secondBody["reason"] != "login_pending" || secondBody["verification_url"] != "https://auth.example/device" || secondBody["user_code"] != "ABCD-EFGH" || secondBody["expires_in"] != float64(900) {
+		t.Fatalf("second = %d %#v", second.Code, secondBody)
+	}
+}
+
+func TestConcurrentLoginStartReportsStartingWhenDeviceCodeFails(t *testing.T) {
+	startWait := make(chan struct{})
+	startCalled := make(chan struct{})
+	adapter := &fakeAdapter{
+		deviceErr:   errors.New("device flow unavailable"),
+		startWait:   startWait,
+		startCalled: startCalled,
+	}
+	s := newTestServer(&fakeStore{grants: make(map[string]store.Grant)}, adapter)
+
+	firstResult := requestGrantAsync(s, context.Background())
+	<-startCalled
+	waiting := make(chan time.Time, 1)
+	secondResult := requestGrantAsync(s, &signalingContext{Context: context.Background(), entered: waiting})
+	<-waiting
+	close(startWait)
+
+	first := <-firstResult
+	if first.Code != http.StatusBadGateway || decodeBody(t, first)["reason"] != "device_code_failed" {
+		t.Fatalf("first = %d %s", first.Code, first.Body.String())
+	}
+	second := <-secondResult
+	secondBody := decodeBody(t, second)
+	if second.Code != http.StatusConflict || len(secondBody) != 1 || secondBody["reason"] != "login_starting" {
+		t.Fatalf("second = %d %#v", second.Code, secondBody)
+	}
+}
+
+func TestConcurrentLoginStartTimesOutWaitingForDeviceCode(t *testing.T) {
+	startWait := make(chan struct{})
+	startCalled := make(chan struct{})
+	adapter := &fakeAdapter{
+		deviceCode:  provider.DeviceCodeResponse{VerificationURL: "https://auth.example/device", UserCode: "ABCD-EFGH", ExpiresIn: 900},
+		startWait:   startWait,
+		startCalled: startCalled,
+	}
+	s := newTestServer(&fakeStore{grants: make(map[string]store.Grant)}, adapter)
+
+	firstResult := requestGrantAsync(s, context.Background())
+	<-startCalled
+	waiting := make(chan time.Time, 1)
+	secondResult := requestGrantAsync(s, &signalingContext{Context: context.Background(), entered: waiting})
+	startedAt := <-waiting
+	second := <-secondResult
+	elapsed := time.Since(startedAt)
+	if elapsed < loginStartWaitTimeout || elapsed > loginStartWaitTimeout+5*time.Second {
+		t.Fatalf("wait duration = %s, want about %s", elapsed, loginStartWaitTimeout)
+	}
+	secondBody := decodeBody(t, second)
+	if second.Code != http.StatusConflict || len(secondBody) != 1 || secondBody["reason"] != "login_starting" {
+		t.Fatalf("second = %d %#v", second.Code, secondBody)
+	}
+
+	close(startWait)
+	<-firstResult
 }

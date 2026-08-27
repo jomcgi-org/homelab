@@ -289,13 +289,23 @@ async def codex_login_start(grant: str = Query(default="codex-cluster")):
                 pending_data = exc.response.json()
             except Exception:
                 pending_data = {}
-            if isinstance(pending_data, dict) and pending_data.get("user_code"):
-                return {
-                    "verification_url": pending_data.get("verification_url"),
-                    "user_code": pending_data.get("user_code"),
-                    "expires_in": pending_data.get("expires_in"),
-                    "pending": True,
-                }
+            if isinstance(pending_data, dict):
+                reason = pending_data.get("reason")
+                has_code = bool(pending_data.get("user_code"))
+                has_code_fields = has_code or bool(pending_data.get("verification_url"))
+                if reason == "login_starting" and not has_code_fields:
+                    return {
+                        "retry_after": 10,
+                        "message": "Device flow is starting, try again shortly.",
+                        "pending": False,
+                    }
+                if has_code and reason in (None, "login_pending"):
+                    return {
+                        "verification_url": pending_data.get("verification_url"),
+                        "user_code": pending_data.get("user_code"),
+                        "expires_in": pending_data.get("expires_in"),
+                        "pending": True,
+                    }
         return JSONResponse(
             status_code=502,
             content={"error": "Codex login broker unavailable"},
