@@ -225,6 +225,7 @@ def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
         branch=None,
         progress_token=None,
         system_prompt=None,
+        reasoning=False,
     ):
         delivered_models.append(model)
         return _completed_delivery(message)
@@ -265,6 +266,7 @@ def test_session_start_returns_immediately(monkeypatch, session):
         branch=None,
         progress_token=None,
         system_prompt=None,
+        reasoning=False,
     ):
         started.set()
         await asyncio.Event().wait()
@@ -302,6 +304,7 @@ def test_session_start_happy_path_persists_result(monkeypatch, session):
         branch=None,
         progress_token=None,
         system_prompt=None,
+        reasoning=False,
     ):
         return _completed_delivery(message)
 
@@ -377,6 +380,7 @@ def test_concurrent_executors_on_first_turn_run_once(monkeypatch, session):
         branch=None,
         progress_token=None,
         system_prompt=None,
+        reasoning=False,
     ):
         executions.append(message)
         await asyncio.sleep(0.01)
@@ -490,6 +494,7 @@ def test_pending_message_executed_in_background(monkeypatch, session):
         branch=None,
         progress_token=None,
         system_prompt=None,
+        reasoning=False,
     ):
         return _completed_delivery(message)
 
@@ -534,6 +539,7 @@ def test_failed_delivery_clears_reused_ember_session(monkeypatch, session):
         branch=None,
         progress_token=None,
         system_prompt=None,
+        reasoning=False,
     ):
         raise EmberSessionGone("terminal invoke failure")
 
@@ -573,6 +579,7 @@ def test_clear_ember_session_not_called_when_fresh_binding_persisted(
         branch=None,
         progress_token=None,
         system_prompt=None,
+        reasoning=False,
     ):
         heir = EmberSession("heir-id", "heir-token", None)
         if on_create is not None:

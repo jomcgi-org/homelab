@@ -1517,6 +1517,45 @@ def test_start_session_marks_message_ui_originated(client, session, monkeypatch)
     mcp._ui_originated.clear()
 
 
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # The console UI sends no reasoning field at all, so these two cases
+        # are what every real session gets. A repo-attached session is doing
+        # multi-step work and needs thinking on; a repo-less one is the case
+        # the pi lane's thinking-off default was chosen for.
+        ({"prompt": "Hi", "repo": "jomcgi-org/homelab"}, True),
+        ({"prompt": "Hi"}, False),
+        # An explicit value still wins in both directions.
+        ({"prompt": "Hi", "repo": "jomcgi-org/homelab", "reasoning": False}, False),
+        ({"prompt": "Hi", "reasoning": True}, True),
+    ],
+)
+def test_start_session_reasoning_defaults_from_repo_presence(
+    client, session, monkeypatch, body, expected
+):
+    mcp._ui_originated.clear()
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_session",
+        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
+            session, local, workspace, branch, model, repo, **kwargs
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr("agent_sessions.router._schedule_next_message", lambda _: None)
+
+    response = client.post("/api/agents/sessions", json=body).json()
+    persisted = store.get_session(session, response["session_id"])
+
+    assert persisted.reasoning is expected
+    mcp._ui_originated.clear()
+
+
 def test_start_session_for_discord_thread_adds_rationale_prompt(session, monkeypatch):
     async def broker_request(*args):
         return {"state": "granted"}

@@ -190,10 +190,33 @@ def _rows(session: Session, status: str | None = None, limit: int | None = None)
 class StartRequest(BaseModel):
     prompt: str
     model: str | None = None
-    reasoning: bool = False
+    # None means "decide from repo presence", resolved in start_session. A
+    # repo-attached session is doing multi-step work, and on the pi lane
+    # thinking off makes qwen repeat one identical tool call until the context
+    # window fills. An explicit true or false from the caller still wins.
+    reasoning: bool | None = None
     workspace: str = "<guest>"
     branch: str = "main"
     repo: str | None = None
+
+
+def _resolve_reasoning(start_request: "StartRequest") -> bool:
+    """Thinking defaults on for a repo-attached session, off otherwise.
+
+    The console never sent this field, so every session it started ran with
+    thinking off, including repo-attached ones. On the pi lane that is what
+    makes qwen repeat one identical tool call until the context window fills:
+    measured on one drainer prompt, thinking off took 461 tool calls and
+    118790 input tokens to end at stopReason length with no answer, while
+    thinking on answered correctly in 8 and 12 calls across two runs.
+
+    A repo-less session is the case the pi lane's thinking-off default was
+    chosen for, so it keeps that default. An explicit value from the caller
+    wins in both directions.
+    """
+    if start_request.reasoning is not None:
+        return start_request.reasoning
+    return bool(start_request.repo)
 
 
 class MessageRequest(BaseModel):
@@ -719,7 +742,7 @@ async def start_session(request: Request, start_request: StartRequest) -> dict:
         start_request.model,
         start_request.repo,
         system_prompt=_append_rationale_trailer(None, start_request.repo),
-        reasoning=start_request.reasoning,
+        reasoning=_resolve_reasoning(start_request),
         triggered_by=triggered_by,
     )
     turn = await asyncio.to_thread(
