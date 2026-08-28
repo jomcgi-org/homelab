@@ -95,9 +95,6 @@ def test_stale_pending_reaper_then_enqueue(monkeypatch):
     cancelled = []
 
     class FakeDBOS:
-        def __init__(self):
-            self.call_count = 0
-
         def list_workflows(
             self,
             name=None,
@@ -107,13 +104,11 @@ def test_stale_pending_reaper_then_enqueue(monkeypatch):
             load_input=False,
             load_output=False,
         ):
-            self.call_count += 1
-            if self.call_count == 1:
-                # First call from _reap_stale_drain_cycles: return one stale workflow
+            # status is a string for PENDING (from reaper), or list for live check
+            if status == "PENDING":
+                # From _reap_stale_drain_cycles: return one stale workflow
                 return [_FakeWorkflow("stale-wf-1", 1000)]
-            elif self.call_count == 2:
-                # Second call from _has_live_drain_cycle: no live workflows
-                return []
+            # From _has_live_drain_cycle (status is a list): no live workflows
             return []
 
         def list_workflow_steps(self, workflow_id, load_output=False):
@@ -158,7 +153,7 @@ def test_fresh_pending_not_reaped_returns_already_queued(monkeypatch):
             if status == "PENDING":
                 # No stale workflows
                 return []
-            # Live workflows check: return one live PENDING
+            # Live workflows check (status is a list): return one live PENDING
             return [_FakeWorkflow("live-wf-1", int(1000 * 1000))]
 
         def list_workflow_steps(self, workflow_id, load_output=False):
@@ -200,7 +195,7 @@ def test_enqueued_row_prevents_second_enqueue(monkeypatch):
             if status == "PENDING":
                 # No stale workflows
                 return []
-            # Live workflows check: return one ENQUEUED
+            # Live workflows check (status is a list): return one ENQUEUED
             return [_FakeWorkflow("live-wf-1", int(1000 * 1000))]
 
         def list_workflow_steps(self, workflow_id, load_output=False):
@@ -296,9 +291,6 @@ def test_old_updated_at_with_recent_step_not_reaped(monkeypatch):
     now_ms = int(1_000_000_000 * 1000)  # Some large epoch ms value
 
     class FakeDBOS:
-        def __init__(self):
-            self.call_count = 0
-
         def list_workflows(
             self,
             name=None,
@@ -308,9 +300,9 @@ def test_old_updated_at_with_recent_step_not_reaped(monkeypatch):
             load_input=False,
             load_output=False,
         ):
-            self.call_count += 1
-            if self.call_count == 1:
-                # First call from _reap_stale_drain_cycles: return one workflow
+            # status is a string for PENDING (from reaper), or list for live check
+            if status == "PENDING":
+                # From _reap_stale_drain_cycles: return one workflow
                 # with very old updated_at (frozen at some status transition)
                 return [
                     _FakeWorkflow(
@@ -318,9 +310,7 @@ def test_old_updated_at_with_recent_step_not_reaped(monkeypatch):
                         now_ms - (4000 * 1000),  # 4000 seconds old
                     )
                 ]
-            elif self.call_count == 2:
-                # Second call from _has_live_drain_cycle: no live workflows
-                return []
+            # From _has_live_drain_cycle (status is a list): no live workflows
             return []
 
         def list_workflow_steps(self, workflow_id, load_output=False):
