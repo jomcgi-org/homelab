@@ -29,6 +29,14 @@ def test_dbos_not_launched_returns_503(monkeypatch):
     assert "not launched" in response.json()["detail"]
 
 
+class _FakeWorkflow:
+    """Fake workflow object that mimics DBOS workflow_id and updated_at."""
+
+    def __init__(self, workflow_id, updated_at):
+        self.workflow_id = workflow_id
+        self.updated_at = updated_at
+
+
 def _fake_dbos_no_live_workflows(monkeypatch):
     """Mock DBOS to return no stale or live workflows."""
 
@@ -102,12 +110,7 @@ def test_stale_pending_reaper_then_enqueue(monkeypatch):
             self.call_count += 1
             if self.call_count == 1:
                 # First call from _reap_stale_drain_cycles: return one stale workflow
-                return [
-                    {
-                        "workflow_id": "stale-wf-1",
-                        "updated_at": 1000,  # Very old, 1 second epoch
-                    }
-                ]
+                return [_FakeWorkflow("stale-wf-1", 1000)]
             elif self.call_count == 2:
                 # Second call from _has_live_drain_cycle: no live workflows
                 return []
@@ -156,7 +159,7 @@ def test_fresh_pending_not_reaped_returns_already_queued(monkeypatch):
                 # No stale workflows
                 return []
             # Live workflows check: return one live PENDING
-            return [{"workflow_id": "live-wf-1", "updated_at": int(1000 * 1000)}]
+            return [_FakeWorkflow("live-wf-1", int(1000 * 1000))]
 
         def list_workflow_steps(self, workflow_id, load_output=False):
             return []
@@ -198,7 +201,7 @@ def test_enqueued_row_prevents_second_enqueue(monkeypatch):
                 # No stale workflows
                 return []
             # Live workflows check: return one ENQUEUED
-            return [{"workflow_id": "live-wf-1", "updated_at": int(1000 * 1000)}]
+            return [_FakeWorkflow("live-wf-1", int(1000 * 1000))]
 
         def list_workflow_steps(self, workflow_id, load_output=False):
             return []
@@ -308,12 +311,12 @@ def test_old_updated_at_with_recent_step_not_reaped(monkeypatch):
             self.call_count += 1
             if self.call_count == 1:
                 # First call from _reap_stale_drain_cycles: return one workflow
+                # with very old updated_at (frozen at some status transition)
                 return [
-                    {
-                        "workflow_id": "active-wf-1",
-                        # updated_at is very old (frozen at some status transition)
-                        "updated_at": now_ms - (4000 * 1000),  # 4000 seconds old
-                    }
+                    _FakeWorkflow(
+                        "active-wf-1",
+                        now_ms - (4000 * 1000),  # 4000 seconds old
+                    )
                 ]
             elif self.call_count == 2:
                 # Second call from _has_live_drain_cycle: no live workflows
