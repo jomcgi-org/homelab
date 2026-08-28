@@ -21,6 +21,25 @@ otelInjection:
     - kube-public
     - kube-node-lease
 
+# One-shot sweep removing the OTLP env that inject-otel-env-vars wrote before
+# SigNoz was removed (#5362). Kyverno wrote those fields into the Deployment
+# specs, so Kyverno is what can remove them: ArgoCD's diff under
+# ServerSideApply only compares fields its own manifest declares, so a field no
+# chart carries is invisible to it.
+#
+# TEMPORARY. Set enabled: false and delete the template once no workload
+# carries a signoz OTLP endpoint.
+stripStaleOtel:
+  enabled: true
+  targetKinds:
+    - Deployment
+    - StatefulSet
+    - DaemonSet
+  excludeNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+
 # Require resource requests + a memory limit (AUDIT-only) in first-party app
 # namespaces, so regressions in our own charts surface as PolicyReports. A CPU
 # limit is intentionally NOT required: CPU limits cause CFS throttling even on an

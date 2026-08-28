@@ -1,0 +1,134 @@
+{{- if .Values.stripStaleOtel.enabled }}
+# One-shot sweep to remove the OTLP env that inject-otel-env-vars wrote before
+# SigNoz was removed (#5362).
+#
+# WHY THIS EXISTS AND ARGOCD COULD NOT DO IT
+#
+# The injection policy mutated Deployment SPECS at admission, not just live
+# pods, so the values survive a rollout. Disabling that policy stops new
+# injection but leaves roughly 83 workloads pointing at a SigNoz service that
+# no longer resolves.
+#
+# ArgoCD cannot clean this up, and removing its ignoreDifferences entry did not
+# help: under ServerSideApply its diff compares only the fields present in its
+# own desired manifest against live. A field no chart declares is not part of
+# that comparison, so there is nothing to flag and nothing to prune. Verified
+# empirically: cert-manager reconciled ten minutes after the ignore was removed
+# and still reported Synced with the stale value in place.
+#
+# Kyverno wrote these fields, so Kyverno is what can unwrite them.
+#
+# THIS IS TEMPORARY. Delete this file once the sweep has run and
+# `kubectl get deploy,statefulset,daemonset -A -o json` shows no container
+# carrying a signoz OTLP endpoint. Leaving it armed means every future
+# admission pays for a mutation that can never match.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: strip-stale-signoz-otel
+  annotations:
+    policies.kyverno.io/title: Strip Stale SigNoz OTLP Env
+    policies.kyverno.io/category: Observability
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/description: |
+      Removes OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_PROTOCOL from
+      workloads where the endpoint still points at the removed SigNoz service,
+      plus the otel.injected-by annotation that marked them.
+
+      Deliberately narrow: it matches ONLY on the endpoint value containing
+      "signoz". A workload pointing at the new collector is untouched, so this
+      cannot undo an opt-in, and re-running it is a no-op once swept.
+spec:
+  # Fire against resources that ALREADY exist, which is the whole point. Without
+  # this the rule would only apply at the next admission of each workload, and
+  # nothing is going to re-admit 83 specs on its own.
+  mutateExistingOnPolicyUpdate: true
+  # Audit, not Enforce: a mutate rule that cannot match must never block an
+  # unrelated admission.
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: strip-stale-otel-env
+      match:
+        any:
+          - resources:
+              kinds:
+                {{- range .Values.stripStaleOtel.targetKinds }}
+                - {{ . }}
+                {{- end }}
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                {{- range .Values.stripStaleOtel.excludeNamespaces }}
+                - {{ . }}
+                {{- end }}
+      mutate:
+        targets:
+          {{- range .Values.stripStaleOtel.targetKinds }}
+          - apiVersion: apps/v1
+            kind: {{ . }}
+          {{- end }}
+        foreach:
+          - list: "request.object.spec.template.spec.containers"
+            preconditions:
+              all:
+                # Only touch a container whose endpoint actually names signoz.
+                # This is the safety property: it cannot strip the new
+                # collector's endpoint from a service that has opted in, and it
+                # makes the rule idempotent once a container is clean.
+                # contains() rather than a wildcard AnyIn: substring matching
+                # via wildcards in AnyIn is not something to rely on here, and
+                # a precondition that silently never matches would make this
+                # policy a no-op that still looks armed.
+                - key: "{{ `{{ contains(element.env[?name=='OTEL_EXPORTER_OTLP_ENDPOINT'].value | [0] || '', 'signoz') }}` }}"
+                  operator: Equals
+                  value: true
+            # Strategic merge deletes a list element by its merge key, which for
+            # env is `name`. json6902 would need a literal index, and the index
+            # differs per container, so it cannot express this.
+            patchStrategicMerge:
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: "{{ `{{ element.name }}` }}"
+                        env:
+                          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                            $patch: delete
+                          - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                            $patch: delete
+    - name: strip-stale-otel-annotation
+      match:
+        any:
+          - resources:
+              kinds:
+                {{- range .Values.stripStaleOtel.targetKinds }}
+                - {{ . }}
+                {{- end }}
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                {{- range .Values.stripStaleOtel.excludeNamespaces }}
+                - {{ . }}
+                {{- end }}
+      preconditions:
+        all:
+          # Only workloads the injection policy actually marked.
+          - key: "{{ `{{ request.object.spec.template.metadata.annotations.\"otel.injected-by\" || '' }}` }}"
+            operator: NotEquals
+            value: ""
+      mutate:
+        targets:
+          {{- range .Values.stripStaleOtel.targetKinds }}
+          - apiVersion: apps/v1
+            kind: {{ . }}
+          {{- end }}
+        patchStrategicMerge:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  otel.injected-by: null
+{{- end }}
