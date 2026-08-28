@@ -14,7 +14,7 @@ opLog:
 # to validate TLA+ specs against live behaviour. Off in production by default.
 specTrace:
   enabled: true
-  path: /var/lib/embervm/spec-trace.db
+  path: /var/lib/embervm-spec-trace/spec-trace.db
   ttlSeconds: 86400
   sweepIntervalSeconds: 3600
 

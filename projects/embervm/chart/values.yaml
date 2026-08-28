@@ -186,9 +186,10 @@ asyncLifecycleWrites: false
 specTrace:
   # Default OFF in production. ON in dev for local spec validation.
   enabled: false
-  # SQLite path for spec trace rows, used only when EMBERVM_OPLOG_DSN is unset.
-  # Empty string means in-memory database.
-  path: ""
+  # SQLite path for spec trace rows. This deliberately lives on a non-durable
+  # emptyDir: SpecTrace is dev-only, retains 24 hours, and its per-BEAM run_id
+  # already partitions the trace whenever the control plane restarts.
+  path: /var/lib/embervm-spec-trace/spec-trace.db
   # Retention for trace rows (seconds).
   ttlSeconds: 86400
   # How often the supervised sweeper runs compaction (seconds). Matches opLog's hourly
