@@ -12,10 +12,25 @@ data:
         endpoint: 0.0.0.0:13133
       {{- if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}
       # Backs tail_sampling's pending-trace buffer with disk instead of RAM.
-      # The directory is an emptyDir mount, so this is node-local scratch, not
-      # durable storage: it holds only traces awaiting a sampling decision.
-      file_storage/tail:
+      #
+      # It MUST be pebble_tail_storage, not file_storage. tail_storage takes a
+      # component.ID, so any extension id parses and `validate` exits 0, but the
+      # processor then type-asserts the resolved extension to the TailStorage
+      # interface (Append/Take/Delete). file_storage implements the byte-KV
+      # storage.Extension instead and fails that assertion at Start with
+      # "non-tail-storage extension", after health_check is already up. The only
+      # thing that catches this is starting a collector against the render.
+      #
+      # max_storage_size_mib defaults to unlimited and must stay under the
+      # volume's sizeLimit: if Pebble outgrows the emptyDir the kubelet evicts
+      # the pod for exceeding ephemeral storage, which is a worse failure than
+      # the OOM this was meant to avoid.
+      #
+      # The extension drops everything in the directory on startup and does not
+      # persist across restarts. That suits a buffer of pending decisions.
+      pebble_tail_storage:
         directory: {{ .Values.sampling.tailStorage.directory | quote }}
+        max_storage_size_mib: {{ .Values.sampling.tailStorage.maxStorageSizeMib }}
       {{- end }}
 
     receivers:
@@ -56,9 +71,12 @@ data:
         send_batch_size: 1024
       {{- if .Values.environment }}
       # Stamped on everything leaving here, traces and probe metrics alike, so
-      # prod and dev remain separable in Honeycomb. upsert rather than insert:
-      # a service that sets its own deployment.environment should not end up
-      # with two conflicting values.
+      # prod and dev remain separable in Honeycomb.
+      #
+      # upsert overwrites a value the service set for itself; insert would keep
+      # the service's. Overwriting is deliberate: the collector knows which
+      # cluster it is running in and a service does not. Resource attributes are
+      # a map, so neither action can produce two conflicting values.
       resource/environment:
         attributes:
           - key: deployment.environment
@@ -83,7 +101,7 @@ data:
         # feature gate, passed as a container arg. With the gate off, setting
         # this fails config validation and the collector refuses to start, so
         # the two must move together.
-        tail_storage: file_storage/tail
+        tail_storage: pebble_tail_storage
         {{- end }}
         policies:
           # One composite policy, not three peer policies. tail_sampling ORs
@@ -141,7 +159,7 @@ data:
           x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
 
     service:
-      extensions: [health_check{{ if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}, file_storage/tail{{ end }}]
+      extensions: [health_check{{ if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}, pebble_tail_storage{{ end }}]
       pipelines:
         {{- if .Values.allowedServices }}
         traces:

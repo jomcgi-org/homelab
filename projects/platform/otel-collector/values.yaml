@@ -73,8 +73,13 @@ sampling:
   # This is what lets numTraces be sized for correct decisions instead of for
   # whatever fits in 512Mi. It is behind an upstream feature gate that is off
   # by default and documented as under active development, so it is kept
-  # toggleable: turning it off falls back to the in-memory buffer, at which
-  # point numTraces must come down to something that actually fits.
+  # toggleable.
+  #
+  # TURNING THIS OFF REQUIRES A SECOND EDIT IN THE SAME CHANGE: numTraces must
+  # come down to something that fits in the memory limit, roughly 2000. Nothing
+  # enforces the pair. Flipping enabled to false on its own leaves 50,000
+  # pending traces in RAM against a 512Mi limit, which is an OOM, and this
+  # toggle is exactly what someone reaches for mid-incident.
   #
   # The backing volume is an emptyDir, deliberately not a PVC. The buffer holds
   # only traces awaiting a decision, so losing it on restart costs one
@@ -86,7 +91,12 @@ sampling:
   tailStorage:
     enabled: true
     directory: /var/lib/otelcol/tail
+    # Volume cap. Exceeding it gets the pod evicted for ephemeral storage.
     sizeLimit: 2Gi
+    # Pebble's own cap, deliberately under sizeLimit. It defaults to unlimited,
+    # so without this the buffer can grow past the volume and trigger that
+    # eviction, which is a worse failure than the OOM disk backing avoids.
+    maxStorageSizeMib: 1536
   # 10s, not 2s. At a 2s threshold a latency incident makes EVERY trace
   # qualify, which is a worse volume risk than an error storm because latency
   # incidents last longer. 10s keeps the pathological outliers, which are the
@@ -106,39 +116,48 @@ sampling:
   # allocating a spans-per-second budget across its sub-policies and dropping
   # what does not fit.
   #
-  # This value is squeezed between two opposing constraints, so it is not free
-  # to tune in one direction only.
+  # Squeezed between two opposing constraints, so it is not free to tune in one
+  # direction only.
   #
   # From above: it is the incident ceiling. Sustained, N spans/sec exhausts a
-  # 20M events/month budget in 20,000,000/N seconds. At 1000 that is 5.5 hours,
-  # which is not a ceiling so much as a way to lose the month. At 200 it is
-  # roughly 27 hours, long enough that a burst is survivable and only a
-  # multi-day sustained incident is dangerous.
+  # 20M events/month budget in 20,000,000/N seconds. At 1000 that is 5.6 hours,
+  # which is not a ceiling so much as a way to lose the month. At 400 it is
+  # roughly 14.
   #
-  # From below: the budget is checked PER TRACE against the matching
-  # sub-policy's own allocation, and a trace bigger than that allocation is
-  # dropped outright rather than falling through. At 200 with errors at 70%,
-  # the errors slice is 140 spans/sec, so an error trace up to 140 spans still
-  # fits. Lowering this further starts silently dropping deep error traces,
-  # which are exactly the ones worth having.
+  # From below, and this is the constraint that sets the floor: the budget is
+  # checked PER TRACE against the MATCHING sub-policy's own slice, and a trace
+  # bigger than that slice is dropped outright. It does NOT fall through to
+  # another sub-policy, so a slice smaller than a typical trace does not merely
+  # sample less, it drops everything that matches it.
   #
-  # embervm-control has ~107 span callsites, so its traces are deep. Recheck
-  # this against measured span-per-trace depth once real data lands, rather
-  # than assuming 140 is enough.
-  maxTotalSpansPerSecond: 200
-  # Budget split across the sub-policies. Errors get the largest slice both
-  # because they are the most valuable per span and because the per-trace rule
-  # above means a bigger slice admits deeper traces.
+  # That makes small slices actively harmful. A 25-span trace that is slow but
+  # not an error matches slow-traces, fails a 20 spans/sec slice, and is
+  # discarded WITHOUT ever being offered to the baseline policy. Raising the
+  # latency threshold to catch pathological outliers makes this worse, because
+  # deep traces are exactly what a small slice cannot hold.
+  #
+  # So every slice has to exceed a typical trace, not just the errors slice.
+  # embervm-control has ~107 span callsites and its traces are deep, so at 400
+  # the slices are 200/100/100 spans/sec and all three can admit a deep trace.
+  # The 27-hour exhaustion figure at 200 was better on paper and bought with
+  # silent drops.
+  #
+  # Recheck against measured span-per-trace depth once real data lands. If
+  # traces run deeper than 100 spans, raise this rather than rebalancing:
+  # shrinking any slice to feed another just moves the silent drop.
+  maxTotalSpansPerSecond: 400
+  # Budget split. Errors keep the largest slice, but every slice is sized to
+  # hold a whole trace, per the per-trace rule above.
   #
   # These do NOT have to sum to 100 and nothing validates them, so a sum over
   # 100 quietly raises the real ceiling above maxTotalSpansPerSecond. A
-  # sub-policy missing or misspelled here silently falls back to an equal
-  # share rather than erroring, so keep the names in step with the
+  # sub-policy missing or misspelled here silently falls back to an EQUAL share
+  # rather than erroring or getting nothing, so keep the names in step with the
   # composite_sub_policy entries in the ConfigMap template.
   rateAllocation:
-    errorsPercent: 70
-    slowPercent: 10
-    baselinePercent: 20
+    errorsPercent: 50
+    slowPercent: 25
+    baselinePercent: 25
 
 # URLs the http_check receiver probes. Empty by default.
 #
