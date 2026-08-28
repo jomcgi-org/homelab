@@ -132,7 +132,7 @@ spec:
             # OFF means no process, no connection, no sweep.
             - name: EMBERVM_SPEC_TRACE
               value: {{ if .Values.specTrace.enabled }}"on"{{ else }}"off"{{ end }}
-            {{- if .Values.specTrace.path }}
+            {{- if and .Values.specTrace.enabled .Values.specTrace.path }}
             - name: EMBERVM_SPEC_TRACE_PATH
               value: {{ .Values.specTrace.path | quote }}
             {{- end }}
@@ -628,6 +628,10 @@ spec:
           volumeMounts:
             - name: oplog
               mountPath: /var/lib/embervm
+            {{- if .Values.specTrace.enabled }}
+            - name: spec-trace
+              mountPath: {{ dir .Values.specTrace.path | quote }}
+            {{- end }}
             # The OTP release writes runtime scratch (extracted vm.args, boot
             # files) to RELEASE_TMP=/tmp; the rootfs is read-only, so /tmp is a
             # writable emptyDir. RELEASE_TMP is set in the image env (apko.yaml).
@@ -689,5 +693,9 @@ spec:
           # nothing here, so an emptyDir avoids a storage dependency.
           emptyDir: {}
           {{- end }}
+        {{- if .Values.specTrace.enabled }}
+        - name: spec-trace
+          emptyDir: {}
+        {{- end }}
         - name: tmp
           emptyDir: {}
