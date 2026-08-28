@@ -340,8 +340,20 @@ def test_discover_repo_normalises_and_falls_back(monkeypatch):
     fake.value = "git@github.com:jomcgi-org/homelab.git\n"
     assert _discover_repo() == "https://github.com/jomcgi-org/homelab"
 
+    fake.value = "ssh://git@github.com/jomcgi-org/homelab.git\n"
+    assert _discover_repo() == "https://github.com/jomcgi-org/homelab"
+
+    fake.value = "\n"
+    assert _discover_repo() == bb_usage._FALLBACK_REPO
+
     def boom(_cmd, **_kwargs):
         raise subprocess.CalledProcessError(128, "git")
 
     monkeypatch.setattr(bb_usage.subprocess, "check_output", boom)
+    assert _discover_repo() == bb_usage._FALLBACK_REPO
+
+    def missing(_cmd, **_kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(bb_usage.subprocess, "check_output", missing)
     assert _discover_repo() == bb_usage._FALLBACK_REPO

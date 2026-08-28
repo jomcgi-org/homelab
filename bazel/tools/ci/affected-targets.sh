@@ -245,6 +245,12 @@ recover_bazel() {
 	timeout 60 "${BAZEL:-bazel}" shutdown >/dev/null 2>&1 || pkill -9 -f 'A-server.jar' >/dev/null 2>&1 || true
 }
 
+# Labels are QUOTED in both set() calls below, and both must stay that way.
+# Bazel's query lexer reads + as an operator, so an unquoted
+# //pkg:src/routes/+page.svelte is a syntax error and bazel exits 2, which the
+# fail-closed paths below turn into a full //... run. Do not collapse either
+# printf through `xargs`: xargs does its own quote removal and would silently
+# undo the fix on the line it touches.
 QUERY_TIMEOUT="${AFFECTED_TARGETS_QUERY_TIMEOUT:-600}"
 echo "affected-targets: probing ${#source_labels[@]} label(s) (timeout ${QUERY_TIMEOUT}s)" >&2
 probe_output=$(timeout "$QUERY_TIMEOUT" "${BAZEL:-bazel}" query "set($(printf '"%s" ' "${source_labels[@]}"))" --keep_going --output=label "${bazel_args[@]}") || probe_rc=$?

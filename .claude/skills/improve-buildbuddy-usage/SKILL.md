@@ -230,8 +230,10 @@ runner's `affected-targets: fallback to //... because` line rather than guessed:
 | merge queue (the authoritative gate) | 143 | 155.7 GB |
 
 Reason split on the local lane's 527.8 GB: BUILD-shaped file 46%, deleted file
-32%, label probe exit 2 4.5%. On PR branches: `MODULE.bazel` 63% (one 335.5 GB
-run), no static trigger at all 19%, deleted file 9%, `BUILD` 8%.
+32%, `label existence probe failed (exit 2)` 4.5%. On PR branches:
+`MODULE.bazel` 63% (one 335.5 GB run), `label existence probe failed (exit 2)`
+19%, deleted file 9%, `BUILD` 8%. Those are the strings the script prints, so
+grep the runner log for them rather than reasoning from the diff.
 
 **Two traps when reading this.** First, a `CI test //...` invocation on branch
 `main` is usually not CI: 51 of the top 60 have a `HOSTED_BAZEL remote run`
@@ -239,9 +241,9 @@ parent, so they are somebody's local `ci test`. Resolve
 `PARENT_INVOCATION_ID` before attributing a byte to a lane. Second, commit size
 still predicts nothing: deleting `docs/THREAT-MODEL.md` cost 85 GB in one run.
 
-The 19% with no static trigger was a plain bug, fixed in this cycle. Every one
-of those 17 commits touched a SvelteKit route file, and bazel's query lexer
-reads `+` as an operator:
+The 19% exiting 2 was a plain bug, fixed in this cycle. No file in any of those
+17 diffs matched a fallback rule; every one of them touched a SvelteKit route
+file, and bazel's query lexer reads `+` as an operator:
 
 ```
 ERROR: Error while parsing 'set(//projects/monolith/frontend:src/routes/public/ember/+page.svelte )':
@@ -288,7 +290,7 @@ file in the diff explains.
 | this PR | gave each monolith `pkg_*` library only the wheels it imports | mean pip closure 37 -> 21, libraries carrying 10+ heavy wheels 25/25 -> 0/25; byte effect pending, re-measure after 2026-08-19 |
 | #5102, #5104, #5105, #5110 (2026-08-22) | pre-push `ci test` opt-in; no `push_charts --stamp` on PRs (analysis cache survives); amd64-only images; manifest as own layer; PR runs test affected targets only | wall: warm pr-checks run ~5.8 min -> measure; bytes pending, re-measure after 2026-08-29 |
 | #5116, #5118 (2026-08-22) | stripped CPython toolchain; postgres_test real closure | test input tree 1.54 GB -> ~0.65 GB, the dominant byte lever; re-measure after 2026-08-29 |
-| this PR (2026-08-27) | quoted labels in the affected-targets query; `--repo` read from the git remote | removes the 19% of PR fallbacks that no diff explained, about 25 GB/day across both lanes; re-measure after 2026-09-03 |
+| #5374 (2026-08-27) | quoted labels in the affected-targets query; `--repo` read from the git remote | removes the 19% of PR fallbacks that no diff explained, about 25 GB/day across both lanes; re-measure after 2026-09-03 |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
