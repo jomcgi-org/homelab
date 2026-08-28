@@ -18,8 +18,28 @@ from pathlib import Path
 # 2 added "concentration" and "top_invocations". Readers tolerate their absence,
 # so schema 1 snapshots still compare and render.
 SCHEMA_VERSION = 2
-DEFAULT_REPO = "https://github.com/jomcgi/homelab"
 _HOST = "https://app.buildbuddy.io"
+# Fallback only. BuildBuddy keys invocations by the repo URL it was told at
+# push time, so a hardcoded one goes stale the moment the repo moves: the
+# 2026-08-22 move to the jomcgi-org org made every default-argument query
+# return nothing after that date, silently, while still printing a report.
+# Ask git instead, and pass --repo "" to measure the whole group across a
+# window that spans a move.
+_FALLBACK_REPO = "https://github.com/jomcgi-org/homelab"
+
+
+def _discover_repo():
+    try:
+        url = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return _FALLBACK_REPO
+    if url.startswith("git@"):
+        url = "https://" + url[len("git@") :].replace(":", "/", 1)
+    if url.endswith(".git"):
+        url = url[: -len(".git")]
+    return url or _FALLBACK_REPO
 
 
 def _int(data, key):
@@ -530,11 +550,12 @@ def _default_out_dir():
 
 
 def _parser():
+    default_repo = _discover_repo()
     parser = argparse.ArgumentParser(description="Measure BuildBuddy cache traffic")
     sub = parser.add_subparsers(dest="command", required=True)
     snap = sub.add_parser("snapshot")
     snap.add_argument("--days", type=float, default=7)
-    snap.add_argument("--repo", default=DEFAULT_REPO)
+    snap.add_argument("--repo", default=default_repo)
     snap.add_argument("--group-id")
     snap.add_argument("--max-invocations", type=int, default=20000)
     snap.add_argument("--out-dir", type=Path, default=_default_out_dir())
@@ -548,11 +569,11 @@ def _parser():
     report.add_argument("--target-reduction", type=float, default=0.5)
     trend = sub.add_parser("trend")
     trend.add_argument("--days", type=float, default=30)
-    trend.add_argument("--repo", default=DEFAULT_REPO)
+    trend.add_argument("--repo", default=default_repo)
     trend.add_argument("--group-id")
     outliers = sub.add_parser("outliers")
     outliers.add_argument("--days", type=float, default=7)
-    outliers.add_argument("--repo", default=DEFAULT_REPO)
+    outliers.add_argument("--repo", default=default_repo)
     outliers.add_argument("--group-id")
     outliers.add_argument("--max-invocations", type=int, default=20000)
     outliers.add_argument("--limit", type=int, default=25)

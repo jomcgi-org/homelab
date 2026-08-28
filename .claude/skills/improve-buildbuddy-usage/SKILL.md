@@ -16,12 +16,22 @@ change at the largest source, and tracks the result across cycles.
 |---|---|
 | Baseline (7 days to 2026-07-28) | 1.502 TB/day download |
 | Target | 0.751 TB/day download |
-| Latest (1.5 days to 2026-08-10, post-rewrite) | 1.67 TB/day download |
-| Upload | 7.1 GB/day, 0.5% of the problem |
+| Latest (5 days to 2026-08-27, post-#5116/#5118) | 0.774 TB/day download |
+| Upload | 4.9 GB/day, 0.6% of the problem |
 
-The latest figure is not a failure of the landed work, and it is not comparable
-to the baseline either: the four reduction commits landed on 2026-08-09 and the
-window still contains the actions they removed. See "Where the bytes are".
+97% of the way to the target, 23 GB/day short. The window is clean: the last
+byte levers landed 2026-08-22 and it starts 2026-08-23. The seven clean days a
+committed snapshot needs are complete on 2026-08-29, so this figure came from
+`snapshot --days 5 --no-write` and `snapshots/` still holds two pre-rewrite
+files.
+
+**The repo URL is part of the measurement, and it moved.** BuildBuddy keys
+invocations by the URL it was told at push time. The 2026-08-22 move to the
+`jomcgi-org` org split the history in two: every query for
+`github.com/jomcgi/homelab` returns nothing after that date and prints a
+confident empty report rather than an error. `--repo` now defaults to
+`git remote get-url origin`, so a future move is picked up on its own. To
+measure a window that spans a move, pass `--repo ""` and read the whole group.
 
 Upload is a rounding error. **Optimise downloads.** Ignore any change that only
 helps upload unless it is free.
@@ -71,6 +81,10 @@ change that cuts the average 10% is worth less than one that stops a single
 392 GB invocation from recurring.
 
 ## Where the bytes are
+
+The table in this section is the 2026-08-10 split, kept for the cold-start unit
+costs below it. For the current split read "What is left is the `//...`
+fallback".
 
 **Both committed snapshots predate the 2026-08-09 rewrite.** Every reduction
 commit (`d2bd5b032`, `524430f02`, `b671019ed`, `d6b4041c6`) landed that day, so
@@ -202,6 +216,43 @@ A commit that touches nothing near a test can still re-execute every test:
 check `trend` for a multi-day gap (cache eviction) before hunting for an
 invalidating input.
 
+## What is left is the `//...` fallback (settled 2026-08-27)
+
+Once the runfiles trees shrank, the remaining tail is not tree size at all. It
+is how often `bazel/tools/ci/affected-targets.sh` gives up and returns `//...`.
+Measured over the 5 days to 2026-08-27, with the reason read out of each
+runner's `affected-targets: fallback to //... because` line rather than guessed:
+
+| lane | full-suite runs | download |
+|---|---|---|
+| PR branches | 89 of ~99 test runs | 534.6 GB (106.9 GB/day) |
+| local `ci test` (top 40 by bytes) | 40 | 527.8 GB |
+| merge queue (the authoritative gate) | 143 | 155.7 GB |
+
+Reason split on the local lane's 527.8 GB: BUILD-shaped file 46%, deleted file
+32%, label probe exit 2 4.5%. On PR branches: `MODULE.bazel` 63% (one 335.5 GB
+run), no static trigger at all 19%, deleted file 9%, `BUILD` 8%.
+
+**Two traps when reading this.** First, a `CI test //...` invocation on branch
+`main` is usually not CI: 51 of the top 60 have a `HOSTED_BAZEL remote run`
+parent, so they are somebody's local `ci test`. Resolve
+`PARENT_INVOCATION_ID` before attributing a byte to a lane. Second, commit size
+still predicts nothing: deleting `docs/THREAT-MODEL.md` cost 85 GB in one run.
+
+The 19% with no static trigger was a plain bug, fixed in this cycle. Every one
+of those 17 commits touched a SvelteKit route file, and bazel's query lexer
+reads `+` as an operator:
+
+```
+ERROR: Error while parsing 'set(//projects/monolith/frontend:src/routes/public/ember/+page.svelte )':
+syntax error at '+ page.svelte )'
+```
+
+Query exit 2 is a command-line error, which the script correctly fails closed
+on. Quoting each label in the `set()` fixes it. Any future character class that
+breaks label parsing will look the same: exit 2, and a `//...` run that no
+file in the diff explains.
+
 ## Refuted, do not retry
 
 - **`--remote_local_fallback` is not the cause of the tail.** A 299 GB
@@ -237,6 +288,7 @@ invalidating input.
 | this PR | gave each monolith `pkg_*` library only the wheels it imports | mean pip closure 37 -> 21, libraries carrying 10+ heavy wheels 25/25 -> 0/25; byte effect pending, re-measure after 2026-08-19 |
 | #5102, #5104, #5105, #5110 (2026-08-22) | pre-push `ci test` opt-in; no `push_charts --stamp` on PRs (analysis cache survives); amd64-only images; manifest as own layer; PR runs test affected targets only | wall: warm pr-checks run ~5.8 min -> measure; bytes pending, re-measure after 2026-08-29 |
 | #5116, #5118 (2026-08-22) | stripped CPython toolchain; postgres_test real closure | test input tree 1.54 GB -> ~0.65 GB, the dominant byte lever; re-measure after 2026-08-29 |
+| this PR (2026-08-27) | quoted labels in the affected-targets query; `--repo` read from the git remote | removes the 19% of PR fallbacks that no diff explained, about 25 GB/day across both lanes; re-measure after 2026-09-03 |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
@@ -247,16 +299,27 @@ dragged all ~24 images out of CAS.
 Ranked by expected bytes saved. Everything here is a **hypothesis that must be
 confirmed against a real invocation** before you act on it.
 
-1. **`CI test //...` at ~700 GB/day is the largest source.** Mechanism settled
-   2026-08-12, see "Test bytes are runfiles trees" below. The lever is the size
-   of each test's runfiles tree, not the cache hit rate.
-2. **Shrink `deploy`'s snapshot further.** This PR removes the image runfiles
+1. **Narrow the deleted-file fallback**, 32% of the local lane's full-suite
+   bytes. The rule exists because a deleted file cannot be mapped to a label by
+   static inspection, the file being gone. It can be mapped from the **base
+   ref's** tree, which still has the BUILD files, so the deletion becomes a
+   changed label in a known package instead of a whole-repo run. Deleting a
+   BUILD file still has to fall back, and that rule already fires first.
+2. **Narrow the BUILD-shaped fallback**, 46% of the same bytes and the largest
+   single lever left, but the riskiest thing on this list. A BUILD edit changes
+   graph shape in one package, so rdeps of that package is the honest set. Get
+   a second opinion before touching it: too narrow here means a green PR that
+   was never tested.
+3. **`CI test //...` runfiles trees.** Mechanism settled 2026-08-12, see "Test
+   bytes are runfiles trees". #5116 and #5118 took the tree from 1.54 GB to
+   ~0.65 GB; what is left is the app's honest closure.
+4. **Shrink `deploy`'s snapshot further.** This PR removes the image runfiles
    staging. If `deploy`'s cold unit does not fall from 33.1 GB toward
    `pr-checks`' 20.9 GB, the extra 12 GB is something else and worth finding.
-3. **`HOSTED_BAZEL` at 240 GB/day was full local `ci test`.** Local runs now use
+5. **`HOSTED_BAZEL` at 240 GB/day was full local `ci test`.** Local runs now use
    affected targets; keep reporting this role separately to verify the drop,
    never fold it into the CI number.
-4. **Fewer redundant pushes.** 1,396 runs in 7 days were superseded within 10
+6. **Fewer redundant pushes.** 1,396 runs in 7 days were superseded within 10
    minutes by another run of the same action on the same branch. The strict
    "up to date with main" rule forces `update-branch` on every open PR whenever
    anything merges. This is policy, not config. Note that a superseded run still
