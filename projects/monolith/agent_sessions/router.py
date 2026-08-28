@@ -247,6 +247,8 @@ def drain_lane_status() -> dict:
 
     settings = load_drainer_settings()
     jobs = list_jobs(kind=settings.job_kind)
+    # This mirrors the due-and-claimable predicate swarm.health computes in
+    # SQL for the drainer health component; keep the two in agreement.
     now = datetime.now(timezone.utc)
     running = []
     running_names = set()
@@ -256,7 +258,7 @@ def drain_lane_status() -> dict:
         if (
             job["locked_by"] is not None
             and locked_at is not None
-            and locked_at + timedelta(seconds=job["ttl_secs"]) > now
+            and locked_at + timedelta(seconds=job["ttl_secs"] or 0) > now
         ):
             running.append({"name": job["name"], "locked_at": _iso(locked_at)})
             running_names.add(job["name"])

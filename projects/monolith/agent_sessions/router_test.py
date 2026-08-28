@@ -137,6 +137,17 @@ def test_drain_lane_classifies_running_due_and_last(client, monkeypatch):
             "locked_at": None,
             "ttl_secs": 300,
         },
+        {
+            # A row locked outside claim_job can carry a NULL ttl_secs; it
+            # must count as an expired lock, not crash the endpoint.
+            "name": "hand-locked-job",
+            "next_run_at": now - timedelta(minutes=1),
+            "last_run_at": None,
+            "last_status": None,
+            "locked_by": "manual",
+            "locked_at": now - timedelta(minutes=1),
+            "ttl_secs": None,
+        },
     ]
     monkeypatch.setattr(
         agent_config,
@@ -160,7 +171,7 @@ def test_drain_lane_classifies_running_due_and_last(client, monkeypatch):
         "enabled": True,
         "kind": "qwen-drain",
         "running": [{"name": "running-job", "locked_at": running_at.isoformat()}],
-        "due_count": 1,
+        "due_count": 2,
         "last": {
             "name": "completed-job",
             "status": "failed",

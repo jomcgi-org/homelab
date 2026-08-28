@@ -176,6 +176,9 @@
       </span>
       {#if runningJob}
         <span>{runningJob.name}</span>
+        {#if drain.running.length > 1}
+          <span>+{drain.running.length - 1}</span>
+        {/if}
         <span aria-hidden="true">{P.punct.dot}</span>
         <span>{relativeTime(runningJob.locked_at)}</span>
       {/if}
