@@ -68,6 +68,23 @@ def _render(extra: list[str] | None = None) -> list[dict]:
     return [d for d in yaml.safe_load_all(result.stdout) if d]
 
 
+def _render_default() -> list[dict]:
+    """Render with values.yaml alone, no prod overlay."""
+    argv = [
+        os.environ.get("HELM_BIN", "helm"),
+        "template",
+        RELEASE,
+        str(_chart_dir()),
+        "--namespace",
+        RELEASE,
+        "--values",
+        str(_values("values")),
+    ]
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, f"helm template failed:\n{result.stderr}"
+    return [d for d in yaml.safe_load_all(result.stdout) if d]
+
+
 def _collector_config(docs: list[dict]) -> dict:
     """The collector config is YAML nested inside a ConfigMap string."""
     for doc in docs:
@@ -195,6 +212,36 @@ def test_every_pipeline_references_only_defined_components(extra):
                 f"pipeline {name} references undefined {section}: {missing}"
             )
         assert pipeline.get("receivers"), f"pipeline {name} has no receivers"
+
+
+def test_health_route_rewrites_to_the_extension_root():
+    """The public route exists so UptimeRobot can metamonitor the collector.
+
+    The health_check extension serves at /, so the /health/otel-collector
+    prefix has to be stripped or every probe 404s while the collector is
+    perfectly healthy.
+    """
+    docs = _render()
+    routes = [d for d in docs if d.get("kind") == "HTTPRoute"]
+    assert len(routes) == 1, "expected exactly one HTTPRoute"
+    rule = routes[0]["spec"]["rules"][0]
+
+    assert rule["matches"][0]["path"]["value"] == "/health/otel-collector"
+    rewrite = rule["filters"][0]["urlRewrite"]["path"]
+    assert rewrite["replacePrefixMatch"] == "/"
+
+    backend = rule["backendRefs"][0]
+    assert backend["name"] == "otel-collector"
+    assert backend["port"] == 13133, (
+        "the route must target the health port, never an OTLP port: those are "
+        "not exposed at all while the allowlist is empty"
+    )
+
+
+def test_health_route_is_absent_by_default():
+    """Inert without the prod overlay, like every other switch in this chart."""
+    argv_docs = _render_default()
+    assert not [d for d in argv_docs if d.get("kind") == "HTTPRoute"]
 
 
 def test_probe_targets_are_public_urls():

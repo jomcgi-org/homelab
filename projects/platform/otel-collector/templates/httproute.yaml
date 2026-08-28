@@ -1,0 +1,39 @@
+{{- /*
+Public health route: https://jomcgi.dev/health/otel-collector
+
+This exists for EXTERNAL metamonitoring (UptimeRobot). It is deliberately a
+direct route to this collector rather than a SvelteKit proxy on the public
+frontend, which is how jomcgi.dev/health is served.
+
+The reason is independence. The collector is the thing watching everything
+else, so the signal saying "the watcher is alive" must not travel through
+another service that can fail on its own. Routing this through the public
+frontend's SSR would mean a frontend outage renders the collector unreachable
+and therefore apparently dead, conflating two unrelated failures at exactly
+the moment you need them separated.
+
+That is a different trade than jomcgi.dev/health, which proxies through the
+frontend on purpose: it reads the public BACKEND, which is deliberately never
+internet-reachable (ADR 004). Nothing here touches the public backend, so that
+isolation is not weakened. What is exposed is the health_check extension's
+fixed JSON status on 13133, which carries no data and no auth surface.
+
+The prefix is rewritten to / because the extension serves at the root.
+
+Note the gateway's SecurityPolicies and rate limits target routes BY NAME, so
+this route inherits neither Cloudflare Access nor a rate limit. That is
+required: UptimeRobot has to reach it unauthenticated.
+*/}}
+{{- if .Values.cfIngress.enabled }}
+{{- $routeParams := dict
+  "name" "otel-collector-health"
+  "tier" .Values.cfIngress.tier
+  "hostname" .Values.cfIngress.hostname
+  "pathPrefix" .Values.cfIngress.pathPrefix
+  "rewritePrefix" .Values.cfIngress.rewritePrefix
+  "serviceName" .Values.cfIngress.serviceName
+  "servicePort" .Values.cfIngress.servicePort
+  "gateway" .Values.cfIngress.gateway
+}}
+{{- include "cf-ingress.httproute" $routeParams }}
+{{- end }}

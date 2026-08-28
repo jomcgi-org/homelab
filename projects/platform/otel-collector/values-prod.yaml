@@ -2,6 +2,10 @@ onepassword:
   enabled: true
   itemPath: "vaults/k8s-homelab/items/honeycomb-ingest"
 
+cfIngress:
+  enabled: true
+  hostname: jomcgi.dev
+
 httpcheck:
   enabled: true
   # Deliberately short to start, new targets are a one-line addition.

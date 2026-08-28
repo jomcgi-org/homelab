@@ -4,6 +4,10 @@ description: Minimal OpenTelemetry Collector exporting telemetry to Honeycomb
 type: application
 version: 0.1.0
 appVersion: "0.159.0"
+dependencies:
+  - name: cf-ingress
+    version: 0.1.0
+    repository: "file://../cf-ingress-library"
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
   org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
