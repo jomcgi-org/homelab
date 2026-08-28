@@ -128,6 +128,35 @@ def test_reasoning_defaults_from_settings_and_payload_overrides(
     assert reasoning is expected
 
 
+def test_reasoning_survives_replayed_settings_without_the_key():
+    """A cycle recovered across this deploy replays settings pinned before it.
+
+    pin_drainer_settings is a checkpointed step, so the dict a recovered cycle
+    sees is the one written by the previous image, which has no "reasoning"
+    key. An eager subscript would raise KeyError, the per-job handler would
+    finish each claimed job as "error", and for a one-shot job that is
+    permanent. repo and branch never needed this because they predate pinning.
+    """
+    legacy_settings = {
+        "enabled": True,
+        "max_jobs_per_cycle": 3,
+        "turn_timeout_seconds": 1800,
+        "job_kind": "qwen-drain",
+        "repo": "jomcgi-org/homelab",
+        "branch": "main",
+    }
+
+    _prompt, _repo, _branch, reasoning = drainer._payload_values(
+        {"prompt": "do work"}, legacy_settings
+    )
+    assert reasoning is False
+
+    _p, _r, _b, explicit = drainer._payload_values(
+        {"prompt": "do work", "reasoning": True}, legacy_settings
+    )
+    assert explicit is True
+
+
 def test_empty_queue_exits_immediately(monkeypatch):
     result, claims, starts, completions, notifications, destroys = _run(monkeypatch, [])
 

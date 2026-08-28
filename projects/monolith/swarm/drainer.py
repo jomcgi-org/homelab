@@ -144,7 +144,15 @@ def _payload_values(payload: object, settings: dict) -> tuple[str, str, str, boo
     branch = payload.get("branch", settings["branch"])
     # Default from settings, like repo and branch above, so an explicit
     # per-job "reasoning": false still wins over the lane default.
-    reasoning = payload.get("reasoning", settings["reasoning"])
+    #
+    # settings.get, not settings[...]: pin_drainer_settings is a checkpointed
+    # step, so a cycle that was in flight when this deploy landed is recovered
+    # afterwards and REPLAYS the settings dict it pinned before the key
+    # existed. An eager subscript would raise KeyError for every job that
+    # cycle claims, and the per-job handler would finish each as "error",
+    # which for a one-shot job is permanent. repo and branch never needed this
+    # because they predate the pinning.
+    reasoning = payload.get("reasoning", settings.get("reasoning", False))
     if not isinstance(repo, str) or not repo.strip():
         raise MalformedPayload("repo must be a non-empty string")
     if not isinstance(branch, str) or not branch.strip():
