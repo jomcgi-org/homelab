@@ -493,8 +493,18 @@ PI_COMPACTION_KEEP_RECENT_TOKENS = 8000
 # report-only job). A model re-running a command after an edit produces a
 # DIFFERENT intervening call, so an unbroken run of identical calls is never
 # productive work. This affects report-only jobs too, so prompt shape is not
-# the trigger. A small threshold is safe.
-PI_MAX_IDENTICAL_TOOL_CALLS = 5
+# the trigger.
+#
+# 20, not 5. Only a different tool call resets the counter, and thinking
+# blocks do not, so check-free POLLING is a legitimate unbroken run of
+# identical calls: waiting on CI with repeated `gh pr checks`, or retrying a
+# flaky egress call. Killing one of those ends the turn, and for a one-shot
+# drain job that error is permanent. The observed pathological runs were 184
+# to 400, so any threshold below about 50 catches all of them, and 20 buys
+# that margin at no cost. A sharper signal, deferred as its own change, is to
+# reset when the tool RESULT changes: an identical call whose output differs
+# is progress, which is exactly what polling is.
+PI_MAX_IDENTICAL_TOOL_CALLS = 20
 PI_WEB_RESEARCH_EXTENSION = "/usr/share/ember-pi/extensions/web-research.ts"
 MAX_REQUEST_BODY_BYTES = 1 << 20
 MAX_TOOL_INPUT_BYTES = 4096

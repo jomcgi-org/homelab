@@ -422,19 +422,23 @@ for line in sys.stdin:
             "repeated-tool-calls-missing-args",
         ):
             mode = os.environ["FAKE_PI_MODE"]
+            # Derived from PI_MAX_IDENTICAL_TOOL_CALLS by the test rather than
+            # hardcoded, so raising the threshold cannot silently turn the
+            # trip cases into non-trip cases.
+            limit = int(os.environ["FAKE_PI_REPEAT_LIMIT"])
             emit({"type": "message_start", "message": {"role": "assistant"}})
             if mode == "repeated-tool-calls":
-                tool_args = [{"command": "grep loop shim.py"}] * 5
+                tool_args = [{"command": "grep loop shim.py"}] * limit
             elif mode == "repeated-tool-calls-n-minus-1":
-                tool_args = [{"command": "grep loop shim.py"}] * 4
+                tool_args = [{"command": "grep loop shim.py"}] * (limit - 1)
             elif mode == "repeated-tool-calls-separated":
                 tool_args = (
-                    [{"command": "grep loop shim.py"}] * 3
+                    [{"command": "grep loop shim.py"}] * (limit - 1)
                     + [{"command": "grep guard shim.py"}]
-                    + [{"command": "grep loop shim.py"}] * 4
+                    + [{"command": "grep loop shim.py"}] * (limit - 1)
                 )
             else:
-                tool_args = [None] * 5
+                tool_args = [None] * limit
             for index, args in enumerate(tool_args):
                 event = {"type": "tool_execution_start",
                          "toolCallId": "bash-%d" % index, "toolName": "bash"}
@@ -633,6 +637,7 @@ def test_pi_turn_without_tools_reports_zero_tool_time(tmp_path, monkeypatch):
 
 def test_pi_repeated_tool_calls_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls")
+    monkeypatch.setenv("FAKE_PI_REPEAT_LIMIT", str(shim.PI_MAX_IDENTICAL_TOOL_CALLS))
     manager = _pi_manager(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match="repeated the same bash tool call"):
@@ -641,6 +646,7 @@ def test_pi_repeated_tool_calls_raises(tmp_path, monkeypatch):
 
 def test_pi_repeated_tool_calls_n_minus_1_completes(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls-n-minus-1")
+    monkeypatch.setenv("FAKE_PI_REPEAT_LIMIT", str(shim.PI_MAX_IDENTICAL_TOOL_CALLS))
     manager = _pi_manager(tmp_path, monkeypatch)
     record = manager.turn("hello", model="qwen")
     manager._close_process()
@@ -650,6 +656,7 @@ def test_pi_repeated_tool_calls_n_minus_1_completes(tmp_path, monkeypatch):
 
 def test_pi_repeated_tool_calls_separated_resets_counter(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls-separated")
+    monkeypatch.setenv("FAKE_PI_REPEAT_LIMIT", str(shim.PI_MAX_IDENTICAL_TOOL_CALLS))
     manager = _pi_manager(tmp_path, monkeypatch)
     record = manager.turn("hello", model="qwen")
     manager._close_process()
@@ -659,6 +666,7 @@ def test_pi_repeated_tool_calls_separated_resets_counter(tmp_path, monkeypatch):
 
 def test_pi_repeated_tool_calls_missing_args_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls-missing-args")
+    monkeypatch.setenv("FAKE_PI_REPEAT_LIMIT", str(shim.PI_MAX_IDENTICAL_TOOL_CALLS))
     manager = _pi_manager(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match="repeated the same bash tool call"):
