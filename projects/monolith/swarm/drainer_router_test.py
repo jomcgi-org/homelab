@@ -29,6 +29,36 @@ def test_dbos_not_launched_returns_503(monkeypatch):
     assert "not launched" in response.json()["detail"]
 
 
+def _fake_session_no_live_workflows(monkeypatch):
+    """Mock Session to return no stale or live workflows."""
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.engine = engine
+
+        def execute(self, sql, params=None):
+            # No stale workflows, no live workflows
+            return FakeResult([])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def fetchall(self):
+            return self.value or []
+
+        def scalar(self):
+            return None
+
+    monkeypatch.setattr(drainer_router, "Session", FakeSession)
+
+
 def test_launched_enqueues_workflow_on_drainer_queue(monkeypatch):
     enqueued = []
 
@@ -39,6 +69,8 @@ def test_launched_enqueues_workflow_on_drainer_queue(monkeypatch):
     class FakeQueue:
         def enqueue(self, workflow):
             enqueued.append(workflow)
+
+    _fake_session_no_live_workflows(monkeypatch)
 
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
@@ -57,3 +89,244 @@ def test_drainer_flag_enables_shared_dbos_runtime(monkeypatch):
     monkeypatch.setenv("DRAINER_ENABLED", "true")
 
     assert drainer_router.runtime._enabled() is True
+
+
+def test_stale_pending_reaper_then_enqueue(monkeypatch):
+    """A stale PENDING row is cancelled and then a fresh cycle IS enqueued."""
+    enqueued = []
+    cancelled = []
+    reaped = []
+
+    class FakeDBOS:
+        def cancel_workflow(self, workflow_id, cancel_children=False):
+            cancelled.append(workflow_id)
+
+        def start_workflow(self, _workflow):
+            raise AssertionError("drain cycle must be queued")
+
+    class FakeQueue:
+        def enqueue(self, workflow):
+            enqueued.append(workflow)
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.engine = engine
+            self.call_count = 0
+
+        def execute(self, sql, params=None):
+            self.call_count += 1
+            sql_text = str(sql)
+            if "SELECT 1" in sql_text:
+                # No live drain_cycle, so enqueue
+                return FakeResult(None)
+            # First call: query returns one stale workflow
+            return FakeResult([("stale-wf-1",)])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def fetchall(self):
+            return self.value or []
+
+        def scalar(self):
+            return self.value
+
+    def fake_reap(workflow_id):
+        reaped.append(workflow_id)
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
+    monkeypatch.setattr(drainer_router, "Session", FakeSession)
+    monkeypatch.setattr(
+        drainer_router.asyncio, "run", lambda coro: None
+    )  # Mock asyncio.run to avoid actually running async code
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "started"}
+    assert "stale-wf-1" in cancelled
+    assert enqueued == [drainer_router.drain_cycle]
+
+
+def test_fresh_pending_not_reaped_returns_already_queued(monkeypatch):
+    """A fresh PENDING row is left alone and NO new cycle is enqueued."""
+    enqueued = []
+
+    class FakeDBOS:
+        def cancel_workflow(self, workflow_id, cancel_children=False):
+            raise AssertionError("should not cancel fresh cycle")
+
+        def start_workflow(self, _workflow):
+            raise AssertionError("drain cycle must be queued")
+
+    class FakeQueue:
+        def enqueue(self, workflow):
+            enqueued.append(workflow)
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.engine = engine
+
+        def execute(self, sql, params=None):
+            sql_text = str(sql)
+            if "SELECT 1" in sql_text:
+                # A live drain_cycle exists, so don't enqueue
+                return FakeResult(1)
+            # Query returns no stale workflows
+            return FakeResult([])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def fetchall(self):
+            return self.value or []
+
+        def scalar(self):
+            return self.value
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
+    monkeypatch.setattr(drainer_router, "Session", FakeSession)
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "already_queued"}
+    assert enqueued == []
+
+
+def test_enqueued_row_prevents_second_enqueue(monkeypatch):
+    """An ENQUEUED row present means no second enqueue."""
+    enqueued = []
+
+    class FakeDBOS:
+        def start_workflow(self, _workflow):
+            raise AssertionError("drain cycle must be queued")
+
+    class FakeQueue:
+        def enqueue(self, workflow):
+            enqueued.append(workflow)
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.engine = engine
+
+        def execute(self, sql, params=None):
+            sql_text = str(sql)
+            if "SELECT 1" in sql_text:
+                # A live ENQUEUED drain_cycle exists
+                return FakeResult(1)
+            # Query returns no stale workflows
+            return FakeResult([])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def fetchall(self):
+            return self.value or []
+
+        def scalar(self):
+            return self.value
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
+    monkeypatch.setattr(drainer_router, "Session", FakeSession)
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "already_queued"}
+    assert enqueued == []
+
+
+def test_nothing_live_means_normal_enqueue(monkeypatch):
+    """Nothing live means normal enqueue, unchanged from today."""
+    enqueued = []
+
+    class FakeDBOS:
+        def start_workflow(self, _workflow):
+            raise AssertionError("drain cycle must be queued")
+
+    class FakeQueue:
+        def enqueue(self, workflow):
+            enqueued.append(workflow)
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.engine = engine
+
+        def execute(self, sql, params=None):
+            # No stale workflows, no live workflows
+            return FakeResult([])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def fetchall(self):
+            return self.value or []
+
+        def scalar(self):
+            return None
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
+    monkeypatch.setattr(drainer_router, "Session", FakeSession)
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "started"}
+    assert enqueued == [drainer_router.drain_cycle]
+
+
+def test_drainer_disabled_still_short_circuits(monkeypatch):
+    """Drainer disabled still short-circuits before any of this."""
+
+    class FakeSession:
+        def execute(self, sql, params=None):
+            raise AssertionError("should not query when disabled")
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: False)
+    monkeypatch.setattr(drainer_router, "Session", FakeSession)
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "disabled"}
