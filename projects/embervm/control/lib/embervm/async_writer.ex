@@ -187,7 +187,7 @@ defmodule Embervm.AsyncWriter do
 
       {:error, reason} ->
         # A lost async append is exactly the crash-window case the reconcile
-        # repairs: log it (SigNoz-visible) and drop it rather than crash the writer
+        # repairs: log it for telemetry and drop it rather than crash the writer
         # and take every other pending append down with it.
         Logger.warning("embervm async_writer append failed",
           kind: op.kind,

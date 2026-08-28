@@ -120,7 +120,7 @@ spec:
     # every route through the gateway dies as a silent dial timeout.
     #
     # The #4659 alert that caught this on policy-denied ingress drops was a
-    # SigNoz alert, removed with SigNoz (#5362), so the failure is silent again
+    # alert removed in #5362, so the failure is silent again
     # until the replacement monitoring lands. Rollback: revert the two
     # app.kubernetes.io label keys, which restores the namespace-wide grant
     # until the relabel is understood.

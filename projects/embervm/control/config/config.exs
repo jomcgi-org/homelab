@@ -8,7 +8,7 @@ import Config
 config :exqlite, force_build: true
 
 # Structured JSON logs (Task 13): set the DEFAULT HANDLER's formatter to our
-# custom Erlang :logger formatter, so every line is one JSON object SigNoz's
+# custom Erlang :logger formatter, so every line is one JSON object a collector's
 # pod-log pipeline ingests as structured fields. NOTE: this is :default_handler
 # (which accepts `formatter: {module, config}`), NOT :default_formatter (which
 # expects keyword options for Elixir's BUILT-IN formatter and crashes boot on a
@@ -19,7 +19,7 @@ config :logger, :default_handler,
 # OpenTelemetry tracing (Task 13). Default OFF (traces_exporter: :none) so tests
 # and any endpoint-less run boot cleanly and export nothing; config/runtime.exs
 # turns on the OTLP/gRPC exporter when OTEL_EXPORTER_OTLP_ENDPOINT is set (the
-# SigNoz collector, wired by the chart). A batch processor buffers spans off the
+# configured collector, wired by the chart). A batch processor buffers spans off the
 # hot path.
 config :opentelemetry,
   span_processor: :batch,

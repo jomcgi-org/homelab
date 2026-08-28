@@ -1100,7 +1100,7 @@ defmodule Embervm.Application do
   end
 
   # Alarm threshold for an instance stuck in destroying (EMBERVM_DESTROYING_ALARM_MS);
-  # default 5 minutes. The reconcile loop logs error-level with a SigNoz-visible field
+  # default 5 minutes. The reconcile loop logs error-level with a searchable field
   # when a destroying instance persists past this, per the ADR risk table.
   defp destroying_alarm_ms do
     int_env_or_nil("EMBERVM_DESTROYING_ALARM_MS") || 300_000

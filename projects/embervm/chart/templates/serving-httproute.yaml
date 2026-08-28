@@ -11,7 +11,7 @@ node Envoy's xDS-published virtual host matches. Public vs private is purely whi
 gateway/hostname an entry binds (and whether Cloudflare Access fronts that hostname);
 the serving substrate knows none of it. A path on an already-routed host needs no
 DNS/cert/tunnel change, which is why the demo routes are paths, not subdomains
-(mirroring the signoz/argocd path-route precedent on the same gateway).
+(mirroring the ArgoCD path-route precedent on the same gateway).
 
 URLRewrite.hostname is the canonical Gateway-API Host rewrite (a RequestHeaderModifier
 on Host is rejected by some implementations).

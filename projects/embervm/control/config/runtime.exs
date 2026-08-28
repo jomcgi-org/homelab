@@ -2,7 +2,7 @@ import Config
 
 # Runtime OpenTelemetry wiring (Task 13), evaluated at release BOOT (and at test
 # runtime). When OTEL_EXPORTER_OTLP_ENDPOINT is set (the chart points it at the
-# SigNoz collector, gRPC 4317), enable the OTLP exporter; otherwise leave tracing
+# collector over gRPC, enable the OTLP exporter; otherwise leave tracing
 # OFF (the config.exs default), so a run with no collector boots cleanly and
 # exports nothing. The endpoint-less case is exactly CI and any local mix run.
 otlp_endpoint = System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT", "")

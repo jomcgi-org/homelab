@@ -3044,7 +3044,7 @@ defmodule Embervm.SessionManager do
   # the VM, re-issue the node-confirmed teardown and, on confirmation, record
   # destroyed. If the owner no longer reports the VM (teardown actually completed but
   # the destroyed op was lost), the destruction is confirmed by absence: record
-  # destroyed. An alarm fires (error-level, SigNoz-visible) if a destroying session
+  # destroyed. An alarm fires at error level if a destroying session
   # persists past destroying_alarm_ms.
   defp redrive_destroying(state, live_vms) do
     now = state.clock.()
@@ -3070,7 +3070,7 @@ defmodule Embervm.SessionManager do
   end
 
   # Alarm ONCE per stuck session (dedup via destroying_alarmed): reconcile runs every
-  # few seconds, so logging every tick would flood SigNoz for a genuinely stuck
+  # few seconds, so logging every tick would flood logs for a genuinely stuck
   # destroy. Returns the updated state (the alarmed set is threaded through redrive).
   defp maybe_alarm_destroying(state, session, now) do
     id = session.session_id

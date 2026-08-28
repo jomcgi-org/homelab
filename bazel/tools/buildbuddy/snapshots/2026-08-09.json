@@ -482,15 +482,6 @@
       "upload_bytes": 1854242
     },
     {
-      "command": "remote test //projects/platform/signoz:template_test",
-      "download_bytes": 10289679020,
-      "download_share": 0.0008471794254649381,
-      "invocations": 2,
-      "pattern": "",
-      "role": "HOSTED_BAZEL",
-      "upload_bytes": 0
-    },
-    {
       "command": "remote build //bazel/erlang:mix_test_smoke",
       "download_bytes": 9458513537,
       "download_share": 0.000778747135693257,
@@ -933,30 +924,12 @@
     },
     {
       "command": "test",
-      "download_bytes": 7439,
-      "download_share": 6.124746684307821e-10,
-      "invocations": 1,
-      "pattern": "//projects/platform/signoz:template_test and 1 more",
-      "role": "CI",
-      "upload_bytes": 38686
-    },
-    {
-      "command": "test",
       "download_bytes": 1207,
       "download_share": 9.937584686059335e-11,
       "invocations": 1,
       "pattern": "//bazel/tools/ci:ci_test",
       "role": "CI",
       "upload_bytes": 5748
-    },
-    {
-      "command": "test",
-      "download_bytes": 777,
-      "download_share": 6.397268683569266e-11,
-      "invocations": 1,
-      "pattern": "//projects/platform/signoz:template_test",
-      "role": "CI",
-      "upload_bytes": 36542
     },
     {
       "command": "remote test //projects/monolith:graph_policy_test",

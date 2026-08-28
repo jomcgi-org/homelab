@@ -20,7 +20,7 @@ WHY NOT ON private.jomcgi.dev. The Cloudflare Access policy that guards that
 hostname carries no `authorization` block at all: it authorizes anyone holding
 a valid team session. There is no group concept on that lane, so a narrower
 grant cannot be expressed there. It is also a hostname shared by argocd,
-signoz, longhorn and kargo, so a mistaken binding there sits one claim away
+longhorn and kargo, so a mistaken binding there sits one claim away
 from the cluster control plane. Here it would expose this app and nothing else.
 */}}
 apiVersion: gateway.networking.k8s.io/v1

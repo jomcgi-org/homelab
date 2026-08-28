@@ -4,7 +4,7 @@ defmodule Embervm.SessionTraceTest do
   bank/relight spans (Task 9). No OTel exporter runs in CI (traces_exporter: :none),
   so `current_traceparent/0` returns nil (no recording span) and these tests pin the
   pure parsing + the never-crash guards; the actual span nesting is an integration
-  property verified live in SigNoz per the acceptance criteria.
+  property verified live in the trace backend per the acceptance criteria.
   """
   use ExUnit.Case, async: true
 

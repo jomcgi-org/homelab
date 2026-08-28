@@ -1,6 +1,6 @@
 # Cluster-specific overrides for the EmberVM control plane. The image tag is
 # pinned into the chart at build time (helm_chart images=), so it is not set
-# here. Defaults in the chart are sized small to start (SigNoz 7-day-peak
+# here. Defaults in the chart are sized small to start (historical 7-day peak
 # resizing later).
 # ENOSPC orphan reclaim (#4458). DISARMED deliberately: land it, wait for a
 # brick to hit ENOSPC, read the dry-run manifest it logs ("WOULD DELETE ...
@@ -52,7 +52,7 @@ opLog:
   # boot and nothing migrates the SQLite file, which is the accepted trade
   # (execution history is not worth a migration; the durable book-of-record
   # rebuilds from node adoption on the next dial-home, and long-horizon audit
-  # lives in SigNoz per ADR embervm/002).
+  # is available in the configured telemetry backend per ADR embervm/002).
   #
   # Still one replica with strategy: Recreate. Multi-replica needs ADR 007's
   # single-writer-per-cell op-log appender, which this does not deliver.
@@ -67,7 +67,7 @@ opLog:
   # empty SQLite op-log.
   size: 2Gi
   # Op-log retention (ADR embervm/002): hourly bounded-batch sweep; ops-journal
-  # prefix compaction past a 30-day horizon (older audit is in SigNoz).
+  # prefix compaction past a 30-day horizon.
   sweepIntervalSeconds: 3600
   journalHorizonDays: 30
 
@@ -136,10 +136,9 @@ usageAdmins:
 quota:
   dailyVcpuSecondsPerPrincipal: {}
 
-# OpenTelemetry tracing to SigNoz (Task 13), OTLP/gRPC on 4317 (the same
-# collector fc-invoke exports to). Turns on the exporter via config/runtime.exs.
+# OpenTelemetry tracing is disabled until this service explicitly opts in.
 tracing:
-  endpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4317"
+  endpoint: ""
   serviceName: embervm-control
 
 # Platform KEK root (ADR embervm/036, #4976), rollout step 1 for #4691.
@@ -169,13 +168,13 @@ artifactEncryption:
 # runaway backstop, not any pool floor.
 noded:
   # Ingress allow-list on every noded pod shape (#4693): gRPC from the control
-  # plane, health from kubelet and the SigNoz scraper, activator from
+  # plane, health from kubelet, activator from
   # serving-envoy and the CP, the serving DNAT range from serving-envoy. Dev has
   # run it since 0.25.1. Flipped in production on its own, ahead of the bearer
   # token, so a missed port shows up as a readiness or serving failure with one
   # cause to revert.
   # Ingress allow-list on every noded pod shape (#4693): gRPC from the control
-  # plane, health from kubelet and the SigNoz scraper, activator 8081 and the
+  # plane, health from kubelet, activator 8081 and the
   # stateful/composite activator ranges (5400-5419, which noded binds by
   # default) from serving-envoy and the CP, the serving DNAT range from
   # serving-envoy. First enable on 2026-08-22 omitted the 5400-5419 ranges and

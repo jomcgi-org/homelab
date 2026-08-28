@@ -17,35 +17,11 @@ spec:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
             app.kubernetes.io/component: noded-brick
       toPorts: [{ ports: [{ port: "8080", protocol: TCP }] }]
-    # Kubelet liveness/readiness probes (and the host-network SigNoz scrape
-    # agent) originate from the node host; once ingress is default-deny they
-    # must be allowed explicitly or the pod never goes Ready. Mirrors
-    # monolith-public's cilium policy.
+    # Kubelet liveness/readiness probes originate from the node host. Once
+    # ingress is default-deny they must be allowed or the pod never goes Ready.
     - fromEntities:
         - host
         - health
-    # The comment above is half right. SigNoz ships TWO collectors, and the one
-    # that reads `prometheus.io/scrape` is not the host-network agent: it is the
-    # otel-deployment, whose `prometheus/scraper` receiver does a cluster-wide
-    # `role: pod` discovery from the POD network. `host` never matched it, so
-    # the scrape annotations on this deployment were advertised and enforced
-    # against: every scrape was dropped (Policy denied) and the broker's
-    # metrics were never collected, while the drops kept the Hubble
-    # POLICY_DENIED alert firing continuously.
-    #
-    # Scoped to instance=signoz deliberately. A second, unmanaged
-    # `k8s-infra-otel-deployment` from an older release name is still running in
-    # that namespace; it is not granted reach to a credential-minting service.
-    #
-    # This is network reach to the metrics path, not authorisation: 8080 also
-    # serves the token API, and that API's own authn is what protects it.
-    - fromEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: signoz
-            app.kubernetes.io/name: k8s-infra
-            app.kubernetes.io/instance: signoz
-            app.kubernetes.io/component: otel-deployment
-      toPorts: [{ ports: [{ port: "8080", protocol: TCP }] }]
     # The monolith's agent surface proxies the device-code login flow
     # (/grants/<name>/login/*) so a login can be kicked off from a chat and
     # the code surfaced in the tool response (ADR 048, #4250 PR 2).

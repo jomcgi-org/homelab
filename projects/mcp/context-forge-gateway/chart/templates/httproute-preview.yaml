@@ -21,7 +21,7 @@ Every other path on this hostname still finds no route and 404s, so adding
 
 WHY THE IDENTITY LANE IS AUTHENTIK AND NOT CLOUDFLARE ACCESS.
 The lanes are split by audience, not by layer. Operator surfaces (argocd,
-signoz, longhorn, monolith private) use cf-ingress.security-policy and stay on
+longhorn, monolith private) use cf-ingress.security-policy and stay on
 Access, which is what keeps an authentik outage recoverable: authentik down
 must not lock the operator out of the tools used to fix authentik. User
 surfaces live here and cost no Zero Trust seats.

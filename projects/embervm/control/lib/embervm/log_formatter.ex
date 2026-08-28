@@ -1,7 +1,7 @@
 defmodule Embervm.LogFormatter do
   @moduledoc """
   Structured JSON log formatter (Task 13, logging half): emits ONE JSON object
-  per log line to stdout so SigNoz's pod-log pipeline ingests structured fields
+  per log line to stdout so pod-log pipelines ingest structured fields
   (level, message, and the whitelisted embervm metadata) rather than parsing free
   text. This is the Erlang `:logger` formatter behaviour (`format/2`), wired as
   the default handler's formatter in `config/config.exs`.
@@ -118,7 +118,7 @@ defmodule Embervm.LogFormatter do
   defp jsonable(v), do: inspect(v)
 
   # meta.time is system microseconds since epoch (OTP :logger). ISO8601 UTC keeps
-  # SigNoz's time parsing trivial; a bad/absent stamp falls back to the raw value.
+  # downstream time parsing trivial; a bad/absent stamp falls back to the raw value.
   defp timestamp(%{time: us}) when is_integer(us) do
     case DateTime.from_unix(us, :microsecond) do
       {:ok, dt} -> DateTime.to_iso8601(dt)

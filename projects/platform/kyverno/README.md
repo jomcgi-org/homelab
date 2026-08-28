@@ -47,7 +47,7 @@ Custom policies included:
 | Value                                       | Description                                | Default                                               |
 | ------------------------------------------- | ------------------------------------------ | ----------------------------------------------------- |
 | `otelInjection.enabled`                     | Enable OTel env var injection policy       | `true`                                                |
-| `otelInjection.endpoint`                    | OTel collector endpoint                    | `signoz-otel-collector.signoz.svc.cluster.local:4317` |
+| `otelInjection.endpoint`                    | OTel collector endpoint                    | `""`                                                  |
 | `otelInjection.protocol`                    | OTel exporter protocol                     | `grpc`                                                |
 | `otelInjection.targetKinds`                 | Resource kinds to inject into              | `[Deployment, StatefulSet, DaemonSet]`                |
 | `kyverno.admissionController.replicas`      | Admission controller replicas              | `1`                                                   |

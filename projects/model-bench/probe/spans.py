@@ -1,4 +1,16 @@
-"""Best-effort SigNoz span collection and hop bucketing."""
+"""Best-effort span collection and hop bucketing.
+
+INOPERATIVE since SigNoz was removed (#5362). collect_spans shells out to
+`kubectl exec` against the SigNoz ClickHouse pod, which no longer exists, so it
+now fails rather than returning spans. Kept because this is manual CLI tooling
+with no deployment behind it, and because bucket_spans and HOPS are still
+useful once a replacement span store lands (#5363).
+
+Restoring it means repointing _clickhouse at whatever that store turns out to
+be. Note it queried signoz_traces.distributed_signoz_index_v3 directly rather
+than through an API, so the replacement needs an equivalent query surface, not
+just an ingest path.
+"""
 
 from __future__ import annotations
 

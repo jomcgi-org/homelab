@@ -45,7 +45,6 @@ oci_digest_manifest(
         "//projects/monolith:jobs_image.info": "//projects/monolith:jobs_image.push",
         "//projects/monolith:progress_image.info": "//projects/monolith:progress_image.push",
         "//projects/operators/oci-model-cache:image.info": "//projects/operators/oci-model-cache:image.push",
-        "//projects/platform/signoz-addons/dashboard-sidecar/cmd:image.info": "//projects/platform/signoz-addons/dashboard-sidecar/cmd:image.push",
     },
     visibility = ["//visibility:public"],
 )

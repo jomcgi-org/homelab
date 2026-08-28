@@ -85,7 +85,7 @@ cilium:
           group: cert-manager.io
           kind: Issuer
           name: cilium-hubble-ca-issuer
-    # UI off; SigNoz remains the dashboard. Keep flow buffer modest.
+    # UI off. Keep the flow buffer modest.
     # httpV2 emits nothing until an L7 CiliumNetworkPolicy redirects a surface
     # through Envoy (ADR networking/003 #2); it is inert until Task A1 lands the
     # /invoke L7 rule. httpV2 (not v1 http) folds status onto
@@ -96,8 +96,8 @@ cilium:
     # drop carries context labels (#4659) because bare hubble_drop_total is
     # node-wide and cumulative, so policy-denied drops cannot be attributed to
     # a destination. The hubble ring buffer is only minutes deep, so drops are
-    # also unanswerable retroactively; the labeled counter series scraped into
-    # SigNoz is the durable record the monolith policy-deny alert reads.
+    # also unanswerable retroactively. The labeled counter series preserves the
+    # context needed by any collector that explicitly opts in.
     # labelsContext keys are exact per metric (no combined "ns/workload"
     # source/destination label), keeping cardinality to one series per
     # (reason, protocol, namespace-pair, direction) tuple on this small cluster.

@@ -1,8 +1,6 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 
-# Read by //projects/platform/signoz:hubble_monolith_policy_drops_test (#4659):
-# the hubble drop metric's context labels live in these two files, and the test
-# pins them in step with the alert that consumes the labels.
+# The Hubble drop metric's context labels are exported for downstream checks.
 exports_files([
     "values.yaml",
     "bootstrap/cilium-helmchart.yaml",

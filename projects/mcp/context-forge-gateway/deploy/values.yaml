@@ -161,7 +161,7 @@ mcp-stack:
         periodSeconds: 15
         timeoutSeconds: 5
         failureThreshold: 5
-    # 7-day SigNoz peak RSS 490Mi / working_set 533Mi. Trimmed 1Gi -> 768Mi
+    # Historical 7-day peak RSS 490Mi / working_set 533Mi. Trimmed 1Gi -> 768Mi
     # (req==limit, Guaranteed) to reclaim reservation on node-2 (a 12.3Gi
     # control-plane node) while keeping ~1.4x headroom over the real peak.
     resources:

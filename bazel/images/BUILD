@@ -66,8 +66,6 @@ multirun(
         "//projects/monolith:progress_image.push",
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
         "//projects/operators/oci-model-cache:image.push",
-        "//projects/platform/signoz-addons/dashboard-sidecar/cmd:image.push",
-        "//projects/platform/signoz-addons/dashboard-sidecar:chart.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],
@@ -86,7 +84,6 @@ multirun(
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
-        "//projects/platform/signoz-addons/dashboard-sidecar:chart.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],

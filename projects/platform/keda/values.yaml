@@ -18,7 +18,7 @@ keda:
     enabled: false
 
   # Expose Prometheus metrics on port 8080 for the operator and the metrics
-  # apiserver. SigNoz autodiscovers scrape targets via the prometheus.io/*
+  # apiserver. Collectors can discover scrape targets via the prometheus.io/*
   # pod annotations below (see podAnnotations); we do NOT rely on the
   # Prometheus Operator's ServiceMonitor/PodMonitor CRDs (not installed here).
   prometheus:
@@ -33,8 +33,8 @@ keda:
       port: 8080
 
   # Pre-populate the Kyverno OTEL annotation to match the cluster mutation
-  # (prevents ArgoCD drift) and add prometheus.io/scrape annotations so SigNoz
-  # autodiscovers the metrics endpoints (port 8080, path /metrics).
+  # (prevents ArgoCD drift) and add prometheus.io/scrape annotations for the
+  # metrics endpoints (port 8080, path /metrics).
   podAnnotations:
     keda:
       otel.injected-by: kyverno/inject-otel-env-vars

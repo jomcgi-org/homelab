@@ -13,6 +13,7 @@ import json
 import logging
 
 import core.leadership as leadership
+import framework.core as framework_core
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -39,6 +40,11 @@ _PLAIN_PRIVATE = dataclasses.replace(
     mcp_enabled=False,
     otel_enabled=False,
     static_frontend=False,
+)
+
+_OTEL_PRIVATE = dataclasses.replace(
+    _PLAIN_PRIVATE,
+    otel_enabled=True,
 )
 
 _WHOAMI_CORE_TEST_REGISTERED = False
@@ -68,6 +74,37 @@ def _mcp_response_json(response: httpx.Response) -> dict:
         )
         return json.loads(data)
     return response.json()
+
+
+def test_build_app_skips_otel_without_an_endpoint(monkeypatch):
+    calls: list[tuple[FastAPI, str]] = []
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    monkeypatch.setattr(
+        framework_core,
+        "_setup_otel",
+        lambda app, service_name: calls.append((app, service_name)),
+    )
+
+    build_app(_OTEL_PRIVATE, [])
+
+    assert calls == []
+
+
+def test_build_app_enables_otel_with_an_endpoint(monkeypatch):
+    calls: list[tuple[FastAPI, str]] = []
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "http://collector.example:4318/v1/traces",
+    )
+    monkeypatch.setattr(
+        framework_core,
+        "_setup_otel",
+        lambda app, service_name: calls.append((app, service_name)),
+    )
+
+    app = build_app(_OTEL_PRIVATE, [])
+
+    assert calls == [(app, "monolith-backend")]
 
 
 def _routed_module(name: str, prefix: str) -> Module:

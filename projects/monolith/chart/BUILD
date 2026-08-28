@@ -99,8 +99,8 @@ py_test(
     name = "cilium_ingress_allowlist_test",
     srcs = ["cilium_ingress_allowlist_test.py"],
     # Chart.lock plus the vendored charts/ and migrations/ trees are load-bearing
-    # for `helm template`: without them the render aborts on the cf-ingress and
-    # signoz-dashboards subchart dependencies. Same data set as
+    # for `helm template`: without them the render aborts on the cf-ingress
+    # subchart dependency. Same data set as
     # chart_env_identity_test above, which renders the same chart.
     data = [
         "Chart.lock",

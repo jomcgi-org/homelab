@@ -101,7 +101,7 @@ defmodule Embervm.DrainCoordinator do
     # The `node_drain` ROOT span (Task 11): a timer-driven fan-out with no caller
     # trace, so a root, mirroring the forced_roll span shape. Bounds the whole
     # force-bank dispatch and carries the per-class banked counts as attributes so
-    # a drain that under-banks a class is visible in SigNoz (Task 11 alert reads
+    # a drain that under-banks a class is visible in telemetry (Task 11 alert reads
     # the same counts off the op-log).
     Tracer.with_span "embervm.node_drain",
                      %{

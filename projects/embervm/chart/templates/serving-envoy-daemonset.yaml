@@ -18,9 +18,8 @@ spec:
         # static (listener + ADS wiring), so a change must restart Envoy to take
         # effect (dynamic config arrives over ADS, but the bootstrap does not).
         checksum/bootstrap: {{ include (print $.Template.BasePath "/serving-envoy-configmap.yaml") . | sha256sum }}
-        # Ship the node Envoy's per-cluster stats to SigNoz (R3 Task 10). The
-        # existing k8s-infra `prometheus/scraper` receiver auto-discovers pods
-        # carrying these annotations; no platform collector change. The path is the
+        # Expose the node Envoy's per-cluster stats for Prometheus discovery.
+        # The path is the
         # admin's native Prometheus exposition (/stats/prometheus), reached through
         # the path-restricted stats listener (its `prefix: /stats` route covers it),
         # so upstream_rq_time histograms + upstream_rq_total are scrapable off-box

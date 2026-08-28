@@ -1,8 +1,7 @@
 """Smoke tests for preview-layout.py.
 
 The script's filename contains a hyphen, so it can't be imported as a normal
-module. Match the pattern used by ``generate_red_dashboard_test.py`` and
-load it via ``importlib.util.spec_from_file_location``.
+module. Load it via ``importlib.util.spec_from_file_location``.
 """
 
 from __future__ import annotations

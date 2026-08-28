@@ -35,7 +35,7 @@ import (
 )
 
 // tracer spans the cold-boot phases (rootfs provision, firecracker boot) so the
-// cold-start cost is visible per phase in SigNoz (ADR 026 measurement).
+// cold-start cost is visible per phase in telemetry (ADR 026 measurement).
 var tracer = otel.Tracer("embervm-noded/driver")
 
 // Config holds the node-4 substrate paths and microVM sizing.
@@ -1090,7 +1090,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	if d.provisioner != nil {
 		// provision_rootfs is the cold-start cost ADR 026 targets (the full-copy
 		// CopyProvisioner today; a CoW provisioner later). Its own span makes the
-		// before/after directly visible in SigNoz.
+		// before/after directly visible in telemetry.
 		pctx, pspan := tracer.Start(ctx, "provision_rootfs")
 		rootfsPath, err = d.provisioner.Provision(pctx, threadID, dir)
 		pspan.End()

@@ -91,8 +91,10 @@ spec:
             {{- end }}
             - name: FRONTEND_HEALTH_URL
               value: "http://localhost:3000/"
+            {{- if .Values.backend.otelEndpoint }}
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
               value: {{ .Values.backend.otelEndpoint | quote }}
+            {{- end }}
             {{- if .Values.semgrep.embervmUrl }}
             # EmberVM control-plane URL for the semgrep and sandbox workloads.
             - name: EMBERVM_URL
@@ -614,8 +616,10 @@ spec:
           env:
             - name: API_BASE
               value: "http://localhost:8000"
+            {{- if .Values.frontend.otelCollectorUrl }}
             - name: OTEL_COLLECTOR_HTTP_URL
               value: {{ .Values.frontend.otelCollectorUrl | quote }}
+            {{- end }}
             {{- if .Values.imgproxySigning.enabled }}
             # HMAC secret for signing /img imgproxy URLs (grimoire reader
             # illustrations). Optional: a missing Secret degrades to unsigned

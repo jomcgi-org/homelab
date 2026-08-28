@@ -38,7 +38,7 @@ tunnel:
   protocol: http2
 
   ingress:
-    # argocd, longhorn, and signoz retired: they now serve under
+    # The operator UIs retired their direct hostnames and now serve under
     # private.jomcgi.dev/app/<app> via the cloudflare-ingress gateway
     # (HTTPRoutes in each chart). Their old subdomains fall through to
     # catchAll, which has no matching gateway route, so they stop resolving.

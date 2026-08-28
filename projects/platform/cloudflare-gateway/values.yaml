@@ -168,8 +168,8 @@ tunnel:
       seccompProfile:
         type: RuntimeDefault
     tracing:
-      enabled: true
-      otlpEndpoint: "signoz-otel-collector.signoz.svc.cluster.local:4317"
+      enabled: false
+      otlpEndpoint: ""
       serviceName: "cloudflare-tunnel"
     resources:
       requests:

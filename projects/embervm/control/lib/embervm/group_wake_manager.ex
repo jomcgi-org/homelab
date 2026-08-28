@@ -838,7 +838,7 @@ defmodule Embervm.GroupWakeManager do
   end
 
   # Alarm ONCE per stuck group (dedup via destroying_alarmed): every-tick logging
-  # would flood SigNoz for a genuinely stuck destroy. Returns the updated state.
+  # would flood logs for a genuinely stuck destroy. Returns the updated state.
   defp maybe_alarm_destroying(state, instance, now) do
     id = instance.instance_id
     elapsed = now - instance.updated_at

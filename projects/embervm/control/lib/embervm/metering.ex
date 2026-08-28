@@ -224,7 +224,7 @@ defmodule Embervm.Metering do
 
     # Structured warn (Task 13): every request-scoped denial (quota, auth-forbidden,
     # queue-depth) is logged with principal + workload + reason so it is searchable
-    # in SigNoz, alongside the durable op-log append below.
+    # in telemetry, alongside the durable op-log append below.
     Logger.warning("embervm denial", principal: principal, workload: workload, reason: reason, kind: kind)
 
     op = %Op{

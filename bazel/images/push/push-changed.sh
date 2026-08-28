@@ -24,7 +24,7 @@
 # content-identical commit. monolith-public deployed that way and wedged for
 # ~11h on 2026-08-11 while this script printed "0 image(s) to push" and the
 # action stayed green. Fixed in PR #4680 (homelab-library) and #4681
-# (oci-model-cache, signoz dashboard-sidecar). Before relying on the skip again,
+# (oci-model-cache and a dashboard sidecar). Before relying on the skip again,
 # check that no chart template renders a bare tag over an image we push:
 #
 #   grep -rn 'image.repository }}:{{' projects/*/chart/templates projects/*/*/chart/templates
@@ -136,9 +136,8 @@ done <"$MANIFEST"
 #
 # Set subtraction with `grep -Fxv -f`, NOT `comm`. comm requires its inputs
 # sorted in comm's OWN collation, and these are sorted LC_ALL=C while the runner
-# locale is not: under en_GB.UTF-8 comm silently mis-merged and reported
-# //projects/platform/signoz-addons/dashboard-sidecar:chart.push, a target
-# present in BOTH lists, as an uncovered image. Fixed-string matching has no
+# locale is not: under en_GB.UTF-8 comm silently mis-merged and reported a chart
+# target present in BOTH lists as an uncovered image. Fixed-string matching has no
 # ordering requirement and no locale sensitivity.
 UNCOVERED=$(_multirun_labels push_all |
 	grep -Fxv -f <(_multirun_labels push_charts) |

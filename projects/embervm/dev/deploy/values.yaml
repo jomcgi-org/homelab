@@ -236,7 +236,7 @@ demoPostgres:
 scratchPrep:
   enabled: false
 
-# Control-plane resources. Same as production (SigNoz 7-day-peak); scale later.
+# Control-plane resources. Same as production's historical 7-day peak.
 resources:
   requests:
     cpu: 100m
@@ -277,9 +277,9 @@ warmthS3Gc:
   maxPrefixes: "50"
   maxBytes: "26843545600" # 25 GiB
 
-# Tracing: reuse production endpoint (if available).
+# Tracing is disabled until this service explicitly opts in.
 tracing:
-  endpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4317"
+  endpoint: ""
   serviceName: embervm-dev-control
 
 # Auth: own ServiceAccount, isolated from production.

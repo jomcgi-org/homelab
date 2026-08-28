@@ -1,14 +1,15 @@
 # Cluster-specific overrides for OpenTelemetry Operator
 
-# Enable all three auto-instrumentation languages
+# No destination is configured. Enabling a language requires pointing it at
+# the collector and adding that service to the collector's allowedServices.
 instrumentation:
   python:
-    enabled: true
+    enabled: false
   nodejs:
-    enabled: true
+    enabled: false
   go:
-    enabled: true
-    endpoint: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318
+    enabled: false
+    endpoint: ""
   # Namespaces to deploy Instrumentation CRs into.
   # Only live namespaces belong here: an entry for a deleted namespace leaves
   # the app permanently OutOfSync (the CR can never be created).

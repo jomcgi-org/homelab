@@ -51,7 +51,7 @@ seaweedfs:
     # must run where its data lives.
     nodeSelector: "kubernetes.io/hostname: node-4"
     # Pre-populate OTEL annotation to match Kyverno injection (prevents ArgoCD drift)
-    # Prometheus annotations enable SigNoz autodiscovery
+    # Prometheus annotations expose metrics to pod-discovery collectors.
     podAnnotations:
       otel.injected-by: kyverno/inject-otel-env-vars
       prometheus.io/scrape: "true"
