@@ -29,52 +29,42 @@ def test_dbos_not_launched_returns_503(monkeypatch):
     assert "not launched" in response.json()["detail"]
 
 
-def _fake_session_no_live_workflows(monkeypatch):
-    """Mock Session to return no stale or live workflows."""
+def _fake_dbos_no_live_workflows(monkeypatch):
+    """Mock DBOS to return no stale or live workflows."""
 
-    class FakeSession:
-        def __init__(self, engine):
-            self.engine = engine
+    class FakeDBOS:
+        def list_workflows(
+            self,
+            name=None,
+            queue_name=None,
+            status=None,
+            limit=None,
+            load_input=False,
+            load_output=False,
+        ):
+            # No workflows at all
+            return []
 
-        def execute(self, sql, params=None):
-            # No stale workflows, no live workflows
-            return FakeResult([])
+        def list_workflow_steps(self, workflow_id, load_output=False):
+            return []
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
+        def cancel_workflow(self, workflow_uuid, cancel_children=False):
             pass
 
-    class FakeResult:
-        def __init__(self, value):
-            self.value = value
-
-        def fetchall(self):
-            return self.value or []
-
-        def scalar(self):
-            return None
-
-    monkeypatch.setattr(drainer_router, "Session", FakeSession)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
 
 
 def test_launched_enqueues_workflow_on_drainer_queue(monkeypatch):
     enqueued = []
 
-    class FakeDBOS:
-        def start_workflow(self, _workflow):
-            raise AssertionError("drain cycle must be queued")
-
     class FakeQueue:
         def enqueue(self, workflow):
             enqueued.append(workflow)
 
-    _fake_session_no_live_workflows(monkeypatch)
+    _fake_dbos_no_live_workflows(monkeypatch)
 
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
-    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
     monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
 
     response = _client().post("/internal/agent/drain")
@@ -97,49 +87,47 @@ def test_stale_pending_reaper_then_enqueue(monkeypatch):
     cancelled = []
 
     class FakeDBOS:
+        def __init__(self):
+            self.call_count = 0
+
+        def list_workflows(
+            self,
+            name=None,
+            queue_name=None,
+            status=None,
+            limit=None,
+            load_input=False,
+            load_output=False,
+        ):
+            self.call_count += 1
+            if self.call_count == 1:
+                # First call from _reap_stale_drain_cycles: return one stale workflow
+                return [
+                    {
+                        "workflow_id": "stale-wf-1",
+                        "updated_at": 1000,  # Very old, 1 second epoch
+                    }
+                ]
+            elif self.call_count == 2:
+                # Second call from _has_live_drain_cycle: no live workflows
+                return []
+            return []
+
+        def list_workflow_steps(self, workflow_id, load_output=False):
+            # Workflow has no steps or very old steps
+            return []
+
         def cancel_workflow(self, workflow_uuid, cancel_children=False):
             cancelled.append(workflow_uuid)
-
-        def start_workflow(self, _workflow):
-            raise AssertionError("drain cycle must be queued")
 
     class FakeQueue:
         def enqueue(self, workflow):
             enqueued.append(workflow)
 
-    class FakeSession:
-        def __init__(self, engine):
-            self.engine = engine
-
-        def execute(self, sql, params=None):
-            sql_text = str(sql)
-            if "SELECT 1" in sql_text:
-                # No live drain_cycle, so enqueue
-                return FakeResult(None)
-            # Query returns one stale workflow
-            return FakeResult([("stale-wf-1", 1000)])
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-    class FakeResult:
-        def __init__(self, value):
-            self.value = value
-
-        def fetchall(self):
-            return self.value or []
-
-        def scalar(self):
-            return self.value
-
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
     monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
-    monkeypatch.setattr(drainer_router, "Session", FakeSession)
     monkeypatch.setattr(drainer_router.asyncio, "run", lambda coro: None)
 
     response = _client().post("/internal/agent/drain")
@@ -155,49 +143,35 @@ def test_fresh_pending_not_reaped_returns_already_queued(monkeypatch):
     enqueued = []
 
     class FakeDBOS:
+        def list_workflows(
+            self,
+            name=None,
+            queue_name=None,
+            status=None,
+            limit=None,
+            load_input=False,
+            load_output=False,
+        ):
+            if status == "PENDING":
+                # No stale workflows
+                return []
+            # Live workflows check: return one live PENDING
+            return [{"workflow_id": "live-wf-1", "updated_at": int(1000 * 1000)}]
+
+        def list_workflow_steps(self, workflow_id, load_output=False):
+            return []
+
         def cancel_workflow(self, workflow_uuid, cancel_children=False):
             raise AssertionError("should not cancel fresh cycle")
-
-        def start_workflow(self, _workflow):
-            raise AssertionError("drain cycle must be queued")
 
     class FakeQueue:
         def enqueue(self, workflow):
             enqueued.append(workflow)
 
-    class FakeSession:
-        def __init__(self, engine):
-            self.engine = engine
-
-        def execute(self, sql, params=None):
-            sql_text = str(sql)
-            if "SELECT 1" in sql_text:
-                # A live drain_cycle exists, so don't enqueue
-                return FakeResult(1)
-            # Query returns no stale workflows
-            return FakeResult([])
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-    class FakeResult:
-        def __init__(self, value):
-            self.value = value
-
-        def fetchall(self):
-            return self.value or []
-
-        def scalar(self):
-            return self.value
-
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
     monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
-    monkeypatch.setattr(drainer_router, "Session", FakeSession)
 
     response = _client().post("/internal/agent/drain")
 
@@ -211,46 +185,32 @@ def test_enqueued_row_prevents_second_enqueue(monkeypatch):
     enqueued = []
 
     class FakeDBOS:
-        def start_workflow(self, _workflow):
-            raise AssertionError("drain cycle must be queued")
+        def list_workflows(
+            self,
+            name=None,
+            queue_name=None,
+            status=None,
+            limit=None,
+            load_input=False,
+            load_output=False,
+        ):
+            if status == "PENDING":
+                # No stale workflows
+                return []
+            # Live workflows check: return one ENQUEUED
+            return [{"workflow_id": "live-wf-1", "updated_at": int(1000 * 1000)}]
+
+        def list_workflow_steps(self, workflow_id, load_output=False):
+            return []
 
     class FakeQueue:
         def enqueue(self, workflow):
             enqueued.append(workflow)
 
-    class FakeSession:
-        def __init__(self, engine):
-            self.engine = engine
-
-        def execute(self, sql, params=None):
-            sql_text = str(sql)
-            if "SELECT 1" in sql_text:
-                # A live ENQUEUED drain_cycle exists
-                return FakeResult(1)
-            # Query returns no stale workflows
-            return FakeResult([])
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-    class FakeResult:
-        def __init__(self, value):
-            self.value = value
-
-        def fetchall(self):
-            return self.value or []
-
-        def scalar(self):
-            return self.value
-
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
     monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
-    monkeypatch.setattr(drainer_router, "Session", FakeSession)
 
     response = _client().post("/internal/agent/drain")
 
@@ -264,42 +224,29 @@ def test_nothing_live_means_normal_enqueue(monkeypatch):
     enqueued = []
 
     class FakeDBOS:
-        def start_workflow(self, _workflow):
-            raise AssertionError("drain cycle must be queued")
+        def list_workflows(
+            self,
+            name=None,
+            queue_name=None,
+            status=None,
+            limit=None,
+            load_input=False,
+            load_output=False,
+        ):
+            # No stale workflows, no live workflows
+            return []
+
+        def list_workflow_steps(self, workflow_id, load_output=False):
+            return []
 
     class FakeQueue:
         def enqueue(self, workflow):
             enqueued.append(workflow)
 
-    class FakeSession:
-        def __init__(self, engine):
-            self.engine = engine
-
-        def execute(self, sql, params=None):
-            # No stale workflows, no live workflows
-            return FakeResult([])
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-    class FakeResult:
-        def __init__(self, value):
-            self.value = value
-
-        def fetchall(self):
-            return self.value or []
-
-        def scalar(self):
-            return None
-
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
     monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
-    monkeypatch.setattr(drainer_router, "Session", FakeSession)
 
     response = _client().post("/internal/agent/drain")
 
@@ -311,12 +258,20 @@ def test_nothing_live_means_normal_enqueue(monkeypatch):
 def test_drainer_disabled_still_short_circuits(monkeypatch):
     """Drainer disabled still short-circuits before any of this."""
 
-    class FakeSession:
-        def execute(self, sql, params=None):
+    class FakeDBOS:
+        def list_workflows(
+            self,
+            name=None,
+            queue_name=None,
+            status=None,
+            limit=None,
+            load_input=False,
+            load_output=False,
+        ):
             raise AssertionError("should not query when disabled")
 
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: False)
-    monkeypatch.setattr(drainer_router, "Session", FakeSession)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
 
     response = _client().post("/internal/agent/drain")
 
@@ -324,36 +279,81 @@ def test_drainer_disabled_still_short_circuits(monkeypatch):
     assert response.json() == {"status": "disabled"}
 
 
-def test_reaper_sql_matches_dbos_schema():
-    """Verify the reaper's hand-written SQL matches the DBOS schema.
+def test_old_updated_at_with_recent_step_not_reaped(monkeypatch):
+    """A PENDING workflow with old updated_at but recent step is NOT reaped.
 
-    The reaper hand-writes SQL against dbos.workflow_status, a table DBOS owns.
-    If a DBOS upgrade renames a column or changes a type, this test must fail
-    before the change reaches production, rather than silently disabling the
-    drainer (which nearly happened when we queried the nonexistent workflow_id
-    column and caught the exception broadly, returning already_queued forever).
-
-    This test is fast and deterministic: it needs no database, only the DBOS
-    package installed in the test environment.
+    This test validates the fix: staleness is determined by max(updated_at, last_step_activity),
+    not just updated_at. A workflow may have an old updated_at (from a status transition)
+    but be actively running steps, and should not be reaped.
     """
-    from dbos._schemas.system_database import SystemSchema
-    from sqlalchemy import BigInteger
+    enqueued = []
+    cancelled = []
 
-    columns = SystemSchema.workflow_status.c
+    # Current time for this test
+    now_ms = int(1_000_000_000 * 1000)  # Some large epoch ms value
 
-    # Every column our SQL queries must exist under the name we use.
-    for name in ("workflow_uuid", "updated_at", "status", "queue_name", "name"):
-        assert name in columns, (
-            f"workflow_status column '{name}' not found; DBOS schema changed"
-        )
+    class FakeDBOS:
+        def __init__(self):
+            self.call_count = 0
 
-    # We compare updated_at and created_at against epoch milliseconds,
-    # so these must be integer columns.
-    for name in ("updated_at", "created_at"):
-        assert isinstance(columns[name].type, BigInteger), (
-            f"{name} must be BigInteger, got {type(columns[name].type)}"
-        )
+        def list_workflows(
+            self,
+            name=None,
+            queue_name=None,
+            status=None,
+            limit=None,
+            load_input=False,
+            load_output=False,
+        ):
+            self.call_count += 1
+            if self.call_count == 1:
+                # First call from _reap_stale_drain_cycles: return one workflow
+                return [
+                    {
+                        "workflow_id": "active-wf-1",
+                        # updated_at is very old (frozen at some status transition)
+                        "updated_at": now_ms - (4000 * 1000),  # 4000 seconds old
+                    }
+                ]
+            elif self.call_count == 2:
+                # Second call from _has_live_drain_cycle: no live workflows
+                return []
+            return []
 
-    # The specific bug that nearly shipped: this column does not exist.
-    # If you see this fail, you queried workflow_id instead of workflow_uuid.
-    assert "workflow_id" not in columns, "workflow_id does not exist; use workflow_uuid"
+        def list_workflow_steps(self, workflow_id, load_output=False):
+            # Workflow has a recently completed step (within last 30 seconds)
+            return [
+                {
+                    "function_id": "poll_turn",
+                    "function_name": "poll_turn",
+                    "started_at_epoch_ms": now_ms - (100 * 1000),  # 100 seconds ago
+                    "completed_at_epoch_ms": now_ms
+                    - (10 * 1000),  # 10 seconds ago, RECENT
+                }
+            ]
+
+        def cancel_workflow(self, workflow_uuid, cancel_children=False):
+            cancelled.append(workflow_uuid)
+
+    class FakeQueue:
+        def enqueue(self, workflow):
+            enqueued.append(workflow)
+
+    # Mock time.time() to return our test now_ms value
+    import time as time_module
+
+    monkeypatch.setattr(time_module, "time", lambda: now_ms / 1000)
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
+
+    response = _client().post("/internal/agent/drain")
+
+    # The workflow should NOT be cancelled because its last step is recent
+    assert cancelled == [], "Should not cancel workflow with recent step activity"
+    # A new cycle should be enqueued
+    assert response.status_code == 202
+    assert response.json() == {"status": "started"}
+    assert enqueued == [drainer_router.drain_cycle]
