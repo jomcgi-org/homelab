@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 
+from agent import config as agent_config
+from agent import routine_jobs
 from agent_sessions import api, store
 from agent_sessions import mcp
 from agent_sessions import transport
@@ -101,6 +103,98 @@ def test_list_sessions_empty(client):
     response = client.get("/api/agents/sessions")
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_drain_lane_classifies_running_due_and_last(client, monkeypatch):
+    now = datetime.now(timezone.utc)
+    running_at = now - timedelta(seconds=30)
+    completed_at = now - timedelta(minutes=1)
+    jobs = [
+        {
+            "name": "running-job",
+            "next_run_at": now - timedelta(minutes=2),
+            "last_run_at": now - timedelta(minutes=3),
+            "last_status": "completed",
+            "locked_by": "drainer-1",
+            "locked_at": running_at,
+            "ttl_secs": 300,
+        },
+        {
+            "name": "due-job",
+            "next_run_at": (now - timedelta(minutes=1)).replace(tzinfo=None),
+            "last_run_at": None,
+            "last_status": None,
+            "locked_by": None,
+            "locked_at": None,
+            "ttl_secs": 300,
+        },
+        {
+            "name": "completed-job",
+            "next_run_at": now + timedelta(hours=1),
+            "last_run_at": completed_at.replace(tzinfo=None),
+            "last_status": "failed",
+            "locked_by": None,
+            "locked_at": None,
+            "ttl_secs": 300,
+        },
+    ]
+    monkeypatch.setattr(
+        agent_config,
+        "load_drainer_settings",
+        lambda: agent_config.DrainerSettings(
+            enabled=True,
+            max_jobs_per_cycle=3,
+            turn_timeout_seconds=1800,
+            stall_threshold_seconds=2700,
+            job_kind="qwen-drain",
+            repo="acme/repo",
+            branch="main",
+        ),
+    )
+    monkeypatch.setattr(routine_jobs, "list_jobs", lambda *, kind: jobs)
+
+    response = client.get("/api/agents/drain-lane")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "enabled": True,
+        "kind": "qwen-drain",
+        "running": [{"name": "running-job", "locked_at": running_at.isoformat()}],
+        "due_count": 1,
+        "last": {
+            "name": "completed-job",
+            "status": "failed",
+            "last_run_at": completed_at.isoformat(),
+        },
+    }
+
+
+def test_drain_lane_empty(client, monkeypatch):
+    monkeypatch.setattr(
+        agent_config,
+        "load_drainer_settings",
+        lambda: agent_config.DrainerSettings(
+            enabled=False,
+            max_jobs_per_cycle=3,
+            turn_timeout_seconds=1800,
+            stall_threshold_seconds=2700,
+            job_kind="qwen-drain",
+            repo="acme/repo",
+            branch="main",
+        ),
+    )
+    monkeypatch.setattr(routine_jobs, "list_jobs", lambda *, kind: [])
+
+    response = client.get("/api/agents/drain-lane")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "enabled": False,
+        "kind": "qwen-drain",
+        "running": [],
+        "due_count": 0,
+        "last": None,
+    }
 
 
 def test_list_sessions_with_status_filter(client, session):

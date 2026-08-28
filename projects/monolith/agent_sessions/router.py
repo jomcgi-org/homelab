@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import httpx
@@ -239,6 +239,57 @@ def list_sessions(
     session: Session = Depends(get_session),
 ) -> list[dict]:
     return _rows(session, status, limit)
+
+
+@router.get("/drain-lane")
+def drain_lane_status() -> dict:
+    from agent.api import list_jobs, load_drainer_settings
+
+    settings = load_drainer_settings()
+    jobs = list_jobs(kind=settings.job_kind)
+    now = datetime.now(timezone.utc)
+    running = []
+    running_names = set()
+
+    for job in jobs:
+        locked_at = _as_utc(job["locked_at"])
+        if (
+            job["locked_by"] is not None
+            and locked_at is not None
+            and locked_at + timedelta(seconds=job["ttl_secs"]) > now
+        ):
+            running.append({"name": job["name"], "locked_at": _iso(locked_at)})
+            running_names.add(job["name"])
+
+    due_count = sum(
+        1
+        for job in jobs
+        if job["name"] not in running_names
+        and (next_run_at := _as_utc(job["next_run_at"])) is not None
+        and next_run_at <= now
+    )
+    completed = [job for job in jobs if job["last_run_at"] is not None]
+    last_job = (
+        max(completed, key=lambda job: _as_utc(job["last_run_at"]))
+        if completed
+        else None
+    )
+    last = (
+        {
+            "name": last_job["name"],
+            "status": last_job["last_status"],
+            "last_run_at": _iso(last_job["last_run_at"]),
+        }
+        if last_job is not None
+        else None
+    )
+    return {
+        "enabled": settings.enabled,
+        "kind": settings.job_kind,
+        "running": running,
+        "due_count": due_count,
+        "last": last,
+    }
 
 
 @router.get("/models")

@@ -196,6 +196,12 @@ export const RUN_LEXICON = {
     launcherQuestion: "What should {model} do?",
     launcherPlaceholder:
       "Describe the task. One session, or a run with a review gate.",
+    drainHeading: "qwen drain",
+    drainRunning: "running",
+    drainIdle: "idle",
+    drainQueued: "{count} queued",
+    drainLast: "last",
+    drainOff: "off",
     noRepo: "no repo",
     allInJump: "All {count} in Jump",
     // shell chrome
