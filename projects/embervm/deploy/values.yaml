@@ -715,7 +715,7 @@ gitMirror:
   # is why the mirror exists; extend only as other catalogs earn their disk on
   # every FC node (one clone per repo per node, refreshed every interval).
   repos:
-    - jomcgi/homelab
+    - jomcgi-org/homelab
 
 
 # Voice-drivable Claude Code agent sessions (issue #4055). The monolith addresses
