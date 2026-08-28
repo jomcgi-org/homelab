@@ -322,3 +322,38 @@ def test_drainer_disabled_still_short_circuits(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "disabled"}
+
+
+def test_reaper_sql_matches_dbos_schema():
+    """Verify the reaper's hand-written SQL matches the DBOS schema.
+
+    The reaper hand-writes SQL against dbos.workflow_status, a table DBOS owns.
+    If a DBOS upgrade renames a column or changes a type, this test must fail
+    before the change reaches production, rather than silently disabling the
+    drainer (which nearly happened when we queried the nonexistent workflow_id
+    column and caught the exception broadly, returning already_queued forever).
+
+    This test is fast and deterministic: it needs no database, only the DBOS
+    package installed in the test environment.
+    """
+    from dbos._schemas.system_database import SystemSchema
+    from sqlalchemy import BigInteger
+
+    columns = SystemSchema.workflow_status.c
+
+    # Every column our SQL queries must exist under the name we use.
+    for name in ("workflow_uuid", "updated_at", "status", "queue_name", "name"):
+        assert name in columns, (
+            f"workflow_status column '{name}' not found; DBOS schema changed"
+        )
+
+    # We compare updated_at and created_at against epoch milliseconds,
+    # so these must be integer columns.
+    for name in ("updated_at", "created_at"):
+        assert isinstance(columns[name].type, BigInteger), (
+            f"{name} must be BigInteger, got {type(columns[name].type)}"
+        )
+
+    # The specific bug that nearly shipped: this column does not exist.
+    # If you see this fail, you queried workflow_id instead of workflow_uuid.
+    assert "workflow_id" not in columns, "workflow_id does not exist; use workflow_uuid"
