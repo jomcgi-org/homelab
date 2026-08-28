@@ -488,6 +488,11 @@ PI_COMPACTION_RESERVE_TOKENS = 16896
 # compaction trigger. This value must remain less than PI_CONTEXT_WINDOW minus
 # PI_COMPACTION_RESERVE_TOKENS so compaction actually helps when it fires.
 PI_COMPACTION_KEEP_RECENT_TOKENS = 8000
+PI_MAX_IDENTICAL_TOOL_CALLS = 5
+# Detect infinite loops: 387-repetition evidence from session 599 (qwen drainer).
+# A model legitimately re-running a command after an edit produces a DIFFERENT
+# intervening call, so an unbroken run of identical calls with nothing in between
+# is never productive work. A small threshold is safe.
 PI_WEB_RESEARCH_EXTENSION = "/usr/share/ember-pi/extensions/web-research.ts"
 MAX_REQUEST_BODY_BYTES = 1 << 20
 MAX_TOOL_INPUT_BYTES = 4096
@@ -3096,6 +3101,8 @@ class PiProcess:
             model_fallback_started_at = None
             tools_by_id = {}
             tools_without_id = collections.deque()
+            last_tool_call_key = None
+            identical_tool_call_count = 0
             self._turn_done.clear()
             self._in_flight = True
             try:
@@ -3190,6 +3197,34 @@ class PiProcess:
                                 tools_by_id[str(tool_id)] = tool_entry
                             else:
                                 tools_without_id.append(tool_entry)
+                            tool_name_guard = event.get("toolName") or event.get(
+                                "tool_name"
+                            )
+                            tool_args = event.get("args")
+                            tool_call_key = (
+                                tool_name_guard
+                                + json.dumps(tool_args, sort_keys=True, default=str)
+                                if tool_name_guard and tool_args
+                                else None
+                            )
+                            if tool_call_key and tool_call_key == last_tool_call_key:
+                                identical_tool_call_count += 1
+                                if (
+                                    identical_tool_call_count
+                                    >= PI_MAX_IDENTICAL_TOOL_CALLS
+                                ):
+                                    args_preview = json.dumps(
+                                        tool_args, sort_keys=True, default=str
+                                    )[:200]
+                                    self._close_process(kill=True)
+                                    raise RuntimeError(
+                                        f"pi repeated the same {tool_name_guard} tool call "
+                                        f"{identical_tool_call_count} times in a row and "
+                                        f"made no progress; last args: {args_preview}"
+                                    )
+                            else:
+                                last_tool_call_key = tool_call_key
+                                identical_tool_call_count = 1
                         elif event_type == "tool_execution_end":
                             tool_finished_at = _turn_timing_now()
                             tool_id = (
@@ -3220,6 +3255,8 @@ class PiProcess:
                                 if tool_name:
                                     tools_by_name[tool_name]["ms"] += elapsed_ms
                             model_fallback_started_at = tool_finished_at
+                    except RuntimeError:
+                        raise
                     except Exception:
                         pass
                     events.append(self._translate_activity_event(event))

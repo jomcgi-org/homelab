@@ -415,6 +415,38 @@ for line in sys.stdin:
                   "content": [{"type": "text", "text": "No tools needed"}],
                   "stopReason": "stop", "usage": {"input": 2, "output": 3}}})
             emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") in (
+            "repeated-tool-calls",
+            "repeated-tool-calls-n-minus-1",
+            "repeated-tool-calls-separated",
+            "repeated-tool-calls-missing-args",
+        ):
+            mode = os.environ["FAKE_PI_MODE"]
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            if mode == "repeated-tool-calls":
+                tool_args = [{"command": "grep loop shim.py"}] * 5
+            elif mode == "repeated-tool-calls-n-minus-1":
+                tool_args = [{"command": "grep loop shim.py"}] * 4
+            elif mode == "repeated-tool-calls-separated":
+                tool_args = (
+                    [{"command": "grep loop shim.py"}] * 3
+                    + [{"command": "grep guard shim.py"}]
+                    + [{"command": "grep loop shim.py"}] * 4
+                )
+            else:
+                tool_args = [None, {}, [], "", 0, False]
+            for index, args in enumerate(tool_args):
+                event = {"type": "tool_execution_start",
+                         "toolCallId": "bash-%d" % index, "toolName": "bash"}
+                if args is not None:
+                    event["args"] = args
+                emit(event)
+                emit({"type": "tool_execution_end",
+                      "toolCallId": "bash-%d" % index})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [{"type": "text", "text": "Loop guard test completed"}],
+                  "stopReason": "stop", "usage": {"input": 8, "output": 4}}})
+            emit({"type": "agent_end", "messages": []})
         else:
             emit({"type": "tool_start", "toolName": "bash",
                   "args": {"command": "echo pi"}})
@@ -597,6 +629,41 @@ def test_pi_turn_without_tools_reports_zero_tool_time(tmp_path, monkeypatch):
     assert record["usage"]["tool_calls"] == 0
     assert record["usage"]["tool_ms"] == 0
     assert record["usage"]["tools_by_name"] == {}
+
+
+def test_pi_repeated_tool_calls_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls")
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="repeated the same bash tool call"):
+        manager.turn("hello", model="qwen")
+
+
+def test_pi_repeated_tool_calls_n_minus_1_completes(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls-n-minus-1")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    record = manager.turn("hello", model="qwen")
+    manager._close_process()
+
+    assert "Loop guard test completed" in record["result"]
+
+
+def test_pi_repeated_tool_calls_separated_resets_counter(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls-separated")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    record = manager.turn("hello", model="qwen")
+    manager._close_process()
+
+    assert "Loop guard test completed" in record["result"]
+
+
+def test_pi_repeated_tool_calls_missing_args_doesnt_crash(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls-missing-args")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    record = manager.turn("hello", model="qwen")
+    manager._close_process()
+
+    assert "Loop guard test completed" in record["result"]
 
 
 def test_pi_pushes_progress_during_turn(tmp_path, monkeypatch):
