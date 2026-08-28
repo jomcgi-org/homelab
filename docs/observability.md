@@ -30,20 +30,32 @@ the path to `/`. The public frontend is not on this path.
 The public stats ticker gets GPU utilization and frame buffer usage by scraping
 the DCGM exporter directly. It does not use the collector or a telemetry store.
 
-## Trace admission is closed
+## Trace admission is deny-by-default
 
 `allowedServices` defaults to an empty list in
-`projects/platform/otel-collector/values.yaml`. Production does not override it.
-The rendered collector has:
+`projects/platform/otel-collector/values.yaml`. Read
+`values-prod.yaml` for the services actually admitted; this document does not
+list them, because that list changes and a copy here would go stale.
+
+While the list is empty the rendered collector has:
 
 - no `otlp` receiver
 - no traces pipeline
 - no container or Service ports for OTLP gRPC on 4317 or OTLP HTTP on 4318
 
-Collector admission for a service is a one-line `allowedServices` override in
+A service that dials the collector without being listed gets connection
+refused. The gate is a property of the rendered config, not a convention about
+what nobody has pointed at it.
+
+Admitting a service is a one-line `allowedServices` override in
 `values-prod.yaml`, using the exact OpenTelemetry `service.name`. A non-empty
 allowlist renders the OTLP receiver, trace pipeline, ports, allowlist filter, and
-tail sampler. The workload must configure its exporter endpoint explicitly.
+tail sampler. The workload must also configure its exporter endpoint.
+
+Those two edits have to agree. The filter drops any span whose `service.name` is
+not on the list, so a service whose `OTEL_SERVICE_NAME` differs from its
+allowlist entry exports successfully and has every span discarded, with nothing
+reporting the mismatch.
 
 The metrics pipeline remains restricted to `http_check` after a trace service is
 admitted.
