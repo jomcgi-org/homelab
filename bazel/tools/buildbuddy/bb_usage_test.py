@@ -1,6 +1,7 @@
 import pytest
 
 from bb_usage import (
+    _discover_repo,
     aggregate,
     concentration,
     compare,
@@ -321,3 +322,26 @@ def test_render_concentration_and_outlier():
     report = render_report(snapshot, None)
     assert "Concentration" in report
     assert "https://app.buildbuddy.io/invocation/abc" in report
+
+
+def test_discover_repo_normalises_and_falls_back(monkeypatch):
+    import subprocess
+
+    import bb_usage
+
+    def fake(_cmd, **_kwargs):
+        return fake.value
+
+    monkeypatch.setattr(bb_usage.subprocess, "check_output", fake)
+
+    fake.value = "https://github.com/jomcgi-org/homelab.git\n"
+    assert _discover_repo() == "https://github.com/jomcgi-org/homelab"
+
+    fake.value = "git@github.com:jomcgi-org/homelab.git\n"
+    assert _discover_repo() == "https://github.com/jomcgi-org/homelab"
+
+    def boom(_cmd, **_kwargs):
+        raise subprocess.CalledProcessError(128, "git")
+
+    monkeypatch.setattr(bb_usage.subprocess, "check_output", boom)
+    assert _discover_repo() == bb_usage._FALLBACK_REPO

@@ -247,7 +247,7 @@ recover_bazel() {
 
 QUERY_TIMEOUT="${AFFECTED_TARGETS_QUERY_TIMEOUT:-600}"
 echo "affected-targets: probing ${#source_labels[@]} label(s) (timeout ${QUERY_TIMEOUT}s)" >&2
-probe_output=$(timeout "$QUERY_TIMEOUT" "${BAZEL:-bazel}" query "set($(printf '%s ' "${source_labels[@]}"))" --keep_going --output=label "${bazel_args[@]}") || probe_rc=$?
+probe_output=$(timeout "$QUERY_TIMEOUT" "${BAZEL:-bazel}" query "set($(printf '"%s" ' "${source_labels[@]}"))" --keep_going --output=label "${bazel_args[@]}") || probe_rc=$?
 probe_rc=${probe_rc:-0}
 if [[ $probe_rc -eq 124 ]]; then
 	echo "affected-targets: fallback to //... because the label probe timed out after ${QUERY_TIMEOUT}s" >&2
@@ -296,7 +296,7 @@ fi
 # cannot be resolved on the Linux runner. Add them back conservatively because
 # semgrep_target_test can scan a transitive source closure that query cannot
 # recover after those tests are excluded.
-test_query="let all_tests = tests(//...) in let semgrep_tests = attr(name, \".*semgrep.*\", \$all_tests) union attr(generator_function, \"semgrep_.*\", \$all_tests) in \$semgrep_tests union tests(rdeps(deps(\$all_tests except \$semgrep_tests), set($(printf '%s ' "${valid_labels[@]}" | xargs))))"
+test_query="let all_tests = tests(//...) in let semgrep_tests = attr(name, \".*semgrep.*\", \$all_tests) union attr(generator_function, \"semgrep_.*\", \$all_tests) in \$semgrep_tests union tests(rdeps(deps(\$all_tests except \$semgrep_tests), set($(printf '"%s" ' "${valid_labels[@]}"))))"
 echo "affected-targets: test-universe query over ${#valid_labels[@]} label(s) (timeout ${QUERY_TIMEOUT}s)" >&2
 query_output=$(timeout "$QUERY_TIMEOUT" "${BAZEL:-bazel}" query "$test_query" --keep_going --output=label "${bazel_args[@]}") || query_rc=$?
 query_rc=${query_rc:-0}

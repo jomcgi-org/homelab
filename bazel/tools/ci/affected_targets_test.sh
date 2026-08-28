@@ -51,9 +51,12 @@ echo "Loading: 0 packages loaded" >&2
 for arg in "$@"; do
 	if [[ "$arg" =~ ^set\( ]]; then
 		# Label existence probe: extract labels from the set() call and output them
-		# Format: set(//pkg:label1 //pkg:label2 ...)
+		# Format: set("//pkg:label1" "//pkg:label2" ...). Real bazel needs those
+		# quotes because its query lexer treats characters like + as operators;
+		# it strips them before resolving the label, so this must too.
 		labels="${arg#set(}"
 		labels="${labels%)}"
+		labels="${labels//\"/}"
 		[[ -n "$labels" ]] && printf '%s\n' $labels
 		exit "${BAZEL_SET_EXIT:-0}"
 	elif [[ "$arg" == *"rdeps("* ]]; then
@@ -346,6 +349,32 @@ check_untracked() {
 	grep "^set(" "$3" | grep -q "p:new.py" && pass "untracked_file_label" || fail "untracked_file_label" "label missing"
 }
 
+# Test 12a: SvelteKit + prefixed route files must be quoted in the query.
+# Unquoted, `set(//p:src/routes/+page.svelte)` is a query SYNTAX error, bazel
+# exits 2, and the whole PR falls back to //.... That cost 100.7 GB over the
+# 5 days to 2026-08-27 on PR branches alone.
+setup_plus_label() {
+	mkdir -p p/src/routes
+	echo "" >p/BUILD
+	echo "x" >"p/src/routes/+page.svelte"
+	echo "x" >"p/src/routes/+server.js"
+	git add .
+	git commit -q -m "base"
+	git branch origin/main
+	echo "y" >"p/src/routes/+page.svelte"
+	echo "y" >"p/src/routes/+server.js"
+}
+
+check_plus_label() {
+	if [[ "$(cat "$1")" == "//..." ]]; then
+		fail "plus_label" "fell back to //..."
+	elif grep "^set(" "$3" | grep -q '"//p:src/routes/+page.svelte"'; then
+		pass "plus_label"
+	else
+		fail "plus_label" "unquoted label: $(grep '^set(' "$3")"
+	fi
+}
+
 # Test 12: Unstaged deleted file is fallback
 setup_unstaged_deleted() {
 	mkdir -p p
@@ -429,6 +458,7 @@ run_test "nested" "setup_nested"
 run_test "outside" "setup_outside"
 run_test "dotdir_outside" "setup_dotdir_outside"
 run_test "untracked" "setup_untracked"
+run_test "plus_label" "setup_plus_label"
 run_test "unstaged_deleted" "setup_unstaged_deleted"
 run_test "no_change" "setup_no_change"
 
