@@ -497,6 +497,10 @@ MAX_TOOL_INPUT_BYTES = 4096
 MAX_PROXY_HEAD_BYTES = 64 << 10
 INIT_READ_TIMEOUT_ENV = "EMBER_INIT_READ_TIMEOUT"
 DEFAULT_INIT_READ_TIMEOUT = 90.0
+PARK_GRACE_SECONDS_ENV = "EMBER_PARK_GRACE_SECONDS"
+# Let a message-less CLI finish its authenticated startup burst before the
+# base snapshot captures it.
+DEFAULT_PARK_GRACE_SECONDS = 15.0
 # Initialization waits inside a turn, so this must stay below the CP per-invoke
 # budget (spec.invocation.timeoutSeconds, currently 900 for claude-runtime),
 # below TURN_READ_TIMEOUT's 600 second role, and generous enough for the cold
@@ -512,6 +516,19 @@ def _read_init_timeout():
         return DEFAULT_INIT_READ_TIMEOUT
     if not math.isfinite(value) or value <= 0:
         return DEFAULT_INIT_READ_TIMEOUT
+    return value
+
+
+def _read_park_grace_seconds():
+    """Return the positive finite park grace from the environment."""
+    try:
+        value = float(
+            os.environ.get(PARK_GRACE_SECONDS_ENV, DEFAULT_PARK_GRACE_SECONDS)
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_PARK_GRACE_SECONDS
+    if not math.isfinite(value) or value <= 0:
+        return DEFAULT_PARK_GRACE_SECONDS
     return value
 
 
@@ -1701,17 +1718,34 @@ class ClaudeProcess:
             self._turn_timing_model_start = _turn_timing_now()
             process.stdin.write(_user_message_line(first_message))
             process.stdin.flush()
+        else:
+            park_grace_seconds = _read_park_grace_seconds()
+            time.sleep(park_grace_seconds)
+            code = process.poll()
+            if code is not None:
+                self._close_process(kill=False)
+                raise StartupError(
+                    self._assemble_error_with_rings(
+                        "claude exited during the %s second park grace, exit code %s"
+                        % (park_grace_seconds, code)
+                    )
+                )
+            return
         # Note: unparseable-line stderr writes are synchronous on the read thread
-        # and race the init timeout. This is fine for tens-of-lines Bun panics
+        # and consume the init budget. This is fine for tens-of-lines Bun panics
         # but could turn thousands-of-lines dumps into a generic init timeout.
         # Resolve the environment at spawn time so callers and tests that set
         # EMBER_INIT_READ_TIMEOUT after module import still affect lazy starts.
         init_read_timeout = (
             _read_init_timeout() if init_timeout is None else init_timeout
         )
+        init_deadline = time.monotonic() + init_read_timeout
         while True:
             try:
-                raw = self._read_output(process, init_read_timeout)
+                remaining = init_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                raw = self._read_output(process, remaining)
             except TimeoutError:
                 self._timeout_interrupt(process, init_read_timeout, "initialization")
                 raise StartupError(
@@ -3472,13 +3506,12 @@ class ProcessManager:
                         session_id=None,
                         first_message=None,
                         model=None,
-                        # Base build also pays for the CA fetch while the node
-                        # may be baking other guests, so allow a cold init more
-                        # room than an ordinary lazy session spawn.
+                        # Preserve the existing prewarm init value. Park mode
+                        # skips the init wait and uses its own grace instead.
                         init_timeout=60,
                     )
-                    # Claude emits a generated id in init, but a parked process
-                    # has not adopted a session until its first user message.
+                    # A message-less Claude spawn emits no init event and owns
+                    # no session until its first user message.
                     self.claude.session_id = None
                 elif cli == "codex":
                     # The app-server binds thread identity only when a turn
