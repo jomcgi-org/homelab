@@ -434,7 +434,7 @@ for line in sys.stdin:
                     + [{"command": "grep loop shim.py"}] * 4
                 )
             else:
-                tool_args = [None, {}, [], "", 0, False]
+                tool_args = [None] * 5
             for index, args in enumerate(tool_args):
                 event = {"type": "tool_execution_start",
                          "toolCallId": "bash-%d" % index, "toolName": "bash"}
@@ -657,13 +657,12 @@ def test_pi_repeated_tool_calls_separated_resets_counter(tmp_path, monkeypatch):
     assert "Loop guard test completed" in record["result"]
 
 
-def test_pi_repeated_tool_calls_missing_args_doesnt_crash(tmp_path, monkeypatch):
+def test_pi_repeated_tool_calls_missing_args_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls-missing-args")
     manager = _pi_manager(tmp_path, monkeypatch)
-    record = manager.turn("hello", model="qwen")
-    manager._close_process()
 
-    assert "Loop guard test completed" in record["result"]
+    with pytest.raises(RuntimeError, match="repeated the same bash tool call"):
+        manager.turn("hello", model="qwen")
 
 
 def test_pi_pushes_progress_during_turn(tmp_path, monkeypatch):
