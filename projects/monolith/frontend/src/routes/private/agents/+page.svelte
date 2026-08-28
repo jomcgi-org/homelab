@@ -453,7 +453,7 @@
 
   async function loadDrainLane() {
     try {
-      const response = await fetch("/api/agents/drain-lane");
+      const response = await fetch("/agents/drain-lane");
       if (!response.ok) return;
       drain = await response.json();
     } catch {
@@ -1152,7 +1152,10 @@
       // the next poll via the initial 100ms timeout.
       // On error, in-loop self-schedule handles the retry to avoid blocking.
       timeoutHandle = setTimeout(schedulePoll, 100);
-      const interval = setInterval(loadSessions, 2000);
+      const interval = setInterval(async () => {
+        await loadSessions();
+        await loadDrainLane();
+      }, 2000);
       return () => {
         stopped = true;
         clearTimeout(timeoutHandle);
