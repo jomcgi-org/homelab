@@ -150,6 +150,7 @@ ADRs document significant architectural decisions and their context.
 | [004 - Public Read-Only Service Isolation](security/004-public-read-only-service-isolation.md) | Separate read-only public service on a replica, isolated from private data and secrets                                                     |
 | [005 - Public Chat Adversarial Hardening](security/005-public-chat-adversarial-hardening.md)   | Defense-in-depth for anonymous GPU-backed chat: Turnstile sessions, reserved-headroom semaphore, server-side limits, DB-confined retrieval |
 | [006 - Crossing on `friends.jomcgi.dev` as a Second Authorization Lane](security/006-moving-friends-authorization-lane.md) | Serve the `moving` family move-planner app from `friends.jomcgi.dev`, not `private.jomcgi.dev`, as a new HTTPRoute with its own SecurityPolicy gated to a new authentik group `family`, so a shared-hostname policy mistake cannot reach ArgoCD, SigNoz, Longhorn, or Kargo |
+| [007 - Aggregate Threat Model Index with Issue-Labeled Findings](security/007-aggregate-threat-model-index.md) | One org-level `docs/THREAT-MODEL.md` index over the per-domain threat models, with the live finding list tracked as GitHub issues labeled `security-finding` instead of duplicated in prose |
 
 ## Services
 
