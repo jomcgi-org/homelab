@@ -285,9 +285,19 @@ def test_tail_storage_gate_extension_and_volume_move_together():
     docs = _render()
     config = _collector_config(docs)
 
-    assert config["processors"]["tail_sampling"]["tail_storage"] == "file_storage/tail"
-    assert "file_storage/tail" in config["extensions"]
-    assert "file_storage/tail" in config["service"]["extensions"], (
+    # The component type matters, not just that some extension is referenced.
+    # tail_storage takes a component.ID, so any id parses and `validate` exits
+    # 0, but the processor type-asserts to the TailStorage interface at Start.
+    # file_storage implements the byte-KV storage.Extension and fails that
+    # assertion with "non-tail-storage extension", after health_check is up.
+    assert (
+        config["processors"]["tail_sampling"]["tail_storage"] == "pebble_tail_storage"
+    ), (
+        "tail_storage must name a TailStorage implementation; file_storage "
+        "parses fine and then CrashLoops at Start"
+    )
+    assert "pebble_tail_storage" in config["extensions"]
+    assert "pebble_tail_storage" in config["service"]["extensions"], (
         "an extension not listed under service.extensions is never started"
     )
 
@@ -297,7 +307,12 @@ def test_tail_storage_gate_extension_and_volume_move_together():
         for a in container["args"]
     ), "tail_storage is set but its feature gate is not enabled"
 
-    directory = config["extensions"]["file_storage/tail"]["directory"]
+    ext = config["extensions"]["pebble_tail_storage"]
+    directory = ext["directory"]
+    assert ext.get("max_storage_size_mib"), (
+        "max_storage_size_mib defaults to unlimited; without it Pebble can "
+        "outgrow the emptyDir and get the pod evicted for ephemeral storage"
+    )
     mounts = {m["mountPath"]: m["name"] for m in container["volumeMounts"]}
     assert directory in mounts, (
         f"{directory} is not mounted; readOnlyRootFilesystem makes it unwritable"
@@ -326,8 +341,8 @@ def test_disabling_tail_storage_removes_every_piece():
     config = _collector_config(docs)
 
     assert "tail_storage" not in config["processors"]["tail_sampling"]
-    assert "file_storage/tail" not in config.get("extensions", {})
-    assert "file_storage/tail" not in config["service"]["extensions"]
+    assert "pebble_tail_storage" not in config.get("extensions", {})
+    assert "pebble_tail_storage" not in config["service"]["extensions"]
 
     container = _deployment_container(docs)
     assert not any("tailstorageextension" in a for a in container.get("args", []))
