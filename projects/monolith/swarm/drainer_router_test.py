@@ -350,3 +350,55 @@ def test_old_updated_at_with_recent_step_not_reaped(monkeypatch):
     assert response.status_code == 202
     assert response.json() == {"status": "started"}
     assert enqueued == [drainer_router.drain_cycle]
+
+
+def test_step_read_failure_does_not_reap(monkeypatch):
+    """A step-read failure must skip the reap, not fall back to updated_at.
+
+    updated_at is frozen at dequeue for a healthy running cycle, which is the
+    whole reason the step signal exists. Falling back to it when the step read
+    fails would reap exactly the long healthy cycles the signal protects, so
+    the failure path leaves the workflow for the next tick instead.
+    """
+    enqueued = []
+    cancelled = []
+    now_ms = int(1_000_000_000 * 1000)
+
+    class FakeDBOS:
+        def list_workflows(
+            self,
+            name=None,
+            queue_name=None,
+            status=None,
+            limit=None,
+            load_input=False,
+            load_output=False,
+        ):
+            if status == "PENDING":
+                # Old enough to be reaped on updated_at alone.
+                return [_FakeWorkflow("active-wf-1", now_ms - (4000 * 1000))]
+            return []
+
+        def list_workflow_steps(self, workflow_id, load_output=False):
+            raise RuntimeError("step read failed")
+
+        def cancel_workflow(self, workflow_uuid, cancel_children=False):
+            cancelled.append(workflow_uuid)
+
+    class FakeQueue:
+        def enqueue(self, workflow):
+            enqueued.append(workflow)
+
+    import time as time_module
+
+    monkeypatch.setattr(time_module, "time", lambda: now_ms / 1000)
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
+
+    response = _client().post("/internal/agent/drain")
+
+    assert cancelled == [], "a step-read failure must not cancel the workflow"
+    assert response.status_code == 202
+    assert enqueued == [drainer_router.drain_cycle]

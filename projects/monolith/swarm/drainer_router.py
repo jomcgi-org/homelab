@@ -71,8 +71,19 @@ def _reap_stale_drain_cycles(dbos) -> int:
                     )
                     last_activity_ms = max(last_activity_ms, max_step_completed_ms)
             except Exception:  # noqa: BLE001
-                # If we fail to fetch steps, fall back to updated_at alone.
-                pass
+                # Skip this workflow rather than falling back to updated_at.
+                # updated_at alone is the signal this whole function exists to
+                # stop trusting: it is frozen at dequeue for a healthy running
+                # cycle, so falling back to it here would reap exactly the
+                # long healthy cycles the step signal was added to protect.
+                # Leaving a genuinely wedged cycle for the next tick is cheap;
+                # cancelling a live one destroys its guest and re-runs its job.
+                logger.warning(
+                    "qwen drainer could not read steps for %s, skipping reap",
+                    workflow_uuid,
+                    exc_info=True,
+                )
+                continue
 
             # Check if this workflow is stale based on last activity.
             if last_activity_ms < stale_before_ms:
