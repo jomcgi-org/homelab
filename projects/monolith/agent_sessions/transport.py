@@ -15,6 +15,7 @@ import binascii
 import json
 import logging
 import os
+import random
 import re
 import zlib
 from typing import Awaitable, Callable, NamedTuple, Protocol
@@ -51,6 +52,53 @@ def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
         return isinstance(body, dict) and body.get("retryable") is True
     except Exception:
         return False
+
+
+# Reasons EmberVM returns on a 429 that mean "no slot right now", as opposed
+# to a transient control-plane problem. See create_denial/2 in the control
+# plane router: capacity is 429 with retryable true, and the reason string is
+# machine readable on purpose.
+_CAPACITY_DENIAL_REASONS = frozenset(
+    {"session_cap", "workload_cap", "quota", "no_capacity"}
+)
+
+# A capacity denial clears only when a live turn ends, and a pi turn runs until
+# the EmberVM invoke watchdog at 900s. The generic retryable ladder below tops
+# out around 2 minutes and the create path used to get only 17 seconds, so a
+# create that collided with a running turn could never wait long enough and
+# failed essentially every time. piRuntimeWorkload.concurrency.cap is 2 and is
+# pinned to the KV budget (each session takes 120K of a 262144-token pool), so
+# the cap cannot simply be raised: waiting is the only way to not fail.
+#
+# Sums to roughly 19 minutes, which comfortably outlasts one watchdog-bounded
+# turn. A successful attempt returns immediately, so a fast-clearing collision
+# is not made slower by the long tail; it only converts creates that would
+# have failed into creates that wait.
+_CAPACITY_BACKOFF_SECONDS = (5, 10, 20, 30, 45, 60, 60, 90, 90, 120, 120, 150, 150, 180)
+
+# Jitter so several waiters blocked on the same freed slot do not all wake and
+# retry in the same instant, which would hand the slot to whoever wins the race
+# and send the rest back around the ladder.
+_CAPACITY_JITTER = 0.25
+
+
+def _capacity_denial(exc: httpx.HTTPStatusError) -> bool:
+    """True when a 429 says the workload is at capacity, not merely busy."""
+    if exc.response.status_code != 429:
+        return False
+    try:
+        body = exc.response.json()
+    except Exception:
+        return False
+    if not isinstance(body, dict):
+        return False
+    return body.get("reason") in _CAPACITY_DENIAL_REASONS
+
+
+def _capacity_sleep_seconds(attempt: int) -> float:
+    """Jittered delay for capacity attempt ``attempt`` (0-based)."""
+    base = _CAPACITY_BACKOFF_SECONDS[min(attempt, len(_CAPACITY_BACKOFF_SECONDS) - 1)]
+    return base * (1.0 + random.uniform(-_CAPACITY_JITTER, _CAPACITY_JITTER))
 
 
 async def _invoke_with_retryable_backoff(
@@ -369,7 +417,23 @@ class EmberVmShimTransport:
             raise EmberVMTimeout(str(exc)) from exc
         except httpx.HTTPStatusError as exc:
             logger.warning("embervm session creation failed: %s", exc)
-            if _attempt < 3 and _retryable_from_response(exc):
+            # A capacity denial waits out a whole turn; anything else retryable
+            # keeps the original short ladder, because a transient control
+            # plane problem clears in seconds and there is no point holding a
+            # caller for 19 minutes over one.
+            if _capacity_denial(exc):
+                if _attempt < len(_CAPACITY_BACKOFF_SECONDS):
+                    delay = _capacity_sleep_seconds(_attempt)
+                    logger.info(
+                        "embervm at capacity, waiting %.0fs for a slot "
+                        "(attempt %d of %d)",
+                        delay,
+                        _attempt + 1,
+                        len(_CAPACITY_BACKOFF_SECONDS),
+                    )
+                    await asyncio.sleep(delay)
+                    return await self.create_session(restore_from, model, _attempt + 1)
+            elif _attempt < 3 and _retryable_from_response(exc):
                 await asyncio.sleep((2, 5, 10)[_attempt])
                 return await self.create_session(restore_from, model, _attempt + 1)
             raise EmberVMTransportError(_status_error_detail(exc)) from exc
