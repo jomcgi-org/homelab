@@ -33,11 +33,18 @@ py_test(
     name = "collector_optin_test",
     srcs = ["collector_optin_test.py"],
     data = [
+        "Chart.lock",
         "Chart.yaml",
         "values.yaml",
         "values-prod.yaml",
         "@multitool//tools/helm",
-    ] + glob(["templates/**/*"]),
+        # Chart.lock plus the vendored charts/ tree are load-bearing for
+        # `helm template`: without them the render aborts on the cf-ingress
+        # subchart dependency that the public health route uses.
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+    ]),
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },

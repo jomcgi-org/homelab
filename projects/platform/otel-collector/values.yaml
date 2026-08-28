@@ -22,6 +22,22 @@ onepassword:
 honeycomb:
   endpoint: "api.honeycomb.io:443"
 
+# Public health route for external metamonitoring. Disabled by default so the
+# chart renders inert; see templates/httproute.yaml for why this is a direct
+# route rather than a proxy through the public frontend.
+cfIngress:
+  enabled: false
+  tier: public
+  hostname: ""
+  pathPrefix: /health/otel-collector
+  # The health_check extension serves at the root, so the prefix is stripped.
+  rewritePrefix: /
+  serviceName: otel-collector
+  servicePort: 13133
+  gateway:
+    name: cloudflare-ingress
+    namespace: envoy-gateway-system
+
 # Services permitted to send traces, matched on resource attribute
 # service.name.
 #
