@@ -370,7 +370,7 @@ web:
   # out on sustained CPU rather than throttling).
   # Memory request == limit (was 160/384) per the sizing convention: req<limit
   # risks an overcommit OOM-kill below the limit under node memory pressure. 384
-  # is ~1.6x the 7-day working-set peak of 238Mi (SigNoz k8s.pod.memory.working_set).
+  # is ~1.6x the historical 7-day working-set peak of 238Mi.
   resources:
     requests:
       cpu: 100m
@@ -430,10 +430,9 @@ frontend:
       initialDelaySeconds: 3
       periodSeconds: 5
   # API_BASE points at the backend "web" Service (in-cluster).
-  # OTEL_COLLECTOR_HTTP_URL lets the same-origin /otel proxy forward browser
-  # traces to the in-cluster SigNoz collector (cross-namespace, in-cluster, so
-  # the EgressNetwork off-cluster deny does not apply). IMGPROXY_KEY/SALT are the
-  # only secrets: the SSR signer (lib/server/trips-img.js) reads them via
+  # OTEL_COLLECTOR_HTTP_URL is intentionally empty. The same-origin /otel proxy
+  # returns 204 when no collector is configured. IMGPROXY_KEY/SALT are the only
+  # secrets: the SSR signer (lib/server/trips-img.js) reads them via
   # $env/dynamic/private to sign /img URLs server-side and they never reach the
   # browser ($lib/server is never client-bundled).
   env:
@@ -451,7 +450,7 @@ frontend:
     - name: TURNSTILE_SITE_KEY
       value: "0x4AAAAAADm59tvOGWo09IYc"
     - name: OTEL_COLLECTOR_HTTP_URL
-      value: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
+      value: ""
     # imgproxy URL signing secret (hex-encoded KEY/SALT), synced from 1Password
     # via the imgproxy-signing OnePasswordItem. The SSR signer computes the same
     # HMAC the imgproxy component validates. secretKeyRef name must equal
@@ -470,7 +469,7 @@ frontend:
   # SSR Node: CPU request sized for a meaningful HPA signal (Node SSR is
   # CPU-bound under concurrent renders); no CPU limit.
   # Memory request == limit (was 128/512) per the sizing convention. 384 is ~1.6x
-  # the 7-day working-set peak of 234Mi (SigNoz); the old 512 limit was overspec.
+  # the historical 7-day working-set peak of 234Mi; the old 512 limit was overspec.
   resources:
     requests:
       cpu: 100m
@@ -641,7 +640,7 @@ imgproxy:
   # CPU request only (no limit): image decode is bursty CPU-bound work and a
   # limit would only throttle it. Memory request == limit per the sizing
   # convention (was 128/512, which violated it). 512 is ~1.4x the 7-day
-  # working-set peak of 360Mi (SigNoz); transcodes are spiky (p99 only 132Mi),
+  # historical working-set peak of 360Mi; transcodes are spiky (p99 only 132Mi),
   # so keep the higher ceiling here rather than trim to the peak.
   resources:
     requests:
@@ -762,14 +761,6 @@ ciliumPolicy:
           app.kubernetes.io/name: embervm-serving-envoy
           app.kubernetes.io/instance: embervm
         port: 5401
-      # NOTE: deliberately NO otel-collector target. The public binary never
-      # initialises OpenTelemetry (framework/core.py build_app returns for
-      # Tier.PUBLIC before _setup_otel) and no OTEL_* env exists on these pods,
-      # so an allow for the SigNoz collector would be dead surface.
-      # OTEL_COLLECTOR_HTTP_URL from the frontend's /otel proxy reaches the
-      # hostNetwork SigNoz k8s-infra agent, so it is a host/remote-node entity
-      # on this port rather than a pod selector.
-      otelAgentHostPort: 4318
     # Cloudflare's published IP ranges, the toCIDRSet allow for the ONE
     # sanctioned off-cluster egress from the backend "web" pod: Turnstile
     # siteverify (challenges.cloudflare.com) on port 443. Pinned as CIDRs rather

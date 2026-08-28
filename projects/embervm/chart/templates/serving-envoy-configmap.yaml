@@ -115,13 +115,11 @@ data:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: serving_ingress
                     codec_type: AUTO
-                    # Hit-path access logs to STDOUT (R3 Task 10): the kubelet captures
-                    # pod stdout, and the existing SigNoz k8s-infra `filelog/k8s`
-                    # receiver already collects every pod's stdout as logs, so this
-                    # needs NO platform collector change. Default JSON-ish command
+                    # Hit-path access logs go to STDOUT, where the kubelet captures
+                    # them for any explicitly configured log collector. Default JSON-ish command
                     # operators carry the per-request status/duration/upstream, giving
-                    # a per-hit record in SigNoz WITHOUT any control-plane span on the
-                    # hit path (standing decision 1: the aggregate hit-latency story is
+                    # a per-hit record without any control-plane span on the hit path
+                    # (standing decision 1: the aggregate hit-latency story is
                     # the scraped Envoy upstream_rq_time histogram, this is the record).
                     access_log:
                       - name: envoy.access_loggers.stdout

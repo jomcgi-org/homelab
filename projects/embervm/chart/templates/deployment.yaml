@@ -294,8 +294,8 @@ spec:
               value: {{ join "," .Values.usageAdmins | quote }}
             {{- end }}
             {{- if .Values.tracing.endpoint }}
-            # OpenTelemetry OTLP/gRPC tracing to SigNoz (Task 13). Set enables the
-            # exporter (config/runtime.exs); unset leaves tracing off. Standard
+            # OpenTelemetry OTLP/gRPC tracing. Set enables the exporter
+            # (config/runtime.exs); unset leaves tracing off. Standard
             # OTEL_* env: the SDK reads OTEL_SERVICE_NAME for the resource and the
             # exporter reads the endpoint.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

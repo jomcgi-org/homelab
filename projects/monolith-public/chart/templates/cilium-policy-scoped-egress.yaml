@@ -61,13 +61,7 @@
 #             never initialises OpenTelemetry (framework/core.py build_app
 #             returns for Tier.PUBLIC before _setup_otel) and no OTEL_* env is
 #             set on these pods, so a collector allow would be dead surface.
-#   frontend  the backend only (API_BASE / CHAT_API_BASE), plus browser traces
-#             forwarded by the same-origin /otel proxy to the SigNoz k8s-infra
-#             agent (OTEL_COLLECTOR_HTTP_URL). That agent is a hostNetwork
-#             DaemonSet (projects/platform/signoz/application.yaml), so Cilium
-#             classifies the destination as the node itself: `host` on the same
-#             node, `remote-node` elsewhere. That is the ONLY reason those two
-#             entities survive here, pinned to the OTLP/HTTP port 4318.
+#   frontend  the backend only (API_BASE / CHAT_API_BASE).
 #   imgproxy  SeaweedFS alone (IMGPROXY_S3_ENDPOINT).
 #
 # Every pod resolves through kube-dns. The apiserver is absent because the
@@ -177,16 +171,6 @@ spec:
       toPorts:
         - ports:
             - port: {{ .Values.web.containerPort | quote }}
-              protocol: TCP
-    # Browser traces via the same-origin /otel proxy go to the SigNoz k8s-infra
-    # agent DaemonSet, which is hostNetwork, so the destination identity is the
-    # node itself rather than a pod. Pinned to the OTLP/HTTP port.
-    - toEntities:
-        - host
-        - remote-node
-      toPorts:
-        - ports:
-            - port: {{ $t.otelAgentHostPort | quote }}
               protocol: TCP
 {{- end }}
 {{- if .Values.imgproxy.enabled }}

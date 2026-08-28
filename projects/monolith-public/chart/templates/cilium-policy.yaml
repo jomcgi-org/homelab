@@ -187,11 +187,10 @@ spec:
 {{- end }}
 {{- if .Values.frontend.enabled }}
 ---
-# Frontend egress: default-deny OFF-cluster, allow all in-cluster (it calls the
-# backend over API_BASE and forwards browser traces to the SigNoz OTLP agent via
-# the /otel proxy) plus DNS. No off-cluster host is needed, so there is no
+# Frontend egress: default-deny OFF-cluster, allow all in-cluster for the backend
+# call over API_BASE plus DNS. No off-cluster host is needed, so there is no
 # toFQDNs and thus no DNS-proxy requirement: DNS resolves at L4 through the
-# in-cluster allow. host/remote-node cover the OTLP agent if it is host-networked.
+# in-cluster allow.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -206,8 +205,6 @@ spec:
   egress:
     - toEntities:
         - cluster
-        - host
-        - remote-node
 {{- end }}
 {{- if .Values.imgproxy.enabled }}
 ---

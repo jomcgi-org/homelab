@@ -199,7 +199,7 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
           # For a chart whose content keeps changing that self-heals, because
           # the next content change moves the digests and takes the escalation
           # path below. For a chart that goes quiet it is PERMANENT: on
-          # 2026-08-10 signoz-dashboard-sidecar sat at 0.2.0 on main against a
+          # On 2026-08-10 a dashboard sidecar sat at 0.2.0 on main against a
           # published 0.3.3 for exactly this reason, while embervm escaped only
           # because an unrelated dependency bump happened to touch it.
           #

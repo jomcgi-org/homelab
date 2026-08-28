@@ -51,7 +51,7 @@ argo-workflows:
       enabled: false
     # Pre-populate the Kyverno OTEL mutation annotation to match the cluster
     # webhook (prevents ArgoCD drift, see the argocd-otel-outofsync saga) and
-    # expose the controller's :9090 telemetry endpoint for SigNoz autodiscovery.
+    # expose the controller's :9090 telemetry endpoint for pod discovery.
     podAnnotations:
       otel.injected-by: kyverno/inject-otel-env-vars
       prometheus.io/scrape: "true"

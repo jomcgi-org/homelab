@@ -75,7 +75,7 @@ imagePullSecret:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/ghcr-read-permissions"
 
-# Control-plane resources sized small to start (SigNoz 7-day-peak resizing later).
+# Control-plane resources sized small to start, with production overrides below.
 # CPU is a request only (no limit) per the repo convention; memory request == limit.
 resources:
   requests:
@@ -148,7 +148,7 @@ opLog:
   # Age past which an append-only op is eligible for ops-journal prefix compaction,
   # provided its task is not still live. Distinct from the 7-day terminal-task
   # retention: this bounds the journal (which carries request payloads); older
-  # audit lives in SigNoz.
+  # audit is retained by the configured telemetry backend.
   journalHorizonDays: 30
 
 # SpecTrace gate for spec validation (GitHub issue #4770). A debug-gated, spec-shaped
@@ -307,9 +307,8 @@ quota:
 # GET /v1/usage (?principal=). Everyone else is self-scoped. Empty = self only.
 usageAdmins: []
 
-# OpenTelemetry OTLP/gRPC tracing (Task 13). Empty endpoint = tracing OFF (the
-# release boots with a no-op exporter); set it (deploy values) to the SigNoz
-# collector to export. serviceName defaults to embervm-control.
+# OpenTelemetry OTLP/gRPC tracing. Empty endpoint means tracing is off. Opting in
+# requires a collector endpoint and an allowlist entry for this service.
 tracing:
   endpoint: ""
   serviceName: embervm-control
@@ -1299,7 +1298,7 @@ noded:
       itemPath: ""
 
   # Ingress allow-list for every charted noded listener: control-plane gRPC,
-  # kubelet and SigNoz health checks, serving-envoy plus control-plane activator
+  # kubelet health checks, serving-envoy plus control-plane activator
   # calls, and serving-envoy traffic to the per-VM DNAT range. Ingress-only, so
   # noded egress remains unrestricted. Disabled by default and enabled in dev.
   networkPolicy:

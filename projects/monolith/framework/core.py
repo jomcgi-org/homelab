@@ -602,7 +602,7 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
     if profile.static_frontend:
         _mount_static_frontend(app)
 
-    if profile.otel_enabled:
+    if profile.otel_enabled and os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"):
         _setup_otel(app, profile.service_name)
 
     return app

@@ -15,6 +15,8 @@ os.environ.pop("STATIC_DIR", None)
 # Force an initial import so reload() has something to work with.
 import app.main  # noqa: F401, E402
 
+_OTEL_ENDPOINT = "http://collector.example:4318/v1/traces"
+
 
 def _make_otel_fake_modules():
     """Build fake sys.modules entries for all opentelemetry subpackages used by main.py."""
@@ -33,6 +35,7 @@ def _make_otel_fake_modules():
         "opentelemetry.exporter.otlp.proto.http.trace_exporter": MagicMock(),
         "opentelemetry.instrumentation": MagicMock(),
         "opentelemetry.instrumentation.fastapi": mock_fastapi_module,
+        "opentelemetry.instrumentation.httpx": MagicMock(),
         "opentelemetry.sdk": MagicMock(),
         "opentelemetry.sdk.resources": MagicMock(),
         "opentelemetry.sdk.trace": MagicMock(),
@@ -45,7 +48,13 @@ class TestOtelInstrumentation:
         """FastAPIInstrumentor.instrument_app() is called on module load."""
         fake_modules, mock_instrumentor_class = _make_otel_fake_modules()
 
-        with patch.dict(sys.modules, fake_modules):
+        with (
+            patch.dict(sys.modules, fake_modules),
+            patch.dict(
+                os.environ,
+                {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": _OTEL_ENDPOINT},
+            ),
+        ):
             importlib.reload(app.main)
 
         mock_instrumentor_class.instrument_app.assert_called_once()
@@ -54,7 +63,13 @@ class TestOtelInstrumentation:
         """_tracer_provider is set to a non-None value after module load."""
         fake_modules, _ = _make_otel_fake_modules()
 
-        with patch.dict(sys.modules, fake_modules):
+        with (
+            patch.dict(sys.modules, fake_modules),
+            patch.dict(
+                os.environ,
+                {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": _OTEL_ENDPOINT},
+            ),
+        ):
             importlib.reload(app.main)
 
         assert app.main._tracer_provider is not None

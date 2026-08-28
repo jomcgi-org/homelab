@@ -40,12 +40,6 @@ gpu-operator:
     # Export metrics for Prometheus
     serviceMonitor:
       enabled: true
-    # SigNoz scrape configuration
-    podAnnotations:
-      signoz.io/scrape: "true"
-      signoz.io/port: "9400"
-      signoz.io/path: "/metrics"
-
   # GPU Feature Discovery
   gfd:
     enabled: true

@@ -109,7 +109,7 @@ _HEX_DEPS = [
     ("googleapis", "0.1.0", "1989a7244fd17d3eb5f3de311a022b656c3736b39740db46506157c4604bd212"),
     ("jason", "1.4.5", "b0c823996102bcd0239b3c2444eb00409b72f6a140c1950bc8b457d836b30684"),
     ("protobuf", "0.17.0", "ca6c91f6f63e2c147b47f03eefd10b80538aa6fc55ff4b12b795efb786b0152f"),
-    #   4. OpenTelemetry tracing (Task 13) exporting OTLP/gRPC to SigNoz. The API +
+    #   4. OpenTelemetry tracing (Task 13) with OTLP/gRPC export. The API +
     #      SDK (opentelemetry, opentelemetry_api, semantic_conventions) plus the
     #      OTLP exporter, whose transport is grpcbox -> {acceptor_pool, ctx, gproc,
     #      ts_chatterbox -> hpack_erl} with TLS cert checking via

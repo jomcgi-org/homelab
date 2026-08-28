@@ -288,7 +288,7 @@ defmodule Embervm.TcpActivator do
       {:ok, usock} ->
         # The `splice` span (Task 10): bounds the whole spliced connection's
         # lifetime (client-to-VM byte pump, both directions) so a stuck or very
-        # long-lived stateful connection is visible in SigNoz. A ROOT span (a raw
+        # long-lived stateful connection is visible in telemetry. A ROOT span (a raw
         # TCP accept carries no caller trace to nest under, same shape as the
         # manager's park/wake spans). ember.bytes_in/ember.bytes_out are the
         # lightweight counters pump_both/2 already threads through its
@@ -304,7 +304,7 @@ defmodule Embervm.TcpActivator do
         with_splice_bracket(class, workload, ctx, fn ->
           # `ember.group` is true for a composite splice (Task 9): the activator spans
           # gain the composite marker so a group entry-member splice is distinguishable
-          # from a stateful one in the SigNoz trace view (both share the splice span
+          # from a stateful one in trace views (both share the splice span
           # name, since the byte-pump mechanism is identical).
           Tracer.with_span "embervm.stateful.splice",
                            %{attributes: %{"ember.workload" => workload, "ember.group" => class == :composite}} do

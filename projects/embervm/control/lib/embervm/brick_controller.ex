@@ -84,7 +84,7 @@ defmodule Embervm.BrickController do
   on EKS Karpenter would add a node). The controller flags such classes; placement
   reads `fleet_full?/2` to turn a would-be denial into a terminal `:fleet_full`
   (503) rather than a retryable park, and the flag transition is logged + traced
-  for a SigNoz alert. A class recovers (unflagged) the first tick its registered
+  for an alert. A class recovers (unflagged) the first tick its registered
   count catches up to desired. A flagged class also refuses further autoscale
   UP steps (scaling desired past a scheduler that cannot place is runaway) and
   blocks DOWN steps for the idle window after the episode clears.
@@ -696,7 +696,7 @@ defmodule Embervm.BrickController do
   end
 
   # Log + trace only on the flag TRANSITION (not every tick past the dwell), so the
-  # SigNoz alert fires once per fleet-full episode, not continuously.
+  # The alert fires once per fleet-full episode, not continuously.
   defp maybe_flag(state, class, desired, registered) do
     unless MapSet.member?(state.flagged, class) do
       Logger.warning("embervm brick fleet full",

@@ -14,7 +14,7 @@ cfIngress:
 argo-cd:
   global:
     # Enable Prometheus scrape annotations on all ArgoCD metrics services
-    # This allows the SigNoz OTel collector to discover and scrape ArgoCD metrics
+    # This allows an explicitly configured collector to scrape ArgoCD metrics
     addPrometheusAnnotations: true
     # Ensure ArgoCD pods survive resource pressure from workload evictions
     priorityClassName: system-cluster-critical
@@ -32,7 +32,7 @@ argo-cd:
       # kubernetes application-API mode, so neither is affected.
       server.basehref: "/app/argocd"
       server.rootpath: "/app/argocd"
-      otlp.address: "signoz-otel-collector.signoz.svc.cluster.local:4317"
+      otlp.address: ""
       # Manifest-generation cache TTL, 24h default -> 10m. Populates
       # ARGOCD_REPO_CACHE_EXPIRATION on repo-server.
       #
@@ -53,7 +53,7 @@ argo-cd:
       reposerver.repo.cache.expiration: "10m"
   # Enable metrics endpoints for all ArgoCD components
   # These expose Prometheus metrics including argocd_app_info for health/sync status
-  # Pod annotations enable SigNoz autodiscovery (scraper uses role: pod)
+  # Pod annotations expose metrics to collectors that discover pod targets.
   controller:
     # Memory limit raised 1Gi -> 2Gi: the controller was OOMKilled x5 (sync storms
     # spike memory well above 1Gi). Request stays 1Gi so it remains schedulable.

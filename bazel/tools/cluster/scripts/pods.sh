@@ -12,7 +12,6 @@ fi
 NAMESPACES=(
 	argocd
 	claude
-	signoz
 	linkerd
 	longhorn-system
 	cert-manager

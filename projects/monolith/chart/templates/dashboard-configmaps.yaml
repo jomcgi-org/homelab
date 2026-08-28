@@ -1,3 +1,0 @@
-{{- if .Values.dashboards }}
-{{- include "signoz-dashboards.configmaps" (dict "root" . "dashboards" .Values.dashboards) }}
-{{- end }}

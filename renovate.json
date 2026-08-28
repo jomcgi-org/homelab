@@ -106,7 +106,6 @@
         "agent-platform",
         "cluster-agents",
         "lakehouse",
-        "signoz-dashboard-sidecar",
         "oci-model-cache-operator"
       ],
       "enabled": false

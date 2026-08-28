@@ -12,10 +12,9 @@ scoped policy that forgot DNS, which is the first thing every pod needs.
 The second half runs `helm template` against chart/values.yaml PLUS the live
 deploy/values.yaml and pins the rendered policy shape in all three rollout
 modes. Enforce mode (the shipped shape) is pinned hardest: no ``toEntities``
-beyond the hostNetwork OTLP agent's node entities anywhere, the broad policies
-gone, and the exact per-dependency allow set the audit window cleared. A
-dependency dropped from scopedTargets now fails HERE instead of as a
-production silent dial timeout.
+grants anywhere, the broad policies gone, and the exact per-dependency allow
+set the audit window cleared. A dependency dropped from scopedTargets now fails
+HERE instead of as a production silent dial timeout.
 """
 
 from __future__ import annotations
@@ -215,11 +214,10 @@ def test_scoped_egress_never_grants_cluster_or_world():
         assert "all" not in entities, "scoped egress must not grant toEntities: all"
 
 
-def test_host_entities_are_port_pinned():
-    """`host`/`remote-node` survive only for the hostNetwork OTLP agent, on one port."""
-    text = _template_path().read_text()
-    for match in re.finditer(r"toEntities:\n((?:\s+- \S+\n)+)(\s+toPorts:)?", text):
-        assert match.group(2), "a toEntities rule in the scoped file must carry toPorts"
+def test_scoped_egress_has_no_entity_grants():
+    assert not any(
+        _entities(chunk) for chunk in _policies(_template_path().read_text())
+    )
 
 
 def test_every_scoped_policy_allows_dns():
@@ -409,20 +407,8 @@ def test_enforced_frontend_and_imgproxy_policies_pin_their_shapes():
     assert _endpoint_rules(frontend) == frontend_expected, (
         f"frontend scoped egress drifted: {_fmt(_endpoint_rules(frontend))}"
     )
-    # The ONLY entity grant in the whole tier: the hostNetwork OTLP agent,
-    # reachable as the node itself, pinned to its single HTTP port.
-    assert _entities_in(frontend) == {"host", "remote-node"}, (
+    assert not _entities_in(frontend), (
         f"frontend entity grants drifted: {sorted(_entities_in(frontend))}"
-    )
-    entity_ports = {
-        (str(p["port"]), p["protocol"])
-        for rule in frontend["spec"]["egress"]
-        if rule.get("toEntities")
-        for block in rule.get("toPorts", [])
-        for p in block["ports"]
-    }
-    assert entity_ports == {(str(targets["otelAgentHostPort"]), "TCP")}, (
-        f"host/remote-node must stay pinned to the OTLP agent port, got {entity_ports}"
     )
 
     imgproxy = _by_name(cnps, "-imgproxy-egress-scoped")

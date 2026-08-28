@@ -221,7 +221,7 @@ priorityClassName: homelab-critical
 
 # Burstable memory (ADR platform/010): request = steady-state, limit holds the
 # real anonymous peak. The model and its KV cache live in GPU VRAM, which is a
-# separate resource from the host RAM this limit governs. 7-day SigNoz shows host
+# separate resource from the host RAM this limit governs. Historical data shows host
 # RSS (the non-reclaimable part that can actually OOM) never exceeds ~5Gi.
 # working_set spikes to ~20Gi only during model load, when the ~18-20GB of int4
 # weight files transit host page cache on the way to VRAM; that cache is clean and
@@ -229,7 +229,7 @@ priorityClassName: homelab-critical
 # the real RSS and only forces page-cache reclaim during the rare load, which is
 # harmless (the weights are already in VRAM by then). Trimmed 32 -> 16 to keep the
 # node-4 paper overcommit honest for the agent-microVM tier.
-# CPU request trimmed 4 -> 2: decode is GPU-bound, 7-day SigNoz peak CPU is
+# CPU request trimmed 4 -> 2: decode is GPU-bound, historical 7-day peak CPU is
 # ~1715m (avg ~7m), so 2 cores covers peak with headroom. Re-check both after
 # the NInfer cutover; these were measured under vLLM and llama.cpp.
 resources:
@@ -287,7 +287,7 @@ embeddings:
   podAnnotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
-  # 7-day SigNoz RSS is ~5.5Gi (llama.cpp holds the GGUF weights in host RAM,
+  # Historical 7-day RSS is ~5.5Gi (llama.cpp holds the GGUF weights in host RAM,
   # n-gpu-layers 0), and the grimoire bulk sourcebook load (2026-07-04, ~40k
   # chunks at 60k-char batches against 8192-token ubatch) OOMKilled the pod at
   # the old 8Gi limit and crash-looped it: each restart got slammed by retry

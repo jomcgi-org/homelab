@@ -106,7 +106,7 @@ defmodule Embervm.OpLog.SQLite do
   # Thirty days in milliseconds: default age past which an op is eligible for
   # prefix compaction, PROVIDED its task is not still live. The ops journal is
   # the on-box book of record for recovery and recent audit; older audit is
-  # delegated to SigNoz (ADR embervm/002). DISTINCT from @default_retention_ms.
+  # delegated to the telemetry backend (ADR embervm/002). DISTINCT from @default_retention_ms.
   @default_journal_horizon_ms 30 * 24 * 60 * 60 * 1000
   # Rows deleted per table per compact/2 batch: bounds how long the single writer
   # holds the connection so appends queued behind it never blow the 5ms budget.

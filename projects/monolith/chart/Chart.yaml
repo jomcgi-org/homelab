@@ -7,6 +7,3 @@ dependencies:
   - name: cf-ingress
     version: 0.1.0
     repository: "file://../../platform/cf-ingress-library"
-  - name: signoz-dashboards
-    version: 0.1.0
-    repository: "file://../../platform/signoz-dashboards-library"

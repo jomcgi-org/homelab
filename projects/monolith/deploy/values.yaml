@@ -1,7 +1,7 @@
 backend:
   replicas: 1
   dcgmExporterUrl: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400"
-  otelEndpoint: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318/v1/traces"
+  otelEndpoint: ""
   resources:
     requests:
       # 4Gi -> 1Gi: the old 4Gi was headroom for the in-process FA2 graph-layout
@@ -30,7 +30,7 @@ auth:
   jwksCacheTtlSeconds: 300
 
 frontend:
-  otelCollectorUrl: "http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4318"
+  otelCollectorUrl: ""
 
 postgres:
   # Nightly logical refresh of monolith-dev-pg, dumped from the production
@@ -142,20 +142,6 @@ knowledge:
   # there is no sidecar, no vault volume, and no git-sync backup left to wire.
   gaps:
     rewriteDiscardable: true
-
-dashboards:
-  cnpg-overview:
-    enabled: true
-    name: "CloudNativePG Overview"
-    tags: "postgres,cnpg"
-  monolith-red:
-    enabled: true
-    name: "Monolith RED Dashboard"
-    tags: "monolith,red,performance,traces"
-  goosecracker-overview:
-    enabled: true
-    name: "goosecracker Overview"
-    tags: "goosecracker,agent,fc-agentd,traces"
 
 chat:
   enabled: true
@@ -408,7 +394,7 @@ scratchPostgres:
 # Deployment, instead of those whole namespaces. Provenance per entry, including
 # the envoy relabel failure mode and its rollback, lives in
 # chart/templates/cilium-ingress-policy.yaml. The #4659 tripwire for a selector
-# that stops matching was a SigNoz alert, removed with SigNoz (#5362), so there
+# that stops matching was an external alert removed in #5362, so there
 # is no automated tripwire until the replacement monitoring lands.
 #
 # If something was still missed it fails as a SILENT dial timeout, not a

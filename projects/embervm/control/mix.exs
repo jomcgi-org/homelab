@@ -97,7 +97,7 @@ defmodule Embervm.MixProject do
       {:grpc_core, path: "deps/grpc_core", override: true},
       {:googleapis, path: "deps/googleapis", override: true},
       {:jason, path: "deps/jason", override: true},
-      # OpenTelemetry tracing (Task 13): OTLP/gRPC export to SigNoz. Full flat
+      # OpenTelemetry tracing (Task 13): OTLP/gRPC export. Full flat
       # closure (see bazel/erlang/repositories.bzl group 4). Two atoms differ from
       # their hex package name: :hpack lives in deps/hpack_erl and :chatterbox in
       # deps/ts_chatterbox (the deps dir is the PACKAGE name, the atom the APP name).

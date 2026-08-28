@@ -15,8 +15,9 @@ opentelemetry-operator:
 
 # Instrumentation CRD configuration
 instrumentation:
-  # OTEL collector endpoint (SigNoz k8s-infra agent)
-  endpoint: http://signoz-k8s-infra-otel-agent.signoz.svc.cluster.local:4317
+  # No destination is configured. Enabling a language requires pointing it at
+  # the collector and adding that service to the collector's allowedServices.
+  endpoint: ""
   propagators:
     - tracecontext
     - baggage

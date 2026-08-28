@@ -22,8 +22,6 @@ resources:
   - ./seaweedfs
   - ./seaweedfs-node4 # Second volume server on node-4 (capacity; cluster runs replication 000)
   - ./seaweedfs-node4b # Third volume server, second on node-4 (capacity relief, incident #4317)
-  - ./signoz
-  - ./signoz-addons # Must be after signoz
   # temporal, warehouse-bucket and temporal-databases removed: lakehouse/Temporal
   # stack decommissioned (superseded by ../loom). The CNPG temporal/
   # temporal_visibility/lakehouse databases were dropped via ensure:absent before
