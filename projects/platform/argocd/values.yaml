@@ -11,38 +11,52 @@ argo-cd:
   configs:
     cm:
       accounts.mcp-agent: apiKey
-      # Kyverno's inject-otel-env-vars ClusterPolicy mutates every Deployment at
-      # admission to add the otel.injected-by annotation and exactly two env
-      # vars: OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_PROTOCOL. ArgoCD
-      # renders charts without those, so affected Deployments sit permanently
-      # OutOfSync (Healthy, but the noise hides genuine drift). Ignore EXACTLY the
-      # two injected names, not all OTEL_* : charts define their own OTEL vars
-      # (e.g. monolith sets OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and
-      # OTEL_COLLECTOR_HTTP_URL), and a startswith("OTEL_") match would strip
-      # those from the live side too and manufacture a fresh diff.
-      # Policy: projects/platform/kyverno/templates/otel-injection-policy.yaml.
+      # The OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_PROTOCOL ignores
+      # were REMOVED with SigNoz (#5362), and removing them is the point rather
+      # than cleanup.
       #
-      # Also ignore kubectl.kubernetes.io/restartedAt: it is written by
+      # Kyverno's inject-otel-env-vars ClusterPolicy used to add those two env
+      # vars to every Deployment at admission, and this ignore existed so the
+      # resulting drift did not park every workload OutOfSync. The policy is now
+      # disabled, but disabling it does not undo what it already wrote: the
+      # mutation landed in the Deployment SPECS, so the values survive a rollout,
+      # and while these ignores stood ArgoCD treated them as someone else's field
+      # and left them alone. 83 workloads were left pointing at a SigNoz endpoint
+      # that no longer resolves.
+      #
+      # Dropping the ignores hands the cleanup back to the normal sync loop:
+      # ArgoCD sees the live env that no chart declares, prunes it, and the
+      # workload rolls once. Expect a one-time fleet-wide roll on the first sync
+      # after this lands, ArgoCD's own components included.
+      #
+      # Do NOT reintroduce these as a startswith("OTEL_") match if injection ever
+      # returns: charts define their own OTEL vars (monolith sets
+      # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and OTEL_COLLECTOR_HTTP_URL), and a
+      # prefix match would strip those from the live side and manufacture a fresh
+      # diff.
+      #
+      # Ignore kubectl.kubernetes.io/restartedAt: it is written by
       # `kubectl rollout restart`, never appears in a chart, and otherwise leaves
       # any manually-restarted Deployment permanently OutOfSync (e.g. monolith
       # carried one from an April restart). The "/" in the annotation key is
       # JSON-Pointer-escaped as "~1".
       resource.customizations.ignoreDifferences.apps_Deployment: |
         jqPathExpressions:
-          - '.spec.template.spec.containers[].env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
-          - '.spec.template.spec.initContainers[]?.env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
-          # Kyverno/kubectl inject otel.injected-by + restartedAt into live;
-          # after they are ignored, live is left with an EMPTY annotations map
-          # while the predicted state drops the key, and gitops-engine treats
-          # {} != absent (permanent OutOfSync; the 2026-07-04 monolith saga).
-          # Delete the WHOLE map iff every key in it is one of the injected
-          # ones (vacuously true for {}), which is order-independent w.r.t.
-          # the jsonPointers below and can never mask real annotation drift
-          # (e.g. config checksums): any other key keeps the map, and the
-          # pointers then strip just the injected entries.
-          - '.spec.template.metadata.annotations | select(all(keys[]; . == "otel.injected-by" or . == "kubectl.kubernetes.io/restartedAt"))'
+          # kubectl writes restartedAt into live; after it is ignored, live can
+          # be left with an EMPTY annotations map while the predicted state
+          # drops the key, and gitops-engine treats {} != absent (permanent
+          # OutOfSync; the 2026-07-04 monolith saga). Delete the WHOLE map iff
+          # every key in it is that one (vacuously true for {}), which is
+          # order-independent w.r.t. the jsonPointers below and can never mask
+          # real annotation drift (e.g. config checksums): any other key keeps
+          # the map, and the pointer then strips just that entry.
+          #
+          # otel.injected-by was dropped from this list deliberately. It is no
+          # longer ignored, so ArgoCD prunes it along with the env vars, and the
+          # empty-map case it leaves behind is still handled here because the
+          # select is vacuously true for {}.
+          - '.spec.template.metadata.annotations | select(all(keys[]; . == "kubectl.kubernetes.io/restartedAt"))'
         jsonPointers:
-          - /spec/template/metadata/annotations/otel.injected-by
           - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
           # /spec/replicas used to be ignored HERE, fleet-wide. It is now scoped
           # to the three Applications that actually have a controller owning
