@@ -1481,3 +1481,115 @@ def test_guest_diff_accepts_a_valid_payload(caplog):
     with caplog.at_level(logging.WARNING, logger=transport.logger.name):
         assert transport._guest_diff(payload, 42) == payload
     assert caplog.text == ""
+
+
+def _capacity_response(request: httpx.Request, reason: str = "workload_cap"):
+    """The exact body the control plane returns for a cap denial."""
+    return httpx.Response(
+        429,
+        json={
+            "error": "session create denied",
+            "reason": reason,
+            "workload": "pi-runtime",
+            "retryable": True,
+        },
+        request=request,
+    )
+
+
+def test_create_session_waits_out_a_capacity_denial(monkeypatch):
+    """A cap denial must outwait a running turn, not the 17s generic ladder.
+
+    piRuntimeWorkload.concurrency.cap is 2, a pi turn runs until the 900s
+    invoke watchdog, and the slot frees only when that turn ends. The old
+    3-attempt ladder summed to 17 seconds, so an ad-hoc create that collided
+    with the drainer failed every time.
+    """
+    attempts = []
+    sleeps = []
+
+    async def handler(request):
+        attempts.append(request)
+        if len(attempts) < 6:
+            return _capacity_response(request)
+        return httpx.Response(
+            200,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(transport.random, "uniform", lambda _lo, _hi: 0.0)
+
+    result = asyncio.run(transport.EmberVmShimTransport().create_session())
+
+    assert result.session_id == "s1"
+    assert len(attempts) == 6
+    assert sleeps == [5, 10, 20, 30, 45]
+    assert sum(transport._CAPACITY_BACKOFF_SECONDS) > 900, (
+        "the ladder must outlast one watchdog-bounded turn"
+    )
+
+
+def test_create_session_capacity_denial_eventually_gives_up(monkeypatch):
+    attempts = []
+
+    async def handler(request):
+        attempts.append(request)
+        return _capacity_response(request)
+
+    async def fake_sleep(_seconds):
+        return None
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(transport.random, "uniform", lambda _lo, _hi: 0.0)
+
+    with pytest.raises(transport.EmberVMTransportError):
+        asyncio.run(transport.EmberVmShimTransport().create_session())
+
+    assert len(attempts) == len(transport._CAPACITY_BACKOFF_SECONDS) + 1
+
+
+def test_create_session_non_capacity_429_keeps_the_short_ladder(monkeypatch):
+    """A retryable 429 that is not a cap denial must not wait 19 minutes.
+
+    Only capacity waits on a turn ending. A transient control plane problem
+    clears in seconds, so holding the caller for the long ladder would be
+    wrong.
+    """
+    attempts = []
+    sleeps = []
+
+    async def handler(request):
+        attempts.append(request)
+        return httpx.Response(
+            429,
+            json={"error": "rate limit exceeded", "retryable": True},
+            request=request,
+        )
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(transport.EmberVMTransportError):
+        asyncio.run(transport.EmberVmShimTransport().create_session())
+
+    assert sleeps == [2, 5, 10]
+
+
+def test_capacity_jitter_stays_within_bounds(monkeypatch):
+    """Jitter spreads waiters off the same freed slot without going negative."""
+    monkeypatch.setattr(transport.random, "uniform", lambda lo, _hi: lo)
+    assert transport._capacity_sleep_seconds(0) == pytest.approx(5 * 0.75)
+    monkeypatch.setattr(transport.random, "uniform", lambda _lo, hi: hi)
+    assert transport._capacity_sleep_seconds(0) == pytest.approx(5 * 1.25)
+    # Past the end of the ladder the last rung repeats rather than raising.
+    assert transport._capacity_sleep_seconds(999) == pytest.approx(180 * 1.25)
