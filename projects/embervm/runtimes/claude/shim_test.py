@@ -81,8 +81,7 @@ if trust_env_path:
             stream,
         )
 api_key = os.environ.get("FAKE_API_KEY", "none")
-print(json.dumps({"type": "system", "subtype": "init", "session_id": "init-sid",
-                  "model": "fake", "apiKeySource": api_key, "mcp_servers": []}), flush=True)
+initialized = False
 
 def interrupted(_signum, _frame):
     sys.exit(0)
@@ -91,6 +90,11 @@ signal.signal(signal.SIGINT, interrupted)
 for line in sys.stdin:
     request = json.loads(line)
     text = request["message"]["content"][0]["text"]
+    if not initialized:
+        print(json.dumps({"type": "system", "subtype": "init", "session_id": "init-sid",
+                          "model": "fake", "apiKeySource": api_key,
+                          "mcp_servers": []}), flush=True)
+        initialized = True
     if text == "block":
         while True:
             signal.pause()
@@ -1343,7 +1347,7 @@ def _parked_claude(tmp_path):
     manager = object.__new__(shim.ClaudeProcess)
     manager.workspace = str(workspace)
     manager.process = _FakeLiveProcess()
-    manager.init_event = {"type": "system", "subtype": "init"}
+    manager.init_event = None
     manager.fatal_error = None
     manager.session_id = None
     manager.model = None
@@ -1379,7 +1383,7 @@ def test_user_message_line_includes_optional_session_id():
     )
 
 
-def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
+def test_process_manager_prewarm_marks_ready_after_park(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace" / "src"
     workspace.mkdir(parents=True)
     manager = _new_process_manager()
@@ -1389,7 +1393,7 @@ def test_process_manager_prewarm_marks_ready_after_init(tmp_path, monkeypatch):
     calls = []
 
     class Adapter:
-        session_id = "init-sid"
+        session_id = None
         fatal_error = None
         process = _FakeLiveProcess()
 
@@ -1471,9 +1475,9 @@ def test_process_manager_prewarm_spawns_every_configured_family_parked(
 ):
     """#4423: codex and pi park like claude, each per its own init profile.
 
-    Claude parks with no session identity (init emits a throwaway id), codex
-    binds nothing until thread/start, and pi is parked on the default model
-    with no caller system prompt so the common first turn reuses it.
+    Claude parks without starting a turn or binding a session, codex binds
+    nothing until thread/start, and pi is parked on the default model with no
+    caller system prompt so the common first turn reuses it.
     """
     workspace = tmp_path / "workspace" / "src"
     workspace.mkdir(parents=True)
@@ -1490,9 +1494,6 @@ def test_process_manager_prewarm_spawns_every_configured_family_parked(
 
         def _spawn(self, *args, **kwargs):
             calls[self.name] = (args, kwargs)
-            if self.name == "claude":
-                # A real claude init emits a generated session id.
-                self.session_id = "init-sid"
 
         def ready(self):
             return True
@@ -3525,6 +3526,140 @@ def test_first_turn_is_sent_before_delayed_cli_init_and_only_once(
     manager._close_process(kill=True)
 
 
+def test_claude_prewarm_parks_without_init_and_leaves_process_alive(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("EMBER_PARK_GRACE_SECONDS", "0.05")
+    claude = _manager(tmp_path, monkeypatch)
+    process_manager = _new_process_manager()
+    process_manager._prewarm_clis = ("claude",)
+    process_manager._prewarm_complete = False
+    process_manager.fatal_error = None
+    process_manager.claude = claude
+
+    class IdleAdapter:
+        process = None
+        session_id = None
+        turn_lock = threading.Lock()
+
+        def ready(self):
+            return True
+
+    process_manager.codex = IdleAdapter()
+    process_manager.pi = IdleAdapter()
+    process_manager._close_process = lambda kill=False: claude._close_process(kill=kill)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+
+    process_manager.prewarm()
+
+    assert process_manager.fatal_error is None
+    assert process_manager._prewarm_complete
+    assert claude.process is not None
+    assert claude.process.poll() is None
+    assert claude.init_event is None
+    assert claude.session_id is None
+    claude._close_process(kill=True)
+
+
+def test_first_turn_after_park_ignores_init_and_binds_result_session(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("EMBER_PARK_GRACE_SECONDS", "0.05")
+    manager = _manager(tmp_path, monkeypatch)
+    manager._spawn(first_message=None)
+    parked_process = manager.process
+    parked_queue = manager._stdout_queue
+
+    record = manager.turn("first")
+
+    assert manager.process is parked_process
+    assert manager._stdout_queue is parked_queue
+    assert manager.init_event is None
+    assert manager.session_id == "sid-1"
+    assert record["terminal_reason"] == "end_turn"
+    manager._close_process(kill=True)
+
+
+def _write_chatty_no_init_cli(tmp_path):
+    executable = tmp_path / "chatty-no-init-cli"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys, time\n"
+        "if '--version' in sys.argv:\n"
+        "    sys.exit(0)\n"
+        "sys.stdin.readline()\n"
+        "sequence = 0\n"
+        "while True:\n"
+        "    print(json.dumps({'type': 'progress', 'message': 'still starting',\n"
+        "                      'sequence': sequence}), flush=True)\n"
+        "    sequence += 1\n"
+        "    time.sleep(0.01)\n"
+    )
+    os.chmod(executable, 0o755)
+    return executable
+
+
+def test_chatty_message_spawn_uses_total_init_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("EMBER_INIT_READ_TIMEOUT", "0.2")
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = _write_chatty_no_init_cli(tmp_path)
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    with pytest.raises(shim.StartupError) as exc_info:
+        manager.turn("test")
+
+    error_msg = str(exc_info.value)
+    assert "after 0.2 seconds" in error_msg
+    assert "Parsed events:" in error_msg
+    assert "still starting" in error_msg
+
+
+def test_message_less_spawn_death_during_park_grace_is_startup_error(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("EMBER_PARK_GRACE_SECONDS", "0.1")
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "dead-park-cli"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "if '--version' in sys.argv:\n"
+        "    sys.exit(0)\n"
+        "print('park startup failed', file=sys.stderr, flush=True)\n"
+        "sys.exit(7)\n"
+    )
+    os.chmod(executable, 0o755)
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    with pytest.raises(shim.StartupError) as exc_info:
+        manager._spawn(first_message=None)
+
+    error_msg = str(exc_info.value)
+    assert "park grace, exit code 7" in error_msg
+    assert "CLI stderr:" in error_msg
+    assert "park startup failed" in error_msg
+    assert manager.process is None
+
+
+def test_park_grace_env_override_and_fallback(monkeypatch):
+    monkeypatch.delenv(shim.PARK_GRACE_SECONDS_ENV, raising=False)
+    assert shim._read_park_grace_seconds() == 15.0
+    monkeypatch.setenv(shim.PARK_GRACE_SECONDS_ENV, "0.25")
+    assert shim._read_park_grace_seconds() == 0.25
+    monkeypatch.setenv(shim.PARK_GRACE_SECONDS_ENV, "not a number")
+    assert shim._read_park_grace_seconds() == 15.0
+
+
 def test_voice_falls_back_to_first_sentence(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch)
     assert manager.turn("fallback")["voice"] == "First sentence."
@@ -4642,13 +4777,13 @@ def _write_delayed_init_cli(tmp_path, delay):
         "import json, sys, time\n"
         "if '--version' in sys.argv:\n"
         "    sys.exit(0)\n"
+        "line = sys.stdin.readline()\n"
         "print('init output before timeout', flush=True)\n"
         "print('init stderr before timeout', file=sys.stderr, flush=True)\n"
         "print(json.dumps({'type': 'error', 'message': 'init still starting'}), flush=True)\n"
         "time.sleep(%s)\n"
         "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',\n"
         "                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)\n"
-        "sys.stdin.readline()\n"
         "print(json.dumps({'type': 'result', 'result': 'ok', 'terminal_reason': 'end_turn',\n"
         "                  'stop_reason': 'end_turn', 'is_error': False,\n"
         "                  'permission_denials': [], 'num_turns': 1, 'session_id': 's',\n"
@@ -4761,12 +4896,12 @@ def test_stderr_lines_captured_to_ring_and_console(tmp_path, monkeypatch, capsys
     fake_cli_code = (
         "#!/usr/bin/env python3\n"
         "import json, sys\n"
+        "line = sys.stdin.readline()\n"
         "sys.stderr.write('stderr line 1\\n')\n"
         "sys.stderr.write('stderr line 2\\n')\n"
         "sys.stderr.flush()\n"
         "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',\n"
         "                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)\n"
-        "line = sys.stdin.readline()\n"
         "print(json.dumps({'type': 'result', 'result': 'ok', 'terminal_reason': 'end_turn',\n"
         "                  'stop_reason': 'end_turn', 'is_error': False, 'permission_denials': [],\n"
         "                  'num_turns': 1, 'session_id': 's', 'usage': {}, 'total_cost_usd': 0,\n"
@@ -4806,10 +4941,10 @@ def test_parsed_non_init_events_retained(tmp_path, monkeypatch):
     fake_cli_code = (
         "#!/usr/bin/env python3\n"
         "import json, sys\n"
+        "line = sys.stdin.readline()\n"
         "print(json.dumps({'type': 'error', 'message': 'pre-init error'}), flush=True)\n"
         "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',\n"
         "                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)\n"
-        "line = sys.stdin.readline()\n"
         "print(json.dumps({'type': 'result', 'result': 'ok', 'terminal_reason': 'end_turn',\n"
         "                  'stop_reason': 'end_turn', 'is_error': False, 'permission_denials': [],\n"
         "                  'num_turns': 1, 'session_id': 's', 'usage': {}, 'total_cost_usd': 0,\n"
