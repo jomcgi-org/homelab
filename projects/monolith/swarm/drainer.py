@@ -142,7 +142,9 @@ def _payload_values(payload: object, settings: dict) -> tuple[str, str, str, boo
         raise MalformedPayload("missing usable prompt in payload")
     repo = payload.get("repo", settings["repo"])
     branch = payload.get("branch", settings["branch"])
-    reasoning = payload.get("reasoning", False)
+    # Default from settings, like repo and branch above, so an explicit
+    # per-job "reasoning": false still wins over the lane default.
+    reasoning = payload.get("reasoning", settings["reasoning"])
     if not isinstance(repo, str) or not repo.strip():
         raise MalformedPayload("repo must be a non-empty string")
     if not isinstance(branch, str) or not branch.strip():

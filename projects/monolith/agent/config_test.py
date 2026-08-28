@@ -37,6 +37,7 @@ def test_drainer_defaults(monkeypatch):
         "DRAINER_JOB_KIND",
         "DRAINER_REPO",
         "DRAINER_BRANCH",
+        "DRAINER_REASONING",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -50,6 +51,10 @@ def test_drainer_defaults(monkeypatch):
     assert settings.repo == GITHUB_REPO
     assert settings.repo in REPO_CATALOG
     assert settings.branch == "main"
+    # Unlike the pi lane's own default, this one is on: drain jobs are
+    # multi-step repo audits and thinking off makes qwen loop until the
+    # context window fills.
+    assert settings.reasoning is True
 
 
 def test_drainer_environment_overrides(monkeypatch):
@@ -60,8 +65,11 @@ def test_drainer_environment_overrides(monkeypatch):
     monkeypatch.setenv("DRAINER_JOB_KIND", "custom-drain")
     monkeypatch.setenv("DRAINER_REPO", "weave-hand/loom")
     monkeypatch.setenv("DRAINER_BRANCH", "work")
+    monkeypatch.setenv("DRAINER_REASONING", "false")
 
     settings = load_drainer_settings()
+
+    assert settings.reasoning is False
 
     assert settings.enabled is True
     assert settings.max_jobs_per_cycle == 5

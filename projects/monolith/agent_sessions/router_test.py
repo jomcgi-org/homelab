@@ -160,6 +160,7 @@ def test_drain_lane_classifies_running_due_and_last(client, monkeypatch):
             job_kind="qwen-drain",
             repo="acme/repo",
             branch="main",
+            reasoning=True,
         ),
     )
     monkeypatch.setattr(routine_jobs, "list_jobs", lambda *, kind: jobs)
@@ -192,6 +193,7 @@ def test_drain_lane_empty(client, monkeypatch):
             job_kind="qwen-drain",
             repo="acme/repo",
             branch="main",
+            reasoning=True,
         ),
     )
     monkeypatch.setattr(routine_jobs, "list_jobs", lambda *, kind: [])

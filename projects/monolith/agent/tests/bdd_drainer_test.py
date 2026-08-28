@@ -53,6 +53,7 @@ def _drainer_settings(**overrides) -> DrainerSettings:
         "job_kind": "qwen-drain",
         "repo": "jomcgi-org/homelab",
         "branch": "main",
+        "reasoning": True,
     }
     values.update(overrides)
     return DrainerSettings(**values)
@@ -298,6 +299,7 @@ def test_errored_one_shot_finishes_once_and_stays_not_due(
         "job_kind": "qwen-drain",
         "repo": "jomcgi-org/homelab",
         "branch": "main",
+        "reasoning": True,
     }
     completions = []
     complete_job = drainer.finish_drainer_job.__wrapped__

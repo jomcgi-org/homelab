@@ -12,6 +12,7 @@ SETTINGS = {
     "job_kind": "qwen-drain",
     "repo": "jomcgi-org/homelab",
     "branch": "main",
+    "reasoning": True,
 }
 
 
@@ -96,6 +97,35 @@ def test_drain_cycle_claims_then_completes(monkeypatch):
     assert completions == [("job-1", "ok", "finished")]
     assert notifications == []
     assert destroys == [(101, "workflow-1:qwen-drain:job-1")]
+
+
+@pytest.mark.parametrize(
+    ("payload_reasoning", "lane_default", "expected"),
+    [
+        # No key in the payload takes the lane default, which is what every
+        # registered job does today. Before this defaulted from settings the
+        # answer was always False, and thinking off is what makes qwen loop.
+        (None, True, True),
+        (None, False, False),
+        # An explicit per-job value still wins over the lane default in both
+        # directions, so a job can opt out of a slow thinking run.
+        (False, True, False),
+        (True, False, True),
+    ],
+)
+def test_reasoning_defaults_from_settings_and_payload_overrides(
+    monkeypatch, payload_reasoning, lane_default, expected
+):
+    payload = {"prompt": "do work"}
+    if payload_reasoning is not None:
+        payload["reasoning"] = payload_reasoning
+
+    settings = SETTINGS | {"reasoning": lane_default}
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings.copy())
+
+    _prompt, _repo, _branch, reasoning = drainer._payload_values(payload, settings)
+
+    assert reasoning is expected
 
 
 def test_empty_queue_exits_immediately(monkeypatch):
