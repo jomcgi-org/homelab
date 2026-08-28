@@ -349,7 +349,7 @@ check_untracked() {
 	grep "^set(" "$3" | grep -q "p:new.py" && pass "untracked_file_label" || fail "untracked_file_label" "label missing"
 }
 
-# Test 12a: SvelteKit + prefixed route files must be quoted in the query.
+# Test 11a: SvelteKit + prefixed route files must be quoted in the query.
 # Unquoted, `set(//p:src/routes/+page.svelte)` is a query SYNTAX error, bazel
 # exits 2, and the whole PR falls back to //.... That cost 100.7 GB over the
 # 5 days to 2026-08-27 on PR branches alone.
@@ -368,6 +368,8 @@ setup_plus_label() {
 check_plus_label() {
 	if [[ "$(cat "$1")" == "//..." ]]; then
 		fail "plus_label" "fell back to //..."
+	elif [[ "$(cat "$1")" != "//p:route_test" ]]; then
+		fail "plus_label" "expected //p:route_test, got '$(cat "$1")'"
 	elif grep "^set(" "$3" | grep -q '"//p:src/routes/+page.svelte"'; then
 		pass "plus_label"
 	else
@@ -458,7 +460,9 @@ run_test "nested" "setup_nested"
 run_test "outside" "setup_outside"
 run_test "dotdir_outside" "setup_dotdir_outside"
 run_test "untracked" "setup_untracked"
-run_test "plus_label" "setup_plus_label"
+plus_fixture="$TMP/rdeps_plus.txt"
+printf '%s\n' "//p:route_test" >"$plus_fixture"
+BAZEL_RDEPS_OUTPUT="$plus_fixture" run_test "plus_label" "setup_plus_label"
 run_test "unstaged_deleted" "setup_unstaged_deleted"
 run_test "no_change" "setup_no_change"
 

@@ -35,7 +35,9 @@ def _discover_repo():
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return _FALLBACK_REPO
-    if url.startswith("git@"):
+    if url.startswith("ssh://git@"):
+        url = "https://" + url[len("ssh://git@") :]
+    elif url.startswith("git@"):
         url = "https://" + url[len("git@") :].replace(":", "/", 1)
     if url.endswith(".git"):
         url = url[: -len(".git")]
