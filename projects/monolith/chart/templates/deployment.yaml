@@ -173,6 +173,8 @@ spec:
               value: {{ .repo | quote }}
             - name: DRAINER_BRANCH
               value: {{ .branch | quote }}
+            - name: DRAINER_REASONING
+              value: {{ .reasoning | quote }}
             {{- end }}
             {{- end }}
             {{- if .Values.swarm.enabled }}

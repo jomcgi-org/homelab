@@ -114,6 +114,18 @@ agents:
     jobKind: "qwen-drain"
     repo: "jomcgi-org/homelab"
     branch: "main"
+    # Thinking on for every drain job unless the job's payload says otherwise.
+    # The pi lane defaults to thinking off because it was built for small
+    # one-shot tasks, but drain jobs are multi-step repo audits, and with no
+    # reasoning trace qwen degenerates into repeating one identical tool call
+    # until the context window fills. In the A/B test, session 613 (off) made
+    # 461 tool calls with no answer, session 615 (on) made 8 tool calls with a
+    # correct answer, and session 620 (on) made 12 tool calls with a correct
+    # answer. A second prompt reproduced it: 242 calls to failure off, 7 calls
+    # to a correct answer on. The tradeoff is real, since jobs
+    # that already succeed do so in well under a minute with thinking off, so
+    # this stays tunable rather than hardcoded.
+    reasoning: true
 
 # Off-pod batch-job execution via Argo CronWorkflows.
 #
