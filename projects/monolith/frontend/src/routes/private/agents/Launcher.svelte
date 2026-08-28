@@ -15,6 +15,7 @@
     repoLoading = false,
     branchLoading = false,
     creating = false,
+    drain = null,
     summary = {
       items: [],
       count: 0,
@@ -158,6 +159,39 @@
       </div>
     </div>
   </form>
+
+  {#if drain !== null && (drain.enabled !== false || drain.due_count > 0 || drain.running?.length > 0)}
+    {@const runningJob = drain.running?.[0]}
+    <div class="drain-lane mono">
+      <span class={`dot ${runningJob ? "running" : ""}`} aria-hidden="true"
+      ></span>
+      <span>{P.labels.drainHeading}</span>
+      <span aria-hidden="true">{P.punct.dot}</span>
+      <span>
+        {runningJob
+          ? P.labels.drainRunning
+          : drain.enabled === false
+            ? P.labels.drainOff
+            : P.labels.drainIdle}
+      </span>
+      {#if runningJob}
+        <span>{runningJob.name}</span>
+        <span aria-hidden="true">{P.punct.dot}</span>
+        <span>{relativeTime(runningJob.locked_at)}</span>
+      {/if}
+      <span aria-hidden="true">{P.punct.dot}</span>
+      <span>
+        {P.labels.drainQueued.replace("{count}", String(drain.due_count))}
+      </span>
+      {#if !runningJob && drain.last}
+        <span aria-hidden="true">{P.punct.dot}</span>
+        <span>{P.labels.drainLast}</span>
+        <span>{drain.last.name}</span>
+        <span>{drain.last.status}</span>
+        <span>{relativeTime(drain.last.last_run_at)}</span>
+      {/if}
+    </div>
+  {/if}
 
   <div class="recent">
     <div class="group-title">
@@ -357,6 +391,19 @@
   .send:disabled {
     cursor: not-allowed;
     opacity: 0.45;
+  }
+  .drain-lane {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: -12px 0;
+    padding: 0 12px;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.2;
+    white-space: nowrap;
   }
   .recent {
     min-width: 0;

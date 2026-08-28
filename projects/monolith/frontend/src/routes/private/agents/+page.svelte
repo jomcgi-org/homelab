@@ -120,6 +120,7 @@
   );
   let runs = $state([]);
   let terminalRuns = $state([]);
+  let drain = $state(null);
   let runDetail = $state(null);
   let runRequestSequence = 0;
   let detail = $state(null);
@@ -447,6 +448,16 @@
           );
         }
       }
+    }
+  }
+
+  async function loadDrainLane() {
+    try {
+      const response = await fetch("/api/agents/drain-lane");
+      if (!response.ok) return;
+      drain = await response.json();
+    } catch {
+      // Keep the last known drain state when this quiet status strip is unavailable.
     }
   }
 
@@ -1019,6 +1030,7 @@
   });
 
   onMount(() => {
+    loadDrainLane();
     loadRuns().then(() => {
       if (
         fixture ||
@@ -1150,6 +1162,7 @@
     const pollInterval = hasActiveSessions ? 2000 : 15000;
     const interval = setInterval(async () => {
       await loadSessions();
+      await loadDrainLane();
       if (selectedRunId != null)
         await loadRunDetail(selectedRunId, runRequestSequence);
       if (selectedId != null)
@@ -1651,6 +1664,7 @@
                 {repoLoading}
                 {branchLoading}
                 {creating}
+                {drain}
                 summary={launcherRecent}
                 jumpCount={launcherJumpTotal}
                 onLoadBranches={loadBranches}
@@ -2072,6 +2086,7 @@
             {repoLoading}
             {branchLoading}
             {creating}
+            {drain}
             summary={launcherRecent}
             jumpCount={launcherJumpTotal}
             onLoadBranches={loadBranches}

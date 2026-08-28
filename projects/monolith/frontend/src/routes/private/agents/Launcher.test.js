@@ -206,3 +206,83 @@ describe("launcher submit path", () => {
     expect(target.textContent).toContain("All 9 in Jump");
   });
 });
+
+describe("launcher drain lane", () => {
+  test("renders a running job and queued count", async () => {
+    const target = await render(vi.fn(), {
+      drain: {
+        enabled: true,
+        running: [
+          {
+            name: "calendar-refresh",
+            locked_at: new Date(Date.now() - 60_000).toISOString(),
+          },
+        ],
+        due_count: 2,
+        last: null,
+      },
+    });
+
+    const strip = target.querySelector(".drain-lane");
+    expect(strip.textContent).toContain(P.labels.drainRunning);
+    expect(strip.textContent).toContain("calendar-refresh");
+    expect(strip.textContent).toContain("2 queued");
+    expect(strip.querySelector(".dot.running")).not.toBeNull();
+  });
+
+  test("renders an idle lane with the last result", async () => {
+    const target = await render(vi.fn(), {
+      drain: {
+        enabled: true,
+        running: [],
+        due_count: 0,
+        last: {
+          name: "repo-check",
+          status: "completed",
+          last_run_at: new Date(Date.now() - 60_000).toISOString(),
+        },
+      },
+    });
+
+    const strip = target.querySelector(".drain-lane");
+    expect(strip.textContent).toContain(P.labels.drainIdle);
+    expect(strip.textContent).toContain("last");
+    expect(strip.textContent).toContain("repo-check");
+    expect(strip.textContent).toContain("completed");
+    expect(strip.querySelector(".dot.running")).toBeNull();
+  });
+
+  test("hides the lane when drain status is null", async () => {
+    const target = await render(vi.fn(), { drain: null });
+
+    expect(target.querySelector(".drain-lane")).toBeNull();
+  });
+
+  test("hides a disabled lane with no backlog", async () => {
+    const target = await render(vi.fn(), {
+      drain: {
+        enabled: false,
+        running: [],
+        due_count: 0,
+        last: null,
+      },
+    });
+
+    expect(target.querySelector(".drain-lane")).toBeNull();
+  });
+
+  test("shows off when a disabled lane has a backlog", async () => {
+    const target = await render(vi.fn(), {
+      drain: {
+        enabled: false,
+        running: [],
+        due_count: 3,
+        last: null,
+      },
+    });
+
+    const strip = target.querySelector(".drain-lane");
+    expect(strip.textContent).toContain(P.labels.drainOff);
+    expect(strip.textContent).toContain("3 queued");
+  });
+});
