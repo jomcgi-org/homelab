@@ -168,6 +168,28 @@ artifactEncryption:
 # ~1.5Gi/VM that is ~24Gi worst case, well within budget. This only raises the
 # runaway backstop, not any pool floor.
 noded:
+  # RAISED from the chart's 60s. This bounds the readiness poll after a COLD
+  # boot, which is the base build, and it has to be strictly greater than the
+  # slowest thing the guest does before it reports ready.
+  #
+  # The claude-runtime guest prewarms its CLIs during a base build, and since
+  # #5367 that prewarm actually completes an authenticated TLS init through the
+  # egress proxy rather than failing fast on an untrusted certificate. Claude's
+  # own init budget inside the shim is 60s. With this bound also at 60s the
+  # build gave up at the same instant the init was allowed to finish, so
+  # WaitReady could never observe a success: the guest was still working, and
+  # /shim/ready was still honestly answering 503.
+  #
+  # 180s leaves real margin over that 60s init plus the CA fetch, the cold boot
+  # and a node that may be baking other guests at the same time. It is a
+  # DETECTOR for a guest that will never come up, not a budget to spend, so
+  # overshooting costs nothing on a healthy build: readiness is polled, not
+  # slept, and a good guest still reports in seconds.
+  #
+  # Keep this strictly above the shim's prewarm init_timeout. If that number
+  # moves, this one moves first.
+  firecracker:
+    bootReadyTimeout: 180s
   # Ingress allow-list on every noded pod shape (#4693): gRPC from the control
   # plane, health from kubelet and the SigNoz scraper, activator from
   # serving-envoy and the CP, the serving DNAT range from serving-envoy. Dev has
