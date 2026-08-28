@@ -501,27 +501,26 @@ but it now contributes to the same fatal composite health decision.
 (see: /projects/monolith/ember_public/health.py)
 (see: /projects/monolith/chart/values.yaml)
 
-The private profile instruments FastAPI and outbound HTTP calls and exports
-OpenTelemetry spans through the deployed SigNoz infrastructure collector. The
-public backend profile intentionally omits in-process telemetry setup.
+The private profile can instrument FastAPI and outbound HTTP calls when an OTel
+endpoint is configured. Production leaves the backend and frontend endpoints
+empty, so neither profile exports spans. The demo trace waterfall returns no
+spans until #5363 connects a replacement span store.
 (see: /projects/monolith/framework/core.py)
 (see: /projects/monolith/deploy/values.yaml)
+(see: /projects/monolith/home/observability/traces.py)
 
-Operational dashboards are shipped with the chart for CloudNativePG, agent
-execution, and red-state overview.
-(see: /projects/monolith/chart/dashboards/cnpg-overview.json)
-(see: /projects/monolith/chart/dashboards/goosecracker-overview.json)
-(see: /projects/monolith/chart/dashboards/monolith-red.json)
+The public stats ticker scrapes the DCGM exporter directly for GPU utilization
+and frame buffer usage.
+(see: /projects/monolith/home/observability/stats.py)
+(see: /projects/monolith/deploy/values.yaml)
 
 **Why.** Process liveness alone stayed green through downstream failures, while
 alert-only maintenance failures could remain unread for days (ADR embervm/031).
 Composite checks therefore classify immediate serving failures as fatal and
 slower debt as advisory, rather than making every degraded dependency trigger a
 rollback. Healthy-only edge caching prevents an old green result from hiding an
-outage, and the public response strips internal details. The private profile
-exports full telemetry to the existing SigNoz path; the public profile accepts
-less in-process detail to keep the anonymous runtime's dependency and credential
-surface smaller (ADR security/004).
+outage, and the public response strips internal details. Production exports no
+in-process traces while the replacement span store is pending.
 
 ## 10. Delivery
 

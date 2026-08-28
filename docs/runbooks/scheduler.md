@@ -21,9 +21,8 @@ Inspect and trigger the monolith's Postgres-backed job scheduler via the
 - Spotting orphan rows (DB row exists but no handler is registered — purged on
   next pod restart)
 
-Prefer this over digging in SigNoz logs when the question is "what does the
-scheduler think the next/last run is" — that lives in the database, not the
-logs.
+Scheduler state lives in the database. Use this runbook when the question is
+what the scheduler thinks the next or last run is.
 
 NOT for the knowledge gardener: gardening is a claude.ai routine now (see the
 knowledge-gardener skill), not a scheduler job. There is no `knowledge.gardener`
@@ -95,9 +94,7 @@ Exits non-zero if the name is unknown.
 - All commands support `--json`
 - "Did the ingest run?" → `homelab scheduler jobs get knowledge.ingest`
   and check `last_run_at` + `last_status`
-- "It says ok but I don't see effects" → `last_status` is `ok` if the handler
-  returned without raising; the handler may be a no-op when nothing's
-  changed. Check application logs in SigNoz for the body of the run.
+- "It says ok but I don't see effects" means the handler returned without
+  raising. The handler may be a no-op when nothing changed.
 - Triggering a `run-now` does **not** wait — it returns immediately after the
   DB row is updated. Wait for the scheduler tick (~30s) before re-checking.
-

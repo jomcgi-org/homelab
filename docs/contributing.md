@@ -9,7 +9,7 @@ This is a GitOps monorepo where related code and deployment configuration live t
 | Directory                | Purpose                                                                  |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `projects/`              | All services, operators, websites — colocated with deploy configs        |
-| `projects/platform/`     | Cluster-critical infrastructure (ArgoCD, Cilium, SigNoz, etc.)          |
+| `projects/platform/`     | Cluster-critical infrastructure (ArgoCD, Cilium, OTel collector, etc.)  |
 | `projects/home-cluster/` | Auto-generated root kustomization that discovers all deploy/ directories |
 | `bazel/`                 | Build infrastructure (Helm rules, tools, images, semgrep, wrangler)      |
 | `docs/`                  | Design docs, ADRs, and runbooks                                          |

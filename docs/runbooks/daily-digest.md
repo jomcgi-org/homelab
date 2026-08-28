@@ -93,7 +93,7 @@ message. Keep it under Discord's 2000-character limit. Shape:
 
 **P0 finish**
 - #412 Cilium default-deny rollout, `critical`, <url>
-- #123 Fix trace sampling, CI red on //projects/signoz, <url>
+- #123 Fix collector opt-in, CI red on //projects/platform/otel-collector, <url>
 - #119 Auth health check, approved + mergeable, just needs merge, <url>
 
 **P1 in flight**
@@ -123,4 +123,3 @@ useful signal for a daily cadence.
 - Prefer `gh` and local file reads; this skill needs no cluster access.
 - If a data source errors, degrade gracefully and report the rest, do not
   abort the digest.
-

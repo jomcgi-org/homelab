@@ -23,12 +23,10 @@ commits.
 
 ## Observability
 
-| Component                                                  | Purpose                                                                                                                          |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `signoz`                     | Unified metrics, logs, and traces platform, the main dashboard for the cluster.                                                  |
-| `signoz-addons`               | Extra collectors and integrations layered on top of the base SigNoz deployment (for example the vLLM/Prometheus metrics bridge). |
-| `signoz-dashboards-library`   | Shared Helm library chart of reusable SigNoz dashboard definitions that services import rather than hand-rolling JSON.           |
-| `opentelemetry-operator`      | OpenTelemetry Operator with auto-instrumentation for Python, Node.js, and Go workloads.                                          |
+| Component                    | Purpose                                                                                                  |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `otel-collector`             | Deny-by-default trace collector and public URL probes exporting to Honeycomb.                            |
+| `opentelemetry-operator`     | OpenTelemetry auto-instrumentation operator; production language instrumentation is disabled.           |
 
 ## Storage
 
@@ -43,7 +41,7 @@ commits.
 
 | Component                                      | Purpose                                                                                                                      |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `kyverno`              | Policy engine with `ClusterPolicies` that automate observability and service-mesh injection across namespaces.               |
+| `kyverno`              | Policy engine for admission, resource audits, and cross-namespace Secret replication.                                       |
 | `priority-classes`     | Cluster-scoped `PriorityClass`es underpinning the memory-oversubscription policy (see ADR platform/010).                     |
 | `keda`                 | Event-driven autoscaler, used where plain CPU/memory-based HPA isn't the right signal.                                       |
 | `node-traffic-shaper`  | Caps inbound bandwidth on a node's uplink with CAKE so a bulk download can't starve latency-sensitive control-plane traffic. |
