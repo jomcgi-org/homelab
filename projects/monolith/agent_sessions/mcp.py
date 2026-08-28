@@ -661,7 +661,7 @@ async def monolith_agent_session_start(
     model: str | None = None,
     repo: str = DEFAULT_AGENT_REPO,
     branch: str = "main",
-    reasoning: bool = False,
+    reasoning: bool | None = None,
 ) -> dict:
     """Start a voice-drivable coding agent session and queue its first turn.
 
@@ -676,8 +676,11 @@ async def monolith_agent_session_start(
             session with NO checkout, which starts faster and suits a session
             that only talks.
         branch: Branch to check out. Defaults to main.
-        reasoning: reasoning=true keeps qwen thinking on for the whole session
-            (default off = fast).
+        reasoning: Keeps qwen thinking on for the whole session. Omit to
+            decide from repo presence: on for a repo-attached session, off for
+            a repo-less one. Thinking off on a repo session makes qwen repeat
+            one identical tool call until its context window fills. Pass false
+            explicitly to force it off, or true to force it on.
     """
     try:
         model_family(model)
@@ -704,7 +707,8 @@ async def monolith_agent_session_start(
         selected_repo,
         discord_thread=None,
         system_prompt=_append_rationale_trailer(voice.VOICE_INSTRUCTION, selected_repo),
-        reasoning=reasoning,
+        # Unset means decide from repo presence, matching the /agents route.
+        reasoning=bool(selected_repo) if reasoning is None else reasoning,
     )
     turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     _schedule_next_message(row.id)
