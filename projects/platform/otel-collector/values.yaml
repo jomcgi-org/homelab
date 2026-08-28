@@ -22,6 +22,12 @@ onepassword:
 honeycomb:
   endpoint: "api.honeycomb.io:443"
 
+# Stamped onto every span and metric as the deployment.environment resource
+# attribute. Set per environment so prod and dev stay separable in Honeycomb
+# once both opt in; without it a dev trace and a prod trace are
+# indistinguishable after export, and there is no way to filter one out later.
+environment: ""
+
 # Public health route for external metamonitoring. Disabled by default so the
 # chart renders inert; see templates/httproute.yaml for why this is a direct
 # route rather than a proxy through the public frontend.
@@ -53,9 +59,44 @@ allowedServices: []
 # Tail sampling. Only rendered when allowedServices is non-empty.
 sampling:
   decisionWaitSeconds: 10
+  # Traces held pending a sampling decision. In-flight volume is roughly
+  # trace_rate x decisionWaitSeconds, but the buffer has to absorb bursts well
+  # above the average or the sampler starts deciding on evicted, incomplete
+  # traces, which is the failure tail sampling exists to avoid: an error
+  # arriving in a late span is missed because the trace was already judged.
+  #
+  # At ~1KB per span this does not fit in the container's memory limit, which
+  # is why tailStorage below moves it to disk.
   numTraces: 50000
-  latencyThresholdMs: 2000
-  probabilisticPercentage: 5
+  # Buffer pending traces on disk rather than in RAM.
+  #
+  # This is what lets numTraces be sized for correct decisions instead of for
+  # whatever fits in 512Mi. It is behind an upstream feature gate that is off
+  # by default and documented as under active development, so it is kept
+  # toggleable: turning it off falls back to the in-memory buffer, at which
+  # point numTraces must come down to something that actually fits.
+  #
+  # The backing volume is an emptyDir, deliberately not a PVC. The buffer holds
+  # only traces awaiting a decision, so losing it on restart costs one
+  # decisionWait of pending decisions and nothing durable. That keeps the pod
+  # disposable and avoids a one-way Longhorn claim.
+  #
+  # num_shards must stay at its default of 1: values above 1 are not supported
+  # together with tail_storage.
+  tailStorage:
+    enabled: true
+    directory: /var/lib/otelcol/tail
+    sizeLimit: 2Gi
+  # 10s, not 2s. At a 2s threshold a latency incident makes EVERY trace
+  # qualify, which is a worse volume risk than an error storm because latency
+  # incidents last longer. 10s keeps the pathological outliers, which are the
+  # ones worth opening, without the policy firing on ordinary slowness.
+  latencyThresholdMs: 10000
+  # 0.1%, not 5%. This is the steady-state cost driver: errors and slow traces
+  # are rare, so the baseline is what actually bills. On a 20M events/month
+  # budget, and with a densely instrumented service like embervm-control
+  # producing deep traces, 5% of everything would dominate the entire budget.
+  probabilisticPercentage: 0.1
   # Hard ceiling on what leaves the cluster, enforced by a composite policy.
   #
   # A rate_limiting policy listed alongside the others would NOT cap anything:
@@ -65,15 +106,29 @@ sampling:
   # allocating a spans-per-second budget across its sub-policies and dropping
   # what does not fit.
   #
-  # Set generously relative to a single trace, not just to steady-state volume.
-  # The budget is checked per trace against the matching sub-policy's own
-  # allocation, and a trace bigger than that allocation is dropped outright
-  # rather than falling through to another sub-policy. At 1000 the errors slice
-  # is 500 spans/sec, so a 500-span error trace still fits. Tune this against
-  # real trace sizes when the first service opts in.
-  maxTotalSpansPerSecond: 1000
-  # Budget split across the sub-policies. Errors are the most valuable per span,
-  # so they get the largest slice.
+  # This value is squeezed between two opposing constraints, so it is not free
+  # to tune in one direction only.
+  #
+  # From above: it is the incident ceiling. Sustained, N spans/sec exhausts a
+  # 20M events/month budget in 20,000,000/N seconds. At 1000 that is 5.5 hours,
+  # which is not a ceiling so much as a way to lose the month. At 200 it is
+  # roughly 27 hours, long enough that a burst is survivable and only a
+  # multi-day sustained incident is dangerous.
+  #
+  # From below: the budget is checked PER TRACE against the matching
+  # sub-policy's own allocation, and a trace bigger than that allocation is
+  # dropped outright rather than falling through. At 200 with errors at 70%,
+  # the errors slice is 140 spans/sec, so an error trace up to 140 spans still
+  # fits. Lowering this further starts silently dropping deep error traces,
+  # which are exactly the ones worth having.
+  #
+  # embervm-control has ~107 span callsites, so its traces are deep. Recheck
+  # this against measured span-per-trace depth once real data lands, rather
+  # than assuming 140 is enough.
+  maxTotalSpansPerSecond: 200
+  # Budget split across the sub-policies. Errors get the largest slice both
+  # because they are the most valuable per span and because the per-trace rule
+  # above means a bigger slice admits deeper traces.
   #
   # These do NOT have to sum to 100 and nothing validates them, so a sum over
   # 100 quietly raises the real ceiling above maxTotalSpansPerSecond. A
@@ -81,8 +136,8 @@ sampling:
   # share rather than erroring, so keep the names in step with the
   # composite_sub_policy entries in the ConfigMap template.
   rateAllocation:
-    errorsPercent: 50
-    slowPercent: 30
+    errorsPercent: 70
+    slowPercent: 10
     baselinePercent: 20
 
 # URLs the http_check receiver probes. Empty by default.

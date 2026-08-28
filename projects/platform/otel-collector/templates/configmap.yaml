@@ -10,6 +10,13 @@ data:
     extensions:
       health_check:
         endpoint: 0.0.0.0:13133
+      {{- if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}
+      # Backs tail_sampling's pending-trace buffer with disk instead of RAM.
+      # The directory is an emptyDir mount, so this is node-local scratch, not
+      # durable storage: it holds only traces awaiting a sampling decision.
+      file_storage/tail:
+        directory: {{ .Values.sampling.tailStorage.directory | quote }}
+      {{- end }}
 
     receivers:
       {{- if .Values.allowedServices }}
@@ -47,6 +54,17 @@ data:
       batch:
         timeout: 1s
         send_batch_size: 1024
+      {{- if .Values.environment }}
+      # Stamped on everything leaving here, traces and probe metrics alike, so
+      # prod and dev remain separable in Honeycomb. upsert rather than insert:
+      # a service that sets its own deployment.environment should not end up
+      # with two conflicting values.
+      resource/environment:
+        attributes:
+          - key: deployment.environment
+            value: {{ .Values.environment | quote }}
+            action: upsert
+      {{- end }}
       {{- if .Values.allowedServices }}
       # Enforces the opt-in list. The filter processor DROPS spans matching a
       # condition, so these conditions describe what is not allowed: a span
@@ -60,6 +78,13 @@ data:
       tail_sampling:
         decision_wait: {{ .Values.sampling.decisionWaitSeconds }}s
         num_traces: {{ .Values.sampling.numTraces }}
+        {{- if .Values.sampling.tailStorage.enabled }}
+        # Requires the processor.tailsamplingprocessor.tailstorageextension
+        # feature gate, passed as a container arg. With the gate off, setting
+        # this fails config validation and the collector refuses to start, so
+        # the two must move together.
+        tail_storage: file_storage/tail
+        {{- end }}
         policies:
           # One composite policy, not three peer policies. tail_sampling ORs
           # its policies, so peers can only ever admit more traces; composite
@@ -116,12 +141,12 @@ data:
           x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
 
     service:
-      extensions: [health_check]
+      extensions: [health_check{{ if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}, file_storage/tail{{ end }}]
       pipelines:
         {{- if .Values.allowedServices }}
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, filter/allowlist, tail_sampling, batch]
+          processors: [memory_limiter, filter/allowlist{{ if .Values.environment }}, resource/environment{{ end }}, tail_sampling, batch]
           exporters: [otlp/honeycomb]
         {{- end }}
         {{- if .Values.httpcheck.enabled }}
@@ -130,6 +155,6 @@ data:
         # metric events are the easiest way to burn the quota by accident.
         metrics:
           receivers: [http_check]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter{{ if .Values.environment }}, resource/environment{{ end }}, batch]
           exporters: [otlp/honeycomb]
         {{- end }}
