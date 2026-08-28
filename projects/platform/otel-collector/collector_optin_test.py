@@ -49,6 +49,12 @@ def _values(name: str) -> Path:
     return _chart_dir() / f"{name}.yaml"
 
 
+def _render_empty_allowlist() -> list[dict]:
+    """Prod now opts a service in, so the deny-by-default invariant has to be
+    asserted against an explicitly empty list rather than against prod."""
+    return _render(["--set", "allowedServices=null"])
+
+
 def _render(extra: list[str] | None = None) -> list[dict]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
@@ -105,7 +111,7 @@ def _of_kind(docs: list[dict], kind: str) -> dict:
 
 
 def test_empty_allowlist_defines_no_otlp_receiver():
-    config = _collector_config(_render())
+    config = _collector_config(_render_empty_allowlist())
     assert "otlp" not in config["receivers"], (
         "an otlp receiver exists with an empty allowlist: any service that "
         "reaches the collector could ship traces to a paid backend"
@@ -113,12 +119,12 @@ def test_empty_allowlist_defines_no_otlp_receiver():
 
 
 def test_empty_allowlist_defines_no_traces_pipeline():
-    config = _collector_config(_render())
+    config = _collector_config(_render_empty_allowlist())
     assert "traces" not in config["service"]["pipelines"]
 
 
 def test_empty_allowlist_exposes_no_otlp_ports():
-    docs = _render()
+    docs = _render_empty_allowlist()
     service_ports = {p["port"] for p in _of_kind(docs, "Service")["spec"]["ports"]}
     assert 4317 not in service_ports and 4318 not in service_ports
 
@@ -154,6 +160,7 @@ def test_allowlisted_service_gets_a_filtered_traces_pipeline():
     assert traces["processors"] == [
         "memory_limiter",
         "filter/allowlist",
+        "resource/environment",
         "tail_sampling",
         "batch",
     ]
@@ -255,3 +262,77 @@ def test_probe_targets_are_public_urls():
             f"{target['endpoint']} is not a public HTTPS target; in-cluster "
             "probes need a Cilium ingress rule added in the same change"
         )
+
+
+# ---------------------------------------------------------------------------
+# Disk-backed tail sampling: three pieces that must move together.
+# ---------------------------------------------------------------------------
+
+
+def _deployment_container(docs):
+    return _of_kind(docs, "Deployment")["spec"]["template"]["spec"]["containers"][0]
+
+
+def test_tail_storage_gate_extension_and_volume_move_together():
+    """tail_storage needs all three or the collector will not start.
+
+    Setting the config key without the feature gate fails config validation
+    outright. Setting both without a writable mount fails at runtime, because
+    readOnlyRootFilesystem is deliberately kept. Each piece is individually
+    plausible to drop in a refactor, and any one missing is a CrashLoop that
+    ArgoCD still reports Synced.
+    """
+    docs = _render()
+    config = _collector_config(docs)
+
+    assert config["processors"]["tail_sampling"]["tail_storage"] == "file_storage/tail"
+    assert "file_storage/tail" in config["extensions"]
+    assert "file_storage/tail" in config["service"]["extensions"], (
+        "an extension not listed under service.extensions is never started"
+    )
+
+    container = _deployment_container(docs)
+    assert any(
+        "processor.tailsamplingprocessor.tailstorageextension" in a
+        for a in container["args"]
+    ), "tail_storage is set but its feature gate is not enabled"
+
+    directory = config["extensions"]["file_storage/tail"]["directory"]
+    mounts = {m["mountPath"]: m["name"] for m in container["volumeMounts"]}
+    assert directory in mounts, (
+        f"{directory} is not mounted; readOnlyRootFilesystem makes it unwritable"
+    )
+
+
+def test_tail_storage_buffer_is_ephemeral_and_capped():
+    """The buffer holds only pending decisions, so it must not be a PVC, and it
+    must be size-capped or a runaway buffer can fill the node and evict
+    unrelated pods."""
+    docs = _render()
+    volumes = {
+        v["name"]: v
+        for v in _of_kind(docs, "Deployment")["spec"]["template"]["spec"]["volumes"]
+    }
+    tail = volumes["tail-storage"]
+
+    assert "emptyDir" in tail, "the tail buffer must not be a PersistentVolumeClaim"
+    assert tail["emptyDir"].get("sizeLimit"), "an uncapped emptyDir can fill the node"
+
+
+def test_disabling_tail_storage_removes_every_piece():
+    """Turning it off must leave no dangling reference: a tail_storage key with
+    the gate off fails validation, which is a worse state than either extreme."""
+    docs = _render(["--set", "sampling.tailStorage.enabled=false"])
+    config = _collector_config(docs)
+
+    assert "tail_storage" not in config["processors"]["tail_sampling"]
+    assert "file_storage/tail" not in config.get("extensions", {})
+    assert "file_storage/tail" not in config["service"]["extensions"]
+
+    container = _deployment_container(docs)
+    assert not any("tailstorageextension" in a for a in container.get("args", []))
+    volumes = {
+        v["name"]
+        for v in _of_kind(docs, "Deployment")["spec"]["template"]["spec"]["volumes"]
+    }
+    assert "tail-storage" not in volumes

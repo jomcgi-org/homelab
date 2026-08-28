@@ -136,9 +136,14 @@ usageAdmins:
 quota:
   dailyVcpuSecondsPerPrincipal: {}
 
-# OpenTelemetry tracing is disabled until this service explicitly opts in.
+# OpenTelemetry tracing, opted in to the collector (#5362).
+#
+# serviceName is load-bearing beyond naming: the collector's filter processor
+# drops any span whose service.name is not on its allowedServices list, so this
+# value and that list have to agree. Changing it here without changing it there
+# silently drops every span.
 tracing:
-  endpoint: ""
+  endpoint: "http://otel-collector.otel-collector.svc.cluster.local:4317"
   serviceName: embervm-control
 
 # Platform KEK root (ADR embervm/036, #4976), rollout step 1 for #4691.

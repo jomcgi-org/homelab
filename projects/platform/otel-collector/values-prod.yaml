@@ -6,6 +6,18 @@ cfIngress:
   enabled: true
   hostname: jomcgi.dev
 
+environment: production
+
+# Services allowed to send traces. This list IS the opt-in: a service not named
+# here cannot reach the receiver at all, because with an empty list the otlp
+# receiver is not rendered.
+#
+# embervm-control must match OTEL_SERVICE_NAME in
+# projects/embervm/deploy/values.yaml (tracing.serviceName). If the two drift
+# apart the filter drops every span and nothing says so.
+allowedServices:
+  - embervm-control
+
 httpcheck:
   enabled: true
   # Deliberately short to start, new targets are a one-line addition.

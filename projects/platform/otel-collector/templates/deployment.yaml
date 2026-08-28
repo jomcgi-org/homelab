@@ -25,6 +25,12 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --config=/conf/collector.yaml
+            {{- if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}
+            # tail_storage is gated upstream and the gate is off by default.
+            # Without this flag the collector fails config validation and will
+            # not start, so this arg and the tail_storage key move together.
+            - --feature-gates=processor.tailsamplingprocessor.tailstorageextension
+            {{- end }}
           {{- if .Values.onepassword.enabled }}
           env:
             # Only the key secret authenticates. The key id is a public
@@ -84,9 +90,24 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}
+            # readOnlyRootFilesystem is kept: the tail buffer gets its own
+            # writable mount rather than the root being opened up.
+            - name: tail-storage
+              mountPath: {{ .Values.sampling.tailStorage.directory | quote }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "otel-collector.fullname" . }}
         - name: tmp
           emptyDir: {}
+        {{- if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}
+        # emptyDir, not a PVC. The buffer holds only traces awaiting a decision,
+        # so losing it on restart costs one decision window and nothing durable.
+        # sizeLimit caps node ephemeral storage: without it a runaway buffer
+        # could fill the node's disk and evict unrelated pods.
+        - name: tail-storage
+          emptyDir:
+            sizeLimit: {{ .Values.sampling.tailStorage.sizeLimit | quote }}
+        {{- end }}
