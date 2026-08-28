@@ -777,6 +777,18 @@ workloads:
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/embervm-noded/scratch-postgres/rootfs.ext4
     harnessInit: /usr/local/bin/ember-postgres-init
+  # R4 iggy stateful base (ADR embervm/039). Its PID-1 ember-iggy-init mounts the
+  # writable volume, decodes IGGY_ROOT_PASSWORD from the mmds_env boot-args, and
+  # launches iggy-server with its data root on the volume. Unlike postgres there
+  # is no separate bootstrap step to gate: iggy-server creates its own state on a
+  # first boot and loads it on every later one. The key must match the top-level
+  # `iggy` block below (the deployment ranges over `workloads` and looks the guest
+  # image up by the same key). The initContainer + EMBERVM_NODED_IMAGES entry are
+  # only rendered when iggy.guestImage.repository is set, so gating the CR/secret
+  # on iggy.enabled keeps the base build wired whenever the image is pinned.
+  iggy:
+    rootfsPath: /var/lib/embervm/scratch/embervm-noded/iggy/rootfs.ext4
+    harnessInit: /usr/local/bin/ember-iggy-init
   # Bazel Skyframe query demo base (ADR embervm/010). Its PID-1 ember-bazel-init
   # mounts a large tmpfs at /tmp, runs the warming `bazel cquery //absl/...`
   # offline (distdir), and only flips /shim/ready after the warming CLIENT exits
@@ -927,6 +939,51 @@ scratchPostgres:
   onepassword:
     # 1Password item path (vaults/<vault>/items/<item>) whose POSTGRES_PASSWORD
     # field syncs into the <fullname>-scratch-postgres Secret. Empty leaves the
+    # OnePasswordItem unrendered (set it to enable the secret sync).
+    itemPath: ""
+
+# R4 iggy stateful consumer (ADR embervm/039): Apache Iggy, a persistent message
+# streaming server, hosted as a scale-to-zero EmberVM microVM. One long-lived VM
+# owns one writable volume (message segments and the state log on the volume,
+# warmth in the snapshot); it banks when idle and wakes on the next inbound TCP
+# connection, exactly like scratch-postgres. Bazel-pinned (helm_chart
+# images="iggy.guestImage") from the iggy runtime image's .info provider.
+# Distinct FLAT top-level key (never nested) so the image pin does not collide on
+# YAML parse (D14a.6). Three refs derive from here and always match: the
+# rootfs-builder GUEST_IMAGE, the EMBERVM_NODED_IMAGES entry, and the Workload
+# CR's source.image.ref. Disabled by default: enabling it requires the 1Password
+# item (onepassword.itemPath) so the first-boot IGGY_ROOT_PASSWORD exists, and
+# without it the guest-init refuses the boot rather than let the server
+# autogenerate a root password it prints exactly once.
+iggy:
+  enabled: false
+  # The node Envoy TCP listener port (must fall in the stateful 5400-5409 range;
+  # see the CRD's listenPort validation). 5400 is scratch-postgres, 5401 is
+  # demo-postgres.
+  listenPort: 5402
+  # Opt in to the two-phase interruptible bank (ADR embervm/008). Off until the
+  # mode is vetted on demo-postgres under real traffic; the atomic bank is
+  # unchanged while false.
+  interruptibleBank: false
+  # Node-local activator (ADR embervm/018 Phase 2): the brick relights this
+  # scaled-to-zero workload on the first connection during a control-plane gap,
+  # so a producer that arrives while the CP is rolling cold-boots on the brick
+  # instead of black-holing on the dead CP-pod activator. meteringFailOpen names
+  # the wake-unmetered-during-gap policy.
+  nodeLocalWake: true
+  meteringFailOpen: true
+  # Sparse cap of the raw volume file, in GiB. Iggy's default segment size is
+  # 1.07 GB and segments are preallocated per partition, so this is sized for a
+  # handful of topics rather than a bulk log; raise it BEFORE creating wide
+  # topics, since volumeSizeGiB is immutable in v1.
+  volumeSizeGiB: 10
+  guestImage:
+    repository: ghcr.io/jomcgi/homelab/projects/embervm/runtimes/iggy
+    tag: latest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  onepassword:
+    # 1Password item path (vaults/<vault>/items/<item>) whose IGGY_ROOT_PASSWORD
+    # field syncs into the <fullname>-iggy Secret. Empty leaves the
     # OnePasswordItem unrendered (set it to enable the secret sync).
     itemPath: ""
 

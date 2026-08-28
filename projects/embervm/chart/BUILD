@@ -64,6 +64,10 @@ helm_chart(
         # R4 stateful consumer (D-R4.PR-11.1): the scratch-postgres base image.
         # Distinct FLAT top-level key (D14a.6), digest-pinned from its .info.
         "scratchPostgres.guestImage": "//projects/embervm/runtimes/postgres:image.info",
+        # ADR embervm/039 (message streaming): the iggy base image, a static
+        # Apache Iggy server on a thin Wolfi rootfs. Distinct FLAT top-level key
+        # (D14a.6), digest-pinned from its .info.
+        "iggy.guestImage": "//projects/embervm/runtimes/iggy:image.info",
         # ADR embervm/035 (website snapshotter): the shotter base image, a warm
         # headless Chromium. Distinct FLAT top-level key (D14a.6), digest-pinned
         # from its .info so the rootfs-builder GUEST_IMAGE, the noded

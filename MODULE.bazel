@@ -434,6 +434,25 @@ oci.pull(
 )
 use_repo(oci, "pgvector_pg16", "pgvector_pg16_linux_amd64")
 
+# Apache Iggy server, the guest binary of the EmberVM stateful `iggy` runtime
+# (ADR embervm/039). Pinned to the 0.8.0 stable line (Docker Hub `latest` as of
+# 2026-08-27; the `-edge.N` tags are pre-releases and the 0.9 line is not out).
+# This is an oci.pull rather than a `multiarch_http_archive` because the image
+# IS the server's release channel: upstream routes the `server-*` tag to
+# `registry: dockerhub` and its GitHub binary tarballs are 30-day CI artifacts,
+# not durable release assets. amd64 only, like every other EmberVM guest image.
+# Bumping this digest re-keys nothing on its own: the runtime image rebuild is
+# what reaches a node, and a guest that is already banked rides its birth image
+# until stateful.maxLifetimeSeconds expires.
+oci.pull(
+    name = "iggy_server_image",
+    digest = "sha256:99b42016a898381d4bab3c2d4613456eb04ad06a7a0688314823d798a685636b",
+    image = "docker.io/apache/iggy",
+    platforms = ["linux/amd64"],
+    tag = "0.8.0",
+)
+use_repo(oci, "iggy_server_image", "iggy_server_image_linux_amd64")
+
 #########################
 # Semgrep Pro — engine + per-language rule packs from GHCR
 # Digests auto-updated by .github/workflows/update-semgrep-pro.yaml
@@ -487,6 +506,11 @@ use_repo(
 # PostgreSQL test fixtures — extract PG16 + pgvector binaries from OCI
 postgres = use_extension("//bazel/tools/postgres:extensions.bzl", "postgres")
 use_repo(postgres, "postgres_test")
+
+# Static binaries lifted out of digest-pinned OCI images, for upstreams whose
+# only durable release channel is a container image (Apache Iggy's server).
+oci_binaries_ext = use_extension("//bazel/tools/oci:extensions.bzl", "oci_binaries_ext")
+use_repo(oci_binaries_ext, "iggy_server_bin")
 
 # Configure apko for container images
 apko = use_extension("@rules_apko//apko:extensions.bzl", "apko")
@@ -551,6 +575,10 @@ apko.translate_lock(
     lock = "//projects/embervm/runtimes/postgres:apko.lock.json",
 )
 apko.translate_lock(
+    name = "embervm_runtime_iggy_lock",
+    lock = "//projects/embervm/runtimes/iggy:apko.lock.json",
+)
+apko.translate_lock(
     name = "embervm_xds_lock",
     lock = "//projects/embervm/xds/image:apko.lock.json",
 )
@@ -594,7 +622,7 @@ apko.translate_lock(
     name = "embervm_mirror_lock",
     lock = "//projects/embervm/mirror/image:apko.lock.json",
 )
-use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_mirror_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "semgrep_guest_lock", "shotter_lock", "whatsapp_lock")
+use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_mirror_lock", "embervm_noded_lock", "embervm_runtime_bazel_lock", "embervm_runtime_claude_lock", "embervm_runtime_iggy_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "semgrep_guest_lock", "shotter_lock", "whatsapp_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")

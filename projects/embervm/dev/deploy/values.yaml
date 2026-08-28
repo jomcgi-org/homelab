@@ -215,6 +215,17 @@ scratchPostgres:
 demoPostgres:
   enabled: false
 
+# iggy carries BOTH of its dev settings here for the same reason scratchPostgres
+# does above: a second `iggy:` key at this level would be a duplicate YAML
+# mapping key and the later block would silently win. Dev exercises task-class
+# lifecycle for the conformance harness, not stateful workloads, and an empty
+# guest image is what keeps the base BUILDER off dev's nodes (the builder is
+# gated on guestImage.repository, separately from the Workload CR).
+iggy:
+  enabled: false
+  guestImage:
+    repository: ""
+
 # The wildcard noded DaemonSet and scratch-prep, BOTH of which default true in
 # the chart and which production explicitly disables.
 #
@@ -376,6 +387,13 @@ workloads:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/runtime-pi/rootfs.ext4
   scratchPostgres:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/scratch-postgres/rootfs.ext4
+  # MANDATORY even though dev does not run the iggy workload: the Workload CR
+  # and the base BUILDER are gated separately, so a path left at the inherited
+  # production value is UNBACKED inside the container (only nvmeRoot is mounted)
+  # and mkfs would write a multi-GB base image onto node-4's ROOT filesystem,
+  # which is where production's bricks live.
+  iggy:
+    rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/iggy/rootfs.ext4
   bazelQuery:
     rootfsPath: /var/lib/embervm/scratch/dev/embervm-noded/bazel-query/rootfs.ext4
   # MANDATORY even though dev does not run the shotter workload: the Workload CR

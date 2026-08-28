@@ -1,0 +1,91 @@
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - busybox
+    - ca-certificates-bundle
+    # mkfs.ext4 for the stateful volume (guest-init formats a blank volume ext4).
+    - e2fsprogs
+    # blkid for the mkfs-if-blank probe: guest-init runs `blkid` to detect an
+    # existing filesystem signature before formatting, so a populated volume is
+    # never reformatted. e2fsprogs does NOT ship blkid (it lives in this dedicated
+    # Wolfi package), and the guest mounts via the unix.Mount syscall (no `mount`
+    # binary needed), so blkid is the only extra volume tool required.
+    - blkid
+
+# Deliberately NOT here: iggy-server itself. Wolfi does not package Iggy, and
+# there is no durable release tarball to vendor (ADR embervm/039); the binary is
+# lifted out of the digest-pinned apache/iggy image by //bazel/tools/oci:
+# oci_binaries and layered in by ./BUILD. It is built for
+# x86_64-unknown-linux-musl and fully static, so it needs no libc, no libhwloc,
+# and no libudev from this rootfs despite upstream's debian base carrying them.
+# That static property is asserted at fetch time, not assumed.
+
+archs:
+  - x86_64
+
+# The unprivileged account iggy-server runs as. Unlike Postgres, iggy-server does
+# not refuse to run as root; it drops here because uid 65532 non-root is the
+# repo-wide image convention and nothing in the server needs privilege (its CPU
+# pinning and NUMA binding are unprivileged calls). guest-init still boots as
+# root (PID 1) to mkfs + mount the volume, then drops every server child to this
+# uid (iggy_linux.go dropToIggy).
+accounts:
+  groups:
+    - groupname: iggy
+      gid: 65532
+  users:
+    - username: iggy
+      uid: 65532
+      gid: 65532
+  # Boot as root: PID-1 guest-init must mkfs/mount the volume before dropping to
+  # the iggy uid to launch the server. A raw Firecracker boot ignores this run-as
+  # anyway (it boots init=<harnessInit>); it is here for any non-FC path.
+  run-as: 0
+
+environment:
+  HOME: /data
+  LANG: C
+  # Iggy reads any config key from an IGGY_-prefixed env var (underscores separate
+  # nested keys), and falls back to the config compiled into the binary when no
+  # config.toml is found, so this runtime carries no TOML file at all. A raw
+  # Firecracker boot never consumes this block; guest-init sets the same defaults
+  # (cmdline.go setDefaultEnv) and that copy is the load-bearing one.
+  #
+  # Bind the binary protocol to every interface so the node Envoy can reach it
+  # over the tap NIC; the compiled default is 127.0.0.1, which would make the
+  # workload's TCP health probe fail forever.
+  IGGY_TCP_ADDRESS: 0.0.0.0:8090
+  # One workload, one port (the stateful class exposes exactly one). HTTP is
+  # already off by default upstream; QUIC is on by default and is turned off here
+  # so nothing listens that the Envoy listener cannot route to.
+  IGGY_HTTP_ENABLED: "false"
+  IGGY_QUIC_ENABLED: "false"
+  # Keep the server's rotating log FILES off the volume: they default to on with
+  # a 4 GiB total cap and 7-day retention under system.path, which would compete
+  # with message segments for the volume. stdout still carries every line, and
+  # noded captures that.
+  IGGY_SYSTEM_LOGGING_FILE_ENABLED: "false"
+  # Message data, state, and streams live on the mounted volume.
+  IGGY_SYSTEM_PATH: /data/iggy
+
+paths:
+  # The stateful volume mount point (CR volumeMountPath). guest-init mounts the
+  # writable volume here (unix.Mount), but the rootfs is read-only, so the mount
+  # directory MUST already exist in the image: mkdir on a read-only rootfs fails.
+  # Must match the CR's volumeMountPath and the IGGY_SYSTEM_PATH parent above.
+  - path: /data
+    type: directory
+    uid: 65532
+    gid: 65532
+    permissions: 0o750
+
+entrypoint:
+  # OCI entrypoint for any NON-Firecracker path (docker/crane). On a raw
+  # Firecracker boot the kernel ignores this and boots init=<harnessInit>; there
+  # PID 1 is /usr/local/bin/ember-iggy-init (layered by ./BUILD), which mounts the
+  # volume, decodes the mmds_env secrets, and launches iggy-server. Both paths
+  # converge on the same init.
+  command: /usr/local/bin/ember-iggy-init
