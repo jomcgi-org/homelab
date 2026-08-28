@@ -51,7 +51,7 @@ Cilium replaced Linkerd's sidecar mesh (ADR platform/012). It runs as the cluste
 
 - **WireGuard encryption**: pod-to-pod traffic is encrypted on the wire via `cilium_wg0` (see: `projects/platform/cilium/values.yaml` l.53-55). `nodeEncryption: true` is set at l.56, but three of the four agents report `NodeEncryption: OptedOut`, so host-level node-to-node encryption is not in force cluster-wide. Read the live state with `cilium-dbg status`, never the values key.
 - **Network policy**: Kubernetes `NetworkPolicy` and `CiliumNetworkPolicy` enforcement, `enable-policy = default` (allow-until-selected, no deny-gap at cutover, l.58)
-- **Hubble observability**: flow logs and metrics fed to SigNoz, mTLS cert rotation via cert-manager (l.63-99)
+- **Hubble observability**: flow logs and metrics from the eBPF datapath, with mTLS cert rotation via cert-manager (l.63-99)
 - **kube-proxy replacement**: kubeProxyReplacement=true, so CNI directly implements service load balancing and addresses k3s's local loopback APIserver endpoint (l.7-36)
 
 Future (ADR networking/003): L7 (HTTP/gRPC) policy, which would gate L7 metrics in Hubble. Infrastructure is ready; `CiliumNetworkPolicy` with Envoy rules not yet deployed.
@@ -156,34 +156,32 @@ guest work as the first victim when peaks coincide.
 
 ## 6. Observability
 
-**SigNoz** is the unified observability platform for metrics, logs, and traces, all stored in ClickHouse. It is the primary dashboard. Ingestion runs through the SigNoz k8s-infra OTel agent, a `DaemonSet` on every node, feeding a gateway collector in the `signoz` namespace. The OpenTelemetry Operator is a separate component and supplies the `Instrumentation` CRs for Python, Node.js, and Go auto-instrumentation.
+**otel-collector** runs one OpenTelemetry Collector Deployment and exports to Honeycomb. Its production metrics pipeline accepts the `http_check` receiver only. The receiver probes `https://jomcgi.dev/health` and `https://jomcgi.dev/`.
 
-Kyverno auto-injects OTel environment variables into workload pods outside system namespaces, so services emit telemetry without declaring it. SigNoz scrapes Prometheus metrics from pods marked with `prometheus.io/scrape: true` and `prometheus.io/port: <port>`.
+Trace admission is deny-by-default. `allowedServices` is empty, so the rendered collector has no `otlp` receiver, no traces pipeline, and no OTLP ports. Adding an exact `service.name` to the list is a one-line production values edit. Arbitrary OTLP metrics remain disabled when traces are enabled.
 
-**signoz-addons** and **signoz-dashboards-library** layer integration collectors and reusable dashboard definitions on top of the base SigNoz deployment.
+UptimeRobot checks `https://jomcgi.dev/health/otel-collector` through a direct public `HTTPRoute` to the collector's `health_check` extension. The route does not proxy through the public frontend.
+
+Kyverno's cluster-wide OTel environment-variable injection is disabled. The OpenTelemetry Operator remains installed, but production renders no Python, Node.js, or Go `Instrumentation` resources and configures no endpoint.
 
 **Internal observability guidance** lives in `docs/observability.md` (not published externally).
 
-(see: `projects/platform/signoz/`, `projects/platform/opentelemetry-operator/`, `projects/platform/signoz-addons/`, `projects/platform/signoz-dashboards-library/`, `docs/observability.md`)
+(see: `projects/platform/otel-collector/`, `projects/platform/opentelemetry-operator/`, `projects/platform/kyverno/values.yaml`, `docs/observability.md`)
 
-**Why.** Network-policy drops could silently black-hole traffic, while Cilium L7
-metrics do not exist until an L7 policy redirects that surface through Envoy
-(ADR networking/003). Enabling HTTP observation cluster-wide was rejected because
-it adds an Envoy hop to every flow, and the Hubble UI was rejected as the primary
-view because it cannot feed the existing incident-alert path. Per-surface L7
-policy and SigNoz ingestion accept proxy latency only where method and path
-enforcement justify it.
+**Why.** Honeycomb quota sets the collector's admission boundary. An empty
+allowlist removes the OTLP listeners instead of relying on workloads not to send.
+The metrics pipeline cannot accept arbitrary OTLP metrics.
 
 ---
 
 ## 7. Security and policy
 
-**Kyverno** runs five cluster policies (`projects/platform/kyverno/templates/`):
+**Kyverno** renders two cluster policies in production (`projects/platform/kyverno/templates/`):
 
-- `inject-otel-env-vars` appends OTel environment variables and an annotation to workloads outside the excluded system namespaces
 - `require-resource-requests` checks first-party namespaces for CPU and memory requests plus a memory limit. `validationFailureAction: Audit`, so violations surface as PolicyReports and nothing is rejected
-- `otel-agent-hostnet-dns` sets the DNS policy for the hostNetwork OTel agent
-- `clone-monolith-pg-app` and `clone-signoz-api-key` clone those two Secrets into the namespaces that consume them
+- `clone-monolith-workflows-secrets` copies the Secrets used by Argo CronWorkflow jobs into `monolith-workflows`
+
+The `inject-otel-env-vars` template is disabled. It renders no OTel configuration or cluster policy.
 
 Non-root execution and dropped capabilities come from each chart's own `securityContext`, and network policy is authored per service as `CiliumNetworkPolicy`.
 

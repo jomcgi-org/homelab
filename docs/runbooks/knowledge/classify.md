@@ -100,7 +100,7 @@ knowledge they are `external`:
 - Kubernetes at scale (multi-cluster, control-plane internals, operators in Go,
   CRDs, admission webhooks).
 - Service mesh (Cilium primarily, Envoy, Gateway API, Cloudflare ZeroTrust).
-- Observability and SLO (OTel internals, SigNoz, Honeycomb, Prometheus, RCA,
+- Observability and SLO (OTel internals, Honeycomb, Prometheus, RCA,
   STAMP/STPA).
 - FinOps and cost attribution (eBPF cost meters, AWS CUR, Orb, Iceberg/Snowflake
   cost, OpenCost).
@@ -198,4 +198,3 @@ Joe. Bias toward the cheap error.
   gap that already has a class or has left the `discovered` state.
 - On a hard failure (repeated `set-gap-class` errors, tool outages), call
   `monolith-agent-notify` once with `level: "error"` and exit.
-

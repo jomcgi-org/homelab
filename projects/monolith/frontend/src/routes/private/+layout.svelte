@@ -10,7 +10,7 @@
   //
   // Suppressed on:
   // - the dashboard root itself ("/"): it IS the nav
-  // - /app/*: gateway-routed full-screen apps (SigNoz, ArgoCD) with their
+  // - /app/*: gateway-routed full-screen apps (ArgoCD, Longhorn) with their
   //   own chrome
   // - /demos/*: renders its own Grimoire-style topbar (wordmark + tabs) that
   //   the link would collide with

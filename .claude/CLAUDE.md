@@ -210,12 +210,11 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
   hardcode one.
 - **Nothing is exposed to the internet directly.** All traffic goes through
   Cloudflare.
-- **The kubernetes, ArgoCD, and SigNoz MCP servers do not exist.** Context Forge
+- **The kubernetes and ArgoCD MCP servers do not exist.** Context Forge
   is the gateway every MCP caller reaches, and it distributes tools by caller
   identity, but its registered upstreams are the monolith and GitHub. So do not
-  spend turns on `ToolSearch +kubernetes`, `+argocd`, or `+signoz`. Use
-  `kubectl`, and the UIs at `private.jomcgi.dev/app/argocd` and
-  `private.jomcgi.dev/app/signoz`. See `projects/mcp/ARCHITECTURE.md`. The
+  spend turns on `ToolSearch +kubernetes` or `+argocd`. Use `kubectl` and the UI
+  at `private.jomcgi.dev/app/argocd`. See `projects/mcp/ARCHITECTURE.md`. The
   BuildBuddy MCP needs `${BUILDBUDDY_API_KEY}` in the shell env *before* the
   session starts, and there is no fallback for inspecting CI without it.
 - **New service:** copy a recent `deploy/` directory (`projects/monolith/deploy/`

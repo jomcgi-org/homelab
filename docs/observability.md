@@ -1,144 +1,76 @@
 # Observability Architecture
 
-This document describes the automatic observability setup in the cluster.
+One OpenTelemetry Collector Deployment exports admitted telemetry to Honeycomb.
+Production currently sends synthetic probe metrics only. No service is admitted
+to the traces pipeline.
 
-## Overview
+## Current signal paths
 
-Every service gets automatic observability through three layers:
-
-1. **OTEL Environment Variables** (Kyverno) - Endpoint configuration for all workloads
-2. **OpenTelemetry Operator** - Language-specific auto-instrumentation (Go, Python, Node.js)
-3. **Cilium Hubble** - Network-level flow and HTTP metrics from the eBPF datapath, no sidecars
-
-## Pod Creation Flow
-
-The following diagram shows how observability is automatically added to every pod:
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Pod Creation Request                         │
-│                    (kubectl apply / ArgoCD sync)                    │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Layer 1: Kyverno Policies                        │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────────────┐                                       │
-│  │  OTEL Injection Policy   │                                       │
-│  ├──────────────────────────┤                                       │
-│  │ Adds env vars:           │                                       │
-│  │ - OTEL_EXPORTER_         │                                       │
-│  │   OTLP_ENDPOINT          │                                       │
-│  │ - OTEL_EXPORTER_         │                                       │
-│  │   OTLP_PROTOCOL=grpc     │                                       │
-│  └──────────────────────────┘                                       │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│             Layer 2: OpenTelemetry Operator (opt-in)                │
-├─────────────────────────────────────────────────────────────────────┤
-│  Per-namespace Instrumentation custom resources (CRs) inject:       │
-│  - Go: eBPF auto-instrumentation (autoinstrumentation-go)           │
-│  - Python: auto-instrument init container                           │
-│  - Node.js: require-hook init container                             │
-│                                                                     │
-│  Auto-instrumentation is enabled cluster-wide via the OpenTelemetry │
-│  operator and Kyverno OTEL injection; see                           │
-│  projects/platform/opentelemetry-operator                           │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Running Pod                                 │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌────────────────────┐                                             │
-│  │  Application       │   Pod network traffic flows through the     │
-│  │  Container         │   Cilium eBPF datapath: Hubble records      │
-│  ├────────────────────┤   flows and HTTP metrics with no sidecar    │
-│  │ OTEL env vars set  │   in the pod.                               │
-│  │ OTel SDK injected  │                                             │
-│  │ (if namespace opted│                                             │
-│  │  into Operator)    │                                             │
-│  └────────────────────┘                                             │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-                       ┌──────────────────┐
-                       │  SigNoz Platform │
-                       ├──────────────────┤
-                       │ - Traces         │
-                       │ - Metrics        │
-                       │ - Logs           │
-                       └──────────────────┘
+```mermaid
+graph LR
+    HC[http_check receiver] -->|probe metrics| OC[otel-collector]
+    OC -->|OTLP| H[Honeycomb]
+    UR[UptimeRobot] -->|direct HTTPRoute| HEALTH[collector health_check]
+    DCGM[DCGM exporter] -->|direct scrape| STATS[public stats ticker]
 ```
 
-## Automatic Observability (Kyverno Policies)
+The collector's `http_check` receiver probes these public URLs every 60 seconds:
 
-### 1. OTEL Environment Variables (Application-Level)
+- `https://jomcgi.dev/health`
+- `https://jomcgi.dev/`
 
-- **All workloads** receive OTEL env vars automatically
-- `OTEL_EXPORTER_OTLP_ENDPOINT` → SigNoz collector
-- `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`
-- Applications with OTEL SDKs get automatic instrumentation
-- Applications without OTEL SDKs ignore the vars (harmless)
-- **Policy:** `projects/platform/kyverno/templates/otel-injection-policy.yaml`
+The metrics pipeline accepts only the `http_check` receiver. It has no OTLP
+metrics receiver, so workloads cannot send arbitrary metrics through it.
 
-### 2. OTel Operator Auto-Instrumentation (Language-Level)
+UptimeRobot metamonitors the collector at
+`https://jomcgi.dev/health/otel-collector`. The `HTTPRoute` sends traffic
+directly to the collector's `health_check` extension on port 13133 and rewrites
+the path to `/`. The public frontend is not on this path.
 
-- **Opt-in per namespace** via `Instrumentation` CRDs
-- The OpenTelemetry Operator watches for these CRDs and injects language-specific init containers
-- **Go:** eBPF-based, no code changes needed, instruments at the kernel level
-- **Python:** Injects `autoinstrumentation-python` init container that patches the runtime
-- **Node.js:** Injects `autoinstrumentation-nodejs` init container with require hooks
-- Kyverno sets the OTEL endpoint; the Operator provides the SDK. They complement each other
-- **Configuration:** `projects/platform/opentelemetry-operator/` with namespace list in values
+The public stats ticker gets GPU utilization and frame buffer usage by scraping
+the DCGM exporter directly. It does not use the collector or a telemetry store.
 
-### 3. Cilium Hubble (Network-Level)
+## Trace admission is closed
 
-- The Cilium eBPF datapath sees all pod traffic; no proxy sidecars, no injection
-- Hubble exports flow and HTTP metrics (e.g. `hubble_httpv2_requests_total`),
-  which SigNoz scrapes and the error-rate alerts read
-- Drop metrics carry destination context (`destination_namespace`,
-  `traffic_direction`, requested via `labelsContext` on the `drop` metric), so
-  policy-denied drops are attributable per destination and the policy-deny
-  alerts can watch a single namespace instead of node-wide noise (#4659)
-- WireGuard encrypts pod-to-pod traffic transparently at the same layer
-- **Configuration:** `projects/platform/cilium/values.yaml`
+`allowedServices` defaults to an empty list in
+`projects/platform/otel-collector/values.yaml`. Production does not override it.
+The rendered collector has:
 
-## Observable by Default Philosophy
+- no `otlp` receiver
+- no traces pipeline
+- no container or Service ports for OTLP gRPC on 4317 or OTLP HTTP on 4318
 
-- New deployments → Get OTEL env vars (Kyverno); network metrics come from the CNI
-- Namespaces opted into OTel Operator → Also get language-level SDK injection
-- Existing deployments → Get annotations/vars via background policies
-- **Opt-out if needed** (see below)
+Collector admission for a service is a one-line `allowedServices` override in
+`values-prod.yaml`, using the exact OpenTelemetry `service.name`. A non-empty
+allowlist renders the OTLP receiver, trace pipeline, ports, allowlist filter, and
+tail sampler. The workload must configure its exporter endpoint explicitly.
 
-## Opting Out
+The metrics pipeline remains restricted to `http_check` after a trace service is
+admitted.
 
-### Opt-out of OTEL injection
+## Automatic injection is off
 
-```yaml
-metadata:
-  labels:
-    otel.instrumentation: "disabled"
-```
+Kyverno's cluster-wide OTel environment-variable injection is disabled in
+`projects/platform/kyverno/values.yaml`. It was not redirected to the replacement
+collector.
+
+The OpenTelemetry Operator remains installed, but production disables its
+Python, Node.js, and Go `Instrumentation` resources and configures no endpoint.
+
+The private monolith has no production OTel endpoint. Its demo trace waterfall
+returns no spans until #5363 connects a replacement span store.
+
+## Network visibility
+
+Cilium and Hubble still provide network flow visibility from the eBPF datapath.
+Their metrics are not part of the collector's `http_check`-only metrics pipeline.
 
 ## Configuration
 
-- OTEL: `projects/platform/kyverno/values.yaml` (otelInjection section)
-- Hubble/Cilium: `projects/platform/cilium/values.yaml`
-
-## Excluded Namespaces (Kyverno policies)
-
-- System: kube-system, kube-public, kube-node-lease
-- Infrastructure: cert-manager, kyverno, argocd, longhorn-system, signoz, opentelemetry-operator
-
-## Service Requirements
-
-Every service must:
-
-- [ ] Export Prometheus metrics on `/metrics`
-- [ ] Provide health check endpoint
-- [ ] Send structured logs
-- [ ] Include OpenTelemetry tracing (for user-facing services)
+- Collector chart and default admission policy:
+  `projects/platform/otel-collector/values.yaml`
+- Production overrides and probe targets:
+  `projects/platform/otel-collector/values-prod.yaml`
+- Disabled cluster-wide injection: `projects/platform/kyverno/values.yaml`
+- Disabled language instrumentation:
+  `projects/platform/opentelemetry-operator/values-prod.yaml`

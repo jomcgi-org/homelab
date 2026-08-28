@@ -68,7 +68,7 @@ First seen on 1e63fee7 (invocation 06feb469): #4862 refreshed 14 apko locks, all
 
 **Cause:** `ServerSideApply=true` changes what the diff means. Client-side apply does a 3-way merge against `last-applied-configuration` and treats a field that is in live but absent from both desired and last-applied as somebody else's, so server defaults are invisible. SSA diffs on field OWNERSHIP instead: a field the chart never declared is missing from the predicted state while the apiserver has defaulted it into live, and that gap can never close.
 
-Seen on all five SSA apps at once (2026-08-14): Gateway API defaulting `parentRefs.group/kind` and `backendRefs.group/kind/weight` on HTTPRoutes, and Envoy Gateway defaulting `remoteJWKS.cacheDuration: 300s` on SecurityPolicies. The tell is that the identical live objects under non-SSA apps (longhorn, signoz, monolith) stayed Synced.
+Seen on all five SSA apps at once (2026-08-14): Gateway API defaulting `parentRefs.group/kind` and `backendRefs.group/kind/weight` on HTTPRoutes, and Envoy Gateway defaulting `remoteJWKS.cacheDuration: 300s` on SecurityPolicies. The tell is that the identical live objects under non-SSA apps (longhorn and monolith) stayed Synced.
 
 **Diagnose:** the sync status alone will not say which field. Pull ArgoCD's own view and diff the two states it computed:
 
