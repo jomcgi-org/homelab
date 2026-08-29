@@ -124,9 +124,9 @@ actions:
           workspace_breakdown() {
             echo "WORKSPACE $1:"
             du -shx \
-              "$HOME/.cache/bazel/repository_cache/content_addressable" \
-              "$HOME/.cache/bazel/repository_cache/contents" \
-              "$HOME/.cache/bazel" \
+              "${HOME:-/home/buildbuddy}/.cache/bazel/repository_cache/content_addressable" \
+              "${HOME:-/home/buildbuddy}/.cache/bazel/repository_cache/contents" \
+              "${HOME:-/home/buildbuddy}/.cache/bazel" \
               /var/lib/docker \
               /home/buildbuddy/workspace \
               2>/dev/null || true
@@ -426,9 +426,9 @@ actions:
           workspace_breakdown() {
             echo "WORKSPACE $1:"
             du -shx \
-              "$HOME/.cache/bazel/repository_cache/content_addressable" \
-              "$HOME/.cache/bazel/repository_cache/contents" \
-              "$HOME/.cache/bazel" \
+              "${HOME:-/home/buildbuddy}/.cache/bazel/repository_cache/content_addressable" \
+              "${HOME:-/home/buildbuddy}/.cache/bazel/repository_cache/contents" \
+              "${HOME:-/home/buildbuddy}/.cache/bazel" \
               /var/lib/docker \
               /home/buildbuddy/workspace \
               2>/dev/null || true
