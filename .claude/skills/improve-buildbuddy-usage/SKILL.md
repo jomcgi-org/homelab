@@ -316,7 +316,7 @@ runner the way it is on a developer machine, and pruning it would save nothing.
 Docker's on-disk state is 4.0K, so the base images are not in there either.
 
 Everything is `/home/buildbuddy/workspace`, and `/usr` plus `/opt` together are
-under 1G, so there is nowhere else for the 19G to be. #5398 walks that tree to
+under 1G, so there is nowhere else for the 19G to be. #5401 walks that tree to
 depth 3 rather than naming paths, because naming paths is what got this wrong.
 
 ## Refuted, do not retry
@@ -357,7 +357,7 @@ depth 3 rather than naming paths, because naming paths is what got this wrong.
 | #5116, #5118 (2026-08-22) | stripped CPython toolchain; postgres_test real closure | test input tree 1.54 GB -> ~0.65 GB, the dominant byte lever; re-measure after 2026-08-29 |
 | #5374 (2026-08-27) | quoted labels in the affected-targets query; `--repo` read from the git remote | removes the 19% of PR fallbacks that no diff explained, about 25 GB/day across both lanes; re-measure after 2026-09-03 |
 | #5397 (2026-08-28) | `du` breakdown of the runner workspace at both ends of both actions | diagnostic, no bytes either way; read `WORKSPACE ... :` in any pr-checks log |
-| #5398 (2026-08-29) | probe walks the workspace to depth 3 instead of naming paths | #5397's guessed paths refuted the `content_addressable` theory and located nothing; this localises the 19G |
+| #5401 (2026-08-29) | probe walks the workspace to depth 3 instead of naming paths | #5397's guessed paths refuted the `content_addressable` theory and located nothing; this localises the 19G |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
