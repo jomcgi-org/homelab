@@ -47,7 +47,8 @@ _ACTIVITY_LIST_CAP = 500
 _ACTIVITY_TEXT_CAP = 300
 _RESULT_HEAD_CHARS = 600
 _PR_CACHE_TTL_SECONDS = 3600
-_PR_CACHE: dict[int, tuple[float, dict]] = {}
+# Cache is unbounded by design: grows one small entry per PR number a human actually opens.
+_PR_CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
 
 
 def _github_get(url: str) -> httpx.Response:
@@ -55,21 +56,23 @@ def _github_get(url: str) -> httpx.Response:
     token = os.environ.get("GITHUB_API_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    with httpx.Client(timeout=10.0) as client:
+    with httpx.Client(timeout=10.0, follow_redirects=True) as client:
         response = client.get(url, headers=headers)
         response.raise_for_status()
         return response
 
 
 def _enrich_pr(pr: dict) -> dict:
+    repo = pr["repo"]
     number = pr["number"]
+    cache_key = (repo, number)
     now = time.monotonic()
-    cached = _PR_CACHE.get(number)
+    cached = _PR_CACHE.get(cache_key)
     if cached is not None and cached[0] > now:
         return {**pr, **cached[1]}
 
     try:
-        response = _github_get(f"{GITHUB_API}/repos/{GITHUB_REPO}/pulls/{number}")
+        response = _github_get(f"{GITHUB_API}/repos/{repo}/pulls/{number}")
         body = response.json()
         enrichment = {
             key: body[key]
@@ -87,7 +90,7 @@ def _enrich_pr(pr: dict) -> dict:
         logger.info("could not enrich GitHub PR %s", number, exc_info=True)
         return pr
 
-    _PR_CACHE[number] = (time.monotonic() + _PR_CACHE_TTL_SECONDS, enrichment)
+    _PR_CACHE[cache_key] = (time.monotonic() + _PR_CACHE_TTL_SECONDS, enrichment)
     return {**pr, **enrichment}
 
 

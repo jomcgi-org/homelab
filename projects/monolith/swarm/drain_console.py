@@ -42,7 +42,7 @@ PROMPT_HEAD_CHARS = 160
 SUMMARY_HEAD_CHARS = 200
 
 _PR_URL_RE = re.compile(
-    r"(?P<url>(?:https?://)?github\.com/"
+    r"(?<![\w.-])(?P<url>https://github\.com/"
     r"(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<number>\d+))",
     re.IGNORECASE,
 )
