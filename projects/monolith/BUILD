@@ -81,6 +81,16 @@ filegroup(
     visibility = ["//projects/monolith/chart:__pkg__"],
 )
 
+# framework/core.py as DATA, for chart/otel_endpoint_test.py. That test parses
+# it rather than importing it: it needs the OTel env var name and the private
+# profile's service_name as they are literally written, and importing the
+# module would pull in the whole FastAPI/pydantic closure to read two strings.
+filegroup(
+    name = "framework_core_src",
+    srcs = ["framework/core.py"],
+    visibility = ["//projects/monolith/chart:__pkg__"],
+)
+
 # Shared source closure for the monolith binaries. Both the API server
 # (:main / :image) and the batch-jobs entrypoint (:jobs / :jobs_image) glob the
 # same tree so their image dependency layers are byte-identical: Bazel caches

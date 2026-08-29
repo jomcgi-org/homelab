@@ -36,6 +36,24 @@ backend:
   # truncates the outboxes, so the data holds nothing actionable either.
   leaderSingletons: false
 
+  # Dev sends no traces, and this line is an IDENTITY override, not a taste one.
+  #
+  # service.name comes from PRIVATE_PROFILE in framework/core.py, so dev and
+  # production both report as monolith-backend. The collector then stamps
+  # deployment.environment=production with a resource processor set to `upsert`,
+  # because it knows which cluster it runs in and the sender does not. Inheriting
+  # production's endpoint would therefore file dev's spans in production's
+  # Honeycomb dataset under production's service name, labelled production, with
+  # nothing in the span to tell them apart.
+  #
+  # That is exactly the inherit-what-you-are hazard chart_env_identity_test.py
+  # exists for: safe to inherit how a workload BEHAVES, unsafe to inherit WHO IT
+  # CLAIMS TO BE. Giving dev its own service name would be the other fix, but it
+  # needs a second entry on the collector's allowedServices and spends trace
+  # quota on an environment nobody is watching, so dev stays dark until someone
+  # wants dev traces specifically.
+  otelEndpoint: ""
+
 # INGRESS: ONE hostname, both surfaces, authentik in front.
 #
 # dev.jomcgi.dev is dev's OWN hostname, so this claims nothing production owns.

@@ -15,8 +15,16 @@ environment: production
 # embervm-control must match OTEL_SERVICE_NAME in
 # projects/embervm/deploy/values.yaml (tracing.serviceName). If the two drift
 # apart the filter drops every span and nothing says so.
+#
+# monolith-backend must match PRIVATE_PROFILE.service_name in
+# projects/monolith/framework/core.py, which is what _setup_otel puts in the
+# resource. Its endpoint is set in projects/monolith/deploy/values.yaml and
+# points at 4318 rather than 4317: that service exports over HTTP, not gRPC.
+# monolith-public is deliberately absent, since PUBLIC_PROFILE sets
+# otel_enabled=False and the public tier never builds an exporter.
 allowedServices:
   - embervm-control
+  - monolith-backend
 
 httpcheck:
   enabled: true
