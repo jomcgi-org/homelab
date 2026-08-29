@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { periodForHour } from "$lib/private/period.js";
   import "../agents-theme.css";
+  import { renderAgentMarkdown } from "../markdown.js";
   import { fmtCost } from "../run-format.js";
   import { relativeTime } from "../run-history.js";
   import { DRAIN_LEXICON as D } from "./lexicon.js";
@@ -162,6 +163,19 @@
       (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
       template,
     );
+  }
+
+  function prState(pr) {
+    if (pr?.merged) return "merged";
+    return ["open", "closed"].includes(pr?.state) ? pr.state : null;
+  }
+
+  function prStateLabel(pr) {
+    return {
+      open: D.labels.prStateOpen,
+      closed: D.labels.prStateClosed,
+      merged: D.labels.prStateMerged,
+    }[prState(pr)];
   }
 
   $effect(() => {
@@ -345,7 +359,7 @@
                   {#if job.state === "error" && job.summary_head}
                     <span class="err-text">{job.summary_head}</span>
                   {:else}
-                    {job.prompt_head || job.summary_head || D.labels.dash}
+                    {job.summary_head || job.prompt_head || D.labels.dash}
                   {/if}
                 </span>
               </span>
@@ -411,8 +425,57 @@
                   <pre class="detail-pre">{detail.job.prompt ||
                       D.labels.dash}</pre>
                   {#if detail.job.last_summary}
-                    <h3 class="detail-label">{D.labels.resultWord}</h3>
-                    <pre class="detail-pre">{detail.job.last_summary}</pre>
+                    {#if detail.job.outcome === "report"}
+                      <h3 class="detail-label">
+                        {D.labels.resultWordForReport}
+                      </h3>
+                      <div class="result-md">
+                        {@html renderAgentMarkdown(detail.job.last_summary)}
+                      </div>
+                    {:else if detail.job.outcome === "pr" && detail.job.pr}
+                      {@const state = prState(detail.job.pr)}
+                      <h3 class="detail-label">{D.labels.prCard}</h3>
+                      <div class="pr-card">
+                        <div class="pr-card-head">
+                          <a
+                            class="pr-number mono"
+                            href={detail.job.pr.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            aria-label={`${D.labels.openPr} ${D.labels.numberMark}${detail.job.pr.number}`}
+                          >
+                            {D.labels.numberMark}{detail.job.pr.number}
+                          </a>
+                          {#if state}
+                            <span class={`pr-state mono pr-state-${state}`}>
+                              {prStateLabel(detail.job.pr)}
+                            </span>
+                          {/if}
+                        </div>
+                        {#if detail.job.pr.title}
+                          <div class="pr-title">{detail.job.pr.title}</div>
+                        {/if}
+                        {#if detail.job.pr.changed_files != null && detail.job.pr.additions != null && detail.job.pr.deletions != null}
+                          <div class="pr-stats mono">
+                            <span>
+                              {detail.job.pr.changed_files}
+                              {detail.job.pr.changed_files === 1
+                                ? D.labels.fileWord
+                                : D.labels.filesWord}
+                            </span>
+                            <span class="pr-add">
+                              {D.labels.additionMark}{detail.job.pr.additions}
+                            </span>
+                            <span class="pr-del">
+                              {D.labels.deletionMark}{detail.job.pr.deletions}
+                            </span>
+                          </div>
+                        {/if}
+                      </div>
+                    {:else}
+                      <h3 class="detail-label">{D.labels.resultWord}</h3>
+                      <pre class="detail-pre">{detail.job.last_summary}</pre>
+                    {/if}
                   {/if}
                   {#each detail.attempts as attempt (attempt.session_id)}
                     <div class="attempt">
@@ -873,6 +936,129 @@
     font-size: var(--size-body-mono);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+  .result-md {
+    color: var(--text-soft);
+    font-size: var(--size-body);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+  }
+  .result-md :global(p) {
+    margin: 0 0 8px;
+  }
+  .result-md :global(p:last-child) {
+    margin-bottom: 0;
+  }
+  .result-md :global(h2),
+  .result-md :global(h3) {
+    margin: 16px 0 8px;
+    color: var(--text);
+    font-size: var(--size-title);
+  }
+  .result-md :global(h3) {
+    font-size: var(--size-body);
+  }
+  .result-md :global(ul),
+  .result-md :global(ol) {
+    margin: 8px 0;
+    padding-left: 22px;
+  }
+  .result-md :global(li) {
+    margin: 4px 0;
+  }
+  .result-md :global(code) {
+    padding: 2px 4px;
+    border-radius: 3px;
+    background: var(--code-bg);
+    font: var(--size-body-mono) var(--font-mono);
+  }
+  .result-md :global(pre) {
+    margin: 8px 0;
+    padding: 12px 14px;
+    overflow-x: auto;
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: var(--code-bg);
+    font-size: var(--size-body-mono);
+    line-height: 1.55;
+  }
+  .result-md :global(pre code) {
+    padding: 0;
+    background: none;
+  }
+  .result-md :global(a) {
+    color: var(--info);
+  }
+  .result-md :global(blockquote) {
+    margin: 8px 0;
+    padding: 4px 12px;
+    border-left: 1px solid var(--line-strong);
+    color: var(--muted);
+  }
+  .result-md :global(table) {
+    margin: 8px 0;
+    border-collapse: collapse;
+  }
+  .result-md :global(th),
+  .result-md :global(td) {
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    text-align: left;
+  }
+  .pr-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--panel-bg);
+  }
+  .pr-card-head,
+  .pr-stats {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pr-number {
+    color: var(--info);
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .pr-number:hover {
+    text-decoration: underline;
+  }
+  .pr-state {
+    padding: 2px 7px;
+    border-radius: var(--radius-pill);
+    font-size: var(--size-meta);
+  }
+  .pr-state-open {
+    color: var(--ok);
+    background: var(--ok-soft);
+  }
+  .pr-state-closed {
+    color: var(--err);
+    background: var(--err-bg);
+  }
+  .pr-state-merged {
+    color: var(--attn-text);
+    background: var(--attn-soft);
+  }
+  .pr-title {
+    color: var(--text);
+    font-size: var(--size-body);
+    font-weight: 600;
+  }
+  .pr-stats {
+    color: var(--muted);
+    font-size: var(--size-meta);
+  }
+  .pr-add {
+    color: var(--diff-add-mark);
+  }
+  .pr-del {
+    color: var(--diff-del-mark);
   }
   .attempt {
     display: flex;

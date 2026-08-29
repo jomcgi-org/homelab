@@ -102,6 +102,72 @@ class TestComposeJobs:
         assert entries[0]["prompt_head"] == "Audit the thing"
         assert entries[0]["summary_head"] == "line one"
 
+    def test_error_outcome_wins_over_a_pr_url(self):
+        jobs = [
+            _job(
+                last_status="error",
+                last_summary="https://github.com/jomcgi/homelab/pull/123",
+            )
+        ]
+        entry = drain_console.compose_jobs(jobs, [], {}, {}, NOW)[0]
+        assert entry["outcome"] == "error"
+        assert "pr" not in entry
+
+    def test_current_org_pr_outcome_includes_parsed_pr(self):
+        jobs = [
+            _job(
+                last_status="ok",
+                last_summary="https://github.com/jomcgi-org/homelab/pull/456",
+            )
+        ]
+        entry = drain_console.compose_jobs(jobs, [], {}, {}, NOW)[0]
+        assert entry["outcome"] == "pr"
+        assert entry["pr"] == {
+            "url": "https://github.com/jomcgi-org/homelab/pull/456",
+            "number": 456,
+            "repo": "jomcgi-org/homelab",
+        }
+
+    def test_legacy_org_pr_outcome_includes_parsed_pr(self):
+        jobs = [
+            _job(
+                last_status="ok",
+                last_summary="https://github.com/jomcgi/homelab/pull/123",
+            )
+        ]
+        entry = drain_console.compose_jobs(jobs, [], {}, {}, NOW)[0]
+        assert entry["outcome"] == "pr"
+        assert entry["pr"]["number"] == 123
+        assert entry["pr"]["repo"] == "jomcgi/homelab"
+
+    def test_markdown_prose_is_a_report(self):
+        jobs = [_job(last_status="ok", last_summary="Done:\n\n- audited config")]
+        entry = drain_console.compose_jobs(jobs, [], {}, {}, NOW)[0]
+        assert entry["outcome"] == "report"
+        assert "pr" not in entry
+
+    def test_pull_request_prose_without_url_is_a_report(self):
+        jobs = [_job(last_status="ok", last_summary="Opened the pull request.")]
+        entry = drain_console.compose_jobs(jobs, [], {}, {}, NOW)[0]
+        assert entry["outcome"] == "report"
+
+    def test_pr_url_embedded_in_prose_is_parsed(self):
+        jobs = [
+            _job(
+                last_status="ok",
+                last_summary=(
+                    "Finished the audit. See "
+                    "https://github.com/jomcgi-org/homelab/pull/789 for details."
+                ),
+            )
+        ]
+        entry = drain_console.compose_jobs(jobs, [], {}, {}, NOW)[0]
+        assert entry["pr"] == {
+            "url": "https://github.com/jomcgi-org/homelab/pull/789",
+            "number": 789,
+            "repo": "jomcgi-org/homelab",
+        }
+
     def test_sort_running_then_due_oldest_first_then_finished_newest_first(self):
         jobs = [
             _job(
