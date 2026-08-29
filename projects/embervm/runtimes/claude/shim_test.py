@@ -415,6 +415,24 @@ for line in sys.stdin:
                   "content": [{"type": "text", "text": "No tools needed"}],
                   "stopReason": "stop", "usage": {"input": 2, "output": 3}}})
             emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") == "truncated-tool-call":
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            message = {"role": "assistant",
+                       "content": [{"type": "text",
+                                    "text": os.environ["FAKE_PI_PARTIAL"]}],
+                       "stopReason": "length",
+                       "usage": {"input": 2, "output": 3}}
+            if not os.environ.get("FAKE_PI_OMIT_FINISH_REASON"):
+                message["finish_reason"] = "length"
+            emit({"type": "message_end", "message": message})
+            emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") == "prose-tool-call":
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            emit({"type": "message_end", "message": {"role": "assistant",
+                  "content": [{"type": "text", "text":
+                               "The response may mention <tool_call> in prose."}],
+                  "stopReason": "stop", "usage": {"input": 2, "output": 3}}})
+            emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") in (
             "repeated-tool-calls",
             "repeated-tool-calls-n-minus-1",
@@ -557,6 +575,57 @@ def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
     assert "input_tokens" in record["usage"]
     assert record["activities"] == [{"type": "bash", "command": "echo pi"}]
     manager._close_process()
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        "<tool_call>\n<",
+        "<tool_call>\n<function=bash",
+        "<tool_call>\n<function=bash>\n<parameter",
+        "<tool_call>\n<function=bash>\n<parameter=command>\nls -",
+        (
+            "<tool_call>\n<function=bash>\n<parameter=command>\n"
+            "ls -la /tmp\n</parameter>\n</"
+        ),
+    ],
+)
+def test_pi_truncated_tool_call_fails_turn(tmp_path, monkeypatch, capsys, partial):
+    monkeypatch.setenv("FAKE_PI_MODE", "truncated-tool-call")
+    monkeypatch.setenv("FAKE_PI_PARTIAL", partial)
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    with pytest.raises(
+        RuntimeError,
+        match="truncated by token limit.*partial tool-call syntax",
+    ):
+        manager.turn("hello", model="qwen")
+    manager._close_process()
+
+    assert "pi-truncated-tool-call signal=finish_reason" in capsys.readouterr().err
+
+
+def test_pi_truncated_tool_call_uses_marker_fallback(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_PI_MODE", "truncated-tool-call")
+    monkeypatch.setenv("FAKE_PI_PARTIAL", "<tool_call>\n<function=bash")
+    monkeypatch.setenv("FAKE_PI_OMIT_FINISH_REASON", "1")
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="truncated by token limit"):
+        manager.turn("hello", model="qwen")
+    manager._close_process()
+
+    assert "pi-truncated-tool-call signal=markers" in capsys.readouterr().err
+
+
+def test_pi_prose_tool_call_mention_is_untouched(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_PI_MODE", "prose-tool-call")
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("hello", model="qwen")
+    manager._close_process()
+
+    assert record["result"] == "The response may mention <tool_call> in prose."
 
 
 def test_resolve_thinking_level():
