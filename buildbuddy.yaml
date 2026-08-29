@@ -105,7 +105,38 @@ actions:
           # do not shrink the reservation to a number these samples only just
           # clear. Snapshot restore cost tracks workspace CONTENT, not this
           # reservation, so shrinking it saves no download bytes either way.
+          # Composition sampling, added 2026-08-28. `df` gives the total but not
+          # what is in it, and nothing has ever measured that. It is the number
+          # that matters now: over the 6 days to 2026-08-28 cold runner
+          # restores were 2.7 TB of the group's 4.5 TB, 161 of them at 15 to
+          # 20 GB each, and a cold pr-checks VM reports 38G used before it runs
+          # a single step. Cutting the restore unit is worth more than any
+          # remaining test-tree or affected-targets work.
+          #
+          # First suspect is the raw download cache. `content_addressable/` has
+          # no GC at all (see the standing comment in .bazelrc and
+          # bazel/tools/bazel-cache-gc.sh, which no CI path runs), so it only
+          # grows, and main's snapshot is re-saved on every push, which every
+          # branch then inherits. Locally that directory is 16G against 240M of
+          # extracted `contents/`.
+          #
+          # Costs no cache traffic: du reads metadata, uploads nothing.
+          workspace_breakdown() {
+            echo "WORKSPACE $1:"
+            du -shx \
+              "$HOME/.cache/bazel/repository_cache/content_addressable" \
+              "$HOME/.cache/bazel/repository_cache/contents" \
+              "$HOME/.cache/bazel" \
+              /var/lib/docker \
+              /home/buildbuddy/workspace \
+              2>/dev/null || true
+            echo "WORKSPACE $1 top-level:"
+            du -shx /home/buildbuddy/* /var/lib/* /opt/* /usr/* 2>/dev/null |
+              sort -h | tail -12 || true
+          }
+
           echo "DISK pr-checks start:"; df -h /
+          workspace_breakdown "pr-checks start"
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
 
@@ -322,6 +353,7 @@ actions:
           fi
 
           echo "DISK pr-checks end:"; df -h /
+          workspace_breakdown "pr-checks end"
 
   # deploy — main only. Same one-runner reasoning as pr-checks.
   #
@@ -388,7 +420,25 @@ actions:
           # deploy is the more interesting of the two: it no longer stages all
           # ~24 images' runfiles, so its footprint should have dropped and the
           # 120GB reservation is the least evidence-based number here.
+          # Same composition sampling as pr-checks, and for the same reason: this
+          # action has its own snapshot namespace, its own 18.2 GB cold unit,
+          # and its own copy of every cache below. See pr-checks for the why.
+          workspace_breakdown() {
+            echo "WORKSPACE $1:"
+            du -shx \
+              "$HOME/.cache/bazel/repository_cache/content_addressable" \
+              "$HOME/.cache/bazel/repository_cache/contents" \
+              "$HOME/.cache/bazel" \
+              /var/lib/docker \
+              /home/buildbuddy/workspace \
+              2>/dev/null || true
+            echo "WORKSPACE $1 top-level:"
+            du -shx /home/buildbuddy/* /var/lib/* /opt/* /usr/* 2>/dev/null |
+              sort -h | tail -12 || true
+          }
+
           echo "DISK deploy start:"; df -h /
+          workspace_breakdown "deploy start"
 
           echo "$GHCR_TOKEN" | docker login ghcr.io -u jomcgi --password-stdin
 
@@ -518,6 +568,7 @@ actions:
           fi
 
           echo "DISK deploy end:"; df -h /
+          workspace_breakdown "deploy end"
 
   # TEMPORARILY DISABLED 2026-08-09: BuildBuddy asked us to cut Workflows cache
   # traffic, and this action is pure runner cost. It normally no-ops (no
