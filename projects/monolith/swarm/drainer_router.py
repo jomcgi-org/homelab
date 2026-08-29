@@ -18,8 +18,33 @@ logger = logging.getLogger(__name__)
 # DBOS workflow queue name for the drainer (must match swarm/queues.py).
 _DRAINER_QUEUE_NAME = "drainer"
 
-# Staleness margin for the reaper: turn_timeout_seconds + (max_jobs_per_cycle * 60) + 600 seconds.
-_REAPER_STALENESS_MARGIN_SECONDS = 600
+# How long a PENDING cycle may record NO step checkpoint before it is treated
+# as wedged.
+#
+# This is a per-STEP bound, not a per-cycle one, and that distinction is the
+# whole point. The first version of this reaper keyed on
+# workflow_status.updated_at and so had to cover a cycle's entire runtime
+# (turn_timeout + max_jobs_per_cycle * 60 + margin = 3300s). updated_at turned
+# out not to advance on step checkpoints at all, so the signal moved to
+# max(operation_outputs.completed_at_epoch_ms), but the old cycle-sized
+# arithmetic came along unchanged. That left detection at 55 minutes, during
+# which one dead workflow holds the concurrency-1 slot and the entire queue
+# stalls behind it. Observed live: a wedge sat 39 minutes with 162 jobs waiting.
+#
+# The floor is the longest a HEALTHY cycle can go between checkpoints, which is
+# its longest single step. _await_turn checkpoints poll_turn every 5 seconds,
+# so the loop is not the constraint. start_agent_session is: it is one step,
+# and inside it create_session can walk the capacity backoff ladder in
+# agent_sessions/transport.py, which sums to roughly 19 minutes when the
+# EmberVM workload cap is full. Reaping faster than that would cancel a cycle
+# that is legitimately waiting for a slot, which is exactly the mistake this
+# reaper exists to avoid making.
+#
+# 1800s is that ~19 minute ceiling plus headroom, and roughly halves detection
+# time versus 3300s. It is a plain constant rather than a formula because the
+# quantity it must exceed has nothing to do with turn_timeout or
+# max_jobs_per_cycle; tying it to those was the original error.
+_REAPER_STALENESS_SECONDS = 1800
 
 
 def _reap_stale_drain_cycles(dbos) -> int:
@@ -31,12 +56,7 @@ def _reap_stale_drain_cycles(dbos) -> int:
 
     Returns the count of workflows reaped.
     """
-    settings = load_drainer_settings()
-    staleness_threshold_seconds = (
-        settings.turn_timeout_seconds
-        + (settings.max_jobs_per_cycle * 60)
-        + _REAPER_STALENESS_MARGIN_SECONDS
-    )
+    staleness_threshold_seconds = _REAPER_STALENESS_SECONDS
     # updated_at in dbos.workflow_status is bigint epoch milliseconds.
     stale_before_ms = int((time.time() - staleness_threshold_seconds) * 1000)
     now_ms = int(time.time() * 1000)
