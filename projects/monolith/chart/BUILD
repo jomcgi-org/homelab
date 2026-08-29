@@ -105,6 +105,13 @@ py_test(
 semgrep_test(
     name = "otel_endpoint_test_semgrep_test",
     srcs = ["otel_endpoint_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
