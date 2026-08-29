@@ -122,6 +122,7 @@ actions:
           # where, so this walks the tree to depth 3 instead of naming paths.
           #
           # Costs no cache traffic: du reads metadata, uploads nothing.
+
           # ---- snapshot hygiene ------------------------------------------
           # Drop bazel's reusable-sandbox stash before the runner snapshots
           # this VM. `common --reuse_sandbox_directories` (preset.bazelrc)
@@ -453,6 +454,7 @@ actions:
           # Same composition sampling as pr-checks, and for the same reason: this
           # action has its own snapshot namespace, its own 18.2 GB cold unit,
           # and its own copy of the whole workspace. See pr-checks for the why.
+
           # ---- snapshot hygiene ------------------------------------------
           # Same reason as pr-checks: bazel's reusable-sandbox stash is 6.8G of
           # scratch inside a snapshot this action restores cold at 18.2 GB a
