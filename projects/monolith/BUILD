@@ -4242,6 +4242,7 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         ":pkg_swarm",
+        "@pip//opentelemetry_sdk",
         "@pip//pytest",
     ],
 )
