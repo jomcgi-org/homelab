@@ -449,6 +449,32 @@ PI_CONTEXT_SAFETY_TOKENS = 4096
 # reserve.
 PI_MAX_OUTPUT_TOKENS = 12288
 
+PI_TOOL_CALL_MARKERS = (
+    "<tool_call>",
+    "</tool_call>",
+    "<arg_key>",
+    "<arg_value>",
+    "<parameter=",
+    "<parameter>",
+    "</parameter>",
+    "<function=",
+)
+
+
+def _is_truncated_tool_call(text):
+    """Return whether text starts with an unclosed XML tool call."""
+    if not isinstance(text, str):
+        return False
+    stripped = text.lstrip()
+    # The leading <tool_call> anchor prevents false positives from legitimate
+    # answers that merely mention tool-call syntax in prose.
+    if not stripped.startswith("<tool_call>"):
+        return False
+    if not any(marker in stripped for marker in PI_TOOL_CALL_MARKERS):
+        return False
+    return stripped.count("<tool_call>") > stripped.count("</tool_call>")
+
+
 # Thinking level for the pi lane. "off" makes pi send
 # chat_template_kwargs.enable_thinking=false to the qwen server, which for a
 # short task cuts generation from a full reasoning trace to a direct answer
@@ -3168,6 +3194,7 @@ class PiProcess:
             cached_activities = []
             activities_are_stale = True
             terminal_reason = "completed"
+            finish_reason = None
             num_turns = 0
             model_ms = 0
             tool_ms = 0
@@ -3377,6 +3404,9 @@ class PiProcess:
                             terminal_reason = message_event.get(
                                 "stopReason", "completed"
                             )
+                            finish_reason = message_event.get("finish_reason")
+                            if finish_reason is None:
+                                finish_reason = message_event.get("finishReason")
                             if pusher:
                                 try:
                                     pusher.push(accumulated_text, cached_activities)
@@ -3398,15 +3428,44 @@ class PiProcess:
                             except Exception:
                                 pass
                     if event.get("type") == "agent_end":
-                        if not result_text:
+                        if not result_text or finish_reason is None:
                             for message_event in reversed(event.get("messages", [])):
                                 if message_event.get("role") == "assistant":
-                                    result_text = "".join(
-                                        item.get("text", "")
-                                        for item in message_event.get("content", [])
-                                        if item.get("type") == "text"
-                                    )
+                                    if not result_text:
+                                        result_text = "".join(
+                                            item.get("text", "")
+                                            for item in message_event.get("content", [])
+                                            if item.get("type") == "text"
+                                        )
+                                    if finish_reason is None:
+                                        finish_reason = message_event.get(
+                                            "finish_reason"
+                                        )
+                                        if finish_reason is None:
+                                            finish_reason = message_event.get(
+                                                "finishReason"
+                                            )
                                     break
+                        if _is_truncated_tool_call(result_text):
+                            signal_name = (
+                                "finish_reason"
+                                if finish_reason == "length"
+                                else "markers"
+                            )
+                            try:
+                                sys.stderr.write(
+                                    "ember-claude-shim: pi-truncated-tool-call "
+                                    "signal=%s\n" % signal_name
+                                )
+                                sys.stderr.flush()
+                            except Exception:
+                                pass
+                            raise RuntimeError(
+                                "pi output was truncated by token limit and returned "
+                                "partial tool-call syntax; the turn is failed. This "
+                                "typically means the job is too large for the token "
+                                "budget."
+                            )
                         if pusher:
                             try:
                                 pusher.push(
