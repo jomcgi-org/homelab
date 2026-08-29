@@ -122,7 +122,10 @@ def test_console_list_never_calls_github(monkeypatch):
     )
     _patch_common(monkeypatch, [job])
 
-    async def unexpected_github_call(url):
+    # Plain def, not async: _github_get is synchronous, so an async fake here
+    # would only ever return an un-awaited coroutine and this guard would pass
+    # whether or not the list endpoint called GitHub.
+    def unexpected_github_call(url):
         raise AssertionError(f"list endpoint called GitHub: {url}")
 
     monkeypatch.setattr(drain_console_router, "_github_get", unexpected_github_call)
