@@ -1328,6 +1328,7 @@ py_library(
         "@pip//dbos",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//jsonschema",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -2004,6 +2005,16 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_turn_artifact_test",
+    srcs = ["swarm/turn_artifact_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
     ],
 )
 
