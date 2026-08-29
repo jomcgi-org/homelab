@@ -354,44 +354,41 @@
               class:open={expanded === job.name}
               onclick={() => toggle(job.name)}
             >
-              <button
-                class="job-toggle"
-                type="button"
-                aria-expanded={expanded === job.name}
-                onclick={(event) => {
-                  stopPropagation(event);
-                  toggle(job.name);
-                }}
-              >
-                <span
-                  class={`dot ${jobClass(job.state)}`}
-                  title={D.jobStates[job.state] || job.state}
-                ></span>
-                <span class="job-main">
-                  <span class="job-name mono">{job.name}</span>
-                  <span class="job-sub">
-                    {#if job.state === "error" && job.summary_head}
-                      <span class="err-text">{job.summary_head}</span>
-                    {:else if job.state === "ok" && job.outcome === "pr" && job.pr}
-                      <span class="pr-space" aria-hidden="true"></span>
-                    {:else if job.state === "ok"}
-                      {job.summary_head || job.prompt_head || D.labels.dash}
-                    {:else}
-                      {job.prompt_head || job.summary_head || D.labels.dash}
-                    {/if}
-                  </span>
-                </span>
-              </button>
-              {#if job.state === "ok" && job.outcome === "pr" && job.pr}
-                <a
-                  class="pr-ref mono"
-                  href={job.pr.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  onclick={stopPropagation}
-                  >{D.labels.numberMark}{job.pr.number}</a
+              <span
+                class={`dot ${jobClass(job.state)}`}
+                title={D.jobStates[job.state] || job.state}
+              ></span>
+              <span class="job-main">
+                <button
+                  class="job-toggle"
+                  type="button"
+                  aria-expanded={expanded === job.name}
+                  onclick={(event) => {
+                    stopPropagation(event);
+                    toggle(job.name);
+                  }}
                 >
-              {/if}
+                  <span class="job-name mono">{job.name}</span>
+                </button>
+                <span class="job-sub">
+                  {#if job.state === "error" && job.summary_head}
+                    <span class="err-text">{job.summary_head}</span>
+                  {:else if job.state === "ok" && job.outcome === "pr" && job.pr}
+                    <a
+                      class="pr-ref mono"
+                      href={job.pr.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      onclick={stopPropagation}
+                      >{D.labels.numberMark}{job.pr.number}</a
+                    >
+                  {:else if job.state === "ok"}
+                    {job.summary_head || job.prompt_head || D.labels.dash}
+                  {:else}
+                    {job.prompt_head || job.summary_head || D.labels.dash}
+                  {/if}
+                </span>
+              </span>
               <span class="job-calls mono" class:runaway={isRunaway(calls)}>
                 {#if calls != null}
                   <span class="track" aria-hidden="true">
@@ -849,16 +846,12 @@
     text-align: left;
   }
   .job-toggle {
-    min-width: 0;
-    align-self: stretch;
-    display: flex;
-    flex: 1;
-    align-items: center;
-    gap: 12px;
+    display: block;
+    max-width: 100%;
     padding: 0;
     border: 0;
-    color: inherit;
     background: transparent;
+    color: inherit;
     font: inherit;
     text-align: left;
   }
@@ -1089,9 +1082,6 @@
     text-align: left;
   }
   .pr-ref {
-    position: absolute;
-    bottom: 8px;
-    left: 32px;
     padding: 4px 8px;
     color: var(--info);
     background: var(--panel-bg);
