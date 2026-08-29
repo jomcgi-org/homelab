@@ -86,7 +86,7 @@ stopped. So the drain path is: SIGINT, await exit 0, bank.
 The shim gives SIGINT up to 30 seconds to unwind a Bash tool and write the
 synthetic interrupt turn. SIGKILL is only a logged last-resort backstop after
 that timeout, because it can leave a truncated final JSONL line. Initialization
-has a 15-second deadline; an output timeout follows the same SIGINT-first path.
+has a 90-second deadline; an output timeout follows the same SIGINT-first path.
 
 Turn output has a 600-second deadline, and it is worth being precise about what
 that measures. It is a per-event inactivity timer, not a cap on total turn
