@@ -299,13 +299,25 @@ already ran is 18% cold against 36% for a branch's first push, which falls back
 to main's snapshot. So the number of restores is roughly fixed by how the repo
 is worked. **Attack the size.**
 
-The named suspect, not yet confirmed on a runner: `repository_cache/
-content_addressable/`, the raw download blobs. Nothing GCs it, on any path.
-`.bazelrc` says so in a standing comment and `bazel/tools/bazel-cache-gc.sh`
-exists for exactly this, but no CI path runs it, main re-saves its snapshot on
-every push, and every branch inherits that snapshot. On a developer machine it
-is 16G against 240M of extracted `contents/`. #5397 prints the runner's split
-so the next cycle either prunes it or drops the hypothesis.
+What the workspace is NOT, measured on candidate `76ac21dd` the moment #5397
+landed:
+
+```
+187M    /home/buildbuddy/workspace/.home/.cache/bazel
+4.0K    /var/lib/docker
+ 19G    /home/buildbuddy/workspace
+```
+
+**`$HOME` on a runner is `/home/buildbuddy/workspace/.home`**, not
+`/home/buildbuddy`, so every bazel cache that `.bazelrc` points at `~` lives
+inside the workspace and all of them together are 187M. That kills the
+`repository_cache/content_addressable/` theory outright: it is not 16G on a
+runner the way it is on a developer machine, and pruning it would save nothing.
+Docker's on-disk state is 4.0K, so the base images are not in there either.
+
+Everything is `/home/buildbuddy/workspace`, and `/usr` plus `/opt` together are
+under 1G, so there is nowhere else for the 19G to be. #5398 walks that tree to
+depth 3 rather than naming paths, because naming paths is what got this wrong.
 
 ## Refuted, do not retry
 
@@ -345,6 +357,7 @@ so the next cycle either prunes it or drops the hypothesis.
 | #5116, #5118 (2026-08-22) | stripped CPython toolchain; postgres_test real closure | test input tree 1.54 GB -> ~0.65 GB, the dominant byte lever; re-measure after 2026-08-29 |
 | #5374 (2026-08-27) | quoted labels in the affected-targets query; `--repo` read from the git remote | removes the 19% of PR fallbacks that no diff explained, about 25 GB/day across both lanes; re-measure after 2026-09-03 |
 | #5397 (2026-08-28) | `du` breakdown of the runner workspace at both ends of both actions | diagnostic, no bytes either way; read `WORKSPACE ... :` in any pr-checks log |
+| #5398 (2026-08-29) | probe walks the workspace to depth 3 instead of naming paths | #5397's guessed paths refuted the `content_addressable` theory and located nothing; this localises the 19G |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
@@ -356,14 +369,14 @@ Ranked by expected bytes saved. Everything here is a **hypothesis that must be
 confirmed against a real invocation** before you act on it.
 
 1. **Shrink the runner snapshot**, 61% of all bytes and now the whole ball
-   game. 161 restores in 6 days at a uniform 15 to 20 GB. Read the
-   `WORKSPACE ...:` lines #5397 added to a pr-checks log first: the standing
-   hypothesis is that `repository_cache/content_addressable/` is roughly half
-   of the 38G and that nothing needs it once `external/` is materialised in the
-   same image. If so, prune it at the end of a run and every restore in every
-   lane gets cheaper at once. Confirm the split before writing the prune, and
-   watch for the counter-effect: a blob pruned too eagerly is re-fetched
-   through `--experimental_remote_downloader`, which is download bytes again.
+   game. 161 restores in 6 days at a uniform 15 to 20 GB, and one fix would cut
+   every lane at once. Read the `WORKSPACE ...:` lines in a recent pr-checks
+   log before doing anything: the caches are ruled out (187M) and the 19G is
+   somewhere inside `/home/buildbuddy/workspace`. Whatever the depth-3 walk
+   names, check first whether the runner still NEEDS it at the end of a run:
+   anything dropped is re-fetched through `--experimental_remote_downloader`
+   on the next run, which is download bytes again, so a thing that is rebuilt
+   every run is a saving and a thing that is reused is not.
 2. **Narrow the deleted-file fallback**, 32% of the local lane's full-suite
    bytes. The rule exists because a deleted file cannot be mapped to a label by
    static inspection, the file being gone. It can be mapped from the **base
@@ -392,6 +405,39 @@ matched by exact name, so deleting an action without editing the ruleset blocks
 every PR, and the deleting PR cannot merge because it removes the checks
 required on itself. Flip the ruleset while the PR is open and its new check is
 green.
+
+## Normalise by pushes and merged PRs, never by commits
+
+A falling daily total is not automatically a win: the repo could just have been
+quiet. Check the denominator before claiming one. Measured across the three
+windows:
+
+| window | GB/day | pushes/day | merged PRs/day | GB per push | GB per merged PR |
+|---|---|---|---|---|---|
+| 7d to 2026-07-28 | 1502 | 84.3 | 23.1 | 17.8 | 64.9 |
+| 7d to 2026-08-09 | 1735 | 106.3 | 28.6 | 16.3 | 60.7 |
+| 6d to 2026-08-28 | 757 | 80.7 | 27.5 | 9.4 | 27.5 |
+
+Merged PRs per day is UP 19% on the baseline and push volume is flat, so the
+halving is per-unit efficiency and not a quiet week.
+
+**Commits on main is the wrong denominator** and will tell you the opposite:
+60.7/day at baseline against 37.7/day now. Two things break it. PRs carry fewer
+commits each (2.6 per merged PR then, 1.4 now), and since ADR platform/009 the
+`chart-version-bot` write-back is its own commit, so bot commits went 30 to 89
+while human ones fell. **Runner spin-ups per day is also misleading**, 549 to
+112, because the four-action collapse is a cause of the saving rather than
+evidence of idleness.
+
+Get pushes from the count of `pr-checks` runner invocations (baseline: the old
+`Test` action's), and merged PRs from
+`gh pr list --state merged --search "merged:<from>..<to>"`. Watch the 200 cap.
+
+One lane is going the wrong way under this normalisation: local `ci test` is
+135.7 GB/day at baseline against 171.6 GB/day now, on FEWER runs (63.3/day to
+37.7/day), because 2.14 GB per run became 4.56 GB. The lane now pays its own
+hosted-runner snapshot restore on top of the test execution, which is the same
+size mechanism as everything else in this section.
 
 ## Running a cycle
 
