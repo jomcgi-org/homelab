@@ -346,6 +346,13 @@ whole `sandbox` tree, which is where live per-action sandboxes go.
 `external` and `execroot` are not free either, but neither is scratch. Shrinking
 those means shrinking the dependency closure, which is lever 4's problem.
 
+Confirmed on candidate `7c6cd607`, the first to carry #5402: `output-base/
+sandbox` is absent from the depth-3 listing and the workspace is **19G**, down
+from 30G. That is 11G, not the 6.8G predicted, because `execroot` also fell
+7.8G to 3.8G. **Do not bank the extra 4G yet.** It is one run against one run
+with different target sets, and the honest reading is that the stash removal is
+proven and the execroot drop is unattributed until the 2026-09-05 re-measure.
+
 ## Refuted, do not retry
 
 - **`--remote_local_fallback` is not the cause of the tail.** A 299 GB
@@ -385,7 +392,7 @@ those means shrinking the dependency closure, which is lever 4's problem.
 | #5374 (2026-08-27) | quoted labels in the affected-targets query; `--repo` read from the git remote | removes the 19% of PR fallbacks that no diff explained, about 25 GB/day across both lanes; re-measure after 2026-09-03 |
 | #5397 (2026-08-28) | `du` breakdown of the runner workspace at both ends of both actions | diagnostic, no bytes either way; read `WORKSPACE ... :` in any pr-checks log |
 | #5401 (2026-08-29) | probe walks the workspace to depth 3 instead of naming paths | #5397's guessed paths refuted the `content_addressable` theory and located nothing; this localises the 19G |
-| #5402 (2026-08-29) | `common:ci --noreuse_sandbox_directories` plus an EXIT trap removing `sandbox_stash` | 6.8G of 30G, so 23% off every cold restore in every lane; expect about 100 GB/day, re-measure after 2026-09-05 |
+| #5402 (2026-08-29) | `common:ci --noreuse_sandbox_directories` plus an EXIT trap removing `sandbox_stash` | **workspace 30G -> 19G**, confirmed on candidate `7c6cd607` the moment it landed. `sandbox` is absent from the listing entirely. Byte effect pending, re-measure after 2026-09-05 |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
