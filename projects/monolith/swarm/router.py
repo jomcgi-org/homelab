@@ -96,6 +96,31 @@ def _dbos():
     return instance
 
 
+def _dbos_read():
+    """Accessor for the READ surfaces, which do not submit anything.
+
+    Composing a run view calls retrieve_workflow, list_workflows and
+    list_workflow_steps and nothing else, so it needs the system database, not
+    the leader's launched runtime. Sharing _dbos() with the submitting paths
+    made every console poll a coin flip: two replicas behind a Service with no
+    session affinity, DBOS launched on one of them, so about half of them 503ed
+    and the console reported the engine unreachable while the run was healthy.
+
+    The leader still answers reads through its launched instance, so the client
+    pool only ever exists where it is needed.
+    """
+    if not config.enabled():
+        raise HTTPException(status_code=503, detail="Swarm workflows are disabled")
+    if runtime.is_launched():
+        instance = runtime.init_dbos()
+        if instance is not None:
+            return instance
+    client = runtime.read_client()
+    if client is None:
+        raise HTTPException(status_code=503, detail="Swarm DBOS is not configured")
+    return client
+
+
 def _server_app_version() -> str:
     """The app version DBOS is actually running, asked of DBOS itself.
 
@@ -550,7 +575,7 @@ def promote_session(request: Request, body: PromoteSessionRequest):
 
 @router.get("/runs/{workflow_id}")
 def get_run(workflow_id: str) -> dict:
-    return _compose_run_view(_dbos(), workflow_id)
+    return _compose_run_view(_dbos_read(), workflow_id)
 
 
 @router.get("/runs")
@@ -568,7 +593,7 @@ def list_runs(request: Request, active: bool = True, limit: int = 50) -> dict:
         requested_limit = 50
     limit = max(1, min(50, requested_limit))
     return compose_master(
-        _dbos(),
+        _dbos_read(),
         active,
         session_costs,
         _server_app_version(),
