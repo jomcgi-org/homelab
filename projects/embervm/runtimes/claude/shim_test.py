@@ -4393,6 +4393,264 @@ def test_hydration_diagnostics_generic_exception(capsys, monkeypatch, tmp_path):
     assert "ValueError" in captured
 
 
+class _WorkspaceAdapter:
+    """Minimal stand-in for the three CLI adapters hydration reassigns."""
+
+    def __init__(self):
+        self.workspace = None
+        self.requires_git_checkout = False
+
+
+def _hydration_manager(tmp_path, monkeypatch):
+    manager = object.__new__(shim.ProcessManager)
+    manager.workspace = str(tmp_path / "workspace")
+    os.makedirs(manager.workspace, exist_ok=True)
+    manager._hydration_attempts = 0
+    manager._hydration_error = None
+    manager._checkout_dir = None
+    manager._hydration_status = None
+    manager.claude = _WorkspaceAdapter()
+    manager.codex = _WorkspaceAdapter()
+    manager.pi = _WorkspaceAdapter()
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    return manager
+
+
+def _materialize_checkout(path):
+    """Create what a successful clone leaves: a .git with a resolvable HEAD."""
+    os.makedirs(os.path.join(path, ".git"), exist_ok=True)
+    with open(os.path.join(path, ".git", "HEAD"), "w") as stream:
+        stream.write("ref: refs/heads/main\n")
+
+
+def _install_fake_git(monkeypatch, clones=None, on_validate=None):
+    """Fake git where clone materializes a checkout and rev-parse reads it.
+
+    HEAD resolving is keyed on .git/HEAD existing, which is what separates a
+    real checkout from the two shapes this fix is about: an empty directory,
+    and a .git holding nothing but info/exclude.
+    """
+    real_run = shim.subprocess.run
+
+    def fake_run(args, **kwargs):
+        if not isinstance(args, (list, tuple)):
+            return real_run(args, **kwargs)
+        args = list(args)
+        if "clone" in args:
+            destination = args[-1]
+            if clones is not None:
+                clones.append(destination)
+            _materialize_checkout(destination)
+            return subprocess.CompletedProcess(args, 0, b"", b"")
+        if "rev-parse" in args:
+            path = args[args.index("-C") + 1]
+            resolved = os.path.exists(os.path.join(path, ".git", "HEAD"))
+            result = subprocess.CompletedProcess(
+                args, 0 if resolved else 128, b"a" * 40 + b"\n", b""
+            )
+            if resolved and on_validate is not None:
+                on_validate(path)
+            return result
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
+
+
+def test_directory_without_a_resolvable_head_is_not_a_usable_checkout(
+    tmp_path, monkeypatch
+):
+    # The turn path recreates <workspace>/src on every turn, so a checkout that
+    # went away comes back as an empty directory. isdir accepted it.
+    _install_fake_git(monkeypatch)
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+
+    assert os.path.isdir(checkout)
+    assert shim._checkout_is_usable(str(checkout)) is False
+
+
+def test_git_stub_holding_only_info_exclude_is_not_a_usable_checkout(
+    tmp_path, monkeypatch
+):
+    # The observed artefact on all six guests: .git exists and contains
+    # info/exclude and nothing else. No HEAD, no config, no refs, no objects.
+    _install_fake_git(monkeypatch)
+    checkout = tmp_path / "src"
+    (checkout / ".git" / "info").mkdir(parents=True)
+    (checkout / ".git" / "info" / "exclude").write_text(".codex/\n.pi/\n")
+
+    assert os.listdir(checkout / ".git") == ["info"]
+    assert shim._checkout_is_usable(str(checkout)) is False
+
+
+def test_repo_less_spawn_still_accepts_a_bare_directory(tmp_path, monkeypatch):
+    # A session with no repo legitimately runs in an empty directory, so the
+    # strict check must not fire until a turn has named a repo.
+    _install_fake_git(monkeypatch)
+    workspace = tmp_path / "src"
+    workspace.mkdir()
+
+    assert shim._workspace_ready_for_spawn(str(workspace), False) is True
+    assert shim._workspace_ready_for_spawn(str(workspace), True) is False
+
+
+def test_claude_spawn_rejects_an_empty_checkout_on_a_repo_backed_session(
+    tmp_path, monkeypatch
+):
+    _install_fake_git(monkeypatch)
+    claude = _manager(tmp_path, monkeypatch)
+    claude.requires_git_checkout = True
+
+    with pytest.raises(shim.StartupError, match="workspace does not exist"):
+        claude._spawn()
+
+
+def test_pi_spawn_rejects_the_git_stub_on_a_repo_backed_session(tmp_path, monkeypatch):
+    # qwen routes to Pi, and the drainer's failure taxonomy keys on this exact
+    # message, so the stub has to raise it rather than start a turn.
+    _install_fake_git(monkeypatch)
+    checkout = tmp_path / "src"
+    (checkout / ".git" / "info").mkdir(parents=True)
+    (checkout / ".git" / "info" / "exclude").write_text(".codex/\n.pi/\n")
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    pi = shim.PiProcess(str(checkout), "pi")
+    pi.requires_git_checkout = True
+
+    with pytest.raises(shim.StartupError, match="workspace does not exist"):
+        pi._spawn("qwen")
+
+
+def test_hydration_clones_once_then_skips_a_usable_checkout(tmp_path, monkeypatch):
+    clones = []
+    _install_fake_git(monkeypatch, clones=clones)
+    manager = _hydration_manager(tmp_path, monkeypatch)
+
+    manager._hydrate_workspace("jomcgi/homelab", "main")
+
+    checkout = os.path.join(manager.workspace, "src")
+    assert clones == [checkout]
+    assert manager._hydration_status == "ok"
+    assert manager._checkout_dir == checkout
+    assert manager.pi.workspace == checkout
+    with open(os.path.join(checkout, ".git", "info", "exclude")) as stream:
+        assert ".codex/" in stream.read()
+
+    # Re-entry on a checkout that is still there must stay cheap: no re-clone.
+    manager._hydrate_workspace("jomcgi/homelab", "main")
+
+    assert clones == [checkout]
+    assert manager._hydration_status == "skipped_existing"
+
+
+def test_hydration_re_runs_when_the_checkout_vanished(tmp_path, monkeypatch):
+    clones = []
+    _install_fake_git(monkeypatch, clones=clones)
+    manager = _hydration_manager(tmp_path, monkeypatch)
+    manager._hydrate_workspace("jomcgi/homelab", "main")
+    checkout = manager._checkout_dir
+    assert manager._hydration_status == "ok"
+
+    # The checkout goes away under a session that already hydrated, and the
+    # turn path puts the bare directory back. That empty directory is what the
+    # old isdir gate accepted, which is how six drainer jobs ran a whole turn
+    # against no source and still recorded last_status ok.
+    shutil.rmtree(checkout)
+    os.makedirs(checkout)
+
+    manager._hydrate_workspace("jomcgi/homelab", "main")
+
+    assert clones == [checkout, checkout]
+    assert manager._hydration_status == "ok"
+    assert os.path.exists(os.path.join(checkout, ".git", "HEAD"))
+
+
+def test_hydration_re_runs_when_the_checkout_is_a_git_stub(tmp_path, monkeypatch):
+    clones = []
+    _install_fake_git(monkeypatch, clones=clones)
+    manager = _hydration_manager(tmp_path, monkeypatch)
+    manager._hydrate_workspace("jomcgi/homelab", "main")
+    checkout = manager._checkout_dir
+
+    shutil.rmtree(checkout)
+    os.makedirs(os.path.join(checkout, ".git", "info"))
+    with open(os.path.join(checkout, ".git", "info", "exclude"), "w") as stream:
+        stream.write(".codex/\n.pi/\n")
+
+    manager._hydrate_workspace("jomcgi/homelab", "main")
+
+    assert clones == [checkout, checkout]
+    assert manager._hydration_status == "ok"
+
+
+def test_hydration_leaves_no_stub_when_the_checkout_disappears_after_cloning(
+    tmp_path, monkeypatch
+):
+    # The clone validates, then the checkout is replaced before the exclude
+    # write. _ensure_cli_dir plus an append-mode open would CREATE
+    # .git/info/exclude in the empty replacement, and that stub is the artefact
+    # every downstream isdir gate accepted.
+    validated = {"done": False}
+
+    def wipe_after_first_validation(path):
+        if validated["done"]:
+            return
+        validated["done"] = True
+        shutil.rmtree(path, ignore_errors=True)
+        os.makedirs(path)
+
+    clones = []
+    _install_fake_git(
+        monkeypatch, clones=clones, on_validate=wipe_after_first_validation
+    )
+    manager = _hydration_manager(tmp_path, monkeypatch)
+
+    manager._hydrate_workspace("jomcgi/homelab", "main")
+
+    checkout = os.path.join(manager.workspace, "src")
+    assert clones == [checkout]
+    assert not os.path.exists(os.path.join(checkout, ".git"))
+    assert manager._hydration_status is None
+    assert manager._checkout_dir is None
+
+
+def test_hydration_stops_re_cloning_at_the_attempt_cap(tmp_path, monkeypatch):
+    # A checkout that keeps vanishing must not clone on every turn forever. The
+    # cap is what turns the silent wrong answer into the loud StartupError the
+    # drainer already recovers from.
+    clones = []
+    _install_fake_git(monkeypatch, clones=clones)
+    manager = _hydration_manager(tmp_path, monkeypatch)
+
+    for _ in range(shim.HYDRATION_ATTEMPT_CAP + 2):
+        manager._hydrate_workspace("jomcgi/homelab", "main")
+        shutil.rmtree(os.path.join(manager.workspace, "src"), ignore_errors=True)
+        os.makedirs(os.path.join(manager.workspace, "src"))
+
+    assert len(clones) == shim.HYDRATION_ATTEMPT_CAP
+    assert manager._hydration_status is None
+
+
+def test_turn_marks_every_adapter_as_repo_backed(tmp_path, monkeypatch):
+    manager = _hydration_manager(tmp_path, monkeypatch)
+    manager._mount_lock = threading.Lock()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setattr(shim, "_ensure_cli_dir", lambda _path: None)
+    monkeypatch.setattr(shim, "_capture_turn_base", lambda _dir: None)
+    monkeypatch.setattr(
+        shim.ProcessManager, "_hydrate_workspace", lambda self, repo, branch: None
+    )
+    monkeypatch.setattr(shim.ProcessManager, "_adapter", lambda self, model: self.pi)
+    manager.pi.turn = lambda *args, **kwargs: {"text": "done"}
+
+    manager.turn("hello", repo="jomcgi/homelab", branch="main")
+
+    assert manager.claude.requires_git_checkout is True
+    assert manager.codex.requires_git_checkout is True
+    assert manager.pi.requires_git_checkout is True
+
+
 def test_egress_copy_counts_bytes(capsys):
     payload = b"x" * (4 * 1024 * 1024 + 123)
 
