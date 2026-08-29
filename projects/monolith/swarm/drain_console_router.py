@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import bindparam, text
 from sqlmodel import Session
@@ -30,6 +33,7 @@ from sqlmodel import Session
 from agent.api import list_jobs, load_drainer_settings
 from agent_sessions.constants import DRAINER_NODE_KEY
 from core.db import get_engine
+from core.github import GITHUB_API, GITHUB_REPO
 from swarm import drain_console
 
 router = APIRouter(prefix="/api/agents/drain", tags=["agents"])
@@ -42,6 +46,49 @@ _CYCLE_SCAN_LIMIT = 40
 _ACTIVITY_LIST_CAP = 500
 _ACTIVITY_TEXT_CAP = 300
 _RESULT_HEAD_CHARS = 600
+_PR_CACHE_TTL_SECONDS = 3600
+_PR_CACHE: dict[int, tuple[float, dict]] = {}
+
+
+def _github_get(url: str) -> httpx.Response:
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(url, headers=headers)
+        response.raise_for_status()
+        return response
+
+
+def _enrich_pr(pr: dict) -> dict:
+    number = pr["number"]
+    now = time.monotonic()
+    cached = _PR_CACHE.get(number)
+    if cached is not None and cached[0] > now:
+        return {**pr, **cached[1]}
+
+    try:
+        response = _github_get(f"{GITHUB_API}/repos/{GITHUB_REPO}/pulls/{number}")
+        body = response.json()
+        enrichment = {
+            key: body[key]
+            for key in (
+                "title",
+                "state",
+                "merged",
+                "changed_files",
+                "additions",
+                "deletions",
+            )
+            if key in body
+        }
+    except Exception:  # noqa: BLE001
+        logger.info("could not enrich GitHub PR %s", number, exc_info=True)
+        return pr
+
+    _PR_CACHE[number] = (time.monotonic() + _PR_CACHE_TTL_SECONDS, enrichment)
+    return {**pr, **enrichment}
 
 
 def _server_app_version() -> str:
@@ -393,25 +440,32 @@ def drain_job_detail(name: str) -> dict:
         )
 
     payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    outcome, pr = drain_console.classify_outcome(job)
+    if pr is not None:
+        pr = _enrich_pr(pr)
+    job_payload = {
+        "name": job["name"],
+        "state": drain_console.job_state(job, now),
+        "outcome": outcome,
+        "routine_kind": job.get("routine_kind"),
+        "prompt": payload.get("prompt"),
+        "repo": payload.get("repo"),
+        "branch": payload.get("branch"),
+        "reasoning": payload.get("reasoning"),
+        "last_status": job.get("last_status"),
+        "last_summary": job.get("last_summary"),
+        "last_run_at": drain_console.iso_dt(job.get("last_run_at")),
+        "next_run_at": drain_console.iso_dt(job.get("next_run_at")),
+        "locked_by": job.get("locked_by"),
+        "locked_at": drain_console.iso_dt(job.get("locked_at")),
+        "ttl_secs": job.get("ttl_secs"),
+        "created_by": job.get("created_by"),
+        "created_at": drain_console.iso_dt(job.get("created_at")),
+    }
+    if pr is not None:
+        job_payload["pr"] = pr
     return {
-        "job": {
-            "name": job["name"],
-            "state": drain_console.job_state(job, now),
-            "routine_kind": job.get("routine_kind"),
-            "prompt": payload.get("prompt"),
-            "repo": payload.get("repo"),
-            "branch": payload.get("branch"),
-            "reasoning": payload.get("reasoning"),
-            "last_status": job.get("last_status"),
-            "last_summary": job.get("last_summary"),
-            "last_run_at": drain_console.iso_dt(job.get("last_run_at")),
-            "next_run_at": drain_console.iso_dt(job.get("next_run_at")),
-            "locked_by": job.get("locked_by"),
-            "locked_at": drain_console.iso_dt(job.get("locked_at")),
-            "ttl_secs": job.get("ttl_secs"),
-            "created_by": job.get("created_by"),
-            "created_at": drain_console.iso_dt(job.get("created_at")),
-        },
+        "job": job_payload,
         "attempts": attempts,
         "now": now.isoformat(),
     }

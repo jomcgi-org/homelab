@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -114,6 +115,24 @@ def test_console_survives_dbos_read_failure(monkeypatch):
     assert body["jobs"][0]["name"] == "qd-a"
 
 
+def test_console_list_never_calls_github(monkeypatch):
+    job = _job(
+        last_status="ok",
+        last_summary="https://github.com/jomcgi-org/homelab/pull/456",
+    )
+    _patch_common(monkeypatch, [job])
+
+    async def unexpected_github_call(url):
+        raise AssertionError(f"list endpoint called GitHub: {url}")
+
+    monkeypatch.setattr(drain_console_router, "_github_get", unexpected_github_call)
+
+    response = _client().get("/api/agents/drain/console")
+
+    assert response.status_code == 200
+    assert response.json()["jobs"][0]["pr"]["number"] == 456
+
+
 def test_job_detail_joins_attempts(monkeypatch):
     sessions = [
         {
@@ -157,6 +176,68 @@ def test_job_detail_joins_attempts(monkeypatch):
     assert attempt["calls"] == 1
     assert attempt["activities"] == [{"type": "bash", "command": "git log"}]
     assert attempt["turn"]["terminal_reason"] == "stop"
+
+
+def test_job_detail_pr_enrichment_fails_soft(monkeypatch):
+    job = _job(
+        last_status="ok",
+        last_summary="https://github.com/jomcgi/homelab/pull/123",
+    )
+    _patch_common(monkeypatch, [job])
+    monkeypatch.setattr(drain_console_router, "_PR_CACHE", {})
+
+    def github_down(url):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(drain_console_router, "_github_get", github_down)
+
+    response = _client().get("/api/agents/drain/jobs/qd-a")
+
+    assert response.status_code == 200
+    assert response.json()["job"]["pr"] == {
+        "url": "https://github.com/jomcgi/homelab/pull/123",
+        "number": 123,
+        "repo": "jomcgi/homelab",
+    }
+
+
+def test_job_detail_caches_successful_pr_enrichment(monkeypatch):
+    job = _job(
+        last_status="ok",
+        last_summary="https://github.com/jomcgi-org/homelab/pull/456",
+    )
+    _patch_common(monkeypatch, [job])
+    monkeypatch.setattr(drain_console_router, "_PR_CACHE", {})
+    calls = []
+
+    def github_get(url):
+        calls.append(url)
+        return httpx.Response(
+            200,
+            json={
+                "title": "Classify drain outcomes",
+                "state": "closed",
+                "merged": True,
+                "changed_files": 3,
+                "additions": 15,
+                "deletions": 8,
+            },
+        )
+
+    monkeypatch.setattr(drain_console_router, "_github_get", github_get)
+
+    first = _client().get("/api/agents/drain/jobs/qd-a")
+    second = _client().get("/api/agents/drain/jobs/qd-a")
+
+    assert first.status_code == 200
+    assert len(calls) == 1
+    assert second.json()["job"]["pr"] == first.json()["job"]["pr"]
+    assert calls == [
+        f"{drain_console_router.GITHUB_API}/repos/"
+        f"{drain_console_router.GITHUB_REPO}/pulls/456"
+    ]
+    assert first.json()["job"]["pr"]["title"] == "Classify drain outcomes"
+    assert first.json()["job"]["pr"]["merged"] is True
 
 
 def test_job_detail_unknown_404(monkeypatch):

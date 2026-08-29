@@ -16,6 +16,7 @@ renders as a single strip above the job list instead of as a collection.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from agent_sessions.constants import DRAINER_NODE_KEY
@@ -39,6 +40,12 @@ _SESSION_KEY_MARKER = f":{DRAINER_NODE_KEY}:"
 
 PROMPT_HEAD_CHARS = 160
 SUMMARY_HEAD_CHARS = 200
+
+_PR_URL_RE = re.compile(
+    r"(?P<url>(?:https?://)?github\.com/"
+    r"(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<number>\d+))",
+    re.IGNORECASE,
+)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -78,6 +85,23 @@ def job_name_from_session_key(local_session_id: str | None) -> str | None:
 def _head(value: object, limit: int) -> str:
     text = str(value or "").strip()
     return text.split("\n")[0][:limit]
+
+
+def classify_outcome(job: dict) -> tuple[str, dict | None]:
+    """Classify a persisted job result and parse a linked pull request."""
+    if job.get("last_status") == "error":
+        return "error", None
+    match = _PR_URL_RE.search(str(job.get("last_summary") or ""))
+    if match is None:
+        return "report", None
+    return (
+        "pr",
+        {
+            "url": match.group("url"),
+            "number": int(match.group("number")),
+            "repo": match.group("repo"),
+        },
+    )
 
 
 def lock_is_live(job: dict, now: datetime) -> bool:
@@ -159,6 +183,7 @@ def compose_jobs(
     entries = []
     for job in jobs:
         name = job["name"]
+        outcome, pr = classify_outcome(job)
         session = latest.get(name)
         session_payload = None
         if session is not None:
@@ -178,24 +203,26 @@ def compose_jobs(
                 "claimed_at": iso_dt(partial.get("claimed_at")),
                 "attempts": attempts.get(name, 0),
             }
-        entries.append(
-            {
-                "name": name,
-                "state": job_state(job, now),
-                "prompt_head": _head(
-                    (job.get("payload") or {}).get("prompt")
-                    if isinstance(job.get("payload"), dict)
-                    else "",
-                    PROMPT_HEAD_CHARS,
-                ),
-                "summary_head": _head(job.get("last_summary"), SUMMARY_HEAD_CHARS),
-                "last_status": job.get("last_status"),
-                "last_run_at": iso_dt(job.get("last_run_at")),
-                "next_run_at": iso_dt(job.get("next_run_at")),
-                "locked_at": iso_dt(job.get("locked_at")),
-                "session": session_payload,
-            }
-        )
+        entry = {
+            "name": name,
+            "state": job_state(job, now),
+            "outcome": outcome,
+            "prompt_head": _head(
+                (job.get("payload") or {}).get("prompt")
+                if isinstance(job.get("payload"), dict)
+                else "",
+                PROMPT_HEAD_CHARS,
+            ),
+            "summary_head": _head(job.get("last_summary"), SUMMARY_HEAD_CHARS),
+            "last_status": job.get("last_status"),
+            "last_run_at": iso_dt(job.get("last_run_at")),
+            "next_run_at": iso_dt(job.get("next_run_at")),
+            "locked_at": iso_dt(job.get("locked_at")),
+            "session": session_payload,
+        }
+        if pr is not None:
+            entry["pr"] = pr
+        entries.append(entry)
     entries.sort(key=_job_sort_key)
     return entries
 
