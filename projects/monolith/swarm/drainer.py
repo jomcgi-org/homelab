@@ -176,6 +176,19 @@ def _completed_output(turn: dict) -> str:
     return output
 
 
+def chain_next_cycle() -> None:
+    """Enqueue the successor cycle, without waiting for it.
+
+    Deliberately does NOT call handle.get_result(). The drainer queue has
+    concurrency 1, so a successor cannot start until this workflow finishes;
+    blocking on it here would hold the only slot waiting for something that
+    cannot run, which is a deadlock rather than a slow path.
+    """
+    from swarm.queues import drainer_queue
+
+    drainer_queue().enqueue(drain_cycle)
+
+
 @DBOS.workflow()
 def drain_cycle() -> dict:
     settings = pin_drainer_settings()
@@ -235,5 +248,21 @@ def drain_cycle() -> dict:
         finally:
             if start_attempted:
                 destroy_drainer_session(session_id, local_session_id)
+
+    # Chain straight into the next cycle when this one stopped because it hit
+    # max_jobs_per_cycle rather than because the queue ran dry. Without this a
+    # deep backlog drains in bursts: a cycle takes its 15 jobs, exits, and the
+    # queue then sits idle until the next */15 tick, so a 45-job backlog spends
+    # roughly half an hour doing nothing at cycle boundaries. The bound exists
+    # to keep any single workflow short, not to rate limit the lane.
+    #
+    # The condition is the whole safety argument. processed == the bound means
+    # every claim in this cycle returned a job, so there was more work than one
+    # cycle could take. A cycle that stops early (claim_drainer_job returned
+    # None) does NOT chain, so an empty queue costs nothing and this cannot
+    # spin. Queue concurrency is still 1, so the successor waits for this
+    # workflow to finish rather than running alongside it.
+    if processed >= settings["max_jobs_per_cycle"]:
+        chain_next_cycle()
 
     return {"status": "complete", "processed": processed}
