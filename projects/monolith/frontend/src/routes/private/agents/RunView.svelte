@@ -160,34 +160,43 @@
         relSeconds(node.blocked_on?.since ?? run.created_at, view.now),
       );
     }
-    if (node.kind === "review" || node.key === "review") {
-      return run.plan?.max_review_cycles == null
-        ? P.nodeStates[node.state] || node.state
-        : `${P.labels.upTo} ${run.plan.max_review_cycles} ${P.labels.cycles}`;
-    }
     if (node.attempts?.length) {
       const first = node.attempts[0];
       const last = node.attempts.at(-1);
       const duration = relSeconds(first.started_at, last.ended_at ?? view.now);
-      return joinMeta(
-        `${node.attempts.length} ${
-          node.attempts.length === 1 ? P.labels.attempt : P.labels.attempts
-        }`,
-        fmtDur(duration),
-      );
+      // The attempt count is only reported once it carries information. An
+      // attempt increments ONLY when the branch head did not move, so "1
+      // attempt" is the healthy case for every node and reads as an iteration
+      // budget the engine does not have. Above one it is a real signal: the
+      // implementer claimed a push that did not land, or the reviewer sent the
+      // work back.
+      return isRetried(node)
+        ? joinMeta(
+            `${node.attempts.length} ${P.labels.attempts}`,
+            fmtDur(duration),
+          )
+        : joinMeta(P.nodeStates[node.state] || node.state, fmtDur(duration));
     }
     return P.nodeStates[node.state] || node.state;
   }
 
+  // True only when a node ran more than once, which is the sole condition
+  // under which an attempt ORDINAL distinguishes anything for the reader.
+  function isRetried(node) {
+    return (node?.attempts?.length ?? 0) > 1;
+  }
+
   function detailPill(node) {
     const attempt = node?.attempts?.at(-1);
-    return attempt
+    return attempt && isRetried(node)
       ? `${P.labels.attempt} ${attempt.n}`
       : P.nodeStates[node?.state] || node?.state;
   }
 
   function attemptTitle(node, attempt) {
-    return joinMeta(node.label, `${P.labels.attempt} ${attempt.n}`);
+    return isRetried(node)
+      ? joinMeta(node.label, `${P.labels.attempt} ${attempt.n}`)
+      : node.label;
   }
 
   function attemptSummary(attempt) {

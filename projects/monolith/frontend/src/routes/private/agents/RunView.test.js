@@ -73,6 +73,85 @@ afterEach(async () => {
   }
 });
 
+function workRun(implementAttempts, extra = {}) {
+  return {
+    workflow_id: "wf/work",
+    dbos_status: "PENDING",
+    state: "running",
+    task: { text: "Do the work" },
+    created_at: "2026-08-22T11:00:00Z",
+    updated_at: "2026-08-22T11:30:00Z",
+    completed_at: null,
+    cost_usd: 0,
+    plan: {
+      pinned: true,
+      max_attempts: 3,
+      max_review_cycles: 2,
+      turn_timeout_seconds: 1800,
+    },
+    nodes: [
+      {
+        key: "implement",
+        kind: "work",
+        label: "implement",
+        state: "done",
+        model: "luna",
+        deps: [],
+        attempts: implementAttempts,
+      },
+      {
+        key: "review",
+        kind: "work",
+        label: "review",
+        state: "running",
+        model: "opus",
+        deps: ["implement"],
+        attempts: [],
+      },
+    ],
+    ...extra,
+  };
+}
+
+function attemptAt(n, state = "done") {
+  return {
+    n,
+    session_id: 300 + n,
+    model: "luna",
+    state,
+    started_at: "2026-08-22T11:05:00Z",
+    ended_at: state === "running" ? null : "2026-08-22T11:08:00Z",
+    cost_usd: 0.1,
+    events: [],
+    live: null,
+  };
+}
+
+describe("attempt ordinals", () => {
+  // An attempt increments ONLY when the branch head did not move, so a single
+  // attempt is the healthy path for every node. Printing "1 attempt" there
+  // reads as an iteration budget the engine does not have.
+  test("a single attempt reports state and duration, never an ordinal", async () => {
+    const target = await render({ run: workRun([attemptAt(1)]) });
+    expect(target.textContent).not.toContain("1 attempt");
+    expect(target.textContent).not.toContain("attempt 1");
+  });
+
+  test("a retried node still reports how many times it ran", async () => {
+    const target = await render({
+      run: workRun([attemptAt(1, "failed"), attemptAt(2)]),
+    });
+    expect(target.textContent).toContain("2 attempts");
+  });
+
+  // max_review_cycles is a plan constant, not run state: it said the same
+  // thing on every run whether the reviewer had sent anything back or not.
+  test("the review node never advertises its cycle ceiling", async () => {
+    const target = await render({ run: workRun([attemptAt(1)]) });
+    expect(target.textContent).not.toContain("up to 2 cycles");
+  });
+});
+
 describe("run decision block", () => {
   test("renders options and posts one decision while disabling every option", async () => {
     let resolveFetch;
