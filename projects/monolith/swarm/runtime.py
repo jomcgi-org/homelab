@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import os
+import threading
 
 from swarm import config
 
 _dbos = None
 _launched = False
 _read_client = None
+# read_client() is the one accessor built on the REQUEST path rather than at
+# startup, and get_run/list_runs are sync endpoints, so FastAPI runs them on the
+# threadpool. A burst of console polls against a cold follower would otherwise
+# race check-then-act on _read_client, construct two clients, and leak the
+# loser's connection pool with no destroy().
+_read_client_lock = threading.Lock()
 
 
 def _enabled() -> bool:
@@ -59,14 +66,20 @@ def read_client():
         return None
     from dbos import DBOSClient
 
-    _read_client = DBOSClient(
-        system_database_url=database_url,
-        dbos_system_schema="dbos",
-        # Deliberately small. This pool exists on every replica that never
-        # launches DBOS and serves console polling, not work. The leader never
-        # builds one at all: it already has the launched instance's pool.
-        system_database_pool_size=2,
-    )
+    with _read_client_lock:
+        # Re-check inside the lock: a caller that blocked here while another
+        # thread built the client must return that one, not build a second.
+        if _read_client is not None:
+            return _read_client
+        _read_client = DBOSClient(
+            system_database_url=database_url,
+            dbos_system_schema="dbos",
+            # Deliberately small. This pool exists on every replica that
+            # never launches DBOS and serves console polling, not work. The
+            # leader never builds one at all: it already has the launched
+            # instance's pool.
+            system_database_pool_size=2,
+        )
     return _read_client
 
 
