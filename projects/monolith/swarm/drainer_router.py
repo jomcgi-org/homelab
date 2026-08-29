@@ -168,6 +168,16 @@ def trigger_drain(response: Response) -> dict:
     if dbos is None:
         raise HTTPException(status_code=503, detail="DBOS is not configured")
 
+    # Resolve the queue BEFORE any early return. drainer_queue() is what
+    # constructs the DBOS Queue object and so registers it in the DBOS
+    # registry; the queue thread only polls queues that are registered on this
+    # process. If the "already_queued" return below skipped this call, a pod
+    # that rolled with a backlog would never register the queue, never dequeue
+    # the backlog, and therefore keep seeing a live cycle forever. That is a
+    # self-reinforcing stall, and it is the same failure this endpoint exists
+    # to prevent.
+    queue = drainer_queue()
+
     # Reap stale PENDING cycles that will never advance.
     _reap_stale_drain_cycles(dbos)
 
@@ -180,5 +190,5 @@ def trigger_drain(response: Response) -> dict:
         response.status_code = 200
         return {"status": "already_queued"}
 
-    drainer_queue().enqueue(drain_cycle)
+    queue.enqueue(drain_cycle)
     return {"status": "started"}
