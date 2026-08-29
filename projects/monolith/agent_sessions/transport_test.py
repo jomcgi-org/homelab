@@ -114,7 +114,7 @@ def test_create_session_retryable_backoff_and_restore_payload(monkeypatch):
     )
 
     assert len(attempts) == 4
-    assert sleeps == [2, 5, 10]
+    assert sleeps == [2, 5, 10]  # first three rungs of _CREATE_RETRY_SECONDS
     assert [json.loads(request.content) for request in attempts] == [
         {"restore_lineage": "lineage-1"}
     ] * 4
@@ -903,7 +903,7 @@ def test_deliver_fresh_session_retryable_then_fails(monkeypatch):
 
     assert turn.result == "ok"
     assert len(attempts) == 4
-    assert sleeps == [2, 5, 10]
+    assert sleeps == [2, 5, 10]  # first three rungs of _CREATE_RETRY_SECONDS
 
 
 def test_deliver_retryable_exhaustion(monkeypatch):
@@ -1555,12 +1555,12 @@ def test_create_session_capacity_denial_eventually_gives_up(monkeypatch):
     assert len(attempts) == len(transport._CAPACITY_BACKOFF_SECONDS) + 1
 
 
-def test_create_session_non_capacity_429_keeps_the_short_ladder(monkeypatch):
-    """A retryable 429 that is not a cap denial must not wait 19 minutes.
+def test_create_session_non_capacity_429_uses_the_generic_ladder(monkeypatch):
+    """A retryable 429 that is not a cap denial takes the generic ladder.
 
-    Only capacity waits on a turn ending. A transient control plane problem
-    clears in seconds, so holding the caller for the long ladder would be
-    wrong.
+    Only capacity has to outlast a whole turn. Everything else retryable gets
+    the shorter generic ladder, which is still minutes rather than the 17
+    seconds it used to be.
     """
     attempts = []
     sleeps = []
@@ -1582,7 +1582,7 @@ def test_create_session_non_capacity_429_keeps_the_short_ladder(monkeypatch):
     with pytest.raises(transport.EmberVMTransportError):
         asyncio.run(transport.EmberVmShimTransport().create_session())
 
-    assert sleeps == [2, 5, 10]
+    assert sleeps == list(transport._CREATE_RETRY_SECONDS)
 
 
 def test_capacity_jitter_stays_within_bounds(monkeypatch):
@@ -1593,3 +1593,52 @@ def test_capacity_jitter_stays_within_bounds(monkeypatch):
     assert transport._capacity_sleep_seconds(0) == pytest.approx(5 * 1.25)
     # Past the end of the ladder the last rung repeats rather than raising.
     assert transport._capacity_sleep_seconds(999) == pytest.approx(180 * 1.25)
+
+
+def test_create_session_retries_prime_failed_past_the_old_17s_window(monkeypatch):
+    """A 500 prime_failed is retryable, and 17 seconds was too short for it.
+
+    On 2026-08-29 seven consecutive creates failed this way at 17 to 22
+    seconds each while EmberVM was healthy, then the condition cleared and a
+    create succeeded after 3m30s. The server marks it retryable; the client
+    was the thing giving up too early.
+    """
+    attempts = []
+    sleeps = []
+
+    async def handler(request):
+        attempts.append(request)
+        if len(attempts) < 8:
+            return httpx.Response(
+                500,
+                json={
+                    "error": "session create failed",
+                    "reason": "{:prime_failed, {:error, %GRPC.RPCError{}}}",
+                    "workload": "pi-runtime",
+                    "retryable": True,
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+
+    result = asyncio.run(transport.EmberVmShimTransport().create_session())
+
+    assert result.session_id == "s1"
+    assert len(attempts) == 8, "it must keep retrying well past the old 3 attempts"
+    assert sum(transport._CREATE_RETRY_SECONDS) > 210, (
+        "the ladder must outlast the observed 3m30s recovery, not 17 seconds"
+    )
+    assert sum(transport._CREATE_RETRY_SECONDS) < sum(
+        transport._CAPACITY_BACKOFF_SECONDS
+    ), "a non-capacity failure must not wait as long as a full turn"
+    assert sleeps == list(transport._CREATE_RETRY_SECONDS[:7])
