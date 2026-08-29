@@ -48,6 +48,17 @@ def launch() -> None:
     global _launched
     instance = init_dbos()
     if instance is not None and not _launched:
+        # Construct the Queue objects BEFORE launching. A Queue registers
+        # itself with DBOS when it is constructed, and swarm/queues.py builds
+        # them lazily, so without this the process launches with no queues and
+        # logs "Listening to 0 queues". The queue thread does re-read the
+        # registry, so a later construction is eventually picked up, but that
+        # left the first registration depending on whichever request path
+        # happened to call for a queue first. A pod that rolled holding a
+        # backlog then sat idle until something triggered that call.
+        from swarm.queues import get_queues
+
+        get_queues()
         instance.launch()
         _launched = True
 

@@ -1,3 +1,5 @@
+import time
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -402,3 +404,47 @@ def test_step_read_failure_does_not_reap(monkeypatch):
     assert cancelled == [], "a step-read failure must not cancel the workflow"
     assert response.status_code == 202
     assert enqueued == [drainer_router.drain_cycle]
+
+
+def test_queue_is_resolved_even_when_a_cycle_is_already_live(monkeypatch):
+    """The already_queued path must still resolve the queue.
+
+    drainer_queue() is what constructs the DBOS Queue and so registers it in
+    the DBOS registry, and the queue thread only polls registered queues. If
+    the early return skipped that call, a pod that rolled holding a backlog
+    would never register the queue, never dequeue the backlog, and so keep
+    seeing a live cycle forever. That stall is self-reinforcing and is exactly
+    what this endpoint exists to prevent.
+    """
+    resolved = []
+    enqueued = []
+
+    class FakeDBOS:
+        def list_workflows(self, **_kwargs):
+            # A live cycle exists, so trigger_drain takes the early return.
+            return [_FakeWorkflow("live-wf", int(time.time() * 1000))]
+
+        def list_workflow_steps(self, _workflow_id, load_output=False):
+            return []
+
+        def cancel_workflow(self, _workflow_uuid, cancel_children=False):
+            raise AssertionError("a live cycle must not be cancelled")
+
+    class FakeQueue:
+        def enqueue(self, workflow):
+            enqueued.append(workflow)
+
+    def fake_drainer_queue():
+        resolved.append(True)
+        return FakeQueue()
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(drainer_router, "drainer_queue", fake_drainer_queue)
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.json() == {"status": "already_queued"}
+    assert enqueued == [], "no second cycle should be stacked"
+    assert resolved == [True], "the queue must still be resolved, to register it"
