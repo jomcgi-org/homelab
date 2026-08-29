@@ -33,6 +33,7 @@
 # gazelle:exclude grimoire
 # gazelle:exclude grimoire_chat
 # gazelle:exclude faas
+# gazelle:exclude updates
 # The frontend is pnpm/rules_js with hand-written BUILD files, so gazelle must
 # not walk it. frontend/BUILD already carries a `# gazelle:ignore`, but that
 # directive applies ONLY to the directory it appears in and does NOT recurse:
@@ -131,6 +132,7 @@ _BACKEND_SRCS = glob(
         "grimoire_chat/**/*.py",
         "faas/**/*.py",
         "swarm/**/*.py",
+        "updates/**/*.py",
     ],
     exclude = [
         # pytest discovers both *_test.py (sibling convention) and
@@ -995,6 +997,32 @@ py_library(
 )
 
 py_library(
+    name = "pkg_updates",
+    srcs = glob(
+        [
+            "updates/**/*.py",
+        ],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "*/tests/**/*.py",
+        ],
+    ),
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_framework",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//pydantic",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_library(
     name = "pkg_stars",
     srcs = glob(
         [
@@ -1464,6 +1492,7 @@ py_library(
             "grimoire_chat/**/*.py",
             "faas/**/*.py",
             "swarm/**/*.py",
+            "updates/**/*.py",
         ],
         exclude = [
             # pytest discovers both *_test.py (sibling convention) and
@@ -5041,6 +5070,22 @@ py_test(
         ":pkg_moving",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "updates_test",
+    srcs = ["updates/updates_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_updates",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pydantic",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
