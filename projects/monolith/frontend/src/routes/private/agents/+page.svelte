@@ -1524,7 +1524,7 @@
   class="console"
 >
   <header class="topbar">
-    <div class="wordmark">Agents</div>
+    <a class="wordmark" href="/">Agents</a>
     {#if voiceMode}
       <span class="mode-pill">
         <span class="level-bars" aria-hidden="true"
@@ -2440,8 +2440,17 @@
   }
   .wordmark {
     flex: 0 0 auto;
+    color: inherit;
     font-size: 14px;
     font-weight: 600;
+    text-decoration: none;
+  }
+  .wordmark:hover {
+    text-decoration: underline;
+  }
+  .wordmark:focus-visible {
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
   }
   .mode-pill {
     height: 32px;

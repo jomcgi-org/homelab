@@ -72,7 +72,8 @@ afterEach(async () => {
 
 describe("drain outcomes", () => {
   test("renders report markdown instead of a summary pre block", async () => {
-    const summary = "Results:\n\n- first item\n- used **bold** and `code`";
+    const summary =
+      "Results for #5405:\n\n- first item\n- used **bold** and `code`";
     const target = await renderPage(listJob(), {
       ...listJob(),
       prompt: "Audit the repository",
@@ -83,17 +84,26 @@ describe("drain outcomes", () => {
     expect(target.querySelector(".result-md code").textContent).toBe("code");
     expect(target.querySelector(".result-md").innerHTML).not.toContain("**");
     expect(target.querySelector(".result-md").innerHTML).toContain("<strong>");
+    expect(target.querySelector(".result-md a").href).toBe(
+      "https://github.com/jomcgi/homelab/issues/5405",
+    );
     expect(target.querySelectorAll(".job-detail .detail-pre")).toHaveLength(1);
   });
 
   test("renders an enriched PR card with state and diff counts", async () => {
     const url = "https://github.com/jomcgi-org/homelab/pull/456";
     const target = await renderPage(
-      listJob({ outcome: "pr", summary_head: url }),
+      listJob({
+        outcome: "pr",
+        summary_head: url,
+        pr: { url, number: 456 },
+      }),
       {
         ...listJob({ outcome: "pr" }),
+        repo: "jomcgi-org/homelab",
+        branch: "feat/drain-links",
         prompt: "Audit the repository",
-        last_summary: url,
+        last_summary: `Opened #5405. ${url}`,
         pr: {
           url,
           number: 456,
@@ -116,13 +126,23 @@ describe("drain outcomes", () => {
     );
     expect(card.textContent).toContain("Classify drain outcomes");
     expect(card.textContent.replace(/\s+/g, " ")).toContain("3 files +15 −8");
+    expect(target.querySelector(".detail-repo").href).toBe(
+      "https://github.com/jomcgi-org/homelab/tree/feat/drain-links",
+    );
+    expect(target.querySelector(".result-md a").href).toBe(
+      "https://github.com/jomcgi-org/homelab/issues/5405",
+    );
     expect(target.querySelectorAll(".job-detail .detail-pre")).toHaveLength(1);
   });
 
   test("renders a link when PR enrichment is unavailable", async () => {
     const url = "https://github.com/jomcgi/homelab/pull/123";
     const target = await renderPage(
-      listJob({ outcome: "pr", summary_head: url }),
+      listJob({
+        outcome: "pr",
+        summary_head: url,
+        pr: { url, number: 123 },
+      }),
       {
         ...listJob({ outcome: "pr" }),
         prompt: "Audit the repository",
@@ -161,5 +181,30 @@ describe("job row outcome text", () => {
     expect(row.textContent).toContain("turn timed out");
     expect(row.textContent).not.toContain("Audit the repository");
     expect(row.querySelector(".err-text")).not.toBeNull();
+  });
+
+  test("PR rows expose separate toggle and link controls", async () => {
+    const url = "https://github.com/jomcgi/homelab/pull/5405";
+    const target = await renderPage(
+      listJob({
+        outcome: "pr",
+        pr: { url, number: 5405 },
+      }),
+    );
+    const row = target.querySelector(".job-row");
+    const toggle = row.querySelector(".job-toggle");
+    const link = row.querySelector(".pr-ref");
+
+    expect(row.tagName).toBe("DIV");
+    expect(toggle.tagName).toBe("BUTTON");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(link.tagName).toBe("A");
+    expect(link.href).toBe(url);
+    expect(link.target).toBe("_blank");
+    expect(link.rel).toBe("noreferrer");
+
+    link.click();
+    await tick();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
   });
 });

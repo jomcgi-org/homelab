@@ -12,6 +12,7 @@ import {
   jobCalls,
   jobClass,
   laneClass,
+  linkifyRefs,
 } from "./console-model.js";
 
 describe("lane and job classes", () => {
@@ -80,6 +81,39 @@ describe("job list", () => {
     expect(jobCalls(running)).toBe(17);
     expect(jobCalls(done)).toBe(8);
     expect(jobCalls({ state: "due" })).toBeNull();
+  });
+});
+
+describe("summary references", () => {
+  test("links bare references with the job repository", () => {
+    expect(linkifyRefs("Fixed #42 and #5405.", "acme/widgets")).toBe(
+      "Fixed [#42](https://github.com/acme/widgets/issues/42) and [#5405](https://github.com/acme/widgets/issues/5405).",
+    );
+    expect(linkifyRefs("See #123")).toBe(
+      "See [#123](https://github.com/jomcgi/homelab/issues/123)",
+    );
+  });
+
+  test("skips invalid contexts, inline code lines, and fenced code", () => {
+    const text = [
+      "Keep word#12, &#34, /#56, and #7 plain.",
+      "A line with `code` and #78 stays plain.",
+      "```text",
+      "#90",
+      "```",
+      "Link #901.",
+    ].join("\n");
+
+    expect(linkifyRefs(text)).toBe(
+      [
+        "Keep word#12, &#34, /#56, and #7 plain.",
+        "A line with `code` and #78 stays plain.",
+        "```text",
+        "#90",
+        "```",
+        "Link [#901](https://github.com/jomcgi/homelab/issues/901).",
+      ].join("\n"),
+    );
   });
 });
 
