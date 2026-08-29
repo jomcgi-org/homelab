@@ -1,0 +1,81 @@
+// Copy table for the drain console, same shape and reason as run-lexicon.js:
+// every user-facing string lives here so the surface stays greppable and a
+// wording pass touches one file. Kept local to the drain route rather than
+// grown onto RUN_LEXICON because the two surfaces share no strings.
+export const DRAIN_LEXICON = {
+  labels: {
+    title: "qwen drain",
+    backToAgents: "agents",
+    kick: "run a cycle now",
+    kicking: "kicking",
+    cancelCycle: "cancel cycle",
+    cancelling: "cancelling",
+    cancelConfirm:
+      "Cancel this drain cycle? The claimed job's work is lost and its claim stays locked until the TTL expires, then it becomes claimable again.",
+    requeue: "requeue",
+    requeueing: "requeueing",
+    cycleWord: "cycle",
+    lastCheckpoint: "last checkpoint",
+    lastStep: "last step",
+    claimsOfFinishes: "{finishes}/{claims} jobs finished this cycle",
+    reapNote: "auto-reap after {duration} of silence",
+    queuedBehind: "{count} queued behind it",
+    recentCycles: "recent cycles",
+    jobsHeading: "jobs",
+    filterAll: "all",
+    callsWord: "calls",
+    liveCallsWord: "calls so far",
+    attemptsWord: "attempts",
+    attemptWord: "attempt",
+    openSession: "open session",
+    promptWord: "prompt",
+    resultWord: "result",
+    activityWord: "activity",
+    activityTailNote: "last {shown} of {total} calls",
+    noActivity: "no recorded activity",
+    noJobs: "no jobs of this kind",
+    noneMatching: "nothing in this state",
+    loading: "loading",
+    unavailable: "drain console unavailable",
+    detailError: "could not load job detail",
+    kickFailed: "could not start a cycle",
+    cancelFailed: "cycle could not be cancelled",
+    requeueFailed: "job could not be requeued",
+    requeueRunning: "job is running; cancel its cycle first",
+    zeroCost: "$0",
+    dash: "–",
+    dot: "·",
+  },
+  // One word per lane state, plus the sentence that earns it. The wedged
+  // hint is the whole point of the rail: tonight's failure mode named in
+  // plain words instead of a SQL query.
+  laneWords: {
+    running: "running",
+    quiet: "quiet",
+    wedged: "wedged",
+    stranded: "stranded",
+    waiting: "waiting",
+    idle: "idle",
+    off: "off",
+    unknown: "unknown",
+  },
+  laneHints: {
+    running: "cycle is checkpointing normally",
+    quiet: "no checkpoint for a while; a session create may be dragging",
+    wedged:
+      "cycle is PENDING but its steps have gone silent; nothing will drain behind it",
+    stranded: "queued under an old build; no worker will ever claim it",
+    waiting: "work is due; waiting for the next cycle to start",
+    idle: "queue is empty",
+    off: "drainer is disabled",
+    unknown: "cycle state could not be read",
+  },
+  jobStates: {
+    running: "running",
+    due: "queued",
+    scheduled: "scheduled",
+    ok: "ok",
+    error: "failed",
+    parked: "parked",
+  },
+};
