@@ -1,10 +1,39 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import os
 
 import httpx
 from dbos import DBOS
+
+from swarm.tracing import set_attributes, tracer
+
+
+def _usage_counts(usage_json: str | None) -> tuple[int | None, int | None]:
+    """Parse (tool_calls, input_tokens) from a turn's usage JSON.
+
+    store.py always writes this column as json.dumps output or NULL, so the
+    shapes below are the ones that actually occur. Each half is resolved
+    independently: a turn that recorded activities but no token count still
+    yields its tool call count, because losing both to one missing key would
+    blind the exact runaway-loop case the count exists to show. Anything
+    unusable degrades to None rather than raising, since a metrics read must
+    never be able to fail the step it decorates.
+    """
+    try:
+        usage = json.loads(usage_json)
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(usage, dict):
+        return None, None
+    activities = usage.get("activities")
+    tool_calls = len(activities) if isinstance(activities, list) else None
+    try:
+        input_tokens = int(usage["input_tokens"])
+    except (KeyError, TypeError, ValueError):
+        input_tokens = None
+    return tool_calls, input_tokens
 
 
 def _decision_payload(row, observed_at=None) -> dict:
@@ -126,19 +155,38 @@ def start_agent_session(
     live session holding another Codex slot, which is exactly the
     externally-visible-step hazard ADR 038 decision 2 calls out.
     """
-    from agent_sessions.api import start_session_for_swarm
+    with tracer.start_as_current_span("swarm.start_agent_session") as span:
+        from agent_sessions.api import start_session_for_swarm
 
-    return start_session_for_swarm(
-        session_key,
-        prompt,
-        model,
-        repo,
-        branch,
-        workflow_id=workflow_id,
-        node_key=node_key,
-        node_attempt=node_attempt,
-        reasoning=reasoning,
-    )
+        set_attributes(
+            span,
+            {
+                "swarm.session_key": session_key,
+                "swarm.model": model,
+                "swarm.repo": repo,
+                "swarm.branch": branch,
+                "swarm.node_key": node_key,
+                "swarm.node_attempt": node_attempt,
+                "swarm.reasoning": reasoning,
+            },
+        )
+        # The EmberVM capacity backoff ladder in agent_sessions/transport.py
+        # (~19 min) shows as one long span here. The step already has
+        # retries_allowed=True/max_attempts=3, so each real retry emits its own
+        # span, which is correct.
+        session_id = start_session_for_swarm(
+            session_key,
+            prompt,
+            model,
+            repo,
+            branch,
+            workflow_id=workflow_id,
+            node_key=node_key,
+            node_attempt=node_attempt,
+            reasoning=reasoning,
+        )
+        set_attributes(span, {"swarm.session_id": session_id})
+        return session_id
 
 
 @DBOS.step()
@@ -152,28 +200,53 @@ def poll_turn(session_id: int, after_seq: int) -> dict | None:
     restart its wait from zero on recovery, which is the fragile-edge shape ADR
     038 decision 1 exists to remove.
     """
-    from sqlmodel import Session, select
+    # This is the drainer's heartbeat. The loop in workflows.py:_await_turn
+    # calls this every POLL_INTERVAL_SECONDS. A wedge shows as the absence of
+    # new spans. Per-iteration instrumentation exports completed heartbeats,
+    # unlike an enclosing span that would never end or export on a wedge.
+    with tracer.start_as_current_span("swarm.poll_turn") as span:
+        from sqlmodel import Session, select
 
-    from agent_sessions.models import AgentTurn
-    from core.db import get_engine
-    from agent_sessions.rationale import parse_rationale
+        from agent_sessions.models import AgentTurn
+        from agent_sessions.rationale import parse_rationale
+        from core.db import get_engine
 
-    with Session(get_engine()) as session:
-        turn = session.exec(
-            select(AgentTurn)
-            .where(AgentTurn.session_id == session_id, AgentTurn.seq > after_seq)
-            .order_by(AgentTurn.seq)
-        ).first()
-        if turn is None:
-            return None
-        return {
-            "seq": turn.seq,
-            "prompt_intent": turn.prompt_intent,
-            "result_text": turn.result_text,
-            "rationale": parse_rationale(turn.result_text),
-            "terminal_reason": turn.terminal_reason,
-            "cost_usd": turn.cost_usd,
-        }
+        set_attributes(
+            span,
+            {
+                "swarm.session_id": session_id,
+                "swarm.after_seq": after_seq,
+            },
+        )
+        with Session(get_engine()) as session:
+            turn = session.exec(
+                select(AgentTurn)
+                .where(AgentTurn.session_id == session_id, AgentTurn.seq > after_seq)
+                .order_by(AgentTurn.seq)
+            ).first()
+            if turn is None:
+                set_attributes(span, {"swarm.turn_found": False})
+                return None
+            tool_calls, input_tokens = _usage_counts(turn.usage_json)
+            set_attributes(
+                span,
+                {
+                    "swarm.turn_found": True,
+                    "swarm.turn_seq": turn.seq,
+                    "swarm.terminal_reason": turn.terminal_reason,
+                    "swarm.cost_usd": turn.cost_usd,
+                    "swarm.tool_calls": tool_calls,
+                    "swarm.input_tokens": input_tokens,
+                },
+            )
+            return {
+                "seq": turn.seq,
+                "prompt_intent": turn.prompt_intent,
+                "result_text": turn.result_text,
+                "rationale": parse_rationale(turn.result_text),
+                "terminal_reason": turn.terminal_reason,
+                "cost_usd": turn.cost_usd,
+            }
 
 
 @DBOS.step()

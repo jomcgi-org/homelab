@@ -137,6 +137,7 @@ def test_poll_turn_includes_rationale(monkeypatch):
                     "result_text": "Done\n\nRATIONALE\n- path: app.py · why: fix it",
                     "terminal_reason": "completed",
                     "cost_usd": 0.25,
+                    "usage_json": None,
                 },
             )()
 
@@ -163,3 +164,37 @@ def test_poll_turn_includes_rationale(monkeypatch):
         "deviations": [],
         "parser_version": 1,
     }
+
+
+def test_usage_counts_parses_well_formed_payload():
+    assert steps._usage_counts(
+        '{"activities": [{"type": "tool"}, {"type": "tool"}], "input_tokens": "42"}'
+    ) == (2, 42)
+
+
+def test_usage_counts_accepts_none():
+    assert steps._usage_counts(None) == (None, None)
+
+
+def test_usage_counts_rejects_invalid_json():
+    assert steps._usage_counts("not json") == (None, None)
+
+
+def test_usage_counts_rejects_json_scalar():
+    assert steps._usage_counts("42") == (None, None)
+
+
+def test_usage_counts_rejects_non_list_activities():
+    """A bad activities shape must not cost the token count as well."""
+    assert steps._usage_counts(
+        '{"activities": {"type": "tool"}, "input_tokens": 42}'
+    ) == (None, 42)
+
+
+def test_usage_counts_rejects_uncoercible_input_tokens():
+    """Nor the reverse: a missing or unusable token count keeps the calls."""
+    assert steps._usage_counts('{"activities": [], "input_tokens": "many"}') == (
+        0,
+        None,
+    )
+    assert steps._usage_counts('{"activities": [{"type": "tool"}]}') == (1, None)

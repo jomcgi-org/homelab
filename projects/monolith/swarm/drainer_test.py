@@ -1,8 +1,23 @@
 from __future__ import annotations
 
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 import pytest
 
 import swarm.drainer as drainer
+
+# trace.get_tracer returns a ProxyTracer that resolves the provider lazily, at
+# the first span rather than at import, so installing this after importing the
+# module under test is what makes the spans land here. The provider is global
+# and can only be set once, which is fine: every py_test target is its own
+# process.
+_EXPORTER = InMemorySpanExporter()
+_PROVIDER = TracerProvider()
+_PROVIDER.add_span_processor(SimpleSpanProcessor(_EXPORTER))
+trace.set_tracer_provider(_PROVIDER)
 
 
 SETTINGS = {
@@ -18,6 +33,16 @@ SETTINGS = {
 
 class FakeDBOS:
     workflow_id = "workflow-1"
+
+
+@pytest.fixture(autouse=True)
+def _clear_spans():
+    _EXPORTER.clear()
+    yield
+
+
+def _spans_named(name: str):
+    return [s for s in _EXPORTER.get_finished_spans() if s.name == name]
 
 
 def _run(monkeypatch, jobs, await_turn=None, start_session=None):
@@ -391,3 +416,109 @@ def test_zero_max_jobs_per_cycle_does_not_chain(monkeypatch):
 
     assert result == {"status": "complete", "processed": 0}
     assert chained == []
+
+
+def test_drain_cycle_emits_a_cycle_span(monkeypatch):
+    job = {"name": "job-1", "payload": {"prompt": "work"}}
+
+    _run(monkeypatch, [job])
+
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.outcome"] == "queue_empty"
+    assert spans[0].attributes["drain.jobs_claimed"] == 1
+    assert spans[0].attributes["drain.jobs_succeeded"] == 1
+    assert spans[0].attributes["drain.chained"] is False
+    assert spans[0].attributes["drain.workflow_id"] == "workflow-1"
+
+
+def test_each_claimed_job_emits_a_job_span(monkeypatch):
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: None)
+    jobs = [
+        {"name": f"job-{i}", "payload": {"prompt": "work"}}
+        for i in range(SETTINGS["max_jobs_per_cycle"])
+    ]
+
+    _run(monkeypatch, jobs)
+
+    spans = _spans_named("drain.job")
+    assert len(spans) == SETTINGS["max_jobs_per_cycle"]
+    assert [span.attributes["drain.job_name"] for span in spans] == [
+        job["name"] for job in jobs
+    ]
+
+
+def test_a_failing_job_still_ends_its_spans(monkeypatch):
+    job = {"name": "fails", "payload": {"prompt": "break"}}
+
+    def fail_await(*_args):
+        raise RuntimeError("turn failed")
+
+    _run(monkeypatch, [job], await_turn=fail_await)
+
+    job_spans = _spans_named("drain.job")
+    cycle_spans = _spans_named("drain.cycle")
+    assert len(job_spans) == 1
+    assert len(cycle_spans) == 1
+    assert "drain.outcome" not in job_spans[0].attributes
+    assert "drain.status" not in job_spans[0].attributes
+
+
+def test_full_batch_cycle_span_records_the_chain(monkeypatch):
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: None)
+    jobs = [
+        {"name": f"job-{i}", "payload": {"prompt": "work"}}
+        for i in range(SETTINGS["max_jobs_per_cycle"])
+    ]
+
+    _run(monkeypatch, jobs)
+
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.outcome"] == "bound_reached"
+    assert spans[0].attributes["drain.chained"] is True
+
+
+def test_disabled_cycle_still_emits_a_cycle_span(monkeypatch):
+    settings = SETTINGS | {"enabled": False}
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings)
+
+    drainer.drain_cycle.__wrapped__()
+
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.outcome"] == "disabled"
+
+
+def test_claim_step_span_lives_inside_the_step_body(monkeypatch):
+    import agent.routine_jobs as routine_jobs
+
+    monkeypatch.setattr(
+        routine_jobs,
+        "claim_job",
+        lambda **_kwargs: {"name": "job-1", "payload": {"prompt": "work"}},
+    )
+
+    drainer.claim_drainer_job.__wrapped__(60, "qwen-drain")
+
+    spans = _spans_named("drain.claim_job")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.claimed"] is True
+    assert spans[0].attributes["drain.job_name"] == "job-1"
+
+    _EXPORTER.clear()
+    # A replayed step emits nothing because its body does not execute again.
+    assert _spans_named("drain.claim_job") == []
+
+
+def test_finish_step_span_marks_error_status(monkeypatch):
+    import agent.routine_jobs as routine_jobs
+
+    monkeypatch.setattr(routine_jobs, "complete_job", lambda *_args, **_kwargs: True)
+
+    drainer.finish_drainer_job.__wrapped__("job-1", "error", "boom")
+
+    spans = _spans_named("drain.finish_job")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.status"] == "error"
+    assert spans[0].status.status_code is StatusCode.ERROR
