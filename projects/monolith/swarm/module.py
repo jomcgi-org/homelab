@@ -20,9 +20,16 @@ async def _leader_start(app):
     return []
 
 
+async def _leader_stop(app):
+    from swarm import runtime
+
+    runtime.shutdown()
+
+
 MODULE = _Module(
     name="swarm",
     register=register,
     leader_start=_leader_start,
+    leader_stop=_leader_stop,
     register_health_advisory={"drainer": drainer_health},
 )
