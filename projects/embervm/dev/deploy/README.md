@@ -14,7 +14,7 @@ This dev environment is disjoint by design:
 - **Own op-log database**: SQLite on a PVC, disjoint from production's shared
   monolith-pg Postgres instance. The chart falls back to EMBERVM_OPLOG_PATH
   when postgres.enabled is false.
-- **nvmeRoot split**: dev bricks use `/var/lib/embervm/scratch-dev`, separate
+- **nvmeRoot split**: dev bricks use `/var/lib/embervm/scratch/dev`, separate
   from production's shared node-4 NVMe scratch. Scratch is shared metal; the
   split prevents prod GC and dev artifacts from colliding.
 - **S3 bucket split**: dev uses `embervm-dev` bucket (production uses `embervm`).
