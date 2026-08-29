@@ -35,6 +35,7 @@ import shotter.module
 import ships.module
 import stars.module
 import trips.module
+import updates.module
 import worldcup.module
 from framework import Module
 
@@ -59,6 +60,7 @@ ALL_MODULES: tuple[Module, ...] = (
     demos.module.MODULE,
     ember_public.module.MODULE,
     moving.module.MODULE,
+    updates.module.MODULE,
     # MCP-only domains (no HTTP routes of their own). Placed here, before
     # semgrep_scan, so MCP tool registration order matches the historical
     # app/main.py import order (knowledge, agent, cluster, semgrep_scan,

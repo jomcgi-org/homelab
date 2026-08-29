@@ -213,6 +213,7 @@ def test_no_schedule_chat_scheduler_agent_paths():
         "/api/chat",
         "/api/scheduler",
         "/api/agent",
+        "/api/updates",
         # knowledge tasks router is private
         "/api/knowledge/tasks",
     ]

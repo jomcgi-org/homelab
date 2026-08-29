@@ -23,6 +23,7 @@ export const launcher = [
   { label: "Longhorn", desc: "cluster storage", href: "/app/longhorn" },
   { label: "Perf", desc: "semgrep scan perf", href: "/perf" },
   { label: "Agents", desc: "agent sessions", href: "/agents" },
+  { label: "Updates", desc: "daily release journal", href: "/updates" },
   {
     label: "BuildBuddy",
     desc: "CI",
