@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlmodel import Session, create_engine, select
@@ -35,14 +36,31 @@ def decision_engine(monkeypatch, tmp_path):
 def decision_api(monkeypatch, decision_engine):
     monkeypatch.setenv("SWARM_ENABLED", "true")
 
+    class FakeHandle:
+        def __init__(self, attributes):
+            self._attributes = attributes
+
+        def get_status(self):
+            return SimpleNamespace(attributes=dict(self._attributes))
+
     class FakeDBOS:
-        def __init__(self):
+        """Models DBOS's REAL attribute semantics: a write REPLACES the whole
+        object (dbos/_sys_db.py update_workflow_attributes is a bare
+        .values(attributes=...)). A fake that merged for us would have hidden
+        #5417 entirely, which is how the bug survived this long."""
+
+        def __init__(self, stored=None):
+            self.stored = dict(stored or {})
             self.attributes = []
+
+        def retrieve_workflow(self, workflow_id):
+            return FakeHandle(self.stored)
 
         async def update_workflow_attributes_async(self, workflow_id, values):
             self.attributes.append((workflow_id, values))
+            self.stored = dict(values)
 
-    dbos = FakeDBOS()
+    dbos = FakeDBOS({"plan": {"implementer_model": "sol", "max_attempts": 3}})
 
     def compose(_dbos, workflow_id):
         if workflow_id != "wf-1":
@@ -563,14 +581,19 @@ def test_decide_run_records_header_actor(decision_api, decision_engine):
         "idempotent": False,
     }
     assert body["decided_at"] is not None
+    # The pinned plan must SURVIVE the decision. Before #5417 this write
+    # replaced the whole attributes object and unpinned the run, so the console
+    # silently fell back to reporting the current deploy's models.
+    assert dbos.stored["plan"] == {"implementer_model": "sol", "max_attempts": 3}
     assert dbos.attributes == [
         (
             "wf-1",
             {
+                "plan": {"implementer_model": "sol", "max_attempts": 3},
                 "decided_by": {
                     "actor": "alice@example.com",
                     "at": body["decided_at"],
-                }
+                },
             },
         )
     ]
@@ -698,8 +721,14 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
         async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
             events.append(("cancel", workflow_id, cancel_children))
 
+        def retrieve_workflow(self, workflow_id):
+            return SimpleNamespace(
+                get_status=lambda: SimpleNamespace(attributes={"plan": {"v": 1}})
+            )
+
         async def update_workflow_attributes_async(self, workflow_id, values):
             events.append(("attributes", workflow_id, values["cancelled_by"]["actor"]))
+            events.append(("preserved", values.get("plan")))
 
     async def reap(workflow_id):
         events.append(("reap", workflow_id))
@@ -731,7 +760,44 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
         ("cancel", "wf-1", True),
         ("reap", "wf-1"),
         ("attributes", "wf-1", "alice@example.com"),
+        # Cancelling must not unpin the run on its way out (#5417).
+        ("preserved", {"v": 1}),
     ]
+
+
+def test_attribute_write_is_skipped_when_the_prior_read_fails(monkeypatch):
+    """A failed read must not degrade into a blind overwrite.
+
+    The whole point of merging is that the pinned plan survives. If the current
+    attributes cannot be read, writing the patch alone would destroy exactly
+    what the merge exists to protect, so the metadata is dropped instead and
+    the caller's best-effort handler logs it.
+    """
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    writes = []
+
+    class FakeDBOS:
+        async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
+            return None
+
+        def retrieve_workflow(self, workflow_id):
+            raise RuntimeError("system database unreachable")
+
+        async def update_workflow_attributes_async(self, workflow_id, values):
+            writes.append(values)
+
+    async def reap(workflow_id):
+        return {"reaped": [], "failed": [], "skipped": []}
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr("agent_sessions.api.reap_sessions_for_workflow", reap)
+
+    response = client().post("/api/swarm/runs/wf-1/cancel")
+
+    # The cancel itself still succeeds; only the actor record is lost.
+    assert response.status_code == 200
+    assert writes == []
 
 
 def test_cancel_expires_every_open_decision(monkeypatch, decision_engine):

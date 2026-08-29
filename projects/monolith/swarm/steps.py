@@ -36,6 +36,46 @@ def _usage_counts(usage_json: str | None) -> tuple[int | None, int | None]:
     return tool_calls, input_tokens
 
 
+async def merge_workflow_attributes(dbos, workflow_id: str, patch: dict) -> None:
+    """Apply ``patch`` to a workflow's attributes WITHOUT discarding the rest.
+
+    DBOS attribute writes are a whole-object replace, not a merge: both the
+    instance method and the client method funnel into a bare
+    ``.values(attributes=attributes)`` over workflow_status (dbos/_sys_db.py),
+    and the docstring says so ("Replace the custom attributes attached to a
+    workflow by ID"). So a blind write of {"decided_by": ...} destroyed the
+    {"plan": plan} that implement_then_review pinned at run start, and
+    swarm/view.py reads the pinned plan from exactly that key with no fallback
+    to the step record. Approving a push gate therefore unpinned the run: the
+    console silently fell back to reporting the CURRENT deploy's models, and
+    coverage lost the pin it is measured against. That is issue #5417.
+
+    Read-modify-write, so it is not atomic. The writers are run start, a human
+    decision, and a human cancel, so concurrent writes to one workflow are not
+    a live concern; a versioned plan that the conductor rewrites often would
+    need a real compare-and-set instead.
+
+    Not for use INSIDE a durable workflow. DBOS records an attribute write as a
+    step so it runs exactly once under recovery, and a read-then-write here is
+    two operations with only the write recorded, so a replay could merge onto
+    state the original execution never saw.
+    """
+    current: dict = {}
+    try:
+        handle = dbos.retrieve_workflow(workflow_id)
+        status = handle.get_status() if hasattr(handle, "get_status") else handle
+        existing = getattr(status, "attributes", None)
+        if isinstance(existing, dict):
+            current = existing
+    except Exception:  # noqa: BLE001 - fall through to the patch alone
+        # Losing the prior attributes is the bug being fixed, so a failed read
+        # must not silently become a blind overwrite of everything. Write only
+        # if there was nothing to preserve; otherwise let the caller's
+        # best-effort handler drop the metadata and keep the plan.
+        raise
+    await dbos.update_workflow_attributes_async(workflow_id, {**current, **patch})
+
+
 def _decision_payload(row, observed_at=None) -> dict:
     return {
         "id": row.id,
