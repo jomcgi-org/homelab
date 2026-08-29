@@ -1,5 +1,4 @@
 <script>
-  import { onMount } from "svelte";
   import {
     facetHref,
     formatDate,
@@ -20,7 +19,9 @@
     if (!dates.includes(activeDate)) activeDate = dates[0] ?? "";
   });
 
-  onMount(() => {
+  $effect(() => {
+    const updates = data.updates;
+    if (!updates.length) return;
     const entries = document.querySelectorAll("[data-update-date]");
     const observer = new IntersectionObserver(
       (observed) => {

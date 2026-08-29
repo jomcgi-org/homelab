@@ -7,7 +7,12 @@ import asyncio
 from auth.api import current_principal
 from core.mcp_app import mcp
 from updates.schemas import ProductUpdateSubmission
-from updates.store import UpdateAlreadyPublished, compare_url, publish_update
+from updates.store import (
+    InvalidPublishedDate,
+    UpdateAlreadyPublished,
+    compare_url,
+    publish_update,
+)
 
 SUBMIT_SCOPE = "updates:submit"
 
@@ -28,7 +33,7 @@ async def submit_product_update(update: ProductUpdateSubmission) -> dict:
 
     try:
         row, created = await asyncio.to_thread(publish_update, update, principal)
-    except UpdateAlreadyPublished as exc:
+    except (InvalidPublishedDate, UpdateAlreadyPublished) as exc:
         return {"accepted": False, "error": str(exc)}
 
     anchor = row.published_on.isoformat()

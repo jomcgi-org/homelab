@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections import Counter
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Iterator
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -23,10 +25,15 @@ from updates.schemas import (
 
 GITHUB_REPOSITORY = "jomcgi-org/homelab"
 GITHUB_BASE_URL = f"https://github.com/{GITHUB_REPOSITORY}"
+VANCOUVER = ZoneInfo("America/Vancouver")
 
 
 class UpdateAlreadyPublished(ValueError):
     """The date or source range is already occupied by another update."""
+
+
+class InvalidPublishedDate(ValueError):
+    """A new update did not target the current Vancouver calendar date."""
 
 
 @contextmanager
@@ -75,6 +82,12 @@ def publish_update(
                 f"{submission.published_on.isoformat()} already has a published update"
             )
 
+        today = datetime.now(VANCOUVER).date()
+        if submission.published_on != today:
+            raise InvalidPublishedDate(
+                f"published_on must be today's Vancouver date ({today.isoformat()})"
+            )
+
         existing_head = db.exec(
             select(ProductUpdate).where(
                 ProductUpdate.source_head_sha == submission.source_head_sha
@@ -120,16 +133,13 @@ def archive(
     *,
     project: Project | None = None,
     technology: Technology | None = None,
-    limit: int = 366,
     session: Session | None = None,
 ) -> ProductUpdateArchive:
     """Return the filtered journal plus unfiltered facet counts."""
     with _session(session) as db:
         rows = list(
             db.exec(
-                select(ProductUpdate)
-                .order_by(ProductUpdate.published_on.desc())
-                .limit(limit)
+                select(ProductUpdate).order_by(ProductUpdate.published_on.desc())
             ).all()
         )
 
