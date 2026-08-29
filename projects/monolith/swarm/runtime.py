@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 
 from swarm import config
 
 _dbos = None
 _launched = False
 _read_client = None
+_read_client_error: Exception | None = None
+_read_client_retry_at = 0.0
+_READ_CLIENT_RETRY_SECONDS = 5.0
 # read_client() is the one accessor built on the REQUEST path rather than at
 # startup, and get_run/list_runs are sync endpoints, so FastAPI runs them on the
-# threadpool. A burst of console polls against a cold follower would otherwise
-# race check-then-act on _read_client, construct two clients, and leak the
-# loser's connection pool with no destroy().
+# threadpool. The lock protects publication and failure backoff state only.
+# DBOSClient construction performs a real database query and must stay outside
+# the lock so one cold connection cannot serialize every follower read.
 _read_client_lock = threading.Lock()
+_monotonic = time.monotonic
 
 
 def _enabled() -> bool:
@@ -58,7 +63,7 @@ def read_client():
     anything. Returns None when swarm is disabled or DATABASE_URL is unset,
     matching init_dbos.
     """
-    global _read_client
+    global _read_client, _read_client_error, _read_client_retry_at
     if _read_client is not None or not _enabled():
         return _read_client
     database_url = os.environ.get("DATABASE_URL")
@@ -66,12 +71,15 @@ def read_client():
         return None
     from dbos import DBOSClient
 
+    now = _monotonic()
     with _read_client_lock:
-        # Re-check inside the lock: a caller that blocked here while another
-        # thread built the client must return that one, not build a second.
         if _read_client is not None:
             return _read_client
-        _read_client = DBOSClient(
+        if _read_client_error is not None and now < _read_client_retry_at:
+            raise _read_client_error
+
+    try:
+        candidate = DBOSClient(
             system_database_url=database_url,
             dbos_system_schema="dbos",
             # Deliberately small. This pool exists on every replica that
@@ -80,7 +88,30 @@ def read_client():
             # instance's pool.
             system_database_pool_size=2,
         )
-    return _read_client
+    except Exception as error:
+        with _read_client_lock:
+            # A concurrent constructor may have succeeded while this attempt
+            # failed. Prefer its usable client over publishing stale failure
+            # state.
+            if _read_client is not None:
+                return _read_client
+            _read_client_error = error
+            _read_client_retry_at = _monotonic() + _READ_CLIENT_RETRY_SECONDS
+        raise
+
+    with _read_client_lock:
+        if _read_client is None:
+            _read_client = candidate
+            _read_client_error = None
+            _read_client_retry_at = 0.0
+            return candidate
+        winner = _read_client
+
+    # DBOSClient.destroy() is safe here: each default client owns its engine,
+    # and use_listen_notify defaults to False, so this only disposes the losing
+    # candidate's connection pool.
+    candidate.destroy()
+    return winner
 
 
 def is_launched() -> bool:
@@ -115,9 +146,12 @@ def launch() -> None:
 
 def shutdown() -> None:
     global _dbos, _launched, _read_client
+    global _read_client_error, _read_client_retry_at
     if _read_client is not None:
         _read_client.destroy()
         _read_client = None
+    _read_client_error = None
+    _read_client_retry_at = 0.0
     if _dbos is not None and _enabled() and os.environ.get("DATABASE_URL"):
         _dbos.destroy()
         _dbos = None

@@ -4190,6 +4190,18 @@ py_test(
 )
 
 py_test(
+    name = "swarm_runtime_test",
+    srcs = ["swarm/runtime_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//dbos",
+        "@pip//fastapi",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_policy_test",
     srcs = ["swarm/policy_test.py"],
     imports = ["."],

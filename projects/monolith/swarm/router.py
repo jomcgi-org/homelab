@@ -102,9 +102,8 @@ def _dbos_read():
     Composing a run view calls retrieve_workflow, list_workflows and
     list_workflow_steps and nothing else, so it needs the system database, not
     the leader's launched runtime. Sharing _dbos() with the submitting paths
-    made every console poll a coin flip: two replicas behind a Service with no
-    session affinity, DBOS launched on one of them, so about half of them 503ed
-    and the console reported the engine unreachable while the run was healthy.
+    made console polls fail during HPA scale-out and rolling updates: a follower
+    can be Ready behind the Service while the old pod still holds leadership.
 
     The leader still answers reads through its launched instance, so the client
     pool only ever exists where it is needed.
@@ -115,7 +114,13 @@ def _dbos_read():
         instance = runtime.init_dbos()
         if instance is not None:
             return instance
-    client = runtime.read_client()
+    try:
+        client = runtime.read_client()
+    except Exception as error:  # noqa: BLE001
+        logger.warning("could not connect a follower DBOS read client", exc_info=True)
+        raise HTTPException(
+            status_code=503, detail="Swarm DBOS is temporarily unavailable"
+        ) from error
     if client is None:
         raise HTTPException(status_code=503, detail="Swarm DBOS is not configured")
     return client
