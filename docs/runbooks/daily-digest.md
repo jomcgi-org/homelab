@@ -9,7 +9,7 @@ summary: Prioritised outstanding-work digest for Discord
 
 # Daily Digest: what to follow through on
 
-Scans four sources of in-flight work, ranks them by how close they are to
+Scans three sources of in-flight work, ranks them by how close they are to
 "done but dropped", and posts a single Discord message. The framing is
 **follow-through**: surface the things Joe started and has not finished, not
 a generic backlog of everything that could ever be done.
