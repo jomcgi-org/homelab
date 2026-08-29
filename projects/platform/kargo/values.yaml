@@ -229,7 +229,7 @@ promotion:
       # Application to Degraded first and argocd-wait fails fast on that. It
       # only catches a workload that never reaches a terminal state at all.
       #
-      # RAISED to 90m0s for the 0.41.7 to 0.47.x jump (#5224). The 30m0s above
+      # RAISED to 90 minutes for the 0.41.7 to 0.47.x jump (#5224). The 30m0s above
       # was measured on a roll where the guest base refs did NOT move, which is
       # the common case and the one the paragraph above describes. That jump
       # moves 13 of 14 base digests (a renovate apko lock refresh rewrote every
@@ -242,7 +242,7 @@ promotion:
       # cold bake, three of them serialized inside the 2gi class wave by
       # maxUnavailable 1. At the measured rate that is roughly 40m.
       #
-      # 90m0s rather than 60m0s because this MUST stay above
+      # 90 minutes rather than 60 because this MUST stay above
       # bricks.progressDeadlineSeconds (3600s) by a real margin, or the ordering
       # the paragraph above depends on inverts. The two clocks do not start
       # together: this budget starts when the argocd-update step starts, while a
@@ -252,11 +252,18 @@ promotion:
       # uninformative "step timed out" at the full budget instead of a
       # ProgressDeadlineExceeded naming the Deployment.
       #
-      # Left at 90m0s afterwards rather than reverted: undershooting fails a
-      # HEALTHY roll, which the comment above calls the worst thing a gate can
+      # Left at 90 minutes afterwards rather than reverted: undershooting fails
+      # a HEALTHY roll, which the comment above calls the worst thing a gate can
       # do, while overshooting only delays the report of a roll that was never
       # going to finish. progressDeadlineSeconds stays the real detector.
-      waitTimeout: 90m0s
+      #
+      # Written 1h30m0s, not 90m0s, for the same reason requiredSoakTime is
+      # written 2m0s: the API server stores the normalized form, and it carries
+      # any duration of an hour or more in hours. Written as 90m0s the value
+      # round-tripped as 1h30m0s, so ArgoCD saw both embervm Stages drift the
+      # instant it synced them and the kargo Application sat permanently
+      # OutOfSync, re-syncing on every reconcile.
+      waitTimeout: 1h30m0s
       stages:
         - name: dev
           application: embervm-dev
