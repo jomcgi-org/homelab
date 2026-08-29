@@ -34,9 +34,10 @@ def test_dbos_not_launched_returns_503(monkeypatch):
 class _FakeWorkflow:
     """Fake workflow object that mimics DBOS workflow_id and updated_at."""
 
-    def __init__(self, workflow_id, updated_at):
+    def __init__(self, workflow_id, updated_at, app_version=None):
         self.workflow_id = workflow_id
         self.updated_at = updated_at
+        self.app_version = app_version
 
 
 def _fake_dbos_no_live_workflows(monkeypatch):
@@ -448,3 +449,74 @@ def test_queue_is_resolved_even_when_a_cycle_is_already_live(monkeypatch):
     assert response.json() == {"status": "already_queued"}
     assert enqueued == [], "no second cycle should be stacked"
     assert resolved == [True], "the queue must still be resolved, to register it"
+
+
+def _stranded_dbos(monkeypatch, enqueued_version, cancelled):
+    """A DBOS whose only live row is an ENQUEUED cycle at some app version."""
+    now_ms = int(time.time() * 1000)
+
+    class FakeDBOS:
+        def list_workflows(self, status=None, **_kwargs):
+            if status == "ENQUEUED":
+                return [_FakeWorkflow("stranded-wf", now_ms, enqueued_version)]
+            return []
+
+        def list_workflow_steps(self, _workflow_id, load_output=False):
+            return []
+
+        def cancel_workflow(self, workflow_uuid, cancel_children=False):
+            cancelled.append(workflow_uuid)
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+    monkeypatch.setattr(drainer_router, "drainer_queue", lambda: _NoopQueue())
+
+
+class _NoopQueue:
+    def enqueue(self, _workflow):
+        return None
+
+
+def test_version_stranded_enqueued_cycle_is_cancelled(monkeypatch):
+    """An ENQUEUED row from a previous image is undequeuable, so cancel it.
+
+    The dequeue query filters application_version against the worker's own, so
+    such a row is never claimed. It is not PENDING, so the staleness reaper
+    never sees it, yet the live check counts it, which latches already_queued
+    forever.
+    """
+    cancelled = []
+    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "v-new")
+    _stranded_dbos(monkeypatch, "v-old", cancelled)
+
+    _client().post("/internal/agent/drain")
+
+    assert cancelled == ["stranded-wf"]
+
+
+def test_matching_version_enqueued_cycle_is_left_alone(monkeypatch):
+    """A successor queued by THIS image is healthy work waiting for the slot."""
+    cancelled = []
+    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "v-new")
+    _stranded_dbos(monkeypatch, "v-new", cancelled)
+
+    _client().post("/internal/agent/drain")
+
+    assert cancelled == []
+
+
+def test_unresolvable_app_version_cancels_nothing(monkeypatch):
+    """Cannot tell is not evidence of stranding.
+
+    swarm/router.py documents a real incident where an unresolved version was
+    compared literally and marked every live run stranded. Same discipline
+    here: an empty version means do nothing.
+    """
+    cancelled = []
+    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    _stranded_dbos(monkeypatch, "v-old", cancelled)
+
+    _client().post("/internal/agent/drain")
+
+    assert cancelled == []

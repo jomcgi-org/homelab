@@ -346,12 +346,14 @@ def test_empty_queue_does_not_chain(monkeypatch):
     assert chained == []
 
 
-def test_failed_jobs_still_count_toward_chaining(monkeypatch):
-    """A full batch of FAILING jobs still means the backlog was deep.
+def test_fully_failed_batch_does_not_chain(monkeypatch):
+    """An all-failing batch must fall back to tick pace, not accelerate.
 
-    processed counts claims, not successes, on purpose: a run of jobs that all
-    error is still evidence there was more work than one cycle could take, and
-    refusing to chain there would stall the queue exactly when it is longest.
+    When the downstream is sick every claimed job fails in seconds, and a
+    failed one-shot is permanently done because complete_job NULLs its
+    next_run_at whatever the status. Chaining through that destroys the
+    backlog at hundreds of dead jobs an hour. Falling back to the next tick
+    is a 15 minute backoff exactly when something is wrong.
     """
     chained = []
     monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
@@ -368,4 +370,24 @@ def test_failed_jobs_still_count_toward_chaining(monkeypatch):
     )
 
     assert result["processed"] == SETTINGS["max_jobs_per_cycle"]
-    assert chained == [True]
+    assert chained == [], "a batch with zero successes must not chain"
+
+
+def test_zero_max_jobs_per_cycle_does_not_chain(monkeypatch):
+    """A bound of zero must not chain.
+
+    DRAINER_MAX_JOBS_PER_CYCLE is unvalidated int(env), so setting it to 0 as
+    a way to pause the lane is plausible. Without the processed guard, 0 >= 0
+    holds and every cycle chains an endless one-per-second no-op.
+    """
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+    settings = SETTINGS | {"max_jobs_per_cycle": 0}
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings.copy())
+
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, []
+    )
+
+    assert result == {"status": "complete", "processed": 0}
+    assert chained == []

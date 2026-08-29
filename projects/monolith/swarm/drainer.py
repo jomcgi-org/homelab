@@ -197,6 +197,7 @@ def drain_cycle() -> dict:
 
     workflow_id = _workflow_id()
     processed = 0
+    succeeded = 0
     ttl_secs = settings["turn_timeout_seconds"] + CLAIM_TTL_MARGIN_SECONDS
 
     for _ in range(settings["max_jobs_per_cycle"]):
@@ -231,6 +232,7 @@ def drain_cycle() -> dict:
                     f"turn timed out after {settings['turn_timeout_seconds']} seconds"
                 )
             finish_drainer_job(name, "ok", _completed_output(turn))
+            succeeded += 1
         except MalformedPayload as exc:
             error = _summary(exc)
             finish_drainer_job(name, "error", error)
@@ -256,13 +258,28 @@ def drain_cycle() -> dict:
     # roughly half an hour doing nothing at cycle boundaries. The bound exists
     # to keep any single workflow short, not to rate limit the lane.
     #
-    # The condition is the whole safety argument. processed == the bound means
-    # every claim in this cycle returned a job, so there was more work than one
-    # cycle could take. A cycle that stops early (claim_drainer_job returned
-    # None) does NOT chain, so an empty queue costs nothing and this cannot
-    # spin. Queue concurrency is still 1, so the successor waits for this
-    # workflow to finish rather than running alongside it.
-    if processed >= settings["max_jobs_per_cycle"]:
+    # Three conditions, each load bearing.
+    #
+    # processed == the bound means every claim returned a job, so there was
+    # more work than one cycle could take. A cycle that stops early (claim
+    # returned None) does NOT chain, so an empty queue costs nothing and this
+    # cannot spin. Queue concurrency is still 1, so the successor waits for
+    # this workflow rather than running alongside it.
+    #
+    # succeeded > 0 is the circuit breaker. When the downstream is sick (say
+    # EmberVM is down) every claimed job fails in seconds, and a failed
+    # one-shot is PERMANENTLY done: complete_job NULLs its next_run_at
+    # whatever the status. Chaining through that destroys the backlog at
+    # several hundred dead jobs an hour, with a Discord warn each. Falling
+    # back to the next tick gives a 15 minute backoff exactly when something
+    # is wrong, and a batch that is genuinely all-garbage still drains, just
+    # at tick pace.
+    #
+    # processed > 0 guards a bound of zero. DRAINER_MAX_JOBS_PER_CYCLE is
+    # unvalidated int(env), so setting it to 0 as a way to pause the lane
+    # would otherwise satisfy 0 >= 0 and chain an endless one-per-second
+    # no-op, writing unbounded workflow_status rows.
+    if processed and succeeded and processed >= settings["max_jobs_per_cycle"]:
         chain_next_cycle()
 
     return {"status": "complete", "processed": processed}
