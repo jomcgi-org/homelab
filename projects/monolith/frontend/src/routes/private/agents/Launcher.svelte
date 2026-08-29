@@ -162,7 +162,10 @@
 
   {#if drain !== null && (drain.enabled !== false || drain.due_count > 0 || drain.running?.length > 0)}
     {@const runningJob = drain.running?.[0]}
-    <div class="drain-lane mono">
+    <!-- A link, not a div: the strip is the doorway to the drain console,
+         which carries cycle liveness and per-job outcomes this one line
+         cannot. -->
+    <a class="drain-lane mono" href="/agents/drain">
       <span class={`dot ${runningJob ? "running" : ""}`} aria-hidden="true"
       ></span>
       <span>{P.labels.drainHeading}</span>
@@ -193,7 +196,8 @@
         <span>{drain.last.status}</span>
         <span>{relativeTime(drain.last.last_run_at)}</span>
       {/if}
-    </div>
+      <span class="drain-open" aria-hidden="true">&rarr;</span>
+    </a>
   {/if}
 
   <div class="recent">
@@ -401,12 +405,21 @@
     align-items: center;
     gap: 6px;
     margin: -12px 0;
-    padding: 0 12px;
+    padding: 4px 12px;
     overflow: hidden;
+    border-radius: var(--radius-md);
     color: var(--muted);
     font-size: 12px;
     line-height: 1.2;
+    text-decoration: none;
     white-space: nowrap;
+  }
+  .drain-lane:hover {
+    background: var(--hover);
+    color: var(--text-soft);
+  }
+  .drain-open {
+    margin-left: auto;
   }
   .recent {
     min-width: 0;

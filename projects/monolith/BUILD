@@ -4237,6 +4237,28 @@ py_test(
 )
 
 py_test(
+    name = "swarm_drain_console_test",
+    srcs = ["swarm/drain_console_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "swarm_drain_console_router_test",
+    srcs = ["swarm/drain_console_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_compare_router_test",
     srcs = ["swarm/compare_router_test.py"],
     imports = ["."],

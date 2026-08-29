@@ -4,11 +4,13 @@ from swarm.health import drainer_health
 
 
 def register(app) -> None:
+    from swarm.drain_console_router import router as drain_console_router
     from swarm.drainer_router import router as drainer_router
     from swarm.router import router
 
     app.include_router(router)
     app.include_router(drainer_router)
+    app.include_router(drain_console_router)
 
 
 async def _leader_start(app):
