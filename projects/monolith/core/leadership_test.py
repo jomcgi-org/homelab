@@ -93,7 +93,7 @@ async def test_releases_lease_on_cancel_when_leader(monkeypatch):
 async def test_acquire_failure_does_not_kill_election(monkeypatch):
     # The first startup fails, then a later election attempt succeeds. The
     # failed attempt must clean up and release its lease before retrying.
-    monkeypatch.setattr(leadership, "_acquire_or_renew", _seq([True, True, True]))
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
     monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
     released = mock.Mock()
     monkeypatch.setattr(leadership, "_release", released)

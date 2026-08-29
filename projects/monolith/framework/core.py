@@ -236,14 +236,7 @@ async def start_leader_singletons(app: FastAPI, modules: Sequence[Module]) -> No
     for m in modules:
         if m.leader_start is None:
             continue
-        try:
-            tasks.extend(await m.leader_start(app))
-        except Exception:
-            # One domain's singleton is not allowed to bench every module
-            # after it in the composition, especially the drainer. The
-            # elector remains alive and can retry the whole startup sequence
-            # after the next lease transition.
-            logger.exception("leader_start for module %s failed", m.name)
+        tasks.extend(await m.leader_start(app))
 
 
 async def stop_leader_singletons(app: FastAPI, modules: Sequence[Module]) -> None:
