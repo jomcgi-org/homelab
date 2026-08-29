@@ -13,6 +13,7 @@ from swarm import config, runtime
 from swarm.compare_router import router as compare_router
 from swarm.compare_router import compare_stats
 from agent_sessions.rationale import parse_rationale
+from swarm.steps import merge_workflow_attributes
 from swarm.walkthrough_composer import compose_walkthrough
 
 router = APIRouter(prefix="/api/swarm", tags=["swarm"])
@@ -609,7 +610,10 @@ async def decide_run(
     except InvalidDecision as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        await dbos.update_workflow_attributes_async(
+        # MERGE, never replace: a blind write here destroyed the pinned plan
+        # that view.py reads, so approving a gate unpinned the run (#5417).
+        await merge_workflow_attributes(
+            dbos,
             workflow_id,
             {
                 "decided_by": {
@@ -647,7 +651,8 @@ async def cancel_run(workflow_id: str, request: Request) -> dict:
     guest_sessions = await reap_sessions_for_workflow(workflow_id)
     actor = request.headers.get("Cf-Access-Authenticated-User-Email") or "operator"
     try:
-        await dbos.update_workflow_attributes_async(
+        await merge_workflow_attributes(
+            dbos,
             workflow_id,
             {
                 "cancelled_by": {
