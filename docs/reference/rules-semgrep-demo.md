@@ -14,7 +14,7 @@ No pysemgrep CLI. No manual config. No special CI jobs. Just `bazel test`.
 
 Engines, rules, and SCA advisories are vendored as OCI artifacts, pinned by digest.
 
-A hourly workflow downloads artifacts, content-hashes them, and skips the push if nothing changed. Same content = same digest = cache stays warm.
+A weekly workflow downloads artifacts, content-hashes them, and skips the push if nothing changed. Same content = same digest = cache stays warm.
 
 > **Open:** [Commit updating only python rules](https://github.com/jomcgi/homelab/commit/360cf6d28e53d24895b345b1445726e86acb1f2b) — show `digests.bzl` change, only the rules that changed get new digests.
 
