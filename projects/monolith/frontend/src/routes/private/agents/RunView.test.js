@@ -124,6 +124,7 @@ function attemptAt(n, state = "done") {
     cost_usd: 0.1,
     events: [],
     live: null,
+    rationale: { parse_status: "parsed", paths: [], deviations: [] },
   };
 }
 
@@ -142,6 +143,7 @@ describe("attempt ordinals", () => {
       run: workRun([attemptAt(1, "failed"), attemptAt(2)]),
     });
     expect(target.textContent).toContain("2 attempts");
+    expect(target.textContent).toContain("attempt 2");
   });
 
   // max_review_cycles is a plan constant, not run state: it said the same

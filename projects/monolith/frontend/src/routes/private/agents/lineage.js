@@ -46,7 +46,9 @@ export function crumbTrail({
   const leaf =
     joinMeta(
       nodeLabel,
-      attemptN != null ? `${RUN_LEXICON.labels.attempt} ${attemptN}` : null,
+      attemptN != null && attemptN > 1
+        ? `${RUN_LEXICON.labels.attempt} ${attemptN}`
+        : null,
     ) || sessionTitle;
   return [
     { label: RUN_LEXICON.labels.runsWord, to: "home" },

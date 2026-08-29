@@ -175,7 +175,7 @@
             `${node.attempts.length} ${P.labels.attempts}`,
             fmtDur(duration),
           )
-        : joinMeta(P.nodeStates[node.state] || node.state, fmtDur(duration));
+        : fmtDur(duration);
     }
     return P.nodeStates[node.state] || node.state;
   }
@@ -788,7 +788,7 @@
         <div class="testimony-attribution">
           {joinMeta(
             node.label,
-            `${P.labels.attempt} ${attempt.n}`,
+            isRetried(node) ? `${P.labels.attempt} ${attempt.n}` : null,
             attempt.model,
           )}
         </div>
