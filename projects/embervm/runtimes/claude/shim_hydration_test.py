@@ -100,21 +100,34 @@ class _GitProcess:
         )
 
 
+def _materialize_checkout(checkout_dir):
+    """Create what a real git clone leaves behind.
+
+    Hydration re-reads the checkout it just cloned before annotating it, and
+    re-reads it again before skipping a later turn, so a fake clone that
+    returns success while leaving the filesystem untouched no longer models
+    git. It models a clone whose checkout vanished, which is the failure under
+    test elsewhere in this file, not the happy path these fakes stand for.
+    """
+    os.makedirs(os.path.join(checkout_dir, ".git"), exist_ok=True)
+
+
 def test_hydration_runs_once_per_session(manager, monkeypatch):
-    processes = [_GitProcess(), _GitProcess()]
+    checkout_dir = os.path.join(manager.workspace, "src")
     commands = []
 
     def fake_run(command, **_kwargs):
         if command[1] == "clone":
             commands.append(command)
-        return processes.pop(0)
+            _materialize_checkout(checkout_dir)
+        return _GitProcess()
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
     manager.turn("first", repo="owner/repo", branch="main")
     manager.turn("second", repo="owner/repo", branch="main")
 
     assert len(commands) == 1
-    assert manager._checkout_dir == os.path.join(manager.workspace, "src")
+    assert manager._checkout_dir == checkout_dir
 
 
 def test_hydration_skips_on_restored_volume(manager, monkeypatch):
@@ -159,6 +172,7 @@ def test_failed_hydration_retries_on_next_turn_and_succeeds(
     manager, monkeypatch, capsys
 ):
     clone_calls = []
+    checkout_dir = os.path.join(manager.workspace, "src")
 
     def fake_run(command, **_kwargs):
         if command[1] == "clone":
@@ -167,6 +181,7 @@ def test_failed_hydration_retries_on_next_turn_and_succeeds(
             # first turn; the retry on turn two succeeds on the mirror.
             if len(clone_calls) <= 2:
                 raise subprocess.TimeoutExpired("git", shim.GIT_CLONE_TIMEOUT_SECONDS)
+            _materialize_checkout(checkout_dir)
         return _GitProcess()
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
@@ -240,24 +255,24 @@ def test_git_command_shape(manager, monkeypatch):
 
 def test_mirror_clone_failure_falls_back_to_github(manager, monkeypatch):
     """An unmirrored repo degrades to today's credentialed GitHub clone."""
-    processes = [
-        _GitProcess(returncode=128, stderr_text="fatal: repository not found"),
-        _GitProcess(),
-        _GitProcess(),
-    ]
+    checkout_dir = os.path.join(manager.workspace, "src")
     commands = []
 
     def fake_run(command, **_kwargs):
         if command[1] == "clone":
             commands.append(command)
-        return processes.pop(0)
+            if len(commands) == 1:
+                return _GitProcess(
+                    returncode=128, stderr_text="fatal: repository not found"
+                )
+            _materialize_checkout(checkout_dir)
+        return _GitProcess()
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
 
     record = manager.turn("first", repo="owner/repo", branch="main")
 
     assert record["workspace_hydration"] == "ok"
-    checkout_dir = os.path.join(manager.workspace, "src")
     assert len(commands) == 2
     fallback = commands[1]
     assert fallback[-2] == "https://github.com/owner/repo.git"
@@ -364,12 +379,17 @@ def test_git_clone_regression_guards(manager, monkeypatch):
 
 
 def test_cli_cwd_set_to_checkout(manager, monkeypatch):
-    process = _GitProcess()
-    monkeypatch.setattr(shim.subprocess, "run", lambda *_a, **_k: process)
+    checkout_dir = os.path.join(manager.workspace, "src")
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            _materialize_checkout(checkout_dir)
+        return _GitProcess()
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
 
     manager.turn("first", repo="owner/repo", branch="main")
 
-    checkout_dir = os.path.join(manager.workspace, "src")
     assert manager.claude.workspace == checkout_dir
     assert manager.claude.calls[0]["workspace"] == checkout_dir
 
@@ -387,19 +407,19 @@ def test_no_hydration_when_repo_absent(manager, monkeypatch):
 
 def test_hydration_works_for_non_default_branch(manager, monkeypatch):
     """Verify clone works for branches other than the repository default."""
-    processes = [_GitProcess(), _GitProcess()]
+    checkout_dir = os.path.join(manager.workspace, "src")
     commands = []
 
     def fake_run(command, **_kwargs):
         if command[1] == "clone":
             commands.append(command)
-        return processes.pop(0)
+            _materialize_checkout(checkout_dir)
+        return _GitProcess()
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
 
     manager.turn("first", repo="owner/repo", branch="develop")
 
-    checkout_dir = os.path.join(manager.workspace, "src")
     assert len(commands) == 1
     # Verify --branch is in command before clone executes checkout
     assert commands[0] == [
@@ -419,14 +439,18 @@ def test_hydration_works_for_non_default_branch(manager, monkeypatch):
 
 
 def test_hydration_updates_adapter_workspace(manager, monkeypatch):
-    process = _GitProcess()
-    monkeypatch.setattr(shim.subprocess, "run", lambda *_a, **_k: process)
+    checkout_dir = os.path.join(manager.workspace, "src")
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            _materialize_checkout(checkout_dir)
+        return _GitProcess()
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
 
     manager.turn("msg", repo="owner/repo", branch="main")
 
-    assert manager.claude.calls[0]["workspace"] == os.path.join(
-        manager.workspace, "src"
-    )
+    assert manager.claude.calls[0]["workspace"] == checkout_dir
 
 
 def test_hydration_git_failure_128(manager, monkeypatch, capsys):
@@ -449,14 +473,19 @@ def test_hydration_git_failure_128(manager, monkeypatch, capsys):
 
 def test_hydration_status_surfaced_in_turn(manager, monkeypatch):
     """Workspace hydration status included in turn record."""
-    process = _GitProcess()
-    monkeypatch.setattr(shim.subprocess, "run", lambda *_a, **_k: process)
+    checkout_dir = os.path.join(manager.workspace, "src")
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "clone":
+            _materialize_checkout(checkout_dir)
+        return _GitProcess()
+
+    monkeypatch.setattr(shim.subprocess, "run", fake_run)
 
     record = manager.turn("msg", repo="owner/repo", branch="main")
     assert record.get("workspace_hydration") == "ok"
 
     # A second request reuses the checkout created by the first hydration.
-    os.makedirs(os.path.join(manager.workspace, "src"), exist_ok=True)
     record = manager.turn("msg2", repo="owner/repo", branch="main")
     assert record.get("workspace_hydration") == "skipped_existing"
 
@@ -550,12 +579,27 @@ def test_poisoned_directory_is_cleaned_and_recloned(manager, monkeypatch):
 
     monkeypatch.setattr(shim.subprocess, "run", fake_run)
     manager.turn("first", repo="owner/repo", branch="main")
+
     # Only the hydration prefix is pinned. A turn legitimately runs further git
     # commands after the checkout is valid (diff capture reads HEAD and diffs
     # against it), and asserting the whole sequence made this test fail for any
     # unrelated command the shim gained. The stub above still fails on a command
     # shape it does not recognise, so new calls cannot slip through unnoticed.
-    assert [command[1] for command in calls][:3] == ["-C", "clone", "-C"]
+    #
+    # Read the operation out of the argv rather than off a fixed index: every
+    # checkout read is now scoped with "-c safe.directory=<dir>", so the
+    # subcommand no longer sits at position 1.
+    def _operation(command):
+        if "clone" in command:
+            return "clone"
+        # "git -c safe.directory=<dir> -C <dir> <subcommand> ..."
+        return command[command.index("-C") + 2]
+
+    assert [_operation(command) for command in calls][:3] == [
+        "rev-parse",
+        "clone",
+        "rev-parse",
+    ]
 
 
 def test_cloning_progress_is_pushed_before_the_clone(manager, monkeypatch):

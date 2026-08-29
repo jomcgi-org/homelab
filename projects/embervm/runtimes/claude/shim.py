@@ -562,6 +562,9 @@ INIT_READ_TIMEOUT = _read_init_timeout()
 TURN_READ_TIMEOUT = 600.0
 INTERRUPT_TIMEOUT = 30.0
 CLI_PROBE_TIMEOUT = 10.0
+# A ref read on a local checkout, so this only ever has to cover process spawn.
+# Matches the timeout hydration's own post-clone validation has always used.
+CHECKOUT_VALIDATION_TIMEOUT_SECONDS = 5
 HYDRATION_ATTEMPT_CAP = 3
 # The guest path is proxied over vsock, so it is materially slower than a direct
 # clone, and a FULL clone additionally pays 86k delta resolutions plus a 151 MB
@@ -631,6 +634,56 @@ def _cli_privilege_kwargs():
         "user": int(os.environ.get(CLI_UID_ENV, str(DEFAULT_CLI_UID))),
         "group": int(os.environ.get(CLI_GID_ENV, str(DEFAULT_CLI_GID))),
     }
+
+
+def _checkout_is_usable(path):
+    """Return whether path is a git checkout whose HEAD resolves.
+
+    os.path.isdir was the whole test at every gate that guards a checkout, and
+    it is satisfied by two things that hold no source at all. The turn path
+    recreates <workspace>/src on every turn (_ensure_cli_dir), so a checkout
+    lost to a park and restore, to a volume mount landing over the base's copy,
+    or to a scratch reclaim comes back as an empty directory. And a .git that
+    holds nothing but info/exclude, which the hydration annotation below can
+    leave behind if the checkout is replaced between the clone's validation and
+    that write, is the same shape one level down. A guest started on either ran
+    a whole turn against no source and reported success, which is a worse
+    failure than the loud StartupError callers already handle.
+
+    Runs as the CLI uid, exactly as hydration's clone and its post-clone
+    validation do, AND scopes safe.directory to this one path. Either alone
+    leaves a false negative: as root against a CLI-owned checkout git refuses
+    with "detected dubious ownership", and a restored volume can hold a
+    checkout owned by neither. A false negative here fails a good turn, so both
+    guards are worth their cost. Nothing is written to any git config.
+    """
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        validation = subprocess.run(
+            _git_read_argv(path, "rev-parse", "--verify", "HEAD"),
+            capture_output=True,
+            timeout=CHECKOUT_VALIDATION_TIMEOUT_SECONDS,
+            **_cli_privilege_kwargs(),
+        )
+    except Exception:
+        # A timeout, a missing git, or a privilege drop that cannot be applied
+        # all mean the same thing to the caller: this checkout cannot be
+        # trusted to hold source.
+        return False
+    return validation.returncode == 0
+
+
+def _workspace_ready_for_spawn(workspace, requires_git_checkout):
+    """Return whether a CLI may be spawned against this workspace.
+
+    A repo-less session legitimately runs in an empty directory, so existence
+    is the whole test there. A repo-backed session must clear the stricter bar
+    in _checkout_is_usable.
+    """
+    if requires_git_checkout:
+        return _checkout_is_usable(workspace)
+    return os.path.isdir(workspace)
 
 
 GIT_PROXY_PATH = "/tmp/ember-git-proxy"
@@ -1596,6 +1649,12 @@ class _ProgressPusher:
 class ClaudeProcess:
     """Own the CLI and serialize turns sent through its JSONL stream."""
 
+    # Set by ProcessManager.turn the first time a turn names a repo, and sticky
+    # for the lineage because the repo is fixed at session create. A class
+    # attribute rather than an __init__ assignment so prewarm, which spawns
+    # before any turn and legitimately has no checkout, reads the default.
+    requires_git_checkout = False
+
     def __init__(self, workspace=None, executable="claude"):
         self.workspace = workspace or os.environ.get(
             "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
@@ -1656,7 +1715,7 @@ class ClaudeProcess:
     ):
         if self.fatal_error is not None:
             raise StartupError(self.fatal_error)
-        if not os.path.isdir(self.workspace):
+        if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         self._configure_git()
         spawn_workspace = self.workspace
@@ -2178,6 +2237,9 @@ class ClaudeProcess:
 class CodexProcess:
     """Own one long-lived Codex app-server process and bind threads lazily."""
 
+    # See ClaudeProcess.requires_git_checkout.
+    requires_git_checkout = False
+
     def __init__(self, workspace=None, executable="codex"):
         self.workspace = workspace or os.environ.get(
             "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
@@ -2313,7 +2375,7 @@ wire_api = "responses"
             stream.write(config)
 
     def _spawn(self):
-        if not os.path.isdir(self.workspace):
+        if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         child_env = self._child_env()
         self._write_auth_json(child_env["CODEX_HOME"])
@@ -2760,6 +2822,9 @@ class PiProcess:
 
     INFERENCE_BASE_URL = "http://inference.inference.svc.cluster.local:8080/v1"
 
+    # See ClaudeProcess.requires_git_checkout.
+    requires_git_checkout = False
+
     def __init__(self, workspace=None, executable="pi"):
         self.workspace = workspace or os.environ.get(
             "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
@@ -2872,7 +2937,7 @@ class PiProcess:
             sys.stderr.flush()
 
     def _spawn(self, model, system_prompt=None):
-        if not os.path.isdir(self.workspace):
+        if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
         child_env = self._child_env()
@@ -3618,14 +3683,27 @@ class ProcessManager:
 
     def _hydrate_workspace(self, repo, branch):
         hydration_start = _turn_timing_now()
-        if self._hydration_status == "ok":
-            if self._checkout_dir and os.path.isdir(self._checkout_dir):
+        if self._hydration_status in ("ok", "skipped_existing"):
+            if _checkout_is_usable(self._checkout_dir):
                 self._hydration_status = "skipped_existing"
                 _emit_elapsed("hydration", hydration_start, status="skipped_existing")
-            return
-        if self._hydration_status == "skipped_existing":
-            _emit_elapsed("hydration", hydration_start, status="skipped_existing")
-            return
+                return
+            # The checkout this session already hydrated is gone, or is a stub.
+            # The skip used to return unconditionally, so hydration never ran
+            # again once it had succeeded even though the source it had cloned
+            # was no longer there, and the turn path's own _ensure_cli_dir put
+            # an empty directory back in its place that satisfied every isdir
+            # gate downstream. Fall through and clone again. The attempt
+            # counter is deliberately NOT reset: a checkout that keeps
+            # vanishing exhausts the cap and then fails loudly at spawn, which
+            # is the documented requeue-on-a-fresh-guest recovery.
+            sys.stderr.write(
+                "ember-claude-shim: hydrated checkout for %s@%s is no longer "
+                "usable, re-hydrating\n" % (repo, branch)
+            )
+            sys.stderr.flush()
+            self._hydration_status = None
+            self._checkout_dir = None
         if self._hydration_attempts >= HYDRATION_ATTEMPT_CAP:
             return
         if self._hydration_attempts:
@@ -3646,27 +3724,17 @@ class ProcessManager:
         # This deliberately ignores repo/branch changes on restored volumes; per-session
         # volumes make that unreachable in practice (repo fixed at session create).
         if os.path.isdir(checkout_dir):
-            try:
-                validation = subprocess.run(
-                    ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
-                    capture_output=True,
-                    timeout=5,
-                    **_cli_privilege_kwargs(),
-                )
-                if validation.returncode == 0:
-                    self._checkout_dir = checkout_dir
-                    self._hydration_status = "skipped_existing"
-                    # Resume slugs are safe: session cwd never changes mid-lineage (repo fixed at create).
-                    self.claude.workspace = checkout_dir
-                    self.codex.workspace = checkout_dir
-                    self.pi.workspace = checkout_dir
-                    _emit_elapsed(
-                        "hydration", hydration_start, status="skipped_existing"
-                    )
-                    return
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            # A durable volume can contain a partial clone from a prior failure.
+            if _checkout_is_usable(checkout_dir):
+                self._checkout_dir = checkout_dir
+                self._hydration_status = "skipped_existing"
+                # Resume slugs are safe: session cwd never changes mid-lineage (repo fixed at create).
+                self.claude.workspace = checkout_dir
+                self.codex.workspace = checkout_dir
+                self.pi.workspace = checkout_dir
+                _emit_elapsed("hydration", hydration_start, status="skipped_existing")
+                return
+            # A durable volume can contain a partial clone from a prior failure,
+            # and the turn path recreates this directory empty on every turn.
             shutil.rmtree(checkout_dir, ignore_errors=True)
         _ensure_cli_dir(self.workspace)
         # Hydrate from the node-local git mirror over http (#4473), falling
@@ -3825,6 +3893,26 @@ class ProcessManager:
             sys.stderr.flush()
             return
         self._hydration_error = None
+        if not _checkout_is_usable(checkout_dir):
+            # The clone validated moments ago, so the checkout went away under
+            # the shim: a volume mount landing on /workspace between the two,
+            # or the scratch it lived on being reclaimed. Do not annotate it.
+            # _ensure_cli_dir creates directories and an append-mode open
+            # creates the file, so the write below would MANUFACTURE
+            # .git/info/exclude inside an empty replacement, and a .git holding
+            # nothing but info/exclude is exactly the artefact that let a later
+            # turn pass every gate and run against no source. Leave nothing
+            # behind and let the next turn clone again.
+            self._hydration_error = "checkout disappeared after clone"
+            self._hydration_status = None
+            self._checkout_dir = None
+            sys.stderr.write(
+                "ember-claude-shim: workspace hydration lost the checkout for "
+                "%s@%s after cloning\n" % (repo, branch)
+            )
+            sys.stderr.flush()
+            _emit_elapsed("hydration", hydration_start, status="lost")
+            return
         exclude_file = os.path.join(checkout_dir, ".git/info/exclude")
         _ensure_cli_dir(os.path.dirname(exclude_file))
         with open(exclude_file, "a") as stream:
@@ -3967,6 +4055,13 @@ class ProcessManager:
         if getattr(self.claude, "workspace", None):
             _ensure_cli_dir(self.claude.workspace)
         if repo is not None and branch is not None:
+            # This lineage is repo-backed, so from here on a directory is not
+            # enough: every spawn must find a checkout whose HEAD resolves.
+            # Sticky, because the repo is fixed at session create and a later
+            # repo-less turn must not reopen the gap. Prewarm runs before any
+            # turn and keeps the plain existence check it has always had.
+            for adapter in (self.claude, self.codex, self.pi):
+                adapter.requires_git_checkout = True
             # Say what the guest is doing while it clones. Without this the UI
             # falls through to "starting the agent..." for the whole hydration,
             # because that is its label for "VM running, no partials yet", and a
