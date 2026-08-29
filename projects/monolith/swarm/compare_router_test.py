@@ -147,15 +147,18 @@ async def test_stored_diff_is_rung_one_without_github(monkeypatch):
     assert result["files"][0]["changes"] == 3
 
 
-def test_stored_compare_preserves_truncated_status():
+def test_stored_compare_skips_a_truncated_reduced_blob():
+    """A truncated blob holds only the turn's small added files, not its work.
+    Serving it as the stored compare would contradict every file the agent
+    really changed, so the stored rung declines and the sha rung (or no
+    compare at all) takes over, exactly as when no blob was stored."""
     raw = b"diff --git a/plan.json b/plan.json\n"
 
     result = mod._stored_compare(
         _data(diff_blob=zlib.compress(raw), diff_truncated=True)
     )
 
-    assert result["truncated"] is True
-    assert result["source"] == "stored"
+    assert result is None
 
 
 @pytest.mark.asyncio

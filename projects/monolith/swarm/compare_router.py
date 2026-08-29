@@ -60,6 +60,14 @@ def _stored_compare(data: dict) -> dict | None:
     blob = data.get("diff_blob")
     if blob is None:
         return None
+    if data.get("diff_truncated"):
+        # A truncated blob is a reduced diff holding only small added files
+        # (declared artifacts, see the guest shim's _reduced_added_file_diff).
+        # Presenting it as the turn's work would contradict every file the
+        # agent really changed, so fall through to the sha rung exactly as
+        # when no blob was stored. The artifact channel reads the blob from
+        # the store directly and is unaffected.
+        return None
     try:
         decompressor = zlib.decompressobj()
         raw_bytes = decompressor.decompress(bytes(blob), 5 * 1024 * 1024 + 1)
@@ -74,7 +82,7 @@ def _stored_compare(data: dict) -> dict | None:
         return None
     return {
         "files": parse_unified_diff(raw),
-        "truncated": bool(data.get("diff_truncated")),
+        "truncated": False,
         "source": "stored",
     }
 

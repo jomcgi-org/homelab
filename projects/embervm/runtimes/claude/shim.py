@@ -235,20 +235,24 @@ def _capture_turn_diff(checkout_dir, base_sha):
                 truncated_outcome = "truncated_compressed"
         if truncated_outcome:
             reduced = _reduced_added_file_diff(raw)
-            reduced_compressed = zlib.compress(reduced)
-            if (
-                reduced
-                and len(reduced) <= MAX_TURN_DIFF_BYTES
-                and len(reduced_compressed) <= MAX_TURN_DIFF_COMPRESSED_BYTES
-            ):
-                _emit_turn_diff_outcome(
-                    checkout_dir, "diff", truncated_outcome + "_reduced"
-                )
-                return {
-                    "base_sha": base_sha,
-                    "zlib_b64": base64.b64encode(reduced_compressed).decode("ascii"),
-                    "truncated": True,
-                }
+            # Check the raw bound before compressing: a raw diff can bust the
+            # cap purely on added files (a committed vendor tree), leaving a
+            # reduced form nearly as large, and compressing hundreds of
+            # megabytes just to discard them is a second full-size buffer in
+            # a small guest.
+            if reduced and len(reduced) <= MAX_TURN_DIFF_BYTES:
+                reduced_compressed = zlib.compress(reduced)
+                if len(reduced_compressed) <= MAX_TURN_DIFF_COMPRESSED_BYTES:
+                    _emit_turn_diff_outcome(
+                        checkout_dir, "diff", truncated_outcome + "_reduced"
+                    )
+                    return {
+                        "base_sha": base_sha,
+                        "zlib_b64": base64.b64encode(reduced_compressed).decode(
+                            "ascii"
+                        ),
+                        "truncated": True,
+                    }
             _emit_turn_diff_outcome(checkout_dir, "diff", truncated_outcome)
             return {"base_sha": base_sha, "zlib_b64": None, "truncated": True}
         _emit_turn_diff_outcome(checkout_dir, "diff", "success")
