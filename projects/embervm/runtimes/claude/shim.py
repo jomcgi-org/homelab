@@ -449,30 +449,23 @@ PI_CONTEXT_SAFETY_TOKENS = 4096
 # reserve.
 PI_MAX_OUTPUT_TOKENS = 12288
 
-PI_TOOL_CALL_MARKERS = (
-    "<tool_call>",
-    "</tool_call>",
-    "<arg_key>",
-    "<arg_value>",
-    "<parameter=",
-    "<parameter>",
-    "</parameter>",
-    "<function=",
-)
 
+def _is_leaked_tool_call(text):
+    """Return whether text starts with tool-call syntax as the answer.
 
-def _is_truncated_tool_call(text):
-    """Return whether text starts with an unclosed XML tool call."""
+    Qwen sometimes emits a tool-call block with spurious junk closing tags,
+    NInfer's parser rejects it and returns the raw XML as content. Because
+    the turn ends stop it passes the clean check and records ok. Alternatively,
+    an emission cut off by the token cap (terminal_reason: length) also begins
+    with <tool_call>. The leading anchor prevents false positives from
+    legitimate answers that merely mention tool-call syntax in prose.
+    """
     if not isinstance(text, str):
         return False
     stripped = text.lstrip()
     # The leading <tool_call> anchor prevents false positives from legitimate
     # answers that merely mention tool-call syntax in prose.
-    if not stripped.startswith("<tool_call>"):
-        return False
-    if not any(marker in stripped for marker in PI_TOOL_CALL_MARKERS):
-        return False
-    return stripped.count("<tool_call>") > stripped.count("</tool_call>")
+    return stripped.startswith("<tool_call>")
 
 
 # Thinking level for the pi lane. "off" makes pi send
@@ -3194,7 +3187,6 @@ class PiProcess:
             cached_activities = []
             activities_are_stale = True
             terminal_reason = "completed"
-            finish_reason = None
             num_turns = 0
             model_ms = 0
             tool_ms = 0
@@ -3404,9 +3396,7 @@ class PiProcess:
                             terminal_reason = message_event.get(
                                 "stopReason", "completed"
                             )
-                            finish_reason = message_event.get("finish_reason")
-                            if finish_reason is None:
-                                finish_reason = message_event.get("finishReason")
+
                             if pusher:
                                 try:
                                     pusher.push(accumulated_text, cached_activities)
@@ -3428,7 +3418,7 @@ class PiProcess:
                             except Exception:
                                 pass
                     if event.get("type") == "agent_end":
-                        if not result_text or finish_reason is None:
+                        if not result_text:
                             for message_event in reversed(event.get("messages", [])):
                                 if message_event.get("role") == "assistant":
                                     if not result_text:
@@ -3437,34 +3427,23 @@ class PiProcess:
                                             for item in message_event.get("content", [])
                                             if item.get("type") == "text"
                                         )
-                                    if finish_reason is None:
-                                        finish_reason = message_event.get(
-                                            "finish_reason"
-                                        )
-                                        if finish_reason is None:
-                                            finish_reason = message_event.get(
-                                                "finishReason"
-                                            )
                                     break
-                        if _is_truncated_tool_call(result_text):
-                            signal_name = (
-                                "finish_reason"
-                                if finish_reason == "length"
-                                else "markers"
-                            )
+                        if _is_leaked_tool_call(result_text):
                             try:
                                 sys.stderr.write(
-                                    "ember-claude-shim: pi-truncated-tool-call "
-                                    "signal=%s\n" % signal_name
+                                    "ember-claude-shim: pi-tool-call-leak "
+                                    "terminal_reason=%s\n" % terminal_reason
                                 )
                                 sys.stderr.flush()
                             except Exception:
                                 pass
                             raise RuntimeError(
-                                "pi output was truncated by token limit and returned "
-                                "partial tool-call syntax; the turn is failed. This "
-                                "typically means the job is too large for the token "
-                                "budget."
+                                "pi returned tool-call syntax as its answer instead of "
+                                "a text response. This can happen when a tool-call block "
+                                "contains spurious closing tags that the parser rejects, "
+                                "or when the output was truncated by the token limit. "
+                                "If truncation, reduce the job size; if malformed syntax, "
+                                "check that the model is correctly installed."
                             )
                         if pusher:
                             try:

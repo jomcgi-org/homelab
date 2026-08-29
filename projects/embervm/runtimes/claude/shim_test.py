@@ -426,6 +426,35 @@ for line in sys.stdin:
                 message["finish_reason"] = "length"
             emit({"type": "message_end", "message": message})
             emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") == "tool-call-leak-balanced":
+            # A complete but malformed tool-call block with junk closing tags
+            # that terminates with stopReason: stop
+            emit({"type": "message_start", "message": {"role": "assistant"}})
+            message = {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "<tool_call>\n"
+                            "<function=bash>\n"
+                            "<parameter=command>\n"
+                            "cd /workspace/src/projects/monolith && grep -rn \"on_startup_jobs\" framework/core.py; ...\n"
+                            "</parameter>\n"
+                            "</framework/core.py>\n"
+                            "</invoke>\n"
+                            "\n"
+                            "</parameter>\n"
+                            "</function>\n"
+                            "</tool_call>"
+                        ),
+                    }
+                ],
+                "stopReason": "stop",
+                "usage": {"input": 2, "output": 3},
+            }
+            emit({"type": "message_end", "message": message})
+            emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") == "prose-tool-call":
             emit({"type": "message_start", "message": {"role": "assistant"}})
             emit({"type": "message_end", "message": {"role": "assistant",
@@ -597,25 +626,24 @@ def test_pi_truncated_tool_call_fails_turn(tmp_path, monkeypatch, capsys, partia
 
     with pytest.raises(
         RuntimeError,
-        match="truncated by token limit.*partial tool-call syntax",
+        match="tool-call syntax",
     ):
         manager.turn("hello", model="qwen")
     manager._close_process()
 
-    assert "pi-truncated-tool-call signal=finish_reason" in capsys.readouterr().err
+    assert "pi-tool-call-leak terminal_reason=length" in capsys.readouterr().err
 
 
-def test_pi_truncated_tool_call_uses_marker_fallback(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("FAKE_PI_MODE", "truncated-tool-call")
-    monkeypatch.setenv("FAKE_PI_PARTIAL", "<tool_call>\n<function=bash")
-    monkeypatch.setenv("FAKE_PI_OMIT_FINISH_REASON", "1")
+def test_pi_tool_call_leak_balanced_block_fails_turn(tmp_path, monkeypatch, capsys):
+    """Test that a complete but malformed tool call block (balanced tags with junk content) fails."""
+    monkeypatch.setenv("FAKE_PI_MODE", "tool-call-leak-balanced")
     manager = _pi_manager(tmp_path, monkeypatch)
 
-    with pytest.raises(RuntimeError, match="truncated by token limit"):
+    with pytest.raises(RuntimeError, match="tool-call syntax"):
         manager.turn("hello", model="qwen")
     manager._close_process()
 
-    assert "pi-truncated-tool-call signal=markers" in capsys.readouterr().err
+    assert "pi-tool-call-leak terminal_reason=stop" in capsys.readouterr().err
 
 
 def test_pi_prose_tool_call_mention_is_untouched(tmp_path, monkeypatch):
