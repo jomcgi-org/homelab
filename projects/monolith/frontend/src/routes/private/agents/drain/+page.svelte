@@ -358,8 +358,14 @@
                 <span class="job-sub">
                   {#if job.state === "error" && job.summary_head}
                     <span class="err-text">{job.summary_head}</span>
-                  {:else}
+                  {:else if job.state === "ok" && job.outcome === "pr" && job.pr}
+                    <span class="pr-ref mono"
+                      >{D.labels.numberMark}{job.pr.number}</span
+                    >
+                  {:else if job.state === "ok"}
                     {job.summary_head || job.prompt_head || D.labels.dash}
+                  {:else}
+                    {job.prompt_head || job.summary_head || D.labels.dash}
                   {/if}
                 </span>
               </span>
@@ -424,53 +430,69 @@
                   <h3 class="detail-label">{D.labels.promptWord}</h3>
                   <pre class="detail-pre">{detail.job.prompt ||
                       D.labels.dash}</pre>
+                  {#if detail.job.outcome === "pr" && detail.job.pr}
+                    {@const state = prState(detail.job.pr)}
+                    <h3 class="detail-label">{D.labels.prCard}</h3>
+                    <div class="pr-card">
+                      <div class="pr-card-head">
+                        <a
+                          class="pr-number mono"
+                          href={detail.job.pr.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label={`${D.labels.openPr} ${D.labels.numberMark}${detail.job.pr.number}`}
+                        >
+                          {D.labels.numberMark}{detail.job.pr.number}
+                        </a>
+                        {#if state}
+                          <span class={`pr-state mono pr-state-${state}`}>
+                            {prStateLabel(detail.job.pr)}
+                          </span>
+                        {/if}
+                      </div>
+                      {#if detail.job.pr.title}
+                        <div class="pr-title">{detail.job.pr.title}</div>
+                      {/if}
+                      {#if detail.job.pr.changed_files != null && detail.job.pr.additions != null && detail.job.pr.deletions != null}
+                        <div class="pr-stats mono">
+                          <span>
+                            {detail.job.pr.changed_files}
+                            {detail.job.pr.changed_files === 1
+                              ? D.labels.fileWord
+                              : D.labels.filesWord}
+                          </span>
+                          <span class="pr-add">
+                            {D.labels.additionMark}{detail.job.pr.additions}
+                          </span>
+                          <span class="pr-del">
+                            {D.labels.deletionMark}{detail.job.pr.deletions}
+                          </span>
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
                   {#if detail.job.last_summary}
-                    {#if detail.job.outcome === "report"}
+                    {#if detail.job.outcome === "pr"}
+                      {@const summaryWithoutUrl = detail.job.last_summary
+                        .replace(
+                          /https:\/\/github\.com\/[^\s]+\/pull\/\d+/g,
+                          "",
+                        )
+                        .trim()}
+                      {#if summaryWithoutUrl}
+                        <h3 class="detail-label">
+                          {D.labels.resultWordForReport}
+                        </h3>
+                        <div class="result-md">
+                          {@html renderAgentMarkdown(summaryWithoutUrl)}
+                        </div>
+                      {/if}
+                    {:else if detail.job.outcome === "report"}
                       <h3 class="detail-label">
                         {D.labels.resultWordForReport}
                       </h3>
                       <div class="result-md">
                         {@html renderAgentMarkdown(detail.job.last_summary)}
-                      </div>
-                    {:else if detail.job.outcome === "pr" && detail.job.pr}
-                      {@const state = prState(detail.job.pr)}
-                      <h3 class="detail-label">{D.labels.prCard}</h3>
-                      <div class="pr-card">
-                        <div class="pr-card-head">
-                          <a
-                            class="pr-number mono"
-                            href={detail.job.pr.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            aria-label={`${D.labels.openPr} ${D.labels.numberMark}${detail.job.pr.number}`}
-                          >
-                            {D.labels.numberMark}{detail.job.pr.number}
-                          </a>
-                          {#if state}
-                            <span class={`pr-state mono pr-state-${state}`}>
-                              {prStateLabel(detail.job.pr)}
-                            </span>
-                          {/if}
-                        </div>
-                        {#if detail.job.pr.title}
-                          <div class="pr-title">{detail.job.pr.title}</div>
-                        {/if}
-                        {#if detail.job.pr.changed_files != null && detail.job.pr.additions != null && detail.job.pr.deletions != null}
-                          <div class="pr-stats mono">
-                            <span>
-                              {detail.job.pr.changed_files}
-                              {detail.job.pr.changed_files === 1
-                                ? D.labels.fileWord
-                                : D.labels.filesWord}
-                            </span>
-                            <span class="pr-add">
-                              {D.labels.additionMark}{detail.job.pr.additions}
-                            </span>
-                            <span class="pr-del">
-                              {D.labels.deletionMark}{detail.job.pr.deletions}
-                            </span>
-                          </div>
-                        {/if}
                       </div>
                     {:else}
                       <h3 class="detail-label">{D.labels.resultWord}</h3>
@@ -1004,6 +1026,12 @@
     padding: 4px 8px;
     border: 1px solid var(--line);
     text-align: left;
+  }
+  .pr-ref {
+    padding: 4px 8px;
+    background: var(--panel-bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
   }
   .pr-card {
     display: flex;

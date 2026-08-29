@@ -72,7 +72,7 @@ afterEach(async () => {
 
 describe("drain outcomes", () => {
   test("renders report markdown instead of a summary pre block", async () => {
-    const summary = "Results:\n\n- first item\n- used `code`";
+    const summary = "Results:\n\n- first item\n- used **bold** and `code`";
     const target = await renderPage(listJob(), {
       ...listJob(),
       prompt: "Audit the repository",
@@ -81,7 +81,8 @@ describe("drain outcomes", () => {
 
     expect(target.querySelector(".result-md li")).not.toBeNull();
     expect(target.querySelector(".result-md code").textContent).toBe("code");
-    expect(target.querySelector(".result-md").innerHTML).not.toContain("*");
+    expect(target.querySelector(".result-md").innerHTML).not.toContain("**");
+    expect(target.querySelector(".result-md").innerHTML).toContain("<strong>");
     expect(target.querySelectorAll(".job-detail .detail-pre")).toHaveLength(1);
   });
 
