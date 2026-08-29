@@ -81,6 +81,19 @@ class TestExtraction:
         assert content is None
         assert failure.status == ta.NOT_FRESH
 
+    def test_a_reduced_diff_from_a_large_turn_still_yields_the_artifact(self):
+        """When the full work diff busts the guest shim's size caps, the shim
+        now emits a reduced diff holding only small added files (truncated stays
+        True). A node whose accumulated diff is huge must still get its 200-byte
+        plan.json through, or retries livelock on diff size alone."""
+        body = '{"nodes": [{"key": "research", "kind": "work"}]}'
+        reduced_diff = added_file_diff("plan.json", body)
+        content, failure = ta.extract_artifact(reduced_diff, "plan.json")
+        assert failure is None
+        assert content == body
+        outcome = ta.evaluate(reduced_diff, "plan.json", SCHEMA)
+        assert outcome.ok
+
 
 class TestEvaluate:
     def test_accepts_a_valid_document(self):
