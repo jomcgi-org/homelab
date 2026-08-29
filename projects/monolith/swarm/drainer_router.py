@@ -121,6 +121,88 @@ def _reap_stale_drain_cycles(dbos) -> int:
             exc_info=True,
         )
 
+    return reaped + _reap_version_stranded_cycles(dbos)
+
+
+def _current_app_version() -> str:
+    """The running DBOS app version, or "" when it cannot be resolved.
+
+    Mirrors _server_app_version in swarm/router.py, including its discipline:
+    an unresolvable version returns "" and callers must treat that as "cannot
+    tell" rather than as evidence of stranding. That module documents a real
+    incident where "unknown" was compared literally and marked every live run
+    stranded.
+    """
+    try:
+        from dbos._utils import GlobalParams
+
+        return GlobalParams.app_version or ""
+    except Exception:  # noqa: BLE001
+        logger.warning("could not read the DBOS app version", exc_info=True)
+        return ""
+
+
+def _reap_version_stranded_cycles(dbos) -> int:
+    """Cancel ENQUEUED cycles stamped with a version nothing will dequeue.
+
+    A queued workflow carries the app_version of the process that enqueued it,
+    and the dequeue query filters on application_version equalling the worker's
+    own. So an ENQUEUED row left behind by a previous image is undequeuable:
+    no PENDING row exists for the staleness reaper to find, yet
+    _has_live_drain_cycle counts it regardless of version, so every tick
+    returns already_queued forever. Silent permanent stall, and the only other
+    exit is editing the row by hand, since resume re-enqueues without changing
+    the version.
+
+    Chaining widens the window that produces one of these. A cycle that
+    finishes during the pod's termination grace period still enqueues its
+    successor, while the queue poller threads are daemons and are already gone,
+    so nothing dequeues it before the new image takes over.
+
+    No staleness timer here on purpose: a version mismatch is not slowness, it
+    is a row no worker will ever claim, so it is dead the moment it is
+    observed.
+    """
+    current_version = _current_app_version()
+    if not current_version:
+        # Cannot tell, so do not guess. Cancelling on an unresolvable version
+        # would reap healthy queued work.
+        return 0
+
+    reaped = 0
+    try:
+        workflows = dbos.list_workflows(
+            name="drain_cycle",
+            queue_name=_DRAINER_QUEUE_NAME,
+            status="ENQUEUED",
+            load_input=False,
+            load_output=False,
+        )
+        for workflow in workflows:
+            version = getattr(workflow, "app_version", None) or getattr(
+                workflow, "application_version", None
+            )
+            if not version or version == current_version:
+                continue
+            try:
+                dbos.cancel_workflow(workflow.workflow_id, cancel_children=True)
+                logger.warning(
+                    "qwen drainer cancelled version-stranded cycle %s "
+                    "(enqueued at version %s, running %s)",
+                    workflow.workflow_id,
+                    version,
+                    current_version,
+                )
+                reaped += 1
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "qwen drainer failed to cancel stranded cycle %s",
+                    workflow.workflow_id,
+                    exc_info=True,
+                )
+    except Exception:  # noqa: BLE001
+        logger.warning("qwen drainer stranded-cycle query failed", exc_info=True)
+
     return reaped
 
 
