@@ -55,6 +55,10 @@ VOLUME_DEVICE_ENV = "EMBER_VOLUME_DEV"
 DEFAULT_VOLUME_DEVICE = "/dev/vdb"
 MAX_TURN_DIFF_BYTES = 5 * 1024 * 1024
 MAX_TURN_DIFF_COMPRESSED_BYTES = 1024 * 1024
+# Per-file cap on added files kept in the reduced diff when the full diff
+# blows a cap. Sized for declared artifacts such as plan.json, not for work
+# products.
+MAX_TURN_DIFF_REDUCED_FILE_BYTES = 64 * 1024
 
 
 def egress_proxy_env():
@@ -167,6 +171,37 @@ def _capture_turn_base(checkout_dir):
         return None
 
 
+def _reduced_added_file_diff(raw):
+    """Keep small added files so declared artifacts survive a capped full diff.
+
+    Server-side artifact validation retries when a declared artifact is absent.
+    Dropping a small JSON artifact with the rest of a huge work diff can make
+    those retries livelock.
+    """
+    marker = b"diff --git "
+    # Boundaries are the newline-anchored header only: every hunk line carries
+    # a +/-/space prefix, so a bare "diff --git " at line start is always a
+    # real per-file boundary, never file content. Slicing by offset keeps each
+    # section's bytes, trailing newline included, exactly as git emitted them.
+    starts = [0] if raw.startswith(marker) else []
+    index = 0
+    while True:
+        index = raw.find(b"\n" + marker, index)
+        if index == -1:
+            break
+        starts.append(index + 1)
+        index += 1
+    kept = []
+    for start, end in zip(starts, starts[1:] + [len(raw)]):
+        section = raw[start:end]
+        if (
+            b"\nnew file mode " in section
+            and len(section) <= MAX_TURN_DIFF_REDUCED_FILE_BYTES
+        ):
+            kept.append(section)
+    return b"".join(kept)
+
+
 def _capture_turn_diff(checkout_dir, base_sha):
     """Return a compressed git diff record without ever failing the turn."""
     if not base_sha:
@@ -191,12 +226,30 @@ def _capture_turn_diff(checkout_dir, base_sha):
             )
             return None
         raw = result.stdout + _untracked_file_diffs(checkout_dir)
+        truncated_outcome = None
         if len(raw) > MAX_TURN_DIFF_BYTES:
-            _emit_turn_diff_outcome(checkout_dir, "diff", "truncated_raw")
-            return {"base_sha": base_sha, "zlib_b64": None, "truncated": True}
-        compressed = zlib.compress(raw)
-        if len(compressed) > MAX_TURN_DIFF_COMPRESSED_BYTES:
-            _emit_turn_diff_outcome(checkout_dir, "diff", "truncated_compressed")
+            truncated_outcome = "truncated_raw"
+        else:
+            compressed = zlib.compress(raw)
+            if len(compressed) > MAX_TURN_DIFF_COMPRESSED_BYTES:
+                truncated_outcome = "truncated_compressed"
+        if truncated_outcome:
+            reduced = _reduced_added_file_diff(raw)
+            reduced_compressed = zlib.compress(reduced)
+            if (
+                reduced
+                and len(reduced) <= MAX_TURN_DIFF_BYTES
+                and len(reduced_compressed) <= MAX_TURN_DIFF_COMPRESSED_BYTES
+            ):
+                _emit_turn_diff_outcome(
+                    checkout_dir, "diff", truncated_outcome + "_reduced"
+                )
+                return {
+                    "base_sha": base_sha,
+                    "zlib_b64": base64.b64encode(reduced_compressed).decode("ascii"),
+                    "truncated": True,
+                }
+            _emit_turn_diff_outcome(checkout_dir, "diff", truncated_outcome)
             return {"base_sha": base_sha, "zlib_b64": None, "truncated": True}
         _emit_turn_diff_outcome(checkout_dir, "diff", "success")
         return {

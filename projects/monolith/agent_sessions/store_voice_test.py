@@ -1,22 +1,23 @@
 from __future__ import annotations
 
+import base64
 import json
+import zlib
 from datetime import datetime
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 from agent_sessions import store
+from agent_sessions.transport import Turn
 from agent_sessions.voice import extract_voice_summary
 
 
 @pytest.fixture
-def session():
+def session(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'store_voice_test.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     table_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -83,6 +84,43 @@ def test_session_and_turn_round_trip(session):
     assert truncated.diff_blob is None
     assert truncated.diff_truncated is True
     assert truncated.diff_base_sha == "fedcba"
+
+
+def test_persist_turn_keeps_blob_when_diff_is_truncated(session, monkeypatch):
+    agent = store.create_session(session, "local-2", "/workspace", "main")
+    agent_id = agent.id
+    session.commit()
+    compressed = zlib.compress(b"diff --git a/plan.json b/plan.json\n")
+    monkeypatch.setattr(store, "get_engine", session.get_bind)
+    turn = Turn(
+        result="Done",
+        terminal_reason="completed",
+        stop_reason="end_turn",
+        is_error=False,
+        permission_denials=[],
+        num_turns=1,
+        session_id="cli-1",
+        usage={},
+        total_cost_usd=0.0,
+        duration_ms=1,
+        activities=[],
+        diff={
+            "base_sha": "a" * 40,
+            "zlib_b64": base64.b64encode(compressed).decode("ascii"),
+            "truncated": True,
+        },
+    )
+
+    store.persist_turn_from_pending_sync(
+        agent_id, 1, "save the plan", turn, "Done", "completed"
+    )
+
+    session.expire_all()
+    persisted = store.get_turn(session, agent_id, 1)
+    assert persisted is not None
+    assert persisted.diff_blob == compressed
+    assert persisted.diff_truncated is True
+    assert persisted.diff_base_sha == "a" * 40
 
 
 @pytest.mark.parametrize(

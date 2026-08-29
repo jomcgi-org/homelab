@@ -230,7 +230,8 @@ def _guest_diff(value, session_id=None) -> dict | None:
     """Validate optional guest diff metadata without making it turn-critical.
 
     An absent payload is silent: guests predating diff capture send nothing and
-    that is not a fault. A payload that is present but invalid is logged.
+    that is not a fault. Truncated payloads may carry a validated reduced blob.
+    A payload that is present but invalid is logged.
     """
     if value is None:
         return None
@@ -248,10 +249,8 @@ def _guest_diff(value, session_id=None) -> dict | None:
         return _reject_guest_diff(session_id, "base_sha is not a 40 to 64 char hex sha")
     if not isinstance(truncated, bool):
         return _reject_guest_diff(session_id, "truncated is not a bool")
-    if truncated:
-        if encoded is None:
-            return value
-        return _reject_guest_diff(session_id, "truncated payload carried a blob")
+    if truncated and encoded is None:
+        return value
     if not isinstance(encoded, str):
         return _reject_guest_diff(session_id, "zlib_b64 is not a string")
     try:

@@ -706,8 +706,9 @@ def persist_turn_from_pending_sync(
             try:
                 diff_base_sha = turn.diff["base_sha"]
                 diff_truncated = turn.diff["truncated"]
-                if not diff_truncated:
-                    diff_blob = base64.b64decode(turn.diff["zlib_b64"], validate=True)
+                encoded_diff = turn.diff.get("zlib_b64")
+                if encoded_diff is not None:
+                    diff_blob = base64.b64decode(encoded_diff, validate=True)
             except (KeyError, TypeError, ValueError, binascii.Error):
                 diff_blob = None
                 diff_truncated = False

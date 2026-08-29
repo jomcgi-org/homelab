@@ -74,7 +74,7 @@ def _stored_compare(data: dict) -> dict | None:
         return None
     return {
         "files": parse_unified_diff(raw),
-        "truncated": False,
+        "truncated": bool(data.get("diff_truncated")),
         "source": "stored",
     }
 
