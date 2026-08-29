@@ -122,6 +122,36 @@ actions:
           # where, so this walks the tree to depth 3 instead of naming paths.
           #
           # Costs no cache traffic: du reads metadata, uploads nothing.
+          # ---- snapshot hygiene ------------------------------------------
+          # Drop bazel's reusable-sandbox stash before the runner snapshots
+          # this VM. `common --reuse_sandbox_directories` (preset.bazelrc)
+          # keeps emptied sandbox directories around so a later LOCAL action
+          # skips the mkdir and symlink work. On this repo local execution is
+          # only the `no-remote-exec` apko actions, everything else is on RBE,
+          # and the stash holds no input and no output: it is scratch that a
+          # cold start pays for and cannot use.
+          #
+          # Measured on candidate 9e29fc49 (#5401's depth-3 probe), identical
+          # at the start and the end of the run:
+          #
+          #    15G  output-base/external          the honest closure
+          #   7.8G  output-base/execroot/_main    what makes a warm run warm
+          #   6.8G  output-base/sandbox/sandbox_stash
+          #    30G  /home/buildbuddy/workspace
+          #
+          # Cold restores were 61% of the whole group's download traffic over
+          # the 6 days to 2026-08-28, 161 of them at a uniform 15 to 20 GB, so
+          # 23% off the workspace is worth about 100 GB/day across every lane
+          # at once. Nothing is re-fetched to replace it: the next run just
+          # creates sandbox directories the ordinary way.
+          #
+          # An EXIT trap, not a last line, because the main seed path below
+          # `exit 0`s early and THAT is the snapshot every new branch inherits.
+          # rm is unconditional and ignores errors so it can never turn a green
+          # run red; if the runner layout ever moves, the WORKSPACE lines the
+          # probe prints are what will show it.
+          trap 'rm -rf /home/buildbuddy/workspace/output-base/sandbox 2>/dev/null || true' EXIT
+
           workspace_breakdown() {
             echo "WORKSPACE $1:"
             du -hx -d 3 /home/buildbuddy/workspace 2>/dev/null |
@@ -417,6 +447,12 @@ actions:
           # Same composition sampling as pr-checks, and for the same reason: this
           # action has its own snapshot namespace, its own 18.2 GB cold unit,
           # and its own copy of the whole workspace. See pr-checks for the why.
+          # ---- snapshot hygiene ------------------------------------------
+          # Same reason as pr-checks: bazel's reusable-sandbox stash is 6.8G of
+          # scratch inside a snapshot this action restores cold at 18.2 GB a
+          # time. See pr-checks for the measurement.
+          trap 'rm -rf /home/buildbuddy/workspace/output-base/sandbox 2>/dev/null || true' EXIT
+
           workspace_breakdown() {
             echo "WORKSPACE $1:"
             du -hx -d 3 /home/buildbuddy/workspace 2>/dev/null |
