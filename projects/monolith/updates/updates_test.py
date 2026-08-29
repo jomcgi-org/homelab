@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
@@ -14,7 +15,18 @@ from auth.dependencies import reset_current_principal, set_current_principal
 from core.db import get_session
 from updates import mcp, router, store
 from updates.models import ProductUpdate
-from updates.schemas import ProductUpdateSubmission, Project, Technology
+from updates.schemas import (
+    ProductUpdateSubmission,
+    Project,
+    Technology,
+    UpdateCategory,
+)
+
+VANCOUVER = ZoneInfo("America/Vancouver")
+
+
+def today():
+    return datetime.now(VANCOUVER).date()
 
 
 @pytest.fixture(name="engine")
@@ -47,7 +59,7 @@ def principal(*scopes: str) -> Principal:
 
 def submission(**overrides) -> ProductUpdateSubmission:
     values = {
-        "published_on": date(2026, 8, 29),
+        "published_on": today(),
         "category": "new-feature",
         "headline": "Private product updates",
         "summary": "A daily release journal is now available on the private site.",
@@ -104,23 +116,57 @@ def test_publish_is_immutable_and_exact_replays_are_idempotent(engine):
             )
 
 
+def test_historical_replays_succeed_but_new_historical_entries_fail(engine):
+    historical = submission().model_copy(
+        update={"published_on": today() - timedelta(days=1)}
+    )
+    row = ProductUpdate(
+        **historical.model_dump(mode="python"),
+        submitted_by="workload:daily-updates",
+        submitted_authority="standing",
+    )
+    with Session(engine) as session:
+        session.add(row)
+        session.commit()
+
+        replay, created = store.publish_update(historical, principal(), session=session)
+        assert created is False
+        assert replay.published_on == historical.published_on
+
+        unseen = historical.model_copy(
+            update={
+                "published_on": today() - timedelta(days=2),
+                "source_base_sha": "e" * 40,
+                "source_head_sha": "f" * 40,
+            }
+        )
+        with pytest.raises(store.InvalidPublishedDate, match="Vancouver date"):
+            store.publish_update(unseen, principal(), session=session)
+
+
 def test_archive_filters_entries_and_keeps_unfiltered_facet_counts(engine):
+    historical = submission().model_copy(
+        update={
+            "published_on": today() - timedelta(days=1),
+            "category": UpdateCategory.IMPROVEMENT,
+            "headline": "Storage improvements",
+            "projects": [Project.HOME_CLUSTER],
+            "technologies": [Technology.STORAGE],
+            "source_base_sha": "c" * 40,
+            "source_head_sha": "d" * 40,
+            "source_commit_count": 2,
+        }
+    )
     with Session(engine) as session:
         store.publish_update(submission(), principal(), session=session)
-        store.publish_update(
-            submission(
-                published_on=date(2026, 8, 28),
-                category="improvement",
-                headline="Storage improvements",
-                projects=["home-cluster"],
-                technologies=["storage"],
-                source_base_sha="c" * 40,
-                source_head_sha="d" * 40,
-                source_commit_count=2,
-            ),
-            principal(),
-            session=session,
+        session.add(
+            ProductUpdate(
+                **historical.model_dump(mode="python"),
+                submitted_by="workload:daily-updates",
+                submitted_authority="standing",
+            )
         )
+        session.commit()
 
         result = store.archive(
             project=Project.MONOLITH,
@@ -187,5 +233,7 @@ def test_submission_tool_returns_private_page_and_source_links(monkeypatch):
 
     assert result["accepted"] is True
     assert result["created"] is True
-    assert result["url"] == ("https://private.jomcgi.dev/updates#update-2026-08-29")
+    assert result["url"] == (
+        f"https://private.jomcgi.dev/updates#update-{today().isoformat()}"
+    )
     assert result["source_compare_url"].endswith(f"{'a' * 40}...{'b' * 40}")
