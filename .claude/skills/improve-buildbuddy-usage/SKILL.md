@@ -316,8 +316,29 @@ runner the way it is on a developer machine, and pruning it would save nothing.
 Docker's on-disk state is 4.0K, so the base images are not in there either.
 
 Everything is `/home/buildbuddy/workspace`, and `/usr` plus `/opt` together are
-under 1G, so there is nowhere else for the 19G to be. #5401 walks that tree to
-depth 3 rather than naming paths, because naming paths is what got this wrong.
+under 1G, so there is nowhere else for it to be. #5401 walked that tree to
+depth 3 rather than naming paths, because naming paths is what got this wrong,
+and candidate `9e29fc49` returned the split:
+
+```
+ 15G  output-base/external               the honest dependency closure
+7.8G  output-base/execroot/_main         what makes a warm run warm
+6.8G  output-base/sandbox/sandbox_stash  scratch
+514M  .home                              every bazel cache, together
+ 30G  /home/buildbuddy/workspace
+```
+
+Identical at the start and the end of the run. **`sandbox_stash` is the one
+part that is neither an input nor an output.** It is bazel's
+`--reuse_sandbox_directories` pool (set in `preset.bazelrc`), emptied sandbox
+directories kept so a later LOCAL action skips the mkdir and symlink work. On
+this repo local execution is only the `no-remote-exec` apko actions, so a cold
+start pays 6.8G for something it cannot use, and nothing is re-fetched to
+replace it: the next run just creates sandbox directories the ordinary way.
+Dropped before the snapshot is saved in #5402.
+
+`external` and `execroot` are not free either, but neither is scratch. Shrinking
+those means shrinking the dependency closure, which is lever 4's problem.
 
 ## Refuted, do not retry
 
@@ -358,6 +379,7 @@ depth 3 rather than naming paths, because naming paths is what got this wrong.
 | #5374 (2026-08-27) | quoted labels in the affected-targets query; `--repo` read from the git remote | removes the 19% of PR fallbacks that no diff explained, about 25 GB/day across both lanes; re-measure after 2026-09-03 |
 | #5397 (2026-08-28) | `du` breakdown of the runner workspace at both ends of both actions | diagnostic, no bytes either way; read `WORKSPACE ... :` in any pr-checks log |
 | #5401 (2026-08-29) | probe walks the workspace to depth 3 instead of naming paths | #5397's guessed paths refuted the `content_addressable` theory and located nothing; this localises the 19G |
+| #5402 (2026-08-29) | drop `output-base/sandbox` on an EXIT trap in both actions | 6.8G of 30G, so 23% off every cold restore in every lane; expect about 100 GB/day, re-measure after 2026-09-05 |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
@@ -369,14 +391,13 @@ Ranked by expected bytes saved. Everything here is a **hypothesis that must be
 confirmed against a real invocation** before you act on it.
 
 1. **Shrink the runner snapshot**, 61% of all bytes and now the whole ball
-   game. 161 restores in 6 days at a uniform 15 to 20 GB, and one fix would cut
-   every lane at once. Read the `WORKSPACE ...:` lines in a recent pr-checks
-   log before doing anything: the caches are ruled out (187M) and the 19G is
-   somewhere inside `/home/buildbuddy/workspace`. Whatever the depth-3 walk
-   names, check first whether the runner still NEEDS it at the end of a run:
-   anything dropped is re-fetched through `--experimental_remote_downloader`
-   on the next run, which is download bytes again, so a thing that is rebuilt
-   every run is a saving and a thing that is reused is not.
+   game. 161 restores in 6 days at a uniform 15 to 20 GB, and one fix cuts
+   every lane at once. The scratch is gone as of #5402; what is left is 15G of
+   `external` and 7.8G of `execroot`, both real. The test for anything else you
+   are tempted to delete: is it rebuilt every run, or reused? Reused content
+   dropped here is re-fetched through `--experimental_remote_downloader` next
+   run, which is download bytes again. Read the `WORKSPACE ...:` lines in a
+   recent pr-checks log before touching anything.
 2. **Narrow the deleted-file fallback**, 32% of the local lane's full-suite
    bytes. The rule exists because a deleted file cannot be mapped to a label by
    static inspection, the file being gone. It can be mapped from the **base
