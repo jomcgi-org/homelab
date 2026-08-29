@@ -81,6 +81,22 @@ _CAPACITY_BACKOFF_SECONDS = (5, 10, 20, 30, 45, 60, 60, 90, 90, 120, 120, 150, 1
 # and send the rest back around the ladder.
 _CAPACITY_JITTER = 0.25
 
+# Every OTHER retryable create failure. Not a capacity denial, so it does not
+# have to outlast a whole turn, but 17 seconds was far too short: the control
+# plane returns 500 prime_failed with retryable true when the gRPC connection
+# to noded drops mid-prime, and on 2026-08-29 seven consecutive creates died
+# that way at 17 to 22 seconds each while EmberVM itself was healthy (every pod
+# Running, zero restarts). The condition cleared on its own and the next create
+# succeeded after 3m30s, so the server was right that it was retryable and the
+# client simply gave up first.
+#
+# Sums to about 7 minutes, which covers that observed 3m30s recovery with real
+# margin while still failing fast enough that a genuinely stuck control plane
+# does not hold a caller for the capacity ladder's 19 minutes. A first draft
+# summed to 172s and its own test caught that as short of the 210s it was
+# sized for.
+_CREATE_RETRY_SECONDS = (2, 5, 10, 20, 30, 45, 60, 90, 90, 90)
+
 
 def _capacity_denial(exc: httpx.HTTPStatusError) -> bool:
     """True when a 429 says the workload is at capacity, not merely busy."""
@@ -433,8 +449,10 @@ class EmberVmShimTransport:
                     )
                     await asyncio.sleep(delay)
                     return await self.create_session(restore_from, model, _attempt + 1)
-            elif _attempt < 3 and _retryable_from_response(exc):
-                await asyncio.sleep((2, 5, 10)[_attempt])
+            elif _attempt < len(_CREATE_RETRY_SECONDS) and _retryable_from_response(
+                exc
+            ):
+                await asyncio.sleep(_CREATE_RETRY_SECONDS[_attempt])
                 return await self.create_session(restore_from, model, _attempt + 1)
             raise EmberVMTransportError(_status_error_detail(exc)) from exc
         except httpx.TransportError as exc:
