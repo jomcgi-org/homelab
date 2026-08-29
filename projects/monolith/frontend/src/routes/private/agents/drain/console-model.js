@@ -81,6 +81,36 @@ export function filterJobs(jobs, filter) {
   return (jobs || []).filter((job) => job.state === filter);
 }
 
+const REF = /(?<![\w&/])#(\d{2,6})\b/g;
+const FENCE_OPEN = /^```\w*\s*$/;
+const FENCE_CLOSE = /^```\s*$/;
+
+export function linkifyRefs(text, repo = "jomcgi/homelab") {
+  const targetRepo = repo || "jomcgi/homelab";
+  const out = [];
+  let inFence = false;
+  for (const line of String(text ?? "").split("\n")) {
+    if (!inFence && FENCE_OPEN.test(line)) {
+      inFence = true;
+      out.push(line);
+    } else if (inFence && FENCE_CLOSE.test(line)) {
+      inFence = false;
+      out.push(line);
+    } else if (inFence || line.includes("`")) {
+      out.push(line);
+    } else {
+      out.push(
+        line.replace(
+          REF,
+          (_, number) =>
+            `[#${number}](https://github.com/${targetRepo}/issues/${number})`,
+        ),
+      );
+    }
+  }
+  return out.join("\n");
+}
+
 // Effective call count for the fingerprint: a live turn reports its partial
 // activity count, a finished one its recorded total.
 export function jobCalls(job) {

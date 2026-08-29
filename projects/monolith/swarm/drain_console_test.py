@@ -178,6 +178,11 @@ class TestComposeJobs:
                 last_run_at=NOW - timedelta(minutes=1),
                 last_status="ok",
             ),
+            _job(
+                name="failed-mid",
+                last_run_at=NOW - timedelta(minutes=30),
+                last_status="error",
+            ),
             _job(name="due-b", next_run_at=NOW - timedelta(minutes=1)),
             _job(name="due-a", next_run_at=NOW - timedelta(minutes=30)),
             _job(
@@ -193,6 +198,7 @@ class TestComposeJobs:
             "due-a",
             "due-b",
             "done-new",
+            "failed-mid",
             "done-old",
         ]
 

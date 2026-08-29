@@ -18,6 +18,7 @@
     jobCalls,
     jobClass,
     laneClass,
+    linkifyRefs,
   } from "./console-model.js";
 
   const POLL_MS = 5000;
@@ -95,6 +96,10 @@
     }
     expanded = name;
     loadDetail(name);
+  }
+
+  function stopPropagation(event) {
+    event.stopPropagation();
   }
 
   async function kick() {
@@ -342,33 +347,51 @@
         <div class="job-list">
           {#each visibleJobs as job (job.name)}
             {@const calls = jobCalls(job)}
-            <button
+            <!-- The nested button provides keyboard access while this div enlarges the pointer target. -->
+            <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+            <div
               class="job-row"
               class:open={expanded === job.name}
-              type="button"
-              aria-expanded={expanded === job.name}
               onclick={() => toggle(job.name)}
             >
-              <span
-                class={`dot ${jobClass(job.state)}`}
-                title={D.jobStates[job.state] || job.state}
-              ></span>
-              <span class="job-main">
-                <span class="job-name mono">{job.name}</span>
-                <span class="job-sub">
-                  {#if job.state === "error" && job.summary_head}
-                    <span class="err-text">{job.summary_head}</span>
-                  {:else if job.state === "ok" && job.outcome === "pr" && job.pr}
-                    <span class="pr-ref mono"
-                      >{D.labels.numberMark}{job.pr.number}</span
-                    >
-                  {:else if job.state === "ok"}
-                    {job.summary_head || job.prompt_head || D.labels.dash}
-                  {:else}
-                    {job.prompt_head || job.summary_head || D.labels.dash}
-                  {/if}
+              <button
+                class="job-toggle"
+                type="button"
+                aria-expanded={expanded === job.name}
+                onclick={(event) => {
+                  stopPropagation(event);
+                  toggle(job.name);
+                }}
+              >
+                <span
+                  class={`dot ${jobClass(job.state)}`}
+                  title={D.jobStates[job.state] || job.state}
+                ></span>
+                <span class="job-main">
+                  <span class="job-name mono">{job.name}</span>
+                  <span class="job-sub">
+                    {#if job.state === "error" && job.summary_head}
+                      <span class="err-text">{job.summary_head}</span>
+                    {:else if job.state === "ok" && job.outcome === "pr" && job.pr}
+                      <span class="pr-space" aria-hidden="true"></span>
+                    {:else if job.state === "ok"}
+                      {job.summary_head || job.prompt_head || D.labels.dash}
+                    {:else}
+                      {job.prompt_head || job.summary_head || D.labels.dash}
+                    {/if}
+                  </span>
                 </span>
-              </span>
+              </button>
+              {#if job.state === "ok" && job.outcome === "pr" && job.pr}
+                <a
+                  class="pr-ref mono"
+                  href={job.pr.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  onclick={stopPropagation}
+                  >{D.labels.numberMark}{job.pr.number}</a
+                >
+              {/if}
               <span class="job-calls mono" class:runaway={isRunaway(calls)}>
                 {#if calls != null}
                   <span class="track" aria-hidden="true">
@@ -398,7 +421,7 @@
               <span class={`job-state mono state-${jobClass(job.state)}`}>
                 {D.jobStates[job.state] || job.state}
               </span>
-            </button>
+            </div>
 
             {#if expanded === job.name}
               <div class="job-detail">
@@ -408,11 +431,24 @@
                   <p class="quiet-note mono">{detail.error}</p>
                 {:else if detail}
                   <div class="detail-head">
-                    <span class="mono detail-kind">
-                      {detail.job.repo || ""}{detail.job.branch
-                        ? `@${detail.job.branch}`
-                        : ""}
-                    </span>
+                    {#if detail.job.repo}
+                      <a
+                        class="mono detail-kind detail-repo"
+                        href={`https://github.com/${detail.job.repo}${detail.job.branch ? `/tree/${detail.job.branch}` : ""}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {detail.job.repo}{detail.job.branch
+                          ? `@${detail.job.branch}`
+                          : ""}
+                      </a>
+                    {:else}
+                      <span class="mono detail-kind">
+                        {detail.job.repo || ""}{detail.job.branch
+                          ? `@${detail.job.branch}`
+                          : ""}
+                      </span>
+                    {/if}
                     <span class="grow" aria-hidden="true"></span>
                     {#if ["error", "parked", "ok"].includes(detail.job.state)}
                       <button
@@ -484,7 +520,9 @@
                           {D.labels.resultWordForReport}
                         </h3>
                         <div class="result-md">
-                          {@html renderAgentMarkdown(summaryWithoutUrl)}
+                          {@html renderAgentMarkdown(
+                            linkifyRefs(summaryWithoutUrl, detail.job.repo),
+                          )}
                         </div>
                       {/if}
                     {:else if detail.job.outcome === "report"}
@@ -492,7 +530,9 @@
                         {D.labels.resultWordForReport}
                       </h3>
                       <div class="result-md">
-                        {@html renderAgentMarkdown(detail.job.last_summary)}
+                        {@html renderAgentMarkdown(
+                          linkifyRefs(detail.job.last_summary, detail.job.repo),
+                        )}
                       </div>
                     {:else}
                       <h3 class="detail-label">{D.labels.resultWord}</h3>
@@ -794,6 +834,7 @@
     overflow: hidden;
   }
   .job-row {
+    position: relative;
     width: 100%;
     min-height: 46px;
     display: flex;
@@ -805,6 +846,20 @@
     color: inherit;
     background: transparent;
     font-size: var(--size-body);
+    text-align: left;
+  }
+  .job-toggle {
+    min-width: 0;
+    align-self: stretch;
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 12px;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    font: inherit;
     text-align: left;
   }
   .job-list > :last-child {
@@ -855,7 +910,7 @@
   }
   .job-sub {
     overflow: hidden;
-    color: var(--muted);
+    color: var(--text-soft);
     font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -937,6 +992,12 @@
   .detail-kind {
     color: var(--muted);
     font-size: var(--size-meta);
+  }
+  .detail-repo {
+    text-decoration: none;
+  }
+  .detail-repo:hover {
+    text-decoration: underline;
   }
   .detail-label {
     margin: 4px 0 0;
@@ -1028,10 +1089,18 @@
     text-align: left;
   }
   .pr-ref {
+    position: absolute;
+    bottom: 8px;
+    left: 32px;
     padding: 4px 8px;
+    color: var(--info);
     background: var(--panel-bg);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
+    text-decoration: none;
+  }
+  .pr-ref:hover {
+    text-decoration: underline;
   }
   .pr-card {
     display: flex;
@@ -1118,6 +1187,7 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     background: var(--panel-bg);
+    color: var(--text-soft);
     font-size: var(--size-body-mono);
   }
   .activities li {

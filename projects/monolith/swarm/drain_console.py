@@ -138,8 +138,8 @@ _STATE_ORDER = {
     "due": 1,
     "scheduled": 2,
     "error": 3,
-    "ok": 4,
-    "parked": 5,
+    "ok": 3,
+    "parked": 4,
 }
 
 
@@ -147,8 +147,8 @@ def _job_sort_key(entry: dict) -> tuple:
     state = entry["state"]
     next_run_at = entry.get("next_run_at") or ""
     last_run_at = entry.get("last_run_at") or ""
-    # Waiting work drains oldest-first (the claim order), finished work reads
-    # newest-first (what just happened is what Joe is checking on).
+    # Waiting work drains oldest-first (the claim order). Finished work (ok and
+    # error together) reads newest-first as one linear history.
     if state in ("due", "scheduled"):
         return (_STATE_ORDER[state], 0, next_run_at, entry["name"])
     return (_STATE_ORDER.get(state, 9), 1, _invert(last_run_at), entry["name"])
