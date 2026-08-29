@@ -6,6 +6,7 @@ from swarm import config
 
 _dbos = None
 _launched = False
+_read_client = None
 
 
 def _enabled() -> bool:
@@ -31,6 +32,42 @@ def init_dbos():
         )
     )
     return _dbos
+
+
+def read_client():
+    """A read-only handle on the DBOS system database, for ANY replica.
+
+    DBOS launches on the leader only, and its system database is constructed
+    inside launch() (dbos/_dbos.py builds _sys_db_field there, and the property
+    raises "System database accessed before DBOS was launched" until it does).
+    So a follower cannot answer even a pure read through the DBOS instance, and
+    the run surfaces are pure reads. Gating them on leadership behind a
+    round-robin Service made roughly half of every console poll 503, which the
+    browser renders as "engine: unreachable".
+
+    DBOSClient is the supported way to read a DBOS application's state from
+    outside it: system database only, no migrations, no workflow registration,
+    and no queue consumption, so a follower holding one still cannot execute
+    anything. Returns None when swarm is disabled or DATABASE_URL is unset,
+    matching init_dbos.
+    """
+    global _read_client
+    if _read_client is not None or not _enabled():
+        return _read_client
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        return None
+    from dbos import DBOSClient
+
+    _read_client = DBOSClient(
+        system_database_url=database_url,
+        dbos_system_schema="dbos",
+        # Deliberately small. This pool exists on every replica that never
+        # launches DBOS and serves console polling, not work. The leader never
+        # builds one at all: it already has the launched instance's pool.
+        system_database_pool_size=2,
+    )
+    return _read_client
 
 
 def is_launched() -> bool:
@@ -64,7 +101,10 @@ def launch() -> None:
 
 
 def shutdown() -> None:
-    global _dbos, _launched
+    global _dbos, _launched, _read_client
+    if _read_client is not None:
+        _read_client.destroy()
+        _read_client = None
     if _dbos is not None and _enabled() and os.environ.get("DATABASE_URL"):
         _dbos.destroy()
         _dbos = None

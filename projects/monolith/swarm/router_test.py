@@ -449,6 +449,80 @@ def test_promote_session_carries_model(monkeypatch):
     assert captured[0].model == "qwen"
 
 
+def test_follower_serves_run_reads_from_the_read_client(monkeypatch):
+    """The read surfaces must answer on a replica that never launched DBOS.
+
+    Two replicas sit behind a Service with no session affinity and DBOS
+    launches on the leader only, so gating reads on is_launched made roughly
+    half of every console poll 503 and the browser reported the engine
+    unreachable while the run was healthy.
+    """
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    composed = []
+
+    class FakeReadClient:
+        def start_workflow(self, *args):  # pragma: no cover - must not be reached
+            raise AssertionError("the read client must never submit a workflow")
+
+    read_client = FakeReadClient()
+
+    def compose(dbos, workflow_id):
+        composed.append(dbos)
+        return {"workflow_id": workflow_id, "dbos_status": "PENDING"}
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: None)
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: False)
+    monkeypatch.setattr(swarm_router.runtime, "read_client", lambda: read_client)
+    monkeypatch.setattr(swarm_router, "_compose_run_view", compose)
+
+    response = client().get("/api/swarm/runs/wf-1")
+
+    assert response.status_code == 200
+    # The read client, not the unlaunched instance, is what composed the view.
+    assert composed == [read_client]
+
+
+def test_leader_serves_run_reads_from_its_launched_instance(monkeypatch):
+    """The leader already holds a pool, so it must not build a second one."""
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    composed = []
+    leader = object()
+
+    def no_client():  # pragma: no cover - must not be reached
+        raise AssertionError("the leader must not construct a read client")
+
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: leader)
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(swarm_router.runtime, "read_client", no_client)
+    monkeypatch.setattr(
+        swarm_router,
+        "_compose_run_view",
+        lambda dbos, workflow_id: (
+            composed.append(dbos)
+            or {"workflow_id": workflow_id, "dbos_status": "PENDING"}
+        ),
+    )
+
+    response = client().get("/api/swarm/runs/wf-1")
+
+    assert response.status_code == 200
+    assert composed == [leader]
+
+
+def test_follower_with_no_read_client_still_refuses(monkeypatch):
+    """No DATABASE_URL means no client to read through, and inventing one would
+    report an empty console as a real answer."""
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: None)
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: False)
+    monkeypatch.setattr(swarm_router.runtime, "read_client", lambda: None)
+
+    response = client().get("/api/swarm/runs/wf-1")
+
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"]
+
+
 def test_follower_replica_returns_503(monkeypatch):
     """DBOS launches on the leader only, but every replica serves the router.
     A follower must refuse rather than submit against an unlaunched runtime."""
@@ -871,7 +945,9 @@ def test_list_runs_clamps_limit_query_parameter(monkeypatch):
     monkeypatch.setattr(
         "swarm.store.list_open_decisions_for", lambda session, workflow_ids: {}
     )
-    monkeypatch.setattr(swarm_router, "_dbos", lambda: object())
+    # list_runs is a READ, so it resolves through _dbos_read and answers on a
+    # follower replica that never launched DBOS.
+    monkeypatch.setattr(swarm_router, "_dbos_read", lambda: object())
     monkeypatch.setattr(swarm_router, "_server_app_version", lambda: "version")
     monkeypatch.setattr("swarm.view.compose_master", compose)
 
