@@ -335,7 +335,13 @@ directories kept so a later LOCAL action skips the mkdir and symlink work. On
 this repo local execution is only the `no-remote-exec` apko actions, so a cold
 start pays 6.8G for something it cannot use, and nothing is re-fetched to
 replace it: the next run just creates sandbox directories the ordinary way.
-Dropped before the snapshot is saved in #5402.
+#5402 turns it off with `common:ci --noreuse_sandbox_directories` AND removes
+the directory on an EXIT trap. Both, deliberately: the flag stops bazel
+populating a stash but cannot reclaim what an earlier snapshot already banked,
+and main's snapshot is what every new branch inherits. With the flag on, bazel
+never looks for a stashed directory, so removing one cannot desync the live
+server's idea of the pool. The trap removes `sandbox_stash` only, never the
+whole `sandbox` tree, which is where live per-action sandboxes go.
 
 `external` and `execroot` are not free either, but neither is scratch. Shrinking
 those means shrinking the dependency closure, which is lever 4's problem.
@@ -379,7 +385,7 @@ those means shrinking the dependency closure, which is lever 4's problem.
 | #5374 (2026-08-27) | quoted labels in the affected-targets query; `--repo` read from the git remote | removes the 19% of PR fallbacks that no diff explained, about 25 GB/day across both lanes; re-measure after 2026-09-03 |
 | #5397 (2026-08-28) | `du` breakdown of the runner workspace at both ends of both actions | diagnostic, no bytes either way; read `WORKSPACE ... :` in any pr-checks log |
 | #5401 (2026-08-29) | probe walks the workspace to depth 3 instead of naming paths | #5397's guessed paths refuted the `content_addressable` theory and located nothing; this localises the 19G |
-| #5402 (2026-08-29) | drop `output-base/sandbox` on an EXIT trap in both actions | 6.8G of 30G, so 23% off every cold restore in every lane; expect about 100 GB/day, re-measure after 2026-09-05 |
+| #5402 (2026-08-29) | `common:ci --noreuse_sandbox_directories` plus an EXIT trap removing `sandbox_stash` | 6.8G of 30G, so 23% off every cold restore in every lane; expect about 100 GB/day, re-measure after 2026-09-05 |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still

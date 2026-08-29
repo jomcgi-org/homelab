@@ -145,12 +145,18 @@ actions:
           # at once. Nothing is re-fetched to replace it: the next run just
           # creates sandbox directories the ordinary way.
           #
+          # `common:ci --noreuse_sandbox_directories` (.bazelrc) is what stops
+          # the stash being populated. It cannot reclaim what an earlier
+          # snapshot already banked, and every branch inherits main's, so this
+          # removes the directory itself. Only `sandbox_stash`, never the whole
+          # `sandbox` tree, which is where live per-action sandboxes go.
+          #
           # An EXIT trap, not a last line, because the main seed path below
           # `exit 0`s early and THAT is the snapshot every new branch inherits.
-          # rm is unconditional and ignores errors so it can never turn a green
-          # run red; if the runner layout ever moves, the WORKSPACE lines the
-          # probe prints are what will show it.
-          trap 'rm -rf /home/buildbuddy/workspace/output-base/sandbox 2>/dev/null || true' EXIT
+          # rm ignores errors so it can never turn a green run red; if the
+          # runner layout ever moves, the WORKSPACE lines the probe prints are
+          # what will show it.
+          trap 'rm -rf /home/buildbuddy/workspace/output-base/sandbox/sandbox_stash 2>/dev/null || true' EXIT
 
           workspace_breakdown() {
             echo "WORKSPACE $1:"
@@ -451,7 +457,7 @@ actions:
           # Same reason as pr-checks: bazel's reusable-sandbox stash is 6.8G of
           # scratch inside a snapshot this action restores cold at 18.2 GB a
           # time. See pr-checks for the measurement.
-          trap 'rm -rf /home/buildbuddy/workspace/output-base/sandbox 2>/dev/null || true' EXIT
+          trap 'rm -rf /home/buildbuddy/workspace/output-base/sandbox/sandbox_stash 2>/dev/null || true' EXIT
 
           workspace_breakdown() {
             echo "WORKSPACE $1:"

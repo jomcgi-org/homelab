@@ -117,6 +117,21 @@ common:ci --repo_env=GHCR_TOKEN
 common:ci --experimental_remote_downloader=grpcs://remote.buildbuddy.io
 common:ci --experimental_remote_downloader_local_fallback
 
+# No reusable-sandbox stash on CI. `preset.bazelrc` sets
+# `common --reuse_sandbox_directories`, which keeps emptied sandbox directories
+# around so a later LOCAL action skips the mkdir and symlink work. That is a
+# fine trade on a laptop and a bad one on a BuildBuddy runner: local execution
+# here is only the `no-remote-exec` apko actions, everything else is on RBE,
+# and the stash reached 6.8G of the runner's 30G workspace (candidate
+# 9e29fc49). The workspace is a VM snapshot that cold starts restore out of the
+# cache 161 times a week at 15 to 20 GB each, which was 61% of this repo's
+# whole BuildBuddy download bill in the 6 days to 2026-08-28. Scratch that a
+# cold start pays for and cannot use is the worst thing to keep in there.
+#
+# Off, not pruned, so bazel never populates a stash and never looks for one.
+# buildbuddy.yaml still removes the directory an earlier snapshot left behind.
+common:ci --noreuse_sandbox_directories
+
 # Pass Semgrep App token to test actions for Pro interfile analysis
 test:ci --test_env=SEMGREP_APP_TOKEN
 
