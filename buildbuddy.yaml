@@ -113,26 +113,20 @@ actions:
           # a single step. Cutting the restore unit is worth more than any
           # remaining test-tree or affected-targets work.
           #
-          # First suspect is the raw download cache. `content_addressable/` has
-          # no GC at all (see the standing comment in .bazelrc and
-          # bazel/tools/bazel-cache-gc.sh, which no CI path runs), so it only
-          # grows, and main's snapshot is re-saved on every push, which every
-          # branch then inherits. Locally that directory is 16G against 240M of
-          # extracted `contents/`.
+          # The first named suspect is REFUTED, and this is what refuted it.
+          # #5397 guessed the raw download cache, `content_addressable/`, which
+          # nothing GCs. Candidate 76ac21dd answered in one run: HOME on a
+          # runner is /home/buildbuddy/workspace/.home, and the whole bazel
+          # cache under it is 187M. /var/lib/docker is 4.0K. All 19G is inside
+          # /home/buildbuddy/workspace, and a guessed path list cannot say
+          # where, so this walks the tree to depth 3 instead of naming paths.
           #
           # Costs no cache traffic: du reads metadata, uploads nothing.
           workspace_breakdown() {
             echo "WORKSPACE $1:"
-            du -shx \
-              "${HOME:-/home/buildbuddy}/.cache/bazel/repository_cache/content_addressable" \
-              "${HOME:-/home/buildbuddy}/.cache/bazel/repository_cache/contents" \
-              "${HOME:-/home/buildbuddy}/.cache/bazel" \
-              /var/lib/docker \
-              /home/buildbuddy/workspace \
-              2>/dev/null || true
-            echo "WORKSPACE $1 top-level:"
-            du -shx /home/buildbuddy/* /var/lib/* /opt/* /usr/* 2>/dev/null |
-              sort -h | tail -12 || true
+            du -hx -d 3 /home/buildbuddy/workspace 2>/dev/null |
+              sort -h | tail -25 || true
+            du -shx /var/lib/docker /usr /opt 2>/dev/null || true
           }
 
           echo "DISK pr-checks start:"; df -h /
@@ -422,19 +416,12 @@ actions:
           # 120GB reservation is the least evidence-based number here.
           # Same composition sampling as pr-checks, and for the same reason: this
           # action has its own snapshot namespace, its own 18.2 GB cold unit,
-          # and its own copy of every cache below. See pr-checks for the why.
+          # and its own copy of the whole workspace. See pr-checks for the why.
           workspace_breakdown() {
             echo "WORKSPACE $1:"
-            du -shx \
-              "${HOME:-/home/buildbuddy}/.cache/bazel/repository_cache/content_addressable" \
-              "${HOME:-/home/buildbuddy}/.cache/bazel/repository_cache/contents" \
-              "${HOME:-/home/buildbuddy}/.cache/bazel" \
-              /var/lib/docker \
-              /home/buildbuddy/workspace \
-              2>/dev/null || true
-            echo "WORKSPACE $1 top-level:"
-            du -shx /home/buildbuddy/* /var/lib/* /opt/* /usr/* 2>/dev/null |
-              sort -h | tail -12 || true
+            du -hx -d 3 /home/buildbuddy/workspace 2>/dev/null |
+              sort -h | tail -25 || true
+            du -shx /var/lib/docker /usr /opt 2>/dev/null || true
           }
 
           echo "DISK deploy start:"; df -h /
