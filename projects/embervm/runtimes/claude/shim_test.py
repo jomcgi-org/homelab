@@ -2098,6 +2098,136 @@ def test_turn_diff_compressed_cap_sets_truncated(monkeypatch, tmp_path, capsys):
     assert "outcome=truncated_compressed" in capsys.readouterr().err
 
 
+def test_turn_diff_over_cap_keeps_small_added_files(monkeypatch, tmp_path, capsys):
+    checkout = tmp_path / "src"
+    big_marker = b"BIG_MODIFIED_CONTENT"
+    big = (
+        b"diff --git a/big.txt b/big.txt\n"
+        b"--- a/big.txt\n"
+        b"+++ b/big.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"+" + big_marker + b"x" * shim.MAX_TURN_DIFF_BYTES + b"\n"
+    )
+    plan = (
+        b"diff --git a/plan.json b/plan.json\n"
+        b"new file mode 100644\n"
+        b"--- /dev/null\n"
+        b"+++ b/plan.json\n"
+        b"@@ -0,0 +1 @@\n"
+        b'+{"steps": []}\n'
+    )
+    monkeypatch.setattr(shim, "_untracked_file_diffs", lambda _checkout: b"")
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, big + plan),
+    )
+
+    result = shim._capture_turn_diff(str(checkout), "a" * 40)
+
+    assert result["zlib_b64"] is not None
+    reduced = zlib.decompress(base64.b64decode(result["zlib_b64"]))
+    assert result["truncated"] is True
+    assert b"plan.json" in reduced
+    assert big_marker not in reduced
+    assert "outcome=truncated_raw_reduced" in capsys.readouterr().err
+
+
+def test_turn_diff_reduced_excludes_oversized_added_files(
+    monkeypatch, tmp_path, capsys
+):
+    checkout = tmp_path / "src"
+    oversized = (
+        b"diff --git a/work.bin b/work.bin\n"
+        b"new file mode 100644\n"
+        b"--- /dev/null\n"
+        b"+++ b/work.bin\n"
+        b"@@ -0,0 +1 @@\n"
+        b"+" + b"x" * shim.MAX_TURN_DIFF_BYTES + b"\n"
+    )
+    monkeypatch.setattr(shim, "_untracked_file_diffs", lambda _checkout: b"")
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, oversized),
+    )
+
+    assert shim._capture_turn_diff(str(checkout), "a" * 40) == {
+        "base_sha": "a" * 40,
+        "zlib_b64": None,
+        "truncated": True,
+    }
+    assert "outcome=truncated_raw" in capsys.readouterr().err
+
+
+def test_reduced_diff_keeps_section_bytes_and_ignores_content_headers():
+    """Two added files survive byte for byte, and a content line that merely
+    contains "diff --git " never starts a section boundary."""
+    first = (
+        b"diff --git a/a.json b/a.json\n"
+        b"new file mode 100644\n"
+        b"--- /dev/null\n"
+        b"+++ b/a.json\n"
+        b"@@ -0,0 +1,2 @@\n"
+        b"+line one\n"
+        b"+diff --git a/decoy b/decoy\n"
+    )
+    second = (
+        b"diff --git a/b.json b/b.json\n"
+        b"new file mode 100644\n"
+        b"--- /dev/null\n"
+        b"+++ b/b.json\n"
+        b"@@ -0,0 +1 @@\n"
+        b"+{}\n"
+    )
+    modified = (
+        b"diff --git a/work.txt b/work.txt\n"
+        b"--- a/work.txt\n"
+        b"+++ b/work.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"+changed\n"
+    )
+
+    assert shim._reduced_added_file_diff(first + modified + second) == first + second
+
+
+def test_turn_diff_compressed_cap_keeps_small_added_files(
+    monkeypatch, tmp_path, capsys
+):
+    checkout = tmp_path / "src"
+    modified = (
+        b"diff --git a/work.bin b/work.bin\n"
+        b"--- a/work.bin\n"
+        b"+++ b/work.bin\n"
+        b"@@ -1 +1 @@\n+" + bytes(range(256)) * 64 + b"\n"
+    )
+    plan = (
+        b"diff --git a/plan.json b/plan.json\n"
+        b"new file mode 100644\n"
+        b"--- /dev/null\n"
+        b"+++ b/plan.json\n"
+        b"@@ -0,0 +1 @@\n"
+        b'+{"steps": ["ship"]}\n'
+    )
+    reduced_size = len(zlib.compress(plan))
+    compressed_cap = reduced_size + 1
+    assert len(zlib.compress(modified + plan)) > compressed_cap
+    monkeypatch.setattr(shim, "MAX_TURN_DIFF_COMPRESSED_BYTES", compressed_cap)
+    monkeypatch.setattr(shim, "_untracked_file_diffs", lambda _checkout: b"")
+    monkeypatch.setattr(
+        shim.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, modified + plan),
+    )
+
+    result = shim._capture_turn_diff(str(checkout), "a" * 40)
+
+    assert result["truncated"] is True
+    assert result["zlib_b64"] is not None
+    assert zlib.decompress(base64.b64decode(result["zlib_b64"])) == plan
+    assert "outcome=truncated_compressed_reduced" in capsys.readouterr().err
+
+
 def test_process_manager_captures_diff_against_head_at_turn_start(
     tmp_path, monkeypatch
 ):

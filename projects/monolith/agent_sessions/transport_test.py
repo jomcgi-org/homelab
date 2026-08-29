@@ -1450,10 +1450,6 @@ def test_guest_diff_logs_a_distinct_reason_per_rejection(caplog):
             {"base_sha": sha, "zlib_b64": "!!!not base64!!!", "truncated": False},
             "undecodable",
         ),
-        (
-            {"base_sha": sha, "zlib_b64": good, "truncated": True},
-            "truncated payload carried a blob",
-        ),
         ("not a mapping", "not a mapping"),
     ]
     for payload, expected in cases:
@@ -1478,6 +1474,35 @@ def test_guest_diff_accepts_a_valid_payload(caplog):
         "zlib_b64": base64.b64encode(zlib.compress(b"diff --git a/a b/a\n")).decode(),
         "truncated": False,
     }
+    with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+        assert transport._guest_diff(payload, 42) == payload
+    assert caplog.text == ""
+
+
+def test_guest_diff_accepts_a_valid_truncated_payload_with_blob(caplog):
+    payload = {
+        "base_sha": "b" * 40,
+        "zlib_b64": base64.b64encode(zlib.compress(b"diff --git a/a b/a\n")).decode(),
+        "truncated": True,
+    }
+    with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+        assert transport._guest_diff(payload, 42) == payload
+    assert caplog.text == ""
+
+
+def test_guest_diff_rejects_an_invalid_truncated_payload_with_blob(caplog):
+    payload = {
+        "base_sha": "b" * 40,
+        "zlib_b64": "!!!not base64!!!",
+        "truncated": True,
+    }
+    with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+        assert transport._guest_diff(payload, 42) is None
+    assert "undecodable" in caplog.text
+
+
+def test_guest_diff_accepts_a_legacy_truncated_payload_without_blob(caplog):
+    payload = {"base_sha": "b" * 40, "zlib_b64": None, "truncated": True}
     with caplog.at_level(logging.WARNING, logger=transport.logger.name):
         assert transport._guest_diff(payload, 42) == payload
     assert caplog.text == ""

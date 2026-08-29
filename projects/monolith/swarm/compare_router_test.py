@@ -147,6 +147,17 @@ async def test_stored_diff_is_rung_one_without_github(monkeypatch):
     assert result["files"][0]["changes"] == 3
 
 
+def test_stored_compare_preserves_truncated_status():
+    raw = b"diff --git a/plan.json b/plan.json\n"
+
+    result = mod._stored_compare(
+        _data(diff_blob=zlib.compress(raw), diff_truncated=True)
+    )
+
+    assert result["truncated"] is True
+    assert result["source"] == "stored"
+
+
 @pytest.mark.asyncio
 async def test_stored_diff_patch_does_not_call_github(monkeypatch):
     raw = (
