@@ -294,3 +294,78 @@ def test_success_summary_is_capped(monkeypatch):
     )
 
     assert completions == [("verbose", "ok", "x" * 2000)]
+
+
+def test_full_batch_chains_the_next_cycle(monkeypatch):
+    """Hitting max_jobs_per_cycle means work remains, so chain immediately.
+
+    Without this a deep backlog drains in bursts, idling at every cycle
+    boundary until the next */15 tick.
+    """
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+
+    jobs = [
+        {"name": f"job-{i}", "payload": {"prompt": "work"}}
+        for i in range(SETTINGS["max_jobs_per_cycle"])
+    ]
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, jobs
+    )
+
+    assert result == {
+        "status": "complete",
+        "processed": SETTINGS["max_jobs_per_cycle"],
+    }
+    assert chained == [True]
+
+
+def test_partial_batch_does_not_chain(monkeypatch):
+    """An empty queue must cost nothing, which is what stops this spinning."""
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+
+    jobs = [{"name": "job-1", "payload": {"prompt": "work"}}]
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, jobs
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    assert chained == []
+
+
+def test_empty_queue_does_not_chain(monkeypatch):
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, []
+    )
+
+    assert result == {"status": "complete", "processed": 0}
+    assert chained == []
+
+
+def test_failed_jobs_still_count_toward_chaining(monkeypatch):
+    """A full batch of FAILING jobs still means the backlog was deep.
+
+    processed counts claims, not successes, on purpose: a run of jobs that all
+    error is still evidence there was more work than one cycle could take, and
+    refusing to chain there would stall the queue exactly when it is longest.
+    """
+    chained = []
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: chained.append(True))
+
+    def fail_turn(*_args):
+        raise RuntimeError("turn failed")
+
+    jobs = [
+        {"name": f"job-{i}", "payload": {"prompt": "work"}}
+        for i in range(SETTINGS["max_jobs_per_cycle"])
+    ]
+    result, _claims, _starts, _completions, _notifications, _destroys = _run(
+        monkeypatch, jobs, await_turn=fail_turn
+    )
+
+    assert result["processed"] == SETTINGS["max_jobs_per_cycle"]
+    assert chained == [True]
