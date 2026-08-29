@@ -9,7 +9,7 @@ ArgoCD sync that restarts the pod again invalidates the observation.
 
 On SIGTERM `noded` publishes `drain_deadline_unix_ms` on its NodeStatus and holds the
 gRPC surface up (serving lifecycle rpcs) until every managed session/serving/stateful/
-group VM has left its registry or the 120s deadline passes. The control plane's
+group VM has left its registry or the 110s deadline passes. The control plane's
 `DrainCoordinator`, watching the drain rising edge on the WatchNode stream, force-banks
 each class: stateful with COMMIT-despite-parked, groups as whole bundle sets, sessions
 and serving via their bank verbs. A `node_drain_started` / `node_drain_finished` op
@@ -45,7 +45,7 @@ Record: the drain span, the op-log excerpt, and the psql output.
 1. Have every live class live at once (stateful + session + serving).
 2. Roll noded and measure the `ember.node_drain` span duration (SigNoz), or the wall
    time between `node_drain_started` and the last per-class bank op.
-3. Confirm it is under the 120s deadline with margin.
+3. Confirm it is under the 110s deadline with margin.
 
 ## Gate 5: parked wake during drain
 
