@@ -68,6 +68,46 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
+# The backend's traces endpoint, across the three seams that each fail silently:
+# the chart-to-code env var name, the HTTP-exporter URL form (4318 plus
+# /v1/traces, NOT embervm's gRPC 4317), and the collector's deny-by-default
+# allowlist. Needs framework/core.py as data because it parses the gate and the
+# profile's service_name out of the source, and the collector's prod values for
+# the cross-chart half.
+py_test(
+    name = "otel_endpoint_test",
+    srcs = ["otel_endpoint_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith:framework_core_src",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/platform/otel-collector:prod_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "CORE_PY": "$(rootpath //projects/monolith:framework_core_src)",
+        "COLLECTOR_PROD_VALUES": "$(rootpath //projects/platform/otel-collector:prod_values)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+semgrep_test(
+    name = "otel_endpoint_test_semgrep_test",
+    srcs = ["otel_endpoint_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
 py_test(
     name = "chart_env_vars_test",
     srcs = ["chart_env_vars_test.py"],

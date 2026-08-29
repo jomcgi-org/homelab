@@ -1,7 +1,31 @@
 backend:
   replicas: 1
   dcgmExporterUrl: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400"
-  otelEndpoint: ""
+  # Repointed off SigNoz onto the replacement collector (#5362). Cleared when
+  # SigNoz was deleted, which left the backend with no traces destination at
+  # all: the chart only renders OTEL_EXPORTER_OTLP_TRACES_ENDPOINT when this is
+  # non-empty, and framework/core.py only calls _setup_otel when that env var
+  # is set, so an empty value here silently disables tracing end to end.
+  #
+  # THE PORT AND THE PATH ARE BOTH LOAD-BEARING, and this is NOT the same
+  # syntax embervm uses. _setup_otel builds an OTLPSpanExporter from
+  # opentelemetry.exporter.otlp.proto.http, the HTTP/protobuf exporter, and
+  # passes this value as its `endpoint` argument. That argument is used
+  # verbatim as the POST url: the SDK's _append_trace_path only ever fires on
+  # the OTEL_EXPORTER_OTLP_ENDPOINT fallback, never on an explicit endpoint or
+  # on OTEL_EXPORTER_OTLP_TRACES_ENDPOINT. So the full URL including
+  # /v1/traces has to be spelled out here, against the collector's HTTP
+  # listener on 4318.
+  #
+  # Copying embervm's "http://...:4317" would post HTTP at the gRPC port and
+  # drop every span with nothing in the logs to say why. embervm can write
+  # that form because it sends over gRPC; this service cannot.
+  #
+  # service.name is monolith-backend (PRIVATE_PROFILE in framework/core.py) and
+  # must stay on the collector's allowedServices list in
+  # projects/platform/otel-collector/values-prod.yaml, or the filter processor
+  # drops the spans after they arrive.
+  otelEndpoint: "http://otel-collector.otel-collector.svc.cluster.local:4318/v1/traces"
   resources:
     requests:
       # 4Gi -> 1Gi: the old 4Gi was headroom for the in-process FA2 graph-layout
