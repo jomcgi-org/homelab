@@ -136,12 +136,70 @@ to move and went `DIRTY`. The fix is not to resolve the conflict: reset the
 branch to `origin/main`, re-apply the one-line edit, drop the stale format-bot
 commit, and force-push. CI regenerates the manifest again.
 
+### The audit-and-fix template
+
+One file in, either `CLEAN` or a PR out. Prefer this over report-only for code
+and doc changes: a report costs a dispatcher round-trip to become a fix, while a
+PR arrives reviewable.
+
+    Report first, then fix only what you can prove. Never use em dashes.
+    Find the checkout: ls /session /session/* then cd to the dir with .git.
+
+    Audit {target} for drift against the current repo state.
+    1. Read {target} in full.
+    2. For every repo path it cites, check existence with ls or git ls-files.
+       A path the text calls retired or historical is NOT a finding. A URL
+       route or a protocol method name is NOT a repo path.
+    3. For claims citing a file plus a checkable detail (a number, a default,
+       a flag, a filename), open the cited file and check it.
+
+    If you found nothing, your entire final answer must be exactly CLEAN.
+    Stop there. Do not create a branch.
+
+    Otherwise fix ONLY findings that are a single-token substitution you have
+    verified on BOTH sides: you have seen the wrong value in {target} and the
+    right value in the source file. Anything needing a judgement call, a
+    rewrite, or more than one line: leave the file alone and report it as a
+    line of text instead.
+
+    For each fix, record the evidence: the command you ran and its output for
+    the doc side and for the source side.
+
+    Then: git config user.name "qwen-drainer" and a noreply email; branch
+    qwen/{job-name}; commit with a Conventional Commit; git remote set-url
+    --push origin https://github.com/jomcgi/homelab.git; push; export
+    GH_TOKEN=placeholder; gh pr create with title prefixed [qwen], label
+    qwen-agent-for-review, and a body containing the evidence block.
+
+    Verify with git diff --stat before pushing. It must show ONLY {target}.
+    If it shows any other file, run git checkout -- . and reply EDIT FAILED.
+    Do NOT edit projects/monolith/knowledge/repo_docs_manifest.ndjson; CI
+    regenerates it.
+
+    Final answer: the PR URL, or CLEAN, or a list of reported-not-fixed lines.
+
+The evidence block is what makes the Opus review cheap: the reviewer checks
+whether the two quoted sides actually disagree, rather than re-deriving the
+finding.
+
 ### Review policy
 
-Review keys on diff class, not author. Spec'd jobs (the dispatcher wrote the
-exact edit): dispatcher checks diff matches spec, PR CI gates, no separate
-Opus pass. Discovery jobs (qwen found the defect itself): one Opus review.
+Review keys on diff class, not author.
+
+- **Spec'd job** (the dispatcher wrote the exact edit): dispatcher checks the
+  diff matches the spec, PR CI gates, no separate Opus pass. There is nothing
+  to judge, because the finding was verified before the job ran.
+- **Audit-and-fix job** (qwen found the drift itself): **one Opus review**.
+  Nobody has judged the finding yet, so the review is judging both the claim
+  and the edit. Read the evidence block in the PR body first; if the two sides
+  it quotes do not actually disagree, close the PR rather than fixing it.
+
 A human merges; qwen PRs are never auto-merged.
+
+The review gate is what makes audit-and-fix affordable. A false positive costs
+one review, not a bad merge. But it is still a real cost: a 174-job batch
+produced 89 findings, so cap a batch at what you are willing to review in one
+sitting rather than queueing every candidate at once.
 
 ## Inspecting outcomes (the improvement loop)
 
@@ -243,12 +301,30 @@ fixing; qwen owns bounded execution.
 | bounded report-only audit | 174 of 174 completed |
 | discovery plus PR in one job | **0 of 6** |
 
-Never write a job that asks qwen to both FIND a defect and FIX it. Discovery has
-no stopping rule, so the job explores until something kills it; one burned 434
-tool calls without reaching the fix. Use two phases instead: a report-only job
-surfaces candidates, the dispatcher verifies one against the repo, then a spec'd
-job executes the exact edit. Every PR this lane has ever landed came from the
-second phase.
+What made the 0-of-6 shape fail was **unbounded** discovery, not the
+find-and-fix combination. "Find one wrong thing somewhere in `projects/mcp/`,
+then fix it" has no stopping rule, so the job explores until something kills it;
+one burned 434 tool calls without reaching the fix. All six also ran with
+thinking off, which is what turned exploration into a loop, so that evidence is
+confounded.
+
+So the rule is about the SEARCH SPACE, not the combination:
+
+- **One named file, then fix it: allowed.** The discovery is already bounded by
+  the file, and the PR carries its own evidence for review.
+- **A directory or "somewhere in the repo", then fix it: never.** Report only,
+  and let the dispatcher pick what is worth fixing.
+
+An audit-and-fix job must also **report rather than edit** when the fix needs
+judgement: superseded ADR wording, whether a doc is aspirational or describes
+something lost, anything touching more than one line. `docs/security.md`
+describing a Kyverno layer that is not deployed is the canonical example, since
+the fix is either a docs rewrite or restoring the policies and only a human
+picks.
+
+The two-phase route (report, dispatcher verifies, spec'd job edits) stays
+correct for anything the dispatcher already knows it wants fixed, and for
+findings that came out of a report-only sweep.
 
 Three habits make the spec'd job reliable:
 
