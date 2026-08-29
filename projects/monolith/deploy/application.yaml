@@ -41,27 +41,29 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: monolith
-  # Kyverno's inject-otel-env-vars ClusterPolicy mutates this Deployment at
-  # admission to add the otel.injected-by annotation and two env vars
-  # (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL); a stale
-  # kubectl.kubernetes.io/restartedAt also lingers from an April manual restart.
-  # A global resource.customizations.ignoreDifferences in argocd-cm covers these,
-  # but resource.customizations are loaded at application-controller startup and
-  # are not hot-reloaded, so monolith sat permanently OutOfSync (Healthy) and hid
-  # genuine drift. This app-level ignoreDifferences is read fresh every reconcile,
-  # so it holds regardless of when the controller last restarted. Match the global
-  # block exactly: ignore only the two injected env names (charts define their own
-  # OTEL_* vars, so a startswith match would manufacture a fresh diff) plus the two
-  # injected/restart annotations.
+  # The Kyverno inject-otel-env-vars ClusterPolicy that these entries existed
+  # for is GONE (kubectl get clusterpolicy inject-otel-env-vars returns
+  # NotFound; only clone-monolith-workflows-secrets and
+  # require-resource-requests remain). Nothing re-injects
+  # OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_PROTOCOL any more, so
+  # ignoring them no longer hides an unavoidable mutation, it pins a dead value:
+  # the live Deployment still carries
+  # OTEL_EXPORTER_OTLP_ENDPOINT=signoz-otel-collector.signoz.svc.cluster.local:4317,
+  # and the signoz namespace no longer exists either.
+  #
+  # 6d7e4ffa2 removed the matching global block from argocd-cm so the stale
+  # values would be pruned, but this app-level copy survived, and being read
+  # fresh every reconcile it kept winning. Dropping it lets ArgoCD prune what
+  # the policy left behind, which is the point of the traces fix in this PR:
+  # a stale endpoint sitting next to the real one is exactly how a
+  # misconfiguration hides.
+  #
+  # The restartedAt annotation entry goes with them: it existed for an April
+  # manual restart, and a rolled Deployment no longer carries it.
   ignoreDifferences:
     - group: apps
       kind: Deployment
-      jqPathExpressions:
-        - '.spec.template.spec.containers[].env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
-        - '.spec.template.spec.initContainers[]?.env[]? | select(.name == "OTEL_EXPORTER_OTLP_ENDPOINT" or .name == "OTEL_EXPORTER_OTLP_PROTOCOL")'
       jsonPointers:
-        - /spec/template/metadata/annotations/otel.injected-by
-        - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
         # The backend HPA owns the replica count (chart/templates/hpa.yaml). The
         # deployment omits spec.replicas when autoscaling is enabled, but with
         # selfHeal on ArgoCD would still revert any HPA scale-up to the default;
