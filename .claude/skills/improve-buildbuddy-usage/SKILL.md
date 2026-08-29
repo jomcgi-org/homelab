@@ -16,14 +16,14 @@ change at the largest source, and tracks the result across cycles.
 |---|---|
 | Baseline (7 days to 2026-07-28) | 1.502 TB/day download |
 | Target | 0.751 TB/day download |
-| Latest (5 days to 2026-08-27, post-#5116/#5118) | 0.774 TB/day download |
+| Latest (6 days to 2026-08-28, post-#5116/#5118) | 0.757 TB/day download |
 | Upload | 4.9 GB/day, 0.6% of the problem |
 
-97% of the way to the target, 23 GB/day short. The window is clean: the last
-byte levers landed 2026-08-22 and it starts 2026-08-23. The seven clean days a
-committed snapshot needs are complete on 2026-08-29, so this figure came from
-`snapshot --days 5 --no-write` and `snapshots/` still holds two pre-rewrite
-files.
+99% of the way to the target, 6 GB/day short, and #5374 has not had a full
+window yet. The window is clean: the last byte levers landed 2026-08-22 and it
+starts 2026-08-23. The seven clean days a committed snapshot needs are complete
+on 2026-08-29, so this figure came from `snapshot --days 6 --no-write` and
+`snapshots/` still holds two pre-rewrite files.
 
 **The repo URL is part of the measurement, and it moved.** BuildBuddy keys
 invocations by the URL it was told at push time. The 2026-08-22 move to the
@@ -255,6 +255,58 @@ on. Quoting each label in the `set()` fixes it. Any future character class that
 breaks label parsing will look the same: exit 2, and a `//...` run that no
 file in the diff explains.
 
+## Cold runner restores are the tail now (settled 2026-08-28)
+
+The test-tree and fallback work moved the bytes far enough that neither is the
+largest source any more. Attributing all 6,418 invocations in the 6 days to
+2026-08-28 to a lane (4.5 TB, 756.6 GB/day):
+
+| slice | download | share |
+|---|---|---|
+| **cold runner snapshot restores** | **2.7 TB** | **61%** |
+| `//...` test executions, local + PR lanes | 1.08 TB | 24% |
+| everything else | ~0.7 TB | 15% |
+
+Cold units are near identical across pools, which is the tell that this is one
+mechanism and not three: pr-checks 17.6 GB over 89 restores, deploy 18.2 GB
+over 7, the `HOSTED_BAZEL` pool behind local `ci test` 15.3 GB over 65. Warm
+runs are free by comparison: 395 warm pr-checks runs cost 43.2 GB in total.
+A cold pr-checks VM reports `38G` used on `/` in its own first `df` line,
+before it runs a step, so **the restore unit is workspace content** and the
+lever is what the workspace carries.
+
+`disk: 120GB` is a reservation, not content. Shrinking it saves nothing.
+
+**Attribute lanes by joining `parentRunId` to `runId`, never by role.**
+`SearchInvocation` returns both. Role and branch alone misread this workload
+badly: 673.5 GB of `CI test //...` on branch `main` is not CI at all, it is
+somebody's local `ci test`, whose parent is a `HOSTED_BAZEL remote run`. After
+the join the lanes are local `ci test` 1.93 TB (43%), PR CI 1.48 TB (33%),
+merge queue 0.91 TB (20%), deploy 0.21 TB (5%). Parent and child are not double
+counted, re-confirmed here: runner traffic is the snapshot restore, child
+traffic is the bazel graph.
+
+Two things drive whether a run is cold, and neither is a knob:
+
+- **Recency.** 10% cold when the previous pr-checks run finished under 5
+  minutes ago, 37% at under 30 minutes, 43% at 2 hours or more.
+- **Concurrency.** 17% cold with nothing else in flight, 26% with two other
+  runs, 50% with four. Concurrent runs cannot share one executor's local VM,
+  so each extra one pays a remote restore.
+
+Per-branch snapshots still earn their keep: a later push to a branch that
+already ran is 18% cold against 36% for a branch's first push, which falls back
+to main's snapshot. So the number of restores is roughly fixed by how the repo
+is worked. **Attack the size.**
+
+The named suspect, not yet confirmed on a runner: `repository_cache/
+content_addressable/`, the raw download blobs. Nothing GCs it, on any path.
+`.bazelrc` says so in a standing comment and `bazel/tools/bazel-cache-gc.sh`
+exists for exactly this, but no CI path runs it, main re-saves its snapshot on
+every push, and every branch inherits that snapshot. On a developer machine it
+is 16G against 240M of extracted `contents/`. #5397 prints the runner's split
+so the next cycle either prunes it or drops the hypothesis.
+
 ## Refuted, do not retry
 
 - **`--remote_local_fallback` is not the cause of the tail.** A 299 GB
@@ -271,12 +323,13 @@ file in the diff explains.
 - **Auto-cancellation is already on.** `allow_concurrent_runs` defaults to
   `false`. Superseded runs still cost their cold start, which is paid at
   spin-up before cancellation can land. Nothing to tune.
-- **Running an action more often does not keep it warm.** Cold rate is flat
-  against the gap since that action's previous run: on 2026-08-10 `deploy` was
-  29 to 43% cold in every gap bucket from under 5 minutes to over an hour, and
-  `pr-checks` was 0 to 10% cold in all of them, including >60m. So "merge the
-  pools so the workspace gets touched more" is not a mechanism. Attack the
-  snapshot's SIZE, or the number of restores per push, not its frequency.
+- **Merging pools to touch a workspace more often is not a lever, but the
+  reason changed.** On 2026-08-10, under the four-pool layout, cold rate was
+  flat against the gap since that action's previous run, so frequency looked
+  irrelevant. Re-measured 2026-08-28 on the collapsed layout it is not flat at
+  all: pr-checks is 10% cold at a sub-5-minute gap and 43% at 2 hours or more.
+  Frequency does keep a runner warm now. It is still not a lever because
+  nothing here controls how often people push. Attack the snapshot's SIZE.
 
 ## Landed
 
@@ -291,6 +344,7 @@ file in the diff explains.
 | #5102, #5104, #5105, #5110 (2026-08-22) | pre-push `ci test` opt-in; no `push_charts --stamp` on PRs (analysis cache survives); amd64-only images; manifest as own layer; PR runs test affected targets only | wall: warm pr-checks run ~5.8 min -> measure; bytes pending, re-measure after 2026-08-29 |
 | #5116, #5118 (2026-08-22) | stripped CPython toolchain; postgres_test real closure | test input tree 1.54 GB -> ~0.65 GB, the dominant byte lever; re-measure after 2026-08-29 |
 | #5374 (2026-08-27) | quoted labels in the affected-targets query; `--repo` read from the git remote | removes the 19% of PR fallbacks that no diff explained, about 25 GB/day across both lanes; re-measure after 2026-09-03 |
+| #5397 (2026-08-28) | `du` breakdown of the runner workspace at both ends of both actions | diagnostic, no bytes either way; read `WORKSPACE ... :` in any pr-checks log |
 
 `bazel run` stages every command's runfiles on the runner *before any command
 executes*, which is why #4586 mattered: a 99% action-cache-hit push still
@@ -301,26 +355,31 @@ dragged all ~24 images out of CAS.
 Ranked by expected bytes saved. Everything here is a **hypothesis that must be
 confirmed against a real invocation** before you act on it.
 
-1. **Narrow the deleted-file fallback**, 32% of the local lane's full-suite
+1. **Shrink the runner snapshot**, 61% of all bytes and now the whole ball
+   game. 161 restores in 6 days at a uniform 15 to 20 GB. Read the
+   `WORKSPACE ...:` lines #5397 added to a pr-checks log first: the standing
+   hypothesis is that `repository_cache/content_addressable/` is roughly half
+   of the 38G and that nothing needs it once `external/` is materialised in the
+   same image. If so, prune it at the end of a run and every restore in every
+   lane gets cheaper at once. Confirm the split before writing the prune, and
+   watch for the counter-effect: a blob pruned too eagerly is re-fetched
+   through `--experimental_remote_downloader`, which is download bytes again.
+2. **Narrow the deleted-file fallback**, 32% of the local lane's full-suite
    bytes. The rule exists because a deleted file cannot be mapped to a label by
    static inspection, the file being gone. It can be mapped from the **base
    ref's** tree, which still has the BUILD files, so the deletion becomes a
    changed label in a known package instead of a whole-repo run. Deleting a
    BUILD file still has to fall back, and that rule already fires first.
-2. **Narrow the BUILD-shaped fallback**, 46% of the same bytes and the largest
-   single lever left, but the riskiest thing on this list. A BUILD edit changes
-   graph shape in one package, so rdeps of that package is the honest set. Get
-   a second opinion before touching it: too narrow here means a green PR that
-   was never tested.
-3. **`CI test //...` runfiles trees.** Mechanism settled 2026-08-12, see "Test
+3. **Narrow the BUILD-shaped fallback**, 46% of the same bytes and the riskiest
+   thing on this list. A BUILD edit changes graph shape in one package, so
+   rdeps of that package is the honest set. Get a second opinion before
+   touching it: too narrow here means a green PR that was never tested.
+4. **`CI test //...` runfiles trees.** Mechanism settled 2026-08-12, see "Test
    bytes are runfiles trees". #5116 and #5118 took the tree from 1.54 GB to
-   ~0.65 GB; what is left is the app's honest closure.
-4. **Shrink `deploy`'s snapshot further.** This PR removes the image runfiles
-   staging. If `deploy`'s cold unit does not fall from 33.1 GB toward
-   `pr-checks`' 20.9 GB, the extra 12 GB is something else and worth finding.
-5. **`HOSTED_BAZEL` at 240 GB/day was full local `ci test`.** Local runs now use
-   affected targets; keep reporting this role separately to verify the drop,
-   never fold it into the CI number.
+   ~0.65 GB; what is left is the app's honest closure. Largely spent.
+5. **`deploy`'s cold unit is 18.2 GB against `pr-checks`' 17.6 GB.** The 12 GB
+   gap recorded on 2026-08-10 is closed, so the two workspaces now carry the
+   same content and the same fix applies to both. Nothing specific left here.
 6. **Fewer redundant pushes.** 1,396 runs in 7 days were superseded within 10
    minutes by another run of the same action on the same branch. The strict
    "up to date with main" rule forces `update-branch` on every open PR whenever
