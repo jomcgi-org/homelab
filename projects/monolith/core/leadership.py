@@ -111,7 +111,30 @@ class LeaderElector:
                 if leader and not self._is_leader:
                     self._is_leader = True
                     logger.info("became leader (%s)", HOLDER_ID)
-                    await on_acquire()
+                    try:
+                        await on_acquire()
+                    except Exception:
+                        # A singleton hook is application code, and a failure
+                        # there must not kill this election task.  Resign the
+                        # partially acquired state before retrying so the next
+                        # attempt runs the complete startup sequence again.
+                        self._is_leader = False
+                        logger.exception(
+                            "leader singleton startup failed; retrying election"
+                        )
+                        try:
+                            await on_resign()
+                        except Exception:
+                            logger.exception(
+                                "leader singleton cleanup after startup failure "
+                                "failed"
+                            )
+                        try:
+                            await asyncio.to_thread(_release, self._lease_key)
+                        except Exception:
+                            logger.exception(
+                                "leader lease release after startup failure failed"
+                            )
                 elif not leader and self._is_leader:
                     self._is_leader = False
                     logger.warning(

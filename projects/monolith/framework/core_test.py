@@ -696,6 +696,27 @@ async def test_start_and_stop_leader_singletons_compose_across_modules():
 
 
 @pytest.mark.asyncio
+async def test_failing_leader_start_does_not_block_later_modules():
+    log: list[str] = []
+
+    async def bad_start(app: FastAPI) -> list[asyncio.Task]:
+        log.append("bad:start")
+        raise RuntimeError("boom")
+
+    modules = [
+        Module(name="bad", leader_start=bad_start),
+        _leader_module("good", log),
+    ]
+    app = FastAPI()
+
+    await start_leader_singletons(app, modules)
+
+    assert log == ["bad:start", "good:start"]
+    assert len(app.state.singleton_tasks) == 1
+    await stop_leader_singletons(app, modules)
+
+
+@pytest.mark.asyncio
 async def test_stop_is_idempotent_and_survives_failing_hook():
     log: list[str] = []
 
