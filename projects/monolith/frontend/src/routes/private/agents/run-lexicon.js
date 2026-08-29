@@ -59,8 +59,6 @@ export const RUN_LEXICON = {
     waitingOnYou: "Waiting on you",
     youWord: "you",
     rebaseOnly: "rebase only",
-    upTo: "up to",
-    cycles: "cycles",
     waitingWordLower: "waiting",
     sessionsInRun: "Sessions in this run",
     escalationTerminal:
