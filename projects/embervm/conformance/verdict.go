@@ -61,7 +61,7 @@ func (s *verdictStore) start(started time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	previous := s.current.Previous
+	var previous *previousVerdict
 	if s.current.Verdict != verdictRunning || len(s.current.Scenarios) > 0 {
 		previous = &previousVerdict{
 			Verdict:   s.current.Verdict,

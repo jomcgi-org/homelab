@@ -57,6 +57,9 @@ func TestPreviousVerdictSurvivesFinishAndCarriesItsOutcome(t *testing.T) {
 	if got.Previous.Verdict != verdictFail {
 		t.Fatalf("previous verdict = %q, want fail", got.Previous.Verdict)
 	}
+	if len(got.Previous.Scenarios) != 1 || got.Previous.Scenarios[0].Detail != "first cycle residue" {
+		t.Fatalf("previous scenarios are not cycle 1's: %#v", got.Previous.Scenarios)
+	}
 
 	payload, err := json.Marshal(got)
 	if err != nil {

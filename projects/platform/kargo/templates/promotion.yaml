@@ -324,6 +324,12 @@ spec:
         roll restarts the runner with previous unset, so cycle one of a new
         chart can never fast-fail on residue by construction.
 
+        Two bounded degrades, both failing safe by retry timeout rather than
+        by verdict: the ONE promotion that ships the new conformance binary
+        still polls an old runner whose finished report carries no previous,
+        so a genuinely red suite there times out instead of fast-failing; and
+        a runner pod restart mid-promotion clears previous the same way.
+
         The version comparison is pre-evaluated by Kargo from the same
         expression argocd-update used, so the step cannot accept a verdict for
         a different chart than the one it just promoted.

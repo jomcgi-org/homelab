@@ -288,19 +288,19 @@ promotion:
           # NEW Freight rather than on failure, so that Freight would then sit
           # unverified with no poller on the next healthy cycle.
           #
-          # This must stay strictly greater than conformance.readyWait plus the
-          # suite budget PLUS one full runInterval and a second suite, because
-          # since 2026-08-29 the failure expression needs TWO consecutive red
+          # Since 2026-08-29 the failure expression needs TWO consecutive red
           # cycles (post-roll settling transients red-ed the first cycle on
           # three different runs while the next quiet cycle passed; see the
-          # promotion template). A lone red keeps the poll waiting for the
-          # next cycle instead of failing. The suite budget is 5m10s (s1 60s +
-          # s2 180s + s3 60s + s4 10s, summed as totalBudget in
-          # conformance/main.go) and runInterval is 30m, so the worst case is
-          # 30m readyWait + 5m10s + 30m + 5m10s, about 70m30s against this
-          # 75m0s: real margin, not slack.
+          # promotion template), so this must cover two full cycles. readyWait
+          # is spent INSIDE the run loop on every cycle, not only the first
+          # (runLoop re-arms it each iteration), so the true worst case is
+          # 2 x 30m readyWait + 30m runInterval + 2 x 5m10s suite, about
+          # 100m20s against this 105m0s. The common path is far shorter: the
+          # observed transients were fast suite reds, putting a real two-cycle
+          # failure at roughly 40m, and a first-cycle green passes the moment
+          # it lands.
           verdictURL: http://embervm-dev-embervm-conformance.embervm-dev.svc.cluster.local:8080/verdict
-          verdictTimeout: 75m0s
+          verdictTimeout: 105m0s
         - name: prod
           application: embervm
           upstream:
