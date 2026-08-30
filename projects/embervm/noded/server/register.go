@@ -18,8 +18,9 @@ import (
 // jittered interval the daemon POSTs {node, pod_uid, address, boot_id} to
 // <ControlPlaneURL>/v1/nodes/register; the control plane upserts the instance
 // keyed by (node, pod_uid), dials the advertised address for WatchNode, and
-// ages the instance out when both the registration lapses AND the WatchNode
-// stream dies.
+// ages a down instance out when its registration lapses or it remains down
+// through a full status-silence window. A replacement also supersedes a down
+// registered sibling.
 //
 // Registration is ADVERTISEMENT, not liveness: capacity and health still ride
 // the WatchNode stream, so a failed POST is retryable and non-fatal, and a
