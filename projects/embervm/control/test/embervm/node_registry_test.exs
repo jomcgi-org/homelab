@@ -656,26 +656,129 @@ defmodule Embervm.NodeRegistryTest do
     assert facts.instance_id == "node-4/uid-1"
   end
 
-  test "two instances on ONE node coexist (surge roll)" do
+  test "a new instance does not supersede a healthy sibling (two instances on ONE node coexist)" do
     {reg, table} = start_registry(register_seams([]))
 
-    for uid <- ["uid-old", "uid-new"] do
-      :ok =
-        NodeRegistry.register(reg, %{
-          "node" => "node-4",
-          "pod_uid" => uid,
-          "address" => "10.0.0.#{uid}:9090"
-        })
-    end
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-4",
+        "pod_uid" => "uid-old",
+        "address" => "10.0.0.uid-old:9090"
+      })
+
+    await_initial_status(reg, "node-4/uid-old")
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-4",
+        "pod_uid" => "uid-new",
+        "address" => "10.0.0.uid-new:9090"
+      })
+
+    await_initial_status(reg, "node-4/uid-new")
 
     eventually(fn -> map_size(NodeRegistry.status(reg)) == 2 end, 200)
     eventually(fn -> length(NodeRegistry.capacity(table)) == 2 end, 200)
+    assert NodeRegistry.status(reg)["node-4/uid-old"].health == :healthy
 
     uids = table |> NodeRegistry.capacity() |> Enum.map(& &1.pod_uid) |> Enum.sort()
     assert uids == ["uid-new", "uid-old"]
     # Both rows share the node name but are distinct instances.
     nodes = table |> NodeRegistry.capacity() |> Enum.map(& &1.node_id) |> Enum.uniq()
     assert nodes == ["node-4"]
+  end
+
+  test "a new instance supersedes a down sibling" do
+    {clock, advance} = new_clock()
+    {:ok, base_builder} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(base_builder) end)
+
+    node = "node-#{System.unique_integer([:positive])}"
+    old_id = "#{node}/uid-old"
+    new_id = "#{node}/uid-new"
+    old_addr = "10.0.0.1:9090"
+    new_addr = "10.0.0.2:9090"
+
+    {:ok, node_channel} =
+      Embervm.NodeChannel.start_link(
+        name: nil,
+        nodes: [],
+        connect_fun: fn addr -> {:ok, {:chan, addr}} end,
+        disconnect_fun: fn _ -> :ok end
+      )
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(node_channel) end)
+
+    {reg, table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          channel_updater_fun: fn key, addr -> Embervm.NodeChannel.update_address(node_channel, key, addr) end,
+          channel_remover_fun: fn key -> Embervm.NodeChannel.remove_address(node_channel, key) end,
+          base_builder_updater_fun: fn msg -> Agent.update(base_builder, &[msg | &1]) end,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
+        )
+      )
+
+    :ok = NodeRegistry.register(reg, %{"node" => node, "pod_uid" => "uid-old", "address" => old_addr})
+    await_initial_status(reg, old_id)
+    assert Enum.any?(NodeRegistry.capacity(table), &(&1.instance_id == old_id))
+    assert {:ok, {:chan, ^old_addr}} = Embervm.NodeChannel.get(node_channel, old_id)
+
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+    assert NodeRegistry.status(reg)[old_id].health == :down
+    refute Enum.any?(NodeRegistry.capacity(table), &(&1.instance_id == old_id))
+
+    :ok = NodeRegistry.register(reg, %{"node" => node, "pod_uid" => "uid-new", "address" => new_addr})
+    await_initial_status(reg, new_id)
+
+    refute Map.has_key?(NodeRegistry.status(reg), old_id)
+    assert {:error, :unknown_node} = Embervm.NodeChannel.get(node_channel, old_id)
+    assert {:ok, {:chan, ^new_addr}} = Embervm.NodeChannel.get(node_channel, new_id)
+    assert {:remove, old_id} in Agent.get(base_builder, & &1)
+    assert {:add, new_id, new_addr} in Agent.get(base_builder, & &1)
+    refute Enum.any?(NodeRegistry.capacity(table), &(&1.instance_id == old_id))
+  end
+
+  test "a new instance does not supersede an unknown sibling" do
+    {clock, advance} = new_clock()
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-4",
+        "pod_uid" => "uid-unknown",
+        "address" => "10.0.0.1:9090"
+      })
+
+    await_initial_status(reg, "node-4/uid-unknown")
+    advance.(5_000)
+    :ok = NodeRegistry.tick(reg)
+    assert NodeRegistry.status(reg)["node-4/uid-unknown"].health == :unknown
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-4",
+        "pod_uid" => "uid-new",
+        "address" => "10.0.0.2:9090"
+      })
+
+    await_initial_status(reg, "node-4/uid-new")
+
+    assert NodeRegistry.status(reg)["node-4/uid-unknown"].health == :unknown
+    assert map_size(NodeRegistry.status(reg)) == 2
   end
 
   test "re-registration at a NEW address re-points the streamer and channel" do
@@ -853,12 +956,13 @@ defmodule Embervm.NodeRegistryTest do
     assert {:ok, {:chan, ^b_addr}} = Embervm.NodeChannel.get(nc, b_id)
     assert {:error, :unknown_node} = Embervm.NodeChannel.get(nc, node)
 
-    # Expire A only: lapse its registration + kill its stream while B keeps re-registering.
-    # (Advancing the clock lapses BOTH; we refresh B's liveness by re-registering it so
-    # only A meets the two-signal expiry.)
+    # Expire A only: lapse its registration and kill its stream while B remains
+    # registered with a healthy stream. Advancing the clock lapses both registrations
+    # and silences both streams, so refresh both of B's independent liveness signals.
     advance.(100_000)
     :ok = NodeRegistry.register(reg, %{"node" => node, "pod_uid" => "uid-B", "address" => b_addr})
-    NodeRegistry.tick(reg)
+    :ok = NodeRegistry.inject_status(reg, b_id, node_status(node_id: node))
+    :ok = NodeRegistry.tick(reg)
     eventually(fn -> not Map.has_key?(NodeRegistry.status(reg), a_id) end, 200)
 
     # A's own key is gone; B's instance_id is untouched; the bare node name still
@@ -885,46 +989,124 @@ defmodule Embervm.NodeRegistryTest do
     assert {:error, :invalid} = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid"})
   end
 
-  test "expiry requires BOTH a lapsed registration AND a dead stream" do
-    {clock, advance} = new_clock()
+  test "expiry requires a down instance plus lapsed registration or prolonged status silence" do
+    {lapsed_clock, advance_lapsed} = new_clock()
 
-    {reg, table} =
+    {lapsed_reg, lapsed_table} =
       start_registry(
         register_seams(
-          clock: clock,
-          # Real age-out cadence driven by tick/1 under the injected clock.
-          age_check_ms: 60_000,
+          clock: lapsed_clock,
+          watch_fun: silent_watch(),
           unknown_after_ms: 5_000,
           down_after_ms: 15_000,
-          expire_after_ms: 90_000
+          expire_after_ms: 20_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
         )
       )
 
-    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "10.0.0.1:9090"})
-    await_initial_status(reg, "node-4/uid-1")
+    :ok =
+      NodeRegistry.register(lapsed_reg, %{
+        "node" => "node-lapsed",
+        "pod_uid" => "uid-1",
+        "address" => "10.0.0.1:9090"
+      })
 
-    # Registration lapses but the stream is still HEALTHY (the blocking watch keeps
-    # emitting on connect; here no fresh status arrives, but we only advance a bit):
-    # advance past the registration lapse yet keep health above :down. The instance
-    # must NOT be expired on one signal alone.
-    advance.(100_000)
-    # Drive an age evaluation. The stream has gone silent (no new status), so the
-    # instance will also be :down after 15s; to isolate the "one signal" case we
-    # re-register to refresh liveness first is not possible without a fresh status.
-    # Instead assert the two-signal semantics directly: an instance whose stream is
-    # healthy (fresh status) but registration lapsed survives.
-    :ok = NodeRegistry.inject_status(reg, "node-4/uid-1", node_status())
-    NodeRegistry.tick(reg)
-    assert Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1")
+    advance_lapsed.(20_000)
+    :ok = NodeRegistry.tick(lapsed_reg)
+    refute Map.has_key?(NodeRegistry.status(lapsed_reg), "node-lapsed/uid-1")
+    assert NodeRegistry.capacity(lapsed_table) == []
 
-    # Now let the stream go dead too (advance past down_after with no fresh status).
+    {healthy_clock, advance_healthy} = new_clock()
+
+    {healthy_reg, _table} =
+      start_registry(
+        register_seams(
+          clock: healthy_clock,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 20_000
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(healthy_reg, %{
+        "node" => "node-healthy",
+        "pod_uid" => "uid-1",
+        "address" => "10.0.0.2:9090"
+      })
+
+    await_initial_status(healthy_reg, "node-healthy/uid-1")
+    advance_healthy.(20_000)
+    :ok = NodeRegistry.inject_status(healthy_reg, "node-healthy/uid-1", node_status(node_id: "node-healthy"))
+    :ok = NodeRegistry.tick(healthy_reg)
+    assert NodeRegistry.status(healthy_reg)["node-healthy/uid-1"].health == :healthy
+
+    {silent_clock, advance_silent} = new_clock()
+
+    {silent_reg, _table} =
+      start_registry(
+        register_seams(
+          clock: silent_clock,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 90_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(silent_reg, %{
+        "node" => "node-silent",
+        "pod_uid" => "uid-1",
+        "address" => "10.0.0.3:9090"
+      })
+
+    await_initial_status(silent_reg, "node-silent/uid-1")
+    advance_silent.(89_999)
+
+    :ok =
+      NodeRegistry.register(silent_reg, %{
+        "node" => "node-silent",
+        "pod_uid" => "uid-1",
+        "address" => "10.0.0.3:9090"
+      })
+
+    :ok = NodeRegistry.tick(silent_reg)
+    assert NodeRegistry.status(silent_reg)["node-silent/uid-1"].health == :down
+
+    advance_silent.(2)
+
+    :ok =
+      NodeRegistry.register(silent_reg, %{
+        "node" => "node-silent",
+        "pod_uid" => "uid-1",
+        "address" => "10.0.0.3:9090"
+      })
+
+    :ok = NodeRegistry.tick(silent_reg)
+    refute Map.has_key?(NodeRegistry.status(silent_reg), "node-silent/uid-1")
+  end
+
+  test "a statically seeded down instance is exempt from expiry" do
+    {clock, advance} = new_clock()
+
+    {reg, _table} =
+      start_registry(
+        clock: clock,
+        unknown_after_ms: 5_000,
+        down_after_ms: 15_000,
+        expire_after_ms: 20_000
+      )
+
+    advance.(20_000)
+    :ok = NodeRegistry.tick(reg)
+    assert NodeRegistry.status(reg)["node-4"].health == :down
+
     advance.(100_000)
     :ok = NodeRegistry.tick(reg)
-
-    # Asserted rather than polled, for the same reason as the expiry test above: tick/1
-    # applies the age-out inline before it replies, so there is nothing to wait for.
-    refute Map.has_key?(NodeRegistry.status(reg), "node-4/uid-1")
-    assert NodeRegistry.capacity(table) == []
+    assert NodeRegistry.status(reg)["node-4"].health == :down
   end
 
   test "expiry disconnects the stored streamer channel" do
