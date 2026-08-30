@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,5 +34,47 @@ func TestRunningVerdictHasNullFinishedAt(t *testing.T) {
 	}
 	if string(raw) != `{"chart_version":"x","verdict":"running","started_at":"1970-01-01T00:00:00Z","finished_at":null,"scenarios":[]}` {
 		t.Fatalf("unexpected JSON: %s", raw)
+	}
+}
+
+func TestPreviousVerdictSurvivesFinishAndCarriesItsOutcome(t *testing.T) {
+	store := newVerdictStore("0.1.0")
+	t0 := time.Now().UTC()
+
+	store.start(t0)
+	store.finish(t0, []scenarioVerdict{{ID: "S4", Verdict: verdictFail, Detail: "first cycle residue"}})
+
+	store.start(t0.Add(time.Minute))
+	store.finish(t0.Add(time.Minute), []scenarioVerdict{{ID: "S4", Verdict: verdictFail, Detail: "second cycle"}})
+
+	got := store.snapshot()
+	if got.Verdict != verdictFail {
+		t.Fatalf("current verdict = %q, want fail", got.Verdict)
+	}
+	if got.Previous == nil {
+		t.Fatal("finished report dropped Previous; the gate cannot see consecutive outcomes")
+	}
+	if got.Previous.Verdict != verdictFail {
+		t.Fatalf("previous verdict = %q, want fail", got.Previous.Verdict)
+	}
+
+	payload, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"previous":{"verdict":"fail"`) {
+		t.Fatalf("previous verdict missing from JSON the gate reads: %s", payload)
+	}
+}
+
+func TestFirstCycleOfAFreshRunnerHasNoPrevious(t *testing.T) {
+	store := newVerdictStore("0.1.0")
+	t0 := time.Now().UTC()
+
+	store.start(t0)
+	store.finish(t0, []scenarioVerdict{{ID: "S4", Verdict: verdictFail, Detail: "post-roll residue"}})
+
+	if got := store.snapshot(); got.Previous != nil {
+		t.Fatalf("fresh runner reported a previous cycle: %#v; a chart roll must never fast-fail on its first red", got.Previous)
 	}
 }

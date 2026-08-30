@@ -309,8 +309,20 @@ spec:
         chart ships into dev. The runner rolls with every chart version
         (CHART_VERSION in its pod env), so a verdict is keyed to the Freight by
         construction: a stale chart_version means the runner has not rolled
-        yet and the step keeps polling; `running` keeps polling; `fail` fails
-        the Promotion; the retry timeout fails it too. Neither is a skip.
+        yet and the step keeps polling; `running` keeps polling; a `fail`
+        whose PREVIOUS cycle also failed fails the Promotion; the retry
+        timeout fails it too. Neither is a skip.
+
+        Two consecutive reds, not one (2026-08-29): every promotion rolls the
+        dev control plane and the suite's first cycle runs in the settling
+        window right after that roll, where three distinct transients were
+        observed red-ing the gate on three different runs (dead-brick redial
+        health churn per #4402, a fast-baseline S3 ratio trip, and
+        inventory_reconciled during instance adoption) while the NEXT quiet
+        cycle passed each time. A lone red therefore keeps polling until the
+        following cycle settles the question; only a repeat fails. A chart
+        roll restarts the runner with previous unset, so cycle one of a new
+        chart can never fast-fail on residue by construction.
 
         The version comparison is pre-evaluated by Kargo from the same
         expression argocd-update used, so the step cannot accept a verdict for
@@ -333,7 +345,7 @@ spec:
             url: {{ $stage.verdictURL | quote }}
             timeout: 10s
             successExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'pass'"
-            failureExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'fail'"
+            failureExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'fail' && response.body.previous != nil && response.body.previous.verdict == 'fail'"
             errorExpression: "'conformance suite failed on chart ' + response.body.chart_version + ': ' + toJSON(response.body.scenarios)"
         {{- end }}
 {{- end }}

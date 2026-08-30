@@ -276,10 +276,7 @@ promotion:
           # (task cold boot, session create / bank / relight / destroy,
           # create-after-destroy, control-plane invariants). 20m0s covered the
           # runner's own wait plus that suite; a wedged brick rebuild already
-          # failed argocd-wait before this step runs. It never covered a retry
-          # and neither does the raised value: runInterval is 30m, so a failed
-          # cycle's next verdict lands a full interval later. Do not re-derive
-          # either number from a retry that does not fit.
+          # failed argocd-wait before this step runs.
           #
           # RAISED to 40m0s alongside the dev readyWait going to 30m for the
           # 0.41.7 to 0.47.x jump (#5224). Both old numbers assumed a roll that
@@ -292,13 +289,18 @@ promotion:
           # unverified with no poller on the next healthy cycle.
           #
           # This must stay strictly greater than conformance.readyWait plus the
-          # suite budget, or the poll gives up while the runner is still
-          # legitimately waiting for its bricks. The suite budget is 5m10s (s1
-          # 60s + s2 180s + s3 60s + s4 10s, summed as totalBudget in
-          # conformance/main.go), so 30m readyWait puts the worst case at
-          # 35m10s against this 40m0s: about 5m of real margin.
+          # suite budget PLUS one full runInterval and a second suite, because
+          # since 2026-08-29 the failure expression needs TWO consecutive red
+          # cycles (post-roll settling transients red-ed the first cycle on
+          # three different runs while the next quiet cycle passed; see the
+          # promotion template). A lone red keeps the poll waiting for the
+          # next cycle instead of failing. The suite budget is 5m10s (s1 60s +
+          # s2 180s + s3 60s + s4 10s, summed as totalBudget in
+          # conformance/main.go) and runInterval is 30m, so the worst case is
+          # 30m readyWait + 5m10s + 30m + 5m10s, about 70m30s against this
+          # 75m0s: real margin, not slack.
           verdictURL: http://embervm-dev-embervm-conformance.embervm-dev.svc.cluster.local:8080/verdict
-          verdictTimeout: 40m0s
+          verdictTimeout: 75m0s
         - name: prod
           application: embervm
           upstream:

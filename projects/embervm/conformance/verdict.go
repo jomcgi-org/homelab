@@ -24,7 +24,13 @@ type scenarioVerdict struct {
 	MS      int64  `json:"ms"`
 }
 
+// The previous COMPLETED cycle's outcome, kept so the promotion gate can
+// distinguish one red cycle (post-roll settling: dead-brick redials, inventory
+// adoption in progress) from a persistent red. The gate's failureExpression
+// requires two consecutive fails; a lone red keeps the poll waiting for the
+// next cycle instead of failing the promotion.
 type previousVerdict struct {
+	Verdict   string            `json:"verdict"`
 	Scenarios []scenarioVerdict `json:"scenarios"`
 }
 
@@ -55,9 +61,12 @@ func (s *verdictStore) start(started time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var previous *previousVerdict
+	previous := s.current.Previous
 	if s.current.Verdict != verdictRunning || len(s.current.Scenarios) > 0 {
-		previous = &previousVerdict{Scenarios: append([]scenarioVerdict(nil), s.current.Scenarios...)}
+		previous = &previousVerdict{
+			Verdict:   s.current.Verdict,
+			Scenarios: append([]scenarioVerdict(nil), s.current.Scenarios...),
+		}
 	}
 	s.current = suiteVerdict{
 		ChartVersion: s.current.ChartVersion,
@@ -80,12 +89,15 @@ func (s *verdictStore) finish(started time.Time, scenarios []scenarioVerdict) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Carry Previous through: dropping it here meant a finished report never
+	// exposed the prior cycle, so the gate could not see consecutive outcomes.
 	s.current = suiteVerdict{
 		ChartVersion: s.current.ChartVersion,
 		Verdict:      verdict,
 		StartedAt:    started.UTC(),
 		FinishedAt:   &finished,
 		Scenarios:    append([]scenarioVerdict(nil), scenarios...),
+		Previous:     s.current.Previous,
 	}
 }
 
@@ -96,7 +108,10 @@ func (s *verdictStore) snapshot() suiteVerdict {
 	copy := s.current
 	copy.Scenarios = append([]scenarioVerdict(nil), s.current.Scenarios...)
 	if s.current.Previous != nil {
-		copy.Previous = &previousVerdict{Scenarios: append([]scenarioVerdict(nil), s.current.Previous.Scenarios...)}
+		copy.Previous = &previousVerdict{
+			Verdict:   s.current.Previous.Verdict,
+			Scenarios: append([]scenarioVerdict(nil), s.current.Previous.Scenarios...),
+		}
 	}
 	return copy
 }
