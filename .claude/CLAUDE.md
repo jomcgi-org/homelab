@@ -233,7 +233,7 @@ Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 | Adding a service | `docs/contributing.md`, `docs/reference/services.md` |
 | Observability work | `docs/observability.md` |
 | Alerting work | `docs/reference/observability-alerting.md` |
-| Frontend or design work: tokens, palette, motion, a11y | `.impeccable.md` (three scoped design systems, deliberately not converged) |
+| Frontend or design work: tokens, palette, motion, a11y | `.impeccable.md` (four scoped design systems, deliberately not converged) |
 | Writing or editing prose humans read: site copy, READMEs, runbooks, posts | `docs/writing.md` |
 | Operator changes | `projects/operators/best-practices.md` |
 | How a domain works today | `projects/<domain>/ARCHITECTURE.md` where one exists (`embervm` today). Source of truth for current state, and what to link to. The ADRs are rationale |
