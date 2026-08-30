@@ -1,5 +1,4 @@
 <script>
-  import { periodForHour } from "$lib/private/period.js";
   import {
     facetHref,
     formatDate,
@@ -8,11 +7,13 @@
   } from "./updates.js";
 
   let { data } = $props();
-  let hour = $state(new Date().getHours());
-  let period = $derived(periodForHour(hour));
+  let dark = $state(false);
   $effect(() => {
-    const id = setInterval(() => (hour = new Date().getHours()), 60_000);
-    return () => clearInterval(id);
+    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => (dark = scheme.matches);
+    apply();
+    scheme.addEventListener("change", apply);
+    return () => scheme.removeEventListener("change", apply);
   });
   let activeDate = $state("");
   let monthGroups = $derived(groupUpdatesByMonth(data.updates));
@@ -51,7 +52,7 @@
   />
 </svelte:head>
 
-<main class="updates-page shell {period}">
+<main class="updates-page shell {dark ? 'night' : 'day'}">
   <div class="frame">
     <header class="masthead">
       <div class="masthead-row">
@@ -358,7 +359,10 @@
 
   .frame {
     position: relative;
-    max-width: 78em;
+    /* Sheet width = spine + gap + a 48em text measure: the ruled strokes
+       end where the text ends, so no rule implies content that is not
+       there. */
+    max-width: 69em;
     margin: 0 auto;
   }
 
@@ -429,7 +433,6 @@
   }
 
   .standfirst {
-    max-width: 44em;
     margin: 0.8rem 0 0;
     color: var(--ink-2);
     font-size: 0.92em;
@@ -440,7 +443,7 @@
 
   .journal {
     display: grid;
-    grid-template-columns: minmax(12em, 16em) minmax(0, 1fr);
+    grid-template-columns: minmax(12em, 15em) minmax(0, 48em);
     gap: clamp(2em, 4vw, 4em);
   }
 
@@ -717,7 +720,6 @@
   }
 
   .summary {
-    max-width: 44em;
     margin: 0.9rem 0 1.8rem;
     color: var(--ink-2);
     font-size: 1rem;
@@ -752,7 +754,6 @@
   }
 
   .item p {
-    max-width: 44em;
     margin: 0;
     color: var(--ink-2);
     font-size: 0.88rem;
@@ -813,7 +814,6 @@
   }
 
   .empty-entry > p {
-    max-width: 44em;
     margin: 1rem 0 0;
     color: var(--ink-2);
     font-size: 0.95em;

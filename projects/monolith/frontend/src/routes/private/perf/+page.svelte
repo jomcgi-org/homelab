@@ -1,13 +1,14 @@
 <script>
   import "$lib/private/dashboard-theme.css";
-  import { periodForHour } from "$lib/private/period.js";
 
   let { data } = $props();
-  let hour = $state(new Date().getHours());
-  let period = $derived(periodForHour(hour));
+  let dark = $state(false);
   $effect(() => {
-    const id = setInterval(() => (hour = new Date().getHours()), 60_000);
-    return () => clearInterval(id);
+    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => (dark = scheme.matches);
+    apply();
+    scheme.addEventListener("change", apply);
+    return () => scheme.removeEventListener("change", apply);
   });
 
   // ── Formatting helpers ───────────────────────
@@ -141,7 +142,7 @@
 
 <svelte:head><title>Scan perf · private.jomcgi.dev</title></svelte:head>
 
-<div class="shell {period}">
+<div class="shell {dark ? 'night' : 'day'}">
   <div class="dash">
     <header class="masthead">
       <h1 class="greeting">
