@@ -57,12 +57,7 @@
   <div class="frame">
     <header class="masthead">
       <a class="back-link" href="/">&larr; Dashboard</a>
-      <span class="masthead-id">
-        <h1>Product updates</h1>
-        <span class="masthead-meta"
-          >/ Private release journal / Daily editions</span
-        >
-      </span>
+      <h1 class="sr-only">Product updates</h1>
     </header>
 
     <div class="journal">
@@ -240,52 +235,53 @@
                   <span class="ed-category">{label(update.category)}</span>
                 </p>
 
-                <div class="ed-article">
+                <div class="ed-lead">
                   <h2>{update.headline}</h2>
                   <p class="summary">{update.summary}</p>
+                </div>
 
-                  <div class="meta-rows">
-                    <p class="meta-kv">
-                      <span class="k">Filed</span>
-                      <span class="v filed-tags">
-                        {#each update.projects as project}
-                          <a
-                            href={facetHref(
-                              "project",
-                              project,
-                              data.selectedProject,
-                              data.selectedTechnology,
-                            )}>{label(project)}</a
-                          >
-                        {/each}
-                        {#each update.technologies as technology}
-                          <a
-                            href={facetHref(
-                              "technology",
-                              technology,
-                              data.selectedProject,
-                              data.selectedTechnology,
-                            )}>{label(technology)}</a
-                          >
-                        {/each}
-                      </span>
-                    </p>
-                    <p class="meta-kv">
-                      <span class="k">Source</span>
-                      <a
-                        class="v source-link"
-                        href={update.source_compare_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        >{update.source_commit_count}
-                        {update.source_commit_count === 1
-                          ? "commit"
-                          : "commits"} on GitHub
-                        <span aria-hidden="true">&nearr;</span></a
-                      >
-                    </p>
-                  </div>
+                <div class="meta-rows">
+                  <p class="meta-kv">
+                    <span class="k">Filed</span>
+                    <span class="v filed-tags">
+                      {#each update.projects as project}
+                        <a
+                          href={facetHref(
+                            "project",
+                            project,
+                            data.selectedProject,
+                            data.selectedTechnology,
+                          )}>{label(project)}</a
+                        >
+                      {/each}
+                      {#each update.technologies as technology}
+                        <a
+                          href={facetHref(
+                            "technology",
+                            technology,
+                            data.selectedProject,
+                            data.selectedTechnology,
+                          )}>{label(technology)}</a
+                        >
+                      {/each}
+                    </span>
+                  </p>
+                  <p class="meta-kv">
+                    <span class="k">Source</span>
+                    <a
+                      class="v source-link"
+                      href={update.source_compare_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      >{update.source_commit_count}
+                      {update.source_commit_count === 1 ? "commit" : "commits"} on
+                      GitHub
+                      <span aria-hidden="true">&nearr;</span></a
+                    >
+                  </p>
+                </div>
 
+                <div class="ed-section">
                   <p class="sec-sublabel">What is new</p>
                   <div class="items">
                     {#each update.highlights as item}
@@ -295,8 +291,10 @@
                       </div>
                     {/each}
                   </div>
+                </div>
 
-                  {#if update.improvements.length}
+                {#if update.improvements.length}
+                  <div class="ed-section">
                     <p class="sec-sublabel">Also improved</p>
                     <div class="items supporting">
                       {#each update.improvements as item}
@@ -306,8 +304,8 @@
                         </div>
                       {/each}
                     </div>
-                  {/if}
-                </div>
+                  </div>
+                {/if}
               </article>
             {/each}
           </section>
@@ -376,26 +374,14 @@
 
   /* ── Masthead ── */
 
-  /* One functional line: navigation left, identity right. The former big
-     h1 tier and standfirst competed with the edition headline for
-     attention and carried no function. */
   .masthead {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 2em;
-    align-items: baseline;
-    margin-bottom: 2.2rem;
-    padding-bottom: 0.9rem;
-    /* Hard partition: the drawing's frame line, not a hairline. */
-    border-bottom: 2px solid var(--ink);
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-    white-space: nowrap;
+    margin-bottom: 1.6rem;
   }
 
   .back-link {
     color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
     text-decoration: none;
   }
 
@@ -403,27 +389,14 @@
     color: var(--accent-ink);
   }
 
-  .masthead-id {
-    display: inline-flex;
-    gap: 0.5em;
-    align-items: baseline;
-    justify-self: end;
-    min-width: 0;
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
     overflow: hidden;
-  }
-
-  h1 {
-    display: inline;
-    margin: 0;
-    color: var(--ink);
-    font-family: var(--font-code);
-    font-size: 1em;
-    font-weight: 700;
-    letter-spacing: inherit;
-  }
-
-  .masthead-meta {
-    margin: 0;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   /* ── Layout ── */
@@ -627,15 +600,15 @@
 
   /* ── Editions ── */
 
+  /* Each edition is one outlined panel with internal partitions, like a
+     technical diagram: content never floats in open space between rules. */
   .edition {
+    border: 1px solid var(--ink);
     scroll-margin-top: 1.5rem;
   }
 
   .edition + .edition {
-    margin-top: 2.5rem;
-    padding-top: 2rem;
-    /* Hard partition between editions, same weight as the frame line. */
-    border-top: 2px solid var(--ink);
+    margin-top: 1.75rem;
   }
 
   /* ── Edition head and metadata rows ──
@@ -650,8 +623,8 @@
     gap: 1.5em;
     align-items: baseline;
     margin: 0;
-    padding: 0.5em 0;
-    border-bottom: 1px solid var(--line);
+    padding: 0.55em 1rem;
+    border-bottom: 1px solid var(--stroke);
     font-family: var(--font-code);
     font-size: 0.72rem;
   }
@@ -666,11 +639,11 @@
   }
 
   .meta-rows {
-    margin: 0 0 1.2rem;
+    margin: 0;
+    padding: 0 1rem;
+    border-top: 1px solid var(--stroke);
   }
 
-  /* The following section label draws the closing rule; a border here too
-     left a stray line bracketing empty space. */
   .meta-rows .meta-kv:last-child {
     border-bottom: 0;
   }
@@ -733,9 +706,13 @@
 
   /* ── Edition article ── */
 
-  .ed-article h2 {
+  .ed-lead {
+    padding: 0.9rem 1rem 1rem;
+  }
+
+  .ed-lead h2 {
     max-width: 34ch;
-    margin: 1rem 0 0;
+    margin: 0;
     font-size: clamp(1.25rem, 1.9vw, 1.6rem);
     font-weight: 700;
     letter-spacing: -0.02em;
@@ -743,16 +720,19 @@
   }
 
   .summary {
-    margin: 0.7rem 0 1.1rem;
+    margin: 0.6rem 0 0;
     color: var(--ink);
     font-size: 0.88rem;
     line-height: 1.5;
   }
 
-  .sec-sublabel {
-    margin: 0 0 0.9em;
-    padding: 0.45em 0 0;
+  .ed-section {
+    padding: 0.7rem 1rem 1rem;
     border-top: 1px solid var(--stroke);
+  }
+
+  .sec-sublabel {
+    margin: 0 0 0.8em;
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.72rem;
@@ -760,7 +740,7 @@
   }
 
   .items {
-    margin-bottom: 1.4rem;
+    margin: 0;
   }
 
   .item + .item {
