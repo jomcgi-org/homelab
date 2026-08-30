@@ -398,7 +398,9 @@
   .facet-options {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.35em 0.95em;
+    /* Uniform gap: the 0.35em/0.95em split predates the pill borders and
+       left wrapped rows nearly touching. */
+    gap: 0.5rem;
   }
 
   .facet-options a,
@@ -417,6 +419,13 @@
 
   .facet-options a span {
     font-family: var(--font-code);
+    font-size: 0.85em;
+  }
+
+  /* Counts stay muted only on inactive chips; on the accent fill they
+     inherit the paper color for contrast (see the a.active rationale). */
+  .facet-options a:not(.active) span {
+    color: var(--ink-3);
   }
 
   .facet-options a:hover,
@@ -846,7 +855,13 @@
 
     .facet-row {
       grid-template-columns: 1fr;
-      gap: 0.35em;
+      gap: 0.5rem;
+    }
+
+    /* Touch sizing: the desktop chip height is fine for a pointer but
+       under the 44px floor for a thumb. */
+    .facet-options a {
+      padding: 0.55rem 0.85rem;
     }
 
     .journal-layout {
@@ -920,8 +935,8 @@
 
     .rail-month a {
       display: block;
-      min-width: 1.7em;
-      padding: 0.3em;
+      min-width: 2.2em;
+      padding: 0.65em 0.4em;
       text-align: center;
       /* In the horizontal strip the desktop left bar would read as a
          divider between pills, so the marker moves to an underline. */
