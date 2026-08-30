@@ -537,8 +537,6 @@ defmodule Embervm.SpecTrace.Checker do
       |> Enum.filter(&(&1["action"] == "checkpoint"))
       |> Enum.sort_by(& &1["mono"])
 
-    progress = Enum.filter(records, &(&1["action"] in ["dispatch_warm", "dispatch_miss", "succeed"]))
-
     cond do
       not Enum.any?(checkpoints, &checkpoint_has_queued_tasks?/1) ->
         eventually_dispatched_vacuous(
@@ -553,6 +551,11 @@ defmodule Embervm.SpecTrace.Checker do
         # has persistent inventory. A task that drains between sweeps is genuinely
         # not a wedge, so its absence from K+1 consecutive checkpoints is honest
         # vacuousness rather than a coverage shortfall.
+        progress_by_task =
+          records
+          |> Enum.filter(&(&1["action"] in ["dispatch_warm", "dispatch_miss", "succeed"]))
+          |> Enum.group_by(&get_in(&1, ["vars", "task_id"]), & &1["mono"])
+
         task_ids =
           checkpoints
           |> Enum.flat_map(&checkpoint_queued_tasks/1)
@@ -561,20 +564,23 @@ defmodule Embervm.SpecTrace.Checker do
           |> Enum.uniq()
           |> Enum.sort()
 
+        windows = Enum.chunk_every(checkpoints, @eventually_dispatched_k + 1, 1, :discard)
+
         results =
           Enum.map(task_ids, fn task_id ->
-            eventually_dispatched_task_result(task_id, checkpoints, progress)
+            eventually_dispatched_task_result(
+              task_id,
+              windows,
+              Map.get(progress_by_task, task_id, [])
+            )
           end)
 
         eventually_dispatched_verdict(results, checkpoints)
     end
   end
 
-  defp eventually_dispatched_task_result(task_id, checkpoints, progress) do
-    window_results =
-      checkpoints
-      |> Enum.chunk_every(@eventually_dispatched_k + 1, 1, :discard)
-      |> Enum.map(&eventually_dispatched_window(task_id, &1, progress))
+  defp eventually_dispatched_task_result(task_id, windows, progress_monos) do
+    window_results = Enum.map(windows, &eventually_dispatched_window(task_id, &1, progress_monos))
 
     cond do
       Enum.any?(window_results, &(&1 == :violation)) ->
@@ -601,7 +607,7 @@ defmodule Embervm.SpecTrace.Checker do
     end
   end
 
-  defp eventually_dispatched_window(task_id, window, progress) do
+  defp eventually_dispatched_window(task_id, window, progress_monos) do
     queued = Enum.map(window, &checkpoint_task_status(&1, task_id))
 
     cond do
@@ -618,11 +624,7 @@ defmodule Embervm.SpecTrace.Checker do
         first_mono = hd(window)["mono"]
         last_mono = List.last(window)["mono"]
 
-        progressed? =
-          Enum.any?(progress, fn record ->
-            get_in(record, ["vars", "task_id"]) == task_id and
-              record["mono"] >= first_mono and record["mono"] <= last_mono
-          end)
+        progressed? = Enum.any?(progress_monos, &(&1 >= first_mono and &1 <= last_mono))
 
         cond do
           progressed? ->

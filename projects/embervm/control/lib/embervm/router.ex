@@ -60,6 +60,7 @@ defmodule Embervm.Router do
   # Default task-record lifetime; Task 5 will source this from the workload's
   # invocation.resultTtlSeconds once the catalog exists.
   @default_task_ttl_ms 86_400_000
+  @conformance_default_lookback_ms 3_600_000
 
   plug(:match)
   plug(:fetch_query)
@@ -650,15 +651,30 @@ defmodule Embervm.Router do
   end
 
   defp conformance_query_opts(params) do
-    [
-      {:since_seq, parse_conformance_integer(params["since_seq"])},
-      {:since_ts_ms, parse_conformance_integer(params["since_ts_ms"])},
-      {:until_ts_ms, parse_conformance_integer(params["until_ts_ms"])},
-      {:run_id, params["run_id"]},
-      {:action, params["action"]},
-      {:spec, params["spec"] || "adoption"}
-    ]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    opts =
+      [
+        {:since_seq, parse_conformance_integer(params["since_seq"])},
+        {:since_ts_ms, parse_conformance_integer(params["since_ts_ms"])},
+        {:until_ts_ms, parse_conformance_integer(params["until_ts_ms"])},
+        {:run_id, params["run_id"]},
+        {:action, params["action"]},
+        {:spec, params["spec"] || "adoption"}
+      ]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+    if Keyword.has_key?(opts, :since_seq) or Keyword.has_key?(opts, :since_ts_ms) do
+      opts
+    else
+      # One hour caps a 5-second sweep at 720 checkpoints. Full-retention reads
+      # remain superlinear-adjacent even after checker indexing, and no current
+      # caller needs an unbounded default because the gate supplies its own bound.
+      # since_ts_ms=0 remains the explicit audit.
+      Keyword.put(
+        opts,
+        :since_ts_ms,
+        now_ms() - @conformance_default_lookback_ms
+      )
+    end
   end
 
   defp parse_conformance_integer(nil), do: nil

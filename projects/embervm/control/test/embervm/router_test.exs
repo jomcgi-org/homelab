@@ -1663,6 +1663,33 @@ defmodule Embervm.RouterTest do
       assert verdict["oracle"] == "trace_only"
     end
 
+    test "defaults to one hour while since_ts_ms=0 deliberately reads all retention" do
+      System.put_env("EMBERVM_SPEC_TRACE", "on")
+      Embervm.SpecTrace.configure()
+
+      on_exit(fn ->
+        System.put_env("EMBERVM_SPEC_TRACE", "off")
+        Embervm.SpecTrace.configure()
+      end)
+
+      start_supervised!({Embervm.SpecTrace.Store.SQLite, path: ":memory:"})
+
+      now = System.system_time(:millisecond)
+
+      records = [
+        conformance_record("old-run", 1, now - 7_200_000),
+        conformance_record("recent-run", 2, now - 60_000)
+      ]
+
+      :ok = Embervm.SpecTrace.Store.SQLite.write(records)
+
+      bounded = req(:get, "/v1/conformance", auth("good")) |> then(&json(&1.body))
+      unbounded = req(:get, "/v1/conformance?since_ts_ms=0", auth("good")) |> then(&json(&1.body))
+
+      assert bounded["run_ids"] == ["recent-run"]
+      assert Enum.sort(unbounded["run_ids"]) == ["old-run", "recent-run"]
+    end
+
     test "requires auth like every other /v1 route" do
       {:ok, resp} =
         Finch.build(:get, "http://127.0.0.1:8080/v1/conformance")
@@ -1670,5 +1697,17 @@ defmodule Embervm.RouterTest do
 
       assert resp.status == 401
     end
+  end
+
+  defp conformance_record(run_id, seq, ts) do
+    %{
+      "run_id" => run_id,
+      "seq" => seq,
+      "mono" => seq,
+      "ts" => ts,
+      "spec" => "adoption",
+      "action" => "prime",
+      "vars" => %{"vm_id" => "vm-#{seq}", "node_id" => "node-1"}
+    }
   end
 end

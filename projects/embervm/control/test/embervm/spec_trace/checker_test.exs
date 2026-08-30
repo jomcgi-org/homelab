@@ -434,6 +434,39 @@ defmodule Embervm.SpecTrace.CheckerTest do
       assert verdict.coverage == 1
     end
 
+    test "progress is indexed by task across shared overlapping windows", %{store: store} do
+      task_a = "task-a-pass"
+      task_b = "task-b-no-progress"
+      task_c = "task-c-partial-progress"
+
+      queued_tasks = [
+        queued_task(task_a, "W"),
+        queued_task(task_b, "W"),
+        queued_task(task_c, "W")
+      ]
+
+      checkpoints =
+        for mono <- [10, 20, 30, 40] do
+          eventually_checkpoint(mono, queued_tasks, %{"node:W" => ["vm-w"]})
+        end
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_progress(15, "succeed", task_c),
+          eventually_progress(25, "dispatch_warm", task_a)
+          | checkpoints
+        ])
+
+      assert verdict == %{
+               invariant: :eventually_dispatched,
+               verdict: :fail,
+               coverage: 3,
+               oracle: :trace_only,
+               detail:
+                 "violating task_ids: \"task-b-no-progress\", \"task-c-partial-progress\""
+             }
+    end
+
     test "inventory for an unrelated workload leaves the task unjudged", %{store: store} do
       task_id = "task-workload-w"
 
