@@ -28,6 +28,11 @@
 
   --radius: 18px;
 
+  /* Paper-white sheet for document pages (the updates journal): the warm
+     card tint reads as cream next to true white, and the document style
+     wants technical writing on paper. Night gets its own neutral sheet. */
+  --sheet: #ffffff;
+
   /* re-bind the shared token names so descendant components
    * (ClusterChatPanel, the search overlay) restyle without edits */
   --font: var(--font-ui);
@@ -58,6 +63,7 @@
 }
 
 .shell.night {
+  --sheet: #181a20;
   --paper: #14151b;
   --card-bg: #1c1e26;
   --ink: #e8e5dc;
