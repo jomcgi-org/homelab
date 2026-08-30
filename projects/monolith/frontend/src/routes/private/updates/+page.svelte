@@ -380,19 +380,19 @@
      h1 tier and standfirst competed with the edition headline for
      attention and carried no function. */
   .masthead {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 2em;
+    align-items: baseline;
     margin-bottom: 2.2rem;
     padding-bottom: 0.9rem;
     border-bottom: 1px solid var(--stroke);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4em 2em;
-    align-items: baseline;
-    justify-content: space-between;
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.68rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
+    white-space: nowrap;
   }
 
   .back-link {
@@ -406,9 +406,11 @@
 
   .masthead-id {
     display: inline-flex;
-    flex-wrap: wrap;
-    gap: 0.4em 0.5em;
+    gap: 0.5em;
     align-items: baseline;
+    justify-self: end;
+    min-width: 0;
+    overflow: hidden;
   }
 
   h1 {
@@ -641,11 +643,10 @@
      noise the spine never needed. */
 
   .ed-head {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4em 1.5em;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 1.5em;
     align-items: baseline;
-    justify-content: space-between;
     margin: 0;
     padding: 0.5em 0;
     border-bottom: 1px solid var(--line);
@@ -713,8 +714,9 @@
     text-decoration: none;
   }
 
-  .filed-tags a + a::before {
-    padding-right: 0.5em;
+  /* Separator trails the tag so a wrapped line never starts with one. */
+  .filed-tags a:not(:last-child)::after {
+    padding-left: 0.5em;
     color: var(--ink-3);
     content: "\00b7";
   }
@@ -880,6 +882,14 @@
     color: var(--ink-2);
     font-size: 0.7em;
     line-height: 1.45;
+  }
+
+  /* The folio is the first thing to go when the masthead track tightens;
+     a wrapped or clipped identity string is worse than a shorter one. */
+  @media (max-width: 980px) {
+    .masthead-meta {
+      display: none;
+    }
   }
 
   /* ── Mobile ── */
