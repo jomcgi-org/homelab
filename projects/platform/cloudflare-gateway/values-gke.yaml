@@ -1,17 +1,27 @@
 gateway-helm:
-  # GKE owns the Gateway API CRDs. Disable the bundled all-or-nothing CRD
-  # chart and its safe-upgrade policy, then install only Envoy Gateway CRDs
-  # through the separately configurable upstream CRD chart below.
+  # The chart owns ALL Gateway API CRDs on the hub, exactly like home. The GKE
+  # Gateway API addon is disabled on the cluster (2026-08-30): its
+  # standard-channel bundle lacks ListenerSet, which Envoy Gateway 1.8.3
+  # requires at startup, and two writers reconciling the same CRDs would
+  # fight. The safe-upgrade admission policy stays off: its Helm lookup guard
+  # never fires under ArgoCD, and with the addon gone there is no second
+  # writer for it to protect against.
   crds:
     enabled: false
     gatewayAPI:
       safeUpgradePolicy:
         enabled: false
 
+# Note: the experimental bundle embeds upstream's safe-upgrades
+# ValidatingAdmissionPolicy. It is acceptable here: with the addon disabled
+# there is no second CRD writer, and re-applying the same experimental bundle
+# passes its rules. It denies only experimental-over-standard and pre-v1.5.0
+# installs, so the standard-channel CRDs must be deleted once (bootstrap step)
+# before the first sync of this bundle.
 gateway-crds-helm:
   crds:
     gatewayAPI:
-      enabled: false
+      enabled: true
     envoyGateway:
       enabled: true
 
