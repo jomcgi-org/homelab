@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/moving", tags=["moving"])
 
 MESSAGE_CHAR_CAP = 2000
-HISTORY_MESSAGE_CAP = 2000
+HISTORY_MESSAGE_CAP = 8000
 HISTORY_LIMIT = 12
-MODEL = "qwen3.6-27b"
+MOVING_CHAT_MODEL = os.getenv("MOVING_CHAT_MODEL", "qwen3.6-27b")
 MAX_TOKENS = 2000
 
 INFERENCE_URL = os.environ.get("MOVING_CHAT_INFERENCE_URL") or os.environ.get(
@@ -51,12 +51,14 @@ _DEFAULT_SYSTEM_PROMPT = (
 
 class HistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: str = Field(min_length=1, max_length=HISTORY_MESSAGE_CAP)
+    content: str = Field(min_length=1)
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MESSAGE_CHAR_CAP)
-    history: list[HistoryMessage] = Field(default_factory=list)
+    history: list[HistoryMessage] = Field(
+        default_factory=list, max_length=HISTORY_LIMIT
+    )
 
 
 def _system_prompt() -> str:
@@ -94,10 +96,11 @@ def build_model_messages(
         },
         {"role": "system", "content": _format_plan_context(state)},
     ]
-    messages.extend(
-        {"role": item.role, "content": item.content}
-        for item in request.history[-HISTORY_LIMIT:]
-    )
+    truncated_history = [
+        {"role": item.role, "content": item.content[:HISTORY_MESSAGE_CAP]}
+        for item in request.history
+    ]
+    messages.extend(truncated_history[-HISTORY_LIMIT:])
     messages.append({"role": "user", "content": request.message})
     return messages
 
@@ -114,11 +117,10 @@ async def stream_chat(
 ) -> AsyncIterator[str]:
     """Stream OpenAI-compatible text deltas with no tools or session state."""
     body = {
-        "model": MODEL,
+        "model": MOVING_CHAT_MODEL,
         "messages": messages,
         "max_tokens": MAX_TOKENS,
         "stream": True,
-        "stream_options": {"include_usage": True},
     }
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         async with client.stream(
@@ -147,8 +149,8 @@ async def _response_stream(
     try:
         async for text in stream_chat(messages, inference_url):
             yield format_sse("token", {"text": text})
-    except httpx.HTTPError as exc:
-        logger.warning("moving.chat.inference_failed error=%s", type(exc).__name__)
+    except Exception:
+        logger.exception("moving.chat.inference_failed")
         yield format_sse(
             "error",
             {"code": "inference_error", "message": "Chat failed. Please try again."},

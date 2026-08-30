@@ -1156,6 +1156,11 @@
   overflow-y: auto;
 }
 
+.moving .chat-status {
+  position: absolute;
+  left: -9999px;
+}
+
 .moving .chat-empty,
 .moving .chat-hint {
   margin: 0;
