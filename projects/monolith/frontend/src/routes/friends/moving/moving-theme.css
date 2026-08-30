@@ -1394,7 +1394,7 @@
 }
 
 .moving .manage-toggle {
-  padding: 3px 10px;
+  padding: 2px 10px;
   border: 2px solid var(--ink);
   background: var(--paper);
   color: var(--ink);
@@ -1417,8 +1417,14 @@
 }
 
 .moving .c-today .manage-toggle {
-  border-color: var(--ink);
+  border-color: #1a1a1a;
   background: var(--yellow);
+  color: #1a1a1a;
+}
+
+.moving .c-today .manage-toggle:hover {
+  background: #1a1a1a;
+  color: var(--yellow);
 }
 
 .moving .manage {
@@ -1518,7 +1524,7 @@
 }
 
 .moving .manage input::placeholder {
-  color: var(--ink);
+  color: var(--ink-3);
 }
 
 .moving .manage button,
@@ -1606,6 +1612,11 @@
   gap: 12px;
   border-color: var(--ink);
   background: var(--yellow);
+  color: #1a1a1a;
+}
+
+.moving .undo-strip * {
+  color: #1a1a1a;
 }
 
 .moving .collision-list {

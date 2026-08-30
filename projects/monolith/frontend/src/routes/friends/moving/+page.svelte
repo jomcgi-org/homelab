@@ -329,7 +329,6 @@
             <button
               class="manage-toggle"
               type="button"
-              aria-pressed="true"
               onclick={() => setMode("dashboard")}>Back to plan</button
             >
           </header>

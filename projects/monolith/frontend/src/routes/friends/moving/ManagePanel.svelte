@@ -39,6 +39,10 @@
       .filter((collision) => collision.wording),
   );
 
+  const spansForSelect = $derived(
+    spans.filter((span) => !span.id.startsWith("pending-")),
+  );
+
   const fields = {
     spans: ["kind", "label", "starts_on", "ends_on", "owner"],
     milestones: ["title", "occurs_on", "owner", "gcal_state"],
@@ -105,9 +109,10 @@
   }
 
   function cancelOnEscape(event) {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    cancelEdit();
+    if (event.key === "Escape" && editing) {
+      event.preventDefault();
+      editing = null;
+    }
   }
 
   function valuesFromForm(type, form) {
@@ -163,7 +168,10 @@
   async function responseMessage(response, fallback) {
     try {
       const body = await response.json();
-      return body.detail ? `${fallback}: ${body.detail}` : fallback;
+      // FastAPI validation errors use an array of objects for detail.
+      return typeof body.detail === "string"
+        ? `${fallback}: ${body.detail}`
+        : fallback;
     } catch {
       return fallback;
     }
@@ -275,6 +283,7 @@
   async function deleteEntity(type, item) {
     clearUndo();
     const before = listFor(type);
+    const deletedIndex = before.findIndex((row) => row.id === item.id);
     const key = pendingKey(type, item.id);
     manageError = "";
     setPending(key, true);
@@ -299,7 +308,16 @@
       if (editing?.id === item.id) editing = null;
       showUndo(type, item);
     } catch (error) {
-      setList(type, before);
+      const current = listFor(type);
+      const insertAt =
+        deletedIndex < 0
+          ? current.length
+          : Math.min(deletedIndex, current.length);
+      setList(type, [
+        ...current.slice(0, insertAt),
+        item,
+        ...current.slice(insertAt),
+      ]);
       manageError = error.message || `Could not delete ${type.slice(0, -1)}.`;
     } finally {
       setPending(key, false);
@@ -339,6 +357,44 @@
           item.id === tempId ? created : item,
         ),
       );
+      if (deleted.type === "tasks" && deleted.item.done_at) {
+        const doneKey = pendingKey("tasks", created.id);
+        const beforeDone = created.done_at ?? null;
+        setPending(doneKey, true);
+        setList(
+          "tasks",
+          listFor("tasks").map((item) =>
+            item.id === created.id
+              ? { ...item, done_at: deleted.item.done_at }
+              : item,
+          ),
+        );
+        try {
+          const doneResponse = await fetch(
+            `/api/moving/tasks/${encodeURIComponent(created.id)}/done`,
+            { method: "POST" },
+          );
+          if (!doneResponse.ok)
+            throw new Error("task completion restore failed");
+          const completed = await doneResponse.json();
+          setList(
+            "tasks",
+            listFor("tasks").map((item) =>
+              item.id === created.id ? completed : item,
+            ),
+          );
+        } catch {
+          setList(
+            "tasks",
+            listFor("tasks").map((item) =>
+              item.id === created.id ? { ...item, done_at: beforeDone } : item,
+            ),
+          );
+          manageError = "Failed to restore task completion state";
+        } finally {
+          setPending(doneKey, false);
+        }
+      }
     } catch (error) {
       setList(
         deleted.type,
@@ -457,7 +513,7 @@
   <section class="tsec manage-section spans" aria-labelledby="manage-spans">
     <div class="th" id="manage-spans">Spans <span>{spans.length}</span></div>
     <div class="manage-table">
-      <div class="manage-row column-head" aria-hidden="true">
+      <div class="manage-row column-head">
         <span>Kind</span><span>Label</span><span>Starts</span><span>Ends</span
         ><span>Owner</span><span>Actions</span>
       </div>
@@ -607,7 +663,7 @@
       Milestones <span>{milestones.length}</span>
     </div>
     <div class="manage-table">
-      <div class="manage-row column-head" aria-hidden="true">
+      <div class="manage-row column-head">
         <span>Title</span><span>Date</span><span>Owner</span><span
           >Calendar</span
         ><span>Sync</span><span>Actions</span>
@@ -753,7 +809,7 @@
   >
     <div class="th" id="manage-tasks">Tasks <span>{tasks.length}</span></div>
     <div class="manage-table">
-      <div class="manage-row column-head" aria-hidden="true">
+      <div class="manage-row column-head">
         <span>Track</span><span>Task</span><span>Note</span><span>Owner</span
         ><span>Due</span><span>Value</span><span>State</span><span>Actions</span
         >
@@ -910,7 +966,7 @@
   >
     <div class="th" id="manage-roles">Roles <span>{roles.length}</span></div>
     <div class="manage-table">
-      <div class="manage-row column-head" aria-hidden="true">
+      <div class="manage-row column-head">
         <span>Company</span><span>Title</span><span>Owner</span><span
           >Stage</span
         ><span>Next</span><span>Span</span><span>Actions</span>
@@ -964,7 +1020,7 @@
                 name="span_id"
                 value={role.span_id ?? ""}
                 ><option value="">No span</option
-                >{#each spans as span (span.id)}<option value={span.id}
+                >{#each spansForSelect as span (span.id)}<option value={span.id}
                     >{span.label}</option
                   >{/each}</select
               ></label
@@ -1045,7 +1101,7 @@
         ><label
           ><span class="sr-only">Linked span</span><select name="span_id"
             ><option value="">No span</option
-            >{#each spans as span (span.id)}<option value={span.id}
+            >{#each spansForSelect as span (span.id)}<option value={span.id}
                 >{span.label}</option
               >{/each}</select
           ></label
