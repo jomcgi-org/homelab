@@ -1,5 +1,5 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load("//bazel/helm:defs.bzl", "helm_chart")
+load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -39,6 +39,26 @@ helm_chart(
     visibility = ["//overlays:__subpackages__"],
 )
 
+argocd_app(
+    name = "monolith-gke",
+    chart = "projects/monolith/chart",
+    chart_files = ":chart",
+    generate_manifests = False,
+    generate_semgrep = False,
+    namespace = "monolith",
+    release_name = "monolith",
+    tags = [
+        "helm",
+        "template",
+    ],
+    target_suffix = "_gke",
+    values_files = [
+        "values.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+    ],
+)
+
 py_test(
     name = "chart_env_identity_test",
     srcs = ["chart_env_identity_test.py"],
@@ -49,6 +69,7 @@ py_test(
         "//projects/monolith:module_configs",
         "//projects/monolith/deploy:application",
         "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
         "//projects/monolith/dev/deploy:application",
         "//projects/monolith/dev/deploy:deploy_values",
         "@multitool//tools/helm",
@@ -60,12 +81,16 @@ py_test(
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
         "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
         # The Applications, so releaseName is read from where it is DECLARED.
         "PROD_APPLICATION": "$(rootpath //projects/monolith/deploy:application)",
         "DEV_APPLICATION": "$(rootpath //projects/monolith/dev/deploy:application)",
     },
-    deps = ["@pip//pytest"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 # The backend's traces endpoint, across the three seams that each fail silently:

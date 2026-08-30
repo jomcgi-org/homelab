@@ -34,6 +34,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 # Kinds with no namespace: two Applications rendering the same name means one
 # object with two owners, not two objects.
@@ -173,11 +174,13 @@ def renders():
     chart = _chart_dir()
     base = [chart / "values.yaml", Path(os.environ["DEPLOY_VALUES"])]
     dev_overlay = Path(os.environ["DEV_VALUES"])
+    gke_overlay = Path(os.environ["GKE_VALUES"])
     prod_release = _release_name(Path(os.environ["PROD_APPLICATION"]))
     dev_release = _release_name(Path(os.environ["DEV_APPLICATION"]))
     return {
         "prod": _render(prod_release, base),
         "dev": _render(dev_release, base + [dev_overlay]),
+        "gke": _render(prod_release, base + [gke_overlay]),
     }
 
 
@@ -434,4 +437,31 @@ def test_dev_takes_no_backups(renders):
         "dev's override is not what is keeping it quiet and the assertion "
         "above passes for the wrong reason. Check the chart still has the "
         "barman templates."
+    )
+
+
+def test_gke_recovery_has_app_credentials_and_a_distinct_archive(renders):
+    """Recovery must mint usable app credentials and archive under a new name."""
+    cluster = next(
+        doc
+        for doc in yaml.safe_load_all(renders["gke"])
+        if isinstance(doc, dict)
+        and doc.get("kind") == "Cluster"
+        and doc.get("metadata", {}).get("name") == "monolith-pg"
+    )
+
+    recovery = cluster["spec"]["bootstrap"]["recovery"]
+    assert recovery["database"] == "monolith"
+    assert recovery["owner"] == "app"
+
+    backup_store = cluster["spec"]["backup"]["barmanObjectStore"]
+    backup_server = backup_store.get("serverName", cluster["metadata"]["name"])
+    recovery_store = cluster["spec"]["externalClusters"][0]
+    recovery_server = recovery_store["barmanObjectStore"].get(
+        "serverName", recovery_store["name"]
+    )
+    assert backup_server != recovery_server, (
+        f"GKE backup and recovery both resolve to serverName {backup_server!r}. "
+        "CNPG requires the recovery source to remain on the home archive while "
+        "the recovered cluster writes to a distinct archive."
     )

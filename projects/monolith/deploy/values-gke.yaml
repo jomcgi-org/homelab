@@ -1,8 +1,16 @@
 # GKE monolith-pg recovery from the off-cluster GCS Barman object store.
+# Consumed by PR #5464's gke-apps Applications (not referenced by this branch).
 postgres:
   bootstrap:
     recovery:
+      # CNPG 1.30 behavior: The recovery-minted app Secret password overwrites
+      # the restored owner role after recovery completes. No manual ALTER ROLE
+      # step is required.
       source: monolith-pg
+      database: monolith
+      owner: app
+  backup:
+    serverName: monolith-pg-gke
   externalClusters:
     - name: monolith-pg
       barmanObjectStore:

@@ -34,6 +34,9 @@ spec:
     retentionPolicy: {{ .Values.cnpg.backup.retentionPolicy | quote }}
     barmanObjectStore:
       destinationPath: {{ .Values.cnpg.backup.destinationPath | quote }}
+      {{- with .Values.cnpg.backup.serverName }}
+      serverName: {{ . | quote }}
+      {{- end }}
       googleCredentials:
         applicationCredentials:
           name: {{ .Values.cnpg.backup.credentialsSecret }}
