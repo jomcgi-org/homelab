@@ -1407,8 +1407,8 @@ marine:
 # light-pollution site grid, uploaded out-of-band) from Cloudflare R2.
 # Credentials sourced from the monolith-r2-s3 Secret (created by OnePasswordItem
 # from the r2-s3-credentials 1Password item). The 1Password item must have fields:
-# - r2_access_key_id (the Account ID: xxx credential)
-# - r2_secret_access_key (the secret key)
+# - access-key-id (the Account ID: xxx credential)
+# - secret-access-key (the secret key)
 stars:
   s3Endpoint: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
   s3Region: "auto"

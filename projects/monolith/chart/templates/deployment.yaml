@@ -434,12 +434,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-r2-s3
-                  key: r2_access_key_id
+                  key: access-key-id
             - name: S3_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-r2-s3
-                  key: r2_secret_access_key
+                  key: secret-access-key
             - name: STARS_GRID_S3_BUCKET
               value: {{ .Values.stars.gridBucket | quote }}
             - name: STARS_GRID_S3_KEY
