@@ -2126,12 +2126,6 @@ defmodule Embervm.BaseBuilder do
   # Workload. spawn_monitor (not link): a worker crash surfaces as a :DOWN we
   # treat as a build error, never escalating to this GenServer.
   defp start_worker(state, node_id, w) do
-    owner = self()
-    address = state.node_addr[node_id]
-    build_fun = state.build_fun
-    connect_fun = state.connect_fun
-    disconnect_fun = state.disconnect_fun
-    request = build_request(w, state.runtime_images)
     sig = signature(w)
 
     vendor =
@@ -2140,37 +2134,53 @@ defmodule Embervm.BaseBuilder do
         :error -> ""
       end
 
-    {pid, ref} =
-      spawn_monitor(fn ->
-        me = self()
-
-        result =
-          case connect_fun.(address) do
-            {:ok, channel} ->
-              try do
-                build_fun.(channel, request)
-              catch
-                kind, reason -> {:error, {kind, reason}}
-              after
-                disconnect_fun.(channel)
-              end
-
-            {:error, reason} ->
-              {:error, {:connect, reason}}
-          end
-
-        send(owner, {:build_result, me, result})
-      end)
-
-    state
-    |> put_in([:nodes, node_id, :building], w.name)
-    |> put_in([:nodes, node_id, :worker], {pid, ref})
-    |> put_in([:workers, pid], %{
+    worker_meta = %{
       node_id: node_id,
       name: w.name,
       signature: sig,
       cpu_vendor: vendor
-    })
+    }
+
+    case Map.get(state.node_addr, node_id) do
+      nil ->
+        # The node departed between enqueue and start, and its address left with
+        # it. Dialing nil only burns an attempt in a worker that cannot succeed.
+        apply_result(state, w, worker_meta, {:error, {:no_address, node_id}})
+
+      address ->
+        owner = self()
+        build_fun = state.build_fun
+        connect_fun = state.connect_fun
+        disconnect_fun = state.disconnect_fun
+        request = build_request(w, state.runtime_images)
+
+        {pid, ref} =
+          spawn_monitor(fn ->
+            me = self()
+
+            result =
+              case connect_fun.(address) do
+                {:ok, channel} ->
+                  try do
+                    build_fun.(channel, request)
+                  catch
+                    kind, reason -> {:error, {kind, reason}}
+                  after
+                    disconnect_fun.(channel)
+                  end
+
+                {:error, reason} ->
+                  {:error, {:connect, reason}}
+              end
+
+            send(owner, {:build_result, me, result})
+          end)
+
+        state
+        |> put_in([:nodes, node_id, :building], w.name)
+        |> put_in([:nodes, node_id, :worker], {pid, ref})
+        |> put_in([:workers, pid], worker_meta)
+    end
   end
 
   # The image lane sets image_ref (proto field 2); the zip lane leaves it empty
@@ -2244,9 +2254,13 @@ defmodule Embervm.BaseBuilder do
           else
             # Spec changed under us: this result is for a stale signature. Discard
             # it and re-enqueue the current desired build.
-            state
-            |> enqueue(node_id, name)
-            |> write_base_status(w, :building)
+            state = enqueue(state, node_id, name)
+
+            if Map.get(state.node_addr, node_id) == nil do
+              state
+            else
+              write_base_status(state, w, :building)
+            end
           end
       end
 
