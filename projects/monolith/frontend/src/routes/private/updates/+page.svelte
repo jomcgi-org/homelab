@@ -52,72 +52,62 @@
 </svelte:head>
 
 <main class="updates-page shell {period}">
-  <header class="masthead">
-    <div class="masthead-label">
-      <p class="kicker">Private release journal</p>
-      <span>Daily editions</span>
-    </div>
+  <div class="journal">
+    <aside class="spine">
+      <div class="spine-brand">
+        <p class="kicker">Private release journal</p>
+        <span class="spine-sub">Daily editions</span>
+      </div>
 
-    <div class="masthead-copy">
-      <h1>Product updates</h1>
-      <p class="intro">
-        What became possible across the homelab, with the exact source range
-        behind every update.
-      </p>
-
-      <div class="facets" aria-label="Filter product updates">
+      <nav class="spine-filters" aria-label="Filter product updates">
         {#if data.projects.length}
-          <div class="facet-row">
-            <span class="facet-label">Projects</span>
-            <div class="facet-options">
-              {#each data.projects as facet}
-                <a
-                  class:active={data.selectedProject === facet.value}
-                  aria-current={data.selectedProject === facet.value
-                    ? "true"
-                    : undefined}
-                  href={facetHref(
-                    "project",
-                    facet.value,
-                    data.selectedProject,
-                    data.selectedTechnology,
-                  )}
-                  >{label(facet.value)}
-                  <span>{facet.count}</span
-                  >{#if data.selectedProject === facet.value}<span
-                      class="remove"
-                      aria-hidden="true">×</span
-                    >{/if}</a
+          <p class="spine-label">Projects</p>
+          <div class="spine-list">
+            {#each data.projects as facet}
+              <a
+                class:active={data.selectedProject === facet.value}
+                aria-current={data.selectedProject === facet.value
+                  ? "true"
+                  : undefined}
+                href={facetHref(
+                  "project",
+                  facet.value,
+                  data.selectedProject,
+                  data.selectedTechnology,
+                )}
+              >
+                <span class="name">{label(facet.value)}</span>
+                <span class="count"
+                  >{facet.count}{#if data.selectedProject === facet.value}
+                    <span class="remove" aria-hidden="true">×</span>{/if}</span
                 >
-              {/each}
-            </div>
+              </a>
+            {/each}
           </div>
         {/if}
         {#if data.technologies.length}
-          <div class="facet-row">
-            <span class="facet-label">Technologies</span>
-            <div class="facet-options">
-              {#each data.technologies as facet}
-                <a
-                  class:active={data.selectedTechnology === facet.value}
-                  aria-current={data.selectedTechnology === facet.value
-                    ? "true"
-                    : undefined}
-                  href={facetHref(
-                    "technology",
-                    facet.value,
-                    data.selectedProject,
-                    data.selectedTechnology,
-                  )}
-                  >{label(facet.value)}
-                  <span>{facet.count}</span
-                  >{#if data.selectedTechnology === facet.value}<span
-                      class="remove"
-                      aria-hidden="true">×</span
-                    >{/if}</a
+          <p class="spine-label">Technologies</p>
+          <div class="spine-list">
+            {#each data.technologies as facet}
+              <a
+                class:active={data.selectedTechnology === facet.value}
+                aria-current={data.selectedTechnology === facet.value
+                  ? "true"
+                  : undefined}
+                href={facetHref(
+                  "technology",
+                  facet.value,
+                  data.selectedProject,
+                  data.selectedTechnology,
+                )}
+              >
+                <span class="name">{label(facet.value)}</span>
+                <span class="count"
+                  >{facet.count}{#if data.selectedTechnology === facet.value}
+                    <span class="remove" aria-hidden="true">×</span>{/if}</span
                 >
-              {/each}
-            </div>
+              </a>
+            {/each}
           </div>
         {/if}
         {#if filtering && !data.error}
@@ -132,169 +122,172 @@
                 )}{/if}{#if data.selectedTechnology}
                 · {label(data.selectedTechnology)}{/if}
             </span>
-            <a class="clear" href="/updates">Clear filters</a>
+            <a class="clear" href="/updates">Clear</a>
           </p>
         {/if}
-      </div>
-    </div>
-  </header>
-
-  {#if data.error}
-    <div class="state" role="alert">
-      <strong>The journal is unavailable.</strong>
-      <span>The archive service did not respond. Try again shortly.</span>
-    </div>
-  {:else if !data.updates.length}
-    {#if filtering}
-      <div class="state">
-        <strong>No updates match these filters.</strong>
-        <span>Clear a filter to see the complete journal.</span>
-      </div>
-    {:else}
-      <div class="empty-journal">
-        <aside class="empty-rail" aria-hidden="true">
-          <span>Archive</span>
-          <strong>00</strong>
-          <small>editions</small>
-        </aside>
-
-        <section class="empty-entry">
-          <div class="empty-meta">
-            <span class="ready-dot"></span>
-            <span>Archive ready</span>
-            <span>Edition 00</span>
-          </div>
-          <h2>Waiting for the first daily edition.</h2>
-          <p>
-            New features and meaningful improvements will land here after the
-            daily rollup submits a validated entry.
-          </p>
-
-          <div class="empty-flow" aria-label="Daily update workflow">
-            <div>
-              <span>01</span>
-              <strong>Collect changes</strong>
-              <small>Public commit range</small>
-            </div>
-            <div>
-              <span>02</span>
-              <strong>Write the story</strong>
-              <small>Features, not commit logs</small>
-            </div>
-            <div>
-              <span>03</span>
-              <strong>Publish here</strong>
-              <small>Structured and browsable</small>
-            </div>
-          </div>
-        </section>
-      </div>
-    {/if}
-  {:else}
-    <div class="journal-layout">
-      <nav class="date-rail" aria-label="Updates by date">
-        {#each monthGroups as group}
-          <div class="rail-month">
-            <p>{group.label}</p>
-            {#each group.updates as update}
-              <a
-                class:active={activeDate === update.published_on}
-                href={`#update-${update.published_on}`}
-                aria-current={activeDate === update.published_on
-                  ? "location"
-                  : undefined}
-              >
-                <span>{update.published_on.slice(8)}</span>
-                <small>{update.headline}</small>
-              </a>
-            {/each}
-          </div>
-        {/each}
       </nav>
 
-      <section class="entries" aria-label="Product update entries">
-        {#each data.updates as update}
-          <article
-            id={`update-${update.published_on}`}
-            data-update-date={update.published_on}
-          >
-            <div class="entry-meta">
-              <time datetime={update.published_on}
-                >{formatDate(update.published_on)}</time
-              >
-              <span class={`category category-${update.category}`}
-                >{label(update.category)}</span
-              >
+      {#if data.updates.length}
+        <nav class="date-rail" aria-label="Updates by date">
+          <p class="spine-label">By date</p>
+          {#each monthGroups as group}
+            <div class="rail-month">
+              <p>{group.label}</p>
+              {#each group.updates as update}
+                <a
+                  class:active={activeDate === update.published_on}
+                  href={`#update-${update.published_on}`}
+                  aria-current={activeDate === update.published_on
+                    ? "location"
+                    : undefined}
+                >
+                  <span>{update.published_on.slice(8)}</span>
+                  <small>{update.headline}</small>
+                </a>
+              {/each}
             </div>
+          {/each}
+        </nav>
+      {/if}
+    </aside>
 
-            <h2>{update.headline}</h2>
-            <p class="summary">{update.summary}</p>
+    <div class="content">
+      <header class="nameplate">
+        <h1>Product updates</h1>
+        <p class="standfirst">
+          What became possible across the homelab, with the exact source range
+          behind every update.
+        </p>
+      </header>
 
-            <div class="section-block">
-              <h3>What is new</h3>
-              <div class="items">
-                {#each update.highlights as item}
-                  <div class="item">
-                    <h4>{item.title}</h4>
-                    <p>{item.description}</p>
-                  </div>
-                {/each}
+      {#if data.error}
+        <div class="state" role="alert">
+          <strong>The journal is unavailable.</strong>
+          <span>The archive service did not respond. Try again shortly.</span>
+        </div>
+      {:else if !data.updates.length}
+        {#if filtering}
+          <div class="state">
+            <strong>No updates match these filters.</strong>
+            <span>Clear a filter to see the complete journal.</span>
+          </div>
+        {:else}
+          <section class="empty-entry">
+            <div class="empty-meta">
+              <span class="ready-dot"></span>
+              <span>Archive ready</span>
+              <span>Edition 00</span>
+            </div>
+            <h2>Waiting for the first daily edition.</h2>
+            <p>
+              New features and meaningful improvements will land here after the
+              daily rollup submits a validated entry.
+            </p>
+
+            <div class="empty-flow" aria-label="Daily update workflow">
+              <div>
+                <span>01</span>
+                <strong>Collect changes</strong>
+                <small>Public commit range</small>
+              </div>
+              <div>
+                <span>02</span>
+                <strong>Write the story</strong>
+                <small>Features, not commit logs</small>
+              </div>
+              <div>
+                <span>03</span>
+                <strong>Publish here</strong>
+                <small>Structured and browsable</small>
               </div>
             </div>
+          </section>
+        {/if}
+      {:else}
+        <section class="editions" aria-label="Product update entries">
+          {#each data.updates as update}
+            <article
+              class="edition"
+              id={`update-${update.published_on}`}
+              data-update-date={update.published_on}
+            >
+              <div class="dateline">
+                <span class="ed-label">Daily edition</span>
+                <time datetime={update.published_on}
+                  >{formatDate(update.published_on)}</time
+                >
+                <span class="ed-category">{label(update.category)}</span>
+              </div>
 
-            {#if update.improvements.length}
-              <div class="section-block supporting">
-                <h3>Also improved</h3>
-                <div class="items">
-                  {#each update.improvements as item}
-                    <div class="item">
-                      <h4>{item.title}</h4>
+              <h2>{update.headline}</h2>
+              <p class="deck">{update.summary}</p>
+
+              <div
+                class="edition-body"
+                class:has-briefs={update.improvements.length}
+              >
+                <div class="stories">
+                  {#each update.highlights as item}
+                    <div class="story">
+                      <h3>{item.title}</h3>
                       <p>{item.description}</p>
                     </div>
                   {/each}
                 </div>
-              </div>
-            {/if}
 
-            <footer class="entry-footer">
-              <div class="tags" aria-label="Projects and technologies">
-                {#each update.projects as project}
-                  <a
-                    href={facetHref(
-                      "project",
-                      project,
-                      data.selectedProject,
-                      data.selectedTechnology,
-                    )}>{label(project)}</a
-                  >
-                {/each}
-                {#each update.technologies as technology}
-                  <a
-                    class="technology"
-                    href={facetHref(
-                      "technology",
-                      technology,
-                      data.selectedProject,
-                      data.selectedTechnology,
-                    )}>{label(technology)}</a
-                  >
-                {/each}
+                {#if update.improvements.length}
+                  <aside class="briefs">
+                    <h3 class="briefs-label">Also improved</h3>
+                    {#each update.improvements as item}
+                      <div class="brief">
+                        <h4>{item.title}</h4>
+                        <p>{item.description}</p>
+                      </div>
+                    {/each}
+                  </aside>
+                {/if}
               </div>
-              <a
-                class="source-link"
-                href={update.source_compare_url}
-                target="_blank"
-                rel="noreferrer"
-                >Explore {update.source_commit_count}
-                {update.source_commit_count === 1 ? "commit" : "commits"} on GitHub
-                <span aria-hidden="true">&nearr;</span></a
-              >
-            </footer>
-          </article>
-        {/each}
-      </section>
+
+              <footer class="folio-line">
+                <span class="filed">Filed under</span>
+                <span class="folio-tags">
+                  {#each update.projects as project}
+                    <a
+                      href={facetHref(
+                        "project",
+                        project,
+                        data.selectedProject,
+                        data.selectedTechnology,
+                      )}>{label(project)}</a
+                    >
+                  {/each}
+                  {#each update.technologies as technology}
+                    <a
+                      href={facetHref(
+                        "technology",
+                        technology,
+                        data.selectedProject,
+                        data.selectedTechnology,
+                      )}>{label(technology)}</a
+                    >
+                  {/each}
+                </span>
+                <a
+                  class="source-link"
+                  href={update.source_compare_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  >{update.source_commit_count}
+                  {update.source_commit_count === 1 ? "commit" : "commits"} on GitHub
+                  <span aria-hidden="true">&nearr;</span></a
+                >
+              </footer>
+            </article>
+          {/each}
+        </section>
+      {/if}
     </div>
-  {/if}
+  </div>
 </main>
 
 <style>
@@ -309,9 +302,14 @@
   }
 
   .updates-page {
+    /* Accent mixed toward ink so small accent text and accent fills clear
+       WCAG AA in every period palette; bare var(--accent) measures 3.85:1
+       on dawn paper. Defined once here, used for every accent-colored
+       text element below. */
+    --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
     min-height: 100vh;
     box-sizing: border-box;
-    padding: clamp(3.5rem, 6vh, 5rem) clamp(1.5em, 6vw, 5.5em) 8em;
+    padding: clamp(2.5rem, 5vh, 4rem) clamp(1.5em, 6vw, 5.5em) 6em;
     color: var(--ink);
     background:
       radial-gradient(circle at 85% 4%, var(--glow-a), transparent 27em),
@@ -321,182 +319,133 @@
     font-size: 16px;
   }
 
-  .masthead {
+  .updates-page a:focus-visible {
+    outline: 2px solid var(--accent-ink);
+    outline-offset: 3px;
+  }
+
+  .journal {
     display: grid;
-    grid-template-columns: minmax(9em, 13em) minmax(0, 52em);
-    gap: clamp(2em, 6vw, 7em);
+    grid-template-columns: minmax(11em, 15em) minmax(0, 52em);
+    gap: clamp(2em, 5vw, 5em);
+    justify-content: center;
     max-width: 76em;
-    margin: 0 auto 3rem;
+    margin: 0 auto;
+  }
+
+  /* ── Spine ─────────────────────────────────── */
+
+  .spine {
+    position: sticky;
+    top: 2rem;
+    align-self: start;
+    max-height: calc(100vh - 4rem);
+    overflow-y: auto;
+    scrollbar-width: none;
+    /* Left padding keeps the 3px-offset focus ring from being clipped by
+       this element's own scroll container. */
+    padding-left: 0.4rem;
   }
 
   .kicker {
     margin: 0;
-    color: var(--accent);
-    font-size: 0.72em;
+    color: var(--accent-ink);
+    font-size: 0.7em;
     font-weight: 700;
-    letter-spacing: 0.15em;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
   }
 
-  .masthead-label {
-    padding-top: 0.55em;
-  }
-
-  .masthead-label > span {
+  .spine-sub {
     display: block;
-    margin-top: 0.55em;
+    margin-top: 0.5em;
     color: var(--ink-3);
     font-family: var(--font-code);
     font-size: 0.68em;
   }
 
-  .masthead-copy {
-    min-width: 0;
-  }
-
-  h1 {
-    max-width: 11ch;
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: clamp(2.6rem, 5.5vw, 4.5rem);
-    font-weight: 450;
-    letter-spacing: -0.05em;
-    line-height: 0.94;
-  }
-
-  .intro {
-    max-width: 38em;
-    margin: 1.25rem 0 0;
-    color: var(--ink-2);
-    font-size: clamp(1em, 1.7vw, 1.15em);
-    line-height: 1.65;
-  }
-
-  .facets {
-    display: grid;
-    gap: 0.85em;
-    margin-top: 1.75rem;
-    padding-top: 1.35em;
+  .spine-label {
+    margin: 0 0 0.7em;
+    padding-top: 1.1em;
     border-top: 1px solid var(--line);
-  }
-
-  .facet-row {
-    display: grid;
-    grid-template-columns: 6.5em 1fr;
-    gap: 1em;
-    align-items: baseline;
-  }
-
-  .facet-label {
     color: var(--ink-3);
-    font-size: 0.7em;
+    font-size: 0.62em;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
   }
 
-  .facet-options {
+  .spine-filters {
+    margin-top: 1.6rem;
+  }
+
+  .spine-list {
+    margin-bottom: 1.4rem;
+  }
+
+  .spine-list a {
     display: flex;
-    flex-wrap: wrap;
-    /* Uniform gap: the 0.35em/0.95em split predates the pill borders and
-       left wrapped rows nearly touching. */
-    gap: 0.5rem;
-  }
-
-  .facet-options a,
-  .clear {
+    gap: 0.6em;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 0.38em 0 0.38em 0.6rem;
+    border-left: 2px solid transparent;
     color: var(--ink-2);
-    text-decoration: none;
-  }
-
-  .facet-options a {
-    padding: 0.3rem 0.7rem;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: transparent;
     font-size: 0.8em;
+    text-decoration: none;
+    transition: color 120ms ease;
   }
 
-  .facet-options a span {
-    font-family: var(--font-code);
-    /* Hierarchy comes from size alone: an ink-3 count fails AA at this
-       size (2.78:1 on day paper), so the color stays the inherited ink-2,
-       and the paper color on the accent fill still wins on active chips. */
-    font-size: 0.85em;
+  .spine-list a:hover,
+  .spine-list a.active {
+    color: var(--accent-ink);
   }
 
-  .facet-options a:hover,
-  .clear:hover {
-    color: var(--accent);
-  }
-
-  .facet-options a:hover {
-    border-color: var(--accent);
-  }
-
-  .facet-options a.active {
-    /* Mixed toward ink so the paper-colored label clears WCAG AA in every
-       period palette; bare var(--accent) fails at 3.85:1 in dawn. */
-    border-color: color-mix(in srgb, var(--accent) 85%, var(--ink));
-    color: var(--paper);
-    background: color-mix(in srgb, var(--accent) 85%, var(--ink));
+  .spine-list a.active {
+    border-left-color: var(--accent-ink);
     font-weight: 650;
   }
 
-  .facet-options .remove {
-    margin-left: 0.15rem;
-    /* The count-span downsizing above is hierarchy for the number; the
-       remove glyph keeps the chip's own text size. */
-    font-size: inherit;
+  .spine-list .count {
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.85em;
+  }
+
+  .spine-list a.active .count {
+    color: inherit;
   }
 
   .filter-results {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem 0.6rem;
+    gap: 0.3rem 0.6rem;
     align-items: baseline;
-    margin: 0;
+    margin: 0 0 1.4rem;
+    padding-left: 0.6rem;
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.72rem;
   }
 
   .clear {
+    color: var(--ink-2);
     border-bottom: 1px solid currentColor;
+    text-decoration: none;
   }
 
-  .updates-page a:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 3px;
+  .clear:hover {
+    color: var(--accent-ink);
   }
 
-  .journal-layout {
-    display: grid;
-    grid-template-columns: minmax(9em, 13em) minmax(0, 52em);
-    gap: clamp(2em, 6vw, 7em);
-    justify-content: center;
-    max-width: 76em;
-    margin: 0 auto;
-  }
-
-  .date-rail {
-    position: sticky;
-    top: 5em;
-    align-self: start;
-    max-height: calc(100vh - 7em);
-    overflow-y: auto;
-    scrollbar-width: none;
-    /* overflow-y: auto forces overflow-x to auto too, which would clip the
-       3px-offset focus ring at the left content edge. */
-    padding-left: 0.4rem;
-  }
+  /* ── Date rail ─────────────────────────────── */
 
   .rail-month + .rail-month {
-    margin-top: 1.6em;
+    margin-top: 1.4em;
   }
 
   .rail-month > p {
-    margin: 0 0 0.6em;
+    margin: 0 0 0.55em;
     /* Flush with the day rows, whose content starts after the 2px marker
        border plus 0.6rem padding. */
     padding-left: calc(0.6rem + 2px);
@@ -514,7 +463,7 @@
     align-items: start;
     padding: 0.45em 0 0.45em 0.6rem;
     border-left: 2px solid transparent;
-    color: var(--ink-3);
+    color: var(--ink-2);
     text-decoration: none;
     transition: color 120ms ease;
   }
@@ -535,150 +484,198 @@
 
   .rail-month a:hover,
   .rail-month a.active {
-    color: var(--accent);
+    color: var(--accent-ink);
+  }
+
+  .rail-month a.active {
+    border-left-color: var(--accent-ink);
   }
 
   .rail-month a.active > span {
     font-weight: 700;
   }
 
-  .rail-month a.active {
-    border-left-color: var(--accent);
+  /* ── Nameplate ─────────────────────────────── */
+
+  .nameplate {
+    margin-bottom: 2rem;
+    padding-bottom: 1.1rem;
+    /* Double rule as masthead furniture; ink-2 rather than the near
+       invisible --line so it survives the night palette. */
+    border-bottom: 3px double var(--ink-2);
   }
 
-  .entries article {
-    scroll-margin-top: 3em;
-    padding-bottom: 3.5rem;
+  h1 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: clamp(2rem, 3.5vw, 2.8rem);
+    font-weight: 480;
+    letter-spacing: -0.035em;
+    line-height: 1;
   }
 
-  .entries article + article {
-    padding-top: 3.5rem;
-    border-top: 1px solid var(--line);
+  .standfirst {
+    max-width: 40em;
+    margin: 0.7rem 0 0;
+    color: var(--ink-2);
+    font-size: 0.95em;
+    line-height: 1.6;
   }
 
-  .entry-meta {
+  /* ── Editions ──────────────────────────────── */
+
+  .edition {
+    scroll-margin-top: 2rem;
+  }
+
+  .edition + .edition {
+    margin-top: 3rem;
+    padding-top: 2.5rem;
+    border-top: 3px double var(--ink-2);
+  }
+
+  .dateline {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.65em 1.1em;
-    align-items: center;
-    margin-bottom: 1.25em;
-    color: var(--ink-3);
+    gap: 0.4em 1.1em;
+    align-items: baseline;
     font-family: var(--font-code);
-    font-size: 0.7em;
-    letter-spacing: 0.02em;
-  }
-
-  .entry-meta time {
-    color: var(--ink-2);
-  }
-
-  .category {
-    padding: 0.25em 0.5em;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    color: var(--accent);
-    font-family: var(--font-ui);
-    font-size: 0.62em;
-    font-weight: 700;
-    letter-spacing: 0.07em;
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
   }
 
-  h2 {
-    max-width: 26ch;
-    margin: 0;
+  .ed-label {
+    color: var(--ink-3);
+  }
+
+  .dateline time {
+    color: var(--ink);
+    font-weight: 650;
+  }
+
+  .ed-category {
+    margin-left: auto;
+    color: var(--accent-ink);
+    font-weight: 700;
+  }
+
+  .edition h2 {
+    max-width: 24ch;
+    margin: 0.8rem 0 0;
     font-family: var(--font-display);
-    font-size: clamp(1.7rem, 3vw, 2.6rem);
+    font-size: clamp(1.9rem, 3.2vw, 2.8rem);
     font-weight: 500;
-    letter-spacing: -0.035em;
-    line-height: 1.1;
+    letter-spacing: -0.03em;
+    line-height: 1.08;
   }
 
-  .summary {
-    max-width: 42em;
-    margin: 1rem 0 2.25rem;
+  .deck {
+    max-width: 40em;
+    margin: 1rem 0 1.9rem;
     color: var(--ink-2);
-    font-size: clamp(1em, 2vw, 1.2em);
-    line-height: 1.7;
-  }
-
-  .section-block {
-    display: grid;
-    grid-template-columns: minmax(7em, 10em) 1fr;
-    gap: clamp(1em, 4vw, 3em);
-    padding: 1.6em 0;
-    border-top: 1px solid var(--line);
-  }
-
-  .section-block h3 {
-    margin: 0;
-    color: var(--accent);
-    font-size: 0.7em;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .items {
-    display: grid;
-    gap: 1.5em;
-  }
-
-  .item h4 {
-    margin: 0 0 0.4em;
-    font-family: var(--font-display);
-    font-size: 1.15em;
-    font-weight: 600;
-  }
-
-  .item p {
-    margin: 0;
-    color: var(--ink-2);
-    font-size: 0.9em;
+    font-size: 1.05rem;
     line-height: 1.65;
   }
 
-  .supporting h3 {
-    color: var(--ink-3);
-  }
-
-  .entry-footer {
+  .edition-body.has-briefs {
     display: grid;
-    gap: 1.5em;
-    margin-top: 2.25em;
-    padding-top: 1.5em;
-    border-top: 1px solid var(--line);
+    grid-template-columns: minmax(0, 2fr) minmax(11em, 1fr);
+    gap: clamp(1.5em, 3vw, 2.5em);
   }
 
-  .tags {
+  .story + .story {
+    margin-top: 1.4em;
+  }
+
+  .story h3 {
+    margin: 0 0 0.35em;
+    font-family: var(--font-display);
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
+
+  .story p {
+    margin: 0;
+    color: var(--ink-2);
+    font-size: 0.9rem;
+    line-height: 1.65;
+  }
+
+  .briefs {
+    padding-left: clamp(1em, 2vw, 1.5em);
+    border-left: 1px solid var(--line);
+  }
+
+  .briefs-label {
+    margin: 0 0 0.9em;
+    color: var(--ink-3);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .brief + .brief {
+    margin-top: 1em;
+  }
+
+  .brief h4 {
+    margin: 0 0 0.25em;
+    font-size: 0.82rem;
+    font-weight: 650;
+  }
+
+  .brief p {
+    margin: 0;
+    color: var(--ink-2);
+    font-size: 0.8rem;
+    line-height: 1.55;
+  }
+
+  .folio-line {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.45em;
+    gap: 0.5em 0.9em;
+    align-items: baseline;
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
   }
 
-  .tags a {
-    padding: 0.3em 0.55em;
-    border-radius: 999px;
+  .filed {
+    color: var(--ink-3);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .folio-tags {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.3em 0.4em;
+    align-items: baseline;
+  }
+
+  .folio-tags a {
     color: var(--ink-2);
-    background: color-mix(in srgb, var(--ink) 5%, transparent);
-    font-size: 0.68em;
     text-decoration: none;
   }
 
-  .tags a.technology {
-    border: 1px solid var(--line);
-    background: transparent;
+  .folio-tags a + a::before {
+    padding-right: 0.4em;
+    color: var(--ink-3);
+    content: "·";
   }
 
-  .tags a:hover {
-    color: var(--accent);
+  .folio-tags a:hover {
+    color: var(--accent-ink);
   }
 
   .source-link {
-    width: max-content;
-    max-width: 100%;
-    color: var(--accent);
-    font-size: 0.78em;
+    margin-left: auto;
+    color: var(--accent-ink);
     font-weight: 650;
     text-decoration: none;
   }
@@ -688,11 +685,11 @@
     text-underline-offset: 0.2em;
   }
 
+  /* ── States ────────────────────────────────── */
+
   .state {
     display: grid;
     gap: 0.5em;
-    max-width: 42em;
-    margin: 2em auto;
     padding: 2em;
     border: 1px solid var(--line);
     border-radius: var(--radius);
@@ -701,53 +698,6 @@
 
   .state span {
     color: var(--ink-2);
-  }
-
-  .empty-journal {
-    display: grid;
-    grid-template-columns: minmax(9em, 13em) minmax(0, 52em);
-    gap: clamp(2em, 6vw, 7em);
-    max-width: 76em;
-    margin: 0 auto;
-  }
-
-  .empty-rail {
-    display: grid;
-    align-content: start;
-    padding-top: 1.25em;
-    border-top: 1px solid var(--line);
-  }
-
-  .empty-rail span,
-  .empty-rail small {
-    color: var(--ink-3);
-    font-size: 0.65em;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .empty-rail strong {
-    margin-top: 1em;
-    color: var(--ink-3);
-    font-family: var(--font-display);
-    font-size: 3.5em;
-    font-weight: 450;
-    letter-spacing: -0.05em;
-    line-height: 0.9;
-  }
-
-  .empty-rail small {
-    margin-top: 0.45em;
-    font-family: var(--font-code);
-    font-size: 0.58em;
-    font-weight: 500;
-  }
-
-  .empty-entry {
-    min-width: 0;
-    padding-top: 1.25em;
-    border-top: 1px solid var(--line);
   }
 
   .empty-meta {
@@ -773,14 +723,18 @@
   }
 
   .empty-entry h2 {
-    max-width: 14ch;
-    margin-top: 2.1em;
-    font-size: clamp(2.4em, 5vw, 4.25em);
+    max-width: 18ch;
+    margin: 1.2rem 0 0;
+    font-family: var(--font-display);
+    font-size: clamp(1.9rem, 3vw, 2.6rem);
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    line-height: 1.08;
   }
 
   .empty-entry > p {
     max-width: 38em;
-    margin: 1.35em 0 0;
+    margin: 1rem 0 0;
     color: var(--ink-2);
     font-size: 0.98em;
     line-height: 1.7;
@@ -789,7 +743,7 @@
   .empty-flow {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    margin-top: 3.25em;
+    margin-top: 2.5em;
     border-top: 1px solid var(--line);
     border-bottom: 1px solid var(--line);
   }
@@ -807,7 +761,7 @@
   }
 
   .empty-flow span {
-    color: var(--accent);
+    color: var(--accent-ink);
     font-family: var(--font-code);
     font-size: 0.62em;
   }
@@ -826,98 +780,85 @@
     line-height: 1.45;
   }
 
+  /* ── Mobile ────────────────────────────────── */
+
   @media (max-width: 760px) {
     .updates-page {
-      padding: 3.5rem 1.35em 5em;
+      padding: 2.5rem 1.35em 4em;
     }
 
-    .masthead {
+    .journal {
       display: block;
-      margin-bottom: 3em;
     }
 
-    .masthead-label {
+    .spine {
+      position: static;
+      max-height: none;
+      padding-left: 0;
+      overflow: visible;
+    }
+
+    .spine-brand {
       display: flex;
-      justify-content: space-between;
       gap: 1em;
       align-items: baseline;
-      padding: 0 0 1em;
+      justify-content: space-between;
+      padding-bottom: 1em;
       border-bottom: 1px solid var(--line);
     }
 
-    .masthead-label > span {
+    .spine-sub {
       margin: 0;
     }
 
-    h1 {
-      margin-top: 1.65em;
+    .nameplate {
+      margin-top: 1.4rem;
     }
 
-    .facet-row {
-      grid-template-columns: 1fr;
-      gap: 0.5rem;
+    /* Filters flatten into wrapping inline rows so they cost three or four
+       lines, not a column. Touch height comes from the padding. */
+    .spine-filters {
+      margin-top: 1.2rem;
     }
 
-    /* Touch sizing: the desktop chip height is fine for a pointer but
-       under the 44px floor for a thumb; 0.8rem vertical padding puts the
-       chip at roughly 44px with the 12.8px label and 2px of border. */
-    .facet-options a {
-      padding: 0.8rem 0.9rem;
+    .spine-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0 1.1em;
+      margin-bottom: 0.8rem;
     }
 
-    .journal-layout {
-      display: block;
-    }
-
-    .empty-journal {
-      display: block;
-    }
-
-    .empty-rail {
-      display: none;
-    }
-
-    .empty-entry h2 {
-      margin-top: 1.65em;
-    }
-
-    .empty-flow {
-      grid-template-columns: 1fr;
-      margin-top: 2.5em;
-    }
-
-    .empty-flow > div {
-      grid-template-columns: 2.5em 1fr;
-      padding: 1em 0;
-    }
-
-    .empty-flow > div + div {
-      padding-left: 0;
-      border-top: 1px solid var(--line);
+    .spine-list a {
+      padding: 0.62em 0;
       border-left: 0;
+      border-bottom: 2px solid transparent;
     }
 
-    .empty-flow strong,
-    .empty-flow small {
-      grid-column: 2;
+    .spine-list a.active {
+      border-bottom-color: var(--accent-ink);
     }
 
-    .empty-flow strong {
-      margin-top: 0;
+    .filter-results {
+      padding-left: 0;
     }
 
     .date-rail {
+      position: sticky;
       z-index: 4;
       top: 0;
       display: flex;
       gap: 1.5em;
-      max-height: none;
-      margin: 0 -1.25em 3.5em;
-      padding: 0.8em 1.25em;
+      align-items: baseline;
+      margin: 0 -1.35em 2.2rem;
+      padding: 0.6em 1.35em;
       overflow-x: auto;
       border-bottom: 1px solid var(--line);
       background: color-mix(in srgb, var(--paper) 92%, transparent);
       backdrop-filter: blur(14px);
+    }
+
+    .date-rail > .spine-label {
+      display: none;
     }
 
     .rail-month,
@@ -946,15 +887,51 @@
     }
 
     .rail-month a.active {
-      border-bottom-color: var(--accent);
+      border-bottom-color: var(--accent-ink);
     }
 
     .rail-month small {
       display: none;
     }
 
-    .section-block {
+    .edition-body.has-briefs {
       grid-template-columns: 1fr;
+    }
+
+    .briefs {
+      margin-top: 1.6em;
+      padding-top: 1.2em;
+      padding-left: 0;
+      border-top: 1px solid var(--line);
+      border-left: 0;
+    }
+
+    .source-link {
+      margin-left: 0;
+    }
+
+    .empty-flow {
+      grid-template-columns: 1fr;
+    }
+
+    .empty-flow > div {
+      grid-template-columns: 2.5em 1fr;
+      padding: 1em 0;
+    }
+
+    .empty-flow > div + div {
+      padding-left: 0;
+      border-top: 1px solid var(--line);
+      border-left: 0;
+    }
+
+    .empty-flow strong,
+    .empty-flow small {
+      grid-column: 2;
+    }
+
+    .empty-flow strong {
+      margin-top: 0;
     }
   }
 </style>
