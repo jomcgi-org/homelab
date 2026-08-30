@@ -964,6 +964,31 @@
   font-weight: 700;
 }
 
+.moving .crow.acked {
+  opacity: 0.55;
+}
+
+.moving .ack-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 5px;
+  border: 1px solid var(--rule);
+  font-family: var(--font-code);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.moving .ack-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 10px;
+  font-weight: 400;
+}
+
 .moving .c-dock {
   grid-area: dock;
   display: grid;
@@ -1347,6 +1372,412 @@
 
 .moving .hue-none {
   --hue: var(--paper);
+}
+
+.moving .manage-shell {
+  border: 2px solid var(--ink);
+  background: var(--paper);
+}
+
+.moving .grid.manage-hidden,
+.moving .app.phone .grid.manage-hidden {
+  display: none;
+}
+
+.moving .manage-shell > .c-head {
+  border-bottom: 2px solid var(--ink);
+}
+
+.moving .manage-title {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.moving .manage-toggle {
+  padding: 3px 10px;
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.moving .manage-toggle:hover,
+.moving .manage-toggle[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.moving .manage-shell .c-head .manage-toggle {
+  margin-left: auto;
+}
+
+.moving .c-today .manage-toggle {
+  border-color: var(--ink);
+  background: var(--yellow);
+}
+
+.moving .manage {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  padding: 22px 20px 34px;
+  background: var(--paper);
+}
+
+.moving .manage-section {
+  min-width: 0;
+  margin-top: 0;
+}
+
+.moving .manage-section > .th span {
+  color: var(--ink);
+}
+
+.moving .manage-table {
+  min-width: 0;
+}
+
+.moving .manage-row {
+  display: grid;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12.5px;
+}
+
+.moving .spans .manage-row {
+  grid-template-columns: 130px minmax(150px, 1fr) 110px 110px 80px 144px;
+}
+
+.moving .milestones .manage-row {
+  grid-template-columns: minmax(180px, 1fr) 110px 80px 100px 120px 144px;
+}
+
+.moving .tasks-manage .manage-row {
+  grid-template-columns:
+    100px minmax(150px, 1.2fr) minmax(130px, 1fr)
+    75px 125px 100px 60px 144px;
+}
+
+.moving .roles-manage .manage-row {
+  grid-template-columns:
+    minmax(120px, 1fr) minmax(140px, 1fr)
+    75px 100px 110px minmax(120px, 1fr) 144px;
+}
+
+.moving .manage-row.column-head {
+  padding-block: 7px;
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.moving .manage-row > *,
+.moving .manage-row label {
+  min-width: 0;
+}
+
+.moving .manage-row strong,
+.moving .manage-row > span {
+  overflow-wrap: anywhere;
+}
+
+.moving .manage-row .sw {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 7px;
+  border: 1px solid var(--ink);
+  background: var(--hue);
+}
+
+.moving .manage input[type="text"],
+.moving .manage input[type="date"],
+.moving .manage input[type="number"],
+.moving .manage select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 5px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 11px;
+}
+
+.moving .manage input::placeholder {
+  color: var(--ink);
+}
+
+.moving .manage button,
+.moving .undo-strip button {
+  padding: 4px 8px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.moving .manage button:hover,
+.moving .undo-strip button:hover,
+.moving .manage button.save,
+.moving .manage button.add {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.moving .manage button.danger:hover {
+  border-color: var(--coral);
+  background: var(--coral);
+  color: var(--ink);
+}
+
+.moving .manage button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.moving .row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.moving .add-row {
+  background: var(--cream);
+}
+
+.moving .sync-state,
+.moving .task-state,
+.moving .ack-copy {
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 9.5px;
+  text-transform: uppercase;
+}
+
+.moving .sync-state small {
+  display: block;
+  overflow: hidden;
+  font: inherit;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.moving .task-state.done-state {
+  color: var(--green);
+}
+
+.moving .manage-error,
+.moving .undo-strip {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--coral);
+  background: var(--paper);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.moving .undo-strip {
+  position: sticky;
+  z-index: 5;
+  top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-color: var(--ink);
+  background: var(--yellow);
+}
+
+.moving .collision-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.moving .collision-manage-row {
+  display: grid;
+  grid-template-columns: 18px 90px minmax(180px, 1fr) minmax(260px, auto);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12.5px;
+}
+
+.moving .collision-manage-row.acked {
+  opacity: 0.65;
+}
+
+.moving .collision-mark {
+  color: var(--coral);
+}
+
+.moving .ack-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  gap: 6px;
+}
+
+.moving .manage-empty {
+  margin: 0;
+  padding: 14px 2px;
+  color: var(--ink);
+}
+
+@media (max-width: 1180px) {
+  .moving .manage-table {
+    overflow-x: auto;
+  }
+
+  .moving .manage-row {
+    min-width: 1030px;
+  }
+}
+
+@media (max-width: 700px) {
+  .moving .manage {
+    gap: 24px;
+    padding: 16px 12px 28px;
+  }
+
+  .moving .manage-table {
+    overflow: visible;
+  }
+
+  .moving .manage-row,
+  .moving .spans .manage-row,
+  .moving .milestones .manage-row,
+  .moving .tasks-manage .manage-row,
+  .moving .roles-manage .manage-row {
+    grid-template-columns: 1fr 1fr;
+    min-width: 0;
+    padding: 14px 2px;
+  }
+
+  .moving .manage-row.column-head {
+    display: none;
+  }
+
+  .moving .manage-row > :not(.row-actions)::before {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--ink);
+    font-family: var(--font-code);
+    font-size: 8.5px;
+    font-style: normal;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .moving .spans .manage-row > :nth-child(1)::before {
+    content: "Kind";
+  }
+  .moving .spans .manage-row > :nth-child(2)::before {
+    content: "Label";
+  }
+  .moving .spans .manage-row > :nth-child(3)::before {
+    content: "Starts";
+  }
+  .moving .spans .manage-row > :nth-child(4)::before {
+    content: "Ends";
+  }
+  .moving .spans .manage-row > :nth-child(5)::before {
+    content: "Owner";
+  }
+  .moving .milestones .manage-row > :nth-child(1)::before {
+    content: "Title";
+  }
+  .moving .milestones .manage-row > :nth-child(2)::before {
+    content: "Date";
+  }
+  .moving .milestones .manage-row > :nth-child(3)::before {
+    content: "Owner";
+  }
+  .moving .milestones .manage-row > :nth-child(4)::before {
+    content: "Calendar";
+  }
+  .moving .milestones .manage-row > :nth-child(5)::before {
+    content: "Sync";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(1)::before {
+    content: "Track";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(2)::before {
+    content: "Task";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(3)::before {
+    content: "Note";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(4)::before {
+    content: "Owner";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(5)::before {
+    content: "Due";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(6)::before {
+    content: "Value";
+  }
+  .moving .tasks-manage .manage-row > :nth-child(7)::before {
+    content: "State";
+  }
+  .moving .roles-manage .manage-row > :nth-child(1)::before {
+    content: "Company";
+  }
+  .moving .roles-manage .manage-row > :nth-child(2)::before {
+    content: "Title";
+  }
+  .moving .roles-manage .manage-row > :nth-child(3)::before {
+    content: "Owner";
+  }
+  .moving .roles-manage .manage-row > :nth-child(4)::before {
+    content: "Stage";
+  }
+  .moving .roles-manage .manage-row > :nth-child(5)::before {
+    content: "Next";
+  }
+  .moving .roles-manage .manage-row > :nth-child(6)::before {
+    content: "Span";
+  }
+
+  .moving .row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .moving .collision-manage-row {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .moving .collision-manage-row > strong,
+  .moving .collision-manage-row > .ack-copy,
+  .moving .collision-manage-row > button,
+  .moving .collision-manage-row > form {
+    grid-column: 2;
+  }
+
+  .moving .ack-form {
+    grid-template-columns: 1fr;
+  }
 }
 
 .moving.access-shell {

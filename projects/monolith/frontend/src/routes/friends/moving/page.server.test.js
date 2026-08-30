@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { load } from "./+page.server.js";
 
-function event(fetch, { scope, email = "joe@example.test" } = {}) {
+function event(fetch, { scope, mode, email = "joe@example.test" } = {}) {
   const url = new URL("https://friends.jomcgi.dev/moving");
   if (scope) url.searchParams.set("scope", scope);
+  if (mode) url.searchParams.set("mode", mode);
   return {
     fetch,
     request: new Request(url, {
@@ -41,7 +42,7 @@ describe("friends moving server load", () => {
       "X-Auth-Email": "joe@example.test",
     });
     expect(fetch.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
-    expect(result).toEqual({ status: "ready", scope: "all", state });
+    expect(result).toEqual({ status: "ready", scope: "all", mode: "", state });
   });
 
   it("defaults the scope to mine", async () => {
@@ -58,12 +59,49 @@ describe("friends moving server load", () => {
     );
   });
 
+  it("passes through manage mode and forces the all scope", async () => {
+    const state = { tasks: [] };
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => state,
+    });
+
+    const result = await load(event(fetch, { scope: "mine", mode: "manage" }));
+
+    expect(fetch.mock.calls[0][0]).toBe(
+      "http://moving-api.test/api/moving/state?scope=all",
+    );
+    expect(result).toEqual({
+      status: "ready",
+      scope: "all",
+      mode: "manage",
+      state,
+    });
+  });
+
+  it("passes through unknown modes without changing dashboard scope", async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ tasks: [] }),
+    });
+
+    const result = await load(event(fetch, { scope: "mine", mode: "preview" }));
+
+    expect(fetch.mock.calls[0][0]).toBe(
+      "http://moving-api.test/api/moving/state?scope=mine",
+    );
+    expect(result.mode).toBe("preview");
+  });
+
   it("turns a backend 403 into the recognised page state", async () => {
     const fetch = vi.fn().mockResolvedValue({ ok: false, status: 403 });
 
     await expect(load(event(fetch))).resolves.toEqual({
       status: "forbidden",
       scope: "mine",
+      mode: "",
       state: null,
     });
   });

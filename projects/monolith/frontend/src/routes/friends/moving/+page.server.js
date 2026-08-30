@@ -7,7 +7,9 @@ function apiBase() {
 }
 
 export async function load({ fetch, request, url }) {
-  const scope = url.searchParams.get("scope") ?? "mine";
+  const mode = url.searchParams.get("mode") ?? "";
+  const requestedScope = url.searchParams.get("scope") ?? "mine";
+  const scope = mode === "manage" ? "all" : requestedScope;
   const email = request.headers.get("x-auth-email");
   const base = apiBase();
 
@@ -21,19 +23,19 @@ export async function load({ fetch, request, url }) {
       },
     );
   } catch {
-    return { status: "unavailable", scope, state: null };
+    return { status: "unavailable", scope, mode, state: null };
   }
 
   if (response.status === 403) {
-    return { status: "forbidden", scope, state: null };
+    return { status: "forbidden", scope, mode, state: null };
   }
   if (!response.ok) {
-    return { status: "unavailable", scope, state: null };
+    return { status: "unavailable", scope, mode, state: null };
   }
 
   try {
-    return { status: "ready", scope, state: await response.json() };
+    return { status: "ready", scope, mode, state: await response.json() };
   } catch {
-    return { status: "unavailable", scope, state: null };
+    return { status: "unavailable", scope, mode, state: null };
   }
 }
