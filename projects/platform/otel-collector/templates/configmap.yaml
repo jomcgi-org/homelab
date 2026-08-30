@@ -149,14 +149,30 @@ data:
                   percent: {{ .Values.sampling.rateAllocation.baselinePercent }}
       {{- end }}
 
+    {{- $hcExporter := "otlp/honeycomb" }}
+    {{- if eq (.Values.honeycomb.protocol | default "grpc") "http" }}
+    {{- $hcExporter = "otlphttp/honeycomb" }}
+    {{- end }}
     exporters:
       # The otlp exporter requires a bare host:port endpoint. A URL scheme
       # breaks it, and otlphttp takes the opposite syntax, so the two are not
       # interchangeable. Getting this wrong drops telemetry silently.
+      # honeycomb.protocol selects between them: "grpc" (default) renders the
+      # otlp exporter with honeycomb.endpoint (host:port), "http" renders
+      # otlphttp with honeycomb.httpEndpoint (full URL). The hub uses http
+      # because the grpc dial path failed there while HTTPS from the same pod
+      # network namespace was verified working.
+      {{- if eq $hcExporter "otlphttp/honeycomb" }}
+      otlphttp/honeycomb:
+        endpoint: {{ .Values.honeycomb.httpEndpoint | default "https://api.honeycomb.io" | quote }}
+        headers:
+          x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+      {{- else }}
       otlp/honeycomb:
         endpoint: {{ .Values.honeycomb.endpoint | quote }}
         headers:
           x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+      {{- end }}
 
     service:
       extensions: [health_check{{ if and .Values.allowedServices .Values.sampling.tailStorage.enabled }}, pebble_tail_storage{{ end }}]
@@ -165,7 +181,7 @@ data:
         traces:
           receivers: [otlp]
           processors: [memory_limiter, filter/allowlist{{ if .Values.environment }}, resource/environment{{ end }}, tail_sampling, batch]
-          exporters: [otlp/honeycomb]
+          exporters: [{{ $hcExporter }}]
         {{- end }}
         {{- if .Values.httpcheck.enabled }}
         # http_check only. The otlp receiver is deliberately absent here: an
@@ -174,5 +190,5 @@ data:
         metrics:
           receivers: [http_check]
           processors: [memory_limiter{{ if .Values.environment }}, resource/environment{{ end }}, batch]
-          exporters: [otlp/honeycomb]
+          exporters: [{{ $hcExporter }}]
         {{- end }}

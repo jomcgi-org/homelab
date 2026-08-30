@@ -10,3 +10,9 @@ httpcheck:
   enabled: true
   targets:
     - "http://argocd-server.argocd.svc:80/healthz"
+
+# OTLP over HTTP, not gRPC: the hub's otelcol gRPC dials to api.honeycomb.io
+# were canceled before completing while HTTPS from the same pod network
+# namespace worked (verified 2026-08-30). otlphttp uses the proven path.
+honeycomb:
+  protocol: "http"
