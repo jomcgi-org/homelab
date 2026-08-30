@@ -4,7 +4,6 @@ import UpdatesPage from "./+page.svelte";
 import {
   facetHref,
   formatDate,
-  formatVersion,
   groupUpdatesByMonth,
   label,
 } from "./updates.js";
@@ -26,9 +25,8 @@ describe("updates archive helpers", () => {
     expect(groups[0].updates).toHaveLength(2);
   });
 
-  it("formats dates, versions, and facet names", () => {
+  it("formats dates and facet names", () => {
     expect(formatDate("2026-08-29")).toBe("August 29, 2026");
-    expect(formatVersion("2026-08-29")).toBe("2026.08.29");
     expect(label("developer-tools")).toBe("Developer Tools");
   });
 
