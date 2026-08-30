@@ -547,6 +547,14 @@ def test_other_viewers_rows_reject_patch_and_delete(
     assert session.get(type(row), row.id) is not None
 
 
+def test_ack_requires_distinct_items(client: TestClient):
+    item = uuid.uuid4()
+    response = client.post(
+        f"/api/moving/collisions/{item}/{item}/ack", headers=_HEADERS, json={}
+    )
+    assert response.status_code == 422
+
+
 def test_collision_ack_lifecycle(client: TestClient, session: Session):
     session.add_all(
         [

@@ -57,6 +57,9 @@ def _migration_tables() -> dict[str, list[str]]:
         for match in _CREATE_TABLE.finditer(_MIGRATION.read_text())
     }
     surface = _WRITE_MIGRATION.read_text()
+    # Guard the DROP half too: dropping a misnamed constraint would pass the
+    # mirror comparison below and then fail at Atlas apply time.
+    assert "DROP CONSTRAINT spans_kind_check" in surface
     tables.update(
         {
             match.group("name"): _definitions(match.group("body"))
