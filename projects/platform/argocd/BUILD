@@ -24,6 +24,9 @@ argocd_app(
 
 argocd_app(
     name = "argocd-gke",
+    generate_manifests = False,
+    generate_semgrep = False,
+    target_suffix = "_gke",
     chart = "projects/platform/argocd",
     chart_files = ":chart",
     namespace = "argocd",

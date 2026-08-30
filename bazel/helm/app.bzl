@@ -15,7 +15,8 @@ def argocd_app(
         generate_semgrep = True,
         semgrep_rules = ["//bazel/semgrep/rules:kubernetes_rules"],
         semgrep_exclude_rules = [],
-        tags = []):
+        tags = [],
+        target_suffix = ""):
     """Declares an ArgoCD application overlay with template testing and manifest rendering.
 
     This macro replaces the genrule + helm_template_test pattern that Gazelle
@@ -41,9 +42,12 @@ def argocd_app(
     if release_name == None:
         release_name = name
 
-    # Always create a template test
+    # Always create a template test. target_suffix keeps a second overlay in
+    # the same package (e.g. a values-gke.yaml variant) from colliding with
+    # the default target names; such variants must also disable manifests and
+    # semgrep, whose target and output names stay fixed.
     helm_template_test(
-        name = "template_test",
+        name = "template_test" + target_suffix,
         chart = chart,
         chart_files = chart_files,
         release_name = release_name,
