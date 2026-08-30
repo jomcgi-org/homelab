@@ -2,7 +2,10 @@
   import "$lib/private/dashboard-theme.css";
 
   let { data } = $props();
-  let dark = $state(false);
+  let dark = $state(
+    typeof window !== "undefined" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches,
+  );
   $effect(() => {
     const scheme = window.matchMedia("(prefers-color-scheme: dark)");
     const apply = () => (dark = scheme.matches);
