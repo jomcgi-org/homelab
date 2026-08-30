@@ -1,6 +1,15 @@
-# GKE authentik-pg recovery from the off-cluster GCS Barman object store.
-# Consumed by PR #5464's gke-apps Applications (not referenced by this branch).
+# GKE cutover destination. Application workloads stay dormant; CNPG stays up
+# for data staging and bootstraps by recovery from the off-cluster GCS Barman
+# object store. Consumed by the gke-apps Applications.
+authentik:
+  server:
+    replicas: 0
+  worker:
+    replicas: 0
+
 cnpg:
+  storage:
+    storageClass: standard-rwo
   bootstrap:
     recovery:
       # CNPG 1.30 behavior: The recovery-minted app Secret password overwrites
@@ -9,6 +18,9 @@ cnpg:
       source: authentik-pg
       database: authentik
       owner: authentik
+  # backup stays ENABLED: the distinct serverName gives the GKE cluster its
+  # own archive prefix, so it never trips CNPG's empty-archive check against
+  # the prefix the home cluster is live-archiving into.
   backup:
     serverName: authentik-pg-gke
   externalClusters:

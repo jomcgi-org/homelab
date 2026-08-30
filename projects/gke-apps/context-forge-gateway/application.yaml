@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: context-forge-gateway
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/mcp/context-forge-gateway/chart
+    helm:
+      releaseName: context-forge-gateway
+      valueFiles:
+        - values.yaml
+        - ../deploy/values.yaml
+        - ../deploy/values-gke.yaml
+      ignoreMissingValueFiles: true
+      # mcp-stack's schema rejects zero replicas although the rendered
+      # Kubernetes Deployment supports it.
+      skipSchemaValidation: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mcp
+  ignoreDifferences:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      jqPathExpressions:
+        - '.spec.parentRefs[].group'
+        - '.spec.parentRefs[].kind'
+        - '.spec.rules[].backendRefs[].group'
+        - '.spec.rules[].backendRefs[].kind'
+        - '.spec.rules[].backendRefs[].weight'
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

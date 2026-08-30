@@ -1,6 +1,14 @@
-# GKE monolith-pg recovery from the off-cluster GCS Barman object store.
-# Consumed by PR #5464's gke-apps Applications (not referenced by this branch).
+# GKE cutover destination. Keep application workloads dormant until cutover;
+# CNPG stays up for data staging and bootstraps by recovery from the
+# off-cluster GCS Barman object store. Consumed by the gke-apps Applications.
+backend:
+  replicas: 0
+  autoscaling:
+    enabled: false
+
 postgres:
+  storage:
+    storageClass: standard-rwo
   bootstrap:
     recovery:
       # CNPG 1.30 behavior: The recovery-minted app Secret password overwrites
@@ -9,6 +17,10 @@ postgres:
       source: monolith-pg
       database: monolith
       owner: app
+  # backup stays ENABLED (inherited from deploy/values.yaml): the distinct
+  # serverName gives the GKE cluster its own archive prefix, so it never
+  # trips CNPG's empty-archive check against the prefix the home cluster is
+  # live-archiving into.
   backup:
     serverName: monolith-pg-gke
   externalClusters:
@@ -21,3 +33,21 @@ postgres:
             key: service-account-key.json
         wal:
           compression: gzip
+
+chat:
+  llamaCppUrl: "http://inference-bridge.tailscale.svc.cluster.local:8080"
+  movingChatInferenceUrl: "http://inference-bridge.tailscale.svc.cluster.local:8080"
+  embeddingUrl: "http://inference-bridge.tailscale.svc.cluster.local:8080"
+
+# Cilium CRDs are not installed on GKE. Native policy replacements can be
+# introduced separately when the dormant application is activated.
+ciliumPolicy:
+  tokenReplayDeny:
+    enabled: false
+  ingress:
+    enabled: false
+
+whatsapp:
+  # This singleton holds an external WhatsApp session and must not connect from
+  # the cutover destination while the home deployment is active.
+  enabled: false

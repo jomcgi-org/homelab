@@ -575,6 +575,7 @@ egress:
     # treated as settled.
     allowlist:
       - inference.inference.svc.cluster.local:8080
+      - inference-bridge.tailscale.svc.cluster.local:8080
       - monolith-searxng.monolith.svc.cluster.local:8080
       - monolith.monolith.svc.cluster.local:8091
       - monolith-public-frontend.monolith-public.svc.cluster.local:3000

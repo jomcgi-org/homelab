@@ -9,3 +9,4 @@ kind: Kustomization
 
 resources:
   - ../../projects/platform-gke
+  - ../../projects/gke-apps

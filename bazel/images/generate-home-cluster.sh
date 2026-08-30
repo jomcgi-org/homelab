@@ -13,6 +13,7 @@ EXCLUDED_ROOTS=(
 	"projects/home-cluster"
 	"projects/gke-cluster"
 	"projects/platform-gke"
+	"projects/gke-apps"
 )
 
 is_excluded() {

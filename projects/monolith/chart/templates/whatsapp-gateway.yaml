@@ -14,9 +14,8 @@ metadata:
     {{- include "monolith.labels" . | nindent 4 }}
     app.kubernetes.io/component: whatsapp
 spec:
-  # Hardcoded to 1: a single WhatsApp socket per device session. Never wire an
-  # HPA here.
-  replicas: 1
+  # A single WhatsApp socket per device session. Never wire an HPA here.
+  replicas: {{ .Values.whatsapp.replicas }}
   # Recreate (not RollingUpdate): two pods must never hold the same session
   # socket at once, or WhatsApp emits StreamReplaced and drops the connection.
   strategy:
