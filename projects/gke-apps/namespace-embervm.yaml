@@ -1,0 +1,9 @@
+# Pre-created for the monolith chart's FaaS RBAC (embervm-role.yaml renders a
+# Role/RoleBinding into this namespace unconditionally, and kubectl auth
+# reconcile fails the WHOLE monolith sync when the namespace is absent).
+# EmberVM itself lands here later (#5459); until then the namespace is empty
+# apart from that RBAC pair.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: embervm
