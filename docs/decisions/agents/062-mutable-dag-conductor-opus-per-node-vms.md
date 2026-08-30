@@ -238,10 +238,10 @@ The following landed in the 24 hours before and after this ADR was written
   diff, rather than relying on it being swept in as an untracked file.
 - **PR #5426**: a reduced-diff fallback survives truncation, so the channel
   does not livelock on large work diffs.
-- **PR #5438**: the agent registry evicts dead instances once their
-  replacement or silence proves them gone, which is what keeps a departed
-  conductor's registry entry from stalling the orchestrator's reconciliation
-  loop decision 2 depends on.
+- **PR #5438**: the node registry evicts dead brick instances once their
+  replacement or silence proves them gone, so the fleet the conductor's
+  nodes execute on cannot be wedged by a departed brick, which the
+  orchestrator's dispatch loop in decision 2 depends on.
 
 These are cited as verifiable git history, not as this ADR's own claims of
 current state.
@@ -329,7 +329,7 @@ is a bad graph, not code execution in the durable owner.
 | Risk | Likelihood | Impact | Mitigation |
 | ---- | ---------- | ------ | ---------- |
 | Opus per-task planning cost exceeds the accepted budget once measured | Medium | Medium | Decision 1 is explicitly revisitable against #4781 decision 10's recording; not a one-way door |
-| Orchestrator reconciliation drifts from the conductor's latest graph edit under concurrent summons | Medium | High | Registry dead-instance eviction (PR #5438) keeps a departed conductor from stalling reconciliation; single-flight-per-run concurrency control is separately tracked work, not yet closed by this ADR |
+| Orchestrator reconciliation drifts from the conductor's latest graph edit under concurrent summons | Medium | High | Single-flight-per-run concurrency control is separately tracked work, not yet closed by this ADR (open question 1) |
 | The delivered-versus-asked verdict is gameable by a conductor that under-plans and then declares success anyway | Low | Medium | The verdict travels beside computed evidence (write activity, branch movement) the conductor cannot alter after the fact, so a false verdict is visibly contradicted rather than merely trusted |
 | A run's single Fable escalation is spent on a wrong problem, leaving no further escalation room | Medium | Medium | The cap is deliberate: a run that needs a second Fable node is defined here as having a wrong plan, so the intended remedy is the conductor reshaping the plan, not a bigger cap |
 | Decision 7's evidence-diffing adds hydration latency to every conductor summon | Low | Low | The cheap first version (raw commit distance, no diffing) is explicitly allowed to ship first |
@@ -364,5 +364,5 @@ is a bad graph, not code execution in the durable owner.
 | PR #5422 | The typed, retryable artifact channel (`swarm/turn_artifact.py`) decision 6 formalizes |
 | PR #5437 | Guest shim delivers the declared artifact beside the turn diff |
 | PR #5426 | Reduced-diff fallback survives truncation |
-| PR #5438 | Registry dead-instance eviction, which keeps reconciliation from stalling on a departed conductor |
+| PR #5438 | Node registry evicts dead brick instances, keeping the execution fleet dispatchable for the orchestrator |
 | Issue #4784 | `budget_usd` enforcement, still not implemented; decision 3's Fable admission check is separate from and does not substitute for it |
