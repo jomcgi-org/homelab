@@ -51,7 +51,7 @@
   />
 </svelte:head>
 
-<main class={`updates-page shell ${period}`}>
+<main class="updates-page shell {period}">
   <header class="masthead">
     <div class="masthead-label">
       <p class="kicker">Private release journal</p>
@@ -477,6 +477,9 @@
     max-height: calc(100vh - 7em);
     overflow-y: auto;
     scrollbar-width: none;
+    /* overflow-y: auto forces overflow-x to auto too, which would clip the
+       3px-offset focus ring at the left content edge. */
+    padding-left: 0.4rem;
   }
 
   .rail-month + .rail-month {
@@ -485,6 +488,9 @@
 
   .rail-month > p {
     margin: 0 0 0.6em;
+    /* Flush with the day rows, whose content starts after the 2px marker
+       border plus 0.6rem padding. */
+    padding-left: calc(0.6rem + 2px);
     color: var(--ink-3);
     font-size: 0.65em;
     font-weight: 700;
@@ -909,6 +915,7 @@
     .rail-month > p {
       min-width: max-content;
       margin: 0 0.3em 0 0;
+      padding-left: 0;
     }
 
     .rail-month a {
