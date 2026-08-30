@@ -6,7 +6,7 @@ cnpg:
   externalClusters:
     - name: authentik-pg
       barmanObjectStore:
-        destinationPath: "gs://cnpg-backups/authentik-pg/"
+        destinationPath: "gs://h0melab-cnpg-backups/authentik-pg/"
         googleCredentials:
           applicationCredentials:
             name: authentik-pg-backup-gcs

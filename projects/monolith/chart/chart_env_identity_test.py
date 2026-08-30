@@ -383,7 +383,7 @@ def test_dev_takes_no_backups(renders):
     production writes to <destinationPath>/monolith-pg/ and dev would have
     written to <destinationPath>/monolith-dev-pg/. Separate catalogues,
     separate retention, no cross-pruning. The GCS layout is
-    gs://cnpg-backups/monolith-pg/monolith-pg/wals/, with the doubled segment
+    gs://h0melab-cnpg-backups/monolith-pg/monolith-pg/wals/, with the doubled segment
     coming from the defaulted serverName.
 
     What remains is smaller and still worth a guard. Dev is reseeded from

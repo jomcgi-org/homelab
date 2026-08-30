@@ -149,7 +149,7 @@ cnpg:
   backup:
     enabled: true
     retentionPolicy: "14d"
-    destinationPath: "gs://cnpg-backups/context-forge-pg/"
+    destinationPath: "gs://h0melab-cnpg-backups/context-forge-pg/"
     credentialsSecret: context-forge-pg-backup-gcs
     onepassword:
       itemPath: "vaults/k8s-homelab/items/cnpg-gcs-backups-context-forge"
