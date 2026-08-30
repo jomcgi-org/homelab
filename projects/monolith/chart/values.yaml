@@ -660,6 +660,40 @@ jobs:
     # reservation-opening surge). Reads the static catalog.json, fetches BC Parks
     # availability (~145 paced curl_cffi calls) + Open-Meteo forecast (~145
     # calls), and upserts campsites.{campgrounds,availability,weather}.
+    - name: moving-gcal-sync
+      replaces: moving.gcal_sync
+      args: ["moving-gcal-sync"]
+      schedule: "20 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      env:
+        # Empty falls back to GOOGLE_CALENDAR_ID, then the credential owner's
+        # primary calendar. Pointing milestones at a shared calendar is a
+        # one-line edit here.
+        MOVING_GCAL_CALENDAR_ID: ""
+      # The whatsapp calendar credential (ADR 039). optional: the keys do not
+      # exist until the OAuth credential is minted, and the handler no-ops
+      # while unconfigured, so the job must still schedule without them.
+      # Provisioning (#5428) must also clone monolith-whatsapp into
+      # workflowNamespace (job pods cannot read monolith-namespace secrets).
+      secretEnv:
+        GOOGLE_CALENDAR_CLIENT_ID:
+          secretName: monolith-whatsapp
+          key: GOOGLE_CALENDAR_CLIENT_ID
+          optional: true
+        GOOGLE_CALENDAR_CLIENT_SECRET:
+          secretName: monolith-whatsapp
+          key: GOOGLE_CALENDAR_CLIENT_SECRET
+          optional: true
+        GOOGLE_CALENDAR_REFRESH_TOKEN:
+          secretName: monolith-whatsapp
+          key: GOOGLE_CALENDAR_REFRESH_TOKEN
+          optional: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
     - name: campsites-refresh
       replaces: campsites.refresh
       args: ["campsites-refresh"]

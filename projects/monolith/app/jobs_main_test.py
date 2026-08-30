@@ -44,6 +44,19 @@ def test_worldcup_sim_dispatches_to_refresh_handler():
     handler.assert_awaited_once()
 
 
+def test_moving_gcal_sync_dispatches_to_handler():
+    handler = mock.AsyncMock(return_value=None)
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session"),
+        mock.patch("moving.gcal_sync.gcal_sync_handler", new=handler),
+    ):
+        result = runner.invoke(jobs_main.app, ["moving-gcal-sync"])
+
+    assert result.exit_code == 0, result.output
+    handler.assert_awaited_once()
+
+
 def test_cluster_snapshot_refresh_dispatches_to_refresh():
     refresh = mock.AsyncMock(return_value=None)
     with mock.patch("home.cluster_snapshot.refresh_cluster_snapshot", new=refresh):

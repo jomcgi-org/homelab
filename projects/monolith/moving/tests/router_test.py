@@ -7,10 +7,10 @@ from decimal import Decimal
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from core.db import get_session
-from moving.models import Milestone, Role, Span, Task, Viewer
+from moving.models import GcalTombstone, Milestone, Role, Span, Task, Viewer
 from moving.router import router
 from moving.viewer import get_viewer
 
@@ -432,6 +432,29 @@ def test_create_and_patch_milestone(client: TestClient, session: Session):
     deleted = client.delete(f"/api/moving/milestones/{milestone_id}", headers=_HEADERS)
     assert deleted.status_code == 204
     assert session.get(Milestone, milestone_id) is None
+    assert session.exec(select(GcalTombstone)).all() == []
+
+
+def test_delete_milestone_records_calendar_tombstone(
+    client: TestClient, session: Session
+):
+    milestone = Milestone(
+        title="Calendar milestone",
+        occurs_on=date(2026, 9, 16),
+        owner="joe",
+        gcal_event_id="event-delete",
+        gcal_state="synced",
+    )
+    session.add(milestone)
+    session.commit()
+
+    deleted = client.delete(f"/api/moving/milestones/{milestone.id}", headers=_HEADERS)
+
+    assert deleted.status_code == 204
+    assert session.get(Milestone, milestone.id) is None
+    tombstone = session.get(GcalTombstone, "event-delete")
+    assert tombstone is not None
+    assert isinstance(tombstone.created_at, datetime)
 
 
 def test_milestone_gcal_sync_columns_are_not_writable(

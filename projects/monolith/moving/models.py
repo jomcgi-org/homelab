@@ -1,7 +1,8 @@
 """SQLModel definitions for the moving planner schema.
 
 Mirrors chart/migrations/20260816000000_moving_schema.sql and
-chart/migrations/20260830000000_moving_write_surface.sql.
+chart/migrations/20260830000000_moving_write_surface.sql, plus the moving
+calendar tombstone migration.
 
 The constrained vocabularies use TEXT + CHECK instead of PostgreSQL enums.
 PostgreSQL enum ALTER TYPE does not roll back cleanly inside a transaction,
@@ -134,6 +135,17 @@ class Milestone(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-f
             nullable=False,
             server_default=text("'queued'"),
         ),
+    )
+
+
+class GcalTombstone(SQLModel, table=True):
+    __tablename__ = "gcal_tombstones"
+    __table_args__ = {"schema": "moving", "extend_existing": True}
+
+    event_id: str = Field(sa_column=Column(Text, primary_key=True, nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
 

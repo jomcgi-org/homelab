@@ -253,6 +253,12 @@ def campsites_refresh() -> None:
     _run_job("campsites-refresh", "campsites.jobs", "refresh_handler")
 
 
+@app.command("moving-gcal-sync")
+def moving_gcal_sync() -> None:
+    """Sync moving milestones to Google Calendar (one-shot of moving.gcal_sync)."""
+    _run_job("moving-gcal-sync", "moving.gcal_sync", "gcal_sync_handler")
+
+
 @app.command("grimoire-load-chunks")
 def grimoire_load_chunks() -> None:
     """Load S3 chunk manifests into knowledge_chunk + embedding (spec #4.2.1).
