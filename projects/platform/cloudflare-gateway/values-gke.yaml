@@ -1,2 +1,26 @@
+gateway-helm:
+  # GKE owns the Gateway API CRDs. Disable the bundled all-or-nothing CRD
+  # chart and its safe-upgrade policy, then install only Envoy Gateway CRDs
+  # through the separately configurable upstream CRD chart below.
+  crds:
+    enabled: false
+    gatewayAPI:
+      safeUpgradePolicy:
+        enabled: false
+
+gateway-crds-helm:
+  crds:
+    gatewayAPI:
+      enabled: false
+    envoyGateway:
+      enabled: true
+
 tunnel:
   replicaCount: 0
+  secret:
+    onepassword:
+      itemPath: "vaults/k8s-homelab/items/cluster-cloudflare-tunnel"
+  protocol: http2
+  ingress:
+    catchAll:
+      service: http://cloudflare-ingress.envoy-gateway-system.svc.cluster.local:80

@@ -1,20 +1,22 @@
 tailscale-operator:
-  oauthSecretVolume:
-    secret:
-      secretName: operator-oauth
   operatorConfig:
-    defaultTags:
-      - tag:k8s-operator
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 64Mi
 
-egressNamespace: inference
+egressNamespace: tailscale
 
-egressServices:
-  # Set this FQDN when node-4 joins the tailnet.
-  - name: inference-node4
-    tailnetFqdn: "node-4.CHANGEME.ts.net"
-    port: 8000
-  # Example for a separate embeddings endpoint:
-  # - name: embeddings-node4
-  #   tailnetFqdn: "node-4.CHANGEME.ts.net"
-  #   port: 8001
-  #   targetPort: 8001
+egressServices: []
+
+# Add this entry when node-4 joins the tailnet. The target namespace must
+# already exist. The tailscale-gke 1Password item fields must be named exactly
+# "client_id" and "client_secret" because the operator mounts them at
+# /oauth/client_id and /oauth/client_secret.
+# egressNamespace: inference
+# egressServices:
+#   - name: inference-node4
+#     tailnetFqdn: "node-4.CHANGEME.ts.net"
+#     port: 8000
