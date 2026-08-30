@@ -7,7 +7,7 @@
 (Draft, the anti-correlation-of-privilege-and-exposure argument this ADR
 keeps, applied to a different conductor model); [054 - The Run View: Pinned
 Plans, Epistemic Registers, and Recorded-Not-Inferred Data](054-run-view-pinned-plans-epistemic-registers.md)
-(Accepted, the versioned plan pin whose "current revision" this ADR defines
+(Draft, the versioned plan pin whose "current revision" this ADR defines
 as an orchestration-level, not workflow-level, read)
 **Supersedes in part:** issue #4781 decision 8 (Qwen conducts), reversed by
 decision 1 below; decisions 3, 5, 9, 10, and 13 of #4781 stand and are
@@ -79,7 +79,7 @@ repo, so the marginal cost of planning is not a new line item, it is a
 reallocation of quota that already exists. The bet is that the increase in
 plan quality, at feature scale, pays for the model tier. This is deliberately
 revisited, not asserted permanently: if measured per-task planning cost turns
-out worse than expected once decision 7 in #4781 (conductor recording) has
+out worse than expected once decision 10 in #4781 (conductor recording) has
 data behind it, that is grounds to revisit this decision, not to have avoided
 making it.
 
@@ -116,8 +116,8 @@ in the graph as its own node kind, not as a fallback state any stuck node can
 fall into.
 
 A run that would need a second Fable node has a wrong plan. The remedy is the
-conductor reshaping that plan, the same way #4781 decision 5's discard and
-add tools already let it correct course, not a second escalation slot. Making
+conductor reshaping that plan, the same way #4781 decision 3's add and
+discard tools already let it correct course, not a second escalation slot. Making
 the cap a node kind rather than a counter means the graph itself shows the
 escalation happened, at what point, and what it cost, the same recording
 discipline #4781 decision 10 already required of every other edit.
@@ -125,9 +125,10 @@ discipline #4781 decision 10 already required of every other edit.
 ### 4. Everything executes in VMs
 
 The conductor and every node it plans are EmberVM guests. No planning and no
-execution happens in the monolith process. The monolith's role stays what
-#4781 decision 12 already drew: the durable owner and the record-keeper, not
-a place where agent reasoning or agent-driven mutation runs in-process.
+execution happens in the monolith process. The monolith stays the durable
+owner and the record-keeper, a boundary this ADR draws explicitly where #4781
+had assumed monolith-adjacent execution, and never a place where agent
+reasoning or agent-driven mutation runs in-process.
 
 ### 5. Under-delivery is a required verdict backed by computed evidence, not an independent judge
 
@@ -141,10 +142,11 @@ is the same false-green class this repo has already fought in other guises
 The conductor emits a required delivered-versus-asked verdict at run end, as
 part of the decision record decision 6 formalizes. That verdict is validated
 server-side through the typed artifact channel like every other declaration
-the conductor makes, and it is accompanied by computed evidence: whether any
-node in the run recorded a write, and whether a branch moved against its
-recorded baseline. These are the same two signals #4781 decision 5's discard
-refusal already treats as authoritative over an agent's own claim.
+the conductor makes, and it is accompanied by two evidence signals of deliberately
+different strength, the same split #4781 decision 5's discard refusal draws:
+branch movement against a recorded baseline is independently computed and
+authoritative, while recorded write activity is an agent's own claim and may
+only ever count against a "delivered" verdict, never substantiate one.
 
 No independent judge node evaluates the verdict. An extra node adds a
 per-run cost and a new false-positive surface (a judge that is wrong is a
@@ -170,8 +172,11 @@ prose (`swarm/policy.py:101`, failing closed to "unparseable" on anything it
 could not match), and a declared JSON artifact only reached the server
 because the shim happened to sweep untracked files into the turn diff. One
 channel means the conductor's graph edits, its rationale, and its verdict on
-its own run all clear the same bar, rather than three different levels of
-scrutiny for three kinds of claim that are equally load-bearing.
+its own run all travel the same validated channel, rather than three
+different transports for three kinds of claim that are equally load-bearing.
+The semantic checks layered above the schema differ by claim (a graph edit
+additionally faces budget admission and discard refusal), and that is by
+design; the shared bar is that nothing structured arrives as trusted prose.
 
 Two prerequisites for this channel shipped as part of the same work: the
 guest shim delivers the declared artifact file beside the turn diff rather
@@ -213,7 +218,9 @@ claim only ever able to force a refusal and never permit a discard) stand
 unchanged and are incorporated by reference rather than restated. Decision 9
 (MCP-first tooling, so the conductor stays swappable) stands, and is what
 makes decision 1's reversal of decision 8 (Qwen conducts) cheap rather than a
-rewrite. Decision 10 (every conductor decision and outcome recorded) stands
+rewrite; its first conductor variant (a local model driven in-process by the
+monolith) is dead under decision 4, so "decision 9 stands" licenses swapping
+the conductor model, never reintroducing in-process planning. Decision 10 (every conductor decision and outcome recorded) stands
 and is the mechanism decision 7 above builds on. Decision 13 (per-node
 `max_cost_usd` admitted against the pin at add time) stands as the one spend
 control that can work, given that cost is observable only between turns.
@@ -330,7 +337,7 @@ is a bad graph, not code execution in the durable owner.
 | ---- | ---------- | ------ | ---------- |
 | Opus per-task planning cost exceeds the accepted budget once measured | Medium | Medium | Decision 1 is explicitly revisitable against #4781 decision 10's recording; not a one-way door |
 | Orchestrator reconciliation drifts from the conductor's latest graph edit under concurrent summons | Medium | High | Single-flight-per-run concurrency control is separately tracked work, not yet closed by this ADR (open question 1) |
-| The delivered-versus-asked verdict is gameable by a conductor that under-plans and then declares success anyway | Low | Medium | The verdict travels beside computed evidence (write activity, branch movement) the conductor cannot alter after the fact, so a false verdict is visibly contradicted rather than merely trusted |
+| The delivered-versus-asked verdict is gameable by a conductor that under-plans and then declares success anyway | Medium | Medium | Branch movement against the recorded baseline is independently computed and contradicts a false verdict; recorded write activity is agent-supplied and may only count against a verdict, so a run with no branch movement and a "delivered" claim is visibly suspect rather than trusted |
 | A run's single Fable escalation is spent on a wrong problem, leaving no further escalation room | Medium | Medium | The cap is deliberate: a run that needs a second Fable node is defined here as having a wrong plan, so the intended remedy is the conductor reshaping the plan, not a bigger cap |
 | Decision 7's evidence-diffing adds hydration latency to every conductor summon | Low | Low | The cheap first version (raw commit distance, no diffing) is explicitly allowed to ship first |
 
@@ -348,6 +355,29 @@ is a bad graph, not code execution in the durable owner.
    ADR.
 3. **Capture of conductor turns into `RawInput`** for decision 7's rationale
    store is named as a later slice, not scoped here.
+4. **Orchestrator durability and where the graph persists.** Decision 2 keeps
+   the graph out of durable workflows but does not say what makes the
+   reconciliation loop itself recoverable, or which store holds the
+   versioned graph. The intended reading is durable server-side state with a
+   recoverable reconciler, not an in-memory loop; the first engine slice must
+   pin this down or it reintroduces lost-runs-on-restart one layer up.
+5. **In-flight descendants of a discarded parent.** Discard refusal protects
+   the node being discarded; whether an already-dispatched child whose pinned
+   inputs derive from a discarded parent is cancelled, orphaned, or run to
+   completion is unspecified.
+6. **Re-dispatch as an unbounded retry extension.** After the artifact
+   ladder escalates, the conductor may re-dispatch the node, which extends
+   the per-node attempt bound by construction. Whether a re-dispatch must
+   re-admit against per-node `max_cost_usd` and the run's remaining budget,
+   and what bound the conductor itself cannot extend, is unspecified; #4618
+   argued for exactly one bound the adjudicator cannot move.
+7. **Fable admission on a budget-less run.** Decision 3 admits the escalation
+   against the run's remaining budget, but `budget_usd` is optional and
+   unenforced (#4784); what the admission check does when no budget is pinned
+   is unspecified.
+8. **A dead conductor versus a thinking one.** Open question 2 covers when to
+   summon; how the orchestrator distinguishes a summoned conductor that died
+   from one still working, and what it does then, is not addressed.
 
 ---
 
