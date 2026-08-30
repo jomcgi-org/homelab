@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - ./argocd # In-cluster ArgoCD adopts and manages its existing installation
+  - ./atlas-operator # Atlas CRDs required by the monolith chart
   - ./cert-manager # Certificate controller and cluster certificate APIs
   - ./cloudnative-pg # CloudNativePG operator for PostgreSQL clusters
   - ./authentik # Dormant identity provider cutover destination

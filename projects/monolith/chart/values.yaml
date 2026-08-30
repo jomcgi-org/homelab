@@ -1119,8 +1119,6 @@ emberDurability:
 
 chat:
   enabled: false
-  searxng:
-    replicas: 1
   # The compare proxy reads this field from the existing chat 1Password item.
   githubApiTokenSecretKey: GITHUB_TOKEN
   llamaCppUrl: ""
@@ -1347,7 +1345,6 @@ orchestrator:
 # chart BUILD images map); never hand-set a digest here.
 whatsapp:
   enabled: false
-  replicas: 1
   # Heavy-agent path (goose household dispatch for charts/artifacts/full tasks).
   # Off by default: a heavy request replies "not wired up yet" instead of
   # dispatching. Set true in deploy values to wire it on.

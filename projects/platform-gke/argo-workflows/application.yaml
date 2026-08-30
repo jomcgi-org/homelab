@@ -20,7 +20,7 @@ spec:
       valueFiles:
         - values.yaml
         - values-gke.yaml
-      ignoreMissingValueFiles: true
+      ignoreMissingValueFiles: false
   destination:
     server: https://kubernetes.default.svc
     namespace: monolith-workflows

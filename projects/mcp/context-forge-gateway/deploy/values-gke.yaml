@@ -34,3 +34,6 @@ cnpg:
             key: service-account-key.json
         wal:
           compression: gzip
+
+teamMapping:
+  enabled: false

@@ -5,6 +5,8 @@ metadata:
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: default
   source:
@@ -17,7 +19,7 @@ spec:
         - values.yaml
         - ../deploy/values.yaml
         - ../deploy/values-gke.yaml
-      ignoreMissingValueFiles: true
+      ignoreMissingValueFiles: false
       # mcp-stack's schema rejects zero replicas although the rendered
       # Kubernetes Deployment supports it.
       skipSchemaValidation: true

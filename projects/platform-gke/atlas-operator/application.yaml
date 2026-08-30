@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: authentik
+  name: atlas-operator
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -10,16 +10,10 @@ spec:
   source:
     repoURL: https://github.com/jomcgi-org/homelab.git
     targetRevision: HEAD
-    path: projects/platform/authentik
-    helm:
-      releaseName: authentik
-      valueFiles:
-        - values.yaml
-        - values-gke.yaml
-      ignoreMissingValueFiles: false
+    path: projects/platform/atlas-operator/deploy
   destination:
     server: https://kubernetes.default.svc
-    namespace: authentik
+    namespace: argocd
   syncPolicy:
     automated:
       prune: true
