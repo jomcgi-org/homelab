@@ -43,7 +43,7 @@ postgres:
 chat:
   llamaCppUrl: "http://inference-bridge.tailscale.svc.cluster.local:8080"
   movingChatInferenceUrl: "http://inference-bridge.tailscale.svc.cluster.local:8080"
-  embeddingUrl: "http://inference-bridge.tailscale.svc.cluster.local:8080"
+  embeddingUrl: "http://inference-bridge-embeddings.tailscale.svc.cluster.local:8081"
 
 # Cilium CRDs are not installed on GKE. Native policy replacements can be
 # introduced separately when the dormant application is activated.

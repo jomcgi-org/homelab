@@ -9,7 +9,18 @@ tailscale-operator:
 
 egressNamespace: tailscale
 
-egressServices: []
+# The node-4 inference bridge (#5457): the GKE workloads reach the bare-metal
+# inference host over the tailnet. node-4 answers on these exact ports
+# (tailscale serve now, the bare-metal servers after the wipe), and the
+# operator's proxy forwards the Service port unchanged, so the port here IS
+# the port node-4 must listen on.
+egressServices:
+  - name: inference-bridge
+    tailnetFqdn: "node-4.tail33e678.ts.net"
+    port: 8080
+  - name: inference-bridge-embeddings
+    tailnetFqdn: "node-4.tail33e678.ts.net"
+    port: 8081
 
 # Add this entry when node-4 joins the tailnet. The target namespace must
 # already exist. The tailscale-gke 1Password item fields must be named exactly
