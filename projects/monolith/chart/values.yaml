@@ -1017,44 +1017,18 @@ postgres:
     # it into the workflow namespace exactly as it already does for
     # monolith-pg-app.
     devAppSecret: monolith-dev-pg-app
-  # Barman object-store backups (WAL archiving + scheduled base backups) to the
-  # in-cluster SeaweedFS S3 gateway. This closes the zero-backup gap exposed when
-  # the Pg Longhorn volume suffered ext4 corruption and had to be fsck-recovered
-  # with no backups. Because the backups live in SeaweedFS (a different volume
-  # set) they survive the Pg-volume-corruption failure class. NOTE: this is NOT
-  # off-cluster disaster recovery (a node/cluster loss still takes both); that is
-  # a separate follow-up.
-  #
-  # Uses the in-spec barmanObjectStore mechanism (supported by the deployed CNPG
-  # 1.28.1 operator). The newer Barman Cloud Plugin is not installed, so the
-  # plugin path is not available here.
-  #
-  # Credentials: SeaweedFS S3 runs with enableAuth: false and every workload uses
-  # the shared non-secret "duckdb"/"duckdb" keys (see stars.s3AccessKeyId). CNPG
-  # s3Credentials only accepts a Secret reference (not literals), so the chart
-  # emits a small Opaque Secret (templates/cnpg-backup-s3-secret.yaml) holding
-  # these same low-value dummy keys. There is no 1Password S3 item to reuse
-  # because SeaweedFS S3 has no real credentials in this cluster.
-  # DISABLED 2026-07-21. WAL archiving to SeaweedFS was enabled briefly, but
-  # SeaweedFS's intermittent 500-on-PutObject (benign-retryable for embervm async
-  # exports) makes it a poor WAL-archive target: ContinuousArchiving flapped Failing
-  # and the archiver burned retries. For now the Pg durability floor is Longhorn block
-  # replication (the monolith-pg data volume is already multi-replica). Proper OFFSITE
-  # backups (a real object store / DR target, not the in-cluster SeaweedFS) are a
-  # deliberate future task, not this in-cluster WAL path. Re-enabling here requires
-  # both a reliable object store and the backup-secret RBAC fix.
+  # Off-cluster GCS backups use the in-spec barmanObjectStore mechanism supported
+  # by CNPG 1.28.1. The chart is disabled by default so a bare render writes to no
+  # external store; deploy values enable it after supplying the 1Password item.
+  bootstrap:
+    recovery: null
+  externalClusters: []
   backup:
     enabled: false
-    # SeaweedFS S3 gateway (path-style, plaintext HTTP), same endpoint the app
-    # workloads use.
-    endpointURL: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
-    # s3://<bucket>/<path>. The bucket must be pre-created out-of-band (see the
-    # note in seaweedfs values.yaml: never let the chart's bucket hook run, it
-    # flips the whole cluster S3 to auth-enforced). CNPG writes base backups and
-    # WALs under this prefix.
-    destinationPath: "s3://monolith-pg-backups/monolith-pg"
-    s3AccessKeyId: "duckdb"
-    s3SecretAccessKey: "duckdb"
+    destinationPath: "gs://cnpg-backups/monolith-pg/"
+    credentialsSecret: monolith-pg-backup-gcs
+    onepassword:
+      itemPath: "vaults/k8s-homelab/items/cnpg-gcs-backups-monolith"
     # Keep 14 days of backups + WALs. Barman prunes on each new base backup.
     retentionPolicy: "14d"
     scheduledBackup:

@@ -81,24 +81,9 @@ postgres:
     enabled: true
   storage:
     size: 50Gi
-  # Barman base backups plus continuous WAL archiving to the SeaweedFS object
-  # store. Written into the chart months ago and left inert, so production has
-  # never had a working backup (#4714). Enabled here rather than in the chart so
-  # a bare `helm template` still writes to nobody's S3.
-  #
-  # The monolith-pg-backups bucket was pre-created out of band and must stay
-  # that way: letting the SeaweedFS chart's bucket hook create it flips the
-  # whole cluster's S3 to auth-enforced.
-  #
-  # The path in the bucket looks doubled and is not a typo. barman appends
-  # serverName, which defaults to the cluster name, so objects land under
-  # s3://monolith-pg-backups/monolith-pg/monolith-pg/wals/. destinationPath is
-  # a root that several clusters could share, not a path to one catalogue.
-  #
-  # Scope, so nobody mistakes this for DR: SeaweedFS is backed by the same
-  # Longhorn layer as the Postgres PVCs, so this covers logical loss (a bad
-  # migration, a dropped table, corruption of the Pg volumes) and NOT the loss
-  # of the cluster. Off-cluster DR is a separate follow-up.
+  # Daily base backups plus continuous WAL archiving to the shared off-cluster
+  # GCS bucket. The chart default carries the per-cluster destination and
+  # 1Password item path; production explicitly enables the backup policy here.
   backup:
     enabled: true
 

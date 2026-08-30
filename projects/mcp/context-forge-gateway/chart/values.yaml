@@ -123,8 +123,8 @@ networkPolicy:
   enabled: false
 
 # CloudNativePG cluster backing the gateway, replacing mcp-stack's bundled
-# postgres:17 Deployment. See templates/postgres-cnpg.yaml for why there is
-# no backup policy.
+# postgres:17 Deployment. Native GCS provides off-cluster base backups and WAL
+# archiving whenever this cluster is enabled.
 cnpg:
   enabled: false
   name: context-forge-pg
@@ -143,6 +143,18 @@ cnpg:
       memory: 512Mi
   monitoring:
     enablePodMonitor: true
+  bootstrap:
+    recovery: null
+  externalClusters: []
+  backup:
+    enabled: true
+    retentionPolicy: "14d"
+    destinationPath: "gs://cnpg-backups/context-forge-pg/"
+    credentialsSecret: context-forge-pg-backup-gcs
+    onepassword:
+      itemPath: "vaults/k8s-homelab/items/cnpg-gcs-backups-context-forge"
+    scheduledBackup:
+      cron: "0 0 2 * * *"
 
 # HTTPRoute for external access via Cloudflare Tunnel.
 # Auth handled at edge by Cloudflare Access Managed OAuth (ADR 011).

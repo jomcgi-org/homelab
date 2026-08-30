@@ -1,0 +1,16 @@
+{{- if and .Values.cnpg.enabled .Values.cnpg.backup.enabled }}
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ .Values.cnpg.name }}-daily
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: authentik-postgresql
+    app.kubernetes.io/part-of: authentik
+spec:
+  # CNPG cron format has a leading seconds field (6 fields).
+  schedule: {{ .Values.cnpg.backup.scheduledBackup.cron | quote }}
+  backupOwnerReference: self
+  cluster:
+    name: {{ .Values.cnpg.name }}
+{{- end }}

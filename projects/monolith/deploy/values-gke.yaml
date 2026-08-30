@@ -1,0 +1,15 @@
+# GKE monolith-pg recovery from the off-cluster GCS Barman object store.
+postgres:
+  bootstrap:
+    recovery:
+      source: monolith-pg
+  externalClusters:
+    - name: monolith-pg
+      barmanObjectStore:
+        destinationPath: "gs://cnpg-backups/monolith-pg/"
+        googleCredentials:
+          applicationCredentials:
+            name: monolith-pg-backup-gcs
+            key: service-account-key.json
+        wal:
+          compression: gzip

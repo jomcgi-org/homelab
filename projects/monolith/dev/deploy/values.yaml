@@ -119,8 +119,8 @@ postgres:
   #
   # It is a waste and an exposure problem. Dev is reseeded from production
   # nightly, so this would store a second copy of production's rows: roughly
-  # 1.5 GB of base backup a day, held 14 days, in a bucket with no S3
-  # identities configured and no NetworkPolicy in front of it (#4708).
+  # 1.5 GB of base backup a day, held 14 days, using the production GCS service
+  # account even though dev is deliberately rebuilt instead of restored.
   # chart_env_identity_test asserts dev renders no object store.
   backup:
     enabled: false
