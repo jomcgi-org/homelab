@@ -65,9 +65,10 @@ defmodule Embervm.NodeRegistry do
   pods, and two instances on ONE node (a surge roll, ADR embervm/012) are
   simultaneously representable because the key is the pod UID, not the node name.
 
-  An instance ages OUT of the registry only when BOTH its registration has lapsed
-  (no re-register within `@expire_after_ms`) AND its WatchNode stream is dead, so
-  a CP-side network blip alone never drops a healthy node.
+  An instance ages OUT of the registry when its registration has lapsed and its
+  WatchNode stream is dead, or when a registered instance remains down through a
+  full stream-silence expiry window. A CP-side network blip alone never drops a
+  healthy node.
 
   ## the static seam
 
@@ -120,6 +121,14 @@ defmodule Embervm.NodeRegistry do
   # (EMBERVM_NODE_ADDRESS override / tests) never registers and so never lapses:
   # its last_registered_at stays nil and expiry is skipped for it.
   @expire_after_ms 90_000
+
+  # An instance that is :down and has produced no status for this long is
+  # expired regardless of registration freshness. The two-signal rule alone
+  # (lapse AND down) makes a registering-but-undialable instance immortal,
+  # redialing at max backoff forever (#4402: 345s observed, unbounded in
+  # principle). Three max-backoff cycles of total stream silence is proof the
+  # dial-back path is dead even while the pod's HTTP register loop lives.
+  @down_expire_after_ms 90_000
 
   # How often the control plane re-pushes the authoritative workload registry to
   # every CONNECTED daemon (SyncRegistry). The per-connection push in
@@ -1042,9 +1051,10 @@ defmodule Embervm.NodeRegistry do
   # -- age-out state machine --------------------------------------------------
 
   # Recompute every instance's health from time-since-last-status and act on any
-  # transition, then expire any instance that is BOTH registration-lapsed AND
-  # stream-dead. This is the sole age-out authority, decoupled from stream liveness
-  # so a silently wedged stream still ages out.
+  # transition, then expire any registered instance that is stream-dead and either
+  # registration-lapsed or silent for the full down-expiry window. This is the sole
+  # age-out authority, decoupled from stream liveness so a silently wedged stream
+  # still ages out.
   defp evaluate_ages(state) do
     now = state.clock.()
 
@@ -1056,15 +1066,11 @@ defmodule Embervm.NodeRegistry do
     expire_lapsed_instances(state, now)
   end
 
-  # Remove an instance from the registry entirely when BOTH signals say it is gone:
-  # its dial-home registration has lapsed (no re-register within expire_after_ms)
-  # AND its WatchNode stream is dead (:down). Requiring both means a CP-side network
-  # blip (stream flaps, registration keeps arriving) never drops a healthy node, and
-  # a control-plane restart (registration timers reset, stream re-establishes) never
-  # drops one either. A statically-seeded instance (last_registered_at nil) never
-  # lapses and is never expired here; only dial-home instances age out. Expiry drops
-  # the capacity row, tells the BaseBuilder to forget the node, kills the streamer,
-  # and removes the runtime entry so no reconnect resurrects it.
+  # Remove a registered instance when it is :down and either its registration has
+  # lapsed or its status stream has been silent for the full down-expiry window.
+  # A statically-seeded instance (last_registered_at nil) is never expired here.
+  # Expiry drops the capacity row, tells the BaseBuilder to forget the node, kills
+  # the streamer, and removes the runtime entry so no reconnect resurrects it.
   defp expire_lapsed_instances(state, now) do
     Enum.reduce(Map.keys(state.node_runtime), state, fn instance_id, acc ->
       rt = acc.node_runtime[instance_id]
@@ -1073,7 +1079,11 @@ defmodule Embervm.NodeRegistry do
         not is_nil(rt.last_registered_at) and
           now - rt.last_registered_at >= acc.expire_after_ms
 
-      if lapsed? and rt.health == :down do
+      down_silent? =
+        not is_nil(rt.last_registered_at) and
+          now - (rt.last_status_at || rt.started_at) >= @down_expire_after_ms
+
+      if rt.health == :down and (lapsed? or down_silent?) do
         expire_instance(acc, instance_id)
       else
         acc
@@ -1428,6 +1438,23 @@ defmodule Embervm.NodeRegistry do
       )
 
     rt = %{rt | last_registered_at: now}
+
+    # A new instance for the same configured node proves the old pod is being
+    # replaced. A :down sibling is already reassigned and capacity-retracted, so
+    # eviction only accelerates cleanup that two-signal expiry cannot reach when
+    # the dying pod keeps registering (#4402). Live surge-roll siblings stay.
+    state =
+      Enum.reduce(state.node_runtime, state, fn {instance_id, sibling}, acc ->
+        if sibling.configured_id == norm.node and sibling.health == :down do
+          Logger.info(
+            "embervm node registry: down instance #{instance_id} superseded by #{rt.instance_id}"
+          )
+
+          expire_instance(acc, instance_id)
+        else
+          acc
+        end
+      end)
 
     Logger.info(
       "embervm node registry: registered instance #{rt.instance_id} (node #{norm.node}, pod #{norm.pod_uid}, #{norm.address})"
