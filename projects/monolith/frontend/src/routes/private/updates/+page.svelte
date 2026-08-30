@@ -665,7 +665,7 @@
   }
 
   .meta-rows {
-    margin: 0 0 1.8rem;
+    margin: 0 0 1.2rem;
   }
 
   /* The following section label draws the closing rule; a border here too
@@ -674,27 +674,31 @@
     border-bottom: 0;
   }
 
+  /* Spec-table shape: fixed label column, value flows left beside it.
+     The spine's space-between works for short counts; a long value list
+     right-aligned against it wraps ragged with a gulf in the middle. */
   .meta-kv {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4em 1.5em;
+    display: grid;
+    grid-template-columns: 5.5em minmax(0, 1fr);
+    gap: 0.8em;
     align-items: baseline;
-    justify-content: space-between;
     margin: 0;
-    padding: 0.5em 0;
+    padding: 0.45em 0;
     border-bottom: 1px solid var(--line);
   }
 
   .meta-kv .k {
-    font-size: 0.8em;
-    font-weight: 600;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
 
   .meta-kv .v {
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.72rem;
-    text-align: right;
   }
 
   .filed-tags {
@@ -702,7 +706,6 @@
     flex-wrap: wrap;
     gap: 0.3em 0.5em;
     align-items: baseline;
-    justify-content: flex-end;
   }
 
   .filed-tags a {
