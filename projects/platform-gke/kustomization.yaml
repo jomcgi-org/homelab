@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ./argocd # In-cluster ArgoCD adopts and manages its existing installation
+  - ./cert-manager # Certificate controller and cluster certificate APIs
+  - ./cloudnative-pg # CloudNativePG operator for PostgreSQL clusters
+  - ./otel-collector # GKE telemetry export to Honeycomb
+  - ./cloudflare-gateway # Envoy Gateway active, Cloudflare Tunnel armed but off
+  - ./tailscale # Tailscale operator and tailnet egress services

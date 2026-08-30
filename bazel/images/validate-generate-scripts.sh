@@ -140,6 +140,14 @@ else
 		echo "    Generated kustomization.yaml contains no resource paths"
 		FAILED=1
 	fi
+
+	if grep -Eq '^\s*- ../../projects/(home-cluster|gke-cluster|platform-gke)(/|$)' projects/home-cluster/kustomization.yaml; then
+		echo "  generate-home-cluster exclusions: FAIL"
+		echo "    Generated kustomization.yaml contains a cluster root or cluster-specific platform path"
+		FAILED=1
+	else
+		echo "  generate-home-cluster exclusions: PASS"
+	fi
 fi
 
 # NOTE: the two doc-index manifests (repo_docs_manifest.ndjson and the public

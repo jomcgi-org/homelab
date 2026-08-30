@@ -1,0 +1,20 @@
+tailscale-operator:
+  oauthSecretVolume:
+    secret:
+      secretName: operator-oauth
+  operatorConfig:
+    defaultTags:
+      - tag:k8s-operator
+
+egressNamespace: inference
+
+egressServices:
+  # Set this FQDN when node-4 joins the tailnet.
+  - name: inference-node4
+    tailnetFqdn: "node-4.CHANGEME.ts.net"
+    port: 8000
+  # Example for a separate embeddings endpoint:
+  # - name: embeddings-node4
+  #   tailnetFqdn: "node-4.CHANGEME.ts.net"
+  #   port: 8001
+  #   targetPort: 8001

@@ -110,6 +110,7 @@ Top-level projects/ directories:
 - design-system
 - embervm
 - firecracker
+- gke-cluster
 - home-cluster
 - inference
 - mcp
@@ -118,6 +119,7 @@ Top-level projects/ directories:
 - monolith-public
 - operators
 - platform
+- platform-gke
 - sextant
 - shared
 
