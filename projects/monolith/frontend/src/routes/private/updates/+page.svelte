@@ -16,6 +16,7 @@
     return () => scheme.removeEventListener("change", apply);
   });
   let activeDate = $state("");
+  let activeMonth = $derived(activeDate.slice(0, 7));
   let monthGroups = $derived(groupUpdatesByMonth(data.updates));
   let filtering = $derived(
     Boolean(data.selectedProject || data.selectedTechnology),
@@ -155,21 +156,26 @@
           <nav class="date-rail" aria-label="Updates by date">
             <p class="sec-label">/ Index</p>
             {#each monthGroups as group}
-              <div class="rail-month">
-                <p>{group.label}</p>
-                {#each group.updates as update}
-                  <a
-                    class:active={activeDate === update.published_on}
-                    href={`#update-${update.published_on}`}
-                    aria-current={activeDate === update.published_on
-                      ? "location"
-                      : undefined}
-                  >
-                    <span>{update.published_on.slice(8)}</span>
-                    <small>{update.headline}</small>
-                  </a>
-                {/each}
-              </div>
+              <details class="rail-month" open={group.key === activeMonth}>
+                <summary>
+                  <span class="month-name">{group.label}</span>
+                  <span class="group-count">{group.updates.length}</span>
+                </summary>
+                <div class="rail-days">
+                  {#each group.updates as update}
+                    <a
+                      class:active={activeDate === update.published_on}
+                      href={`#update-${update.published_on}`}
+                      aria-current={activeDate === update.published_on
+                        ? "location"
+                        : undefined}
+                    >
+                      <span>{update.published_on.slice(8)}</span>
+                      <small>{update.headline}</small>
+                    </a>
+                  {/each}
+                </div>
+              </details>
             {/each}
           </nav>
         {/if}
@@ -481,7 +487,8 @@
     content: "+";
   }
 
-  .spine-group[open] .group-count::after {
+  .spine-group[open] .group-count::after,
+  .rail-month[open] .group-count::after {
     content: "\2212";
   }
 
@@ -550,21 +557,37 @@
     margin-top: 1.8rem;
   }
 
-  .rail-month + .rail-month {
-    margin-top: 1.3em;
+  .rail-month summary {
+    display: flex;
+    gap: 0.6em;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 0.5em 0;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+    list-style: none;
   }
 
-  .rail-month > p {
-    margin: 0 0 0.5em;
-    /* Flush with the day rows, whose content starts after the 2px marker
-       border plus 0.6rem padding. */
-    padding-left: calc(0.6rem + 2px);
-    color: var(--ink-3);
+  .rail-month summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .month-name {
+    color: var(--ink-2);
     font-family: var(--font-code);
-    font-size: 0.62em;
+    font-size: 0.68em;
     font-weight: 500;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
+  }
+
+  .rail-month summary:hover .month-name {
+    color: var(--accent-ink);
+  }
+
+  .rail-days {
+    padding: 0.35em 0;
+    border-bottom: 1px solid var(--line);
   }
 
   .rail-month a {
@@ -898,18 +921,25 @@
       display: none;
     }
 
-    .rail-month,
-    .rail-month + .rail-month {
+    .rail-month {
       display: flex;
       gap: 0.65em;
       align-items: center;
       margin: 0;
     }
 
-    .rail-month > p {
+    .rail-month summary {
       min-width: max-content;
-      margin: 0 0.3em 0 0;
-      padding-left: 0;
+      padding: 0.65em 0;
+      border-bottom: 2px solid transparent;
+    }
+
+    .rail-days {
+      display: flex;
+      gap: 0.35em;
+      align-items: center;
+      padding: 0;
+      border-bottom: 0;
     }
 
     .rail-month a {
