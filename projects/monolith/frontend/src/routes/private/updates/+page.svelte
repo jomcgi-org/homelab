@@ -233,11 +233,9 @@
                 id={`update-${update.published_on}`}
                 data-update-date={update.published_on}
               >
-                <p class="sec-label dateline">
-                  <span
-                    >/ Edition · <time datetime={update.published_on}
-                      >{formatDate(update.published_on)}</time
-                    ></span
+                <p class="ed-head">
+                  <time datetime={update.published_on}
+                    >{formatDate(update.published_on)}</time
                   >
                   <span class="ed-category">{label(update.category)}</span>
                 </p>
@@ -246,41 +244,47 @@
                   <h2>{update.headline}</h2>
                   <p class="summary">{update.summary}</p>
 
-                  <p class="filed-line">
-                    <span class="filed-label">Filed:</span>
-                    <span class="filed-tags">
-                      {#each update.projects as project}
-                        <a
-                          href={facetHref(
-                            "project",
-                            project,
-                            data.selectedProject,
-                            data.selectedTechnology,
-                          )}>{label(project)}</a
-                        >
-                      {/each}
-                      {#each update.technologies as technology}
-                        <a
-                          href={facetHref(
-                            "technology",
-                            technology,
-                            data.selectedProject,
-                            data.selectedTechnology,
-                          )}>{label(technology)}</a
-                        >
-                      {/each}
-                    </span>
-                    <a
-                      class="source-link"
-                      href={update.source_compare_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      >{update.source_commit_count}
-                      {update.source_commit_count === 1 ? "commit" : "commits"} on
-                      GitHub
-                      <span aria-hidden="true">&nearr;</span></a
-                    >
-                  </p>
+                  <div class="meta-rows">
+                    <p class="meta-kv">
+                      <span class="k">Filed</span>
+                      <span class="v filed-tags">
+                        {#each update.projects as project}
+                          <a
+                            href={facetHref(
+                              "project",
+                              project,
+                              data.selectedProject,
+                              data.selectedTechnology,
+                            )}>{label(project)}</a
+                          >
+                        {/each}
+                        {#each update.technologies as technology}
+                          <a
+                            href={facetHref(
+                              "technology",
+                              technology,
+                              data.selectedProject,
+                              data.selectedTechnology,
+                            )}>{label(technology)}</a
+                          >
+                        {/each}
+                      </span>
+                    </p>
+                    <p class="meta-kv">
+                      <span class="k">Source</span>
+                      <a
+                        class="v source-link"
+                        href={update.source_compare_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        >{update.source_commit_count}
+                        {update.source_commit_count === 1
+                          ? "commit"
+                          : "commits"} on GitHub
+                        <span aria-hidden="true">&nearr;</span></a
+                      >
+                    </p>
+                  </div>
 
                   <p class="sec-sublabel">What is new</p>
                   <div class="items">
@@ -630,16 +634,29 @@
     margin-top: 2.75rem;
   }
 
-  /* ── Edition dateline and filed line ──
-     Metadata is two quiet mono lines, one above the article and one below
-     the summary; boxed chip rows and a key-value band were both tried and
-     vetoed as chip soup that buried the headline. */
+  /* ── Edition head and metadata rows ──
+     The content column follows the spine's discipline: label left, value
+     right, one hairline per row. A slash-labeled edition banner, boxed
+     chips, and a free-wrapping filed line were all tried and vetoed as
+     noise the spine never needed. */
 
-  .dateline {
+  .ed-head {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4em 1.5em;
+    align-items: baseline;
     justify-content: space-between;
+    margin: 0;
+    padding: 0.5em 0;
+    border-bottom: 1px solid var(--line);
+    font-family: var(--font-code);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .ed-head time {
+    color: var(--ink-2);
   }
 
   .ed-category {
@@ -647,22 +664,37 @@
     font-weight: 500;
   }
 
-  .filed-line {
+  .meta-rows {
+    margin: 0 0 1.8rem;
+  }
+
+  /* The following section label draws the closing rule; a border here too
+     left a stray line bracketing empty space. */
+  .meta-rows .meta-kv:last-child {
+    border-bottom: 0;
+  }
+
+  .meta-kv {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4em 1em;
+    gap: 0.4em 1.5em;
     align-items: baseline;
-    margin: 0 0 2rem;
-    padding-top: 0.7em;
-    border-top: 1px solid var(--line);
+    justify-content: space-between;
+    margin: 0;
+    padding: 0.5em 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .meta-kv .k {
+    font-size: 0.8em;
+    font-weight: 600;
+  }
+
+  .meta-kv .v {
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.72rem;
-  }
-
-  .filed-label {
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    text-align: right;
   }
 
   .filed-tags {
@@ -670,6 +702,7 @@
     flex-wrap: wrap;
     gap: 0.3em 0.5em;
     align-items: baseline;
+    justify-content: flex-end;
   }
 
   .filed-tags a {
@@ -688,10 +721,8 @@
   }
 
   .source-link {
-    margin-left: auto;
     color: var(--ink-2);
     text-decoration: none;
-    border-bottom: 1px solid currentColor;
   }
 
   .source-link:hover {
@@ -702,7 +733,7 @@
 
   .ed-article h2 {
     max-width: 34ch;
-    margin: 0;
+    margin: 1rem 0 0;
     font-size: clamp(1.25rem, 1.9vw, 1.6rem);
     font-weight: 700;
     letter-spacing: -0.02em;
@@ -710,7 +741,7 @@
   }
 
   .summary {
-    margin: 0.7rem 0 1.2rem;
+    margin: 0.7rem 0 1.1rem;
     color: var(--ink);
     font-size: 0.88rem;
     line-height: 1.5;
