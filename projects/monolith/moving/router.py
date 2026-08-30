@@ -128,6 +128,15 @@ def get_state(
     session: Session = Depends(get_session),
 ) -> dict:
     """Return the moving dashboard scoped to the viewer by default."""
+    return build_state(session, viewer, scope)
+
+
+def build_state(
+    session: Session,
+    viewer: str,
+    scope: Literal["mine", "all"] = "mine",
+) -> dict:
+    """Build the dashboard state for HTTP and read-only chat context."""
     task_query = select(Task).order_by(Task.created_at, Task.id)
     milestone_query = select(Milestone).order_by(Milestone.occurs_on, Milestone.id)
     span_query = select(Span).order_by(Span.starts_on, Span.id)

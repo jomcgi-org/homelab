@@ -248,6 +248,8 @@ spec:
                   key: DISCORD_BOT_TOKEN
             - name: LLAMA_CPP_URL
               value: {{ .Values.chat.llamaCppUrl | quote }}
+            - name: MOVING_CHAT_INFERENCE_URL
+              value: {{ .Values.chat.movingChatInferenceUrl | quote }}
             # Pinned OpenRouter model for household content generation.
             - name: HOUSEHOLD_LLM_MODEL
               value: {{ .Values.whatsapp.model | quote }}

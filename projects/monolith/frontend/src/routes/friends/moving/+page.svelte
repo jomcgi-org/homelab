@@ -3,6 +3,7 @@
   import { page } from "$app/stores";
   import { onMount, untrack } from "svelte";
   import AccessPanel from "./AccessPanel.svelte";
+  import ChatPanel from "./ChatPanel.svelte";
   import ManagePanel from "./ManagePanel.svelte";
   import {
     clusterMilestoneGroups,
@@ -55,6 +56,7 @@
   let sellDialog = $state();
   let calendarDialog = $state();
   let rolesDialog = $state();
+  let chatDialog = $state();
   let plotCard = $state();
   let plotTrackWidth = $state(0);
   let tooltip = $state(null);
@@ -227,7 +229,13 @@
   }
 
   function openDialog(dialog) {
-    for (const item of [tasksDialog, sellDialog, calendarDialog, rolesDialog]) {
+    for (const item of [
+      tasksDialog,
+      sellDialog,
+      calendarDialog,
+      rolesDialog,
+      chatDialog,
+    ]) {
       if (item?.open) item.close();
     }
     dialog?.showModal();
@@ -742,6 +750,13 @@
               <span class="v mono">{openTasks.length} open</span>
             {/if}
           </button>
+          <button
+            class="dockbtn"
+            type="button"
+            onclick={() => openDialog(chatDialog)}
+          >
+            Ask <span class="v">about the plan</span>
+          </button>
         </nav>
 
         <nav class="tabbar" aria-label="Sections">
@@ -954,6 +969,27 @@
             </div>
           {/each}
         {/if}
+      </div>
+    </dialog>
+
+    <dialog
+      class="chat-dialog"
+      bind:this={chatDialog}
+      aria-labelledby="chat-heading"
+      onclick={closeFromBackdrop}
+    >
+      <div class="dlg-head">
+        <h2 id="chat-heading">Ask about the plan</h2>
+        <span class="sub">Read-only helper</span>
+        <button
+          class="x"
+          type="button"
+          aria-label="Close"
+          onclick={() => chatDialog.close()}>×</button
+        >
+      </div>
+      <div class="dlg-body">
+        <ChatPanel />
       </div>
     </dialog>
   </main>

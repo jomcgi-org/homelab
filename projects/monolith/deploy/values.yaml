@@ -170,6 +170,7 @@ knowledge:
 chat:
   enabled: true
   llamaCppUrl: "http://inference.inference.svc.cluster.local:8080"
+  movingChatInferenceUrl: "http://inference.inference.svc.cluster.local:8080"
   embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
   searxngUrl: "http://monolith-searxng:8080"
   changelogs:

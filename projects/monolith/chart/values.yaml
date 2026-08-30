@@ -1110,6 +1110,7 @@ chat:
   # The compare proxy reads this field from the existing chat 1Password item.
   githubApiTokenSecretKey: GITHUB_TOKEN
   llamaCppUrl: ""
+  movingChatInferenceUrl: ""
   embeddingUrl: ""
   searxngUrl: ""
   # Discord attachment bytes are stored in SeaweedFS (content-addressed at
