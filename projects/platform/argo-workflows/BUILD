@@ -34,3 +34,22 @@ argocd_app(
         "values.yaml",
     ],
 )
+
+argocd_app(
+    name = "argo-workflows-gke",
+    chart = "projects/platform/argo-workflows",
+    chart_files = ":chart",
+    generate_manifests = False,
+    generate_semgrep = False,
+    namespace = "monolith-workflows",
+    release_name = "argo-workflows",
+    tags = [
+        "helm",
+        "template",
+    ],
+    target_suffix = "_gke",
+    values_files = [
+        "values.yaml",
+        "values-gke.yaml",
+    ],
+)

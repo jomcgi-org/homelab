@@ -1,0 +1,7 @@
+# Preserve the workflow CRDs and CronWorkflows, but do not execute workflows
+# before the cutover.
+argo-workflows:
+  controller:
+    replicas: 0
+  server:
+    replicas: 0

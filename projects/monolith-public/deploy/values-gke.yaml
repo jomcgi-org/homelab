@@ -1,0 +1,23 @@
+# GKE cutover destination. Disable HPAs so zero replicas remain authoritative.
+web:
+  # The shared chart helper treats numeric zero as empty and defaults it to one.
+  # A string still renders as the numeric YAML scalar `replicas: 0`.
+  replicas: "0"
+  autoscaling:
+    enabled: false
+
+frontend:
+  replicas: "0"
+  autoscaling:
+    enabled: false
+
+imgproxy:
+  replicas: "0"
+
+# Cilium CRDs are not installed on GKE. Native policy replacements can be
+# introduced separately when the dormant application is activated.
+ciliumPolicy:
+  ingress:
+    enabled: false
+  egress:
+    enabled: false

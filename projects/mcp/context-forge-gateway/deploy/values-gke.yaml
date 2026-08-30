@@ -1,5 +1,13 @@
-# GKE context-forge-pg recovery from the off-cluster GCS Barman object store.
-# Consumed by PR #5464's gke-apps Applications (not referenced by this branch).
+# GKE cutover destination. The gateway stays dormant; CNPG stays up for data
+# staging and bootstraps by recovery from the off-cluster GCS Barman object
+# store. Consumed by the gke-apps Applications.
+mcp-stack:
+  mcpContextForge:
+    # Upstream's schema requires at least one replica even though Kubernetes
+    # accepts zero. The GKE Application skips that schema check for this dormant
+    # deployment and still renders the Deployment with replicas: 0.
+    replicaCount: 0
+
 cnpg:
   storage:
     storageClass: standard-rwo
@@ -11,6 +19,9 @@ cnpg:
       source: context-forge-pg
       database: mcpgateway
       owner: mcpgateway
+  # backup stays ENABLED: the distinct serverName gives the GKE cluster its
+  # own archive prefix, so it never trips CNPG's empty-archive check against
+  # the prefix the home cluster is live-archiving into.
   backup:
     serverName: context-forge-pg-gke
   externalClusters:

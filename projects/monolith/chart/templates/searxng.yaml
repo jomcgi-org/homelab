@@ -25,7 +25,7 @@ metadata:
     {{- include "monolith.labels" . | nindent 4 }}
     app.kubernetes.io/component: searxng
 spec:
-  replicas: 1
+  replicas: {{ .Values.chat.searxng.replicas }}
   selector:
     matchLabels:
       {{- include "monolith.selectorLabels" . | nindent 6 }}

@@ -110,6 +110,7 @@ Top-level projects/ directories:
 - design-system
 - embervm
 - firecracker
+- gke-apps
 - gke-cluster
 - home-cluster
 - inference

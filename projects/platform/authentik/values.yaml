@@ -2,6 +2,10 @@
 # requires Ember's object-authorization matrix to land before SSO is admitted.
 
 authentik:
+  # Storage class for the wrapper-owned CloudNativePG additionalObject.
+  cnpg:
+    storage:
+      storageClass: longhorn
   # Custom blueprints from ../blueprints/, rendered into a ConfigMap by
   # templates/blueprints-configmap.yaml. The chart discovers every key ending
   # in `.yaml` and authentik's worker applies them, so groups, policy bindings
@@ -147,6 +151,9 @@ cnpg:
   instances: 1
   storage:
     size: 20Gi
+    # Empty inherits the cluster default (longhorn at home); the GKE overlay
+    # sets standard-rwo explicitly.
+    storageClass: ""
   resources:
     requests:
       cpu: 100m

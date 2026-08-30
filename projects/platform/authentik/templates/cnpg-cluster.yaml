@@ -11,6 +11,9 @@ spec:
   instances: {{ .Values.cnpg.instances }}
   storage:
     size: {{ .Values.cnpg.storage.size }}
+    {{- with .Values.cnpg.storage.storageClass }}
+    storageClass: {{ . | quote }}
+    {{- end }}
   resources:
     {{- toYaml .Values.cnpg.resources | nindent 4 }}
   bootstrap:
