@@ -419,13 +419,10 @@
 
   .facet-options a span {
     font-family: var(--font-code);
+    /* Hierarchy comes from size alone: an ink-3 count fails AA at this
+       size (2.78:1 on day paper), so the color stays the inherited ink-2,
+       and the paper color on the accent fill still wins on active chips. */
     font-size: 0.85em;
-  }
-
-  /* Counts stay muted only on inactive chips; on the accent fill they
-     inherit the paper color for contrast (see the a.active rationale). */
-  .facet-options a:not(.active) span {
-    color: var(--ink-3);
   }
 
   .facet-options a:hover,
@@ -448,6 +445,9 @@
 
   .facet-options .remove {
     margin-left: 0.15rem;
+    /* The count-span downsizing above is hierarchy for the number; the
+       remove glyph keeps the chip's own text size. */
+    font-size: inherit;
   }
 
   .filter-results {
@@ -859,9 +859,10 @@
     }
 
     /* Touch sizing: the desktop chip height is fine for a pointer but
-       under the 44px floor for a thumb. */
+       under the 44px floor for a thumb; 0.8rem vertical padding puts the
+       chip at roughly 44px with the 12.8px label and 2px of border. */
     .facet-options a {
-      padding: 0.55rem 0.85rem;
+      padding: 0.8rem 0.9rem;
     }
 
     .journal-layout {
