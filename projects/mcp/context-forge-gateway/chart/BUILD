@@ -16,9 +16,9 @@ helm_chart(
     # :chart and :values.yaml, so the deploy package must stay visible or the
     # format stage commits a BUILD that cannot analyse. The keep comment stops
     # the helm gazelle extension resetting this attribute.
-    visibility = [  # keep
+    visibility = [
+        # keep
         "//overlays:__subpackages__",
-        "//projects/mcp/context-forge-gateway/deploy:__pkg__",
     ],
 )
 
