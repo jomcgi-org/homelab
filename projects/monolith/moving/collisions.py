@@ -21,8 +21,14 @@ def find_collisions(spans: list[Span], tasks: list[Task]) -> list[Collision]:
     """Find cross-kind span overlaps and tasks due inside any span."""
     collisions: list[Collision] = []
 
+    # Leave exists to cover visits and trips, so overlapping them is the point,
+    # and a task due during leave is not a conflict.
     for index, first in enumerate(spans):
+        if first.kind == "leave":
+            continue
         for second in spans[index + 1 :]:
+            if second.kind == "leave":
+                continue
             if first.kind == second.kind:
                 continue
             overlaps_from = max(first.starts_on, second.starts_on)
@@ -42,6 +48,8 @@ def find_collisions(spans: list[Span], tasks: list[Task]) -> list[Collision]:
         if task.due_on is None:
             continue
         for span in spans:
+            if span.kind == "leave":
+                continue
             if span.starts_on <= task.due_on <= span.ends_on:
                 collisions.append(
                     Collision(

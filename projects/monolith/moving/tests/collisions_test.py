@@ -21,6 +21,29 @@ def _span(
     )
 
 
+def test_leave_spans_never_collide():
+    spans = [
+        _span("leave", "leave", date(2026, 9, 1), date(2026, 9, 10)),
+        _span("visitor", "visitor", date(2026, 9, 2), date(2026, 9, 8)),
+        _span("trip", "trip", date(2026, 9, 3), date(2026, 9, 6)),
+    ]
+    task = Task(id="task", title="Pack", due_on=date(2026, 9, 1))
+
+    collisions = find_collisions(spans, [task])
+
+    pairs = {(collision.item1_id, collision.item2_id) for collision in collisions}
+    assert ("leave", "visitor") not in pairs
+    assert ("leave", "trip") not in pairs
+    assert ("task", "leave") not in pairs
+    assert ("visitor", "trip") in pairs
+
+
+def test_task_due_only_inside_leave_span_is_not_a_collision():
+    spans = [_span("leave", "leave", date(2026, 9, 1), date(2026, 9, 10))]
+    task = Task(id="task", title="Pack", due_on=date(2026, 9, 5))
+    assert find_collisions(spans, [task]) == []
+
+
 def test_overlapping_different_kind_spans_collide():
     spans = [
         _span("visitor", "visitor", date(2026, 9, 1), date(2026, 9, 5)),
