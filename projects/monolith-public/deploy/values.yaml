@@ -7,6 +7,12 @@
 # to monolith-pg-ro as public_reader).
 onepassword:
   itemPath: "vaults/k8s-homelab/items/public-reader-db"
+  # R2 S3 read-only credentials for artifact reader + imgproxy. Separate
+  # 1Password item from the monolith backend's read-write credentials (ADR 004
+  # isolation principle).
+  # NOTE: The chart's onepassword.itemPath is used only for the FIRST item
+  # (public_reader_db). The r2-s3-public-read item is set in the web component
+  # env block below (app-specific override for web component onepassword).
 
 databaseSecretName: monolith-public-db
 
@@ -42,6 +48,12 @@ imgproxySigning:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/trips-imgproxy-signing"
 
+# R2 S3 read-only credentials for the public tier (artifact reader,
+# imgproxy source). Separate 1Password item from the monolith backend's
+# read-write credentials (ADR 004 isolation principle).
+web:
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/r2-s3-public-read"
 # Serve /img on the private hostname too: the grimoire reader on
 # private.jomcgi.dev loads signed illustration URLs same-origin (CF Access
 # still fronts the hostname at the edge; same gateway, same imgproxy).

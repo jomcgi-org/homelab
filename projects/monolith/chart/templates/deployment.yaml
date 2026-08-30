@@ -120,11 +120,11 @@ spec:
             {{- end }}
             {{- if .Values.faas }}
             # FaaS zip-lane function registry (ADR 045 / embervm R1). The read
-            # base is the in-cluster SeaweedFS S3 host noded GETs archives from;
+            # base is the R2 S3 host noded GETs archives from;
             # storage.code_uri raises if FAAS_S3_READ_BASE is unset, so it is
             # required whenever the faas domain is composed. The S3 write
             # endpoint/creds (SEAWEEDFS_S3_ENDPOINT, S3_ACCESS_KEY_ID,
-            # S3_SECRET_ACCESS_KEY) are the shared SeaweedFS ones emitted under
+            # S3_SECRET_ACCESS_KEY) are the shared R2 ones emitted under
             # the stars block below.
             - name: FAAS_S3_READ_BASE
               value: {{ .Values.faas.s3ReadBase | quote }}
@@ -427,11 +427,19 @@ spec:
             {{- end }}
             {{- if .Values.stars }}
             - name: SEAWEEDFS_S3_ENDPOINT
-              value: {{ .Values.stars.seaweedfsS3Endpoint | quote }}
+              value: {{ .Values.stars.s3Endpoint | quote }}
+            - name: AWS_REGION
+              value: {{ .Values.stars.s3Region | quote }}
             - name: S3_ACCESS_KEY_ID
-              value: {{ .Values.stars.s3AccessKeyId | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-r2-s3
+                  key: r2_access_key_id
             - name: S3_SECRET_ACCESS_KEY
-              value: {{ .Values.stars.s3SecretAccessKey | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-r2-s3
+                  key: r2_secret_access_key
             - name: STARS_GRID_S3_BUCKET
               value: {{ .Values.stars.gridBucket | quote }}
             - name: STARS_GRID_S3_KEY
@@ -439,13 +447,13 @@ spec:
             - name: STARS_CLIMATOLOGY_S3_KEY
               value: {{ .Values.stars.climatologyKey | quote }}
             {{- if .Values.chat }}
-            # Chat attachment blob store reuses the shared SeaweedFS S3 endpoint/
+            # Chat attachment blob store reuses the shared R2 S3 endpoint/
             # creds above (emitted under the stars block, which is always set).
             - name: CHAT_BLOB_S3_BUCKET
               value: {{ .Values.chat.blobBucket | quote }}
             {{- end }}
             {{- if .Values.artifact }}
-            # goosecracker artifact store (ADR 024) reuses the shared SeaweedFS S3
+            # goosecracker artifact store (ADR 024) reuses the shared R2 S3
             # endpoint/creds above. The full monolith mediates artifact writes
             # (the agent guest holds no S3 credential); ARTIFACT_PUBLIC_BASE is the
             # origin the publish response returns the artifact URL on.
@@ -459,7 +467,7 @@ spec:
             # Grimoire D&D ingest pipeline (private tier only; spec
             # the grimoire pg-first design, section 4.3). The S3
             # endpoint/creds the loader reads (SEAWEEDFS_S3_ENDPOINT,
-            # S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY) are the shared SeaweedFS
+            # S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY) are the shared R2
             # ones emitted under the stars block above (always set). Only the
             # OpenRouter key and grimoire-specific config are added here.
             # OPENROUTER_API_KEY is synced from the "openrouter" 1Password item
