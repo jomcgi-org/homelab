@@ -62,7 +62,7 @@
 #             returns for Tier.PUBLIC before _setup_otel) and no OTEL_* env is
 #             set on these pods, so a collector allow would be dead surface.
 #   frontend  the backend only (API_BASE / CHAT_API_BASE).
-#   imgproxy  SeaweedFS alone (IMGPROXY_S3_ENDPOINT).
+#   imgproxy  Cloudflare R2 S3 via IMGPROXY_S3_ENDPOINT and CIDR allow.
 #
 # Every pod resolves through kube-dns. The apiserver is absent because the
 # public tier holds no RBAC (its SA token is identity-only: presented TO
@@ -108,7 +108,7 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    {{- range $dep := list $t.postgres $t.inference $t.embeddings $t.seaweedfs $t.embervm $t.embervmServing }}
+    {{- range $dep := list $t.postgres $t.inference $t.embeddings $t.embervm $t.embervmServing }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $dep.namespace }}
@@ -207,14 +207,18 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: {{ $t.seaweedfs.namespace }}
-            {{- toYaml $t.seaweedfs.matchLabels | nindent 12 }}
+    {{- if eq $mode "enforce" }}
+    # Cloudflare published ranges for R2 (artifact/trips image source).
+    # These ranges already cover Turnstile; reuse for R2 on 443.
+    - toCIDRSet:
+        {{- range .Values.ciliumPolicy.egress.turnstileCidrs }}
+        - cidr: {{ . | quote }}
+        {{- end }}
       toPorts:
         - ports:
-            - port: {{ $t.seaweedfs.port | quote }}
+            - port: "443"
               protocol: TCP
+    {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

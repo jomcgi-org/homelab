@@ -65,6 +65,7 @@ def _blob_s3_put(sha256: str, data: bytes, content_type: str) -> bool:
         endpoint_url=endpoint,
         aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
         aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
+        region_name=os.environ.get("AWS_REGION", "us-east-1"),
         config=Config(s3={"addressing_style": "path"}),
     )
     key = f"blobs/{sha256}"

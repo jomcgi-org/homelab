@@ -175,12 +175,12 @@ spec:
             - name: S3_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: monolith-r2-s3
+                secretKeyRef:  # Coupled to platform Kyverno clone-monolith-workflows-secrets rule
                   key: access-key-id
             - name: S3_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: monolith-r2-s3
+                secretKeyRef:  # Coupled to platform Kyverno clone-monolith-workflows-secrets rule
                   key: secret-access-key
             - name: EMBEDDING_URL
               value: {{ $.Values.chat.embeddingUrl | quote }}
