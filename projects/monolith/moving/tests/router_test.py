@@ -91,6 +91,8 @@ def test_state_returns_full_dashboard(client: TestClient, session: Session):
             "item2_id": body["spans"][0]["id"],
             "overlaps_from": "2026-09-10",
             "overlaps_to": "2026-09-10",
+            "acked_by": None,
+            "ack_note": None,
         }
     ]
 
@@ -315,6 +317,309 @@ def test_other_viewers_task_rejects_every_write(
     assert response.status_code == 403
     session.expire_all()
     assert session.get(Task, task_id) is not None
+
+
+def test_create_and_patch_span(client: TestClient, session: Session):
+    created = client.post(
+        "/api/moving/spans",
+        headers=_HEADERS,
+        json={
+            "kind": "leave",
+            "label": "Joe leave",
+            "starts_on": "2026-09-20",
+            "ends_on": "2026-09-25",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["owner"] == "joe"
+    span_id = created.json()["id"]
+
+    patched = client.patch(
+        f"/api/moving/spans/{span_id}",
+        headers=_HEADERS,
+        json={"kind": "trip", "ends_on": "2026-09-27"},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["kind"] == "trip"
+    assert patched.json()["ends_on"] == "2026-09-27"
+    session.expire_all()
+    assert session.get(Span, span_id).label == "Joe leave"
+
+
+def test_span_date_order_is_422_on_create_and_patch(client: TestClient):
+    backwards = client.post(
+        "/api/moving/spans",
+        headers=_HEADERS,
+        json={
+            "kind": "trip",
+            "label": "Backwards",
+            "starts_on": "2026-09-05",
+            "ends_on": "2026-09-01",
+        },
+    )
+    assert backwards.status_code == 422
+
+    created = client.post(
+        "/api/moving/spans",
+        headers=_HEADERS,
+        json={
+            "kind": "trip",
+            "label": "Forward",
+            "starts_on": "2026-09-01",
+            "ends_on": "2026-09-05",
+        },
+    )
+    span_id = created.json()["id"]
+
+    crossed = client.patch(
+        f"/api/moving/spans/{span_id}",
+        headers=_HEADERS,
+        json={"starts_on": "2026-09-06"},
+    )
+    assert crossed.status_code == 422
+
+    null_label = client.patch(
+        f"/api/moving/spans/{span_id}", headers=_HEADERS, json={"label": None}
+    )
+    assert null_label.status_code == 422
+
+
+def test_delete_span(client: TestClient, session: Session):
+    created = client.post(
+        "/api/moving/spans",
+        headers=_HEADERS,
+        json={
+            "kind": "visitor",
+            "label": "Friends",
+            "starts_on": "2026-09-01",
+            "ends_on": "2026-09-05",
+        },
+    )
+    span_id = created.json()["id"]
+
+    deleted = client.delete(f"/api/moving/spans/{span_id}", headers=_HEADERS)
+    assert deleted.status_code == 204
+    assert session.get(Span, span_id) is None
+
+    missing = client.delete(f"/api/moving/spans/{span_id}", headers=_HEADERS)
+    assert missing.status_code == 404
+
+
+def test_create_and_patch_milestone(client: TestClient, session: Session):
+    created = client.post(
+        "/api/moving/milestones",
+        headers=_HEADERS,
+        json={"title": "Visa appointment", "occurs_on": "2026-09-15"},
+    )
+    assert created.status_code == 201
+    assert created.json()["owner"] == "joe"
+    assert created.json()["gcal_state"] == "queued"
+    milestone_id = created.json()["id"]
+
+    held = client.patch(
+        f"/api/moving/milestones/{milestone_id}",
+        headers=_HEADERS,
+        json={"gcal_state": "held"},
+    )
+    assert held.status_code == 200
+    assert held.json()["gcal_state"] == "held"
+
+    null_title = client.patch(
+        f"/api/moving/milestones/{milestone_id}", headers=_HEADERS, json={"title": None}
+    )
+    assert null_title.status_code == 422
+
+    deleted = client.delete(f"/api/moving/milestones/{milestone_id}", headers=_HEADERS)
+    assert deleted.status_code == 204
+    assert session.get(Milestone, milestone_id) is None
+
+
+def test_milestone_gcal_sync_columns_are_not_writable(
+    client: TestClient, session: Session
+):
+    created = client.post(
+        "/api/moving/milestones",
+        headers=_HEADERS,
+        json={"title": "Flights booked", "occurs_on": "2026-09-20"},
+    )
+    milestone_id = created.json()["id"]
+
+    smuggled = client.patch(
+        f"/api/moving/milestones/{milestone_id}",
+        headers=_HEADERS,
+        json={"gcal_event_id": "evt-1", "gcal_synced_at": "2026-09-01T00:00:00Z"},
+    )
+    assert smuggled.status_code == 200
+    session.expire_all()
+    milestone = session.get(Milestone, milestone_id)
+    assert milestone.gcal_event_id is None
+    assert milestone.gcal_synced_at is None
+
+
+def test_create_and_patch_role(client: TestClient, session: Session):
+    span = Span(
+        kind="work",
+        label="Onsite loop",
+        starts_on=date(2026, 9, 1),
+        ends_on=date(2026, 9, 3),
+    )
+    session.add(span)
+    session.commit()
+
+    orphan = client.post(
+        "/api/moving/roles",
+        headers=_HEADERS,
+        json={"company": "Acme", "title": "Engineer", "span_id": str(uuid.uuid4())},
+    )
+    assert orphan.status_code == 422
+
+    created = client.post(
+        "/api/moving/roles",
+        headers=_HEADERS,
+        json={
+            "company": "Acme",
+            "title": "Engineer",
+            "stage": "screen",
+            "span_id": span.id,
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["owner"] == "joe"
+    assert created.json()["span_id"] == span.id
+    role_id = created.json()["id"]
+
+    cleared = client.patch(
+        f"/api/moving/roles/{role_id}",
+        headers=_HEADERS,
+        json={"stage": None, "span_id": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["stage"] is None
+    assert cleared.json()["span_id"] is None
+
+    null_company = client.patch(
+        f"/api/moving/roles/{role_id}", headers=_HEADERS, json={"company": None}
+    )
+    assert null_company.status_code == 422
+
+    deleted = client.delete(f"/api/moving/roles/{role_id}", headers=_HEADERS)
+    assert deleted.status_code == 204
+    assert session.get(Role, role_id) is None
+
+
+@pytest.mark.parametrize(
+    ("resource", "factory"),
+    [
+        (
+            "spans",
+            lambda: Span(
+                kind="trip",
+                label="Anna trip",
+                starts_on=date(2026, 9, 1),
+                ends_on=date(2026, 9, 2),
+                owner="anna",
+            ),
+        ),
+        (
+            "milestones",
+            lambda: Milestone(
+                title="Anna milestone", occurs_on=date(2026, 9, 1), owner="anna"
+            ),
+        ),
+        ("roles", lambda: Role(company="Anna Co", title="Engineer", owner="anna")),
+    ],
+)
+def test_other_viewers_rows_reject_patch_and_delete(
+    client: TestClient, session: Session, resource: str, factory
+):
+    row = factory()
+    session.add(row)
+    session.commit()
+
+    patched = client.patch(
+        f"/api/moving/{resource}/{row.id}", headers=_HEADERS, json={}
+    )
+    assert patched.status_code == 403
+
+    deleted = client.delete(f"/api/moving/{resource}/{row.id}", headers=_HEADERS)
+    assert deleted.status_code == 403
+    session.expire_all()
+    assert session.get(type(row), row.id) is not None
+
+
+def test_collision_ack_lifecycle(client: TestClient, session: Session):
+    session.add_all(
+        [
+            Span(
+                id=str(uuid.uuid4()),
+                kind="visitor",
+                label="Visit",
+                starts_on=date(2026, 9, 1),
+                ends_on=date(2026, 9, 10),
+            ),
+            Span(
+                id=str(uuid.uuid4()),
+                kind="move",
+                label="Pack out",
+                starts_on=date(2026, 9, 5),
+                ends_on=date(2026, 9, 12),
+            ),
+        ]
+    )
+    session.commit()
+
+    before = client.get("/api/moving/state", headers=_HEADERS).json()
+    assert len(before["collisions"]) == 1
+    collision = before["collisions"][0]
+    assert collision["acked_by"] is None
+    assert collision["ack_note"] is None
+
+    acked = client.post(
+        f"/api/moving/collisions/{collision['item2_id']}/{collision['item1_id']}/ack",
+        headers=_HEADERS,
+        json={"note": "Packing during the visit is deliberate"},
+    )
+    assert acked.status_code == 200
+    assert acked.json()["acked_by"] == "joe"
+
+    after = client.get("/api/moving/state", headers=_HEADERS).json()
+    assert after["collisions"][0]["acked_by"] == "joe"
+    assert (
+        after["collisions"][0]["ack_note"] == "Packing during the visit is deliberate"
+    )
+
+    reacked = client.post(
+        f"/api/moving/collisions/{collision['item1_id']}/{collision['item2_id']}/ack",
+        headers=_HEADERS,
+        json={},
+    )
+    assert reacked.status_code == 200
+    assert reacked.json()["note"] == "Packing during the visit is deliberate"
+
+    cleared = client.post(
+        f"/api/moving/collisions/{collision['item1_id']}/{collision['item2_id']}/ack",
+        headers=_HEADERS,
+        json={"note": None},
+    )
+    assert cleared.json()["note"] is None
+
+    unacked = client.delete(
+        f"/api/moving/collisions/{collision['item1_id']}/{collision['item2_id']}/ack",
+        headers=_HEADERS,
+    )
+    assert unacked.status_code == 204
+    assert (
+        client.get("/api/moving/state", headers=_HEADERS).json()["collisions"][0][
+            "acked_by"
+        ]
+        is None
+    )
+
+    repeat = client.delete(
+        f"/api/moving/collisions/{collision['item1_id']}/{collision['item2_id']}/ack",
+        headers=_HEADERS,
+    )
+    assert repeat.status_code == 204
 
 
 def _dependency_calls(dependant) -> set[object]:

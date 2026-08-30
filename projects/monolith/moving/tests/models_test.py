@@ -11,16 +11,18 @@ from sqlalchemy import Numeric, Text, UniqueConstraint, text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
-from moving.models import Milestone, Role, Span, Task, Viewer
+from moving.models import CollisionAck, Milestone, Role, Span, Task, Viewer
 
-_MIGRATION = (
-    Path(__file__).resolve().parents[2]
-    / "chart/migrations/20260816000000_moving_schema.sql"
-)
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "chart/migrations"
+_MIGRATION = _MIGRATIONS_DIR / "20260816000000_moving_schema.sql"
+_WRITE_MIGRATION = _MIGRATIONS_DIR / "20260830000000_moving_write_surface.sql"
 _CREATE_TABLE = re.compile(
     r"CREATE TABLE moving\.(?P<name>[a-z_][a-z0-9_]*)\s*"
     r"\((?P<body>.*?)\n\);",
     re.DOTALL,
+)
+_SPANS_KIND_ALTER = re.compile(
+    r"ADD CONSTRAINT spans_kind_check\s+CHECK\s*\((?P<expr>kind IN \([^)]*\))\)"
 )
 _MODELS = {
     "tasks": Task,
@@ -28,6 +30,7 @@ _MODELS = {
     "spans": Span,
     "roles": Role,
     "viewers": Viewer,
+    "collision_acks": CollisionAck,
 }
 
 
@@ -49,11 +52,24 @@ def _definitions(body: str) -> list[str]:
 
 
 def _migration_tables() -> dict[str, list[str]]:
-    sql = _MIGRATION.read_text()
-    return {
+    tables = {
         match.group("name"): _definitions(match.group("body"))
-        for match in _CREATE_TABLE.finditer(sql)
+        for match in _CREATE_TABLE.finditer(_MIGRATION.read_text())
     }
+    surface = _WRITE_MIGRATION.read_text()
+    tables.update(
+        {
+            match.group("name"): _definitions(match.group("body"))
+            for match in _CREATE_TABLE.finditer(surface)
+        }
+    )
+    # The write-surface migration replaces the span kind vocabulary in place.
+    replacement = " ".join(_SPANS_KIND_ALTER.search(surface).group("expr").split())
+    tables["spans"] = [
+        re.sub(r"kind IN \([^)]*\)", replacement, definition)
+        for definition in tables["spans"]
+    ]
+    return tables
 
 
 def _sql_columns(definitions: list[str]) -> dict[str, str]:
@@ -146,7 +162,10 @@ def test_migration_and_models_have_same_tables_and_columns():
     assert set(migration) == set(_MODELS)
     for table_name, model in _MODELS.items():
         assert model.__tablename__ == table_name
-        assert model.__table_args__ == {
+        table_args = model.__table_args__
+        if isinstance(table_args, tuple):
+            table_args = table_args[-1]
+        assert table_args == {
             "schema": "moving",
             "extend_existing": True,
         }
@@ -208,6 +227,7 @@ def test_server_defaults_match_except_sqlite_safe_client_factories():
         ("milestones", "id"): ("gen_random_uuid()", None),
         ("spans", "id"): ("gen_random_uuid()", None),
         ("roles", "id"): ("gen_random_uuid()", None),
+        ("collision_acks", "acked_at"): ("now()", None),
     }
 
     task = Task(title="Pack records")
@@ -241,6 +261,10 @@ def test_server_defaults_match_except_sqlite_safe_client_factories():
         "INSERT INTO roles (id, company, title, stage) "
         "VALUES ('9', 'Acme', 'Builder', 'maybe')",
         "INSERT INTO viewers (email, name) VALUES ('a@example.test', 'nobody')",
+        "INSERT INTO collision_acks (item1_id, item2_id, acked_by, acked_at) "
+        "VALUES ('a', 'b', 'nobody', CURRENT_TIMESTAMP)",
+        "INSERT INTO collision_acks (item1_id, item2_id, acked_by, acked_at) "
+        "VALUES ('b', 'a', 'joe', CURRENT_TIMESTAMP)",
     ],
 )
 def test_sqlite_rejects_invalid_constrained_values(session: Session, statement: str):

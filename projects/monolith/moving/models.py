@@ -1,6 +1,7 @@
 """SQLModel definitions for the moving planner schema.
 
-Mirrors chart/migrations/20260816000000_moving_schema.sql.
+Mirrors chart/migrations/20260816000000_moving_schema.sql and
+chart/migrations/20260830000000_moving_write_surface.sql.
 
 The constrained vocabularies use TEXT + CHECK instead of PostgreSQL enums.
 PostgreSQL enum ALTER TYPE does not roll back cleanly inside a transaction,
@@ -31,7 +32,7 @@ from sqlmodel import Field, SQLModel
 Track = Literal["sell", "admin", "ship", "people"]
 Owner = Literal["joe", "anna", "both"]
 GcalState = Literal["queued", "synced", "held"]
-SpanKind = Literal["visitor", "work", "move", "trip"]
+SpanKind = Literal["visitor", "work", "move", "trip", "leave"]
 RoleStage = Literal["applied", "screen", "onsite", "offer", "closed"]
 ViewerName = Literal["joe", "anna"]
 
@@ -148,7 +149,7 @@ class Span(SQLModel, table=True):
         sa_column=Column(
             Text,
             CheckConstraint(
-                "kind IN ('visitor', 'work', 'move', 'trip')",
+                "kind IN ('visitor', 'work', 'move', 'trip', 'leave')",
                 name="spans_kind_chk",
             ),
             nullable=False,
@@ -208,6 +209,31 @@ class Role(SQLModel, table=True):
     span_id: str | None = Field(
         default=None,
         sa_column=_uuid_column(nullable=True, fk="moving.spans.id"),
+    )
+
+
+class CollisionAck(SQLModel, table=True):
+    __tablename__ = "collision_acks"
+    __table_args__ = (
+        CheckConstraint("item1_id < item2_id", name="collision_acks_pair_order_chk"),
+        {"schema": "moving", "extend_existing": True},
+    )
+
+    item1_id: str = Field(sa_column=_uuid_column(primary_key=True, nullable=False))
+    item2_id: str = Field(sa_column=_uuid_column(primary_key=True, nullable=False))
+    note: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    acked_by: ViewerName = Field(
+        sa_column=Column(
+            Text,
+            CheckConstraint(
+                "acked_by IN ('joe', 'anna')", name="collision_acks_acked_by_chk"
+            ),
+            nullable=False,
+        )
+    )
+    acked_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
 

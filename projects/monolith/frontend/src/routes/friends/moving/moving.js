@@ -20,6 +20,7 @@ const SPAN_KIND_LABELS = {
   work: "Work trips",
   move: "The move",
   trip: "Trips",
+  leave: "Leave",
 };
 
 function dateParts(value) {
