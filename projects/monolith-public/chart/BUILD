@@ -1,4 +1,4 @@
-load("//bazel/helm:defs.bzl", "helm_chart")
+load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 
 # Guard (ADR 005): the public HTTPRoute must never route chat or the internal
 # API. The test that enforces this lives in the Python-native //projects/monolith
@@ -68,4 +68,27 @@ helm_chart(
     lint = False,
     publish = True,
     visibility = ["//overlays:__subpackages__"],
+)
+
+# GKE render coverage for the dormant overlay. Lives in the chart package on
+# purpose: chart_files = ":chart" is a same-package reference, so the helm
+# gazelle extension resetting the chart's visibility on every format pass
+# cannot break analysis (it did when this target sat in deploy/BUILD).
+argocd_app(
+    name = "monolith-public-gke",
+    chart = "projects/monolith-public/chart",
+    chart_files = ":chart",
+    generate_manifests = False,
+    generate_semgrep = False,
+    namespace = "monolith-public",
+    release_name = "monolith-public",
+    tags = [
+        "helm",
+        "template",
+    ],
+    target_suffix = "_gke",
+    values_files = [
+        "//projects/monolith-public/deploy:deploy_values",
+        "//projects/monolith-public/deploy:gke_values",
+    ],
 )
