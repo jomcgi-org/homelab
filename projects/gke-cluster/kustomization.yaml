@@ -1,4 +1,9 @@
-# Hand-maintained during the GKE migration; not generated. Lists what the GKE cluster's root Application syncs.
+# Hand-maintained during the GKE migration; not generated. Lists what the GKE
+# cluster's root Application syncs. The root Application is hand-applied and is
+# not stored in this repository, matching the home canada convention.
+# 1Password Connect and the 1Password operator must be installed out of band
+# before this root syncs. otel-collector, cloudflare-gateway, and tailscale each
+# render OnePasswordItem resources.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

@@ -7,27 +7,27 @@ helm_chart(
 )
 
 argocd_app(
-    name = "argocd",
-    chart = "projects/platform/argocd",
+    name = "cloudflare-gateway",
+    chart = "projects/platform/cloudflare-gateway",
     chart_files = ":chart",
-    namespace = "argocd",
-    release_name = "argocd",
+    namespace = "envoy-gateway-system",
+    release_name = "cloudflare-gateway",
     tags = [
         "helm",
         "template",
     ],
     values_files = [
         "values.yaml",
-        "values-cluster.yaml",
+        "values-prod.yaml",
     ],
 )
 
 argocd_app(
-    name = "argocd-gke",
-    chart = "projects/platform/argocd",
+    name = "cloudflare-gateway-gke",
+    chart = "projects/platform/cloudflare-gateway",
     chart_files = ":chart",
-    namespace = "argocd",
-    release_name = "argocd",
+    namespace = "envoy-gateway-system",
+    release_name = "cloudflare-gateway",
     tags = [
         "helm",
         "template",

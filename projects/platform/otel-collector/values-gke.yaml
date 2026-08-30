@@ -1,1 +1,12 @@
+onepassword:
+  enabled: true
+  itemPath: "vaults/k8s-homelab/items/honeycomb-ingest"
+
 environment: homelab-hub
+
+allowedServices: []
+
+httpcheck:
+  enabled: true
+  targets:
+    - "http://argocd-server.argocd.svc:80/healthz"

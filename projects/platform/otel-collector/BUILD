@@ -35,6 +35,22 @@ argocd_app(
     ],
 )
 
+argocd_app(
+    name = "otel-collector-gke",
+    chart = "projects/platform/otel-collector",
+    chart_files = ":chart",
+    namespace = "otel-collector",
+    release_name = "otel-collector",
+    tags = [
+        "helm",
+        "template",
+    ],
+    values_files = [
+        "values.yaml",
+        "values-gke.yaml",
+    ],
+)
+
 # Hand-written test target (this directory has no gazelle-managed Python).
 # argocd_app only proves the chart renders; nothing there parses the embedded
 # collector config. This pins the invariant the chart exists to enforce: with
