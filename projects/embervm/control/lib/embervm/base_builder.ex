@@ -246,8 +246,8 @@ defmodule Embervm.BaseBuilder do
   @doc """
   Remove a node from the builder's placement set (its noded pod vanished from
   discovery). A workload placed on it is unpinned so a later add re-places it; a
-  build already in flight for that node is left to finish and its result is applied
-  or dropped as usual. `whereis`-guarded like `reconcile/2`.
+  build already in flight for that node is killed so its normal failure path can
+  re-place it promptly. `whereis`-guarded like `reconcile/2`.
   """
   @spec remove_node(GenServer.server(), String.t()) :: :ok
   def remove_node(server \\ __MODULE__, node_id) do
@@ -454,9 +454,8 @@ defmodule Embervm.BaseBuilder do
     # on an instance big enough to boot the guest, and the biggest-budget instance is
     # preferred (the DS wildcard first, else the largest classed brick), instead of
     # blindly pinning the first-registered instance. Defaults to the shared registry
-    # table; tests that assert pure placement leave it empty, and placement fails OPEN
-    # (treats a budget-unknown instance as eligible) so a builder with no capacity view
-    # still places, keeping its behaviour identical to the pre-Step-5 List.first pick.
+    # table. The registry keeps a fact exactly while an instance is healthy, so a
+    # missing fact makes that instance ineligible until its first NodeStatus arrives.
     capacity_table = Keyword.get(opts, :capacity_table, Embervm.NodeCapacity.table())
 
     node_ids = Enum.map(nodes, & &1.id)
@@ -1509,11 +1508,7 @@ defmodule Embervm.BaseBuilder do
   # The runtime entry (state.nodes[node_id]) is dropped ONLY when it has no build in
   # flight. If a worker is still running for this node, we KEEP the entry (with its
   # queue cleared) so finish_build's put_in([:nodes, node_id, :building], nil) does
-  # not crash on a missing key when that worker reports; the entry is harmless once
-  # node_id is gone from node_ids (nothing places onto it) and finish_build's
-  # trailing maybe_start_build drains the empty queue to a no-op. A pure orphan
-  # entry with no queue and no worker is fine to leave until the next add refreshes
-  # it, but we drop it when idle to keep the map tidy.
+  # not crash on a missing key when the worker's monitor reports its exit.
   defp remove_node_from_state(state, node_id) do
     state =
       state
@@ -1526,9 +1521,21 @@ defmodule Embervm.BaseBuilder do
           update_in(state.nodes, &Map.delete(&1, node_id))
 
         %{} = n ->
-          # Build in flight: keep the entry (clear its queue) so the in-flight
-          # worker's finish_build lands cleanly; it self-cleans on completion.
-          put_in(state.nodes[node_id], %{n | queue: []})
+          # The worker owns a blocking BuildBase RPC to a pod that is gone. Waiting
+          # for its timeout retains the binding for minutes and delays re-placement;
+          # registry eviction (#5438) is the fast, reliable departure signal. Keep
+          # the entry so the killed worker's finish_build callback lands cleanly.
+          state = put_in(state.nodes[node_id], %{n | queue: []})
+
+          for {pid, meta} <- state.workers, meta.node_id == node_id do
+            Logger.info(
+              "embervm base builder: node #{node_id} departed; killing in-flight build for workload #{meta.name}"
+            )
+
+            Process.exit(pid, :kill)
+          end
+
+          state
 
         nil ->
           state
@@ -1564,8 +1571,8 @@ defmodule Embervm.BaseBuilder do
   # the fleet at :no_capacity.
   #
   # Instead: among the instances that can actually BUILD this workload (mem_budget_mib
-  # big enough to boot a `need_mib` guest, OR a wildcard/zero-budget instance that is
-  # always eligible), pick the one with the LARGEST budget (the DS wildcard ranks
+  # big enough to boot a `need_mib` guest, or a reported wildcard/zero-budget
+  # instance), pick the one with the LARGEST budget (the DS wildcard ranks
   # first as the full-node envelope, else the biggest classed brick) so a small brick
   # never captures a base it cannot build. Bases are NODE-SHARED (baseDir =
   # SnapshotRoot/bases, served by any co-located instance), so we only need ONE build
@@ -1577,10 +1584,9 @@ defmodule Embervm.BaseBuilder do
   # ineligible, or a bigger eligible instance appeared. Determinism: ties (equal rank)
   # break on instance_id, so the choice is stable run to run.
   #
-  # Fail-OPEN when capacity is unknown: an instance with no capacity fact (a builder
-  # seeded before WatchNode populated facts, or a test with no table) is treated as an
-  # eligible wildcard, so placement still returns a node and is behaviour-identical to
-  # the pre-Step-5 pick on a fleet with no per-instance budgets reported.
+  # A capacity fact exists exactly while an instance is healthy, so a fact-less
+  # instance is not placeable. A brand-new control plane can briefly have no facts;
+  # builds wait for the first NodeStatus rather than binding to an unknown instance.
   defp placement(state, prev, need_mib) do
     case eligible_build_instances(state, need_mib) do
       [] ->
@@ -1605,21 +1611,21 @@ defmodule Embervm.BaseBuilder do
   defp keep_or_replace(_prev, _instances, best), do: best.instance_id
 
   # The registered instances that can BUILD `need_mib`, each as a compact map
-  # (instance_id + the fields the rank/eligibility read). An instance with no capacity
-  # fact is a fail-open wildcard (budget/class unknown => always eligible). Node-shared
-  # bases mean we keep at most one instance per node_id (the highest-ranked), so the
-  # best pick is naturally one build per node.
+  # (instance_id + the fields the rank/eligibility read). A missing capacity fact
+  # excludes the instance because facts exist exactly while instances are healthy.
+  # Node-shared bases mean we keep at most one instance per node_id (the highest-ranked),
+  # so the best pick is naturally one build per node.
   defp eligible_build_instances(state, need_mib) do
     state.node_ids
     |> Enum.map(fn iid -> instance_build_facts(state, iid) end)
+    |> Enum.reject(&is_nil/1)
     |> Enum.filter(fn i -> build_eligible?(i, need_mib) end)
     |> dedupe_per_node()
   end
 
   # Compact build-facts for a registered instance_id: its reported size_class /
-  # mem_budget_mib / node_id, or wildcard defaults (size_class "", budget 0) when no
-  # capacity fact is found (fail-open). node_id falls back to the instance_id itself so
-  # dedupe_per_node still groups sanely for a fact-less id.
+  # mem_budget_mib / node_id. No fact means the instance is not healthy and therefore
+  # not eligible for build placement.
   defp instance_build_facts(state, instance_id) do
     case find_capacity_fact(state.capacity_table, instance_id) do
       {:ok, f} ->
@@ -1632,13 +1638,7 @@ defmodule Embervm.BaseBuilder do
         }
 
       :error ->
-        %{
-          instance_id: instance_id,
-          node_id: instance_id,
-          cpu_vendor: "",
-          size_class: "",
-          mem_budget_mib: 0
-        }
+        nil
     end
   end
 
@@ -1799,7 +1799,7 @@ defmodule Embervm.BaseBuilder do
 
   # Look up the capacity fact whose derived instance_id matches (the registry stamps
   # :instance_id = "node/pod_uid" into each fact). Returns :error when the table is
-  # absent/empty or no fact carries that instance_id, which makes placement fail-open.
+  # absent/empty or no fact carries that instance_id, which excludes it from placement.
   defp find_capacity_fact(table, instance_id) do
     table
     |> Embervm.NodeCapacity.all()
@@ -2248,7 +2248,21 @@ defmodule Embervm.BaseBuilder do
           end
       end
 
-    maybe_start_build(state, node_id)
+    state = maybe_start_build(state, node_id)
+
+    case Map.get(state.nodes, node_id) do
+      %{building: nil, queue: []} ->
+        if node_id in state.node_ids do
+          state
+        else
+          # This entry survived removal only so this callback could land. The build
+          # is finished and the node departed, so no later path will clean it.
+          update_in(state.nodes, &Map.delete(&1, node_id))
+        end
+
+      _ ->
+        state
+    end
   end
 
   # A successful build: record the new base, advance status.snapshotRef (the
@@ -3593,7 +3607,7 @@ defmodule Embervm.BaseBuilder do
   # state: gating it on a build would leave it stale after an unrelated node
   # rebuilt its own base or after retention evicted one. An EMPTY map is never
   # written, so a CP that has not yet heard from any node cannot clobber a good
-  # value with {} (the same fail-open posture as find_capacity_fact/2).
+  # value with {} while its capacity view is still empty.
   defp put_snapshot_refs(status_map, refs, previous_refs) do
     case refs do
       empty when map_size(empty) == 0 -> status_map
