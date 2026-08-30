@@ -104,6 +104,32 @@ class SwarmConductorCall(SQLModel, table=True):
     latency_ms: int | None = None
 
 
+class SwarmNodeRun(SQLModel, table=True):
+    __tablename__ = "swarm_node_run"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "node_key",
+            "attempt",
+            name="swarm_node_run_task_node_attempt_key",
+        ),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: str = Field(foreign_key="swarm.swarm_task.id", index=True)
+    node_key: str
+    attempt: int
+    session_id: int | None = None
+    status: str
+    cost_usd: float | None = None
+    base_sha: str | None = None
+    head_sha: str | None = None
+    outcome_json: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    finished_at: datetime | None = None
+
+
 class SwarmDecision(SQLModel, table=True):
     __tablename__ = "swarm_decision"
     __table_args__ = (

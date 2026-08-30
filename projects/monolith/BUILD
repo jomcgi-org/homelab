@@ -2051,6 +2051,16 @@ py_test(
 )
 
 py_test(
+    name = "swarm_graph_test",
+    srcs = ["swarm/graph_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_store_test",
     srcs = ["swarm/store_test.py"],
     imports = ["."],
