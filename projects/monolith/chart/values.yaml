@@ -1025,7 +1025,7 @@ postgres:
   externalClusters: []
   backup:
     enabled: false
-    destinationPath: "gs://cnpg-backups/monolith-pg/"
+    destinationPath: "gs://h0melab-cnpg-backups/monolith-pg/"
     credentialsSecret: monolith-pg-backup-gcs
     onepassword:
       itemPath: "vaults/k8s-homelab/items/cnpg-gcs-backups-monolith"

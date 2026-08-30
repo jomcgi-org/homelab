@@ -8,7 +8,7 @@ cnpg:
   externalClusters:
     - name: context-forge-pg
       barmanObjectStore:
-        destinationPath: "gs://cnpg-backups/context-forge-pg/"
+        destinationPath: "gs://h0melab-cnpg-backups/context-forge-pg/"
         googleCredentials:
           applicationCredentials:
             name: context-forge-pg-backup-gcs

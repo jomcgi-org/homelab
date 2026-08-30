@@ -6,7 +6,7 @@ postgres:
   externalClusters:
     - name: monolith-pg
       barmanObjectStore:
-        destinationPath: "gs://cnpg-backups/monolith-pg/"
+        destinationPath: "gs://h0melab-cnpg-backups/monolith-pg/"
         googleCredentials:
           applicationCredentials:
             name: monolith-pg-backup-gcs

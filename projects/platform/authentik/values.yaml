@@ -178,7 +178,7 @@ cnpg:
   backup:
     enabled: true
     retentionPolicy: "14d"
-    destinationPath: "gs://cnpg-backups/authentik-pg/"
+    destinationPath: "gs://h0melab-cnpg-backups/authentik-pg/"
     credentialsSecret: authentik-pg-backup-gcs
     scheduledBackup:
       cron: "0 0 2 * * *"
