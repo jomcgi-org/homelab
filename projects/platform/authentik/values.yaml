@@ -138,20 +138,6 @@ authentik:
       spec:
         itemPath: vaults/k8s-homelab/items/authentik
 
-    # The service-account JSON must use the exact 1Password field name
-    # service-account-key.json. The operator mirrors that field into the
-    # generated Opaque Secret without supporting key renames.
-    - apiVersion: onepassword.com/v1
-      kind: OnePasswordItem
-      metadata:
-        name: authentik-pg-backup-gcs
-        namespace: authentik
-        labels:
-          app.kubernetes.io/name: authentik-postgresql
-          app.kubernetes.io/part-of: authentik
-      spec:
-        itemPath: vaults/k8s-homelab/items/cnpg-gcs-backups-authentik
-
 # CloudNativePG is rendered by this wrapper rather than additionalObjects so a
 # GKE values overlay can replace initdb with recovery without replacing the
 # upstream chart's entire additionalObjects list.
@@ -179,6 +165,9 @@ cnpg:
     enabled: true
     retentionPolicy: "14d"
     destinationPath: "gs://h0melab-cnpg-backups/authentik-pg/"
+    serverName: ""
     credentialsSecret: authentik-pg-backup-gcs
+    onepassword:
+      itemPath: "vaults/k8s-homelab/items/cnpg-gcs-backups-authentik"
     scheduledBackup:
       cron: "0 0 2 * * *"

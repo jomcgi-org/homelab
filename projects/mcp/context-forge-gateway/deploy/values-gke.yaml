@@ -1,10 +1,18 @@
 # GKE context-forge-pg recovery from the off-cluster GCS Barman object store.
+# Consumed by PR #5464's gke-apps Applications (not referenced by this branch).
 cnpg:
   storage:
     storageClass: standard-rwo
   bootstrap:
     recovery:
+      # CNPG 1.30 behavior: The recovery-minted app Secret password overwrites
+      # the restored owner role after recovery completes. No manual ALTER ROLE
+      # step is required.
       source: context-forge-pg
+      database: mcpgateway
+      owner: mcpgateway
+  backup:
+    serverName: context-forge-pg-gke
   externalClusters:
     - name: context-forge-pg
       barmanObjectStore:

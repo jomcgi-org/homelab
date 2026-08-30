@@ -1018,7 +1018,7 @@ postgres:
     # monolith-pg-app.
     devAppSecret: monolith-dev-pg-app
   # Off-cluster GCS backups use the in-spec barmanObjectStore mechanism supported
-  # by CNPG 1.28.1. The chart is disabled by default so a bare render writes to no
+  # by CNPG 1.30.0. The chart is disabled by default so a bare render writes to no
   # external store; deploy values enable it after supplying the 1Password item.
   bootstrap:
     recovery: null
@@ -1026,6 +1026,7 @@ postgres:
   backup:
     enabled: false
     destinationPath: "gs://h0melab-cnpg-backups/monolith-pg/"
+    serverName: ""
     credentialsSecret: monolith-pg-backup-gcs
     onepassword:
       itemPath: "vaults/k8s-homelab/items/cnpg-gcs-backups-monolith"

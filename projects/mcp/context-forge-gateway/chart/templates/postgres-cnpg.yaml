@@ -7,9 +7,11 @@ port, dbname, user, password) are exactly the defaults mcp-stack's
 postgres.external.*Key values expect, so the two compose with no key mapping.
 The password is never committed.
 
-The database now has off-cluster GCS backups because it holds durable gateway
-state, including issued API tokens, teams, and per-user configuration. Daily
-base backups anchor continuous WAL archiving for recovery on GKE.
+The database holds gateway registrations, team membership, the tool catalogue
+cache, and sso_providers. It does not hold issued API tokens or per-user
+configuration. Registrations and sso_providers have previously been restored
+by hand after rebuilds, so backups preserve that work and make this small
+cluster the rehearsal candidate for the GKE recovery path.
 */}}
 {{- if .Values.cnpg.enabled }}
 apiVersion: postgresql.cnpg.io/v1
@@ -47,6 +49,9 @@ spec:
     retentionPolicy: {{ .Values.cnpg.backup.retentionPolicy | quote }}
     barmanObjectStore:
       destinationPath: {{ .Values.cnpg.backup.destinationPath | quote }}
+      {{- with .Values.cnpg.backup.serverName }}
+      serverName: {{ . | quote }}
+      {{- end }}
       googleCredentials:
         applicationCredentials:
           name: {{ .Values.cnpg.backup.credentialsSecret }}
@@ -67,6 +72,7 @@ metadata:
 spec:
   # CNPG cron format has a leading seconds field (6 fields).
   schedule: {{ .Values.cnpg.backup.scheduledBackup.cron | quote }}
+  immediate: true
   backupOwnerReference: self
   cluster:
     name: {{ .Values.cnpg.name }}

@@ -25,6 +25,25 @@ argocd_app(
     values_files = ["values.yaml"],
 )
 
+argocd_app(
+    name = "authentik-gke",
+    chart = "projects/platform/authentik",
+    chart_files = ":chart",
+    generate_manifests = False,
+    generate_semgrep = False,
+    namespace = "authentik",
+    release_name = "authentik",
+    tags = [
+        "helm",
+        "template",
+    ],
+    target_suffix = "_gke",
+    values_files = [
+        "values.yaml",
+        "values-gke.yaml",
+    ],
+)
+
 # Hand-written test target because this directory is gazelle-excluded for Python.
 # The `data` glob materializes the blueprints/*.yaml files as runfiles so the
 # test can read them during execution. See blueprint_tags_test.py for why this

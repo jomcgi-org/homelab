@@ -10,6 +10,7 @@ metadata:
 spec:
   # CNPG cron format has a leading seconds field (6 fields).
   schedule: {{ .Values.cnpg.backup.scheduledBackup.cron | quote }}
+  immediate: true
   backupOwnerReference: self
   cluster:
     name: {{ .Values.cnpg.name }}

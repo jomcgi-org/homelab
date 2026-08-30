@@ -13,6 +13,7 @@ metadata:
 spec:
   # CNPG cron format has a leading seconds field (6 fields).
   schedule: {{ .Values.postgres.backup.scheduledBackup.cron | quote }}
+  immediate: true
   backupOwnerReference: self
   cluster:
     name: {{ include "monolith.fullname" . }}-pg
