@@ -345,14 +345,22 @@ web:
     # public off-cluster EgressNetwork deny does not block it) and the SSR
     # frontend proxies /artifact/<id>/raw + /version to it. Read-only: the write
     # router is not mounted on the public binary. Creds are the cluster's dummy
-    # S3 identity (auth disabled); literals, not secrets. ARTIFACTS_S3_BUCKET must
-    # match the full monolith's artifact.bucket (where the write lands).
-    - name: SEAWEEDFS_S3_ENDPOINT
-      value: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+    # R2 read-only S3 access via OnePasswordItem-backed Secret.
+    # ARTIFACTS_S3_BUCKET must match the full monolith's artifact.bucket (where
+    # the write lands).
+      value: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+    - name: AWS_REGION
+      value: "auto"
     - name: S3_ACCESS_KEY_ID
-      value: "duckdb"
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-r2-s3
+          key: r2_access_key_id
     - name: S3_SECRET_ACCESS_KEY
-      value: "duckdb"
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-r2-s3
+          key: r2_secret_access_key
     # The stars read API serves the compact snapshot written by the Argo
     # stars-refresh workflow, rather than hydrating stars.site_hours here.
     - name: STARS_GRID_S3_BUCKET
@@ -545,13 +553,19 @@ imgproxy:
     - name: IMGPROXY_USE_S3
       value: "true"
     - name: IMGPROXY_S3_ENDPOINT
-      value: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+      value: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
     - name: IMGPROXY_S3_REGION
-      value: "us-east-1"
+      value: "auto"
     - name: AWS_ACCESS_KEY_ID
-      value: "anonymous"
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-r2-s3
+          key: r2_access_key_id
     - name: AWS_SECRET_ACCESS_KEY
-      value: "anonymous"
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-r2-s3
+          key: r2_secret_access_key
     # Lock imgproxy to the trips bucket: it will only fetch sources under
     # s3://monolith-trips/, never other buckets or arbitrary URLs. Defense in
     # depth alongside URL signing (IMGPROXY_KEY/SALT below) and the preset

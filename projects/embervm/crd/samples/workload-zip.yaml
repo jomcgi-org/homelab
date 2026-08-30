@@ -15,7 +15,7 @@ spec:
     zip:
       runtime: python312
       # In-cluster SeaweedFS S3 read URL the control plane mints; noded GETs it.
-      codeUri: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/embervm-zips/echo-zip.zip
+      codeUri: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com/embervm-zips/echo-zip.zip
       # Hex SHA-256 of the archive bytes (noded verifies; also feeds the
       # base-build change-detect signature so a new zip rebuilds the base).
       # PLACEHOLDER value below (the sha256 of empty input): this is an illustrative

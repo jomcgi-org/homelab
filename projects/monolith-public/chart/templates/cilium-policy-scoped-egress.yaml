@@ -119,13 +119,19 @@ spec:
               protocol: TCP
     {{- end }}
     {{- if eq $mode "enforce" }}
-    # THE ONE SANCTIONED OFF-CLUSTER EGRESS (ADR 005, Public Chat V3): Cloudflare
-    # Turnstile siteverify (challenges.cloudflare.com) on 443. Pinned to
-    # Cloudflare's published IP ranges rather than a toFQDNs hostname match:
-    # Turnstile's ~42s DNS TTL over a rotating anycast pool made a toFQDNs allow
-    # race and intermittently DROP live connections, failing closed -> 5xx. In
-    # audit mode this rule lives in the broad web policy instead (it carries
-    # enforcement until this file does), so it renders here only when enforcing.
+    # THE ONE SANCTIONED OFF-CLUSTER EGRESS (ADR 005, Public Chat V3), now two
+    # destinations over the same ranges: Cloudflare Turnstile siteverify
+    # (challenges.cloudflare.com) and Cloudflare R2 S3
+    # (<account>.r2.cloudflarestorage.com, artifact/stars/imgproxy reads since
+    # the SeaweedFS retirement), both on 443. Pinned to Cloudflare's published
+    # IP ranges rather than a toFQDNs hostname match: Turnstile's ~42s DNS TTL
+    # over a rotating anycast pool made a toFQDNs allow race and intermittently
+    # DROP live connections, failing closed -> 5xx, and R2 rides the same
+    # anycast pool. SECURITY NOTE: R2 reads are a NEW off-cluster dependency of
+    # the public tier (SeaweedFS was in-cluster); the CIDR allow already
+    # admitted these ranges, so the blast radius is unchanged. In audit mode
+    # this rule lives in the broad web policy instead (it carries enforcement
+    # until this file does), so it renders here only when enforcing.
     - toCIDRSet:
         {{- range .Values.ciliumPolicy.egress.turnstileCidrs }}
         - cidr: {{ . | quote }}

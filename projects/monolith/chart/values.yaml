@@ -1187,13 +1187,13 @@ scratchPostgres:
     itemPath: ""
 
 # FaaS zip-lane function registry (ADR 045 / embervm R1). s3ReadBase is the
-# in-cluster SeaweedFS S3 read host noded GETs function archives from; it must
-# match the CRD samples' codeUri host so storage.code_uri() and noded agree on
-# the URL shape. Required whenever the faas domain is composed (storage.code_uri
-# raises if FAAS_S3_READ_BASE is unset). s3Bucket is optional (code defaults to
-# "faas").
+# R2 S3 read host noded GETs function archives from; it must match the CRD
+# samples' codeUri host so storage.code_uri() and noded agree on the URL shape.
+# Required whenever the faas domain is composed (storage.code_uri raises if
+# FAAS_S3_READ_BASE is unset). s3Bucket is optional (code defaults to "faas").
+# Credentials are sourced from monolith-r2-creds Secret.
 faas:
-  s3ReadBase: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+  s3ReadBase: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
   s3Bucket: "faas"
 
 semgrep:
@@ -1404,19 +1404,22 @@ marine:
   boundingBox: "[[[46.876152, -129.552155], [51.413769, -121.213531]]]"
 
 # Stars / dark-sky planner: the stars.load_grid job ingests grid.json (the
-# light-pollution site grid, uploaded out-of-band) from the SeaweedFS S3
-# gateway. SeaweedFS auth is disabled cluster-wide, so the dummy creds below
-# only satisfy boto3's "some value required" check.
+# light-pollution site grid, uploaded out-of-band) from Cloudflare R2.
+# Credentials sourced from the monolith-r2-s3 Secret (created by OnePasswordItem
+# from the r2-s3-credentials 1Password item). The 1Password item must have fields:
+# - r2_access_key_id (the Account ID: xxx credential)
+# - r2_secret_access_key (the secret key)
 stars:
-  seaweedfsS3Endpoint: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+  s3Endpoint: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+  s3Region: "auto"
   gridBucket: "stars"
   gridKey: "grid.json"
   climatologyKey: "climatology.json"
   sitesKey: "sites.json"
   mapKey: "map.json"
   historyMapKey: "history-map.json"
-  s3AccessKeyId: "duckdb"
-  s3SecretAccessKey: "duckdb"
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/r2-s3-credentials"
 
 # goosecracker artifact store (ADR 024). The full monolith writes agent-built
 # HTML to s3://<bucket>/<id>/index.html (reusing the shared SeaweedFS S3

@@ -193,7 +193,7 @@ chat:
 # so storage.code_uri() and noded resolve archives at the same URL. S3 write
 # endpoint/creds are the shared SeaweedFS ones (stars block).
 faas:
-  s3ReadBase: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+  s3ReadBase: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
   s3Bucket: "faas"
 
 semgrep:

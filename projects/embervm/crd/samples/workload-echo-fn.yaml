@@ -21,7 +21,7 @@ spec:
       runtime: python312
       # In-cluster SeaweedFS S3 read URL noded GETs. The object is uploaded to
       # s3://faas/echo-fn/<sha256>.zip (see testdata/echo/README.md).
-      codeUri: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/faas/echo-fn/53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b.zip
+      codeUri: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com/faas/echo-fn/53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b.zip
       # Hex SHA-256 of echo.zip (noded verifies; also feeds the base-build
       # change-detect signature so a new zip rebuilds the base).
       sha256: 53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b
