@@ -273,15 +273,20 @@ func TestS3LatencyRegressed(t *testing.T) {
 	}{
 		// The live false red: 138ms against an unusually fast 59ms baseline
 		// trips the ratio while both numbers are healthy.
-		{"fast session against faster baseline", 138 * time.Millisecond, 59 * time.Millisecond, false},
-		{"under the ratio", 103 * time.Millisecond, 175 * time.Millisecond, false},
-		{"over the ratio but under the floor", 400 * time.Millisecond, 175 * time.Millisecond, false},
-		{"real degradation", 3 * time.Second, 175 * time.Millisecond, true},
-		{"slow but proportional to a slow baseline", 2 * time.Second, 1500 * time.Millisecond, false},
+		{name: "fast session against faster baseline", latency: 138 * time.Millisecond, baseline: 59 * time.Millisecond, want: false},
+		{name: "under the ratio", latency: 103 * time.Millisecond, baseline: 175 * time.Millisecond, want: false},
+		{name: "over the ratio but under the floor", latency: 400 * time.Millisecond, baseline: 175 * time.Millisecond, want: false},
+		// Exactly at the floor passes: both comparisons are strict, so a
+		// change to >= would flip the one-poll-tick bucket's verdict here.
+		{name: "exactly at the floor", latency: time.Second, baseline: 100 * time.Millisecond, want: false},
+		{name: "real degradation", latency: 3 * time.Second, baseline: 175 * time.Millisecond, want: true},
+		{name: "slow but proportional to a slow baseline", latency: 2 * time.Second, baseline: 1500 * time.Millisecond, want: false},
 	}
 	for _, tc := range cases {
-		if got := s3LatencyRegressed(tc.latency, tc.baseline); got != tc.want {
-			t.Errorf("%s: s3LatencyRegressed(%s, %s) = %v, want %v", tc.name, tc.latency, tc.baseline, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s3LatencyRegressed(tc.latency, tc.baseline); got != tc.want {
+				t.Errorf("s3LatencyRegressed(%s, %s) = %v, want %v", tc.latency, tc.baseline, got, tc.want)
+			}
+		})
 	}
 }

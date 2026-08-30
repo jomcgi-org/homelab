@@ -587,7 +587,13 @@ func runS3(ctx context.Context, cfg config, client *controlPlaneClient, baseline
 // unusually FAST baseline is the failure trigger, not the second session. The
 // degradation S3 exists to catch (teardown leaving the restore path wedged)
 // measures in seconds.
-const s3AbsoluteLatencyFloor = time.Second
+//
+// The value must stay at pollInterval, not above it: latency is bimodal, sub
+// 200ms when create returns live synchronously and pollInterval-plus when it
+// needed a waitForSessionState tick, so a floor of exactly one tick keeps the
+// entire slow bucket failing the ratio. Raising it "to be safer" would
+// silently forgive that whole bucket.
+const s3AbsoluteLatencyFloor = pollInterval
 
 func s3LatencyRegressed(latency, baseline time.Duration) bool {
 	return latency > baseline*2 && latency > s3AbsoluteLatencyFloor
