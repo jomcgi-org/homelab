@@ -86,11 +86,22 @@ defmodule Embervm.BaseBuilderTest do
   end
 
   defp start_builder(opts) do
+    nodes = Keyword.get(opts, :nodes, [@node])
+
+    opts =
+      if Keyword.has_key?(opts, :capacity_table) do
+        opts
+      else
+        table = new_cap_table()
+        Enum.each(nodes, &put_instance_fact(table, &1.id))
+        Keyword.put(opts, :capacity_table, table)
+      end
+
     {:ok, pid} =
       BaseBuilder.start_link(
         [
           name: nil,
-          nodes: Keyword.get(opts, :nodes, [@node]),
+          nodes: nodes,
           connect_fun: Keyword.get(opts, :connect_fun, fn _addr -> {:ok, :fake_channel} end),
           disconnect_fun: fn :fake_channel -> :ok end,
           # Base-durability PR-1 defaults for tests that do not exercise export:
@@ -1582,10 +1593,17 @@ defmodule Embervm.BaseBuilderTest do
     # discovered is held {:pending, :no_node}. When NodeRegistry's discovery later
     # calls add_node, the held workload must re-drive and build.
     agent = start_recorder()
+    table = new_cap_table()
+    put_instance_fact(table, "node-4")
     build_fun = fn :fake_channel, _req -> {:ok, resp("snap-late", "sha256:late")} end
 
     builder =
-      start_builder(nodes: [], status_writer: recording_status_writer(agent), build_fun: build_fun)
+      start_builder(
+        nodes: [],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun
+      )
 
     # Admitted with NO node: held pending, no build, Ready=False no_node.
     :ok = BaseBuilder.reconcile(builder, desc())
@@ -1660,6 +1678,145 @@ defmodule Embervm.BaseBuilderTest do
       max_live_vms: 8,
       updated_at: 0
     })
+  end
+
+  defp put_instance_fact(table, instance_id) do
+    [node_id | pod_uid] = String.split(instance_id, "/", parts: 2)
+    pod_uid = List.first(pod_uid) || "test"
+
+    NodeCapacity.put(table, {node_id, pod_uid}, %{
+      node_id: node_id,
+      configured_id: node_id,
+      instance_id: instance_id,
+      cpu_vendor: "amd",
+      size_class: "8gi",
+      mem_budget_mib: 8_192,
+      mem_headroom_mib: 8_000,
+      live_vms: 0,
+      max_live_vms: 8,
+      updated_at: 0
+    })
+  end
+
+  test "fact-less instances are excluded from build placement" do
+    test_pid = self()
+    table = new_cap_table()
+    put_brick(table, "node-4", "big", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+
+    build_fun = fn :fake_channel, req ->
+      send(test_pid, {:build_started, req.trace.workload})
+      {:ok, resp("snap-facted")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [
+          %{id: "node-5/missing", address: "missing"},
+          %{id: "node-4/big", address: "facted"}
+        ],
+        capacity_table: table,
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "facted"}))
+    assert_receive {:build_started, "facted"}, 1_000
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["facted"].built end)
+    assert BaseBuilder.status(builder).workloads["facted"].node_id == "node-4/big"
+
+    empty_table = new_cap_table()
+
+    empty_builder =
+      start_builder(
+        nodes: [%{id: "node-5/missing", address: "missing"}],
+        capacity_table: empty_table,
+        build_fun: fn :fake_channel, _req ->
+          send(test_pid, :unexpected_build)
+          {:ok, resp("unexpected")}
+        end
+      )
+
+    :ok = BaseBuilder.reconcile(empty_builder, desc(%{name: "pending"}))
+    refute_receive :unexpected_build, 100
+
+    pending = :sys.get_state(empty_builder)
+    assert pending.workloads["pending"].node_id == nil
+    assert pending.workloads["pending"].snapshot_ref == nil
+    assert pending.workers == %{}
+  end
+
+  defp start_departure_builder(test_pid) do
+    table = new_cap_table()
+    put_brick(table, "node-4", "departing", size_class: "16gi", mem_budget: 16_384, mem_headroom: 16_000)
+    put_brick(table, "node-5", "survivor", size_class: "8gi", mem_budget: 8_192, mem_headroom: 8_000)
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      attempt = Agent.get_and_update(attempts, fn n -> {n + 1, n + 1} end)
+      send(test_pid, {:departure_build_started, attempt, self()})
+
+      if attempt == 1 do
+        receive do
+          :unreachable_release -> {:ok, resp("departed")}
+        end
+      else
+        {:ok, resp("survivor")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [
+          %{id: "node-4/departing", address: "departing"},
+          %{id: "node-5/survivor", address: "survivor"}
+        ],
+        capacity_table: table,
+        build_fun: build_fun,
+        base_backoff_ms: 30_000,
+        max_backoff_ms: 60_000
+      )
+
+    {builder, attempts}
+  end
+
+  test "remove_node kills an in-flight build and reconcile places its retry on a survivor" do
+    {builder, attempts} = start_departure_builder(self())
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive {:departure_build_started, 1, worker}, 1_000
+
+    :ok = BaseBuilder.remove_node(builder, "node-4/departing")
+    assert_eventually(fn -> not Process.alive?(worker) end)
+
+    assert_eventually(fn ->
+      :sys.get_state(builder).workloads["w"].retry_timer != nil
+    end)
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive {:departure_build_started, 2, _worker}, 1_000
+
+    assert_eventually(fn ->
+      workload = :sys.get_state(builder).workloads["w"]
+      workload.node_id == "node-5/survivor" and workload.snapshot_ref == "survivor"
+    end)
+
+    assert Agent.get(attempts, & &1) == 2
+  end
+
+  test "finish_build removes the retained entry for a departed node" do
+    {builder, _attempts} = start_departure_builder(self())
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 4_000}))
+    assert_receive {:departure_build_started, 1, worker}, 1_000
+
+    :ok = BaseBuilder.remove_node(builder, "node-4/departing")
+    assert_eventually(fn -> not Process.alive?(worker) end)
+
+    assert_eventually(fn ->
+      state = :sys.get_state(builder)
+
+      state.workloads["w"].retry_timer != nil and
+        Map.get(state.nodes, "node-4/departing") == nil
+    end)
   end
 
   test "placement picks the LARGEST-budget eligible instance, never List.first" do
@@ -2736,15 +2893,14 @@ defmodule Embervm.BaseBuilderTest do
     assert :sys.get_state(builder).workloads["w"].vendor_built == workload.vendor_built
   end
 
-  test "a build without a capacity fact keeps scalar bookkeeping and records no vendor" do
+  test "a build without a capacity fact stays pending" do
     agent = start_recorder()
     table = new_cap_table()
+    test_pid = self()
 
-    build_fun = fn :fake_channel, req ->
-      case req.image_ref do
-        "imgA" -> {:ok, resp("snap1", "sha256:one")}
-        "imgB" -> {:ok, resp("snap2", "sha256:two")}
-      end
+    build_fun = fn :fake_channel, _req ->
+      send(test_pid, :unexpected_factless_build)
+      {:ok, resp("unexpected")}
     end
 
     builder =
@@ -2756,17 +2912,15 @@ defmodule Embervm.BaseBuilderTest do
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap1" end)
-
-    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgB"}))
-    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap2" end)
+    refute_receive :unexpected_factless_build, 100
 
     workload = :sys.get_state(builder).workloads["w"]
+    assert workload.node_id == nil
     assert workload.vendor_built == %{}
-    assert workload.snapshot_digest == "sha256:two"
-    assert workload.superseded_refs == ["snap1"]
-    assert Map.has_key?(workload.base_refs, "snap1")
-    assert %{"status" => "True"} = condition(latest(agent, "w"), "BaseVendorCoverage")
+    assert workload.snapshot_ref == nil
+    assert workload.retry_timer == nil
+    assert %{"status" => "Unknown", "reason" => "NoNodeAvailable"} =
+             condition(latest(agent, "w"), "BaseBuilt")
   end
 
   test "a build with a blank CPU vendor records no vendor" do
