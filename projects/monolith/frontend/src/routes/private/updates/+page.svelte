@@ -353,7 +353,7 @@
     --stroke: color-mix(in srgb, var(--ink) 28%, transparent);
     min-height: 100vh;
     box-sizing: border-box;
-    padding: clamp(2rem, 4vh, 3rem) clamp(1.5em, 5vw, 4.5em) 6em;
+    padding: clamp(3.25rem, 5vh, 3.75rem) clamp(1.5em, 5vw, 4.5em) 6em;
     color: var(--ink);
     /* One bright sheet for the whole page: the drawing is on white, not
        white panels floating on cream. */
@@ -782,11 +782,11 @@
   }
 
   .supporting .item h3 {
-    font-size: 0.85rem;
+    font-size: 0.78rem;
   }
 
   .supporting .item p {
-    font-size: 0.82rem;
+    font-size: 0.76rem;
   }
 
   /* ── States ── */
@@ -883,16 +883,13 @@
   /* The folio is the first thing to go when the masthead track tightens;
      a wrapped or clipped identity string is worse than a shorter one. */
   @media (max-width: 980px) {
-    .masthead-meta {
-      display: none;
-    }
   }
 
   /* ── Mobile ── */
 
   @media (max-width: 760px) {
     .updates-page {
-      padding: 1.8rem 1.35em 4em;
+      padding: 3rem 1.35em 4em;
     }
 
     .journal {
