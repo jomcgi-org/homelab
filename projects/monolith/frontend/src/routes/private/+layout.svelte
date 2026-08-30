@@ -1,16 +1,17 @@
 <script>
   import "$lib/private/dashboard-theme.css";
   import { page } from "$app/stores";
-  import { periodForHour } from "$lib/private/period.js";
 
   let { children } = $props();
-  let hour = $state(new Date().getHours());
-  let period = $derived(periodForHour(hour));
-  // The layout survives client-side navigation, so without a tick its
-  // palette would freeze at first mount and drift from the page under it.
+  // Clean light/dark from the color scheme, matching the document pages
+  // under it; the clock-drift palette stays a dashboard-only feature.
+  let dark = $state(false);
   $effect(() => {
-    const id = setInterval(() => (hour = new Date().getHours()), 60_000);
-    return () => clearInterval(id);
+    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => (dark = scheme.matches);
+    apply();
+    scheme.addEventListener("change", apply);
+    return () => scheme.removeEventListener("change", apply);
   });
 
   // Minimal private-tier chrome: the shared Nav is suppressed for the whole
@@ -41,7 +42,9 @@
 </script>
 
 {#if showBack}
-  <a class="back-to-dashboard shell {period}" href="/">&larr; dashboard</a>
+  <a class="back-to-dashboard shell {dark ? 'night' : 'day'}" href="/"
+    >&larr; dashboard</a
+  >
 {/if}
 
 {@render children()}
