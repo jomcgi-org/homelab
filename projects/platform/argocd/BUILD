@@ -24,17 +24,17 @@ argocd_app(
 
 argocd_app(
     name = "argocd-gke",
-    generate_manifests = False,
-    generate_semgrep = False,
-    target_suffix = "_gke",
     chart = "projects/platform/argocd",
     chart_files = ":chart",
+    generate_manifests = False,
+    generate_semgrep = False,
     namespace = "argocd",
     release_name = "argocd",
     tags = [
         "helm",
         "template",
     ],
+    target_suffix = "_gke",
     values_files = [
         "values.yaml",
         "values-gke.yaml",

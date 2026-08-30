@@ -24,17 +24,17 @@ argocd_app(
 
 argocd_app(
     name = "cloudflare-gateway-gke",
-    generate_manifests = False,
-    generate_semgrep = False,
-    target_suffix = "_gke",
     chart = "projects/platform/cloudflare-gateway",
     chart_files = ":chart",
+    generate_manifests = False,
+    generate_semgrep = False,
     namespace = "envoy-gateway-system",
     release_name = "cloudflare-gateway",
     tags = [
         "helm",
         "template",
     ],
+    target_suffix = "_gke",
     values_files = [
         "values.yaml",
         "values-gke.yaml",
