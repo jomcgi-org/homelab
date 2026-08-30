@@ -11,15 +11,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 helm_chart(
     name = "chart",
     lint = False,
-    visibility = [
-        "//overlays:__subpackages__",
-        # gazelle generates an argocd_app (with template and semgrep tests) in
-        # the deploy package because this is a git-chart single-source app; the
-        # generated targets depend on :chart and :values.yaml, so both must be
-        # visible there or CI's format stage commits a BUILD that cannot
-        # analyse.
-        "//projects/mcp/context-forge-gateway/deploy:__pkg__",
-    ],
+    visibility = ["//overlays:__subpackages__"],
 )
 
 argocd_app(
