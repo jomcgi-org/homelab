@@ -124,6 +124,20 @@ defmodule Embervm.ZipLaneEchoTest do
     # WorkloadCatalog.create(cat_table), so the test must NOT pre-create it (a
     # named ETS table cannot be created twice: "table name already exists").
     NodeCapacity.create(cap_table)
+    
+    # Seed a capacity fact for the builder node so placement succeeds
+    NodeCapacity.put(cap_table, {"node-4", "ds"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4",
+      cpu_vendor: "amd",
+      size_class: "8gi",
+      mem_budget_mib: 8_192,
+      mem_headroom_mib: 8_000,
+      live_vms: 0,
+      max_live_vms: 8,
+      updated_at: 0
+    })
 
     # -- BaseBuilder over a fake daemon: a ZipSource build -> a snapshot. ------
     build_fun = fn :fake_channel, req ->
