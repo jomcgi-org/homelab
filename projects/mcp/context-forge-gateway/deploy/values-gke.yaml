@@ -1,0 +1,17 @@
+# GKE context-forge-pg recovery from the off-cluster GCS Barman object store.
+cnpg:
+  storage:
+    storageClass: standard-rwo
+  bootstrap:
+    recovery:
+      source: context-forge-pg
+  externalClusters:
+    - name: context-forge-pg
+      barmanObjectStore:
+        destinationPath: "gs://cnpg-backups/context-forge-pg/"
+        googleCredentials:
+          applicationCredentials:
+            name: context-forge-pg-backup-gcs
+            key: service-account-key.json
+        wal:
+          compression: gzip

@@ -1,5 +1,5 @@
 {{- if .Values.postgres.backup.enabled }}
-# Daily base backup of monolith-pg to the SeaweedFS Barman object store. WAL
+# Daily base backup of monolith-pg to the GCS Barman object store. WAL
 # archiving (configured on the Cluster's spec.backup) runs continuously; this
 # ScheduledBackup takes the periodic full base backup that WALs replay from and
 # that the retentionPolicy prunes against. method defaults to barmanObjectStore.

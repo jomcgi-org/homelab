@@ -1,0 +1,15 @@
+# GKE authentik-pg recovery from the off-cluster GCS Barman object store.
+cnpg:
+  bootstrap:
+    recovery:
+      source: authentik-pg
+  externalClusters:
+    - name: authentik-pg
+      barmanObjectStore:
+        destinationPath: "gs://cnpg-backups/authentik-pg/"
+        googleCredentials:
+          applicationCredentials:
+            name: authentik-pg-backup-gcs
+            key: service-account-key.json
+        wal:
+          compression: gzip

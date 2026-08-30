@@ -7,12 +7,9 @@ port, dbname, user, password) are exactly the defaults mcp-stack's
 postgres.external.*Key values expect, so the two compose with no key mapping.
 The password is never committed.
 
-No backup policy on purpose. This database holds one gateway registration and
-a tool catalogue that Context Forge's health-check loop rebuilds from the
-upstream MCP server, so restoring from scratch is both faster and better tested
-than restoring from a backup. If durable state ever lands here (issued API
-tokens, teams, per-user config) that reasoning expires and this needs a
-barmanObjectStore.
+The database now has off-cluster GCS backups because it holds durable gateway
+state, including issued API tokens, teams, and per-user configuration. Daily
+base backups anchor continuous WAL archiving for recovery on GKE.
 */}}
 {{- if .Values.cnpg.enabled }}
 apiVersion: postgresql.cnpg.io/v1
@@ -29,11 +26,49 @@ spec:
     storageClass: {{ . }}
     {{- end }}
   bootstrap:
+    {{- with .Values.cnpg.bootstrap.recovery }}
+    recovery:
+      {{- toYaml . | nindent 6 }}
+    {{- else }}
     initdb:
       database: {{ .Values.cnpg.database }}
       owner: {{ .Values.cnpg.owner }}
+    {{- end }}
+  {{- with .Values.cnpg.externalClusters }}
+  externalClusters:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   resources:
     {{- toYaml .Values.cnpg.resources | nindent 4 }}
   monitoring:
     enablePodMonitor: {{ .Values.cnpg.monitoring.enablePodMonitor }}
+  {{- if .Values.cnpg.backup.enabled }}
+  backup:
+    retentionPolicy: {{ .Values.cnpg.backup.retentionPolicy | quote }}
+    barmanObjectStore:
+      destinationPath: {{ .Values.cnpg.backup.destinationPath | quote }}
+      googleCredentials:
+        applicationCredentials:
+          name: {{ .Values.cnpg.backup.credentialsSecret }}
+          key: service-account-key.json
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+  {{- end }}
+{{- if .Values.cnpg.backup.enabled }}
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ .Values.cnpg.name }}-daily
+  labels:
+    {{- include "context-forge.labels" . | nindent 4 }}
+spec:
+  # CNPG cron format has a leading seconds field (6 fields).
+  schedule: {{ .Values.cnpg.backup.scheduledBackup.cron | quote }}
+  backupOwnerReference: self
+  cluster:
+    name: {{ .Values.cnpg.name }}
+{{- end }}
 {{- end }}

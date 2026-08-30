@@ -109,31 +109,6 @@ authentik:
     enabled: false
 
   additionalObjects:
-    - apiVersion: postgresql.cnpg.io/v1
-      kind: Cluster
-      metadata:
-        name: authentik-pg
-        labels:
-          app.kubernetes.io/name: authentik-postgresql
-          app.kubernetes.io/part-of: authentik
-      spec:
-        instances: 1
-        storage:
-          size: 20Gi
-        resources:
-          requests:
-            cpu: 100m
-            memory: 512Mi
-          limits:
-            cpu: 500m
-            memory: 1Gi
-        bootstrap:
-          initdb:
-            database: authentik
-            owner: authentik
-        monitoring:
-          enablePodMonitor: true
-
     - apiVersion: onepassword.com/v1
       kind: OnePasswordItem
       type: kubernetes.io/dockerconfigjson
@@ -162,3 +137,48 @@ authentik:
           app.kubernetes.io/part-of: authentik
       spec:
         itemPath: vaults/k8s-homelab/items/authentik
+
+    # The service-account JSON must use the exact 1Password field name
+    # service-account-key.json. The operator mirrors that field into the
+    # generated Opaque Secret without supporting key renames.
+    - apiVersion: onepassword.com/v1
+      kind: OnePasswordItem
+      metadata:
+        name: authentik-pg-backup-gcs
+        namespace: authentik
+        labels:
+          app.kubernetes.io/name: authentik-postgresql
+          app.kubernetes.io/part-of: authentik
+      spec:
+        itemPath: vaults/k8s-homelab/items/cnpg-gcs-backups-authentik
+
+# CloudNativePG is rendered by this wrapper rather than additionalObjects so a
+# GKE values overlay can replace initdb with recovery without replacing the
+# upstream chart's entire additionalObjects list.
+cnpg:
+  enabled: true
+  name: authentik-pg
+  instances: 1
+  storage:
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  database: authentik
+  owner: authentik
+  monitoring:
+    enablePodMonitor: true
+  bootstrap:
+    recovery: null
+  externalClusters: []
+  backup:
+    enabled: true
+    retentionPolicy: "14d"
+    destinationPath: "gs://cnpg-backups/authentik-pg/"
+    credentialsSecret: authentik-pg-backup-gcs
+    scheduledBackup:
+      cron: "0 0 2 * * *"

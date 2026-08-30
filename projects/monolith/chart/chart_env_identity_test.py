@@ -376,21 +376,21 @@ def test_dev_takes_no_backups(renders):
 
     The CRD refutes it in one line:
 
-        serverName: The server name on S3, the cluster name is used if this
-                    parameter is omitted
+        serverName: The server name in object storage, the cluster name is
+                    used if this parameter is omitted
 
     barman namespaces each cluster under the destination by serverName, so
     production writes to <destinationPath>/monolith-pg/ and dev would have
     written to <destinationPath>/monolith-dev-pg/. Separate catalogues,
-    separate retention, no cross-pruning. Visible in the live bucket, whose
-    real layout is /buckets/monolith-pg-backups/monolith-pg/monolith-pg/wals/,
-    the doubled segment being exactly that defaulted serverName.
+    separate retention, no cross-pruning. The GCS layout is
+    gs://cnpg-backups/monolith-pg/monolith-pg/wals/, with the doubled segment
+    coming from the defaulted serverName.
 
     What remains is smaller and still worth a guard. Dev is reseeded from
     production nightly, so backing dev up stores a SECOND copy of production's
-    rows: roughly 1.5 GB of base backup a day, held 14 days, in a bucket with
-    no S3 identities configured and no NetworkPolicy in front of it (#4708).
-    Waste, and the same rows exposed twice.
+    rows: roughly 1.5 GB of base backup a day, held 14 days, using the same
+    production GCS service account. That is waste, and the same rows are
+    exposed twice.
 
     So the invariant is just that dev takes no backups, plus a control proving
     that is because of dev's override and not because the chart's barman
@@ -404,7 +404,7 @@ def test_dev_takes_no_backups(renders):
     assert not dev_dest, (
         f"dev renders a backup object store ({sorted(dev_dest)}). Dev is a "
         "nightly copy of production, so this stores production's rows a second "
-        "time in a bucket with no S3 auth in front of it (#4708). Keep "
+        "time using the production GCS service account. Keep "
         "postgres.backup.enabled false in dev's overlay."
     )
 
