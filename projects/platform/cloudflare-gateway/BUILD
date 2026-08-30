@@ -24,6 +24,9 @@ argocd_app(
 
 argocd_app(
     name = "cloudflare-gateway-gke",
+    generate_manifests = False,
+    generate_semgrep = False,
+    target_suffix = "_gke",
     chart = "projects/platform/cloudflare-gateway",
     chart_files = ":chart",
     namespace = "envoy-gateway-system",
