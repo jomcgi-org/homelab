@@ -136,6 +136,9 @@ defmodule Embervm.ZipLaneEchoTest do
       mem_headroom_mib: 8_000,
       live_vms: 0,
       max_live_vms: 8,
+      # The Dispatcher path reads fact.workloads with strict access, so the
+      # seeded fact must carry the key even before any workload reports.
+      workloads: %{},
       updated_at: 0
     })
 
