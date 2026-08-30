@@ -240,7 +240,54 @@ defmodule Embervm.NodeRegistryTest do
     advance.(10_000)
     :ok = NodeRegistry.tick(reg)
     assert NodeRegistry.status(reg)["node-4"].health == :down
-    assert_receive {:reassigned, "node-4"}
+    refute_receive {:reassigned, "node-4"}, 50
+  end
+
+  test "a down edge reassigns only an instance that has produced a status" do
+    {clock, advance} = new_clock()
+    {:ok, reassigns} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(reassigns) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          watch_fun: silent_watch(),
+          reassign_fun: fn id -> Agent.update(reassigns, &[id | &1]) end,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-never",
+        "pod_uid" => "uid-1",
+        "address" => "node-never.test:9090"
+      })
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-ready",
+        "pod_uid" => "uid-1",
+        "address" => "node-ready.test:9090"
+      })
+
+    :ok =
+      NodeRegistry.inject_status(
+        reg,
+        "node-ready/uid-1",
+        node_status(node_id: "node-ready")
+      )
+
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+
+    assert NodeRegistry.status(reg)["node-never/uid-1"].health == :down
+    assert NodeRegistry.status(reg)["node-ready/uid-1"].health == :down
+    assert Agent.get(reassigns, & &1) == ["node-ready/uid-1"]
   end
 
   # -- real streamer wiring --------------------------------------------------
@@ -718,6 +765,7 @@ defmodule Embervm.NodeRegistryTest do
           base_builder_updater_fun: fn msg -> Agent.update(base_builder, &[msg | &1]) end,
           unknown_after_ms: 5_000,
           down_after_ms: 15_000,
+          # Prevent reconnects from restamping last_status_at mid-test (#4078).
           base_backoff_ms: 120_000,
           max_backoff_ms: 120_000
         )
@@ -742,6 +790,41 @@ defmodule Embervm.NodeRegistryTest do
     assert {:remove, old_id} in Agent.get(base_builder, & &1)
     assert {:add, new_id, new_addr} in Agent.get(base_builder, & &1)
     refute Enum.any?(NodeRegistry.capacity(table), &(&1.instance_id == old_id))
+  end
+
+  test "a new instance does not supersede a down statically seeded sibling" do
+    {clock, advance} = new_clock()
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          nodes: [%{id: "node-4", address: "static.test:9090"}],
+          watch_fun: silent_watch(),
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
+        )
+      )
+
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+    assert NodeRegistry.status(reg)["node-4"].health == :down
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-4",
+        "pod_uid" => "uid-new",
+        "address" => "pod.test:9090"
+      })
+
+    assert Map.has_key?(NodeRegistry.status(reg), "node-4")
+
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+    assert NodeRegistry.status(reg)["node-4"].health == :down
+    assert NodeRegistry.status(reg)["node-4/uid-new"].health == :down
   end
 
   test "a new instance does not supersede an unknown sibling" do
@@ -1051,6 +1134,7 @@ defmodule Embervm.NodeRegistryTest do
           unknown_after_ms: 5_000,
           down_after_ms: 15_000,
           expire_after_ms: 90_000,
+          down_expire_after_ms: 20_000,
           base_backoff_ms: 120_000,
           max_backoff_ms: 120_000
         )
@@ -1064,7 +1148,8 @@ defmodule Embervm.NodeRegistryTest do
       })
 
     await_initial_status(silent_reg, "node-silent/uid-1")
-    advance_silent.(89_999)
+    # One millisecond below the configured silence threshold still survives.
+    advance_silent.(19_999)
 
     :ok =
       NodeRegistry.register(silent_reg, %{
@@ -1076,7 +1161,8 @@ defmodule Embervm.NodeRegistryTest do
     :ok = NodeRegistry.tick(silent_reg)
     assert NodeRegistry.status(silent_reg)["node-silent/uid-1"].health == :down
 
-    advance_silent.(2)
+    # Exactly at the threshold, the registered down instance expires.
+    advance_silent.(1)
 
     :ok =
       NodeRegistry.register(silent_reg, %{
@@ -1087,6 +1173,49 @@ defmodule Embervm.NodeRegistryTest do
 
     :ok = NodeRegistry.tick(silent_reg)
     refute Map.has_key?(NodeRegistry.status(silent_reg), "node-silent/uid-1")
+  end
+
+  test "a never-status instance stays non-reassignable across expiry and re-registration" do
+    {clock, advance} = new_clock()
+    {:ok, reassigns} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(reassigns) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          watch_fun: silent_watch(),
+          reassign_fun: fn _id -> Agent.update(reassigns, &(&1 + 1)) end,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 120_000,
+          down_expire_after_ms: 20_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
+        )
+      )
+
+    registration = %{
+      "node" => "node-recycle",
+      "pod_uid" => "uid-1",
+      "address" => "10.0.0.4:9090"
+    }
+
+    :ok = NodeRegistry.register(reg, registration)
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+    assert NodeRegistry.status(reg)["node-recycle/uid-1"].health == :down
+    assert Agent.get(reassigns, & &1) == 0
+
+    advance.(5_000)
+    :ok = NodeRegistry.tick(reg)
+    refute Map.has_key?(NodeRegistry.status(reg), "node-recycle/uid-1")
+
+    :ok = NodeRegistry.register(reg, registration)
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+    assert NodeRegistry.status(reg)["node-recycle/uid-1"].health == :down
+    assert Agent.get(reassigns, & &1) == 0
   end
 
   test "a statically seeded down instance is exempt from expiry" do

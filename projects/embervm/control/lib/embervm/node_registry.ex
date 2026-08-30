@@ -37,10 +37,10 @@ defmodule Embervm.NodeRegistry do
 
     * every `NodeStatus` stamps `last_status_at` and marks the node `:healthy`;
     * a ~1s tick recomputes each node's health from `now - last_status_at`;
-    * crossing into `:down` fires the reassignment path ONCE and tears the
-      (possibly wedged) streamer down so a fresh connection is attempted, which
-      is the only way to recover from a silent wedge (a wedged stream never ends
-      on its own).
+    * crossing into `:down` fires the reassignment path ONCE if the instance has
+      reported a status, and tears the (possibly wedged) streamer down so a fresh
+      connection is attempted, which is the only way to recover from a silent
+      wedge (a wedged stream never ends on its own).
 
   ## fail-closed
 
@@ -67,8 +67,11 @@ defmodule Embervm.NodeRegistry do
 
   An instance ages OUT of the registry when its registration has lapsed and its
   WatchNode stream is dead, or when a registered instance remains down through a
-  full stream-silence expiry window. A CP-side network blip alone never drops a
-  healthy node.
+  full stream-silence expiry window. A CP-side network blip shorter than 90
+  seconds alone never drops a healthy node. A CP-side gRPC-only outage of 90
+  seconds or longer expires registered instances, with automatic recovery within
+  about 30 seconds via re-registration; capacity is already retracted on the down
+  edges. This is a deliberate trade-off.
 
   ## the static seam
 
@@ -115,11 +118,11 @@ defmodule Embervm.NodeRegistry do
   @age_check_ms 1_000
   # How long an instance may go without re-registering (dial-home) before its
   # registration is considered LAPSED. noded re-registers every ~30s, so 90s is
-  # three missed intervals: an instance is expired from the registry only when its
-  # registration is lapsed AND its WatchNode stream is dead (both signals), so a
-  # CP-side blip alone never drops a healthy node. A statically-seeded instance
-  # (EMBERVM_NODE_ADDRESS override / tests) never registers and so never lapses:
-  # its last_registered_at stays nil and expiry is skipped for it.
+  # three missed intervals. A registered instance is evicted when it is down and
+  # its registration has lapsed, when it stays down through a full status-silence
+  # window, or when a replacement supersedes it. A statically-seeded instance
+  # (EMBERVM_NODE_ADDRESS override / tests) never registers and is exempt from all
+  # three paths: its last_registered_at stays nil and expiry is skipped for it.
   @expire_after_ms 90_000
 
   # An instance that is :down and has produced no status for this long is
@@ -289,6 +292,7 @@ defmodule Embervm.NodeRegistry do
     # How long an instance may go without re-registering (dial-home) before its
     # registration is LAPSED; expiry additionally requires a dead stream.
     expire_after = Keyword.get(opts, :expire_after_ms, @expire_after_ms)
+    down_expire_after = Keyword.get(opts, :down_expire_after_ms, @down_expire_after_ms)
     # How a (re)registered instance's NEW address is propagated to the Prime/Assign
     # hot-path channel holder (Embervm.NodeChannel), whose node_addr map would
     # otherwise keep dialing a rolled pod's dead IP. Keyed by INSTANCE id. Default
@@ -339,6 +343,7 @@ defmodule Embervm.NodeRegistry do
       max_backoff_ms: max_backoff,
       min_watch_ms: min_watch,
       expire_after_ms: expire_after,
+      down_expire_after_ms: down_expire_after,
       channel_updater_fun: channel_updater_fun,
       channel_remover_fun: channel_remover_fun,
       base_builder_updater_fun: base_builder_updater_fun,
@@ -1081,7 +1086,7 @@ defmodule Embervm.NodeRegistry do
 
       down_silent? =
         not is_nil(rt.last_registered_at) and
-          now - (rt.last_status_at || rt.started_at) >= @down_expire_after_ms
+          now - (rt.last_status_at || rt.started_at) >= acc.down_expire_after_ms
 
       if rt.health == :down and (lapsed? or down_silent?) do
         expire_instance(acc, instance_id)
@@ -1114,8 +1119,8 @@ defmodule Embervm.NodeRegistry do
   # Health changed for a node. Update the runtime, keep the capacity table
   # fail-closed (only :healthy-and-not-draining keeps a row; here we never enter
   # from a fresh status so a non-healthy target always retracts), and on the edge
-  # INTO :down fire reassignment once and tear the streamer down to force a fresh
-  # connection (silent-wedge recovery).
+  # INTO :down fire reassignment once for an instance that has reported status and
+  # tear the streamer down to force a fresh connection (silent-wedge recovery).
   defp apply_health_transition(state, node_id, _old_health, :healthy) do
     # A tick can only compute :healthy when last_status_at is recent, which means
     # apply_status already published facts; nothing to do but record it.
@@ -1151,9 +1156,10 @@ defmodule Embervm.NodeRegistry do
     end
   end
 
-  # The node crossed into :down. Reassign its in-flight tasks (at-least-once, via
-  # the existing Retry policy) exactly once, then drop the current streamer if any
-  # so a wedged connection is torn down and reconnected.
+  # The node crossed into :down. If it has reported status, reassign its in-flight
+  # tasks (at-least-once, via the existing Retry policy) exactly once, then drop
+  # the current streamer if any so a wedged connection is torn down and
+  # reconnected.
   #
   # Ordering matters: we FORGET the streamer's pid before killing it, so a
   # NodeStatus the streamer enqueued concurrently with this down-transition (a
@@ -1169,10 +1175,15 @@ defmodule Embervm.NodeRegistry do
   defp handle_node_down(state, node_id) do
     Logger.warning("embervm node registry: node #{node_id} is DOWN (stream silent > #{state.down_after_ms}ms)")
 
-    try do
-      state.reassign_fun.(node_id)
-    rescue
-      e -> Logger.error("embervm node registry: reassign for #{node_id} raised: #{inspect(e)}")
+    # An instance that never delivered a NodeStatus could not have received a
+    # dispatch. Skipping reassignment here prevents its repeated register, expire,
+    # and reconnect cycle from triggering a fleet-wide task-store sweep.
+    if not is_nil(state.node_runtime[node_id].last_status_at) do
+      try do
+        state.reassign_fun.(node_id)
+      rescue
+        e -> Logger.error("embervm node registry: reassign for #{node_id} raised: #{inspect(e)}")
+      end
     end
 
     case state.node_runtime[node_id].streamer do
@@ -1445,7 +1456,8 @@ defmodule Embervm.NodeRegistry do
     # the dying pod keeps registering (#4402). Live surge-roll siblings stay.
     state =
       Enum.reduce(state.node_runtime, state, fn {instance_id, sibling}, acc ->
-        if sibling.configured_id == norm.node and sibling.health == :down do
+        if sibling.configured_id == norm.node and sibling.health == :down and
+             not is_nil(sibling.last_registered_at) do
           Logger.info(
             "embervm node registry: down instance #{instance_id} superseded by #{rt.instance_id}"
           )
