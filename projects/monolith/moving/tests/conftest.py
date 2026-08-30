@@ -5,11 +5,20 @@ from collections.abc import Iterator
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
-from moving.models import CollisionAck, Milestone, Role, Span, Task, Viewer
+from moving.models import (
+    CollisionAck,
+    GcalTombstone,
+    Milestone,
+    Role,
+    Span,
+    Task,
+    Viewer,
+)
 
 _MOVING_TABLES = [
     Task.__table__,
     Milestone.__table__,
+    GcalTombstone.__table__,
     Span.__table__,
     Role.__table__,
     Viewer.__table__,

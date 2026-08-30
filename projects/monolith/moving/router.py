@@ -24,6 +24,7 @@ from core.db import get_session
 from moving.collisions import find_collisions
 from moving.models import (
     CollisionAck,
+    GcalTombstone,
     GcalState,
     Milestone,
     Owner,
@@ -409,6 +410,8 @@ def delete_milestone(
 ) -> None:
     """Delete a milestone."""
     milestone = _editable_or_403(session, Milestone, milestone_id, viewer, "milestone")
+    if milestone.gcal_event_id is not None:
+        session.add(GcalTombstone(event_id=milestone.gcal_event_id))
     session.delete(milestone)
     session.commit()
 

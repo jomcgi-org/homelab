@@ -99,6 +99,9 @@ spec:
                 secretKeyRef:
                   name: {{ $ref.secretName }}
                   key: {{ $ref.key }}
+                  {{- if $ref.optional }}
+                  optional: true
+                  {{- end }}
             {{- end }}
             {{- if .s3 }}
             # Full SeaweedFS + stars S3 env, mirroring the monolith deployment

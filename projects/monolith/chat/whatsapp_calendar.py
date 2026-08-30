@@ -23,10 +23,9 @@ from datetime import datetime, timedelta
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from shared import google_calendar
 
-_TOKEN_URL = "https://oauth2.googleapis.com/token"
-_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/{cal_id}/events"
+logger = logging.getLogger(__name__)
 
 # Default event length when the request names only a start time.
 _DEFAULT_DURATION = timedelta(hours=1)
@@ -39,33 +38,11 @@ def calendar_configured() -> bool:
     partial credential is treated as unconfigured so the caller takes the safe
     draft fallback rather than failing mid-create.
     """
-    return all(
-        os.environ.get(k)
-        for k in (
-            "GOOGLE_CALENDAR_CLIENT_ID",
-            "GOOGLE_CALENDAR_CLIENT_SECRET",
-            "GOOGLE_CALENDAR_REFRESH_TOKEN",
-        )
-    )
+    return google_calendar.configured()
 
 
 def _calendar_id() -> str:
     return os.environ.get("GOOGLE_CALENDAR_ID", "primary")
-
-
-async def _access_token(client: httpx.AsyncClient) -> str:
-    """Exchange the stored refresh token for a short-lived access token."""
-    resp = await client.post(
-        _TOKEN_URL,
-        data={
-            "client_id": os.environ["GOOGLE_CALENDAR_CLIENT_ID"],
-            "client_secret": os.environ["GOOGLE_CALENDAR_CLIENT_SECRET"],
-            "refresh_token": os.environ["GOOGLE_CALENDAR_REFRESH_TOKEN"],
-            "grant_type": "refresh_token",
-        },
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
 
 
 async def create_event(
@@ -91,15 +68,11 @@ async def create_event(
     if attendees:
         body["description"] = f"With: {attendees}"
 
-    url = _EVENTS_URL.format(cal_id=_calendar_id())
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-        token = await _access_token(client)
-        resp = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {token}"},
-            json=body,
+        created = await google_calendar._insert_event_json(
+            client,
+            _calendar_id(),
+            body,
         )
-        resp.raise_for_status()
-        created = resp.json()
     logger.info("whatsapp calendar: created event %s", created.get("id", "?"))
     return created

@@ -11,11 +11,20 @@ from sqlalchemy import Numeric, Text, UniqueConstraint, text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
-from moving.models import CollisionAck, Milestone, Role, Span, Task, Viewer
+from moving.models import (
+    CollisionAck,
+    GcalTombstone,
+    Milestone,
+    Role,
+    Span,
+    Task,
+    Viewer,
+)
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "chart/migrations"
 _MIGRATION = _MIGRATIONS_DIR / "20260816000000_moving_schema.sql"
 _WRITE_MIGRATION = _MIGRATIONS_DIR / "20260830000000_moving_write_surface.sql"
+_GCAL_MIGRATION = _MIGRATIONS_DIR / "20260830030000_moving_gcal_tombstones.sql"
 _CREATE_TABLE = re.compile(
     r"CREATE TABLE moving\.(?P<name>[a-z_][a-z0-9_]*)\s*"
     r"\((?P<body>.*?)\n\);",
@@ -31,6 +40,7 @@ _MODELS = {
     "roles": Role,
     "viewers": Viewer,
     "collision_acks": CollisionAck,
+    "gcal_tombstones": GcalTombstone,
 }
 
 
@@ -64,6 +74,13 @@ def _migration_tables() -> dict[str, list[str]]:
         {
             match.group("name"): _definitions(match.group("body"))
             for match in _CREATE_TABLE.finditer(surface)
+        }
+    )
+    tombstones = _GCAL_MIGRATION.read_text()
+    tables.update(
+        {
+            match.group("name"): _definitions(match.group("body"))
+            for match in _CREATE_TABLE.finditer(tombstones)
         }
     )
     # The write-surface migration replaces the span kind vocabulary in place.
@@ -231,6 +248,7 @@ def test_server_defaults_match_except_sqlite_safe_client_factories():
         ("spans", "id"): ("gen_random_uuid()", None),
         ("roles", "id"): ("gen_random_uuid()", None),
         ("collision_acks", "acked_at"): ("now()", None),
+        ("gcal_tombstones", "created_at"): ("now()", None),
     }
 
     task = Task(title="Pack records")
@@ -240,6 +258,8 @@ def test_server_defaults_match_except_sqlite_safe_client_factories():
     assert milestone.id
     assert milestone.owner == "both"
     assert milestone.gcal_state == "queued"
+    tombstone = GcalTombstone(event_id="event-1")
+    assert tombstone.created_at.tzinfo is timezone.utc
 
 
 @pytest.mark.parametrize(
