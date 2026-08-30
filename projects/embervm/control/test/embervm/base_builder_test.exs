@@ -3974,7 +3974,6 @@ defmodule Embervm.BaseBuilderTest do
         build_fun: build_fun
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd")
 
     status = latest(agent, "w")
@@ -4003,7 +4002,6 @@ defmodule Embervm.BaseBuilderTest do
         build_fun: build_fun
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd")
 
     assert latest(agent, "w")["snapshotRefs"] == %{
@@ -4028,7 +4026,6 @@ defmodule Embervm.BaseBuilderTest do
         build_fun: build_fun
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd")
 
     assert latest(agent, "w")["snapshotRefs"] == %{"amd" => ["w__amd"]}
@@ -4048,7 +4045,6 @@ defmodule Embervm.BaseBuilderTest do
         build_fun: build_fun
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd")
 
     status = latest(agent, "w")
@@ -4097,7 +4093,6 @@ defmodule Embervm.BaseBuilderTest do
         nodes: [@node, %{id: "node-1/ds", address: "node-1:9090"}]
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd_cur")
 
     # Drive one sweep. It must consult EACH vendor exactly once (the store object
@@ -4149,7 +4144,6 @@ defmodule Embervm.BaseBuilderTest do
         nodes: [@node, %{id: "node-1/ds", address: "node-1:9090"}]
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd_cur")
     _ = BaseBuilder.retention_sweep_now(builder)
 
@@ -4184,7 +4178,6 @@ defmodule Embervm.BaseBuilderTest do
         remote_retention_sweep_enabled: true
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__phantom")
 
     log = capture_log(fn -> BaseBuilder.retention_sweep_now(builder) end)
@@ -4225,7 +4218,6 @@ defmodule Embervm.BaseBuilderTest do
         remote_retention_sweep_enabled: true
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd_cur")
 
     # A superseded ref STILL REFERENCED (not yet drained/evicted): this is the one
@@ -4261,7 +4253,6 @@ defmodule Embervm.BaseBuilderTest do
         list_fun: list_fun
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd_cur")
     _ = BaseBuilder.retention_sweep_now(builder)
 
@@ -4287,7 +4278,6 @@ defmodule Embervm.BaseBuilderTest do
         export_reconcile_interval_ms: 0
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd")
     assert latest(agent, "w")["snapshotRefs"] == %{"amd" => ["w__amd"]}
 
@@ -4317,7 +4307,6 @@ defmodule Embervm.BaseBuilderTest do
         export_reconcile_interval_ms: 0
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd")
 
     # Establish the last successfully written effective map, then discard setup
@@ -4362,7 +4351,6 @@ defmodule Embervm.BaseBuilderTest do
         export_reconcile_interval_ms: 0
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd")
     send(builder, :export_reconcile)
     _ = :sys.get_state(builder)
@@ -4391,7 +4379,6 @@ defmodule Embervm.BaseBuilderTest do
         export_reconcile_interval_ms: 0
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd")
     send(builder, :export_reconcile)
     _ = :sys.get_state(builder)
@@ -4418,7 +4405,6 @@ defmodule Embervm.BaseBuilderTest do
         export_reconcile_interval_ms: 0
       )
 
-    put_node_capacity_fact(table, "w", "placeholder", true)
     build_current(builder, agent, "w__amd")
 
     # One refresh settles last_snapshot_refs against what the build already wrote.
