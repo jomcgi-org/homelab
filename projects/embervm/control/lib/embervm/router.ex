@@ -662,13 +662,23 @@ defmodule Embervm.Router do
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-    if Keyword.has_key?(opts, :since_seq) or Keyword.has_key?(opts, :since_ts_ms) do
+    bounded? =
+      Enum.any?(
+        [:since_seq, :since_ts_ms, :until_ts_ms, :run_id],
+        &Keyword.has_key?(opts, &1)
+      )
+
+    if bounded? do
       opts
     else
       # One hour caps a 5-second sweep at 720 checkpoints. Full-retention reads
-      # remain superlinear-adjacent even after checker indexing, and no current
-      # caller needs an unbounded default because the gate supplies its own bound.
-      # since_ts_ms=0 remains the explicit audit.
+      # remain superlinear-adjacent even after checker indexing, and a BARE call
+      # has no caller that needs unbounded history (the gate supplies its own
+      # bound). Any explicit bound suppresses the default: a run_id or
+      # until_ts_ms query is an operator reaching for specific history, and
+      # silently intersecting it with the last hour would return a vacuous
+      # "no records" that reads as conformance. since_ts_ms=0 remains the
+      # explicit full-retention audit.
       Keyword.put(
         opts,
         :since_ts_ms,
