@@ -11,6 +11,7 @@
   let message = $state("");
   let busy = $state(false);
   let error = $state("");
+  let completionAnnouncement = $state("");
   let panel = $state();
   let messages = $state();
   let controller;
@@ -45,7 +46,8 @@
       .map(({ role, content: turnContent }) => ({
         role,
         content: turnContent,
-      }));
+      }))
+      .slice(-12);
     const userTurn = { id: ++nextId, role: "user", content };
     const assistantId = ++nextId;
     transcript = [
@@ -55,6 +57,7 @@
     ];
     message = "";
     error = "";
+    completionAnnouncement = "";
     busy = true;
     let turn = initialTurnState();
 
@@ -69,7 +72,12 @@
               : item,
           );
           if (turn.error) error = turn.error;
-          if (turn.status === "done" || turn.status === "error") busy = false;
+          if (turn.status === "done") {
+            completionAnnouncement = "Assistant response complete.";
+            busy = false;
+          } else if (turn.status === "error") {
+            busy = false;
+          }
         },
       });
     } catch (caught) {
@@ -90,7 +98,7 @@
 </script>
 
 <section class="chat" bind:this={panel} aria-label="Moving plan chat">
-  <div class="chat-messages" bind:this={messages} aria-live="polite">
+  <div class="chat-messages" bind:this={messages}>
     {#if transcript.length === 0}
       <p class="chat-empty">Ask about dates, tasks, roles, or collisions.</p>
     {/if}
@@ -102,6 +110,7 @@
       {/if}
     {/each}
   </div>
+  <span class="chat-status" role="status">{completionAnnouncement}</span>
   {#if error}
     <p class="chat-error" role="alert">{error}</p>
   {/if}
