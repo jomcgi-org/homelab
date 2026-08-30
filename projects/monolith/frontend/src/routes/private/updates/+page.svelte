@@ -56,10 +56,13 @@
 <main class="updates-page shell {dark ? 'night' : 'day'}">
   <div class="frame">
     <header class="masthead">
-      <div class="masthead-row">
-        <h1>Product updates</h1>
-        <p class="masthead-meta">Private release journal / daily editions</p>
-      </div>
+      <p class="masthead-top">
+        <a class="back-link" href="/">&larr; Dashboard</a>
+        <span class="masthead-meta"
+          >Private release journal / daily editions</span
+        >
+      </p>
+      <h1>Product updates</h1>
       <p class="standfirst">
         What became possible across the homelab, with the exact source range
         behind every update.
@@ -357,25 +360,6 @@
     margin: 0 auto;
   }
 
-  /* Registration marks: drawing-sheet corners, ornament only. */
-  .frame::before,
-  .frame::after {
-    position: absolute;
-    top: -0.4em;
-    color: var(--ink-3);
-    font-family: var(--font-code);
-    font-size: 0.85em;
-    content: "+";
-  }
-
-  .frame::before {
-    left: -0.6em;
-  }
-
-  .frame::after {
-    right: -0.6em;
-  }
-
   /* ── Section labels: the one heading style for all chrome ── */
 
   .sec-label {
@@ -398,24 +382,13 @@
     border-bottom: 1px solid var(--stroke);
   }
 
-  .masthead-row {
+  .masthead-top {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5em 2em;
+    gap: 0.4em 2em;
     align-items: baseline;
     justify-content: space-between;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: clamp(2rem, 3.4vw, 3rem);
-    font-weight: 700;
-    letter-spacing: -0.03em;
-    line-height: 1;
-  }
-
-  .masthead-meta {
-    margin: 0;
+    margin: 0 0 1rem;
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.68rem;
@@ -423,11 +396,32 @@
     text-transform: uppercase;
   }
 
-  .standfirst {
-    margin: 0.8rem 0 0;
+  .back-link {
     color: var(--ink-2);
-    font-size: 0.92em;
-    line-height: 1.6;
+    text-decoration: none;
+  }
+
+  .back-link:hover {
+    color: var(--accent-ink);
+  }
+
+  .masthead-meta {
+    margin: 0;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(1.6rem, 2.4vw, 2rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1;
+  }
+
+  .standfirst {
+    margin: 0.6rem 0 0;
+    color: var(--ink-2);
+    font-size: 0.85em;
+    line-height: 1.5;
   }
 
   /* ── Layout ── */
@@ -636,7 +630,7 @@
   }
 
   .edition + .edition {
-    margin-top: 4rem;
+    margin-top: 2.75rem;
   }
 
   /* ── Edition dateline and filed line ──
@@ -710,19 +704,19 @@
   /* ── Edition article ── */
 
   .ed-article h2 {
-    max-width: 26ch;
+    max-width: 34ch;
     margin: 0;
-    font-size: clamp(1.5rem, 2.6vw, 2.2rem);
+    font-size: clamp(1.25rem, 1.9vw, 1.6rem);
     font-weight: 700;
-    letter-spacing: -0.025em;
-    line-height: 1.12;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
   }
 
   .summary {
-    margin: 0.9rem 0 1.4rem;
+    margin: 0.7rem 0 1.2rem;
     color: var(--ink);
-    font-size: 0.95rem;
-    line-height: 1.55;
+    font-size: 0.88rem;
+    line-height: 1.5;
   }
 
   .sec-sublabel {
@@ -739,24 +733,24 @@
   }
 
   .items {
-    margin-bottom: 1.8rem;
+    margin-bottom: 1.4rem;
   }
 
   .item + .item {
-    margin-top: 1.1em;
+    margin-top: 0.9em;
   }
 
   .item h3 {
-    margin: 0 0 0.25em;
-    font-size: 0.9rem;
+    margin: 0 0 0.2em;
+    font-size: 0.84rem;
     font-weight: 650;
   }
 
   .item p {
     margin: 0;
     color: var(--ink-2);
-    font-size: 0.84rem;
-    line-height: 1.55;
+    font-size: 0.8rem;
+    line-height: 1.5;
   }
 
   .supporting .item h3 {
@@ -863,11 +857,6 @@
   @media (max-width: 760px) {
     .updates-page {
       padding: 1.8rem 1.35em 4em;
-    }
-
-    .frame::before,
-    .frame::after {
-      content: none;
     }
 
     .journal {
