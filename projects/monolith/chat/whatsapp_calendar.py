@@ -69,7 +69,7 @@ async def create_event(
         body["description"] = f"With: {attendees}"
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-        created = await google_calendar._insert_event_json(
+        created = await google_calendar.insert_event_json(
             client,
             _calendar_id(),
             body,

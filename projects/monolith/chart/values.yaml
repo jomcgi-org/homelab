@@ -656,10 +656,7 @@ jobs:
           memory: 512Mi
         limits:
           memory: 1Gi
-    # campsites.refresh: hourly at :00 UTC (not aligned to the 07:00 PT
-    # reservation-opening surge). Reads the static catalog.json, fetches BC Parks
-    # availability (~145 paced curl_cffi calls) + Open-Meteo forecast (~145
-    # calls), and upserts campsites.{campgrounds,availability,weather}.
+    # moving.gcal_sync: hourly milestone push to Google Calendar (#5428).
     - name: moving-gcal-sync
       replaces: moving.gcal_sync
       args: ["moving-gcal-sync"]
@@ -694,6 +691,12 @@ jobs:
         requests:
           cpu: 100m
           memory: 256Mi
+        limits:
+          memory: 256Mi
+    # campsites.refresh: hourly at :00 UTC (not aligned to the 07:00 PT
+    # reservation-opening surge). Reads the static catalog.json, fetches BC Parks
+    # availability (~145 paced curl_cffi calls) + Open-Meteo forecast (~145
+    # calls), and upserts campsites.{campgrounds,availability,weather}.
     - name: campsites-refresh
       replaces: campsites.refresh
       args: ["campsites-refresh"]
