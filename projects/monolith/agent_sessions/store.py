@@ -343,6 +343,9 @@ def create_turn(
     diff_blob: bytes | None = None,
     diff_truncated: bool = False,
     diff_base_sha: str | None = None,
+    artifact_path: str | None = None,
+    artifact_blob: bytes | None = None,
+    artifact_outcome: str | None = None,
 ) -> AgentTurn:
     row = AgentTurn(
         session_id=session_id,
@@ -359,6 +362,9 @@ def create_turn(
         diff_blob=diff_blob,
         diff_truncated=diff_truncated,
         diff_base_sha=diff_base_sha,
+        artifact_path=artifact_path,
+        artifact_blob=artifact_blob,
+        artifact_outcome=artifact_outcome,
         usage_json=json.dumps(usage or {}),
         cost_usd=cost_usd,
     )
@@ -713,6 +719,20 @@ def persist_turn_from_pending_sync(
                 diff_blob = None
                 diff_truncated = False
                 diff_base_sha = None
+        artifact_path = None
+        artifact_blob = None
+        artifact_outcome = None
+        if turn.artifact is not None:
+            try:
+                artifact_path = turn.artifact["path"]
+                artifact_outcome = turn.artifact["outcome"]
+                encoded_artifact = turn.artifact.get("content_b64")
+                if encoded_artifact is not None:
+                    artifact_blob = base64.b64decode(encoded_artifact, validate=True)
+            except (KeyError, TypeError, ValueError, binascii.Error):
+                artifact_path = None
+                artifact_blob = None
+                artifact_outcome = None
         row = create_turn(
             session,
             session_id,
@@ -731,6 +751,9 @@ def persist_turn_from_pending_sync(
             diff_blob=diff_blob,
             diff_truncated=diff_truncated,
             diff_base_sha=diff_base_sha,
+            artifact_path=artifact_path,
+            artifact_blob=artifact_blob,
+            artifact_outcome=artifact_outcome,
         )
         # The guest-reported CLI session_id is authoritative for this VM.
         if cli_session_id:

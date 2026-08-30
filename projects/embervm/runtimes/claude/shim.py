@@ -59,6 +59,10 @@ MAX_TURN_DIFF_COMPRESSED_BYTES = 1024 * 1024
 # blows a cap. Sized for declared artifacts such as plan.json, not for work
 # products.
 MAX_TURN_DIFF_REDUCED_FILE_BYTES = 64 * 1024
+# Bound on a declared artifact delivered beside the diff. Independent of the
+# diff caps on purpose: the artifact channel exists precisely so a huge work
+# diff cannot cost the caller its small declared document.
+MAX_TURN_ARTIFACT_BYTES = 256 * 1024
 
 
 def egress_proxy_env():
@@ -264,6 +268,49 @@ def _capture_turn_diff(checkout_dir, base_sha):
     except Exception:
         _emit_turn_diff_outcome(checkout_dir, "diff", "diff_exception")
         return None
+
+
+def _capture_turn_artifact(checkout_dir, artifact_path):
+    """Deliver a declared artifact whole without making it turn-critical.
+
+    The reduced-diff fallback under truncation only preserves ADDED files under
+    64 KiB. Direct delivery is whole-file, works for modified files, and removes
+    the parser's NOT_FRESH constraint.
+    """
+    if not artifact_path:
+        return None
+    try:
+        resolved_checkout = os.path.realpath(checkout_dir)
+        resolved_artifact = os.path.realpath(os.path.join(checkout_dir, artifact_path))
+        if os.path.isabs(artifact_path) or not resolved_artifact.startswith(
+            resolved_checkout + os.sep
+        ):
+            outcome = "invalid_path"
+            content_b64 = None
+        elif not os.path.isfile(resolved_artifact):
+            outcome = "missing"
+            content_b64 = None
+        elif os.path.getsize(resolved_artifact) > MAX_TURN_ARTIFACT_BYTES:
+            outcome = "oversize"
+            content_b64 = None
+        else:
+            with open(resolved_artifact, "rb") as artifact_file:
+                raw = artifact_file.read()
+            outcome = "ok"
+            content_b64 = base64.b64encode(raw).decode("ascii")
+        _emit_turn_diff_outcome(checkout_dir, "artifact", outcome)
+        return {
+            "path": artifact_path,
+            "content_b64": content_b64,
+            "outcome": outcome,
+        }
+    except OSError:
+        _emit_turn_diff_outcome(checkout_dir, "artifact", "unreadable")
+        return {
+            "path": artifact_path,
+            "content_b64": None,
+            "outcome": "unreadable",
+        }
 
 
 # Untracked files are capped so a stray build tree or vendored download cannot
@@ -4140,6 +4187,7 @@ class ProcessManager:
         progress_token=None,
         system_prompt=None,
         thinking=None,
+        artifact_path=None,
     ):
         total_start = _turn_timing_now()
         with self._mount_lock:
@@ -4215,6 +4263,9 @@ class ProcessManager:
                 diff = _capture_turn_diff(checkout_dir, turn_base)
                 if diff is not None:
                     record["diff"] = diff
+                artifact = _capture_turn_artifact(checkout_dir, artifact_path)
+                if artifact is not None:
+                    record["artifact"] = artifact
             return record
         finally:
             # End-of-turn quiescence point: park only happens after a completed
@@ -4326,6 +4377,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         ):
             self._send(400, {"error": "system_prompt must be a non-empty string"})
             return
+        artifact_path = payload.get("artifact_path")
+        if artifact_path is not None and (
+            not isinstance(artifact_path, str) or not artifact_path.strip()
+        ):
+            self._send(400, {"error": "artifact_path must be a non-empty string"})
+            return
         thinking = payload.get("thinking")
         if thinking is not None and not (
             thinking is True
@@ -4354,12 +4411,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 {"progress_token": progress_token.strip()} if progress_token else {}
             )
             prompt = {"system_prompt": system_prompt.strip()} if system_prompt else {}
+            artifact = {"artifact_path": artifact_path.strip()} if artifact_path else {}
             thinking_override = {"thinking": thinking} if thinking is not None else {}
             record = self.manager.turn(
                 message,
                 session_id,
                 payload.get("model"),
-                **(hydration | progress | prompt | thinking_override),
+                **(hydration | progress | prompt | artifact | thinking_override),
             )
             if repo is not None and isinstance(record, dict):
                 if getattr(self.manager, "_hydration_error", None):

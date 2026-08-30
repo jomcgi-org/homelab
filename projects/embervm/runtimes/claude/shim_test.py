@@ -2062,6 +2062,68 @@ def test_turn_diff_subprocess_exception_logs_and_does_not_propagate(
     assert "checkout_dir=%s" % checkout.resolve() in captured
 
 
+def test_capture_turn_artifact_reads_declared_file(tmp_path, capsys):
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+    raw = b'{"nodes": []}\n'
+    (checkout / "plan.json").write_bytes(raw)
+
+    result = shim._capture_turn_artifact(str(checkout), "plan.json")
+
+    assert result == {
+        "path": "plan.json",
+        "content_b64": base64.b64encode(raw).decode("ascii"),
+        "outcome": "ok",
+    }
+    assert "phase=artifact outcome=ok" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("artifact_path", "setup", "expected_outcome"),
+    [
+        ("missing.json", lambda checkout: None, "missing"),
+        ("directory", lambda checkout: (checkout / "directory").mkdir(), "missing"),
+        (
+            "large.json",
+            lambda checkout: (checkout / "large.json").write_bytes(
+                b"x" * (shim.MAX_TURN_ARTIFACT_BYTES + 1)
+            ),
+            "oversize",
+        ),
+        ("../outside.json", lambda checkout: None, "invalid_path"),
+        ("/etc/passwd", lambda checkout: None, "invalid_path"),
+    ],
+)
+def test_capture_turn_artifact_reports_non_ok_outcomes(
+    tmp_path, capsys, artifact_path, setup, expected_outcome
+):
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+    setup(checkout)
+
+    assert shim._capture_turn_artifact(str(checkout), artifact_path) == {
+        "path": artifact_path,
+        "content_b64": None,
+        "outcome": expected_outcome,
+    }
+    assert "phase=artifact outcome=%s" % expected_outcome in capsys.readouterr().err
+
+
+def test_capture_turn_artifact_rejects_symlink_escape(tmp_path, capsys):
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}")
+    (checkout / "plan.json").symlink_to(outside)
+
+    assert shim._capture_turn_artifact(str(checkout), "plan.json") == {
+        "path": "plan.json",
+        "content_b64": None,
+        "outcome": "invalid_path",
+    }
+    assert "phase=artifact outcome=invalid_path" in capsys.readouterr().err
+
+
 def test_turn_diff_uncompressed_cap_sets_truncated(monkeypatch, tmp_path, capsys):
     checkout = tmp_path / "src"
     (checkout / ".git").mkdir(parents=True)
@@ -2228,9 +2290,7 @@ def test_turn_diff_compressed_cap_keeps_small_added_files(
     assert "outcome=truncated_compressed_reduced" in capsys.readouterr().err
 
 
-def test_process_manager_captures_diff_against_head_at_turn_start(
-    tmp_path, monkeypatch
-):
+def test_process_manager_captures_diff_and_artifact_at_turn_end(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     checkout = workspace / "src"
     checkout.mkdir(parents=True)
@@ -2265,6 +2325,7 @@ def test_process_manager_captures_diff_against_head_at_turn_start(
 
         def turn(self, *_args, **_kwargs):
             tracked.write_text("after\n")
+            (checkout / "plan.json").write_bytes(b'{"nodes": []}')
             return {"ok": True}
 
     manager.claude = Adapter()
@@ -2276,12 +2337,17 @@ def test_process_manager_captures_diff_against_head_at_turn_start(
     monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
     monkeypatch.setattr(shim, "_sync_session_volume", lambda: None)
 
-    record = manager.turn("change it")
+    record = manager.turn("change it", artifact_path="plan.json")
 
     assert record["diff"]["base_sha"] == base_sha
     assert record["diff"]["truncated"] is False
     compressed = base64.b64decode(record["diff"]["zlib_b64"])
     assert b"-before\n+after\n" in shim.zlib.decompress(compressed)
+    assert record["artifact"] == {
+        "path": "plan.json",
+        "content_b64": base64.b64encode(b'{"nodes": []}').decode("ascii"),
+        "outcome": "ok",
+    }
 
 
 def test_process_manager_without_prewarm_preserves_ready_semantics():
@@ -3408,6 +3474,12 @@ def test_system_prompt_validation_and_forwarding():
     assert manager.calls[0][1] == {}
 
     manager = _Manager()
+    assert post({"message": "hello", "artifact_path": "  plan.json  "}, manager) == [
+        (200, {"result": "ok"})
+    ]
+    assert manager.calls[0][1] == {"artifact_path": "plan.json"}
+
+    manager = _Manager()
     assert post({"message": "hello", "thinking": "high"}, manager) == [
         (200, {"result": "ok"})
     ]
@@ -3418,6 +3490,13 @@ def test_system_prompt_validation_and_forwarding():
         responses = post({"message": "hello", "system_prompt": token}, manager)
         assert responses == [
             (400, {"error": "system_prompt must be a non-empty string"})
+        ]
+        assert manager.calls == []
+    for artifact_path in ("", 123):
+        manager = _Manager()
+        responses = post({"message": "hello", "artifact_path": artifact_path}, manager)
+        assert responses == [
+            (400, {"error": "artifact_path must be a non-empty string"})
         ]
         assert manager.calls == []
     for token in ("", 123):

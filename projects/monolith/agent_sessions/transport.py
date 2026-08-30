@@ -210,6 +210,7 @@ class Turn(NamedTuple):
     activities: list[dict]
     workspace_recovery: dict | None = None
     diff: dict | None = None
+    artifact: dict | None = None
 
 
 def _reject_guest_diff(session_id, reason: str) -> None:
@@ -274,6 +275,56 @@ def _guest_diff(value, session_id=None) -> dict | None:
     return value
 
 
+def _reject_guest_artifact(session_id, reason: str) -> None:
+    """Log why a present artifact payload was discarded, then discard it.
+
+    Every rejection below returns None, which is also what an absent payload
+    returns. Without this log, a missing declaration and malformed guest data
+    would be indistinguishable after validation.
+    """
+    logger.warning("discarding guest artifact for session %s: %s", session_id, reason)
+    return None
+
+
+def _guest_artifact(value, session_id=None) -> dict | None:
+    """Validate optional guest artifact metadata without failing the turn."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return _reject_guest_artifact(session_id, "payload is not a mapping")
+    required = {"path", "content_b64", "outcome"}
+    if not required.issubset(value):
+        missing = sorted(required - set(value))
+        return _reject_guest_artifact(session_id, f"missing keys {missing}")
+    path = value.get("path")
+    outcome = value.get("outcome")
+    encoded = value.get("content_b64")
+    if not isinstance(path, str) or not path:
+        return _reject_guest_artifact(session_id, "path is not a non-empty string")
+    allowed_outcomes = ("ok", "missing", "oversize", "invalid_path", "unreadable")
+    if outcome not in allowed_outcomes:
+        return _reject_guest_artifact(session_id, f"invalid outcome {outcome!r}")
+    if outcome != "ok":
+        if encoded is not None:
+            return _reject_guest_artifact(
+                session_id, "content_b64 must be null when outcome is not ok"
+            )
+        return value
+    if not isinstance(encoded, str):
+        return _reject_guest_artifact(
+            session_id, "content_b64 is not a string for ok outcome"
+        )
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        return _reject_guest_artifact(session_id, f"undecodable content_b64: {exc}")
+    if len(raw) > 256 * 1024:
+        return _reject_guest_artifact(
+            session_id, f"artifact is {len(raw)} bytes, over 256 KiB"
+        )
+    return value
+
+
 class EmberSession(NamedTuple):
     session_id: str
     session_token: str
@@ -304,6 +355,7 @@ class ShimTransport(Protocol):
         progress_token: str | None = None,
         system_prompt: str | None = None,
         reasoning: bool = False,
+        artifact_path: str | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -594,6 +646,7 @@ class EmberVmShimTransport:
         progress_token: str | None = None,
         system_prompt: str | None = None,
         reasoning: bool = False,
+        artifact_path: str | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -608,6 +661,10 @@ class EmberVmShimTransport:
             system_prompt: The caller's system prompt, appended to the shim's
                 own sandbox prompt. Omitted from the payload if None.
             reasoning: Whether the guest should use high thinking for each invoke.
+            artifact_path: Declared artifact file the guest should read from the
+                checkout after the turn and deliver beside the diff. None means
+                no declaration, which is every caller until the conductor lands
+                in #5419.
             restore_from: A prior LINEAGE handle to inherit the guest
                 workspace from when ember is None (#4306 slice 5: the
                 binding-was-cleared path, e.g. after an EmberSessionGone or
@@ -690,6 +747,8 @@ class EmberVmShimTransport:
                 payload["progress_token"] = progress_token
             if system_prompt is not None:
                 payload["system_prompt"] = system_prompt
+            if artifact_path is not None:
+                payload["artifact_path"] = artifact_path
             body = json.dumps(payload)
             url = f"{EMBERVM_URL}/v1/sessions/{current.session_id}/invoke"
             headers = {
@@ -717,6 +776,9 @@ class EmberVmShimTransport:
                         duration_ms=guest_data.get("duration_ms"),
                         activities=guest_data.get("activities", []),
                         diff=_guest_diff(guest_data.get("diff"), current.session_id),
+                        artifact=_guest_artifact(
+                            guest_data.get("artifact"), current.session_id
+                        ),
                     )
             except httpx.TimeoutException as exc:
                 logger.warning(

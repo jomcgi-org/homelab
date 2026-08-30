@@ -325,6 +325,54 @@ def test_deliver_maps_valid_guest_diff(monkeypatch):
     assert turn.diff == captured
 
 
+def test_deliver_maps_valid_guest_artifact(monkeypatch):
+    captured = {
+        "path": "plan.json",
+        "content_b64": base64.b64encode(b'{"nodes": []}').decode("ascii"),
+        "outcome": "ok",
+    }
+
+    async def handler(request):
+        response = _turn_response(request)
+        payload = response.json()
+        payload["artifact"] = captured
+        return httpx.Response(200, json=payload, request=request)
+
+    _client(monkeypatch, handler)
+    turn, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+        )
+    )
+
+    assert turn.artifact == captured
+
+
+@pytest.mark.parametrize("artifact_path", [None, "plan.json"])
+def test_deliver_sends_artifact_path_only_when_declared(monkeypatch, artifact_path):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None),
+            "cli-1",
+            "hello",
+            artifact_path=artifact_path,
+        )
+    )
+
+    payload = json.loads(requests[0].content)
+    if artifact_path is None:
+        assert "artifact_path" not in payload
+    else:
+        assert payload["artifact_path"] == artifact_path
+
+
 @pytest.mark.parametrize(
     "value",
     [None, "bad", {}, {"base_sha": "x", "zlib_b64": "bad", "truncated": False}],
@@ -1505,6 +1553,56 @@ def test_guest_diff_accepts_a_legacy_truncated_payload_without_blob(caplog):
     payload = {"base_sha": "b" * 40, "zlib_b64": None, "truncated": True}
     with caplog.at_level(logging.WARNING, logger=transport.logger.name):
         assert transport._guest_diff(payload, 42) == payload
+    assert caplog.text == ""
+
+
+def test_guest_artifact_logs_a_distinct_reason_per_rejection(caplog):
+    good = base64.b64encode(b'{"nodes": []}').decode("ascii")
+    cases = [
+        ("not a mapping", "not a mapping"),
+        ({"path": "plan.json"}, "missing keys"),
+        (
+            {"path": "plan.json", "content_b64": None, "outcome": "unknown"},
+            "invalid outcome",
+        ),
+        (
+            {"path": "plan.json", "content_b64": good, "outcome": "missing"},
+            "must be null",
+        ),
+        (
+            {"path": "plan.json", "content_b64": "not-base64", "outcome": "ok"},
+            "undecodable",
+        ),
+        (
+            {
+                "path": "plan.json",
+                "content_b64": base64.b64encode(b"x" * (256 * 1024 + 1)).decode(),
+                "outcome": "ok",
+            },
+            "over 256 KiB",
+        ),
+        ({"path": "", "content_b64": good, "outcome": "ok"}, "non-empty"),
+    ]
+    for payload, expected in cases:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+            assert transport._guest_artifact(payload, 42) is None
+        assert expected in caplog.text, f"{payload!r} did not log {expected!r}"
+        assert "discarding guest artifact for session 42" in caplog.text
+
+
+def test_guest_artifact_accepts_valid_ok_and_missing_payloads(caplog):
+    payloads = [
+        {
+            "path": "plan.json",
+            "content_b64": base64.b64encode(b'{"nodes": []}').decode("ascii"),
+            "outcome": "ok",
+        },
+        {"path": "plan.json", "content_b64": None, "outcome": "missing"},
+    ]
+    with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+        for payload in payloads:
+            assert transport._guest_artifact(payload, 42) == payload
     assert caplog.text == ""
 
 
