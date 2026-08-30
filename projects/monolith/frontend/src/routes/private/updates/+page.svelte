@@ -10,6 +10,10 @@
   let { data } = $props();
   let hour = $state(new Date().getHours());
   let period = $derived(periodForHour(hour));
+  $effect(() => {
+    const id = setInterval(() => (hour = new Date().getHours()), 60_000);
+    return () => clearInterval(id);
+  });
   let activeDate = $state("");
   let monthGroups = $derived(groupUpdatesByMonth(data.updates));
   let filtering = $derived(
@@ -116,7 +120,7 @@
             </div>
           </div>
         {/if}
-        {#if filtering}
+        {#if filtering && !data.error}
           <p class="filter-results">
             <span>
               {data.updates.length}
@@ -425,14 +429,12 @@
   }
 
   .facet-options a.active {
-    border-color: var(--accent);
+    /* Mixed toward ink so the paper-colored label clears WCAG AA in every
+       period palette; bare var(--accent) fails at 3.85:1 in dawn. */
+    border-color: color-mix(in srgb, var(--accent) 85%, var(--ink));
     color: var(--paper);
-    background: var(--accent);
+    background: color-mix(in srgb, var(--accent) 85%, var(--ink));
     font-weight: 650;
-  }
-
-  .facet-options a.active span {
-    opacity: 0.75;
   }
 
   .facet-options .remove {
@@ -912,8 +914,16 @@
     .rail-month a {
       display: block;
       min-width: 1.7em;
-      padding: 0.3em 0.3em 0.3em 0.6rem;
+      padding: 0.3em;
       text-align: center;
+      /* In the horizontal strip the desktop left bar would read as a
+         divider between pills, so the marker moves to an underline. */
+      border-left: 0;
+      border-bottom: 2px solid transparent;
+    }
+
+    .rail-month a.active {
+      border-bottom-color: var(--accent);
     }
 
     .rail-month small {
