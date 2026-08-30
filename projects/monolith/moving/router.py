@@ -3,8 +3,9 @@
 The dashboard reads one aggregate response from ``GET /api/moving/state``.
 Tasks, spans, milestones, and roles have dedicated create, patch, and delete
 endpoints; tasks add done and undone toggles, and computed collisions can be
-acknowledged. Every route resolves its viewer through ``get_viewer``; routes
-never read the identity header directly.
+acknowledged (the UI driving the non-task writes is tracked in #5007). Every
+route resolves its viewer through ``get_viewer``; routes never read the
+identity header directly.
 """
 
 from __future__ import annotations
@@ -114,6 +115,8 @@ def _span_exists_or_422(session: Session, span_id: str | None) -> None:
 
 def _ack_pair(item1_id: uuid.UUID, item2_id: uuid.UUID) -> tuple[str, str]:
     """Acks are stored sorted so either argument order reaches the same row."""
+    if item1_id == item2_id:
+        raise HTTPException(status_code=422, detail="collision items must differ")
     first, second = sorted((str(item1_id), str(item2_id)))
     return first, second
 
@@ -506,7 +509,8 @@ def ack_collision(
     """Record that a collision is understood and accepted.
 
     Any viewer may acknowledge: a collision is shared judgment, not owned data.
-    Re-acking without a note keeps the existing note; an explicit null clears it.
+    Re-acking records the latest viewer and time; without a note the existing
+    note is kept, and an explicit null clears it.
     """
     first, second = _ack_pair(item1_id, item2_id)
     ack = session.get(CollisionAck, (first, second))
@@ -516,6 +520,7 @@ def ack_collision(
         )
     else:
         ack.acked_by = viewer
+        ack.acked_at = datetime.now(timezone.utc)
         if "note" in body.model_fields_set:
             ack.note = body.note
     session.add(ack)
