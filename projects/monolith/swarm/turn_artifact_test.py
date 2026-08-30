@@ -152,6 +152,11 @@ class TestEvaluateContent:
         assert outcome.ok
         assert outcome.value == {"nodes": []}
 
+    def test_invalid_utf8_bytes_are_unparsable(self):
+        outcome = ta.evaluate_content(b'{"key": "\xff\xfe"}', "plan.json", SCHEMA)
+        assert outcome.status == ta.UNPARSABLE
+        assert outcome.errors
+
     def test_modified_file_is_not_fresh_in_diff_but_valid_when_delivered(self):
         _, diff_outcome = ta.extract_artifact(
             modified_file_diff("plan.json"), "plan.json"

@@ -20,7 +20,8 @@ recover added files safely.
 The outcome is never a dead end. A turn that fails validation is retryable with
 the reasons fed back to the agent, and when retries run out the node escalates
 to the conductor, which can retry it again or reshape the plan around it. There
-is deliberately no "fail" branch: see `next_action`.
+is deliberately no "fail" branch: see `next_action`. Nothing calls
+``evaluate_content`` yet; the conductor (#5419) will be its first caller.
 """
 
 from __future__ import annotations
@@ -107,8 +108,6 @@ def evaluate_content(raw, path: str, schema: dict) -> ArtifactOutcome:
     """
     if raw is None:
         return ArtifactOutcome(MISSING, errors=[f"{path} was not delivered this turn"])
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", "replace")
     return _evaluate_raw(raw, path, schema)
 
 

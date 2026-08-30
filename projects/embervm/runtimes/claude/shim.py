@@ -12,6 +12,7 @@ import re
 import signal
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -290,21 +291,34 @@ def _capture_turn_artifact(checkout_dir, artifact_path):
         elif not os.path.isfile(resolved_artifact):
             outcome = "missing"
             content_b64 = None
-        elif os.path.getsize(resolved_artifact) > MAX_TURN_ARTIFACT_BYTES:
-            outcome = "oversize"
-            content_b64 = None
         else:
-            with open(resolved_artifact, "rb") as artifact_file:
-                raw = artifact_file.read()
-            outcome = "ok"
-            content_b64 = base64.b64encode(raw).decode("ascii")
+            # Guest code is untrusted (ARCHITECTURE.md:920). Take size and
+            # content from one descriptor; O_NOFOLLOW prevents a check-to-use
+            # final-component symlink swap.
+            fd = os.open(resolved_artifact, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    outcome = "missing"
+                    content_b64 = None
+                elif info.st_size > MAX_TURN_ARTIFACT_BYTES:
+                    outcome = "oversize"
+                    content_b64 = None
+                else:
+                    raw = stream.read(MAX_TURN_ARTIFACT_BYTES + 1)
+                    if len(raw) > MAX_TURN_ARTIFACT_BYTES:
+                        outcome = "oversize"
+                        content_b64 = None
+                    else:
+                        outcome = "ok"
+                        content_b64 = base64.b64encode(raw).decode("ascii")
         _emit_turn_diff_outcome(checkout_dir, "artifact", outcome)
         return {
             "path": artifact_path,
             "content_b64": content_b64,
             "outcome": outcome,
         }
-    except OSError:
+    except Exception:
         _emit_turn_diff_outcome(checkout_dir, "artifact", "unreadable")
         return {
             "path": artifact_path,
