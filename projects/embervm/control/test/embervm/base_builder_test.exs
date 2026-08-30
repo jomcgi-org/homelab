@@ -1870,6 +1870,118 @@ defmodule Embervm.BaseBuilderTest do
     end)
   end
 
+  test "a changed build does not dial a departed node without an address" do
+    test_pid = self()
+    agent = start_recorder()
+    table = new_cap_table()
+
+    put_brick(table, "node-a", "departing",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
+    connect_fun = fn
+      nil ->
+        send(test_pid, {:connected, nil})
+        raise FunctionClauseError
+
+      address ->
+        send(test_pid, {:connected, address})
+        {:ok, :fake_channel}
+    end
+
+    build_fun = fn :fake_channel, req ->
+      if req.image_ref == "imgA" do
+        send(test_pid, {:departing_build_started, self()})
+
+        receive do
+          :release -> {:ok, resp("stale")}
+        end
+      else
+        send(test_pid, {:survivor_build_started, self()})
+        {:ok, resp("survivor")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-a/departing", address: "node-a:9090"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        connect_fun: connect_fun,
+        build_fun: build_fun,
+        base_backoff_ms: 30_000,
+        max_backoff_ms: 60_000
+      )
+
+    :ok =
+      BaseBuilder.reconcile(
+        builder,
+        desc(%{generation: 1, image_ref: "imgA", mem_mib: 4_000})
+      )
+
+    assert_receive {:connected, "node-a:9090"}, 1_000
+    assert_receive {:departing_build_started, worker}, 1_000
+
+    :ok =
+      BaseBuilder.reconcile(
+        builder,
+        desc(%{generation: 2, image_ref: "imgB", mem_mib: 4_000})
+      )
+
+    _ = :sys.get_state(builder)
+    writes_before_departure = length(recorded(agent))
+
+    log =
+      capture_log(fn ->
+        :ok = BaseBuilder.remove_node(builder, "node-a/departing")
+        assert_eventually(fn -> not Process.alive?(worker) end)
+
+        assert_eventually(fn ->
+          state = :sys.get_state(builder)
+
+          state.workloads["w"].retry_timer != nil and state.workers == %{} and
+            Map.get(state.nodes, "node-a/departing") == nil
+        end)
+      end)
+
+    assert Process.alive?(builder)
+    refute_receive {:connected, nil}, 100
+    assert length(Regex.scan(~r/BuildBase for embervm\/w failed/, log)) == 1
+    assert log =~ "no_address"
+    assert log =~ "node-a/departing"
+    refute log =~ "FunctionClauseError"
+
+    writes_after_departure = Enum.drop(recorded(agent), writes_before_departure)
+
+    refute Enum.any?(writes_after_departure, fn {_namespace, "w", status_map} ->
+             match?(%{"reason" => "BaseBuilding"}, condition(status_map, "BaseBuilt"))
+           end)
+
+    assert Enum.any?(writes_after_departure, fn {_namespace, "w", status_map} ->
+             match?(%{"reason" => "BuildFailed"}, condition(status_map, "BaseBuilt"))
+           end)
+
+    put_brick(table, "node-b", "healthy",
+      size_class: "16gi",
+      mem_budget: 16_384,
+      mem_headroom: 16_000
+    )
+
+    :ok = BaseBuilder.add_node(builder, "node-b/healthy", "node-b:9090")
+
+    assert_receive {:connected, "node-b:9090"}, 1_000
+    assert_receive {:survivor_build_started, _worker}, 1_000
+
+    assert_eventually(fn ->
+      workload = :sys.get_state(builder).workloads["w"]
+      workload.node_id == "node-b/healthy" and workload.snapshot_ref == "survivor"
+    end)
+
+    refute_receive {:connected, nil}, 100
+  end
+
   test "placement picks the LARGEST-budget eligible instance, never List.first" do
     # Three co-located bricks on node-4; the first-registered is the 2Gi one (the
     # old List.first bug pinned everything to it). The base must land on the 16Gi
