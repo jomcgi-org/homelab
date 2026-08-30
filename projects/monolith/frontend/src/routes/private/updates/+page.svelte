@@ -56,17 +56,13 @@
 <main class="updates-page shell {dark ? 'night' : 'day'}">
   <div class="frame">
     <header class="masthead">
-      <p class="masthead-top">
-        <a class="back-link" href="/">&larr; Dashboard</a>
+      <a class="back-link" href="/">&larr; Dashboard</a>
+      <span class="masthead-id">
+        <h1>Product updates</h1>
         <span class="masthead-meta"
-          >Private release journal / daily editions</span
+          >/ Private release journal / daily editions</span
         >
-      </p>
-      <h1>Product updates</h1>
-      <p class="standfirst">
-        What became possible across the homelab, with the exact source range
-        behind every update.
-      </p>
+      </span>
     </header>
 
     <div class="journal">
@@ -376,19 +372,18 @@
 
   /* ── Masthead ── */
 
+  /* One functional line: navigation left, identity right. The former big
+     h1 tier and standfirst competed with the edition headline for
+     attention and carried no function. */
   .masthead {
-    margin-bottom: 2.5rem;
-    padding-bottom: 1.2rem;
+    margin-bottom: 2.2rem;
+    padding-bottom: 0.9rem;
     border-bottom: 1px solid var(--stroke);
-  }
-
-  .masthead-top {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4em 2em;
     align-items: baseline;
     justify-content: space-between;
-    margin: 0 0 1rem;
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.68rem;
@@ -405,23 +400,25 @@
     color: var(--accent-ink);
   }
 
-  .masthead-meta {
-    margin: 0;
+  .masthead-id {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.4em 0.5em;
+    align-items: baseline;
   }
 
   h1 {
+    display: inline;
     margin: 0;
-    font-size: clamp(1.6rem, 2.4vw, 2rem);
+    color: var(--ink);
+    font-family: var(--font-code);
+    font-size: 1em;
     font-weight: 700;
-    letter-spacing: -0.025em;
-    line-height: 1;
+    letter-spacing: inherit;
   }
 
-  .standfirst {
-    margin: 0.6rem 0 0;
-    color: var(--ink-2);
-    font-size: 0.85em;
-    line-height: 1.5;
+  .masthead-meta {
+    margin: 0;
   }
 
   /* ── Layout ── */
@@ -647,7 +644,7 @@
 
   .ed-category {
     color: var(--accent-ink);
-    font-weight: 700;
+    font-weight: 500;
   }
 
   .filed-line {
@@ -721,9 +718,8 @@
 
   .sec-sublabel {
     margin: 0 0 0.9em;
-    padding: 0.45em 0;
+    padding: 0.45em 0 0;
     border-top: 1px solid var(--stroke);
-    border-bottom: 1px solid var(--line);
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.68rem;
