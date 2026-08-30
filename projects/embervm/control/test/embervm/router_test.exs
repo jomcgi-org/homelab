@@ -1688,6 +1688,18 @@ defmodule Embervm.RouterTest do
 
       assert bounded["run_ids"] == ["recent-run"]
       assert Enum.sort(unbounded["run_ids"]) == ["old-run", "recent-run"]
+
+      # Any explicit bound suppresses the default. An operator reaching for a
+      # 90-minute-old run by run_id must find it, not a vacuous "no records"
+      # silently intersected with the last hour.
+      by_run = req(:get, "/v1/conformance?run_id=old-run", auth("good")) |> then(&json(&1.body))
+      assert by_run["run_ids"] == ["old-run"]
+
+      until_old =
+        req(:get, "/v1/conformance?until_ts_ms=#{now - 3_600_000}", auth("good"))
+        |> then(&json(&1.body))
+
+      assert until_old["run_ids"] == ["old-run"]
     end
 
     test "requires auth like every other /v1 route" do
