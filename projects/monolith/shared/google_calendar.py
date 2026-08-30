@@ -47,9 +47,7 @@ async def _access_token(client: httpx.AsyncClient) -> str:
     return response.json()["access_token"]
 
 
-async def _insert_event_json(
-    client: httpx.AsyncClient, cal_id: str, body: dict
-) -> dict:
+async def insert_event_json(client: httpx.AsyncClient, cal_id: str, body: dict) -> dict:
     """Insert an event body and return Google's created-event response."""
     token = await _access_token(client)
     response = await client.post(
@@ -78,7 +76,7 @@ async def insert_event(
     ends_on: date | None = None,
 ) -> str:
     """Insert an all-day event and return its Google event id."""
-    created = await _insert_event_json(
+    created = await insert_event_json(
         client, cal_id, _all_day_body(title, starts_on, ends_on)
     )
     return created["id"]

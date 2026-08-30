@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import httpx
@@ -124,7 +124,11 @@ def test_synced_no_drift_does_not_patch(session: Session, monkeypatch):
         return _response(
             request,
             200,
-            {"summary": "Collect keys", "start": {"date": "2026-10-07"}},
+            {
+                "summary": "Collect keys",
+                "start": {"date": "2026-10-07"},
+                "end": {"date": "2026-10-08"},
+            },
         )
 
     requests = _install_transport(monkeypatch, responder)
@@ -277,3 +281,132 @@ def test_calendar_id_fallback(
 
     _install_transport(monkeypatch, responder)
     assert gcal_sync.sync_milestones(session) == 1
+
+
+def test_requeued_milestone_with_event_id_heals_instead_of_inserting(
+    session: Session, monkeypatch
+):
+    milestone = _add_milestone(session, gcal_state="queued", gcal_event_id="event-kept")
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET", "re-queued row must never POST a duplicate"
+        return _response(
+            request,
+            200,
+            {
+                "summary": "Collect keys",
+                "start": {"date": "2026-10-07"},
+                "end": {"date": "2026-10-08"},
+            },
+        )
+
+    requests = _install_transport(monkeypatch, responder)
+    assert gcal_sync.sync_milestones(session) == 0
+    assert [request.method for request in _event_requests(requests)] == ["GET"]
+    session.expire_all()
+    assert session.get(Milestone, milestone.id).gcal_event_id == "event-kept"
+
+
+def test_end_date_drift_alone_triggers_patch(session: Session, monkeypatch):
+    _add_milestone(
+        session,
+        gcal_state="synced",
+        gcal_event_id="event-stretched",
+        gcal_synced_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return _response(
+                request,
+                200,
+                {
+                    "summary": "Collect keys",
+                    "start": {"date": "2026-10-07"},
+                    "end": {"date": "2026-10-09"},
+                },
+            )
+        assert request.method == "PATCH"
+        return _response(request, 200, {})
+
+    requests = _install_transport(monkeypatch, responder)
+    assert gcal_sync.sync_milestones(session) == 1
+    assert [request.method for request in _event_requests(requests)] == [
+        "GET",
+        "PATCH",
+    ]
+
+
+def test_hold_taken_mid_run_survives_apply(session: Session):
+    milestone = _add_milestone(session, gcal_state="held")
+    outcome = gcal_sync._SyncOutcome(
+        milestone_updates=[
+            gcal_sync._MilestoneUpdate(
+                id=milestone.id,
+                event_id="event-late",
+                synced_at=datetime.now(timezone.utc),
+            )
+        ]
+    )
+
+    gcal_sync._apply_sync(session, outcome)
+    session.commit()
+    session.expire_all()
+    held = session.get(Milestone, milestone.id)
+    assert held.gcal_state == "held"
+    assert held.gcal_event_id == "event-late"
+    assert held.gcal_synced_at is None
+
+
+def test_milestone_deleted_mid_run_tombstones_its_fresh_event(session: Session):
+    outcome = gcal_sync._SyncOutcome(
+        milestone_updates=[
+            gcal_sync._MilestoneUpdate(
+                id="00000000-0000-0000-0000-000000000000",
+                event_id="event-orphan",
+                synced_at=datetime.now(timezone.utc),
+            )
+        ]
+    )
+
+    assert gcal_sync._apply_sync(session, outcome) == 1
+    session.commit()
+    assert session.get(GcalTombstone, "event-orphan") is not None
+
+
+def test_expired_tombstone_is_dropped_without_a_delete_call(
+    session: Session, monkeypatch
+):
+    session.add(
+        GcalTombstone(
+            event_id="event-undeletable",
+            created_at=datetime.now(timezone.utc)
+            - timedelta(days=gcal_sync.TOMBSTONE_RETRY_DAYS + 1),
+        )
+    )
+    session.commit()
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("expired tombstone must not reach the API")
+
+    requests = _install_transport(monkeypatch, responder)
+    assert gcal_sync.sync_milestones(session) == 0
+    assert requests == []
+    assert session.get(GcalTombstone, "event-undeletable") is None
+
+
+def test_configured_handler_syncs_through_fresh_sessions(session: Session, monkeypatch):
+    milestone = _add_milestone(session)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        return _response(request, 200, {"id": "event-handler"})
+
+    _install_transport(monkeypatch, responder)
+    monkeypatch.setattr("core.db.get_engine", lambda: session.get_bind())
+
+    assert asyncio.run(gcal_sync.gcal_sync_handler(object())) is None
+    session.expire_all()
+    synced = session.get(Milestone, milestone.id)
+    assert synced.gcal_event_id == "event-handler"
+    assert synced.gcal_state == "synced"

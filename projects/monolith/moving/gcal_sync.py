@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import delete
@@ -18,6 +18,10 @@ from shared import google_calendar
 logger = logging.getLogger("monolith.moving.gcal_sync")
 
 GCAL_TIMEOUT_SECS = 30.0
+
+# An undeletable event (e.g. created under a different credential, 403 on
+# delete) would otherwise be retried and logged every run forever.
+TOMBSTONE_RETRY_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -67,7 +71,25 @@ def _snapshot_milestones(session: Session) -> list[_MilestoneSnapshot]:
 
 
 def _snapshot_tombstones(session: Session) -> list[str]:
-    return list(session.exec(select(GcalTombstone.event_id)).all())
+    """Tombstones still worth retrying; expired ones are dropped with a warning."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=TOMBSTONE_RETRY_DAYS)
+    live: list[str] = []
+    expired: list[str] = []
+    for row in session.exec(select(GcalTombstone)).all():
+        created = row.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        (live if created >= cutoff else expired).append(row.event_id)
+    if expired:
+        logger.warning(
+            "moving gcal sync: giving up on %d undeletable tombstone(s)",
+            len(expired),
+        )
+        session.execute(
+            delete(GcalTombstone).where(GcalTombstone.event_id.in_(expired))
+        )
+        session.commit()
+    return live
 
 
 def _load_milestones() -> list[_MilestoneSnapshot]:
@@ -118,7 +140,10 @@ async def _run_network_sync(
     outcome = _SyncOutcome()
     for milestone in milestones:
         try:
-            if milestone.gcal_state == "queued" or milestone.gcal_event_id is None:
+            # A re-queued row that still carries an event id takes the
+            # GET-and-heal path below; inserting again would orphan the
+            # original event.
+            if milestone.gcal_event_id is None:
                 outcome.milestone_updates.append(
                     await _insert_milestone(client, cal_id, milestone)
                 )
@@ -136,9 +161,11 @@ async def _run_network_sync(
                 )
                 continue
 
+            expected_end = (milestone.occurs_on + timedelta(days=1)).isoformat()
             if (
                 event.get("summary") != milestone.title
                 or event.get("start", {}).get("date") != milestone.occurs_on.isoformat()
+                or event.get("end", {}).get("date") != expected_end
             ):
                 await google_calendar.patch_event(
                     client,
@@ -177,11 +204,24 @@ def _apply_sync(session: Session, outcome: _SyncOutcome) -> int:
     updates_by_id = {update.id: update for update in outcome.milestone_updates}
     touched = 0
     for milestone in milestones:
-        update = updates_by_id[milestone.id]
+        update = updates_by_id.pop(milestone.id)
         milestone.gcal_event_id = update.event_id
+        if milestone.gcal_state == "held":
+            # A hold taken between snapshot and apply wins; keep the event id
+            # so a later delete still tombstones the created event.
+            continue
         milestone.gcal_synced_at = update.synced_at
         milestone.gcal_state = "synced"
         touched += 1
+
+    # Rows deleted between snapshot and apply leave their fresh events
+    # orphaned; tombstone them for the next drain.
+    orphaned = [
+        GcalTombstone(event_id=update.event_id) for update in updates_by_id.values()
+    ]
+    if orphaned:
+        session.add_all(orphaned)
+        touched += len(orphaned)
 
     if outcome.deleted_tombstones:
         result = session.execute(

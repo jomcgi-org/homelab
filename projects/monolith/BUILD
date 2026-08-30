@@ -987,9 +987,12 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_chat_public",
         ":pkg_core",
         ":pkg_framework",
+        ":pkg_shared",
         "@pip//fastapi",
+        "@pip//httpx",
         "@pip//pydantic",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
@@ -5069,6 +5072,41 @@ py_test(
         ":pkg_core",
         ":pkg_moving",
         "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "moving_chat_test",
+    srcs = [
+        "moving/tests/__init__.py",
+        "moving/tests/chat_test.py",
+        "moving/tests/conftest.py",
+    ],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        ":pkg_moving",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "moving_gcal_sync_test",
+    srcs = [
+        "moving/tests/__init__.py",
+        "moving/tests/conftest.py",
+        "moving/tests/gcal_sync_test.py",
+    ],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        ":pkg_moving",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
