@@ -2078,6 +2078,23 @@ def test_capture_turn_artifact_reads_declared_file(tmp_path, capsys):
     assert "phase=artifact outcome=ok" in capsys.readouterr().err
 
 
+def test_capture_turn_artifact_reads_file_at_size_limit(tmp_path, capsys):
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+    raw = b"x" * shim.MAX_TURN_ARTIFACT_BYTES
+    (checkout / "plan.json").write_bytes(raw)
+
+    result = shim._capture_turn_artifact(str(checkout), "plan.json")
+
+    assert result == {
+        "path": "plan.json",
+        "content_b64": base64.b64encode(raw).decode("ascii"),
+        "outcome": "ok",
+    }
+    assert base64.b64decode(result["content_b64"]) == raw
+    assert "phase=artifact outcome=ok" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     ("artifact_path", "setup", "expected_outcome"),
     [
@@ -2122,6 +2139,48 @@ def test_capture_turn_artifact_rejects_symlink_escape(tmp_path, capsys):
         "outcome": "invalid_path",
     }
     assert "phase=artifact outcome=invalid_path" in capsys.readouterr().err
+
+
+def test_capture_turn_artifact_rejects_symlink_swap(tmp_path, capsys, monkeypatch):
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+    target = checkout / "target.json"
+    target.write_text("{}")
+    (checkout / "plan.json").symlink_to(target)
+    monkeypatch.setattr(shim.os.path, "isfile", lambda _path: True)
+    monkeypatch.setattr(shim.os.path, "realpath", lambda path: path)
+
+    assert shim._capture_turn_artifact(str(checkout), "plan.json") == {
+        "path": "plan.json",
+        "content_b64": None,
+        "outcome": "unreadable",
+    }
+    assert "phase=artifact outcome=unreadable" in capsys.readouterr().err
+
+
+def test_capture_turn_artifact_rejects_fifo(tmp_path, capsys):
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+    os.mkfifo(checkout / "plan.json")
+
+    assert shim._capture_turn_artifact(str(checkout), "plan.json") == {
+        "path": "plan.json",
+        "content_b64": None,
+        "outcome": "missing",
+    }
+    assert "phase=artifact outcome=missing" in capsys.readouterr().err
+
+
+def test_capture_turn_artifact_nul_path_is_unreadable(tmp_path, capsys):
+    checkout = tmp_path / "src"
+    checkout.mkdir()
+
+    assert shim._capture_turn_artifact(str(checkout), "plan\x00.json") == {
+        "path": "plan\x00.json",
+        "content_b64": None,
+        "outcome": "unreadable",
+    }
+    assert "phase=artifact outcome=unreadable" in capsys.readouterr().err
 
 
 def test_turn_diff_uncompressed_cap_sets_truncated(monkeypatch, tmp_path, capsys):

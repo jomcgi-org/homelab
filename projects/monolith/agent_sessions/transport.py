@@ -286,12 +286,18 @@ def _reject_guest_artifact(session_id, reason: str) -> None:
     return None
 
 
-def _guest_artifact(value, session_id=None) -> dict | None:
+def _guest_artifact(value, declared_path, session_id=None) -> dict | None:
     """Validate optional guest artifact metadata without failing the turn."""
     if value is None:
         return None
+    if declared_path is None:
+        return _reject_guest_artifact(session_id, "artifact was not declared")
     if not isinstance(value, dict):
         return _reject_guest_artifact(session_id, "payload is not a mapping")
+    if value.get("path") != declared_path:
+        return _reject_guest_artifact(
+            session_id, "path does not match the declared artifact"
+        )
     required = {"path", "content_b64", "outcome"}
     if not required.issubset(value):
         missing = sorted(required - set(value))
@@ -777,7 +783,9 @@ class EmberVmShimTransport:
                         activities=guest_data.get("activities", []),
                         diff=_guest_diff(guest_data.get("diff"), current.session_id),
                         artifact=_guest_artifact(
-                            guest_data.get("artifact"), current.session_id
+                            guest_data.get("artifact"),
+                            artifact_path,
+                            current.session_id,
                         ),
                     )
             except httpx.TimeoutException as exc:

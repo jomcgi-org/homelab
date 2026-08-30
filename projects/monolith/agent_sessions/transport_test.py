@@ -341,11 +341,67 @@ def test_deliver_maps_valid_guest_artifact(monkeypatch):
     _client(monkeypatch, handler)
     turn, _ = asyncio.run(
         transport.EmberVmShimTransport().deliver(
-            transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+            transport.EmberSession("s1", "t1", None),
+            "cli-1",
+            "hello",
+            artifact_path="plan.json",
         )
     )
 
     assert turn.artifact == captured
+
+
+def test_deliver_rejects_guest_artifact_with_mismatched_path(monkeypatch, caplog):
+    captured = {
+        "path": "other.json",
+        "content_b64": base64.b64encode(b'{"nodes": []}').decode("ascii"),
+        "outcome": "ok",
+    }
+
+    async def handler(request):
+        response = _turn_response(request)
+        payload = response.json()
+        payload["artifact"] = captured
+        return httpx.Response(200, json=payload, request=request)
+
+    _client(monkeypatch, handler)
+    with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+        turn, _ = asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("s1", "t1", None),
+                "cli-1",
+                "hello",
+                artifact_path="plan.json",
+            )
+        )
+
+    assert turn.artifact is None
+    assert "path does not match the declared artifact" in caplog.text
+
+
+def test_deliver_rejects_guest_artifact_when_not_declared(monkeypatch, caplog):
+    captured = {
+        "path": "plan.json",
+        "content_b64": base64.b64encode(b'{"nodes": []}').decode("ascii"),
+        "outcome": "ok",
+    }
+
+    async def handler(request):
+        response = _turn_response(request)
+        payload = response.json()
+        payload["artifact"] = captured
+        return httpx.Response(200, json=payload, request=request)
+
+    _client(monkeypatch, handler)
+    with caplog.at_level(logging.WARNING, logger=transport.logger.name):
+        turn, _ = asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("s1", "t1", None), "cli-1", "hello"
+            )
+        )
+
+    assert turn.artifact is None
+    assert "artifact was not declared" in caplog.text
 
 
 @pytest.mark.parametrize("artifact_path", [None, "plan.json"])
@@ -1585,8 +1641,11 @@ def test_guest_artifact_logs_a_distinct_reason_per_rejection(caplog):
     ]
     for payload, expected in cases:
         caplog.clear()
+        declared_path = (
+            payload.get("path") if isinstance(payload, dict) else "plan.json"
+        )
         with caplog.at_level(logging.WARNING, logger=transport.logger.name):
-            assert transport._guest_artifact(payload, 42) is None
+            assert transport._guest_artifact(payload, declared_path, 42) is None
         assert expected in caplog.text, f"{payload!r} did not log {expected!r}"
         assert "discarding guest artifact for session 42" in caplog.text
 
@@ -1602,7 +1661,7 @@ def test_guest_artifact_accepts_valid_ok_and_missing_payloads(caplog):
     ]
     with caplog.at_level(logging.WARNING, logger=transport.logger.name):
         for payload in payloads:
-            assert transport._guest_artifact(payload, 42) == payload
+            assert transport._guest_artifact(payload, "plan.json", 42) == payload
     assert caplog.text == ""
 
 
