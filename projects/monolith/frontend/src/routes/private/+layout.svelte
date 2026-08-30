@@ -6,6 +6,12 @@
   let { children } = $props();
   let hour = $state(new Date().getHours());
   let period = $derived(periodForHour(hour));
+  // The layout survives client-side navigation, so without a tick its
+  // palette would freeze at first mount and drift from the page under it.
+  $effect(() => {
+    const id = setInterval(() => (hour = new Date().getHours()), 60_000);
+    return () => clearInterval(id);
+  });
 
   // Minimal private-tier chrome: the shared Nav is suppressed for the whole
   // tier (see routes/+layout.svelte), so every private page other than the

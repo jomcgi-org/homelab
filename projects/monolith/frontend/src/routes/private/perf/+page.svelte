@@ -5,6 +5,10 @@
   let { data } = $props();
   let hour = $state(new Date().getHours());
   let period = $derived(periodForHour(hour));
+  $effect(() => {
+    const id = setInterval(() => (hour = new Date().getHours()), 60_000);
+    return () => clearInterval(id);
+  });
 
   // ── Formatting helpers ───────────────────────
 
