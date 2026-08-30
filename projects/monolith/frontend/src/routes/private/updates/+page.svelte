@@ -7,7 +7,10 @@
   } from "./updates.js";
 
   let { data } = $props();
-  let dark = $state(false);
+  let dark = $state(
+    typeof window !== "undefined" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches,
+  );
   $effect(() => {
     const scheme = window.matchMedia("(prefers-color-scheme: dark)");
     const apply = () => (dark = scheme.matches);
@@ -344,9 +347,9 @@
     /* Header bands tint from the sheet itself so they stay in the same
        neutral family as the paper. */
     --band: color-mix(in srgb, var(--ink) 5%, var(--sheet));
-    /* Accent mixed toward ink so small accent text and accent fills clear
-       WCAG AA in every period palette; bare var(--accent) measures 3.85:1
-       on dawn paper. */
+    /* Accent mixed toward ink: one darker accent for all small chrome so
+       accent text sits well above AA on both schemes (6.1:1 day, 8.8:1
+       night) instead of hovering near the floor. */
     --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
     /* Rule and box borders: --line is too faint to carry the drawing on
        the night palette, so structural strokes get a stronger mix. */
@@ -497,6 +500,10 @@
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.85em;
+  }
+
+  .spine-list .remove {
+    margin-left: 0.2em;
   }
 
   .spine-list a.active .count {
@@ -677,9 +684,9 @@
     font-size: 0.72rem;
   }
 
-  /* A real table of uniform cells: grid sizes every cell the same, each
-     cell draws its own left and top rule, and the container clips the
-     outer edges so only internal dividers remain. */
+  /* A real table of uniform cells: flex with a fixed basis sizes every
+     cell the same, each cell draws its own left and top rule, and the
+     container clips the outer edges so only internal dividers remain. */
   .filed-tags {
     display: flex;
     flex-wrap: wrap;
@@ -689,19 +696,12 @@
   .filed-tags a {
     box-sizing: border-box;
     flex: 0 0 10.5rem;
-  }
-
-  .filed-tags a {
     margin: -1px 0 0 -1px;
     padding: 0.35em 0.7em;
     border-top: 1px solid var(--line);
     border-left: 1px solid var(--line);
     color: var(--ink-2);
     text-decoration: none;
-  }
-
-  .filed-tags a:hover {
-    color: var(--accent-ink);
   }
 
   .filed-tags a:hover {
@@ -981,6 +981,11 @@
 
     .rail-month small {
       display: none;
+    }
+
+    /* Anchor jumps must clear the sticky index strip (about 52px). */
+    .edition {
+      scroll-margin-top: 4rem;
     }
 
     .empty-flow {

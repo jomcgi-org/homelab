@@ -30,7 +30,9 @@
 
   /* Paper-white sheet for document pages (the updates journal): the warm
      card tint reads as cream next to true white, and the document style
-     wants technical writing on paper. Night gets its own neutral sheet. */
+     wants technical writing on paper. Night gets its own neutral sheet;
+     dawn and dusk inherit the day value on purpose, document pages only
+     ever render day or night. */
   --sheet: #ffffff;
 
   /* re-bind the shared token names so descendant components

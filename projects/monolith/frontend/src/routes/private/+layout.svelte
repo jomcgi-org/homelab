@@ -5,7 +5,10 @@
   let { children } = $props();
   // Clean light/dark from the color scheme, matching the document pages
   // under it; the clock-drift palette stays a dashboard-only feature.
-  let dark = $state(false);
+  let dark = $state(
+    typeof window !== "undefined" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches,
+  );
   $effect(() => {
     const scheme = window.matchMedia("(prefers-color-scheme: dark)");
     const apply = () => (dark = scheme.matches);
