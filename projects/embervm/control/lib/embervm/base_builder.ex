@@ -1585,8 +1585,10 @@ defmodule Embervm.BaseBuilder do
   # break on instance_id, so the choice is stable run to run.
   #
   # A capacity fact exists exactly while an instance is healthy, so a fact-less
-  # instance is not placeable. A brand-new control plane can briefly have no facts;
-  # builds wait for the first NodeStatus rather than binding to an unknown instance.
+  # instance is not placeable. A brand-new control plane can briefly have no
+  # facts; a workload then holds at {:pending, :no_node} until WorkloadWatcher's
+  # periodic catalog resync (60s default) re-drives it, since nothing notifies
+  # the builder when the first NodeStatus lands a fact.
   defp placement(state, prev, need_mib) do
     case eligible_build_instances(state, need_mib) do
       [] ->
