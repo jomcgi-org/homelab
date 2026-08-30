@@ -62,6 +62,7 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── sextant/          #   State-machine code generator for operators
 ├── embervm/          #   Firecracker microVM orchestrator (Elixir control plane + Go node daemon)
 ├── firecracker/      #   fc-invoke microVM substrate (frozen; embervm forked its node daemon from it)
+├── gke-apps/         #   GKE destinations for the app workloads (dormant until cutover)
 ├── gke-cluster/      #   Auto-generated ArgoCD root kustomization for GKE hub
 ├── home-cluster/     #   Auto-generated ArgoCD root kustomization
 └── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
