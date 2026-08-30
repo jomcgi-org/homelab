@@ -611,8 +611,11 @@
     scroll-margin-top: 1.5rem;
   }
 
+  /* Editions run into each other as one continuous ruled document; the
+     tinted date band is the separator, and adjacent panel borders
+     collapse into a single line. */
   .edition + .edition {
-    margin-top: 1.75rem;
+    margin-top: -1px;
   }
 
   /* ── Edition head and metadata rows ──
