@@ -228,27 +228,24 @@
                 id={`update-${update.published_on}`}
                 data-update-date={update.published_on}
               >
-                <p class="sec-label">
-                  / Edition · <time datetime={update.published_on}
-                    >{formatDate(update.published_on)}</time
+                <p class="sec-label dateline">
+                  <span
+                    >/ Edition · <time datetime={update.published_on}
+                      >{formatDate(update.published_on)}</time
+                    ></span
                   >
+                  <span class="ed-category">{label(update.category)}</span>
                 </p>
 
-                <dl class="meta-band">
-                  <div class="meta-row">
-                    <dt>Category:</dt>
-                    <dd>
-                      <span class="boxed category"
-                        >{label(update.category)}</span
-                      >
-                    </dd>
-                  </div>
-                  <div class="meta-row">
-                    <dt>Filed:</dt>
-                    <dd class="meta-tags">
+                <div class="ed-article">
+                  <h2>{update.headline}</h2>
+                  <p class="summary">{update.summary}</p>
+
+                  <p class="filed-line">
+                    <span class="filed-label">Filed:</span>
+                    <span class="filed-tags">
                       {#each update.projects as project}
                         <a
-                          class="boxed"
                           href={facetHref(
                             "project",
                             project,
@@ -259,7 +256,6 @@
                       {/each}
                       {#each update.technologies as technology}
                         <a
-                          class="boxed"
                           href={facetHref(
                             "technology",
                             technology,
@@ -268,29 +264,18 @@
                           )}>{label(technology)}</a
                         >
                       {/each}
-                    </dd>
-                  </div>
-                  <div class="meta-row source-row">
-                    <dt>Source:</dt>
-                    <dd>
-                      <a
-                        class="source-link"
-                        href={update.source_compare_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        >{update.source_commit_count}
-                        {update.source_commit_count === 1
-                          ? "commit"
-                          : "commits"} on GitHub
-                        <span aria-hidden="true">&nearr;</span></a
-                      >
-                    </dd>
-                  </div>
-                </dl>
-
-                <div class="ed-article">
-                  <h2>{update.headline}</h2>
-                  <p class="summary">{update.summary}</p>
+                    </span>
+                    <a
+                      class="source-link"
+                      href={update.source_compare_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      >{update.source_commit_count}
+                      {update.source_commit_count === 1 ? "commit" : "commits"} on
+                      GitHub
+                      <span aria-hidden="true">&nearr;</span></a
+                    >
+                  </p>
 
                   <p class="sec-sublabel">What is new</p>
                   <div class="items">
@@ -631,74 +616,65 @@
     margin-top: 4rem;
   }
 
-  /* ── Edition metadata band ──
-     A single wrapping flex strip under the edition label instead of a
-     side column: every edition keeps the same vertical rhythm regardless
-     of article length, and enlarged text simply wraps the band. */
+  /* ── Edition dateline and filed line ──
+     Metadata is two quiet mono lines, one above the article and one below
+     the summary; boxed chip rows and a key-value band were both tried and
+     vetoed as chip soup that buried the headline. */
 
-  .meta-band {
+  .dateline {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.7em 2.2em;
-    align-items: baseline;
-    margin: 0 0 1.6rem;
-    padding-bottom: 0.9em;
-    border-bottom: 1px solid var(--line);
+    gap: 0.4em 1.5em;
+    justify-content: space-between;
   }
 
-  .meta-row {
+  .ed-category {
+    color: var(--accent-ink);
+    font-weight: 700;
+  }
+
+  .filed-line {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.6em;
+    gap: 0.4em 1em;
     align-items: baseline;
-  }
-
-  .source-row {
-    margin-left: auto;
-  }
-
-  .meta-row dt {
+    margin: 0 0 2rem;
+    padding-top: 0.7em;
+    border-top: 1px solid var(--line);
     color: var(--ink-2);
     font-family: var(--font-code);
-    font-size: 0.68rem;
+    font-size: 0.72rem;
+  }
+
+  .filed-label {
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
 
-  .meta-row dd {
-    margin: 0;
-    font-family: var(--font-code);
-    font-size: 0.74rem;
-  }
-
-  .meta-tags {
-    display: flex;
+  .filed-tags {
+    display: inline-flex;
     flex-wrap: wrap;
-    gap: 0.35em;
+    gap: 0.3em 0.5em;
+    align-items: baseline;
   }
 
-  .boxed {
-    display: inline-block;
-    padding: 0.15em 0.45em;
-    border: 1px solid var(--stroke);
+  .filed-tags a {
     color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.7rem;
     text-decoration: none;
   }
 
-  a.boxed:hover {
-    border-color: var(--accent-ink);
-    color: var(--accent-ink);
+  .filed-tags a + a::before {
+    padding-right: 0.5em;
+    color: var(--ink-3);
+    content: "\00b7";
   }
 
-  .boxed.category {
-    border-color: var(--accent-ink);
+  .filed-tags a:hover {
     color: var(--accent-ink);
-    font-weight: 600;
   }
 
   .source-link {
+    margin-left: auto;
     color: var(--ink-2);
     text-decoration: none;
     border-bottom: 1px solid currentColor;
@@ -720,10 +696,10 @@
   }
 
   .summary {
-    margin: 0.9rem 0 1.8rem;
-    color: var(--ink-2);
-    font-size: 1rem;
-    line-height: 1.65;
+    margin: 0.9rem 0 1.4rem;
+    color: var(--ink);
+    font-size: 0.95rem;
+    line-height: 1.55;
   }
 
   .sec-sublabel {
@@ -748,16 +724,16 @@
   }
 
   .item h3 {
-    margin: 0 0 0.3em;
-    font-size: 0.95rem;
+    margin: 0 0 0.25em;
+    font-size: 0.9rem;
     font-weight: 650;
   }
 
   .item p {
     margin: 0;
     color: var(--ink-2);
-    font-size: 0.88rem;
-    line-height: 1.6;
+    font-size: 0.84rem;
+    line-height: 1.55;
   }
 
   .supporting .item h3 {
