@@ -22,11 +22,6 @@ helm_chart(
     ],
 )
 
-exports_files(
-    ["values.yaml"],
-    visibility = ["//projects/mcp/context-forge-gateway/deploy:__pkg__"],
-)
-
 argocd_app(
     name = "context-forge-gke",
     chart = "projects/mcp/context-forge-gateway/chart",
