@@ -60,7 +60,7 @@
       <span class="masthead-id">
         <h1>Product updates</h1>
         <span class="masthead-meta"
-          >/ Private release journal / daily editions</span
+          >/ Private release journal / Daily editions</span
         >
       </span>
     </header>
@@ -386,12 +386,11 @@
     align-items: baseline;
     margin-bottom: 2.2rem;
     padding-bottom: 0.9rem;
-    border-bottom: 1px solid var(--stroke);
+    /* Hard partition: the drawing's frame line, not a hairline. */
+    border-bottom: 2px solid var(--ink);
     color: var(--ink-2);
     font-family: var(--font-code);
-    font-size: 0.68rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 0.72rem;
     white-space: nowrap;
   }
 
@@ -633,7 +632,10 @@
   }
 
   .edition + .edition {
-    margin-top: 2.75rem;
+    margin-top: 2.5rem;
+    padding-top: 2rem;
+    /* Hard partition between editions, same weight as the frame line. */
+    border-top: 2px solid var(--ink);
   }
 
   /* ── Edition head and metadata rows ──
@@ -651,9 +653,7 @@
     padding: 0.5em 0;
     border-bottom: 1px solid var(--line);
     font-family: var(--font-code);
-    font-size: 0.68rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 0.72rem;
   }
 
   .ed-head time {
@@ -681,7 +681,7 @@
   .meta-kv {
     display: grid;
     grid-template-columns: 5.5em minmax(0, 1fr);
-    gap: 0.8em;
+    gap: 1.4em;
     align-items: baseline;
     margin: 0;
     padding: 0.45em 0;
@@ -691,9 +691,7 @@
   .meta-kv .k {
     color: var(--ink-2);
     font-family: var(--font-code);
-    font-size: 0.68rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 0.72rem;
   }
 
   .meta-kv .v {
@@ -705,20 +703,19 @@
   .filed-tags {
     display: inline-flex;
     flex-wrap: wrap;
-    gap: 0.3em 0.5em;
+    gap: 0.4em;
     align-items: baseline;
   }
 
   .filed-tags a {
+    padding: 0.1em 0.45em;
+    border: 1px solid var(--stroke);
     color: var(--ink-2);
     text-decoration: none;
   }
 
-  /* Separator trails the tag so a wrapped line never starts with one. */
-  .filed-tags a:not(:last-child)::after {
-    padding-left: 0.5em;
-    color: var(--ink-3);
-    content: "\00b7";
+  .filed-tags a:hover {
+    border-color: var(--accent-ink);
   }
 
   .filed-tags a:hover {
@@ -758,10 +755,8 @@
     border-top: 1px solid var(--stroke);
     color: var(--ink-2);
     font-family: var(--font-code);
-    font-size: 0.68rem;
+    font-size: 0.72rem;
     font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
   }
 
   .items {
