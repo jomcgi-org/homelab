@@ -341,13 +341,13 @@ web:
           name: monolith-public-turnstile
           key: IP_HASH_SALT
     # goosecracker artifact read path (ADR 024). The public backend reads the
-    # agent-built HTML from the shared SeaweedFS S3 gateway (in-cluster, so the
-    # public off-cluster EgressNetwork deny does not block it) and the SSR
-    # frontend proxies /artifact/<id>/raw + /version to it. Read-only: the write
-    # router is not mounted on the public binary. Creds are the cluster's dummy
-    # R2 read-only S3 access via OnePasswordItem-backed Secret.
-    # ARTIFACTS_S3_BUCKET must match the full monolith's artifact.bucket (where
-    # the write lands).
+    # agent-built HTML from Cloudflare R2 (off-cluster; the scoped egress
+    # policy's Cloudflare CIDR allow admits it on 443) and the SSR frontend
+    # proxies /artifact/<id>/raw + /version to it. Read-only: the write router
+    # is not mounted on the public binary, and the creds are the read-only R2
+    # item via the OnePasswordItem-backed Secret. ARTIFACTS_S3_BUCKET must
+    # match the full monolith's artifact.bucket (where the write lands).
+    - name: SEAWEEDFS_S3_ENDPOINT
       value: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
     - name: AWS_REGION
       value: "auto"
@@ -355,12 +355,12 @@ web:
       valueFrom:
         secretKeyRef:
           name: monolith-public-r2-s3
-          key: access-key-id
+          key: r2_access_key_id
     - name: S3_SECRET_ACCESS_KEY
       valueFrom:
         secretKeyRef:
           name: monolith-public-r2-s3
-          key: secret-access-key
+          key: r2_secret_access_key
     # The stars read API serves the compact snapshot written by the Argo
     # stars-refresh workflow, rather than hydrating stars.site_hours here.
     - name: STARS_GRID_S3_BUCKET
@@ -560,12 +560,12 @@ imgproxy:
       valueFrom:
         secretKeyRef:
           name: monolith-public-r2-s3
-          key: access-key-id
+          key: r2_access_key_id
     - name: AWS_SECRET_ACCESS_KEY
       valueFrom:
         secretKeyRef:
           name: monolith-public-r2-s3
-          key: secret-access-key
+          key: r2_secret_access_key
     # Lock imgproxy to the trips bucket: it will only fetch sources under
     # s3://monolith-trips/, never other buckets or arbitrary URLs. Defense in
     # depth alongside URL signing (IMGPROXY_KEY/SALT below) and the preset

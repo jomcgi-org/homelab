@@ -68,11 +68,11 @@ the event dict, whose `.body` field is `"hello ember"`. That is the round-trip.
 
 ## LIVE end-to-end procedure (run against the homelab cluster)
 
-Prereqs: `kubectl` pointed at the homelab cluster, `rclone`, `curl`. SeaweedFS
-S3 is in-cluster only (ClusterIP `seaweedfs-s3.seaweedfs:8333`), so upload over a
+Prereqs: `kubectl` pointed at the homelab cluster, `rclone`, `curl`. R2 requires
+off-cluster access and authentication, so upload credentials via env variables:
 `kubectl port-forward` (mirror `projects/monolith/grimoire/tools/upload-book.sh`).
 
-### 1. Upload the zip to SeaweedFS at `s3://faas/echo-fn/<sha256>.zip`
+### 1. Upload the zip to R2 at `s3://faas/echo-fn/<sha256>.zip`
 
 ```bash
 SHA=53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b
@@ -81,7 +81,7 @@ ZIP=projects/embervm/runtimes/python/testdata/echo/echo.zip
 # Sanity: the local bytes must match the sha the CR pins.
 test "$(sha256sum "$ZIP" | cut -d' ' -f1)" = "$SHA" || echo "SHA MISMATCH"
 
-# rclone SeaweedFS remote, configured purely via env (no config file). The
+# rclone R2 remote, configured purely via env (no config file). The
 # duckdb/duckdb identity matches the SEAWEEDFS_S3 creds in the cluster.
 export RCLONE_CONFIG_SW_TYPE=s3
 export RCLONE_CONFIG_SW_PROVIDER=Other
@@ -91,7 +91,7 @@ export RCLONE_CONFIG_SW_ENDPOINT=http://localhost:8333
 export RCLONE_CONFIG_SW_REGION=us-east-1
 export RCLONE_CONFIG_SW_FORCE_PATH_STYLE=true
 
-kubectl port-forward -n seaweedfs svc/seaweedfs-s3 8333:8333 >/dev/null 2>&1 &
+# (R2 is off-cluster, no port-forward needed)
 PF=$!
 sleep 2
 rclone mkdir SW:faas 2>/dev/null || true
@@ -101,7 +101,7 @@ kill "$PF"
 ```
 
 The CR's `codeUri` is the in-cluster read URL for exactly this object:
-`http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333/faas/echo-fn/<sha256>.zip`.
+`https://R2_ACCOUNT_ID.r2.cloudflarestorage.com/faas/echo-fn/<sha256>.zip`.
 
 ### 2. Apply the Workload CR
 

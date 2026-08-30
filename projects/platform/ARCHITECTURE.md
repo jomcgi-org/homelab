@@ -106,7 +106,7 @@ The cluster has no S3 backup target for Longhorn volumes today. Durability rests
 
 (see: `projects/platform/longhorn/`, `projects/platform/longhorn/README.md`)
 
-**SeaweedFS** is S3-compatible distributed object storage. Every service that needs blob storage uses it. Global replication policy is single-copy (`replicationPlacement: "000"`, see: `projects/platform/seaweedfs/values.yaml` l.36). The volume servers' own Longhorn PVCs provide redundancy (two replicas on the primary storage node, one on the GPU node by design). The master is single-replica and lives on Longhorn.
+**SeaweedFS** is S3-compatible distributed object storage (deprecated, awaiting decommission). **Cloudflare R2** now serves blob storage for the app (artifacts, images, chat attachments). Global replication policy was single-copy (`replicationPlacement: "000"`, see: `projects/platform/seaweedfs/values.yaml` l.36). The volume servers' own Longhorn PVCs provided redundancy (two replicas on the primary storage node, one on the GPU node by design). The master was single-replica and lived on Longhorn.
 
 EmberVM uses SeaweedFS to archive task results, session state, and banked snapshots. The ember buckets are authenticated: only the `embervm` identity holds read and write on them, with credentials delivered as an `OnePasswordItem` (see: `projects/platform/seaweedfs/values.yaml` l.175-182, #4708). Every other bucket carries an anonymous identity with read and write, so SigV4 covers the ember keyspace rather than the store as a whole.
 

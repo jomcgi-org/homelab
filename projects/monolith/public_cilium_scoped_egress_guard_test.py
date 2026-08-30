@@ -295,7 +295,6 @@ def test_enforced_web_policy_pins_exactly_the_audited_destinations():
                 "postgres",
                 "inference",
                 "embeddings",
-                "seaweedfs",
                 "embervm",
                 "embervmServing",
             )
@@ -329,15 +328,6 @@ def test_enforced_web_policy_pins_exactly_the_audited_destinations():
                 ("app.kubernetes.io/name", "inference"),
             ),
             (("8080", "TCP"),),
-        ),
-        # SeaweedFS S3 gateway.
-        (
-            "seaweedfs",
-            (
-                ("app.kubernetes.io/component", "s3"),
-                ("app.kubernetes.io/name", "seaweedfs"),
-            ),
-            (("8333", "TCP"),),
         ),
         # EmberVM control plane (/functions router, demo-postgres status/reset).
         (
@@ -414,14 +404,23 @@ def test_enforced_frontend_and_imgproxy_policies_pin_their_shapes():
     imgproxy = _by_name(cnps, "-imgproxy-egress-scoped")
     imgproxy_expected = {
         _expected_rule(targets["dns"], DNS_PORTS),
-        _expected_rule(
-            targets["seaweedfs"], ((str(targets["seaweedfs"]["port"]), "TCP"),)
-        ),
     }
     assert _endpoint_rules(imgproxy) == imgproxy_expected, (
         f"imgproxy scoped egress drifted: {_fmt(_endpoint_rules(imgproxy))}"
     )
     assert not (_entities_in(imgproxy)), "imgproxy needs no entity grants"
+
+    # Cloudflare CIDR allow for R2 (artifact/trip image source) on 443.
+    cidr_rules = [rule for rule in imgproxy["spec"]["egress"] if rule.get("toCIDRSet")]
+    assert len(cidr_rules) == 1, (
+        "exactly one toCIDRSet rule (Cloudflare for R2) expected"
+    )
+    ports = {
+        (str(p["port"]), p["protocol"])
+        for block in cidr_rules[0]["toPorts"]
+        for p in block["ports"]
+    }
+    assert ports == {("443", "TCP")}, f"R2 allow must be 443/TCP, got {ports}"
 
 
 def test_audit_mode_still_coexists_with_the_broad_policies():
