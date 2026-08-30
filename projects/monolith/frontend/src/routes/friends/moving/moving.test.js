@@ -1,16 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  blankToNull,
   clusterMilestoneGroups,
   collidingSpanIds,
   collisionWording,
+  GCAL_STATE_LABELS,
   ganttDatePosition,
   groupMilestonesByDate,
   mergeAgendaItems,
   moveCountdown,
+  OWNER_LABELS,
   packLaneBars,
   packLegTags,
   progressSummary,
+  ROLE_STAGE_LABELS,
+  SPAN_KIND_LABELS,
   sumSellValues,
+  TRACK_LABELS,
+  patchDiff,
 } from "./moving.js";
 
 const tasks = [{ id: "task-1", title: "Ship the boxes", done_at: null }];
@@ -60,6 +67,107 @@ describe("colliding span ids", () => {
     ];
 
     expect(collidingSpanIds(collisions)).toEqual(collidingSpanIds(collisions));
+  });
+
+  it("excludes acknowledged collisions", () => {
+    expect(
+      collidingSpanIds([
+        {
+          type: "span_span",
+          item1_id: "span-1",
+          item2_id: "span-2",
+          acked_by: "anna",
+        },
+        {
+          type: "task_span",
+          item1_id: "task-1",
+          item2_id: "span-3",
+          acked_by: null,
+        },
+      ]),
+    ).toEqual(new Set(["span-3"]));
+  });
+});
+
+describe("moving editor vocabularies", () => {
+  it("exports the span kind vocabulary", () => {
+    expect(Object.keys(SPAN_KIND_LABELS)).toEqual([
+      "visitor",
+      "work",
+      "move",
+      "trip",
+      "leave",
+    ]);
+  });
+
+  it("exports the task track vocabulary", () => {
+    expect(Object.keys(TRACK_LABELS)).toEqual([
+      "sell",
+      "admin",
+      "ship",
+      "people",
+    ]);
+  });
+
+  it("exports the shared owner vocabulary", () => {
+    expect(Object.keys(OWNER_LABELS)).toEqual(["joe", "anna", "both"]);
+  });
+
+  it("exports the calendar state vocabulary", () => {
+    expect(Object.keys(GCAL_STATE_LABELS)).toEqual([
+      "queued",
+      "synced",
+      "held",
+    ]);
+  });
+
+  it("exports the role stage vocabulary", () => {
+    expect(Object.keys(ROLE_STAGE_LABELS)).toEqual([
+      "applied",
+      "screen",
+      "onsite",
+      "offer",
+      "closed",
+    ]);
+  });
+});
+
+describe("moving editor patch diff", () => {
+  it("returns only changed fields in caller order", () => {
+    expect(
+      patchDiff(
+        { title: "Pack", due_on: "2026-09-01", owner: "both" },
+        { title: "Pack boxes", due_on: null, owner: "both" },
+        ["title", "due_on", "owner"],
+      ),
+    ).toEqual({ title: "Pack boxes", due_on: null });
+  });
+
+  it("returns an empty object when no fields changed", () => {
+    expect(patchDiff({ title: "Pack" }, { title: "Pack" }, ["title"])).toEqual(
+      {},
+    );
+  });
+
+  it("does not mutate either input", () => {
+    const original = { stage: "screen" };
+    const edited = { stage: null };
+
+    patchDiff(original, edited, ["stage"]);
+
+    expect(original).toEqual({ stage: "screen" });
+    expect(edited).toEqual({ stage: null });
+  });
+});
+
+describe("blank nullable field conversion", () => {
+  it("converts an empty form value to null", () => {
+    expect(blankToNull("")).toBeNull();
+  });
+
+  it("preserves non-empty and already-null values", () => {
+    expect(blankToNull("2026-09-01")).toBe("2026-09-01");
+    expect(blankToNull(null)).toBeNull();
   });
 });
 

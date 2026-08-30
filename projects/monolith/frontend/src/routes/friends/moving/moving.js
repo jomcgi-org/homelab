@@ -15,13 +15,58 @@ const MONTH_SHORT = [
   "Dec",
 ];
 
-const SPAN_KIND_LABELS = {
+export const SPAN_KIND_LABELS = {
   visitor: "Visitors",
   work: "Work trips",
   move: "The move",
   trip: "Trips",
   leave: "Leave",
 };
+
+export const TRACK_LABELS = {
+  sell: "Sell",
+  admin: "Admin",
+  ship: "Ship",
+  people: "People",
+};
+
+export const OWNER_LABELS = {
+  joe: "Joe",
+  anna: "Anna",
+  both: "Both",
+};
+
+export const GCAL_STATE_LABELS = {
+  queued: "Queued",
+  synced: "Synced",
+  held: "Held",
+};
+
+export const ROLE_STAGE_LABELS = {
+  applied: "Applied",
+  screen: "Screen",
+  onsite: "Onsite",
+  offer: "Offer",
+  closed: "Closed",
+};
+
+export function patchDiff(
+  original,
+  edited,
+  fields = Object.keys(edited ?? {}),
+) {
+  const patch = {};
+  for (const field of fields) {
+    if (!Object.is(original?.[field], edited?.[field])) {
+      patch[field] = edited?.[field];
+    }
+  }
+  return patch;
+}
+
+export function blankToNull(value) {
+  return value === "" ? null : value;
+}
 
 function dateParts(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value ?? "");
@@ -229,6 +274,7 @@ export function collisionWording(collision, tasks, spans) {
 export function collidingSpanIds(collisions) {
   const ids = new Set();
   for (const collision of collisions ?? []) {
+    if (collision.acked_by) continue;
     if (collision.type === "span_span") {
       ids.add(collision.item1_id);
       ids.add(collision.item2_id);

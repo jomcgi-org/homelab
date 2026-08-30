@@ -1,8 +1,9 @@
 <script>
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import AccessPanel from "./AccessPanel.svelte";
+  import ManagePanel from "./ManagePanel.svelte";
   import {
     clusterMilestoneGroups,
     collidingSpanIds,
@@ -40,8 +41,12 @@
 
   let { data } = $props();
 
-  let tasks = $state(data.state?.tasks ?? []);
-  let progress = $state(data.state?.progress ?? 0);
+  let tasks = $state(untrack(() => data.state?.tasks ?? []));
+  let spans = $state(untrack(() => data.state?.spans ?? []));
+  let milestones = $state(untrack(() => data.state?.milestones ?? []));
+  let roles = $state(untrack(() => data.state?.roles ?? []));
+  let rawCollisions = $state(untrack(() => data.state?.collisions ?? []));
+  let progress = $state(untrack(() => data.state?.progress ?? 0));
   let pendingTaskIds = $state(new Set());
   let taskError = $state("");
   let isPhone = $state(false);
@@ -56,10 +61,7 @@
 
   const now = new Date();
   const currentScope = $derived(data.scope === "all" ? "all" : "mine");
-  const spans = $derived(data.state?.spans ?? []);
-  const milestones = $derived(data.state?.milestones ?? []);
-  const roles = $derived(data.state?.roles ?? []);
-  const rawCollisions = $derived(data.state?.collisions ?? []);
+  const currentMode = $derived(data.mode === "manage" ? "manage" : "dashboard");
   const collidingIds = $derived(collidingSpanIds(rawCollisions));
   const viewer = $derived(data.state?.viewer ?? "");
   const countdown = $derived(moveCountdown(spans, now));
@@ -150,6 +152,10 @@
 
   $effect(() => {
     tasks = data.state?.tasks ?? [];
+    spans = data.state?.spans ?? [];
+    milestones = data.state?.milestones ?? [];
+    roles = data.state?.roles ?? [];
+    rawCollisions = data.state?.collisions ?? [];
     progress = data.state?.progress ?? 0;
     taskError = "";
   });
@@ -168,6 +174,14 @@
     if (scope === currentScope) return;
     const url = new URL($page.url);
     url.searchParams.set("scope", scope);
+    goto(url, { keepFocus: true, noScroll: true });
+  }
+
+  function setMode(mode) {
+    if (mode === currentMode) return;
+    const url = new URL($page.url);
+    if (mode === "manage") url.searchParams.set("mode", "manage");
+    else url.searchParams.delete("mode");
     goto(url, { keepFocus: true, noScroll: true });
   }
 
@@ -305,7 +319,31 @@
 {:else}
   <main class="moving">
     <div class:phone={isPhone} class="app" data-mtab={mobileTab}>
-      <div class="grid fx">
+      {#if currentMode === "manage"}
+        <div class="manage-shell fx">
+          <header class="cell c-head">
+            <b>Crossing</b>
+            <span>{titleCaseName(viewer)}'s plan</span>
+            <span class="manage-title">Manage plan</span>
+            <time datetime={now.toISOString()}>{currentDateLabel}</time>
+            <button
+              class="manage-toggle"
+              type="button"
+              aria-pressed="true"
+              onclick={() => setMode("dashboard")}>Back to plan</button
+            >
+          </header>
+          <ManagePanel
+            bind:spans
+            bind:milestones
+            bind:tasks
+            bind:roles
+            bind:collisions={rawCollisions}
+            {viewer}
+          />
+        </div>
+      {/if}
+      <div class:manage-hidden={currentMode === "manage"} class="grid fx">
         <header class="cell c-head">
           <b>Crossing</b>
           <span>{titleCaseName(viewer)}'s plan</span>
@@ -355,6 +393,12 @@
                 onclick={() => setScope("all")}>All</button
               >
             </span>
+            <button
+              class="manage-toggle"
+              type="button"
+              aria-pressed="false"
+              onclick={() => setMode("manage")}>Manage</button
+            >
             <span class="badge">{overdueRows.length} late</span>
           </div>
           <div class="cta-body">
@@ -625,15 +669,23 @@
             {#if collisionRows.length === 0}
               <p class="quiet-empty">No date collisions.</p>
             {:else}
-              {#each collisionRows as collision}
-                <div class="crow">
+              {#each collisionRows as collision (`${collision.item1_id}:${collision.item2_id}`)}
+                <div class:acked={collision.acked_by} class="crow">
                   <span class="ic" aria-hidden="true"
                     >{collision.type === "task_span" ? "▲" : "△"}</span
                   >
                   <span class="d"
                     >{formatShortDate(collision.overlaps_from)}</span
                   >
-                  <span><b>{collision.wording}</b></span>
+                  <span
+                    ><b>{collision.wording}</b>
+                    {#if collision.acked_by}
+                      <span class="ack-chip">acked</span>
+                      {#if collision.ack_note}
+                        <span class="ack-note">{collision.ack_note}</span>
+                      {/if}
+                    {/if}</span
+                  >
                 </div>
               {/each}
             {/if}
