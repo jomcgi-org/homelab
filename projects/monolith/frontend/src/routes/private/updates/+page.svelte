@@ -47,53 +47,59 @@
 
 <main class="updates-page shell day">
   <header class="masthead">
-    <p class="kicker">Private release journal</p>
-    <h1>Product updates</h1>
-    <p class="intro">
-      A daily record of what became possible across the homelab, with the exact
-      source range behind every update.
-    </p>
+    <div class="masthead-label">
+      <p class="kicker">Private release journal</p>
+      <span>Daily editions</span>
+    </div>
 
-    <div class="facets" aria-label="Filter product updates">
-      {#if data.projects.length}
-        <div class="facet-row">
-          <span class="facet-label">Projects</span>
-          <div class="facet-options">
-            {#each data.projects as facet}
-              <a
-                class:active={data.selectedProject === facet.value}
-                href={facetHref(
-                  "project",
-                  facet.value,
-                  data.selectedProject,
-                  data.selectedTechnology,
-                )}>{label(facet.value)} <span>{facet.count}</span></a
-              >
-            {/each}
+    <div class="masthead-copy">
+      <h1>Product updates</h1>
+      <p class="intro">
+        What became possible across the homelab, with the exact source range
+        behind every update.
+      </p>
+
+      <div class="facets" aria-label="Filter product updates">
+        {#if data.projects.length}
+          <div class="facet-row">
+            <span class="facet-label">Projects</span>
+            <div class="facet-options">
+              {#each data.projects as facet}
+                <a
+                  class:active={data.selectedProject === facet.value}
+                  href={facetHref(
+                    "project",
+                    facet.value,
+                    data.selectedProject,
+                    data.selectedTechnology,
+                  )}>{label(facet.value)} <span>{facet.count}</span></a
+                >
+              {/each}
+            </div>
           </div>
-        </div>
-      {/if}
-      {#if data.technologies.length}
-        <div class="facet-row">
-          <span class="facet-label">Technologies</span>
-          <div class="facet-options">
-            {#each data.technologies as facet}
-              <a
-                class:active={data.selectedTechnology === facet.value}
-                href={facetHref(
-                  "technology",
-                  facet.value,
-                  data.selectedProject,
-                  data.selectedTechnology,
-                )}>{label(facet.value)} <span>{facet.count}</span></a
-              >
-            {/each}
+        {/if}
+        {#if data.technologies.length}
+          <div class="facet-row">
+            <span class="facet-label">Technologies</span>
+            <div class="facet-options">
+              {#each data.technologies as facet}
+                <a
+                  class:active={data.selectedTechnology === facet.value}
+                  href={facetHref(
+                    "technology",
+                    facet.value,
+                    data.selectedProject,
+                    data.selectedTechnology,
+                  )}>{label(facet.value)} <span>{facet.count}</span></a
+                >
+              {/each}
+            </div>
           </div>
-        </div>
-      {/if}
-      {#if filtering}
-        <a class="clear" href="/updates">Clear filters</a>
-      {/if}
+        {/if}
+        {#if filtering}
+          <a class="clear" href="/updates">Clear filters</a>
+        {/if}
+      </div>
     </div>
   </header>
 
@@ -103,18 +109,51 @@
       <span>The archive service did not respond. Try again shortly.</span>
     </div>
   {:else if !data.updates.length}
-    <div class="state">
-      <strong
-        >{filtering
-          ? "No updates match these filters."
-          : "The first update is on its way."}</strong
-      >
-      <span
-        >{filtering
-          ? "Clear a filter to see the complete journal."
-          : "Daily entries will appear here as soon as they are submitted."}</span
-      >
-    </div>
+    {#if filtering}
+      <div class="state">
+        <strong>No updates match these filters.</strong>
+        <span>Clear a filter to see the complete journal.</span>
+      </div>
+    {:else}
+      <div class="empty-journal">
+        <aside class="empty-rail" aria-hidden="true">
+          <span>Archive</span>
+          <strong>00</strong>
+          <small>editions</small>
+        </aside>
+
+        <section class="empty-entry">
+          <div class="empty-meta">
+            <span class="ready-dot"></span>
+            <span>Archive ready</span>
+            <span>Edition 00</span>
+          </div>
+          <h2>Waiting for the first daily edition.</h2>
+          <p>
+            New features and meaningful improvements will land here after the
+            daily rollup submits a validated entry.
+          </p>
+
+          <div class="empty-flow" aria-label="Daily update workflow">
+            <div>
+              <span>01</span>
+              <strong>Collect changes</strong>
+              <small>Public commit range</small>
+            </div>
+            <div>
+              <span>02</span>
+              <strong>Write the story</strong>
+              <small>Features, not commit logs</small>
+            </div>
+            <div>
+              <span>03</span>
+              <strong>Publish here</strong>
+              <small>Structured and browsable</small>
+            </div>
+          </div>
+        </section>
+      </div>
+    {/if}
   {:else}
     <div class="journal-layout">
       <nav class="date-rail" aria-label="Updates by date">
@@ -235,67 +274,85 @@
   .updates-page {
     min-height: 100vh;
     box-sizing: border-box;
-    padding: 7rem clamp(1.25rem, 5vw, 5.5rem) 8rem;
+    padding: 6em clamp(1.5em, 6vw, 5.5em) 8em;
     color: var(--ink);
     background:
-      radial-gradient(circle at 85% 4%, var(--glow-a), transparent 27rem),
-      radial-gradient(circle at 8% 24%, var(--glow-b), transparent 24rem),
+      radial-gradient(circle at 85% 4%, var(--glow-a), transparent 27em),
+      radial-gradient(circle at 8% 24%, var(--glow-b), transparent 24em),
       var(--paper);
     font-family: var(--font-ui);
+    font-size: 16px;
   }
 
   .masthead {
-    max-width: 76rem;
-    margin: 0 auto 5rem;
-    padding-left: clamp(0rem, 17vw, 13rem);
+    display: grid;
+    grid-template-columns: minmax(9em, 13em) minmax(0, 52em);
+    gap: clamp(2em, 6vw, 7em);
+    max-width: 76em;
+    margin: 0 auto 4em;
   }
 
   .kicker {
-    margin: 0 0 1rem;
+    margin: 0;
     color: var(--accent);
-    font-size: 0.72rem;
+    font-size: 0.72em;
     font-weight: 700;
     letter-spacing: 0.15em;
     text-transform: uppercase;
   }
 
+  .masthead-label {
+    padding-top: 0.55em;
+  }
+
+  .masthead-label > span {
+    display: block;
+    margin-top: 0.55em;
+    color: var(--ink-3);
+    font-family: var(--font-code);
+    font-size: 0.68em;
+  }
+
+  .masthead-copy {
+    min-width: 0;
+  }
+
   h1 {
-    max-width: 12ch;
+    max-width: 11ch;
     margin: 0;
     font-family: var(--font-display);
-    font-size: clamp(3.2rem, 8vw, 7rem);
+    font-size: clamp(3.2em, 7vw, 5.4em);
     font-weight: 450;
-    letter-spacing: -0.055em;
-    line-height: 0.9;
+    letter-spacing: -0.05em;
+    line-height: 0.94;
   }
 
   .intro {
-    max-width: 42rem;
-    margin: 2rem 0 0;
+    max-width: 38em;
+    margin: 1.5em 0 0;
     color: var(--ink-2);
-    font-family: var(--font-display);
-    font-size: clamp(1.1rem, 2vw, 1.4rem);
-    line-height: 1.55;
+    font-size: clamp(1em, 1.7vw, 1.15em);
+    line-height: 1.65;
   }
 
   .facets {
     display: grid;
-    gap: 0.85rem;
-    margin-top: 3rem;
-    padding-top: 1.35rem;
+    gap: 0.85em;
+    margin-top: 3em;
+    padding-top: 1.35em;
     border-top: 1px solid var(--line);
   }
 
   .facet-row {
     display: grid;
-    grid-template-columns: 6.5rem 1fr;
-    gap: 1rem;
+    grid-template-columns: 6.5em 1fr;
+    gap: 1em;
     align-items: baseline;
   }
 
   .facet-label {
     color: var(--ink-3);
-    font-size: 0.7rem;
+    font-size: 0.7em;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -304,20 +361,20 @@
   .facet-options {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.35rem 0.95rem;
+    gap: 0.35em 0.95em;
   }
 
   .facet-options a,
   .clear {
     color: var(--ink-2);
-    font-size: 0.8rem;
+    font-size: 0.8em;
     text-decoration: none;
   }
 
   .facet-options a span {
     color: var(--ink-3);
     font-family: var(--font-code);
-    font-size: 0.67rem;
+    font-size: 0.67em;
   }
 
   .facet-options a:hover,
@@ -332,36 +389,36 @@
 
   .clear {
     width: max-content;
-    margin-left: 7.5rem;
+    margin-left: 7.5em;
     border-bottom: 1px solid currentColor;
   }
 
   .journal-layout {
     display: grid;
-    grid-template-columns: minmax(9rem, 13rem) minmax(0, 52rem);
-    gap: clamp(2rem, 6vw, 7rem);
+    grid-template-columns: minmax(9em, 13em) minmax(0, 52em);
+    gap: clamp(2em, 6vw, 7em);
     justify-content: center;
-    max-width: 76rem;
+    max-width: 76em;
     margin: 0 auto;
   }
 
   .date-rail {
     position: sticky;
-    top: 5rem;
+    top: 5em;
     align-self: start;
-    max-height: calc(100vh - 7rem);
+    max-height: calc(100vh - 7em);
     overflow-y: auto;
     scrollbar-width: none;
   }
 
   .rail-month + .rail-month {
-    margin-top: 1.6rem;
+    margin-top: 1.6em;
   }
 
   .rail-month > p {
-    margin: 0 0 0.6rem;
+    margin: 0 0 0.6em;
     color: var(--ink-3);
-    font-size: 0.65rem;
+    font-size: 0.65em;
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -369,10 +426,10 @@
 
   .rail-month a {
     display: grid;
-    grid-template-columns: 2rem 1fr;
-    gap: 0.65rem;
+    grid-template-columns: 2em 1fr;
+    gap: 0.65em;
     align-items: start;
-    padding: 0.45rem 0;
+    padding: 0.45em 0;
     color: var(--ink-3);
     text-decoration: none;
     transition: color 120ms ease;
@@ -380,13 +437,13 @@
 
   .rail-month a > span {
     font-family: var(--font-code);
-    font-size: 0.75rem;
+    font-size: 0.75em;
   }
 
   .rail-month small {
     display: -webkit-box;
     overflow: hidden;
-    font-size: 0.7rem;
+    font-size: 0.7em;
     line-height: 1.3;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
@@ -402,24 +459,24 @@
   }
 
   .entries article {
-    scroll-margin-top: 3rem;
-    padding-bottom: 6rem;
+    scroll-margin-top: 3em;
+    padding-bottom: 6em;
   }
 
   .entries article + article {
-    padding-top: 5.5rem;
+    padding-top: 5.5em;
     border-top: 1px solid var(--line);
   }
 
   .entry-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.65rem 1.1rem;
+    gap: 0.65em 1.1em;
     align-items: center;
-    margin-bottom: 1.25rem;
+    margin-bottom: 1.25em;
     color: var(--ink-3);
     font-family: var(--font-code);
-    font-size: 0.7rem;
+    font-size: 0.7em;
     letter-spacing: 0.02em;
   }
 
@@ -428,12 +485,12 @@
   }
 
   .category {
-    padding: 0.25rem 0.5rem;
+    padding: 0.25em 0.5em;
     border: 1px solid var(--line);
     border-radius: 999px;
     color: var(--accent);
     font-family: var(--font-ui);
-    font-size: 0.62rem;
+    font-size: 0.62em;
     font-weight: 700;
     letter-spacing: 0.07em;
     text-transform: uppercase;
@@ -443,32 +500,32 @@
     max-width: 16ch;
     margin: 0;
     font-family: var(--font-display);
-    font-size: clamp(2.3rem, 5vw, 4.4rem);
+    font-size: clamp(2.3em, 5vw, 4.4em);
     font-weight: 500;
     letter-spacing: -0.035em;
     line-height: 1.02;
   }
 
   .summary {
-    max-width: 42rem;
-    margin: 1.5rem 0 3.25rem;
+    max-width: 42em;
+    margin: 1.5em 0 3.25em;
     color: var(--ink-2);
-    font-size: clamp(1rem, 2vw, 1.2rem);
+    font-size: clamp(1em, 2vw, 1.2em);
     line-height: 1.7;
   }
 
   .section-block {
     display: grid;
-    grid-template-columns: minmax(7rem, 10rem) 1fr;
-    gap: clamp(1rem, 4vw, 3rem);
-    padding: 1.6rem 0;
+    grid-template-columns: minmax(7em, 10em) 1fr;
+    gap: clamp(1em, 4vw, 3em);
+    padding: 1.6em 0;
     border-top: 1px solid var(--line);
   }
 
   .section-block h3 {
     margin: 0;
     color: var(--accent);
-    font-size: 0.7rem;
+    font-size: 0.7em;
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -476,20 +533,20 @@
 
   .items {
     display: grid;
-    gap: 1.5rem;
+    gap: 1.5em;
   }
 
   .item h4 {
-    margin: 0 0 0.4rem;
+    margin: 0 0 0.4em;
     font-family: var(--font-display);
-    font-size: 1.15rem;
+    font-size: 1.15em;
     font-weight: 600;
   }
 
   .item p {
     margin: 0;
     color: var(--ink-2);
-    font-size: 0.9rem;
+    font-size: 0.9em;
     line-height: 1.65;
   }
 
@@ -499,24 +556,24 @@
 
   .entry-footer {
     display: grid;
-    gap: 1.5rem;
-    margin-top: 2.25rem;
-    padding-top: 1.5rem;
+    gap: 1.5em;
+    margin-top: 2.25em;
+    padding-top: 1.5em;
     border-top: 1px solid var(--line);
   }
 
   .tags {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.45rem;
+    gap: 0.45em;
   }
 
   .tags a {
-    padding: 0.3rem 0.55rem;
+    padding: 0.3em 0.55em;
     border-radius: 999px;
     color: var(--ink-2);
     background: color-mix(in srgb, var(--ink) 5%, transparent);
-    font-size: 0.68rem;
+    font-size: 0.68em;
     text-decoration: none;
   }
 
@@ -533,22 +590,22 @@
     width: max-content;
     max-width: 100%;
     color: var(--accent);
-    font-size: 0.78rem;
+    font-size: 0.78em;
     font-weight: 650;
     text-decoration: none;
   }
 
   .source-link:hover {
     text-decoration: underline;
-    text-underline-offset: 0.2rem;
+    text-underline-offset: 0.2em;
   }
 
   .state {
     display: grid;
-    gap: 0.5rem;
-    max-width: 42rem;
-    margin: 2rem auto;
-    padding: 2rem;
+    gap: 0.5em;
+    max-width: 42em;
+    margin: 2em auto;
+    padding: 2em;
     border: 1px solid var(--line);
     border-radius: var(--radius);
     background: color-mix(in srgb, var(--card-bg) 88%, transparent);
@@ -558,19 +615,160 @@
     color: var(--ink-2);
   }
 
+  .empty-journal {
+    display: grid;
+    grid-template-columns: minmax(9em, 13em) minmax(0, 52em);
+    gap: clamp(2em, 6vw, 7em);
+    max-width: 76em;
+    margin: 0 auto;
+  }
+
+  .empty-rail {
+    display: grid;
+    align-content: start;
+    padding-top: 1.25em;
+    border-top: 1px solid var(--line);
+  }
+
+  .empty-rail span,
+  .empty-rail small {
+    color: var(--ink-3);
+    font-size: 0.65em;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .empty-rail strong {
+    margin-top: 1em;
+    color: var(--ink-3);
+    font-family: var(--font-display);
+    font-size: 3.5em;
+    font-weight: 450;
+    letter-spacing: -0.05em;
+    line-height: 0.9;
+  }
+
+  .empty-rail small {
+    margin-top: 0.45em;
+    font-family: var(--font-code);
+    font-size: 0.58em;
+    font-weight: 500;
+  }
+
+  .empty-entry {
+    min-width: 0;
+    padding-top: 1.25em;
+    border-top: 1px solid var(--line);
+  }
+
+  .empty-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65em 1.1em;
+    align-items: center;
+    color: var(--ink-3);
+    font-family: var(--font-code);
+    font-size: 0.68em;
+  }
+
+  .empty-meta span:last-child {
+    margin-left: auto;
+  }
+
+  .ready-dot {
+    width: 0.45em;
+    height: 0.45em;
+    border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 0 0.2em color-mix(in srgb, var(--ok) 13%, transparent);
+  }
+
+  .empty-entry h2 {
+    max-width: 14ch;
+    margin-top: 2.1em;
+    font-size: clamp(2.4em, 5vw, 4.25em);
+  }
+
+  .empty-entry > p {
+    max-width: 38em;
+    margin: 1.35em 0 0;
+    color: var(--ink-2);
+    font-size: 0.98em;
+    line-height: 1.7;
+  }
+
+  .empty-flow {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin-top: 3.25em;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .empty-flow > div {
+    display: grid;
+    align-content: start;
+    min-width: 0;
+    padding: 1.25em 1em 1.35em 0;
+  }
+
+  .empty-flow > div + div {
+    padding-left: 1em;
+    border-left: 1px solid var(--line);
+  }
+
+  .empty-flow span {
+    color: var(--accent);
+    font-family: var(--font-code);
+    font-size: 0.62em;
+  }
+
+  .empty-flow strong {
+    margin-top: 1.4em;
+    font-family: var(--font-display);
+    font-size: 1em;
+    font-weight: 600;
+  }
+
+  .empty-flow small {
+    margin-top: 0.35em;
+    color: var(--ink-3);
+    font-size: 0.68em;
+    line-height: 1.45;
+  }
+
   @media (max-width: 760px) {
     .updates-page {
-      padding-top: 6rem;
+      padding: 5.5em 1.35em 5em;
     }
 
     .masthead {
-      margin-bottom: 3rem;
-      padding-left: 0;
+      display: block;
+      margin-bottom: 3em;
+    }
+
+    .masthead-label {
+      display: flex;
+      justify-content: space-between;
+      gap: 1em;
+      align-items: baseline;
+      padding: 0 0 1em;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .masthead-label > span {
+      margin: 0;
+    }
+
+    h1 {
+      margin-top: 1.65em;
+      font-size: clamp(3em, 16vw, 4.2em);
     }
 
     .facet-row {
       grid-template-columns: 1fr;
-      gap: 0.35rem;
+      gap: 0.35em;
     }
 
     .clear {
@@ -581,14 +779,51 @@
       display: block;
     }
 
+    .empty-journal {
+      display: block;
+    }
+
+    .empty-rail {
+      display: none;
+    }
+
+    .empty-entry h2 {
+      margin-top: 1.65em;
+    }
+
+    .empty-flow {
+      grid-template-columns: 1fr;
+      margin-top: 2.5em;
+    }
+
+    .empty-flow > div {
+      grid-template-columns: 2.5em 1fr;
+      padding: 1em 0;
+    }
+
+    .empty-flow > div + div {
+      padding-left: 0;
+      border-top: 1px solid var(--line);
+      border-left: 0;
+    }
+
+    .empty-flow strong,
+    .empty-flow small {
+      grid-column: 2;
+    }
+
+    .empty-flow strong {
+      margin-top: 0;
+    }
+
     .date-rail {
       z-index: 4;
       top: 0;
       display: flex;
-      gap: 1.5rem;
+      gap: 1.5em;
       max-height: none;
-      margin: 0 -1.25rem 3.5rem;
-      padding: 0.8rem 1.25rem;
+      margin: 0 -1.25em 3.5em;
+      padding: 0.8em 1.25em;
       overflow-x: auto;
       border-bottom: 1px solid var(--line);
       background: color-mix(in srgb, var(--paper) 92%, transparent);
@@ -598,20 +833,20 @@
     .rail-month,
     .rail-month + .rail-month {
       display: flex;
-      gap: 0.65rem;
+      gap: 0.65em;
       align-items: center;
       margin: 0;
     }
 
     .rail-month > p {
       min-width: max-content;
-      margin: 0 0.3rem 0 0;
+      margin: 0 0.3em 0 0;
     }
 
     .rail-month a {
       display: block;
-      min-width: 1.7rem;
-      padding: 0.3rem;
+      min-width: 1.7em;
+      padding: 0.3em;
       text-align: center;
     }
 
