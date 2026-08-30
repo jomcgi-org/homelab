@@ -1,4 +1,10 @@
-load("//bazel/helm:defs.bzl", "argocd_app")
+# gazelle:argocd disabled
+# The argocd gazelle extension would generate an argocd_app here (this is
+# the one git-chart single-source app) whose template and semgrep tests
+# depend on the chart target, visible only to //overlays; the extension
+# also resets that visibility on every format pass, so the generated
+# targets can never analyse. The chart renders are covered by the
+# hand-written targets in ../chart/BUILD instead.
 
 filegroup(
     name = "deploy_values",
@@ -12,18 +18,3 @@ filegroup(
     visibility = ["//projects/mcp/context-forge-gateway/chart:__pkg__"],
 )
 
-argocd_app(
-    name = "context-forge-gateway",
-    chart = "projects/mcp/context-forge-gateway/chart",
-    chart_files = "//projects/mcp/context-forge-gateway/chart:chart",
-    namespace = "mcp",
-    release_name = "context-forge-gateway",
-    tags = [
-        "helm",
-        "template",
-    ],
-    values_files = [
-        "//projects/mcp/context-forge-gateway/chart:values.yaml",
-        "values.yaml",
-    ],
-)
