@@ -229,7 +229,6 @@
                   <time datetime={update.published_on}
                     >{formatDate(update.published_on)}</time
                   >
-                  <span class="ed-category">{label(update.category)}</span>
                 </p>
 
                 <div class="ed-lead">
@@ -323,7 +322,28 @@
     margin: 0;
   }
 
+  /* Pin the overscroll ground to the sheet so rubber banding never shows
+     the cream tier background (same approach as html:has(.ember-site)).
+     Tokens are scoped to .shell and cannot reach html, so these are the
+     literal day and night card values. */
+  :global(html:has(.updates-page)) {
+    background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
+    /* The tier scales the root font with the viewport (global.css clamp
+       up to 48px); a fixed document wants a fixed basis, and every rem
+       on this page assumes it. */
+    font-size: 16px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(html:has(.updates-page)) {
+      background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
+    }
+  }
+
   .updates-page {
+    /* Header bands tint from the sheet itself so they stay in the same
+       neutral family as the paper. */
+    --band: color-mix(in srgb, var(--ink) 5%, var(--sheet));
     /* Accent mixed toward ink so small accent text and accent fills clear
        WCAG AA in every period palette; bare var(--accent) measures 3.85:1
        on dawn paper. */
@@ -335,7 +355,9 @@
     box-sizing: border-box;
     padding: clamp(2rem, 4vh, 3rem) clamp(1.5em, 5vw, 4.5em) 6em;
     color: var(--ink);
-    background: var(--paper);
+    /* One bright sheet for the whole page: the drawing is on white, not
+       white panels floating on cream. */
+    background: var(--sheet);
     font-family: var(--font-ui);
     font-size: 16px;
   }
@@ -586,9 +608,6 @@
      technical diagram: content never floats in open space between rules. */
   .edition {
     border: 1px solid var(--ink);
-    /* Panel sits on the raised card surface so text gets the brighter
-       ground; the page paper stays behind the panels. */
-    background: var(--card-bg);
     scroll-margin-top: 1.5rem;
   }
 
@@ -603,25 +622,16 @@
      noise the spine never needed. */
 
   .ed-head {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 1.5em;
-    align-items: baseline;
     margin: 0;
     padding: 0.55em 1rem;
     border-bottom: 1px solid var(--stroke);
-    background: var(--surface);
+    background: var(--band);
     font-family: var(--font-code);
     font-size: 0.72rem;
   }
 
   .ed-head time {
     color: var(--ink-2);
-  }
-
-  .ed-category {
-    color: var(--accent-ink);
-    font-weight: 500;
   }
 
   .meta-rows {
@@ -653,6 +663,10 @@
     border-left: 1px solid var(--line);
   }
 
+  .meta-kv .v.filed-tags {
+    padding: 0;
+  }
+
   .meta-kv .k,
   .meta-kv .v {
     color: var(--ink-2);
@@ -660,27 +674,27 @@
     font-size: 0.72rem;
   }
 
-  /* Divider lines between tags, not boxes: the row supplies the frame,
-     tags read as one divided value. */
+  /* A real table of uniform cells: grid sizes every cell the same, each
+     cell draws its own left and top rule, and the container clips the
+     outer edges so only internal dividers remain. */
   .filed-tags {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.35em 0;
+    overflow: hidden;
   }
 
   .filed-tags a {
-    padding: 0 0.7em;
-    border-right: 1px solid var(--stroke);
+    box-sizing: border-box;
+    flex: 0 0 10.5rem;
+  }
+
+  .filed-tags a {
+    margin: -1px 0 0 -1px;
+    padding: 0.35em 0.7em;
+    border-top: 1px solid var(--line);
+    border-left: 1px solid var(--line);
     color: var(--ink-2);
     text-decoration: none;
-  }
-
-  .filed-tags a:first-child {
-    padding-left: 0;
-  }
-
-  .filed-tags a:last-child {
-    border-right: 0;
   }
 
   .filed-tags a:hover {
@@ -707,18 +721,18 @@
   }
 
   .ed-lead h2 {
-    max-width: 34ch;
+    max-width: 40ch;
     margin: 0;
-    font-size: clamp(1.25rem, 1.9vw, 1.6rem);
+    font-size: clamp(1.1rem, 1.6vw, 1.35rem);
     font-weight: 700;
     letter-spacing: -0.02em;
     line-height: 1.15;
   }
 
   .summary {
-    margin: 0.6rem 0 0;
+    margin: 0.5rem 0 0;
     color: var(--ink);
-    font-size: 0.88rem;
+    font-size: 0.84rem;
     line-height: 1.5;
   }
 
@@ -731,7 +745,7 @@
     margin: 0;
     padding: 0.45em 1rem;
     border-bottom: 1px solid var(--line);
-    background: var(--surface);
+    background: var(--band);
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.72rem;
@@ -740,23 +754,27 @@
 
   .items {
     margin: 0;
-    padding: 0.8rem 1rem 1rem;
+  }
+
+  /* Items are ruled rows inside the section, not floating text. */
+  .item {
+    padding: 0.6rem 1rem 0.7rem;
   }
 
   .item + .item {
-    margin-top: 0.9em;
+    border-top: 1px solid var(--line);
   }
 
   .item h3 {
-    margin: 0 0 0.2em;
-    font-size: 0.84rem;
+    margin: 0 0 0.15em;
+    font-size: 0.8rem;
     font-weight: 650;
   }
 
   .item p {
     margin: 0;
     color: var(--ink-2);
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     line-height: 1.5;
   }
 
@@ -917,7 +935,7 @@
       overflow-x: auto;
       border-top: 1px solid var(--line);
       border-bottom: 1px solid var(--stroke);
-      background: color-mix(in srgb, var(--paper) 92%, transparent);
+      background: color-mix(in srgb, var(--sheet) 92%, transparent);
       backdrop-filter: blur(14px);
     }
 
