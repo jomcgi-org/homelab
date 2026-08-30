@@ -454,6 +454,14 @@ def test_gke_recovery_has_app_credentials_and_a_distinct_archive(renders):
     assert recovery["database"] == "monolith"
     assert recovery["owner"] == "app"
 
+    # An absent backup section is the SAFE degenerate case: nothing archives,
+    # so nothing can collide with the home archive. The GKE overlay holds
+    # backup disabled while the gke-apps chart pin predates the serverName
+    # template (an enabled backup on the pinned chart archives straight into
+    # the home prefix). Once backup is enabled again, its archive name must
+    # differ from the recovery source.
+    if "backup" not in cluster["spec"]:
+        return
     backup_store = cluster["spec"]["backup"]["barmanObjectStore"]
     backup_server = backup_store.get("serverName", cluster["metadata"]["name"])
     recovery_store = cluster["spec"]["externalClusters"][0]
