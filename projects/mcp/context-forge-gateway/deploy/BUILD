@@ -17,4 +17,3 @@ filegroup(
     srcs = ["values-gke.yaml"],
     visibility = ["//projects/mcp/context-forge-gateway/chart:__pkg__"],
 )
-
