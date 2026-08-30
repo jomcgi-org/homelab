@@ -1,0 +1,11 @@
+argo-cd:
+  server:
+    replicas: 1
+  repoServer:
+    replicas: 1
+  configs:
+    params:
+      reposerver.repo.cache.expiration: "10m"
+
+cfIngress:
+  enabled: false

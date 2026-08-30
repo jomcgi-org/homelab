@@ -6,12 +6,34 @@ cd "${BUILD_WORKSPACE_DIRECTORY:-$(git rev-parse --show-toplevel)}"
 
 OUTPUT_FILE="projects/home-cluster/kustomization.yaml"
 
+# Cluster roots and cluster-specific platform trees must never be enrolled in
+# the home cluster. Keep these exclusions explicit even when a directory would
+# currently be skipped by the discovery heuristics below.
+EXCLUDED_ROOTS=(
+	"projects/home-cluster"
+	"projects/gke-cluster"
+	"projects/platform-gke"
+)
+
+is_excluded() {
+	local path="$1"
+	for root in "${EXCLUDED_ROOTS[@]}"; do
+		if [[ "$path" == "$root" || "$path" == "$root"/* ]]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
 # Aggregator directories have their own top-level kustomization.yaml that
 # includes their children. We include the aggregator itself, not the individual
 # deploy/ dirs underneath it.
 AGGREGATOR_DIRS=()
 for dir in projects/*/kustomization.yaml; do
 	parent=$(dirname "$dir")
+	if is_excluded "$parent"; then
+		continue
+	fi
 	# A directory is an aggregator if it contains subdirectories with their own
 	# kustomization.yaml (either directly or under deploy/)
 	has_children=false
@@ -50,7 +72,7 @@ for pattern in projects/*/deploy/kustomization.yaml projects/*/*/deploy/kustomiz
 	for f in $pattern; do
 		[ -f "$f" ] || continue
 		dir=$(dirname "$f")
-		if ! is_under_aggregator "$dir"; then
+		if ! is_excluded "$dir" && ! is_under_aggregator "$dir"; then
 			PATHS+=("$dir")
 		fi
 	done
