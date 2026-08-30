@@ -586,6 +586,9 @@
      technical diagram: content never floats in open space between rules. */
   .edition {
     border: 1px solid var(--ink);
+    /* Panel sits on the raised card surface so text gets the brighter
+       ground; the page paper stays behind the panels. */
+    background: var(--card-bg);
     scroll-margin-top: 1.5rem;
   }
 
@@ -607,6 +610,7 @@
     margin: 0;
     padding: 0.55em 1rem;
     border-bottom: 1px solid var(--stroke);
+    background: var(--surface);
     font-family: var(--font-code);
     font-size: 0.72rem;
   }
@@ -622,7 +626,6 @@
 
   .meta-rows {
     margin: 0;
-    padding: 0 1rem;
     border-top: 1px solid var(--stroke);
   }
 
@@ -631,44 +634,56 @@
      right-aligned against it wraps ragged with a gulf in the middle. */
   .meta-kv {
     display: grid;
-    grid-template-columns: 5.5em minmax(0, 1fr);
-    gap: 1.4em;
-    align-items: baseline;
+    grid-template-columns: 6.5em minmax(0, 1fr);
+    align-items: stretch;
     margin: 0;
-    padding: 0.45em 0;
+  }
+
+  .meta-kv + .meta-kv {
+    border-top: 1px solid var(--line);
   }
 
   .meta-kv .k {
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
+    padding: 0.5em 0 0.5em 1rem;
   }
 
+  .meta-kv .v {
+    padding: 0.5em 1rem 0.5em 1.2em;
+    /* Label column rule, drawn by the value cell so it spans row height. */
+    border-left: 1px solid var(--line);
+  }
+
+  .meta-kv .k,
   .meta-kv .v {
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.72rem;
   }
 
-  /* One divided box, not individual chips: cells share collapsed 1px
-     borders like compartments in a diagram, wrapping included. */
+  /* Divider lines between tags, not boxes: the row supplies the frame,
+     tags read as one divided value. */
   .filed-tags {
     display: flex;
     flex-wrap: wrap;
-    margin: 1px 0 0 1px;
+    gap: 0.35em 0;
   }
 
   .filed-tags a {
-    margin: -1px 0 0 -1px;
-    padding: 0.2em 0.6em;
-    border: 1px solid var(--stroke);
+    padding: 0 0.7em;
+    border-right: 1px solid var(--stroke);
     color: var(--ink-2);
     text-decoration: none;
   }
 
+  .filed-tags a:first-child {
+    padding-left: 0;
+  }
+
+  .filed-tags a:last-child {
+    border-right: 0;
+  }
+
   .filed-tags a:hover {
-    position: relative;
-    border-color: var(--accent-ink);
     color: var(--accent-ink);
   }
 
@@ -708,12 +723,15 @@
   }
 
   .ed-section {
-    padding: 0.7rem 1rem 1rem;
     border-top: 1px solid var(--stroke);
   }
 
+  /* Tinted band distinguishes section headers from content at a glance. */
   .sec-sublabel {
-    margin: 0 0 0.8em;
+    margin: 0;
+    padding: 0.45em 1rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.72rem;
@@ -722,6 +740,7 @@
 
   .items {
     margin: 0;
+    padding: 0.8rem 1rem 1rem;
   }
 
   .item + .item {
