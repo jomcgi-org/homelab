@@ -12,6 +12,11 @@ SERVER-SIDE. The guest may pre-check as a courtesy, but a guest is exactly the
 component whose claims cannot be trusted, so validation that matters happens
 where the agent cannot reach it.
 
+The whole-file channel is primary for a turn dispatched with a declared
+artifact, and ``evaluate_content`` imposes no freshness constraint. Diff
+recovery remains a fallback for turns without a direct delivery and can only
+recover added files safely.
+
 The outcome is never a dead end. A turn that fails validation is retryable with
 the reasons fed back to the agent, and when retries run out the node escalates
 to the conductor, which can retry it again or reshape the plan around it. There
@@ -47,7 +52,7 @@ class ArtifactOutcome:
 def extract_artifact(
     diff_text: str | None, path: str
 ) -> tuple[str | None, ArtifactOutcome | None]:
-    """Recover a declared artifact's content from a turn's unified diff.
+    """Recover a declared artifact's content from a turn's unified diff fallback.
 
     Returns ``(content, None)`` when the file was recovered, and
     ``(None, outcome)`` when it was not.
@@ -86,11 +91,31 @@ def extract_artifact(
 
 def evaluate(diff_text: str | None, path: str, schema: dict) -> ArtifactOutcome:
     """Extract, parse and validate one declared artifact from a turn."""
-    import json
-
     raw, failure = extract_artifact(diff_text, path)
     if failure is not None:
         return failure
+    return _evaluate_raw(raw, path, schema)
+
+
+def evaluate_content(raw, path: str, schema: dict) -> ArtifactOutcome:
+    """Validate a directly delivered artifact (the beside-the-diff channel).
+
+    raw is the file's bytes or text as the guest delivered them, or None when
+    the guest reported the file absent. Unlike the diff path there is no
+    NOT_FRESH here: a delivered artifact is the whole file regardless of
+    whether the turn created or modified it.
+    """
+    if raw is None:
+        return ArtifactOutcome(MISSING, errors=[f"{path} was not delivered this turn"])
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    return _evaluate_raw(raw, path, schema)
+
+
+def _evaluate_raw(raw, path: str, schema: dict) -> ArtifactOutcome:
+    """Parse and validate artifact content shared by both delivery paths."""
+    import json
+
     try:
         value = json.loads(raw)
     except ValueError as exc:

@@ -123,6 +123,73 @@ def test_persist_turn_keeps_blob_when_diff_is_truncated(session, monkeypatch):
     assert persisted.diff_base_sha == "a" * 40
 
 
+def test_persist_turn_keeps_declared_artifact_bytes(session, monkeypatch):
+    agent = store.create_session(session, "local-artifact", "/workspace", "main")
+    agent_id = agent.id
+    session.commit()
+    raw = b'{"nodes": []}'
+    monkeypatch.setattr(store, "get_engine", session.get_bind)
+    turn = Turn(
+        result="Done",
+        terminal_reason="completed",
+        stop_reason="end_turn",
+        is_error=False,
+        permission_denials=[],
+        num_turns=1,
+        session_id="cli-1",
+        usage={},
+        total_cost_usd=0.0,
+        duration_ms=1,
+        activities=[],
+        artifact={
+            "path": "plan.json",
+            "content_b64": base64.b64encode(raw).decode("ascii"),
+            "outcome": "ok",
+        },
+    )
+
+    store.persist_turn_from_pending_sync(
+        agent_id, 1, "save the plan", turn, "Done", "completed"
+    )
+
+    session.expire_all()
+    persisted = store.get_turn(session, agent_id, 1)
+    assert persisted.artifact_path == "plan.json"
+    assert persisted.artifact_blob == raw
+    assert persisted.artifact_outcome == "ok"
+
+
+def test_persist_turn_discards_malformed_artifact(session, monkeypatch):
+    agent = store.create_session(session, "local-bad-artifact", "/workspace", "main")
+    agent_id = agent.id
+    session.commit()
+    monkeypatch.setattr(store, "get_engine", session.get_bind)
+    turn = Turn(
+        result="Done",
+        terminal_reason="completed",
+        stop_reason="end_turn",
+        is_error=False,
+        permission_denials=[],
+        num_turns=1,
+        session_id="cli-1",
+        usage={},
+        total_cost_usd=0.0,
+        duration_ms=1,
+        activities=[],
+        artifact={"path": "plan.json"},
+    )
+
+    store.persist_turn_from_pending_sync(
+        agent_id, 1, "save the plan", turn, "Done", "completed"
+    )
+
+    session.expire_all()
+    persisted = store.get_turn(session, agent_id, 1)
+    assert persisted.artifact_path is None
+    assert persisted.artifact_blob is None
+    assert persisted.artifact_outcome is None
+
+
 @pytest.mark.parametrize(
     ("result", "expected"),
     [

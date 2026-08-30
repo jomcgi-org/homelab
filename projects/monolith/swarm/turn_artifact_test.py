@@ -123,6 +123,46 @@ class TestEvaluate:
         assert outcome.value == {"nodes": [{"kind": "wrong"}]}
 
 
+class TestEvaluateContent:
+    def test_accepts_a_valid_document(self):
+        raw = '{"nodes": [{"key": "research", "kind": "work"}]}'
+        outcome = ta.evaluate_content(raw, "plan.json", SCHEMA)
+        assert outcome.ok
+        assert outcome.value == {"nodes": [{"key": "research", "kind": "work"}]}
+
+    def test_unparsable_json_is_distinct_from_invalid(self):
+        outcome = ta.evaluate_content("{not json", "plan.json", SCHEMA)
+        assert outcome.status == ta.UNPARSABLE
+        assert outcome.errors
+
+    def test_reports_sorted_schema_violations(self):
+        raw = '{"nodes": [{"kind": "wrong"}, {"key": 7, "kind": "work"}]}'
+        outcome = ta.evaluate_content(raw, "plan.json", SCHEMA)
+        assert outcome.status == ta.INVALID
+        assert len(outcome.errors) >= 3
+        assert outcome.errors == sorted(outcome.errors)
+
+    def test_none_is_missing(self):
+        outcome = ta.evaluate_content(None, "plan.json", SCHEMA)
+        assert outcome.status == ta.MISSING
+        assert outcome.errors == ["plan.json was not delivered this turn"]
+
+    def test_decodes_bytes_as_utf8(self):
+        outcome = ta.evaluate_content(b'{"nodes": []}', "plan.json", SCHEMA)
+        assert outcome.ok
+        assert outcome.value == {"nodes": []}
+
+    def test_modified_file_is_not_fresh_in_diff_but_valid_when_delivered(self):
+        _, diff_outcome = ta.extract_artifact(
+            modified_file_diff("plan.json"), "plan.json"
+        )
+        delivered = b'{"nodes": [{"key": "a", "kind": "work"}]}'
+
+        assert diff_outcome.status == ta.NOT_FRESH
+        direct_outcome = ta.evaluate_content(delivered, "plan.json", SCHEMA)
+        assert direct_outcome.ok
+
+
 class TestRetryInstruction:
     def test_names_the_file_and_every_reason(self):
         outcome = ta.ArtifactOutcome(
