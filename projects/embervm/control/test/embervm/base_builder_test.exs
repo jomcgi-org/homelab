@@ -1476,6 +1476,10 @@ defmodule Embervm.BaseBuilderTest do
       ready_base("w__unknown", "w", 512)
     ])
 
+    # The builder's own node needs a fact of its own for placement now that a
+    # fact-less instance is excluded rather than a fail-open wildcard.
+    put_instance_fact(table, "node-1/intel")
+
     export_fun = fn :fake_channel, %Embervm.Node.V1.ExportArtifactRequest{artifact: ref} ->
       send(test_pid, {:exported, ref.ref})
       {:ok, %Embervm.Node.V1.ExportArtifactResponse{bytes_moved: 0, skipped: true, generation: 0}}
@@ -1533,6 +1537,10 @@ defmodule Embervm.BaseBuilderTest do
         retention_sweep_enabled: true,
         retention_disk_driven_enabled: true
       )
+
+    # An explicit capacity_table skips start_builder's default seeding, and a
+    # fact-less instance is no longer placeable, so seed node-4 ourselves.
+    put_instance_fact(table, "node-4")
 
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 1, image_ref: "imgA"}))
     assert_eventually(fn -> match?(%{"snapshotRef" => "snap-old"}, latest(agent, "w")) end)
@@ -1609,7 +1617,10 @@ defmodule Embervm.BaseBuilderTest do
         {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
       end
     )
-    put_node_capacity_fact(table, "w", "placeholder", true)
+    # No put_node_capacity_fact here: it writes the SAME {"node-4", "ds"} key as
+    # the put_local_bases_fact above and would wipe the 21-base inventory this
+    # test sweeps. The bases fact itself is wildcard-shaped (no size_class), so
+    # placement works from it directly.
     build_current(builder, agent, "w__current")
 
     plan = BaseBuilder.retention_sweep_now(builder)
@@ -1718,14 +1729,19 @@ defmodule Embervm.BaseBuilderTest do
     [node_id | pod_uid] = String.split(instance_id, "/", parts: 2)
     pod_uid = List.first(pod_uid) || "test"
 
+    # Deliberately a REPORTED wildcard (blank class and vendor, zero budget):
+    # wildcard? keeps it build-eligible, so default-table tests place exactly as
+    # before the fact-less exclusion landed, while the blank vendor keeps it out
+    # of fleet_vendors and off the vendor-keyed tests' subject matter. Tests
+    # that assert on budgets or vendors seed their own explicit facts.
     NodeCapacity.put(table, {node_id, pod_uid}, %{
       node_id: node_id,
       configured_id: node_id,
       instance_id: instance_id,
-      cpu_vendor: "amd",
-      size_class: "8gi",
-      mem_budget_mib: 8_192,
-      mem_headroom_mib: 8_000,
+      cpu_vendor: "",
+      size_class: "",
+      mem_budget_mib: 0,
+      mem_headroom_mib: 0,
       live_vms: 0,
       max_live_vms: 8,
       updated_at: 0

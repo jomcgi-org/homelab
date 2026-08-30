@@ -124,7 +124,7 @@ defmodule Embervm.ZipLaneEchoTest do
     # WorkloadCatalog.create(cat_table), so the test must NOT pre-create it (a
     # named ETS table cannot be created twice: "table name already exists").
     NodeCapacity.create(cap_table)
-    
+
     # Seed a capacity fact for the builder node so placement succeeds
     NodeCapacity.put(cap_table, {"node-4", "ds"}, %{
       node_id: "node-4",
@@ -156,7 +156,8 @@ defmodule Embervm.ZipLaneEchoTest do
         # A no-op status writer: this test asserts on the build request + the
         # submit round-trip, not on the CR status patch (the watcher/builder unit
         # tests cover status).
-        status_writer: fn _ns, _name, _status -> :ok end
+        status_writer: fn _ns, _name, _status -> :ok end,
+        capacity_table: cap_table
       )
 
     # -- WorkloadWatcher parses the CR, catalogs it, and drives the builder. ---
