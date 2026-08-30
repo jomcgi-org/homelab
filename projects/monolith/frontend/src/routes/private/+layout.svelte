@@ -35,8 +35,7 @@
   let showBack = $derived.by(() => {
     const path = $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
     if (path === "/") return false;
-    // updates renders the dashboard link inside its own masthead topline.
-    if (/^\/(app|demos|review|chat|notes|agents|updates)(\/|$)/.test(path))
+    if (/^\/(app|demos|review|chat|notes|agents)(\/|$)/.test(path))
       return false;
     return true;
   });

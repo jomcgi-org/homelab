@@ -55,10 +55,7 @@
 
 <main class="updates-page shell {dark ? 'night' : 'day'}">
   <div class="frame">
-    <header class="masthead">
-      <a class="back-link" href="/">&larr; Dashboard</a>
-      <h1 class="sr-only">Product updates</h1>
-    </header>
+    <h1 class="sr-only">Product updates</h1>
 
     <div class="journal">
       <aside class="spine">
@@ -374,21 +371,6 @@
 
   /* ── Masthead ── */
 
-  .masthead {
-    margin-bottom: 1.6rem;
-  }
-
-  .back-link {
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-    text-decoration: none;
-  }
-
-  .back-link:hover {
-    color: var(--accent-ink);
-  }
-
   .sr-only {
     position: absolute;
     width: 1px;
@@ -644,10 +626,6 @@
     border-top: 1px solid var(--stroke);
   }
 
-  .meta-rows .meta-kv:last-child {
-    border-bottom: 0;
-  }
-
   /* Spec-table shape: fixed label column, value flows left beside it.
      The spine's space-between works for short counts; a long value list
      right-aligned against it wraps ragged with a gulf in the middle. */
@@ -658,7 +636,6 @@
     align-items: baseline;
     margin: 0;
     padding: 0.45em 0;
-    border-bottom: 1px solid var(--line);
   }
 
   .meta-kv .k {
@@ -673,22 +650,26 @@
     font-size: 0.72rem;
   }
 
+  /* One divided box, not individual chips: cells share collapsed 1px
+     borders like compartments in a diagram, wrapping included. */
   .filed-tags {
-    display: inline-flex;
+    display: flex;
     flex-wrap: wrap;
-    gap: 0.4em;
-    align-items: baseline;
+    margin: 1px 0 0 1px;
   }
 
   .filed-tags a {
-    padding: 0.1em 0.45em;
+    margin: -1px 0 0 -1px;
+    padding: 0.2em 0.6em;
     border: 1px solid var(--stroke);
     color: var(--ink-2);
     text-decoration: none;
   }
 
   .filed-tags a:hover {
+    position: relative;
     border-color: var(--accent-ink);
+    color: var(--accent-ink);
   }
 
   .filed-tags a:hover {
