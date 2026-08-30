@@ -67,5 +67,8 @@ helm_chart(
     },
     lint = False,
     publish = True,
-    visibility = ["//overlays:__subpackages__"],
+    visibility = [
+        "//overlays:__subpackages__",
+        "//projects/monolith-public/deploy:__pkg__",
+    ],
 )

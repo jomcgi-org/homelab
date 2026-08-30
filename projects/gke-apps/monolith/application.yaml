@@ -5,18 +5,22 @@ metadata:
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: default
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith
+      # This pin is a deliberate bootstrap floor. Write-back does NOT maintain gke-apps pins.
+      # The cutover window (issue #5458) advances it manually from this frozen baseline.
       targetRevision: 0.395.3
       helm:
         releaseName: monolith
         valueFiles:
           - $values/projects/monolith/deploy/values.yaml
           - $values/projects/monolith/deploy/values-gke.yaml
-        ignoreMissingValueFiles: true
+        ignoreMissingValueFiles: false
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       ref: values

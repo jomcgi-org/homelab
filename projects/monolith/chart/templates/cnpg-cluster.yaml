@@ -9,7 +9,7 @@ spec:
   storage:
     size: {{ .Values.postgres.storage.size }}
     {{- if .Values.postgres.storage.storageClass }}
-    storageClassName: {{ .Values.postgres.storage.storageClass }}
+    storageClass: {{ .Values.postgres.storage.storageClass }}
     {{- end }}
   postgresql:
     parameters:
