@@ -1,13 +1,15 @@
 <script>
+  import { periodForHour } from "$lib/private/period.js";
   import {
     facetHref,
     formatDate,
-    formatVersion,
     groupUpdatesByMonth,
     label,
   } from "./updates.js";
 
   let { data } = $props();
+  let hour = $state(new Date().getHours());
+  let period = $derived(periodForHour(hour));
   let activeDate = $state("");
   let monthGroups = $derived(groupUpdatesByMonth(data.updates));
   let filtering = $derived(
@@ -45,7 +47,7 @@
   />
 </svelte:head>
 
-<main class="updates-page shell day">
+<main class={`updates-page shell ${period}`}>
   <header class="masthead">
     <div class="masthead-label">
       <p class="kicker">Private release journal</p>
@@ -67,12 +69,21 @@
               {#each data.projects as facet}
                 <a
                   class:active={data.selectedProject === facet.value}
+                  aria-current={data.selectedProject === facet.value
+                    ? "true"
+                    : undefined}
                   href={facetHref(
                     "project",
                     facet.value,
                     data.selectedProject,
                     data.selectedTechnology,
-                  )}>{label(facet.value)} <span>{facet.count}</span></a
+                  )}
+                  >{label(facet.value)}
+                  <span>{facet.count}</span
+                  >{#if data.selectedProject === facet.value}<span
+                      class="remove"
+                      aria-hidden="true">×</span
+                    >{/if}</a
                 >
               {/each}
             </div>
@@ -85,19 +96,40 @@
               {#each data.technologies as facet}
                 <a
                   class:active={data.selectedTechnology === facet.value}
+                  aria-current={data.selectedTechnology === facet.value
+                    ? "true"
+                    : undefined}
                   href={facetHref(
                     "technology",
                     facet.value,
                     data.selectedProject,
                     data.selectedTechnology,
-                  )}>{label(facet.value)} <span>{facet.count}</span></a
+                  )}
+                  >{label(facet.value)}
+                  <span>{facet.count}</span
+                  >{#if data.selectedTechnology === facet.value}<span
+                      class="remove"
+                      aria-hidden="true">×</span
+                    >{/if}</a
                 >
               {/each}
             </div>
           </div>
         {/if}
         {#if filtering}
-          <a class="clear" href="/updates">Clear filters</a>
+          <p class="filter-results">
+            <span>
+              {data.updates.length}
+              {data.updates.length === 1
+                ? "update"
+                : "updates"}{#if data.selectedProject}
+                · {label(
+                  data.selectedProject,
+                )}{/if}{#if data.selectedTechnology}
+                · {label(data.selectedTechnology)}{/if}
+            </span>
+            <a class="clear" href="/updates">Clear filters</a>
+          </p>
         {/if}
       </div>
     </div>
@@ -186,7 +218,6 @@
               <time datetime={update.published_on}
                 >{formatDate(update.published_on)}</time
               >
-              <span>v{formatVersion(update.published_on)}</span>
               <span class={`category category-${update.category}`}
                 >{label(update.category)}</span
               >
@@ -263,8 +294,10 @@
 </main>
 
 <style>
-  :global(html) {
-    scroll-behavior: smooth;
+  @media (prefers-reduced-motion: no-preference) {
+    :global(html) {
+      scroll-behavior: smooth;
+    }
   }
 
   :global(body) {
@@ -274,7 +307,7 @@
   .updates-page {
     min-height: 100vh;
     box-sizing: border-box;
-    padding: 6em clamp(1.5em, 6vw, 5.5em) 8em;
+    padding: clamp(3.5rem, 6vh, 5rem) clamp(1.5em, 6vw, 5.5em) 8em;
     color: var(--ink);
     background:
       radial-gradient(circle at 85% 4%, var(--glow-a), transparent 27em),
@@ -289,7 +322,7 @@
     grid-template-columns: minmax(9em, 13em) minmax(0, 52em);
     gap: clamp(2em, 6vw, 7em);
     max-width: 76em;
-    margin: 0 auto 4em;
+    margin: 0 auto 3rem;
   }
 
   .kicker {
@@ -321,7 +354,7 @@
     max-width: 11ch;
     margin: 0;
     font-family: var(--font-display);
-    font-size: clamp(3.2em, 7vw, 5.4em);
+    font-size: clamp(2.6rem, 5.5vw, 4.5rem);
     font-weight: 450;
     letter-spacing: -0.05em;
     line-height: 0.94;
@@ -329,7 +362,7 @@
 
   .intro {
     max-width: 38em;
-    margin: 1.5em 0 0;
+    margin: 1.25rem 0 0;
     color: var(--ink-2);
     font-size: clamp(1em, 1.7vw, 1.15em);
     line-height: 1.65;
@@ -338,7 +371,7 @@
   .facets {
     display: grid;
     gap: 0.85em;
-    margin-top: 3em;
+    margin-top: 1.75rem;
     padding-top: 1.35em;
     border-top: 1px solid var(--line);
   }
@@ -367,30 +400,63 @@
   .facet-options a,
   .clear {
     color: var(--ink-2);
-    font-size: 0.8em;
     text-decoration: none;
   }
 
+  .facet-options a {
+    padding: 0.3rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: transparent;
+    font-size: 0.8em;
+  }
+
   .facet-options a span {
-    color: var(--ink-3);
     font-family: var(--font-code);
-    font-size: 0.67em;
   }
 
   .facet-options a:hover,
-  .facet-options a.active,
   .clear:hover {
     color: var(--accent);
   }
 
+  .facet-options a:hover {
+    border-color: var(--accent);
+  }
+
   .facet-options a.active {
+    border-color: var(--accent);
+    color: var(--paper);
+    background: var(--accent);
     font-weight: 650;
   }
 
+  .facet-options a.active span {
+    opacity: 0.75;
+  }
+
+  .facet-options .remove {
+    margin-left: 0.15rem;
+  }
+
+  .filter-results {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.6rem;
+    align-items: baseline;
+    margin: 0;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
+  }
+
   .clear {
-    width: max-content;
-    margin-left: 7.5em;
     border-bottom: 1px solid currentColor;
+  }
+
+  .updates-page a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
   }
 
   .journal-layout {
@@ -426,10 +492,11 @@
 
   .rail-month a {
     display: grid;
-    grid-template-columns: 2em 1fr;
+    grid-template-columns: 2em minmax(0, 1fr);
     gap: 0.65em;
     align-items: start;
-    padding: 0.45em 0;
+    padding: 0.45em 0 0.45em 0.6rem;
+    border-left: 2px solid transparent;
     color: var(--ink-3);
     text-decoration: none;
     transition: color 120ms ease;
@@ -458,13 +525,17 @@
     font-weight: 700;
   }
 
+  .rail-month a.active {
+    border-left-color: var(--accent);
+  }
+
   .entries article {
     scroll-margin-top: 3em;
-    padding-bottom: 6em;
+    padding-bottom: 3.5rem;
   }
 
   .entries article + article {
-    padding-top: 5.5em;
+    padding-top: 3.5rem;
     border-top: 1px solid var(--line);
   }
 
@@ -497,18 +568,18 @@
   }
 
   h2 {
-    max-width: 16ch;
+    max-width: 26ch;
     margin: 0;
     font-family: var(--font-display);
-    font-size: clamp(2.3em, 5vw, 4.4em);
+    font-size: clamp(1.7rem, 3vw, 2.6rem);
     font-weight: 500;
     letter-spacing: -0.035em;
-    line-height: 1.02;
+    line-height: 1.1;
   }
 
   .summary {
     max-width: 42em;
-    margin: 1.5em 0 3.25em;
+    margin: 1rem 0 2.25rem;
     color: var(--ink-2);
     font-size: clamp(1em, 2vw, 1.2em);
     line-height: 1.7;
@@ -740,7 +811,7 @@
 
   @media (max-width: 760px) {
     .updates-page {
-      padding: 5.5em 1.35em 5em;
+      padding: 3.5rem 1.35em 5em;
     }
 
     .masthead {
@@ -763,16 +834,11 @@
 
     h1 {
       margin-top: 1.65em;
-      font-size: clamp(3em, 16vw, 4.2em);
     }
 
     .facet-row {
       grid-template-columns: 1fr;
       gap: 0.35em;
-    }
-
-    .clear {
-      margin-left: 0;
     }
 
     .journal-layout {
@@ -846,7 +912,7 @@
     .rail-month a {
       display: block;
       min-width: 1.7em;
-      padding: 0.3em;
+      padding: 0.3em 0.3em 0.3em 0.6rem;
       text-align: center;
     }
 

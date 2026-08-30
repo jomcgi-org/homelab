@@ -1,7 +1,10 @@
 <script>
   import "$lib/private/dashboard-theme.css";
+  import { periodForHour } from "$lib/private/period.js";
 
   let { data } = $props();
+  let hour = $state(new Date().getHours());
+  let period = $derived(periodForHour(hour));
 
   // ── Formatting helpers ───────────────────────
 
@@ -134,7 +137,7 @@
 
 <svelte:head><title>Scan perf · private.jomcgi.dev</title></svelte:head>
 
-<div class="shell day">
+<div class="shell {period}">
   <div class="dash">
     <header class="masthead">
       <h1 class="greeting">

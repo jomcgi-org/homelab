@@ -19,10 +19,6 @@ export function formatDate(value) {
   return DATE_FORMAT.format(asDate(value));
 }
 
-export function formatVersion(value) {
-  return value.replaceAll("-", ".");
-}
-
 export function label(value) {
   return value
     .split("-")

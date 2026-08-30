@@ -1,8 +1,11 @@
 <script>
   import "$lib/private/dashboard-theme.css";
   import { page } from "$app/stores";
+  import { periodForHour } from "$lib/private/period.js";
 
   let { children } = $props();
+  let hour = $state(new Date().getHours());
+  let period = $derived(periodForHour(hour));
 
   // Minimal private-tier chrome: the shared Nav is suppressed for the whole
   // tier (see routes/+layout.svelte), so every private page other than the
@@ -32,15 +35,15 @@
 </script>
 
 {#if showBack}
-  <a class="back-to-dashboard shell day" href="/">&larr; dashboard</a>
+  <a class="back-to-dashboard shell {period}" href="/">&larr; dashboard</a>
 {/if}
 
 {@render children()}
 
 <style>
-  /* A quiet text link. This renders OUTSIDE any page's .shell, so it
-     carries "shell day" itself: dashboard-theme.css's .shell class only
-     defines custom properties, making the day palette resolve here without
+  /* A quiet text link. This renders OUTSIDE any page's .shell, so it carries
+     the current period itself. dashboard-theme.css's .shell class only defines
+     custom properties, making the matching palette resolve here without
      inheriting any page styling. */
   .back-to-dashboard {
     position: fixed;
