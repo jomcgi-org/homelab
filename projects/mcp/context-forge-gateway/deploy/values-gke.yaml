@@ -6,7 +6,7 @@ mcp-stack:
     # Upstream's schema requires at least one replica even though Kubernetes
     # accepts zero. The GKE Application skips that schema check for this dormant
     # deployment and still renders the Deployment with replicas: 0.
-    replicaCount: 0
+    replicaCount: 1
 
 cnpg:
   storage:
@@ -36,4 +36,4 @@ cnpg:
           compression: gzip
 
 teamMapping:
-  enabled: false
+  enabled: true

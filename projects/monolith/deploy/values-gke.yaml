@@ -2,7 +2,9 @@
 # CNPG stays up for data staging and bootstraps by recovery from the
 # off-cluster GCS Barman object store. Consumed by the gke-apps Applications.
 backend:
-  replicas: 0
+  # WINDOW: GKE serving. Autoscaling stays off until an HPA (and its
+  # ignoreDifferences companion) is deliberately reintroduced.
+  replicas: 2
   autoscaling:
     enabled: false
 
