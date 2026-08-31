@@ -42,7 +42,7 @@ web:
   - name: CHAT_PUBLIC_INFERENCE_URL
     value: http://inference-bridge.tailscale.svc.cluster.local:8080
   - name: EMBEDDING_URL
-    value: http://inference-bridge-embeddings.tailscale.svc.cluster.local:8081
+    value: http://inference-embeddings.inference.svc.cluster.local:8080
   - name: CHAT_PUBLIC_RETRIEVAL_K
     value: '6'
   - name: CHAT_PUBLIC_MODEL_WINDOW_TOKENS

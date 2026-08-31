@@ -29,6 +29,7 @@ server:
   port: 8080
 
 ninfer:
+  enabled: true
   modelVolume:
     enabled: true
     # neroued/Qwen3.8-27B-NInfer qwen3_8_27b.ninfer (18.2 GB, groupwise-int,

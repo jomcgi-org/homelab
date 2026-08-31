@@ -34,4 +34,4 @@ egress:
       - monolith.monolith.svc.cluster.local:3000
       - monolith-searxng.monolith.svc.cluster.local:8080
       - inference-bridge.tailscale.svc.cluster.local:8080
-      - inference-bridge-embeddings.tailscale.svc.cluster.local:8081
+      - inference-embeddings.inference.svc.cluster.local:8080
