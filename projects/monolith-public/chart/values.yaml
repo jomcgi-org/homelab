@@ -11,6 +11,7 @@
 
 nameOverride: ""
 fullnameOverride: ""
+maintenanceBanner: ""
 
 imagePullSecret:
   enabled: false
@@ -457,6 +458,8 @@ frontend:
     # Mirrors turnstile.siteKey above (Helm values cannot self-reference).
     - name: TURNSTILE_SITE_KEY
       value: "0x4AAAAAADm59tvOGWo09IYc"
+    - name: PUBLIC_MAINTENANCE_BANNER
+      value: ""
     - name: OTEL_COLLECTOR_HTTP_URL
       value: ""
     # imgproxy URL signing secret (hex-encoded KEY/SALT), synced from 1Password

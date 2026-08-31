@@ -1,7 +1,7 @@
 <script>
   import "$lib/public/styles/design-system.css";
   import { personLdScript } from "$lib/public/seo.js";
-  let { children } = $props();
+  let { data, children } = $props();
 </script>
 
 <svelte:head>
@@ -21,4 +21,26 @@
   />
 </svelte:head>
 
+{#if data.maintenanceBanner}
+  <div class="maintenance-banner" role="status">
+    {data.maintenanceBanner}
+  </div>
+{/if}
+
 {@render children()}
+
+<style>
+  .maintenance-banner {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 12px 16px;
+    border-bottom: 2px solid var(--ink);
+    background: var(--accent);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 400;
+    line-height: 1.4;
+    text-align: center;
+  }
+</style>
