@@ -3,10 +3,19 @@
 # The hub starts with node-local state only. An empty endpoint is the chart's
 # safe store-disabled mode, and no object-store credentials are rendered.
 noded:
+  # Base store on same-region GCS via the S3 interop endpoint (free bandwidth
+  # both directions inside europe-west2; R2 would pay GCP egress on every
+  # export). HMAC credentials for ember-base-store@h0melab minted through the
+  # temporary org-policy window, stored in 1Password. With constantly shifting
+  # snapshots this is what makes a fresh Spot node restore bases on miss
+  # instead of the ~11 minute cold rebuild.
   store:
-    endpoint: ""
+    endpoint: "https://storage.googleapis.com"
+    bucket: "h0melab-ember-bases"
     credentials:
-      enabled: false
+      enabled: true
+      onepassword:
+        itemPath: "vaults/k8s-homelab/items/embervm-base-store-gcs"
   # CiliumNetworkPolicy-shaped; no Cilium CRDs on the hub (same trade as the
   # monolith overlays). Plain NetworkPolicy replacements come with activation
   # hardening.
