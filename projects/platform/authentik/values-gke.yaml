@@ -3,9 +3,9 @@
 # object store. Consumed by the gke-apps Applications.
 authentik:
   server:
-    replicas: 0
+    replicas: 1
   worker:
-    replicas: 0
+    replicas: 1
 
 cnpg:
   storage:

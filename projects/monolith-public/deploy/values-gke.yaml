@@ -2,17 +2,17 @@
 web:
   # The shared chart helper treats numeric zero as empty and defaults it to one.
   # A string still renders as the numeric YAML scalar `replicas: 0`.
-  replicas: "0"
+  replicas: "1"
   autoscaling:
     enabled: false
 
 frontend:
-  replicas: "0"
+  replicas: "1"
   autoscaling:
     enabled: false
 
 imgproxy:
-  replicas: "0"
+  replicas: "2"
 
 # Cilium CRDs are not installed on GKE. Native policy replacements can be
 # introduced separately when the dormant application is activated.
