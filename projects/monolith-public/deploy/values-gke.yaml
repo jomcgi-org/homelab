@@ -1,5 +1,94 @@
 # GKE cutover destination. Disable HPAs so zero replicas remain authoritative.
+# WINDOW: the web env list is a literal in chart values (Helm values cannot
+# self-reference), so pointing the public chat inference and embeddings at
+# the node-4 bridge means overriding the WHOLE list here. Two entries differ
+# from the chart: CHAT_PUBLIC_INFERENCE_URL and EMBEDDING_URL. Fold this
+# back into a template-driven env in the chart post-window (#5457).
 web:
+  env:
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        key: uri
+        name: monolith-public-db
+  - name: PUBLIC_WRITER_DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        key: uri
+        name: monolith-public-writer-db
+  - name: EMBERVM_URL
+    value: http://embervm-embervm.embervm.svc.cluster.local:8080
+  - name: DEMO_PG_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        key: POSTGRES_PASSWORD
+        name: monolith-public-demo-postgres
+  - name: DEMO_POSTGRES_DSN
+    value: postgresql://postgres:$(DEMO_PG_PASSWORD)@embervm-embervm-serving.embervm.svc:5401/scratch
+  - name: EMBER_DEMO_MAX_CONCURRENT
+    value: '4'
+  - name: CHAT_PUBLIC_CHAR_CAP
+    value: '8000'
+  - name: CHAT_PUBLIC_MAX_TURNS
+    value: '20'
+  - name: CHAT_PUBLIC_MAX_OUTPUT_TOKENS
+    value: '4000'
+  - name: CHAT_PUBLIC_MAX_SESSION_TOKENS
+    value: '32000'
+  - name: CHAT_PUBLIC_SESSION_TTL_SECONDS
+    value: '1800'
+  - name: CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT
+    value: '1'
+  - name: CHAT_PUBLIC_INFERENCE_URL
+    value: http://inference-bridge.tailscale.svc.cluster.local:8080
+  - name: EMBEDDING_URL
+    value: http://inference-bridge-embeddings.tailscale.svc.cluster.local:8081
+  - name: CHAT_PUBLIC_RETRIEVAL_K
+    value: '6'
+  - name: CHAT_PUBLIC_MODEL_WINDOW_TOKENS
+    value: '32768'
+  - name: CHAT_PUBLIC_COMPACTION_TRIGGER
+    value: '0.70'
+  - name: CHAT_PUBLIC_COMPACTION_KEEP_MESSAGES
+    value: '6'
+  - name: CHAT_PUBLIC_SUMMARY_MAX_TOKENS
+    value: '512'
+  - name: TURNSTILE_SECRET_KEY
+    valueFrom:
+      secretKeyRef:
+        key: SECRET_KEY
+        name: monolith-public-turnstile
+  - name: TURNSTILE_TIMEOUT_SECONDS
+    value: '5'
+  - name: CHAT_PUBLIC_IP_HASH_SALT
+    valueFrom:
+      secretKeyRef:
+        key: IP_HASH_SALT
+        name: monolith-public-turnstile
+  - name: SEAWEEDFS_S3_ENDPOINT
+    value: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+  - name: AWS_REGION
+    value: auto
+  - name: S3_ACCESS_KEY_ID
+    valueFrom:
+      secretKeyRef:
+        key: access-key-id
+        name: monolith-public-r2-s3
+  - name: S3_SECRET_ACCESS_KEY
+    valueFrom:
+      secretKeyRef:
+        key: secret-access-key
+        name: monolith-public-r2-s3
+  - name: STARS_GRID_S3_BUCKET
+    value: stars
+  - name: STARS_SITES_S3_KEY
+    value: sites.json
+  - name: STARS_MAP_S3_KEY
+    value: map.json
+  - name: STARS_HISTORY_MAP_S3_KEY
+    value: history-map.json
+  - name: ARTIFACTS_S3_BUCKET
+    value: artifacts
   # The shared chart helper treats numeric zero as empty and defaults it to one.
   # A string still renders as the numeric YAML scalar `replicas: 0`.
   replicas: "1"
