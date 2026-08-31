@@ -7,6 +7,17 @@ noded:
     endpoint: ""
     credentials:
       enabled: false
+  # CiliumNetworkPolicy-shaped; no Cilium CRDs on the hub (same trade as the
+  # monolith overlays). Plain NetworkPolicy replacements come with activation
+  # hardening.
+  networkPolicy:
+    enabled: false
+
+# The tokenBroker's network policy has no separate gate, so the whole broker
+# waits for either a plain NetworkPolicy port or Cilium on GKE; agent OAuth
+# grants are down until then.
+tokenBroker:
+  enabled: false
 
 # One 2 GiB brick fits the single n2-standard-8 spot node while leaving room
 # for serving and node overhead. Explicit zeros prevent deep-merge leakage.
