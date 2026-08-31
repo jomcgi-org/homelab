@@ -11,4 +11,5 @@ resources:
   - ./otel-collector # GKE telemetry export to Honeycomb
   - ./cloudflare-gateway # Envoy Gateway active, Cloudflare Tunnel armed but off
   - ./tailscale # Tailscale operator and tailnet egress services
+  - ./kyverno # Secret cloning into monolith-workflows (job pods were secretless on the hub)
   - ./priority-classes # Cluster-scoped tiers (embervm's disposable tier depends on homelab-disposable)
