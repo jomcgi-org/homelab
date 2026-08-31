@@ -46,3 +46,10 @@ egress:
       - monolith-searxng.monolith.svc.cluster.local:8080
       - inference-bridge.tailscale.svc.cluster.local:8080
       - inference-embeddings.inference.svc.cluster.local:8080
+
+# Home provisions node scratch out of band (dedicated NVMe); the hub has no
+# such bootstrap, so the chart actuator provisions the capped ext4 loop file
+# at /var/lib/embervm/scratch on the FC-labeled Spot node. The brick pod was
+# stuck FailedMount without it.
+scratchPrep:
+  enabled: true
