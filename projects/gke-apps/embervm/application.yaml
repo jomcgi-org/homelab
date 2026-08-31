@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: embervm
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: embervm
+      # This pin is a deliberate bootstrap floor. Write-back does NOT maintain gke-apps pins.
+      targetRevision: 0.48.12
+      helm:
+        releaseName: embervm
+        valueFiles:
+          - $values/projects/embervm/deploy/values.yaml
+          - $values/projects/embervm/deploy/values-gke.yaml
+        ignoreMissingValueFiles: false
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: embervm
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

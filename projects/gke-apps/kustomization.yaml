@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - namespace-embervm.yaml
+  - ./embervm
   - ./monolith
   - ./monolith-public
   - ./context-forge-gateway
