@@ -2,6 +2,8 @@
 # The image tag is pinned by the Bazel helm_images_values pipeline at build
 # time; do not set a repository/tag/digest here.
 
+maintenanceBanner: "Infrastructure migration in progress: some features are temporarily unavailable."
+
 # Sync the public_reader DB credential from 1Password into the
 # monolith-public-db Secret (key "uri" = full postgresql:// connection string
 # to monolith-pg-ro as public_reader).

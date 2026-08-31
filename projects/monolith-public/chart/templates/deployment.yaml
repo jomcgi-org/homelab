@@ -1,3 +1,8 @@
 {{- include "homelab.deployment" (dict "context" . "component" "web") }}
 ---
+{{- range $env := .Values.frontend.env }}
+{{- if eq $env.name "PUBLIC_MAINTENANCE_BANNER" }}
+{{- $_ := set $env "value" $.Values.maintenanceBanner }}
+{{- end }}
+{{- end }}
 {{- include "homelab.deployment" (dict "context" . "component" "frontend") }}
