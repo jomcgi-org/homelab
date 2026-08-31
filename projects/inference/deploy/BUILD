@@ -6,6 +6,12 @@ filegroup(
     visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
+filegroup(
+    name = "gke_values",
+    srcs = ["values-gke.yaml"],
+    visibility = ["//projects/inference:__subpackages__"],
+)
+
 helm_chart(
     name = "chart",
     lint = False,

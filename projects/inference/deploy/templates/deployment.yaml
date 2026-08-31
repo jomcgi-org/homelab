@@ -3,6 +3,7 @@ The generative LLM served by NInfer (ninfer-serve). The Service, its selector,
 and every caller URL key off the `inference` component label and the chart
 fullname, which this Deployment keeps from the engines it replaced.
 */}}
+{{- if .Values.ninfer.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -99,3 +100,4 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

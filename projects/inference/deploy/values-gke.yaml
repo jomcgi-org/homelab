@@ -1,0 +1,65 @@
+imagePullSecret:
+  enabled: false
+
+ninfer:
+  enabled: false
+
+cfIngress:
+  enabled: false
+
+embeddings:
+  enabled: true
+  podSecurityContext:
+    runAsUser: 0
+    runAsGroup: 0
+    fsGroup: 0
+    seccompProfile:
+      type: RuntimeDefault
+  image:
+    repository: ghcr.io/ggml-org/llama.cpp
+    tag: "server-cuda-b8643@sha256:ee54620034076d53fee9cd6acf8483902becd3d66acf77acc6ecfe5eefddaecb"
+    pullPolicy: IfNotPresent
+  modelVolume:
+    enabled: true
+    reference: "ghcr.io/jomcgi/models/voyageai/voyage-4-nano:jsonmartin-gguf-q8-0"
+    mountPath: "/model-image"
+  llamaCpp:
+    nGpuLayers: 0
+    ctxSize: 8192
+    flashAttn: "off"
+    cacheTypeK: "f16"
+    cacheTypeV: "f16"
+    threads: 4
+    jinja: false
+    extraArgs:
+      - "--embedding"
+      - "--alias"
+      - "voyage-4-nano"
+      - "--metrics"
+      - "--ubatch-size"
+      - "8192"
+      - "--batch-size"
+      - "8192"
+  # The default e2 pool is at 98 percent CPU requested and 5.8Gi allocatable,
+  # so the evidence-based 12Gi reservation (home RSS 5.5Gi steady, OOMKilled
+  # at 8Gi under grimoire bulk loads) only fits the Spot n2-standard-8. A
+  # preemption is a short embeddings blip and a reschedule; accepted.
+  nodeSelector:
+    # Null deletes home's hostname pin from the deep-merged map.
+    kubernetes.io/hostname: null
+    embervm.io/serving: "true"
+  tolerations:
+    - key: embervm.jomcgi.dev/node
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  resources:
+    requests:
+      cpu: 2
+      memory: "12Gi"
+    limits:
+      cpu: 2
+      memory: "12Gi"
