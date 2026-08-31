@@ -21,13 +21,9 @@ postgres:
   # serverName gives the GKE cluster its own archive prefix, so it never
   # trips CNPG's empty-archive check against the prefix the home cluster is
   # live-archiving into.
+  # backup stays ENABLED with the distinct serverName now the pin carries the
+  # serverName template: the GKE cluster archives to its own prefix.
   backup:
-    # DISABLED until the gke-apps chart pin advances past 0.396.x: the pinned
-    # 0.395.3 template has no serverName support, so an enabled backup here
-    # archives into the exact prefix home's monolith-pg claims when it flips
-    # to GCS, wedging production's empty-archive check. Re-enable (the
-    # serverName below already carves the distinct prefix) when the pin moves.
-    enabled: false
     serverName: monolith-pg-gke
   externalClusters:
     - name: monolith-pg

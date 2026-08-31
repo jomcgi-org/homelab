@@ -14,7 +14,7 @@ spec:
       chart: monolith-public
       # This pin is a deliberate bootstrap floor. Write-back does NOT maintain gke-apps pins.
       # The cutover window (issue #5458) advances it manually from this frozen baseline.
-      targetRevision: 0.390.3
+      targetRevision: 0.395.0
       helm:
         releaseName: monolith-public
         valueFiles:
