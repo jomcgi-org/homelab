@@ -16,3 +16,9 @@ httpcheck:
 # namespace worked (verified 2026-08-30). otlphttp uses the proven path.
 honeycomb:
   protocol: "http"
+
+# WINDOW: the ingress flip moved jomcgi.dev to the hub, which never enabled
+# the metamonitoring route; UptimeRobot 404s without it.
+cfIngress:
+  enabled: true
+  hostname: jomcgi.dev
