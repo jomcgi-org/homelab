@@ -5,7 +5,6 @@ resources:
   - ./argocd
   - ./argo-workflows # Namespace-scoped (monolith-workflows ns) batch-job executor for the monolith
   - ./atlas-operator/deploy
-  - ./authentik
   - ./cert-manager
   - ./cilium # CNI; manual-sync-disabled until the Cilium cutover window (ADR platform/012)
   - ./cloudnative-pg/deploy
@@ -20,9 +19,6 @@ resources:
   - ./otel-collector
   - ./priority-classes # Cluster-scoped PriorityClasses (ADR platform/010)
   - ./renovate # Self-hosted dependency updates on Argo Workflows
-  - ./seaweedfs
-  - ./seaweedfs-node4 # Second volume server on node-4 (capacity; cluster runs replication 000)
-  - ./seaweedfs-node4b # Third volume server, second on node-4 (capacity relief, incident #4317)
   # temporal, warehouse-bucket and temporal-databases removed: lakehouse/Temporal
   # stack decommissioned (superseded by ../loom). The CNPG temporal/
   # temporal_visibility/lakehouse databases were dropped via ensure:absent before

@@ -14,6 +14,13 @@ EXCLUDED_ROOTS=(
 	"projects/gke-cluster"
 	"projects/platform-gke"
 	"projects/gke-apps"
+	# Decommissioned at home after the 2026-08-31 GKE cutover (the deploy dirs
+	# stay: the hub's $values refs consume them). Inference stays enrolled until
+	# the node-4 host-process move.
+	"projects/embervm"
+	"projects/monolith"
+	"projects/monolith-public"
+	"projects/mcp"
 )
 
 is_excluded() {
