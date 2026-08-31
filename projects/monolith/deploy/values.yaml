@@ -1,6 +1,10 @@
 backend:
-  # WINDOW: writers stopped for the GKE cutover (runbook step 3).
+  # WINDOW: writers stopped for the GKE cutover (runbook step 3). The HPA
+  # must go too: with autoscaling on the chart omits replicas and minPods 1
+  # keeps one backend alive.
   replicas: 0
+  autoscaling:
+    enabled: false
   dcgmExporterUrl: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400"
   # Repointed off SigNoz onto the replacement collector (#5362). Cleared when
   # SigNoz was deleted, which left the backend with no traces destination at
