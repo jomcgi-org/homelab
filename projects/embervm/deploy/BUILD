@@ -14,6 +14,16 @@ filegroup(
     ],
 )
 
+filegroup(
+    name = "gke_values",
+    srcs = ["values-gke.yaml"],
+    visibility = [
+        "//projects/embervm/chart:__pkg__",
+        "//projects/embervm/runtimes/claude:__pkg__",
+        "//projects/embervm/runtimes/shotter:__pkg__",
+    ],
+)
+
 # The production Application, exposed to the chart tests.
 filegroup(
     name = "application",

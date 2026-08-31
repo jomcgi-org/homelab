@@ -1,0 +1,37 @@
+# GKE hub overrides. This file is applied after deploy/values.yaml.
+
+# The hub starts with node-local state only. An empty endpoint is the chart's
+# safe store-disabled mode, and no object-store credentials are rendered.
+noded:
+  store:
+    endpoint: ""
+    credentials:
+      enabled: false
+
+# One 2 GiB brick fits the single n2-standard-8 spot node while leaving room
+# for serving and node overhead. Explicit zeros prevent deep-merge leakage.
+bricks:
+  desiredReplicas:
+    2gi: 1
+    4gi: 0
+    8gi: 0
+    16gi: 0
+  nodeFloors: []
+
+# GKE node names are not known before provisioning. An empty list keeps the
+# fleet-freshness guard closed.
+warmthS3Gc:
+  expectedNodes: []
+
+# Only services reachable from the hub belong on the internal lane. searxng
+# runs on the hub; inference is reached through the node-4 tailnet bridge
+# (same ports the bare-metal servers keep after the wipe).
+egress:
+  internal:
+    allowlist:
+      - monolith.monolith.svc.cluster.local:8091
+      - monolith-public-frontend.monolith-public.svc.cluster.local:3000
+      - monolith.monolith.svc.cluster.local:3000
+      - monolith-searxng.monolith.svc.cluster.local:8080
+      - inference-bridge.tailscale.svc.cluster.local:8080
+      - inference-bridge-embeddings.tailscale.svc.cluster.local:8081
