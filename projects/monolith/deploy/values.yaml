@@ -1,5 +1,6 @@
 backend:
-  replicas: 1
+  # WINDOW: writers stopped for the GKE cutover (runbook step 3).
+  replicas: 0
   dcgmExporterUrl: "http://nvidia-dcgm-exporter.gpu-operator.svc.cluster.local:9400"
   # Repointed off SigNoz onto the replacement collector (#5362). Cleared when
   # SigNoz was deleted, which left the backend with no traces destination at
@@ -320,7 +321,8 @@ orchestrator:
 # point. The whatsmeow session reuses the monolith CNPG cluster under a dedicated
 # `whatsapp` schema.
 whatsapp:
-  enabled: true
+  # WINDOW: session singleton parked; re-enable on GKE only after home is off.
+  enabled: false
   # Heavy-agent path ON: charts/artifacts/full tasks dispatch the household goose
   # agent (recipe=agent, tier=household, DeepSeek). Charts come back as an artifact
   # URL (deliverable as text), sidestepping the text-only outbox media limit.
@@ -430,3 +432,9 @@ cdHealth:
     - app: embervm
       kargo_namespace: kargo-embervm
       chart_repo_suffix: /charts/embervm
+
+# WINDOW: nulling the build-time image pin unrenders all 37 CronWorkflows in
+# one line, stopping the job engine for the cutover (runbook step 3). Delete
+# this block to bring the jobs back.
+jobs:
+  image: null

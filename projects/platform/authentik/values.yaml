@@ -60,7 +60,8 @@ authentik:
             name: authentik-pg-app
             key: password
   server:
-    replicas: 1
+    # WINDOW: stopped for the cutover.
+    replicas: 0
     resources:
       requests:
         cpu: 100m
@@ -101,7 +102,8 @@ authentik:
             name: cloudflare-ingress
             namespace: envoy-gateway-system
   worker:
-    replicas: 1
+    # WINDOW: stopped for the cutover.
+    replicas: 0
     resources:
       requests:
         cpu: 100m

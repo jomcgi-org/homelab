@@ -54,6 +54,8 @@ imgproxySigning:
 # imgproxy source). Separate 1Password item from the monolith backend's
 # read-write credentials (ADR 004 isolation principle).
 web:
+  # WINDOW: public chat writes via public_writer; stopped for the cutover.
+  replicas: "0"
   onepassword:
     itemPath: "vaults/k8s-homelab/items/r2-s3-public-read"
 # Serve /img on the private hostname too: the grimoire reader on
