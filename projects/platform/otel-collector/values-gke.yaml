@@ -4,7 +4,12 @@ onepassword:
 
 environment: homelab-hub
 
-allowedServices: []
+# Same opt-in as home production: without entries the otlp receiver is not
+# rendered at all, and both the monolith backend and the embervm control
+# plane time out their span exports (observed on cutover night).
+allowedServices:
+  - embervm-control
+  - monolith-backend
 
 httpcheck:
   enabled: true
