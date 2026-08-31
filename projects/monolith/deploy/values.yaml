@@ -436,9 +436,3 @@ cdHealth:
     - app: embervm
       kargo_namespace: kargo-embervm
       chart_repo_suffix: /charts/embervm
-
-# WINDOW: nulling the build-time image pin unrenders all 37 CronWorkflows in
-# one line, stopping the job engine for the cutover (runbook step 3). Delete
-# this block to bring the jobs back.
-jobs:
-  image: null
