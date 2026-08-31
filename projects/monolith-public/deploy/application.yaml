@@ -23,11 +23,10 @@ spec:
     namespace: monolith-public
   # The HPA owns replica counts; without this, selfHeal would revert the
   # Deployments to the chart's replicas and fight the autoscaler.
-  ignoreDifferences:
-    - group: apps
-      kind: Deployment
-      jsonPointers:
-        - /spec/replicas
+  # WINDOW: the Deployment /spec/replicas ignoreDifferences entry is removed
+  # so the writer-stop (and later the GKE scale-up) actually applies; with
+  # RespectIgnoreDifferences it suppressed APPLYING too. Restore the entry
+  # alongside the HPA when home comes back or the GKE autoscaler arrives.
   syncPolicy:
     automated:
       prune: true
