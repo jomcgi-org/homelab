@@ -1,5 +1,3 @@
-imagePullSecret:
-  enabled: false
 
 ninfer:
   enabled: false
