@@ -58,7 +58,9 @@ tunnel:
   # and their replicas can die in the same stampede. It buys 4 chances instead of
   # 2. The root fix is sequencing the rollout; the durable one is shaping every
   # node. Each replica costs 25m CPU / 64Mi, so the headroom is free.
-  replicaCount: 4
+  # WINDOW: home connectors drained for the GKE cutover; the hub overlay
+  # carries the connectors now. Revert to bring home ingress back.
+  replicaCount: 0
   fullnameOverride: "cloudflared"
 
   image:
