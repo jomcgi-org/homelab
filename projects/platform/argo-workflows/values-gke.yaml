@@ -2,6 +2,6 @@
 # before the cutover.
 argo-workflows:
   controller:
-    replicas: 0
+    replicas: 1
   server:
-    replicas: 0
+    replicas: 1
