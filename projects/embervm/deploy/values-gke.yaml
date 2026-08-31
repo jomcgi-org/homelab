@@ -37,7 +37,13 @@ bricks:
     8gi: 0
     16gi: 0
   nodeFloors: []
-
+  autoscale:
+    minReplicas:
+      16gi: 0
+    maxReplicas:
+      4gi: 0
+      8gi: 0
+      16gi: 0
 # GKE node names are not known before provisioning. An empty list keeps the
 # fleet-freshness guard closed.
 warmthS3Gc:
@@ -67,11 +73,3 @@ scratchPrep:
 # the big classes are capped off, including the chart default 16gi warm floor
 # (a home policy for the scratch-k8s composite). Revisit the session-class
 # ceiling and group-spread when the qwen lane revives (#5459, #5461).
-bricks:
-  autoscale:
-    minReplicas:
-      16gi: 0
-    maxReplicas:
-      4gi: 0
-      8gi: 0
-      16gi: 0
