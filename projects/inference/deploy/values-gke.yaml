@@ -54,10 +54,15 @@ embeddings:
   podAnnotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
+  # Deliberate break from the home req=limits convention (Joe, cutover night):
+  # idle RSS is ~0.5Gi and the 12Gi ceiling only matters during grimoire bulk
+  # loads, so a 12Gi reservation starves the Spot node (it blocked the 16gi
+  # brick). Burstable: small honest request, the measured ceiling as limit,
+  # no CPU limit per the CPU=requests-only convention. Eviction under
+  # simultaneous bulk-embed + full brick is the accepted Spot trade.
   resources:
     requests:
-      cpu: 2
-      memory: "12Gi"
+      cpu: 1
+      memory: "2Gi"
     limits:
-      cpu: 2
       memory: "12Gi"
