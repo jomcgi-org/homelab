@@ -60,15 +60,10 @@ spec:
   #
   # The restartedAt annotation entry goes with them: it existed for an April
   # manual restart, and a rolled Deployment no longer carries it.
-  ignoreDifferences:
-    - group: apps
-      kind: Deployment
-      jsonPointers:
-        # The backend HPA owns the replica count (chart/templates/hpa.yaml). The
-        # deployment omits spec.replicas when autoscaling is enabled, but with
-        # selfHeal on ArgoCD would still revert any HPA scale-up to the default;
-        # ignore /spec/replicas so the HPA holds. Mirrors the monolith-public app.
-        - /spec/replicas
+  # WINDOW: the Deployment /spec/replicas ignoreDifferences entry is removed
+  # so the writer-stop (and later the GKE scale-up) actually applies; with
+  # RespectIgnoreDifferences it suppressed APPLYING too. Restore the entry
+  # alongside the HPA when home comes back or the GKE autoscaler arrives.
   syncPolicy:
     automated:
       prune: true
