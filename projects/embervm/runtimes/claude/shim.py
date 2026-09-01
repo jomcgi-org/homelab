@@ -2194,34 +2194,24 @@ class ClaudeProcess:
                     # Check if this legacy session must respawn due to workspace change.
                     if not _transcript_exists(self.workspace, session_id):
                         legacy_workspace = os.path.dirname(self.workspace)
-                        # A transcript in the legacy dir means respawn with the
-                        # legacy cwd to restore state. NO transcript anywhere
-                        # means a FRESH session adopting a parked prewarm CLI,
-                        # and that CLI's spawn-time state (CODEX_HOME, config)
-                        # can predate the session workspace volume now mounted
-                        # under it: on the GKE hub every first turn failed
-                        # "-32600: failed to load configuration" because the
-                        # prewarm .codex did not exist on the swapped-in
-                        # volume (2026-09-01). Either way the parked CLI is
-                        # unusable as-is, so close it and respawn against the
-                        # CURRENT workspace; a cold spawn is ~250ms against a
-                        # 1-5s API leg.
-                        self._close_process(kill=False)
-                        try:
-                            self._spawn(
-                                session_id,
-                                first_message=message,
-                                model=model,
-                                system_prompt=system_prompt,
-                            )
-                        except Exception:
-                            if parked_adoption and not session_was_bound:
-                                self.session_id = None
-                            raise
-                        process = self.process
-                        message_sent = True
-                        parked_adoption = False
-                        cli_ready_path = "remediation_respawn"
+                        if _transcript_exists(legacy_workspace, session_id):
+                            # Close parked CLI and respawn with legacy cwd to restore state.
+                            self._close_process(kill=False)
+                            try:
+                                self._spawn(
+                                    session_id,
+                                    first_message=message,
+                                    model=model,
+                                    system_prompt=system_prompt,
+                                )
+                            except Exception:
+                                if parked_adoption and not session_was_bound:
+                                    self.session_id = None
+                                raise
+                            process = self.process
+                            message_sent = True
+                            parked_adoption = False
+                            cli_ready_path = "remediation_respawn"
                     if parked_adoption:
                         self.session_id = session_id
                         cli_ready_path = "adopt"
@@ -2718,6 +2708,21 @@ wire_api = "responses"
                 process = self.process
             cli_ready_path = None
             process_was_unbound = not self.session_id
+            if (
+                process is not None
+                and process.poll() is None
+                and not os.path.isdir(os.path.join(self.workspace, ".codex"))
+            ):
+                # The live app-server's CODEX_HOME is gone: this VM was relit
+                # with a fresh workspace volume mounted under the same path, so
+                # the parked (usually prewarmed) server's spawn-time state
+                # predates the mount. Its next thread/start or resume fails
+                # "-32600: failed to load configuration" (every first codex
+                # turn on the GKE hub, 2026-09-01). Respawn against the current
+                # workspace instead; a cold spawn is ~250ms against the 1-5s
+                # API leg, and _spawn rewrites auth.json and config.toml.
+                self._close_process(kill=False)
+                process = None
             if process is None or process.poll() is not None:
                 self._close_process(kill=False)
                 process = self._spawn()
