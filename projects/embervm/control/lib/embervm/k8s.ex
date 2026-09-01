@@ -26,15 +26,19 @@ defmodule Embervm.K8s do
   rate near zero, so per-call file reads cost nothing).
 
   The Finch pool's TLS is configured by `finch_child_spec/0`: when the SA CA file
-  is present (in-cluster) the default pool verifies the peer against it; when it
-  is absent (local `mix`, ExUnit) the plain default pool is used, which is why the
-  loopback HTTP smoke and the request tests need no cluster.
+  is present (in-cluster) the default pool verifies the peer against the combined
+  system and SA CA trust stores; when it is absent (local `mix`, ExUnit) the plain
+  default pool is used, which is why the loopback HTTP smoke and the request tests
+  need no cluster.
   """
   require Logger
 
   @sa_dir "/var/run/secrets/kubernetes.io/serviceaccount"
   @token_file "#{@sa_dir}/token"
   @ca_file "#{@sa_dir}/ca.crt"
+  @system_ca_file "/etc/ssl/certs/ca-certificates.crt"
+  @pem_cert_begin "-----BEGIN CERTIFICATE-----"
+  @pem_cert_end "-----END CERTIFICATE-----"
   @tokenreview_path "/apis/authentication.k8s.io/v1/tokenreviews"
   @workloads_collection "/apis/embervm.dev/v1alpha1"
   @namespace_file "#{@sa_dir}/namespace"
@@ -57,27 +61,89 @@ defmodule Embervm.K8s do
 
   @doc """
   The Finch child spec for the control plane's shared HTTP pool. In-cluster it
-  pins the default pool to verify TLS against the SA CA bundle; elsewhere it is a
-  plain pool. TLS transport opts are ignored for plaintext (loopback) requests,
-  so one pool safely serves both the K8s calls and the health/loopback smoke.
+  configures the default pool to verify TLS against the combined system and SA CA
+  trust stores; elsewhere it is a plain pool. TLS transport opts are ignored for
+  plaintext (loopback) requests, so one pool safely serves both the K8s calls and
+  the health/loopback smoke.
   """
   @spec finch_child_spec() :: Supervisor.child_spec() | {module(), keyword()}
-  def finch_child_spec do
+  @spec finch_child_spec(Path.t()) :: Supervisor.child_spec() | {module(), keyword()}
+  def finch_child_spec(ca_file \\ @ca_file) do
     pools =
-      case File.exists?(@ca_file) do
+      case File.exists?(ca_file) do
         true ->
           # Each pool's value MUST be a keyword list, not a map: Finch runs it
           # through NimbleOptions.validate, which only accepts keyword lists (a
-          # map crashes the pool at boot). This branch is deploy-only-reachable
-          # (guarded by the in-cluster CA file), so CI, which always takes the
-          # empty-pools branch below, cannot exercise it.
-          %{default: [conn_opts: [transport_opts: [verify: :verify_peer, cacertfile: @ca_file]]]}
+          # map crashes the pool at boot). On 2026-09-01, the SA-CA-only pool sent
+          # storage.googleapis.com requests to unknown_ca, which broke sessions
+          # on park/restore. Plaintext home SeaweedFS masked the defect. Combining
+          # the system and SA CA stores keeps both public storage and the K8s
+          # apiserver trusted.
+          %{
+            default: [
+              conn_opts: [
+                transport_opts: [verify: :verify_peer, cacerts: combined_cacerts(ca_file)]
+              ]
+            ]
+          }
 
         false ->
           %{}
       end
 
     {Finch, name: Embervm.Finch, pools: pools}
+  end
+
+  defp combined_cacerts(ca_file) do
+    Enum.uniq(system_cacerts() ++ pem_cacerts(ca_file))
+  end
+
+  defp system_cacerts do
+    case os_cacerts() do
+      [] -> pem_cacerts(@system_ca_file)
+      cacerts -> cacerts
+    end
+  end
+
+  defp os_cacerts do
+    :public_key.cacerts_get()
+    |> Enum.flat_map(&certificate_der/1)
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
+  end
+
+  defp certificate_der(der) when is_binary(der), do: [der]
+  defp certificate_der({:cert, der, _decoded}) when is_binary(der), do: [der]
+  defp certificate_der(_entry), do: []
+
+  defp pem_cacerts(path) do
+    with {:ok, pem} <- File.read(path) do
+      pem
+      |> :binary.split(@pem_cert_begin, [:global])
+      |> Enum.drop(1)
+      |> Enum.flat_map(&decode_pem_certificate/1)
+    else
+      {:error, _reason} -> []
+    end
+  end
+
+  defp decode_pem_certificate(pem_after_begin) do
+    case :binary.split(pem_after_begin, @pem_cert_end) do
+      [body, _rest] ->
+        for {:Certificate, der, _encryption} <-
+              :public_key.pem_decode(@pem_cert_begin <> body <> @pem_cert_end),
+            is_binary(der),
+            do: der
+
+      [_incomplete] ->
+        []
+    end
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
   end
 
   @doc """
