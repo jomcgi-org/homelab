@@ -326,8 +326,9 @@ defmodule Embervm.StatefulManager do
       # the real Embervm.K8s client.
       get_secret_fun: Keyword.get(opts, :get_secret_fun, &Embervm.K8s.get_secret/2),
       # workload -> [{from, principal}] parked behind an in-flight wake
-      # (single-flight). No request envelope: a stateful miss carries no HTTP
-      # request to replay, only the raw socket the activator already holds.
+      # (single-flight). An empty list reserves an unattended auto-wake. No
+      # request envelope: a stateful miss carries no HTTP request to replay,
+      # only the raw socket the activator already holds.
       waking: %{},
       # workload -> per-miss tracing bundle (Task 10), the stateful counterpart of
       # ServingManager's wake_traces. UNLIKE serving, a raw TCP accept carries no
@@ -388,7 +389,7 @@ defmodule Embervm.StatefulManager do
   end
 
   def handle_call({:parked?, workload}, _from, state) do
-    {:reply, Map.has_key?(state.waking, workload), state}
+    {:reply, Map.get(state.waking, workload, []) != [], state}
   end
 
   def handle_call(:reconcile, _from, state) do
@@ -2221,18 +2222,30 @@ defmodule Embervm.StatefulManager do
   # ops step: THIS PR's chart bump rolls the noded and rebuilds demo-postgres' base,
   # and without this the demo stays dark until a connection (or an operator) wakes
   # it. A workload with a live/banked instance is left alone (nothing to wake); one
-  # mid-wake is owned by that wake. start_wake parks no caller, so a successful wake
-  # simply publishes the endpoint for the next connection (reply_all([]) is a no-op).
+  # mid-wake is owned by that wake. An auto-wake reserves an empty `waking` entry
+  # before dispatch, so a manual or activator wake arriving during it joins the same
+  # attempt. A successful unattended wake simply publishes the endpoint for the next
+  # connection (reply_all([]) is a no-op).
   defp auto_wake_ready_workloads(state, facts) do
     WorkloadCatalog.all_names(state.catalog_table)
     |> Enum.reduce(state, fn workload, acc ->
       if auto_wake_eligible?(acc, workload, facts) do
         Logger.info("embervm stateful: auto-waking workload after base READY", workload: workload)
-        start_wake(acc, workload)
+        start_unattended_wake(acc, workload)
       else
         acc
       end
     end)
+  end
+
+  # Auto-wake has no caller to park, but it must still own the workload's
+  # single-flight slot before StartStateful is dispatched. Without this empty
+  # reservation, the next manual or activator wake sees no in-flight attempt and
+  # starts a competing RPC. Its real caller is appended to this list by
+  # park_behind_wake/4 and receives the shared result through finish_wake/3.
+  defp start_unattended_wake(state, workload) do
+    state = %{state | waking: Map.put(state.waking, workload, [])}
+    start_wake(state, workload)
   end
 
   defp auto_wake_eligible?(state, workload, facts) do

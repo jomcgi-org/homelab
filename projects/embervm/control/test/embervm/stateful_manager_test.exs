@@ -543,6 +543,93 @@ defmodule Embervm.StatefulManagerTest do
     assert [_one] = StatefulStore.list(ctx.store, "wl-a")
   end
 
+  test "slow in-flight start shares one StartStateful result with second and third wakes" do
+    test_pid = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    start_fun = fn _ch, _req ->
+      Agent.update(calls, &(&1 + 1))
+      send(test_pid, {:start_stateful_waiting, self()})
+
+      receive do
+        :complete_start ->
+          {:ok,
+           %StartStatefulResponse{
+             vm_id: "vm-shared",
+             ip: "10.88.0.5",
+             port: 5432,
+             generation: 1,
+             was_relight: false
+           }}
+      end
+    end
+
+    ctx = start_stack(start_stateful_fun: start_fun, clock: fn -> 1_000 end, mono_clock: fn -> 10 end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    first = GenServer.send_request(ctx.mgr, {:wake, "wl-a", "p1"})
+    assert_receive {:start_stateful_waiting, worker}
+
+    second = GenServer.send_request(ctx.mgr, {:wake, "wl-a", "p2"})
+    third = GenServer.send_request(ctx.mgr, {:wake, "wl-a", "p3"})
+
+    assert waiter_count(ctx, "wl-a") == 3
+    assert Agent.get(calls, & &1) == 1
+
+    send(worker, :complete_start)
+
+    expected = {:ok, %{ip: "10.88.0.5", port: 5432, generation: 1}}
+    assert {:reply, ^expected} = GenServer.receive_response(first, 1_000)
+    assert {:reply, ^expected} = GenServer.receive_response(second, 1_000)
+    assert {:reply, ^expected} = GenServer.receive_response(third, 1_000)
+    assert Agent.get(calls, & &1) == 1
+  end
+
+  test "joiner timeout does not abort the shared in-flight StartStateful" do
+    test_pid = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    start_fun = fn _ch, _req ->
+      Agent.update(calls, &(&1 + 1))
+      send(test_pid, {:start_stateful_waiting, self()})
+
+      receive do
+        :complete_start ->
+          {:ok,
+           %StartStatefulResponse{
+             vm_id: "vm-owner",
+             ip: "10.88.0.5",
+             port: 5432,
+             generation: 1,
+             was_relight: false
+           }}
+      end
+    end
+
+    ctx = start_stack(start_stateful_fun: start_fun, clock: fn -> 1_000 end, mono_clock: fn -> 10 end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    owner = GenServer.send_request(ctx.mgr, {:wake, "wl-a", "owner"})
+    assert_receive {:start_stateful_waiting, worker}
+
+    joiner = GenServer.send_request(ctx.mgr, {:wake, "wl-a", "timed-out-joiner"})
+    assert waiter_count(ctx, "wl-a") == 2
+
+    # receive_response/2 abandons this request when its own deadline expires.
+    # The manager still owns the unlinked wake worker and the first caller must
+    # receive its result when StartStateful completes.
+    assert :timeout = GenServer.receive_response(joiner, 0)
+    send(worker, :complete_start)
+
+    assert {:reply, {:ok, %{ip: "10.88.0.5", port: 5432, generation: 1}}} =
+             GenServer.receive_response(owner, 1_000)
+
+    assert Agent.get(calls, & &1) == 1
+    refute StatefulManager.parked?(ctx.mgr, "wl-a")
+  end
+
   # -- wake-rate limit + parked cap ---------------------------------------------
 
   test "the per-workload wake-rate limit denies excess wakes without touching the node" do
@@ -2167,6 +2254,54 @@ defmodule Embervm.StatefulManagerTest do
     end)
 
     assert Agent.get(wakes, & &1) == 1
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{ip: "10.88.0.5", port: 5432}
+  end
+
+  test "manual wake joins an in-flight auto-wake and receives its shared result" do
+    test_pid = self()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    start_fun = fn _ch, _req ->
+      call = Agent.get_and_update(calls, fn count -> {count + 1, count + 1} end)
+      send(test_pid, {:auto_start_stateful_waiting, call, self()})
+
+      receive do
+        :complete_start ->
+          {:ok,
+           %StartStatefulResponse{
+             vm_id: "vm-auto-shared",
+             ip: "10.88.0.5",
+             port: 5432,
+             generation: 1,
+             was_relight: false
+           }}
+      end
+    end
+
+    ctx = start_stack(start_stateful_fun: start_fun, clock: fn -> 1_000 end, mono_clock: fn -> 10 end)
+    stateful_workload(ctx, "wl-a", %{auto_wake: true})
+    stateful_node(ctx, "node-4")
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert_receive {:auto_start_stateful_waiting, 1, worker}
+    refute StatefulManager.parked?(ctx.mgr, "wl-a")
+
+    manual = GenServer.send_request(ctx.mgr, {:wake, "wl-a", "manual"})
+
+    # A later auto-wake reconcile observes the same single-flight reservation.
+    # It neither replaces the attempt nor dispatches a second StartStateful.
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert waiter_count(ctx, "wl-a") == 1
+    assert StatefulManager.parked?(ctx.mgr, "wl-a")
+    assert Agent.get(calls, & &1) == 1
+    refute_receive {:auto_start_stateful_waiting, 2, _worker}, 100
+
+    send(worker, :complete_start)
+
+    assert {:reply, {:ok, %{ip: "10.88.0.5", port: 5432, generation: 1}}} =
+             GenServer.receive_response(manual, 1_000)
+
+    assert Agent.get(calls, & &1) == 1
     assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{ip: "10.88.0.5", port: 5432}
   end
 
