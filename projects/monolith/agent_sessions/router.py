@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
@@ -50,6 +50,8 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 _DEFAULT_BRANCH_CACHE: dict[str, tuple[float, str | None]] = {}
 _REPO_CACHE_TTL = 300.0
 _REPO_CACHE_FAILURE_TTL = 30.0
+_PREWARM_TTL = 15.0
+_prewarm_timestamps: dict[int, float] = {}
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -902,6 +904,30 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
     await asyncio.to_thread(_set_session_status, session_id, "running")
     _schedule_next_message(session_id)
     return {"accepted": True, "session_id": session_id, "turn": turn}
+
+
+@router.post("/sessions/{session_id}/prewarm", status_code=204)
+async def prewarm_session(session_id: int) -> Response:
+    """Best-effort wake for an existing guest binding."""
+    try:
+        row = await asyncio.to_thread(_load_session_row, session_id)
+        if row is None or not row.ember_session_id or not row.ember_session_token:
+            return Response(status_code=204)
+
+        now = time.monotonic()
+        last = _prewarm_timestamps.get(session_id)
+        if last is not None and now - last < _PREWARM_TTL:
+            return Response(status_code=204)
+
+        # Claim the TTL before awaiting so concurrent requests in this process
+        # cannot both start a relight.
+        _prewarm_timestamps[session_id] = now
+        await _transport.prewarm_session(row.ember_session_id, row.ember_session_token)
+    except Exception as exc:  # noqa: BLE001 - prewarm must swallow every failure
+        # Prewarm is an invisible latency optimization. It must never create a
+        # composer error channel or affect the real send that follows.
+        logger.debug("agent session prewarm failed for session %s: %s", session_id, exc)
+    return Response(status_code=204)
 
 
 @router.delete("/sessions/{session_id}")

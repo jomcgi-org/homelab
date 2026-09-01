@@ -73,10 +73,12 @@ def reset_vm_state_cache():
     cache.generation = 0
     cache.initialized = False
     cache.last_error = None
+    agent_router._prewarm_timestamps.clear()
     yield
     cache.cache_map = {}
     cache.task = None
     cache.subscriber_count = 0
+    agent_router._prewarm_timestamps.clear()
 
 
 @pytest.fixture(name="client")
@@ -1437,6 +1439,101 @@ def test_send_message_session_not_found(client, monkeypatch):
         "/api/agents/sessions/999/messages", json={"prompt": "hello"}
     ).json()
     assert body == {"accepted": False, "error": "Unknown agent session 999"}
+
+
+def test_prewarm_bound_session_wakes_once(client, session, monkeypatch):
+    row = _session(
+        session,
+        "prewarm-bound",
+        ember_session_id="ember-1",
+        ember_session_token="token-1",
+    )
+    calls = []
+
+    async def fake_prewarm(ember_session_id, ember_session_token):
+        calls.append((ember_session_id, ember_session_token))
+
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        "agent_sessions.router._transport.prewarm_session", fake_prewarm
+    )
+
+    response = client.post(f"/api/agents/sessions/{row.id}/prewarm")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert calls == [("ember-1", "token-1")]
+
+
+def test_prewarm_unbound_session_is_noop(client, session, monkeypatch):
+    row = _session(session, "prewarm-unbound")
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    calls = []
+
+    async def fake_prewarm(*args):
+        calls.append(args)
+
+    monkeypatch.setattr(
+        "agent_sessions.router._transport.prewarm_session", fake_prewarm
+    )
+
+    response = client.post(f"/api/agents/sessions/{row.id}/prewarm")
+
+    assert response.status_code == 204
+    assert calls == []
+
+
+def test_prewarm_repeats_only_after_ttl(client, session, monkeypatch):
+    row = _session(
+        session,
+        "prewarm-ttl",
+        ember_session_id="ember-1",
+        ember_session_token="token-1",
+    )
+    calls = []
+    now = [100.0]
+
+    async def fake_prewarm(*args):
+        calls.append(args)
+
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr("agent_sessions.router.time.monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        "agent_sessions.router._transport.prewarm_session", fake_prewarm
+    )
+
+    assert client.post(f"/api/agents/sessions/{row.id}/prewarm").status_code == 204
+    now[0] += agent_router._PREWARM_TTL - 0.1
+    assert client.post(f"/api/agents/sessions/{row.id}/prewarm").status_code == 204
+    now[0] += 0.1
+    assert client.post(f"/api/agents/sessions/{row.id}/prewarm").status_code == 204
+
+    assert calls == [
+        ("ember-1", "token-1"),
+        ("ember-1", "token-1"),
+    ]
+
+
+def test_prewarm_errors_still_return_no_content(client, session, monkeypatch):
+    row = _session(
+        session,
+        "prewarm-error",
+        ember_session_id="ember-1",
+        ember_session_token="token-1",
+    )
+
+    async def fake_prewarm(*_args):
+        raise EmberVMTransportError("control plane unavailable")
+
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        "agent_sessions.router._transport.prewarm_session", fake_prewarm
+    )
+
+    response = client.post(f"/api/agents/sessions/{row.id}/prewarm")
+
+    assert response.status_code == 204
+    assert response.content == b""
 
 
 def test_delete_session(client, session, monkeypatch):

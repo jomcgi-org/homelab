@@ -36,6 +36,7 @@
   import { RUN_LEXICON as P } from "./run-lexicon.js";
   import PaneHeader from "./PaneHeader.svelte";
   import CodexLogin from "./CodexLogin.svelte";
+  import ComposerPrewarm from "./ComposerPrewarm.svelte";
   import WalkthroughNarrative from "./WalkthroughNarrative.svelte";
   import JumpPalette from "./JumpPalette.svelte";
   import Turns from "./Turns.svelte";
@@ -2052,6 +2053,7 @@
               </div>
             </div>
           </form>
+          <ComposerPrewarm sessionId={selectedSession.id} />
         {:else if selectedId}
           <!-- ?session= for a row absent from the server-rendered list. Without
            this branch the pane falls through to the launcher and swaps
