@@ -1311,9 +1311,9 @@ noded:
   networkPolicy:
     enabled: false
 
-  # Firecracker substrate on node-4. The firecracker binary + guest kernel are
-  # baked into the image at /opt/fc, so the node only provides /dev/kvm and the
-  # nvme scratch dir (see projects/platform/firecracker-node).
+  # Firecracker substrate on node-4. The firecracker + jailer binaries and guest
+  # kernel are baked into the image at /opt/fc, so the node only provides
+  # /dev/kvm and the nvme scratch dir (see projects/platform/firecracker-node).
   firecracker:
     nvmeRoot: /var/lib/embervm/scratch
     guestOomScoreAdj: 1000
@@ -1321,6 +1321,11 @@ noded:
     # Shared base rootfs is booted READ-ONLY (root=/dev/vda ro): every mutable
     # guest path is a tmpfs, so one read-only rootfs file backs every microVM.
     kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
+
+  jailer:
+    # Default-on isolation. Set false only as an operational escape hatch back
+    # to the former direct Firecracker exec path.
+    enabled: true
 
   # (Artifact-decoupling Phase 2: the node-side image identity table that USED to
   # be rendered into the daemon's EMBERVM_NODED_IMAGES env from `noded.images` +

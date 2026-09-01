@@ -462,6 +462,8 @@ func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
 		DiffBanking:           cfg.DiffBanking,
 	}, &driver.ExecLauncher{
 		Bin:             cfg.BinPath,
+		JailerBin:       cfg.JailerBinPath,
+		JailerEnabled:   cfg.JailerEnabled,
 		OOMScoreAdj:     cfg.GuestOomScoreAdj,
 		VsockBindTarget: cfg.CanonicalVsockDir,
 		Self:            self,
