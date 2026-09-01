@@ -1877,10 +1877,15 @@ claudeRuntimeWorkload:
     # multi-GiB snapshot write per bank), but this quadrant parks instead (VM
     # teardown, workspace stays on its volume). Rejoin is a ~250ms cold spawn
     # plus volume attach against a 1-5s model API leg, and a parked session
-    # holds no concurrency.cap slot (ADR embervm/029), so a short grace window
-    # only needs to keep rapid back-and-forth exchanges live; 20s does that
-    # while abandoned sessions park almost immediately.
-    idleBankSeconds: 20
+    # holds no concurrency.cap slot (ADR embervm/029). Five minutes, raised
+    # from 20s for the agents console: the composer keepalive (first
+    # keystroke wakes the guest, pings while typing) plus this window keeps a
+    # session hot through composition and for 5 minutes after the last
+    # keystroke, so an active conversation never pays teardown/rejoin churn
+    # mid-thought. A live session does hold its concurrency.cap slot for the
+    # window, acceptable on a single-user private tier; abandoned sessions
+    # still park within 5 minutes.
+    idleBankSeconds: 300
     # A session rides its birth base until this expires, then the next invoke
     # 410s onto the current base.
     maxLifetimeSeconds: 21600
