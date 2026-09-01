@@ -44,6 +44,10 @@ defmodule Embervm.LogFormatter do
     :total_working_set_mib,
     :guest_free?,
     :cp_reserved_mib,
+    # StatefulSweeper pressure-state transitions.
+    :brick_id,
+    :from,
+    :to,
     # Base retention manifest and accounting metadata.
     :path,
     :size_bytes,

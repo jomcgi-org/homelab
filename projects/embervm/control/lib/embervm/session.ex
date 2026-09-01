@@ -52,7 +52,7 @@ defmodule Embervm.Session do
   the idle timer, and the session banks, releasing its workload-cap slot
   without discarding guest state.
 
-  ## the idle-bank timer (Task 7)
+  ## idle and pressure bank admission
 
   A live session with ZERO in-flight and ZERO queued invokes for `idle_bank_ms`
   banks: releasing its live VM while retaining state on a node-disk snapshot. This
@@ -71,6 +71,12 @@ defmodule Embervm.Session do
   than banks. `idle_bank_ms` nil/0 disables banking entirely (the session never
   idle-banks; only expiry/destroy/relight-cycle ends it).
 
+  `pressure_bank/1` uses the same ownership boundary for a StatefulSweeper
+  request. The synchronous call checks both the worker and FIFO inside this
+  process before asking SessionManager to admit the bank, closing the race in
+  which an external observer could see an idle session just before an invoke
+  entered its queue. The workload's idle-bank disable applies to pressure too.
+
   All timers use `Process.send_after` with an injectable `idle_bank_ms`, and tests
   drive `:maybe_bank` directly for determinism.
   """
@@ -79,7 +85,14 @@ defmodule Embervm.Session do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.Node.V1.{GuestRequest, GuestResponse, SessionAssignRequest, SessionAssignResponse, Trace}
+  alias Embervm.Node.V1.{
+    GuestRequest,
+    GuestResponse,
+    SessionAssignRequest,
+    SessionAssignResponse,
+    Trace
+  }
+
   alias Embervm.SessionTrace
 
   # Default margin the invoke watchdog adds on top of transport_timeout/1. Matches
@@ -115,6 +128,19 @@ defmodule Embervm.Session do
   @doc "The session id this process serves (for supervision/debug)."
   @spec session_id(GenServer.server()) :: String.t()
   def session_id(server), do: GenServer.call(server, :session_id)
+
+  @doc """
+  Banks this session for brick memory pressure only when it is idle now.
+
+  The quiescence check and bank admission run inside the session process, so an
+  invoke already queued or in flight is never interrupted. A nil or non-positive
+  idle-bank setting remains an explicit workload-level disable. On successful
+  admission the process stops exactly as it does for the ordinary idle timer.
+  """
+  @spec pressure_bank(GenServer.server()) :: :ok | {:error, term()}
+  def pressure_bank(server) do
+    GenServer.call(server, :pressure_bank, :infinity)
+  end
 
   # -- GenServer callbacks ---------------------------------------------------
 
@@ -177,6 +203,22 @@ defmodule Embervm.Session do
 
   @impl true
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
+
+  def handle_call(:pressure_bank, _from, state) do
+    cond do
+      not banking_enabled?(state) ->
+        {:reply, {:error, :banking_disabled}, state}
+
+      not quiescent?(state) ->
+        {:reply, {:error, :busy}, state}
+
+      true ->
+        case ask_bank(state) do
+          :ok -> {:stop, :normal, :ok, state}
+          {:error, _reason} = error -> {:reply, error, state}
+        end
+    end
+  end
 
   def handle_call({:invoke, req}, from, state) do
     # Queue-cap is over WAITERS: the in-flight invoke does not count against the
@@ -303,6 +345,8 @@ defmodule Embervm.Session do
   # -- idle-bank -------------------------------------------------------------
 
   defp quiescent?(state), do: is_nil(state.worker) and :queue.is_empty(state.queue)
+
+  defp banking_enabled?(%{idle_bank_ms: ms}), do: is_integer(ms) and ms > 0
 
   # Ask the manager to admit a bank. The manager owns the per-node bank cap, the disk
   # fail-closed gate, the Bank RPC (run off its process), the durable session_banked

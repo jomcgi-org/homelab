@@ -383,8 +383,10 @@ defmodule Embervm.Application do
       # EndpointPublisher (it mutates the store + re-pushes) and AFTER StatefulManager +
       # TcpActivator (banking must not race an in-flight wake's own transition, and this
       # ordering means a StatefulSweeper restart under :rest_for_one does not bounce the
-      # wake path). With no stats_base wired (reuses EMBERVM_SERVING_STATS_BASE) every
-      # tick fails open and banks nothing, mirroring ServingSweeper's no-op default.
+      # wake path). With no stats_base wired (reuses EMBERVM_SERVING_STATS_BASE),
+      # ordinary idle banking and pressure selection of stateful guests fail open;
+      # pressure selection of quiescent sessions remains safe because each Session
+      # process owns its invoke-state check.
       {Embervm.StatefulSweeper, stateful_sweeper_opts()},
       # The composite-group lifecycle-economics sweeper (R5, Task 8): the group
       # idle-to-bank / max-lifetime / banked-TTL loop, plus the forced-roll verb the
@@ -1309,6 +1311,22 @@ defmodule Embervm.Application do
     end
   end
 
+  defp boolean_env(name, default) do
+    case trimmed_env(name) do
+      "" -> default
+      value when value in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  defp float_env(name, default) do
+    case Float.parse(trimmed_env(name)) do
+      {value, ""} -> value
+      :error -> default
+      {_value, _rest} -> default
+    end
+  end
+
   # ServingSweeper (Task 9) config: the sweep cadence, the node Envoy stats base URL,
   # and the per-node concurrent-bank cap. The stats_base is the serving Service's
   # stats port (EMBERVM_SERVING_STATS_BASE, e.g. http://embervm-serving:9902); unset
@@ -1345,9 +1363,10 @@ defmodule Embervm.Application do
   # URL (reuses sweeper_stats_base/0, EMBERVM_SERVING_STATS_BASE: stateful's L4
   # tcp_proxy listeners live on the SAME node Envoy admin the serving scrape already
   # reaches, so there is no separate stateful stats env var), the per-node concurrent-
-  # bank cap, and the max-lifetime drain patience window. Unset stats_base disables the
-  # scrape, so every tick fails open and banks nothing, exactly the ServingSweeper
-  # default.
+  # bank cap, max-lifetime drain patience, and brick memory-pressure hysteresis.
+  # Unset stats_base disables the L4 scrape, so pressure banking can still select
+  # idle session guests but cannot select a stateful guest without a fresh
+  # zero-connection reading.
   # The drain coordinator reads only its safety-margin knob from the environment;
   # an unset var lets the module apply its own 15s default (the reject drops the
   # nil so it never overrides the default with nil).
@@ -1362,7 +1381,10 @@ defmodule Embervm.Application do
       sweep_interval_ms: stateful_sweep_interval_ms(),
       stats_base: sweeper_stats_base(),
       bank_concurrency: int_env_or_nil("EMBERVM_STATEFUL_BANK_CONCURRENCY"),
-      lifetime_drain_max_ms: int_env_or_nil("EMBERVM_STATEFUL_LIFETIME_DRAIN_MAX_MS")
+      lifetime_drain_max_ms: int_env_or_nil("EMBERVM_STATEFUL_LIFETIME_DRAIN_MAX_MS"),
+      pressure_banking_enabled: boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", true),
+      high_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_HIGH_WATER_FRACTION", 0.85),
+      low_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION", 0.70)
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end

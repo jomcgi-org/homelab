@@ -428,6 +428,14 @@ spec:
             - name: EMBERVM_STATEFUL_SWEEP_INTERVAL_MS
               value: {{ .Values.statefulSweeper.sweepIntervalMs | quote }}
             {{- end }}
+            # StatefulSweeper resident-memory hysteresis. These are CP-only
+            # settings over NodeCapacity facts and add no daemon surface.
+            - name: EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED
+              value: {{ .Values.statefulSweeper.pressureBanking.enabled | quote }}
+            - name: EMBERVM_STATEFUL_PRESSURE_HIGH_WATER_FRACTION
+              value: {{ .Values.statefulSweeper.pressureBanking.highWaterFraction | quote }}
+            - name: EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION
+              value: {{ .Values.statefulSweeper.pressureBanking.lowWaterFraction | quote }}
             {{- if .Values.grpcConnectionSweeper.enabled }}
             # gRPC connection sweep gate (default off, dry-run logging only). "1" or "true"
             # arms destructive orphaned connection termination.
