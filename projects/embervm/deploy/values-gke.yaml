@@ -28,12 +28,18 @@ noded:
 tokenBroker:
   enabled: false
 
-# One 2 GiB brick fits the single n2-standard-8 spot node while leaving room
-# for serving and node overhead. Explicit zeros prevent deep-merge leakage.
+# 2gi bricks scale horizontally for the small guests; the 4gi class exists
+# because the fleet has consumers that cannot fit a 2gi brick at all: the
+# semgrep task guest is 1536 MiB (its primed floor sat unsatisfied and every
+# scan hung at wait=true until 2026-09-01), and pi-runtime sessions were
+# taking steady no_capacity denials with the 2gi class at its ceiling. The
+# ember-bricks node pool autoscales (max 3 nodes), so a 4gi brick that does
+# not fit the current node adds one. 8gi/16gi stay off; explicit zeros
+# prevent deep-merge leakage. #5459 tracks the fuller session-class design.
 bricks:
   desiredReplicas:
     2gi: 1
-    4gi: 0
+    4gi: 1
     8gi: 0
     16gi: 0
   nodeFloors: []
@@ -41,7 +47,7 @@ bricks:
     minReplicas:
       16gi: 0
     maxReplicas:
-      4gi: 0
+      4gi: 2
       8gi: 0
       16gi: 0
 # GKE node names are not known before provisioning. An empty list keeps the
