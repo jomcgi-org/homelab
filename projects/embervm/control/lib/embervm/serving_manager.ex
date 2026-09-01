@@ -101,6 +101,11 @@ defmodule Embervm.ServingManager do
   @default_wake_max 30
   @default_wake_window_ms 60_000
 
+  # Keep this equal to NodeRegistry's @expire_after_ms (90_000). A rebuilt
+  # published row stays optimistic across the short NodeStatus reconnect gap,
+  # while sharing the registry's finite bound when a brick never reports.
+  @resident_health_grace_ms 90_000
+
   # Parked-request cap per workload: how many callers may park behind one wake
   # before excess misses get 503 (the wake is slow / stuck; do not accumulate
   # unbounded callers on one workload).
@@ -154,13 +159,22 @@ defmodule Embervm.ServingManager do
   def init(opts) do
     op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     op_log = Keyword.get(opts, :op_log, op_log_mod)
+    clock = Keyword.get(opts, :clock, &default_clock/0)
 
     state = %{
       store: Keyword.get(opts, :store, ServingStore),
       publisher: Keyword.get(opts, :publisher, EndpointPublisher),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
-      clock: Keyword.get(opts, :clock, &default_clock/0),
+      clock: clock,
+      # Measure from manager boot even when the first reconcile is delayed. A
+      # first-reconcile timestamp would renew the grace after scheduler stalls
+      # and make the supposedly bounded optimistic publication unbounded again.
+      booted_at_ms: clock.(),
+      # Node names that have contributed capacity at least once since this
+      # manager booted. A later capacity retraction is handled by registry
+      # liveness, not by the durable-only endpoint grace.
+      seen_reporting_nodes: MapSet.new(),
       id_fun: Keyword.get(opts, :id_fun, nil),
       tenant: Keyword.get(opts, :tenant, "homelab"),
       # Daemon serving-verb seams (injected for tests; production dials the real
@@ -964,6 +978,17 @@ defmodule Embervm.ServingManager do
   # without touching any VM).
   defp do_reconcile(state) do
     facts = NodeCapacity.all(state.capacity_table)
+
+    reporting_nodes =
+      facts
+      |> Enum.map(&Map.get(&1, :node_id))
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    state = %{
+      state
+      | seen_reporting_nodes: MapSet.union(state.seen_reporting_nodes, reporting_nodes)
+    }
     live_vms = index_serving_vms(facts)
     snapshots = index_serving_snapshots(facts)
 
@@ -982,6 +1007,13 @@ defmodule Embervm.ServingManager do
 
     state = evict_orphan_snapshots(state, facts)
 
+    # Serving names its live endpoint state :published rather than :serving, but
+    # the safety property is identical: preserve rebuilt endpoints during the CP
+    # deploy reconnect window, then clear only health for an owner that supplied
+    # no NodeCapacity fact at any reconcile by the shared 90-second liveness
+    # bound.
+    state = withdraw_unreported_resident_health(state)
+
     # Fail-closed reconciliation toward destruction (ADR embervm/014 decision 5),
     # gated: re-drive stuck destroying instances and destroy reported serving VMs
     # with no CP row. Gate off is inert, preserving today's adoption behavior.
@@ -996,6 +1028,37 @@ defmodule Embervm.ServingManager do
 
     # Re-derive + re-push after adoption so the fan-out reflects the healed facts.
     EndpointPublisher.publish(state.publisher)
+    state
+  end
+
+  defp withdraw_unreported_resident_health(state) do
+    elapsed_ms = state.clock.() - state.booted_at_ms
+
+    if elapsed_ms >= @resident_health_grace_ms do
+      ServingStore.all(state.store)
+      |> Enum.filter(fn instance ->
+        instance.state == :published and instance.healthy and
+          not MapSet.member?(state.seen_reporting_nodes, instance.node_id)
+      end)
+      |> Enum.each(fn instance ->
+        # A missing NodeCapacity row is normal for a brick that never reached its
+        # first NodeStatus. Treat a concurrent row disappearance as a benign
+        # best-effort miss so endpoint withdrawal cannot crash the manager.
+        case ServingStore.set_health(state.store, instance.instance_id, false) do
+          {:ok, _updated} ->
+            Logger.warning("embervm serving endpoint withdrawn after node-report grace",
+              instance_id: instance.instance_id,
+              workload: instance.workload,
+              node_id: instance.node_id,
+              elapsed_ms: elapsed_ms
+            )
+
+          :error ->
+            :ok
+        end
+      end)
+    end
+
     state
   end
 

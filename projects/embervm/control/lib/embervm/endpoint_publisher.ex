@@ -43,8 +43,9 @@ defmodule Embervm.EndpointPublisher do
 
   Because the render reads only ServingStore + StatefulStore + the catalog (never
   the durable op-log), a projection rebuild followed by a publish is byte-identical
-  to the pre-restart snapshot: this is the property test the plan requires and the
-  reason the version's ONLY moving part is the counter, not any fact.
+  to the pre-restart snapshot: this property holds for 90 seconds; a node that never
+  reports loses its endpoint thereafter. This is the property test the plan requires
+  and the reason the version's ONLY moving part is the counter, not any fact.
 
   ## version = fixed-width monotonic string (D-R3.5.1)
 
