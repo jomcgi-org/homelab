@@ -22,11 +22,17 @@ noded:
   networkPolicy:
     enabled: false
 
-# The tokenBroker's network policy has no separate gate, so the whole broker
-# waits for either a plain NetworkPolicy port or Cilium on GKE; agent OAuth
-# grants are down until then.
+# Broker on, its CiliumNetworkPolicy off (no Cilium CRDs on the hub; same
+# trade as noded.networkPolicy above). Without the broker the codex-cluster
+# grant never populates and every codex-lane session turn fails with
+# "-32600: failed to load configuration". The grant Secret's /data is
+# ignoreDifferences'd in projects/gke-apps/embervm/application.yaml per the
+# loud contract in chart/values.yaml. Fresh state: the bundle needs one
+# codex-broker-login round to seed the refresh token.
 tokenBroker:
-  enabled: false
+  enabled: true
+  networkPolicy:
+    enabled: false
 
 # 2gi bricks scale horizontally for the small guests; the 4gi class exists
 # because the fleet has consumers that cannot fit a 2gi brick at all: the
