@@ -16,7 +16,7 @@ spec:
       # 0.49.31 carries the CP combined Finch trust store (#5500) and the
       # registry's 0.49.29 tag is STALE pre-gate content (see #5507), do not
       # pin it. Verify a fresh pin by pulling the tag and grepping the change.
-      targetRevision: 0.50.0
+      targetRevision: 0.51.2
       helm:
         releaseName: embervm
         valueFiles:
