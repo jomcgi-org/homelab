@@ -317,6 +317,16 @@ defmodule Embervm.NodeRegistry do
     base_builder_updater_fun =
       Keyword.get(opts, :base_builder_updater_fun, &default_base_builder_update/1)
 
+    # How expiry withdraws live endpoint facts for VMs whose owning brick is being
+    # forgotten. The function is injected for the same reason as the channel and
+    # BaseBuilder callbacks above: NodeRegistry starts before the lifecycle stores,
+    # and a missing, restarting, or slow store must never take registry liveness
+    # down with it. The default scans the real store and flips only the rows whose
+    # vm_ids appeared in this brick instance's last NodeStatus. Tests can point the
+    # same production callback at unnamed real stores via the two store options.
+    resident_health_fun =
+      Keyword.get(opts, :resident_health_fun, &default_withdraw_resident_health/4)
+
     NodeCapacity.create(table)
 
     now = clock.()
@@ -347,6 +357,9 @@ defmodule Embervm.NodeRegistry do
       channel_updater_fun: channel_updater_fun,
       channel_remover_fun: channel_remover_fun,
       base_builder_updater_fun: base_builder_updater_fun,
+      resident_health_fun: resident_health_fun,
+      stateful_store: Keyword.get(opts, :stateful_store, Embervm.StatefulStore),
+      serving_store: Keyword.get(opts, :serving_store, Embervm.ServingStore),
       registry_resync_ms: registry_resync_ms,
       node_runtime: node_runtime,
       # The process notified once per drain rising edge with {:node_draining,
@@ -592,7 +605,14 @@ defmodule Embervm.NodeRegistry do
   defp apply_status(state, instance_id, %NodeStatus{} = status) do
     now = state.clock.()
     prev = state.node_runtime[instance_id]
-    rt = %{prev | last_status_at: now, health: :healthy, draining: status.draining}
+    rt = %{
+      prev
+      | last_status_at: now,
+        health: :healthy,
+        draining: status.draining,
+        stateful_vm_ids: resident_vm_ids(status.stateful_vms),
+        serving_vm_ids: resident_vm_ids(status.serving_vms)
+    }
     state = put_in(state.node_runtime[instance_id], rt)
     Embervm.SpecTrace.emit(:adoption, :recv_status, %{
       "gen" => rt.gen,
@@ -607,6 +627,17 @@ defmodule Embervm.NodeRegistry do
   defp primed_vm_ids(%NodeStatus{workloads: workloads}) do
     for %WorkloadCapacity{primed_vm_ids: vm_ids} <- workloads, vm_id <- vm_ids, do: vm_id
   end
+
+  # Keep just the VM identity needed to withdraw endpoint health if this brick
+  # later expires. Capacity facts are retracted as soon as the brick ages down,
+  # long before expiry, so the capacity table cannot be the source at the expiry
+  # edge. Recording the ids on the runtime also distinguishes co-located brick
+  # instances that share one configured node name.
+  defp resident_vm_ids(vms) when is_list(vms) do
+    for %{vm_id: vm_id} <- vms, is_binary(vm_id) and vm_id != "", uniq: true, do: vm_id
+  end
+
+  defp resident_vm_ids(_), do: []
 
   # On the RISING edge of draining (false -> true) notify the drain listener exactly
   # once with the instance's published deadline, so it force-banks the instance's
@@ -1514,15 +1545,21 @@ defmodule Embervm.NodeRegistry do
       last_registered_at: nil,
       health: :starting,
       draining: false,
+      # The last inventory reported by this exact brick instance. Store rows carry
+      # the configured node name, not pod_uid, so vm_id is the discriminator that
+      # prevents expiry of one co-located brick from ejecting its healthy sibling.
+      stateful_vm_ids: [],
+      serving_vm_ids: [],
       gen: 0
     }
   end
 
   # Remove an instance from the registry: retract its capacity row, drop its
   # NodeChannel key (its instance_id, the only key it is registered under post-B0c),
-  # tell the BaseBuilder to drop it, kill its streamer if any (forgetting the pid
-  # first so the ensuing DOWN is ignored), and drop its runtime so no reconnect
-  # resurrects it. Used both by two-signal expiry and by a re-registration re-point.
+  # tell the BaseBuilder to drop it, withdraw the endpoint health of resident
+  # stateful and serving VMs, kill its streamer if any (forgetting the pid first so
+  # the ensuing DOWN is ignored), and drop its runtime so no reconnect resurrects
+  # it. Used both by two-signal expiry and by a re-registration re-point.
   #
   # NodeChannel removal (single-key, post instance-key migration): add_instance
   # registered this instance's address under its instance_id alone, and expiry removes
@@ -1533,9 +1570,33 @@ defmodule Embervm.NodeRegistry do
   defp expire_instance(state, instance_id) do
     Logger.info("embervm node registry: instance #{instance_id} expired; tearing down")
 
+    rt = state.node_runtime[instance_id]
+
     safe_channel_remove(state.channel_remover_fun, instance_id)
 
     safe_base_builder_update(state.base_builder_updater_fun, {:remove, instance_id})
+
+    if rt do
+      # Health is deliberately the lever here: no FSM transition and no op-log
+      # append. If a supposedly lost guest is actually still alive, a later
+      # NodeStatus adoption restores the endpoint from the daemon's probe fact.
+      safe_withdraw_resident_health(
+        state.resident_health_fun,
+        Embervm.StatefulStore,
+        state.stateful_store,
+        rt.configured_id,
+        rt.stateful_vm_ids
+      )
+
+      safe_withdraw_resident_health(
+        state.resident_health_fun,
+        Embervm.ServingStore,
+        state.serving_store,
+        rt.configured_id,
+        rt.serving_vm_ids
+      )
+    end
+
     state = retract_capacity(state, instance_id)
 
     state =
@@ -1651,6 +1712,51 @@ defmodule Embervm.NodeRegistry do
   catch
     kind, reason ->
       Logger.warning("embervm node registry: base builder update #{inspect(msg)} exited: #{inspect({kind, reason})}")
+      :ok
+  end
+
+  # Withdraw endpoint health through the lifecycle store's lossy node-fact API.
+  # Match both configured node and vm_id: store rows intentionally carry the node
+  # name while the registry distinguishes co-located bricks by pod_uid, and the
+  # remembered VM inventory is what identifies residency on the expiring instance.
+  defp default_withdraw_resident_health(_store_mod, _store, _node_id, []), do: :ok
+
+  defp default_withdraw_resident_health(store_mod, store, node_id, vm_ids) do
+    resident_vm_ids = MapSet.new(vm_ids)
+
+    store_mod.all(store)
+    |> Enum.filter(fn instance ->
+      instance.node_id == node_id and MapSet.member?(resident_vm_ids, instance.vm_id)
+    end)
+    |> Enum.each(fn instance ->
+      _ = store_mod.set_health(store, instance.instance_id, false)
+    end)
+
+    :ok
+  end
+
+  # The lifecycle stores are later children than NodeRegistry and can be absent or
+  # restarting when an expiry lands. Mirror safe_channel_remove and
+  # safe_base_builder_update: swallow raises, exits, and call timeouts after logging
+  # so endpoint cleanup remains best effort and never crashes the registry.
+  defp safe_withdraw_resident_health(nil, _store_mod, _store, _node_id, _vm_ids), do: :ok
+
+  defp safe_withdraw_resident_health(withdrawer, store_mod, store, node_id, vm_ids) do
+    withdrawer.(store_mod, store, node_id, vm_ids)
+    :ok
+  rescue
+    e ->
+      Logger.warning(
+        "embervm node registry: #{inspect(store_mod)} resident health withdrawal for #{node_id} failed: #{inspect(e)}"
+      )
+
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning(
+        "embervm node registry: #{inspect(store_mod)} resident health withdrawal for #{node_id} failed: #{inspect({kind, reason})}"
+      )
+
       :ok
   end
 

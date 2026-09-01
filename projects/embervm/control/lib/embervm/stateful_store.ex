@@ -13,12 +13,13 @@ defmodule Embervm.StatefulStore do
   On `init/1` this rebuilds its two ETS tables from
   `OpLog.load_stateful_instances/1` and `OpLog.load_volumes/1`, the recovery
   path: a fresh StatefulStore against an existing op-log ends up with exactly the
-  state the durable projections recorded, no replay logic beyond "read the
-  projection". A projection rebuild followed by an `Embervm.EndpointPublisher`
-  publish is therefore byte-identical to the pre-restart snapshot (the publisher
-  is a pure function of these facts). Adoption (a later task) layers the NODE's
-  reported stateful inventory on top of this durable rebuild to heal residency
-  and limbo states.
+  durable lifecycle state the projections recorded, no replay logic beyond "read
+  the projection". Health is intentionally excluded from that equivalence: it is
+  a lossy node fact, so rebuilt rows start unhealthy and do not contribute an
+  endpoint. `Embervm.StatefulManager` layers the NODE's reported stateful
+  inventory on top of this durable rebuild to restore health for live guests and
+  heal residency and limbo states. A node that never reports cannot retain an
+  endpoint merely because its last durable state was `serving`.
 
   ## the singleton invariant
 
@@ -680,11 +681,12 @@ defmodule Embervm.StatefulStore do
 
   # Rebuild: read every durable stateful-instance + volume row and populate the two
   # hot sets + counts from scratch. No per-op replay: the projections already ARE
-  # the current state. `healthy` is NOT durable (it is a live node-probe fact); a
-  # rebuilt `serving` instance is marked healthy=true so the publisher re-publishes
-  # the exact endpoint the projection recorded (byte-identical rebuild), and the
-  # node's next probe corrects it if it is actually unhealthy. A non-serving rebuilt
-  # instance is healthy=false (it is not in the fan-out anyway).
+  # the current state. `healthy` is NOT durable (it is a live node-probe fact), so
+  # every rebuilt instance starts unhealthy and outside the endpoint fact. A live
+  # brick sends an initial NodeStatus immediately when NodeRegistry opens WatchNode,
+  # then every 2 seconds; StatefulManager's boot and periodic adoption reconcile
+  # copies that report through adopt_endpoint/5. A brick that never reports cannot
+  # leave its durable `serving` projection published forever.
   defp rebuild(state) do
     with {:ok, rows} <- state.op_log_mod.load_stateful_instances(state.op_log),
          {:ok, volumes} <- state.op_log_mod.load_volumes(state.op_log),
@@ -739,10 +741,10 @@ defmodule Embervm.StatefulStore do
       vm_id: row.vm_id,
       ip: row.ip,
       port: row.port,
-      # Not durable: a rebuilt serving instance is assumed healthy so the boot
-      # publish re-emits its recorded endpoint identically; the node probe corrects
-      # a truly-unhealthy one on its next report.
-      healthy: fsm_state == :serving,
+      # Not durable: fail closed until adoption sees this VM in a live brick's
+      # NodeStatus and copies the probe verdict through adopt_endpoint/5. Assuming
+      # health here made a dead brick's durable serving row immortal after restart.
+      healthy: false,
       # Transient (ETS-only) endpoint-pull marker, set on unpublish; nil after a
       # rebuild (a bank interrupted by a restart is re-driven by adoption, not
       # resumed from this field).

@@ -12,9 +12,9 @@ defmodule Embervm.NodeRegistryTest do
   # test), proving connect -> emit -> ETS publish -> reconnect-on-drop.
   use ExUnit.Case, async: true
 
-  alias Embervm.{NodeRegistry, StatefulStore, WorkloadCatalog}
+  alias Embervm.{NodeRegistry, ServingStore, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, WorkloadCapacity}
+  alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, ServingVm, StatefulVm, WorkloadCapacity}
 
   # -- helpers ---------------------------------------------------------------
 
@@ -1053,6 +1053,135 @@ defmodule Embervm.NodeRegistryTest do
     assert {:error, :unknown_node} = Embervm.NodeChannel.get(nc, a_id)
     assert {:ok, {:chan, ^b_addr}} = Embervm.NodeChannel.get(nc, b_id)
     assert {:error, :unknown_node} = Embervm.NodeChannel.get(nc, node)
+  end
+
+  test "instance expiry withdraws stateful and serving endpoints resident on the brick" do
+    suffix = System.unique_integer([:positive, :monotonic])
+    path = Path.join(System.tmp_dir!(), "embervm_node_expiry_endpoint_test_#{suffix}.db")
+    on_exit(fn -> File.rm_rf!(path) end)
+
+    {:ok, op_log} = SQLite.start_link(name: nil, path: path)
+    {:ok, stateful_store} = StatefulStore.start_link(name: nil, op_log: op_log)
+    {:ok, serving_store} = ServingStore.start_link(name: nil, op_log: op_log)
+
+    node = "endpoint-node-#{suffix}"
+    stateful_vm_id = "stateful-vm-#{suffix}"
+    serving_vm_id = "serving-vm-#{suffix}"
+
+    {:ok, _} =
+      StatefulStore.start(stateful_store, %{
+        instance_id: "stateful-instance-#{suffix}",
+        tenant: "homelab",
+        principal: "test",
+        workload: "stateful-workload-#{suffix}",
+        node_id: node,
+        vm_id: stateful_vm_id,
+        generation: 1
+      })
+
+    {:ok, _} =
+      StatefulStore.publish(
+        stateful_store,
+        "stateful-instance-#{suffix}",
+        "10.88.0.5",
+        5432,
+        :started
+      )
+
+    {:ok, _} =
+      ServingStore.start(serving_store, %{
+        instance_id: "serving-instance-#{suffix}",
+        tenant: "homelab",
+        principal: "test",
+        workload: "serving-workload-#{suffix}",
+        node_id: node,
+        vm_id: serving_vm_id,
+        ip: "10.99.0.5",
+        port: 8080,
+        base_snapshot_ref: "base:test",
+        base_digest: "sha256:test"
+      })
+
+    {:ok, _} =
+      ServingStore.publish(
+        serving_store,
+        "serving-instance-#{suffix}",
+        "10.99.0.5",
+        8080,
+        :started
+      )
+
+    stateful_workload = "stateful-workload-#{suffix}"
+    serving_workload = "serving-workload-#{suffix}"
+
+    assert StatefulStore.published_endpoint(stateful_store, stateful_workload) == %{
+             ip: "10.88.0.5",
+             port: 5432
+           }
+
+    assert ServingStore.published_endpoints(serving_store, serving_workload) == [
+             %{ip: "10.99.0.5", port: 8080}
+           ]
+
+    reported_status = %NodeStatus{
+      node_status(node_id: node)
+      | stateful_vms: [
+          %StatefulVm{
+            vm_id: stateful_vm_id,
+            workload: stateful_workload,
+            ip: "10.88.0.5",
+            port: 5432,
+            healthy: true,
+            generation: 1
+          }
+        ],
+        serving_vms: [
+          %ServingVm{
+            vm_id: serving_vm_id,
+            workload: serving_workload,
+            ip: "10.99.0.5",
+            port: 8080,
+            healthy: true
+          }
+        ]
+    }
+
+    watch_fun = fn _channel, _node_id, emit ->
+      emit.(reported_status)
+      receive do: (:never -> {:ok, :closed})
+    end
+
+    {clock, advance} = new_clock()
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          watch_fun: watch_fun,
+          stateful_store: stateful_store,
+          serving_store: serving_store,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 20_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => node,
+        "pod_uid" => "uid-expired",
+        "address" => "10.0.0.9:9090"
+      })
+
+    await_initial_status(reg, "#{node}/uid-expired")
+    advance.(20_000)
+    :ok = NodeRegistry.tick(reg)
+
+    refute Map.has_key?(NodeRegistry.status(reg), "#{node}/uid-expired")
+    assert StatefulStore.published_endpoint(stateful_store, stateful_workload) == nil
+    assert ServingStore.published_endpoints(serving_store, serving_workload) == []
   end
 
   test "registration feeds instance add to the BaseBuilder (so BuildBase can place)" do
