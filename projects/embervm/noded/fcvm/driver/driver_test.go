@@ -48,7 +48,8 @@ func (p *fakeProcess) Kill() error { p.killed = true; return p.srv.Close() }
 func (p *fakeProcess) Wait() error { return nil }
 func (p *fakeProcess) Pid() int    { return p.pid }
 
-func (l *fakeLauncher) Launch(_ context.Context, _ string, socketPath string) (Process, error) {
+func (l *fakeLauncher) Launch(_ context.Context, spec LaunchSpec) (Process, error) {
+	socketPath := spec.SocketPath
 	l.mu.Lock()
 	l.launched++
 	l.mu.Unlock()

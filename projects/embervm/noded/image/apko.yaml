@@ -1,7 +1,7 @@
 # Runtime image for the embervm-noded daemon. Wolfi base with ca-certificates
 # (TLS to the in-cluster apiserver / OTLP) and busybox (a shell for in-pod
 # debugging). The Go daemon binary is layered at /usr/local/bin/embervm-noded and
-# the firecracker binary + guest kernel are baked at /opt/fc from the
+# the firecracker + jailer binaries and guest kernel are baked at /opt/fc from the
 # @kata_firecracker bundle, so node-4 needs no /opt/kata install: it only provides
 # /dev/kvm and the nvme scratch dir (see projects/platform/firecracker-node).
 #

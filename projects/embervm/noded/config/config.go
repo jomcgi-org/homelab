@@ -169,6 +169,11 @@ type Config struct {
 	ReapUnclaimedWarmth bool
 	// BinPath is the firecracker binary (baked into the image at /opt/fc).
 	BinPath string
+	// JailerEnabled launches every VM through Firecracker's jailer. Disable only
+	// as an operational escape hatch back to direct exec.
+	JailerEnabled bool
+	// JailerBinPath is the jailer binary matching BinPath's Firecracker release.
+	JailerBinPath string
 	// KernelImagePath is the guest kernel (baked at /opt/fc), shared by every VM.
 	KernelImagePath string
 	// KernelBootArgs are appended to the kernel command line on cold boot. Empty
@@ -449,6 +454,8 @@ func Load() (Config, error) {
 		WarmthStaleAfter:        600 * time.Second,
 		ReapUnclaimedWarmth:     os.Getenv("EMBERVM_NODED_REAP_UNCLAIMED_WARMTH") == "1",
 		BinPath:                 getenvDefault("EMBERVM_NODED_FIRECRACKER_BIN", "/opt/fc/firecracker"),
+		JailerEnabled:           boolDefault("EMBERVM_NODED_JAILER_ENABLED", true),
+		JailerBinPath:           getenvDefault("EMBERVM_NODED_JAILER_BIN", "/opt/fc/jailer"),
 		KernelImagePath:         getenvDefault("EMBERVM_NODED_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
 		KernelBootArgs:          os.Getenv("EMBERVM_NODED_KERNEL_BOOT_ARGS"),
 		HarnessInit:             getenvDefault("EMBERVM_NODED_HARNESS_INIT", "/usr/local/bin/fc-shim-init"),

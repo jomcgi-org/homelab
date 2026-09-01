@@ -331,6 +331,7 @@ func TestLoadDefaults(t *testing.T) {
 		"EMBERVM_NODED_DRAIN_TIMEOUT", "EMBERVM_NODED_DIFF_BANKING", "EMBERVM_NODED_DIFF_BANKING_WORKLOADS",
 		"EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", "EMBERVM_NODED_WARMTH_STALE_AFTER",
 		"EMBERVM_NODED_REAP_UNCLAIMED_WARMTH",
+		"EMBERVM_NODED_JAILER_ENABLED", "EMBERVM_NODED_JAILER_BIN",
 	} {
 		t.Setenv(k, "")
 	}
@@ -362,6 +363,12 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.BinPath != "/opt/fc/firecracker" {
 		t.Errorf("BinPath = %q, want /opt/fc/firecracker", c.BinPath)
+	}
+	if !c.JailerEnabled {
+		t.Error("JailerEnabled should default true")
+	}
+	if c.JailerBinPath != "/opt/fc/jailer" {
+		t.Errorf("JailerBinPath = %q, want /opt/fc/jailer", c.JailerBinPath)
 	}
 	if c.KernelImagePath != "/opt/fc/vmlinux.container" {
 		t.Errorf("KernelImagePath = %q, want /opt/fc/vmlinux.container", c.KernelImagePath)
@@ -409,6 +416,17 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.RequireRestoreCapability {
 		t.Error("RequireRestoreCapability should default false for the two-phase rollout")
+	}
+}
+
+func TestLoadJailerEscapeHatch(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_JAILER_ENABLED", "false")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.JailerEnabled {
+		t.Error("JailerEnabled = true, want false from escape-hatch env")
 	}
 }
 

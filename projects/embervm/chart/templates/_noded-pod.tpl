@@ -243,6 +243,8 @@ containers:
         value: {{ printf "%s/embervm-noded-vsock" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
       - name: EMBERVM_NODED_GUEST_OOM_SCORE_ADJ
         value: {{ $ctx.Values.noded.firecracker.guestOomScoreAdj | quote }}
+      - name: EMBERVM_NODED_JAILER_ENABLED
+        value: {{ $ctx.Values.noded.jailer.enabled | quote }}
       - name: EMBERVM_NODED_BOOT_READY_TIMEOUT
         value: {{ $ctx.Values.noded.firecracker.bootReadyTimeout | quote }}
       {{- with $ctx.Values.noded.firecracker.kernelBootArgs }}
