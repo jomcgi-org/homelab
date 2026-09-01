@@ -2,7 +2,7 @@ apiVersion: v2
 name: oci-model-cache-operator
 description: A Helm chart for the OCI Model Cache Operator - caches HuggingFace models as OCI artifacts
 type: application
-version: 0.6.408
+version: 0.6.409
 appVersion: "latest"
 keywords:
   - oci
