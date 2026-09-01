@@ -13,10 +13,10 @@ spec:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: embervm
       # This pin is a deliberate bootstrap floor. Write-back does NOT maintain gke-apps pins.
-      # 0.49.30 carries the tokenBroker.networkPolicy gate (#5506); the
+      # 0.49.31 carries the CP combined Finch trust store (#5500) and the
       # registry's 0.49.29 tag is STALE pre-gate content (see #5507), do not
       # pin it. Verify a fresh pin by pulling the tag and grepping the change.
-      targetRevision: 0.49.30
+      targetRevision: 0.49.31
       helm:
         releaseName: embervm
         valueFiles:
