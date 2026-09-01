@@ -42,6 +42,10 @@ LIST_SESSIONS_READ_TIMEOUT = 5.0
 # a wedged control plane would otherwise hold one request for 90 minutes.
 DESTROY_SESSION_READ_TIMEOUT = 30.0
 
+# A composer prewarm only needs to hand the request to the control plane. The
+# relight continues there if this client gives up before the guest answers.
+PREWARM_SESSION_TIMEOUT = 2.0
+
 
 def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
     try:
@@ -637,6 +641,38 @@ class EmberVmShimTransport:
                 ember_session_id,
                 exc,
             )
+            raise EmberVMTransportError(str(exc)) from exc
+
+    async def prewarm_session(
+        self, ember_session_id: str, ember_session_token: str
+    ) -> None:
+        """Start a session relight without invoking a model turn.
+
+        The control plane has no dedicated session wake route. Its existing
+        POST /v1/sessions/:id/invoke route is the session wake surface, so this
+        targets the guest's lightweight health path. The control plane always
+        forwards session invokes as POST, while healthz is GET-only, making the
+        eventual guest 404 harmless. The relight has already completed by then.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+
+        url = f"{EMBERVM_URL}/v1/sessions/{ember_session_id}/invoke"
+        headers = {
+            "Authorization": f"Bearer {ember_session_token}",
+            "X-Ember-Guest-Path": "/shim/healthz",
+        }
+        timeout = httpx.Timeout(PREWARM_SESSION_TIMEOUT)
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                # Do not raise for status. A woken guest returns the expected
+                # 404 because /shim/healthz is GET-only, and prewarm has already
+                # accomplished its only job by the time that response arrives.
+                await client.post(url, content=b"", headers=headers)
+        except httpx.TimeoutException as exc:
+            raise EmberVMTimeout(str(exc)) from exc
+        except httpx.TransportError as exc:
             raise EmberVMTransportError(str(exc)) from exc
 
     async def deliver(

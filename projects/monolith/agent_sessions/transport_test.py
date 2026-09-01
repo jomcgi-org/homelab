@@ -90,6 +90,31 @@ def test_create_session_parses_cp_session_identity(monkeypatch):
     assert requests[0].headers["Authorization"] == "management"
 
 
+def test_prewarm_uses_session_invoke_health_probe_with_short_timeout(monkeypatch):
+    requests = []
+    timeout_values = []
+    real_timeout = httpx.Timeout
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(404, json={"error": "not found"}, request=request)
+
+    def capture_timeout(value):
+        timeout_values.append(value)
+        return real_timeout(value)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.httpx, "Timeout", capture_timeout)
+    asyncio.run(transport.EmberVmShimTransport().prewarm_session("s1", "t1"))
+
+    assert str(requests[0].url) == "https://ember.test/v1/sessions/s1/invoke"
+    assert requests[0].headers["Authorization"] == "Bearer t1"
+    assert requests[0].headers["X-Ember-Guest-Path"] == "/shim/healthz"
+    assert requests[0].content == b""
+    assert timeout_values == [transport.PREWARM_SESSION_TIMEOUT]
+    assert transport.PREWARM_SESSION_TIMEOUT == 2.0
+
+
 def test_create_session_retryable_backoff_and_restore_payload(monkeypatch):
     attempts = []
     sleeps = []
