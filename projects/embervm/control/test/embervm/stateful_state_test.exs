@@ -39,7 +39,8 @@ defmodule Embervm.StatefulStateTest do
     {:relighting, :destroy} => :destroyed,
     {:cold_booting, :destroy} => :destroyed,
     # Node-confirmed destroy (ADR embervm/014 decision 5): begin_destroy from every
-    # non-terminal state (checkpointed included), then destroying -> destroy.
+    # non-terminal state (checkpointed included), then destroying -> destroy on
+    # confirmation or -> fail after the bounded missing-owner escape.
     {:starting, :begin_destroy} => :destroying,
     {:serving, :begin_destroy} => :destroying,
     {:banking, :begin_destroy} => :destroying,
@@ -48,6 +49,7 @@ defmodule Embervm.StatefulStateTest do
     {:relighting, :begin_destroy} => :destroying,
     {:cold_booting, :begin_destroy} => :destroying,
     {:destroying, :destroy} => :destroyed,
+    {:destroying, :fail} => :failed,
     {:starting, :fail} => :failed,
     {:serving, :fail} => :failed,
     {:banking, :fail} => :failed,

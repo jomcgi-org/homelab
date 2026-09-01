@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"sort"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -454,17 +456,46 @@ const defaultStatefulResolveTimeout = 30 * time.Second
 // cold boot can never have its attach stolen out from under it.
 const statefulPendingAttachGrace = 5 * time.Minute
 
+const statefulAPISocketProbeTimeout = 100 * time.Millisecond
+
 // releaseOrphanedAttach clears a writable-attach lock whose owning VM the
 // registry no longer knows about, so a workload wedged by a lost Detach
 // self-heals on its next wake instead of needing a noded restart (#3648).
 func (s *Server) releaseOrphanedAttach(workload string) {
 	live := ""
 	if e, ok := s.statefulVMs.byWorkload(workload); ok {
-		live = e.vmID
+		socketPath := s.statefulDriver.StatefulAPISocketPath(e.handle)
+		if socketPath == "" || statefulAPISocketDead(socketPath) {
+			if removed := s.statefulVMs.remove(e.vmID); removed != nil {
+				removed.probe.Stop()
+				if err := s.driver.Release(context.Background(), removed.handle); err != nil {
+					s.logger.Warn("noded: release dead stateful vm", "vm_id", removed.vmID, "err", err)
+				}
+				if err := s.driver.RemoveBundle(removed.handle.ThreadID); err != nil {
+					s.logger.Warn("noded: remove dead stateful vm bundle", "vm_id", removed.vmID, "err", err)
+				}
+				s.servingNet.ReleaseTap(context.Background(), removed.ip)
+				s.signalChange()
+			}
+		} else {
+			live = e.vmID
+		}
 	}
 	if reason, released := s.volumes.ReleaseOrphaned(workload, live, statefulPendingAttachGrace); released {
 		s.logger.Warn("noded: reclaimed orphaned writable attach", "workload", workload, "reason", reason)
 	}
+}
+
+// statefulAPISocketDead recognizes only the definitive local death verdicts
+// produced by a missing socket or a socket with no Firecracker listener. Other
+// dial errors fail closed and preserve the healthy-attach fast path.
+func statefulAPISocketDead(path string) bool {
+	conn, err := net.DialTimeout("unix", path, statefulAPISocketProbeTimeout)
+	if err == nil {
+		_ = conn.Close()
+		return false
+	}
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
 }
 
 // StopStateful tears down a live stateful VM. BANK pauses it, writes a

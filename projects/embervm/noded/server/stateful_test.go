@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -49,6 +50,7 @@ type fakeStatefulDriver struct {
 	pinnedIPs      map[string]string
 	restoreStarted chan struct{}
 	releaseRestore chan struct{}
+	apiSocketPath  string
 }
 
 type fakeCheckpoint struct {
@@ -93,6 +95,12 @@ func (f *fakeStatefulDriver) StatefulPinnedIP(snapshotRef string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.pinnedIPs[snapshotRef]
+}
+
+func (f *fakeStatefulDriver) StatefulAPISocketPath(_ substrate.Handle) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.apiSocketPath
 }
 
 func (f *fakeStatefulDriver) RestoreStateful(_ context.Context, snapshotRef, _ string) (substrate.Handle, error) {
@@ -268,6 +276,30 @@ func newStatefulTestServer(t *testing.T) (*Server, *fakeServingNet, *fakeStatefu
 	dir := t.TempDir()
 	volumeRoot := dir + "/volumes"
 	fsd := newFakeStatefulDriver(dir)
+	socketDir, err := os.MkdirTemp("/tmp", "stf-fake-api-")
+	if err != nil {
+		t.Fatalf("MkdirTemp fake Firecracker socket: %v", err)
+	}
+	socketPath := socketDir + "/api.sock"
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		_ = os.RemoveAll(socketDir)
+		t.Fatalf("listen fake Firecracker socket: %v", err)
+	}
+	fsd.apiSocketPath = socketPath
+	t.Cleanup(func() {
+		_ = listener.Close()
+		_ = os.RemoveAll(socketDir)
+	})
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
 	fsn := newFakeServingNet()
 	s := New(Options{
 		Config: config.Config{
@@ -433,6 +465,56 @@ func TestStartStatefulAttachLockRefusesSecondAttach(t *testing.T) {
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("second attach of an already-attached workload: got %v want FailedPrecondition", err)
 	}
+}
+
+// TestReleaseOrphanedAttachDropsDeadRegistryVM proves a registry entry is not
+// accepted as attach-health testimony after its Firecracker API socket dies.
+// The live socket preserves the attach; removing it drops the registry entry
+// and lets ReleaseOrphaned reclaim the stale writable lock.
+func TestReleaseOrphanedAttachDropsDeadRegistryVM(t *testing.T) {
+	port := tcpHealthServer(t)
+	s, _, fsd := newStatefulTestServer(t)
+	resp := startFreshStateful(t, s, port, "wl-state")
+
+	socketDir, err := os.MkdirTemp("", "stf-api-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := socketDir + "/api.sock"
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on fake Firecracker socket: %v", err)
+	}
+
+	fsd.mu.Lock()
+	fsd.apiSocketPath = socketPath
+	fsd.mu.Unlock()
+
+	s.releaseOrphanedAttach("wl-state")
+	if entry, ok := s.statefulVMs.byWorkload("wl-state"); !ok || entry.vmID != resp.GetVmId() {
+		t.Fatalf("healthy registry entry was dropped: entry = %+v, ok = %v", entry, ok)
+	}
+	if err := s.volumes.Attach("wl-state"); err == nil {
+		s.volumes.Detach("wl-state")
+		t.Fatal("healthy attach was reclaimed")
+	}
+
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close fake Firecracker socket: %v", err)
+	}
+	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove fake Firecracker socket: %v", err)
+	}
+
+	s.releaseOrphanedAttach("wl-state")
+	if _, ok := s.statefulVMs.byWorkload("wl-state"); ok {
+		t.Fatal("dead registry entry still reported by workload")
+	}
+	if err := s.volumes.Attach("wl-state"); err != nil {
+		t.Fatalf("attach after dead-owner reclamation: %v", err)
+	}
+	s.volumes.Detach("wl-state")
 }
 
 // TestStartStatefulGenerationBumpedBeforeBootAndNotRolledBackOnFailure proves

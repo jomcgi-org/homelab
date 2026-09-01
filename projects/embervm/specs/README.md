@@ -2,7 +2,7 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of [ADR embervm/006](../../../docs/decisions/embervm/006-tla-formal-specification-pilot.md):
-five specs now, checked exhaustively over small bounds, plus the layer-1
+six specs now, checked exhaustively over small bounds, plus the layer-1
 vocabulary sync guard that keeps them honest against the code. Protocol 1 (VM
 lifecycle + adoption) is `adoption.tla`; protocol 2 (session bank/relight
 generation pairing) is `bank_relight.tla`, added by the ADR embervm/014 PR 5
@@ -46,7 +46,13 @@ checkpoint-abort auto-heal) is `generation_issuance.tla`, added for issue
 - `generation_issuance.cfg`, `generation_issuance_liveness.cfg`,
   `generation_issuance_heal_wedge.cfg`, `generation_issuance_lag_wedge.cfg` :
   the four generation issuance TLC run configurations (below).
-- `BUILD` : seventeen genrules run TLC over the five specs, one per cfg, via the
+- `stateful.tla` : the pure TLA+ model of the full stateful FSM, interruptible
+  checkpoint recovery, node-confirmed destroy redrive, and noded writable-attach
+  singleton under VM, brick, and owner-report faults.
+- `stateful.cfg`, `stateful_liveness.cfg`, `stateful_destroying_wedge.cfg`,
+  `stateful_attach_wedge.cfg`, `stateful_destroy_escape_unsafe.cfg` : the five
+  stateful lifecycle TLC run configurations (below).
+- `BUILD` : twenty-two genrules run TLC over the six specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -421,9 +427,34 @@ one fix and asserts TLC still reproduces the outage that motivated it:
   wake, so it can never re-bless to catch the watermark up: the recurring
   demo-postgres quarantine after a CP roll.
 
+## Stateful lifecycle and bounded escapes (`stateful.tla`)
+
+The stateful model names all 11 implementation states and all 37 legal FSM
+edges after adding `destroying -> failed`. Its protocol variables separately
+track the checkpoint retry backoff, owner-report absence budget, Firecracker
+process liveness, noded registry testimony, the volume attach owner, and the
+set of physical writable guests. One workload is sufficient for both incidents:
+each is a singleton-local wedge, while the bounded old/new writer identities
+still exercise replacement without allowing two writers.
+
+| cfg | switches | checks | expect | proves |
+| --- | --- | --- | --- | --- |
+| `stateful.cfg` | full FSM exploration, failed escape, registry validation ON | `TypeOK` and five safety invariants | pass | all edges preserve no resurrection, singleton attach, and node-confirmed destroyed semantics |
+| `stateful_liveness.cfg` | lean incident graph, failed escape, validation ON | three temporal properties | pass | live instances terminalize, terminal attaches release, and terminal workloads wake |
+| `stateful_destroying_wedge.cfg` | destroying escape OFF | `EventuallyTerminal` | fail | re-finds incident (a), missing owner testimony strands destroying forever |
+| `stateful_attach_wedge.cfg` | registry validation OFF | `TerminalWorkloadEventuallyWakes` | fail | re-finds incident (b), stale live-VM testimony preserves the attach lock forever |
+| `stateful_destroy_escape_unsafe.cfg` | missing-owner escape records destroyed | `NoDestroyBeforeConfirm` | fail | rejects treating silence as teardown confirmation, motivating the conservative failed terminal |
+
+The safety invariants are `NoResurrection`, `SingleWritableAttach`,
+`WriterHasAttach`, `NoDestroyBeforeConfirm`, and
+`DestroyIntentPrecedesRecord`. The liveness config adds fair sweep, redrive,
+socket validation, attach release, and wake actions. Crash and report-loss
+actions remain unfair adversarial faults. The spec is pure TLA+, so it has no
+PlusCal translation region to regenerate.
+
 ## Running TLC
 
-CI runs all seventeen genrules via `bazel test //projects/embervm/specs/...`. There is
+CI runs all twenty-two genrules via `bazel test //projects/embervm/specs/...`. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
 copy of this directory (swap `adoption` for `bank_relight` for protocol 2):
@@ -441,13 +472,14 @@ Never hand-edit the translation region.
 
 ## Scope
 
-The pilot now models five protocols: protocol 1 (VM lifecycle + adoption,
+The pilot now models six protocols: protocol 1 (VM lifecycle + adoption,
 `adoption.tla`), protocol 2 (session bank/relight generation pairing,
 `bank_relight.tla`, added by the ADR embervm/014 PR 5 follow-through since the
 pilot earned its keep), protocol 3 (the fail-closed quota gate, `quota.tla`),
 and protocol 4 (generation issuance authority: blessing, wake grants,
 quarantine, checkpoint-abort auto-heal, `generation_issuance.tla`, added for
 issue #4700). The SessionManager create-starvation model `session_create.tla`
-covers issue #5051 alongside them. Layer-2 trace validation (op-log events
-mapped to TLA+ actions and checked against a drill trace) is a separate
-follow-up and is deliberately not built here.
+covers issue #5051 alongside them. The stateful lifecycle model `stateful.tla`
+covers the bounded destroy and writable-attach escapes. Layer-2 trace validation
+(op-log events mapped to TLA+ actions and checked against a drill trace) is a
+separate follow-up and is deliberately not built here.

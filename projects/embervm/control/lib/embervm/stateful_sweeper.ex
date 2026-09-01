@@ -1256,7 +1256,7 @@ defmodule Embervm.StatefulSweeper do
           Embervm.EndpointPublisher.publish(state.publisher)
         end
 
-        state
+        arm_bank_backoff(state, workload, state.clock.())
 
       _ ->
         state

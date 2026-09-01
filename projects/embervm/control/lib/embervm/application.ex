@@ -1106,6 +1106,14 @@ defmodule Embervm.Application do
     int_env_or_nil("EMBERVM_DESTROYING_ALARM_MS") || 300_000
   end
 
+  # Bounded owner-report absence before a stateful destroying lifecycle fails
+  # conservatively (EMBERVM_STATEFUL_DESTROYING_ESCAPE_MS); default 10 minutes.
+  # This is separate from the alarm interval so visibility can remain frequent
+  # without weakening the node-confirmed destroyed meaning.
+  defp stateful_destroying_escape_ms do
+    int_env_or_nil("EMBERVM_STATEFUL_DESTROYING_ESCAPE_MS") || 600_000
+  end
+
   # Grace window before fail-closed orphan reconciliation acts
   # (EMBERVM_ORPHAN_GRACE_MS); default 60s. An instance younger than this window is
   # never terminalized/destroyed by reconciliation (it may be mid-boot or racing an
@@ -1404,6 +1412,7 @@ defmodule Embervm.Application do
       reconcile_interval_ms: stateful_reconcile_interval_ms(),
       node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
+      destroying_escape_ms: stateful_destroying_escape_ms(),
       orphan_grace_ms: orphan_grace_ms()
     ] ++ stateful_wake_opts()
   end

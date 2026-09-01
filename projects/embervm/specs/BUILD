@@ -1,6 +1,6 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Five specs, seventeen genrules run the //bazel/tla:tlc.sh driver:
+# Six specs, twenty-two genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
@@ -21,6 +21,9 @@
 #     liveness config, and two NEGATIVE modes reproducing the two halves of the
 #     blessing-watermark false-quarantine history: the pre-ADR-017 fail-closed-
 #     both-ways checkpoint abort and the pre-ADR-014 fenced-writer deadlock.
+#   stateful.tla (stateful lifecycle, checkpoint recovery, destroy redrive, and
+#     writable attach singleton) with safety and liveness configs, two NEGATIVE
+#     incident wedges, and one NEGATIVE destroy-escape design comparison.
 # The driver fails the build if a "fail" mode finds NO violation (the model went
 # blind). Safety and liveness are split across cfgs because exhaustive liveness over
 # the rich safety graph is too slow for CI; see README.md for the cfg matrix.
@@ -318,6 +321,89 @@ genrule(
           "\"$(location %s)\" " % _JAR +
           "\"$(location generation_issuance.tla)\" " +
           "\"$(location generation_issuance_lag_wedge.cfg)\" " +
+          "\"$@\" fail",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+# Stateful lifecycle and both September 2026 incident wedges. The fifth target
+# checks the rejected "owner missing means destroyed" design and must fail
+# NoDestroyBeforeConfirm, documenting why production escapes to failed.
+genrule(
+    name = "tlc_stateful",
+    srcs = _JRE_SRCS + [
+        "stateful.tla",
+        "stateful.cfg",
+    ],
+    outs = ["stateful.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location stateful.tla)\" " +
+          "\"$(location stateful.cfg)\" " +
+          "\"$@\" pass",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_stateful_liveness",
+    srcs = _JRE_SRCS + [
+        "stateful.tla",
+        "stateful_liveness.cfg",
+    ],
+    outs = ["stateful_liveness.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location stateful.tla)\" " +
+          "\"$(location stateful_liveness.cfg)\" " +
+          "\"$@\" pass",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_stateful_destroying_wedge",
+    srcs = _JRE_SRCS + [
+        "stateful.tla",
+        "stateful_destroying_wedge.cfg",
+    ],
+    outs = ["stateful_destroying_wedge.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location stateful.tla)\" " +
+          "\"$(location stateful_destroying_wedge.cfg)\" " +
+          "\"$@\" fail",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_stateful_attach_wedge",
+    srcs = _JRE_SRCS + [
+        "stateful.tla",
+        "stateful_attach_wedge.cfg",
+    ],
+    outs = ["stateful_attach_wedge.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location stateful.tla)\" " +
+          "\"$(location stateful_attach_wedge.cfg)\" " +
+          "\"$@\" fail",
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_stateful_destroy_escape_unsafe",
+    srcs = _JRE_SRCS + [
+        "stateful.tla",
+        "stateful_destroy_escape_unsafe.cfg",
+    ],
+    outs = ["stateful_destroy_escape_unsafe.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location stateful.tla)\" " +
+          "\"$(location stateful_destroy_escape_unsafe.cfg)\" " +
           "\"$@\" fail",
     tools = ["//bazel/tla:tlc.sh"],
 )

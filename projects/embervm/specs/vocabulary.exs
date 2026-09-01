@@ -1,6 +1,6 @@
-# Layer-1 vocabulary manifest for the adoption spec (ADR embervm/006, layer 1).
+# Layer-1 vocabulary manifest for the EmberVM spec suite (ADR embervm/006, layer 1).
 #
-# This declares, per implementation surface, which enum members the adoption.tla
+# This declares, per implementation surface, which enum members the spec suite
 # model MODELS versus which it deliberately EXCLUDES. spec_vocabulary_test.exs
 # reads this with Code.eval_file and asserts three things per surface:
 #
@@ -9,22 +9,24 @@
 #      health state, or op-log kind that lands in neither bucket fails CI and
 #      forces a human decision: model it, or exclude it here with a reason.
 #   2. modeled and excluded are DISJOINT.
-#   3. every modeled name's string appears verbatim in adoption.tla (the freshness
+#   3. every modeled name's string appears verbatim in a spec .tla file (the freshness
 #      cross-check: a name we claim to model must actually be mentioned in the
 #      spec's prose map or actions).
 #
-# The exclusions are grouped by feature rung with a one-line reason each. Per the
-# ADR the pilot models exactly one protocol (VM lifecycle + adoption); serving,
-# stateful, groups, sessions, continuity, and FaaS are out of scope by decision,
-# so their vocabulary is excluded, not modeled.
+# The exclusions are grouped by feature rung with a one-line reason each. A
+# feature may be partly modeled by one focused protocol while its remaining
+# vocabulary stays explicitly excluded.
 %{
   # -- node.proto RPC verbs (proto/embervm/node/v1/node.proto) ----------------
   # adoption.tla models the R0 task-lifecycle + node-health surface: Prime a VM,
   # Assign it to a task, Destroy it, and the WatchNode / GetNodeStatus status flow
   # that drives the health machine and adoption reconcile. bank_relight.tla (ADR 006
-  # protocol 2) models the Bank and Relight generation-pairing verbs.
+  # protocol 2) models the Bank and Relight generation-pairing verbs. stateful.tla
+  # models the R4 StartStateful, StopStateful, and ResolveStateful lifecycle.
   proto_rpcs: %{
-    modeled: ~w(Prime Assign Destroy WatchNode GetNodeStatus Bank Relight)a,
+    modeled:
+      ~w(Prime Assign Destroy WatchNode GetNodeStatus Bank Relight
+         StartStateful StopStateful ResolveStateful)a,
     excluded:
       ~w(
         BuildBase
@@ -36,8 +38,8 @@
         ~w(SessionAssign EvictSnapshot)a ++
         # R3 serving: long-lived HTTP-over-tap VMs, out of scope.
         ~w(StartServing StopServing)a ++
-        # R4 stateful: singleton volume-owning VMs + generation pairing, out of scope.
-        ~w(StartStateful StopStateful ResolveStateful DeleteVolume)a ++
+        # R4 explicit data deletion is outside stateful.tla's instance lifecycle.
+        ~w(DeleteVolume)a ++
         # R5 groups: composite multi-member workloads, out of scope.
         ~w(CreateGroupNetwork DeleteGroupNetwork StartGroupMember StopGroupMember)a ++
         # R6 continuity: off-node artifact durability, out of scope. ListArtifacts
@@ -90,6 +92,12 @@
         # unlike a time-based watermark that would break on restore.
         ~w(session_banked session_relit session_evicted session_destroying
            session_destroyed)a ++
+        # R4 stateful.tla: lifecycle completions, node-confirmed destroy intent,
+        # conservative failed escape, and interruptible checkpoint dispatch/resolve.
+        ~w(stateful_started stateful_published stateful_banked stateful_relit
+           stateful_cold_booted stateful_evicted stateful_destroying
+           stateful_destroyed stateful_failed checkpoint_dispatched
+           checkpoint_resolved)a ++
         # R0 quota gate protocol 3: quota.tla models the submit-time quota
         # denial audit append, while dispatch-side skips are counters only.
         ~w(quota_enforced)a,
@@ -126,21 +134,13 @@
         ~w(serving_started serving_published serving_unpublished serving_banked
            serving_relit serving_evicted serving_destroying serving_destroyed
            serving_failed serving_stats)a ++
-        # R4 stateful lifecycle + volume kinds, out of scope. generation_blessed
+        # R4 volume and observation kinds remain out of scope. generation_blessed
         # is the volume-generation blessing ledger audit kind (control plane as
         # sole generation issuer), part of the same out-of-scope volume machinery.
         # blessing_lease_granted is a durability operation, not modeled in
         # adoption.tla per ADR embervm/006 scope.
-        # stateful_destroying is the ADR embervm/014 destroy-intent kind.
         ~w(volume_created volume_deleted generation_blessed blessing_lease_granted
-           stateful_started
-           stateful_published stateful_unpublished stateful_banked stateful_relit
-           stateful_cold_booted stateful_evicted stateful_destroying stateful_destroyed
-           stateful_failed stateful_stats)a ++
-        # R7 checkpoint-abort auto-heal (ADR embervm/017): the durable
-        # checkpoint-dispatch record that lets the control plane auto-heal its own
-        # auto-aborted checkpoint. Part of the same out-of-scope stateful machinery.
-        ~w(checkpoint_dispatched checkpoint_resolved)a ++
+           stateful_unpublished stateful_stats)a ++
         # R5 composite-group lifecycle kinds, out of scope. group_destroying is the
         # ADR embervm/014 destroy-intent kind.
         ~w(group_created group_net_created group_net_deleted group_member_started
@@ -192,7 +192,18 @@
     session_relit: "session_manager.ex",
     session_evicted: "session_manager.ex",
     session_destroying: "session_manager.ex",
-    session_destroyed: "session_manager.ex"
+    session_destroyed: "session_manager.ex",
+    stateful_started: "stateful_store.ex",
+    stateful_published: "stateful_store.ex",
+    stateful_banked: "stateful_sweeper.ex",
+    stateful_relit: "stateful_manager.ex",
+    stateful_cold_booted: "stateful_store.ex",
+    stateful_evicted: "stateful_manager.ex",
+    stateful_destroying: "stateful_manager.ex",
+    stateful_destroyed: "stateful_manager.ex",
+    stateful_failed: "stateful_manager.ex",
+    checkpoint_dispatched: "stateful_store.ex",
+    checkpoint_resolved: "stateful_store.ex"
   },
   # -- SpecTrace emission sites (#4770) ---------------------------------------
   # Which module EMITS each spec action, mirroring op_kind_sites above. Name the
