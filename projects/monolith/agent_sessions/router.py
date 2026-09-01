@@ -50,7 +50,7 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 _DEFAULT_BRANCH_CACHE: dict[str, tuple[float, str | None]] = {}
 _REPO_CACHE_TTL = 300.0
 _REPO_CACHE_FAILURE_TTL = 30.0
-_PREWARM_TTL = 15.0
+_PREWARM_TTL = 10.0
 _prewarm_timestamps: dict[int, float] = {}
 
 
