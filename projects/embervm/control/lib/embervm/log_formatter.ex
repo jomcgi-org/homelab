@@ -48,6 +48,10 @@ defmodule Embervm.LogFormatter do
     :brick_id,
     :from,
     :to,
+    :high_water_fraction,
+    :low_water_fraction,
+    :pressure_idle_floor_ms,
+    :session_pressure_idle_floor_ms,
     # Base retention manifest and accounting metadata.
     :path,
     :size_bytes,

@@ -118,13 +118,16 @@ defmodule Embervm.StatefulSweeper do
   ## pressure banking: brick memory hysteresis
 
   The ordinary idle window optimizes steady-state cost. A second pass protects
-  the brick budget when observed guest memory (`mem_budget_mib -
-  mem_headroom_mib` from `Embervm.NodeCapacity`) rises above a high-water
-  fraction. It orders idle session and stateful guests on that exact brick by
-  their last activity and asks their existing lifecycle owner to bank them until
-  the estimated working set reaches the low-water fraction. The gap between the
-  two marks keeps a brick that just recovered from immediately entering another
-  shedding episode.
+  the brick budget when the `Embervm.NodeCapacity` occupancy signal rises above
+  a high-water fraction. It orders idle session and stateful guests on that exact
+  brick by their last activity and asks their existing lifecycle owner to bank
+  them until the estimated working set reaches the low-water fraction. The gap
+  between the two marks keeps a brick that just recovered from immediately
+  entering another shedding episode.
+
+  The occupancy signal measures non-reclaimable guest memory net of the daemon
+  reserve. Clean page cache is excluded by construction, so a relit guest reads
+  lighter than a cold-booted guest holding the same working set.
 
   Pressure never invents a second bank path. Sessions atomically confirm that
   their invoke worker and queue are empty in `Embervm.Session`; stateful guests
@@ -224,6 +227,7 @@ defmodule Embervm.StatefulSweeper do
   @default_pressure_high_water_fraction 0.85
   @default_pressure_low_water_fraction 0.70
   @default_pressure_idle_floor_ms 5_000
+  @default_session_pressure_idle_floor_ms 60_000
 
   # -- Client API ------------------------------------------------------------
 
@@ -387,7 +391,25 @@ defmodule Embervm.StatefulSweeper do
           )
         ),
       pressure_idle_floor_ms:
-        Keyword.get(opts, :pressure_idle_floor_ms, @default_pressure_idle_floor_ms),
+        Keyword.get(
+          opts,
+          :pressure_idle_floor_ms,
+          Application.get_env(
+            :embervm,
+            :stateful_pressure_idle_floor_ms,
+            @default_pressure_idle_floor_ms
+          )
+        ),
+      session_pressure_idle_floor_ms:
+        Keyword.get(
+          opts,
+          :session_pressure_idle_floor_ms,
+          Application.get_env(
+            :embervm,
+            :stateful_session_pressure_idle_floor_ms,
+            @default_session_pressure_idle_floor_ms
+          )
+        ),
       pressure_facts_fun:
         Keyword.get(opts, :pressure_facts_fun, fn -> NodeCapacity.all(capacity_table) end),
       session_store: Keyword.get(opts, :session_store, SessionStore),
@@ -406,10 +428,12 @@ defmodule Embervm.StatefulSweeper do
       # happens to re-confirm zero. A nonzero delta or nonzero active resets
       # (deletes) the entry: any activity restarts the idle clock.
       idle_since: %{},
-      # instance_id -> workload, for an instance currently unpublished
-      # (banking) awaiting the recheck-and-bank step within the SAME sweep, or
-      # whose bank RPC is in flight in a spawned worker. Prevents a second tick
-      # from re-arming a bank already in progress.
+      # instance_id -> %{workload, brick_id, mem_mib}, for an instance currently
+      # unpublished (banking) awaiting the recheck-and-bank step within the SAME
+      # sweep, or whose bank RPC is in flight in a spawned worker. The pressure
+      # fields are nil for banks admitted by another lane. Prevents a second tick
+      # from re-arming a bank already in progress and lets pressure account for
+      # memory an asynchronous bank is expected to release.
       banking: %{},
       # The set of workloads whose node is DRAINING (R6, ADR embervm/009): a
       # drain-forced bank bypasses the recheck raced-in/scrape/cap aborts and
@@ -436,7 +460,7 @@ defmodule Embervm.StatefulSweeper do
       sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, 0)
     }
 
-    validate_pressure_config!(state)
+    state = validate_pressure_config(state)
 
     if state.sweep_interval_ms > 0 do
       schedule(:sweep, state.sweep_interval_ms)
@@ -759,21 +783,63 @@ defmodule Embervm.StatefulSweeper do
 
   # -- brick memory-pressure banking ----------------------------------------
 
-  defp validate_pressure_config!(state) do
+  defp validate_pressure_config(state) do
     high = state.high_water_fraction
     low = state.low_water_fraction
+    idle_floor = state.pressure_idle_floor_ms
+    session_idle_floor = state.session_pressure_idle_floor_ms
 
-    unless is_number(low) and is_number(high) and low >= 0 and high <= 1 and low < high do
-      raise ArgumentError,
-            "pressure water fractions must satisfy 0 <= low < high <= 1, got low=#{inspect(low)} high=#{inspect(high)}"
+    errors =
+      []
+      |> maybe_pressure_config_error(
+        not (is_number(low) and low >= 0),
+        "low_water_fraction must be a non-negative number"
+      )
+      |> maybe_pressure_config_error(
+        not (is_number(high) and high <= 1),
+        "high_water_fraction must be a number at most 1"
+      )
+      |> maybe_pressure_config_error(
+        is_number(low) and is_number(high) and low >= high,
+        "low_water_fraction must be less than high_water_fraction"
+      )
+      |> maybe_pressure_config_error(
+        not (is_integer(idle_floor) and idle_floor >= 0),
+        "pressure_idle_floor_ms must be a non-negative integer"
+      )
+      |> maybe_pressure_config_error(
+        not (is_integer(session_idle_floor) and session_idle_floor >= 0),
+        "session_pressure_idle_floor_ms must be a non-negative integer"
+      )
+
+    if errors == [] do
+      state
+    else
+      Logger.error(
+        "embervm stateful: invalid pressure banking configuration, disabling pressure banking: " <>
+          Enum.join(Enum.reverse(errors), "; ") <>
+          "; got low_water_fraction=#{inspect(low)} high_water_fraction=#{inspect(high)} " <>
+          "pressure_idle_floor_ms=#{inspect(idle_floor)} " <>
+          "session_pressure_idle_floor_ms=#{inspect(session_idle_floor)}",
+        low_water_fraction: low,
+        high_water_fraction: high,
+        pressure_idle_floor_ms: idle_floor,
+        session_pressure_idle_floor_ms: session_idle_floor
+      )
+
+      %{
+        state
+        | pressure_banking_enabled: false,
+          high_water_fraction: @default_pressure_high_water_fraction,
+          low_water_fraction: @default_pressure_low_water_fraction,
+          pressure_idle_floor_ms: @default_pressure_idle_floor_ms,
+          session_pressure_idle_floor_ms: @default_session_pressure_idle_floor_ms
+      }
     end
-
-    unless is_integer(state.pressure_idle_floor_ms) and state.pressure_idle_floor_ms >= 0 do
-      raise ArgumentError, "pressure_idle_floor_ms must be a non-negative integer"
-    end
-
-    :ok
   end
+
+  defp maybe_pressure_config_error(errors, true, message), do: [message | errors]
+  defp maybe_pressure_config_error(errors, false, _message), do: errors
 
   defp pressure_sweep(%{pressure_banking_enabled: false} = state, _now) do
     pressure_by_brick =
@@ -839,6 +905,7 @@ defmodule Embervm.StatefulSweeper do
     id = brick_id(fact)
     limit = Map.fetch!(fact, :mem_budget_mib)
     observed = max(limit - Map.fetch!(fact, :mem_headroom_mib), 0)
+    effective_observed = max(observed - in_flight_pressure_mem_mib(state, id), 0)
     high_water = limit * state.high_water_fraction
     low_water = limit * state.low_water_fraction
 
@@ -852,13 +919,15 @@ defmodule Embervm.StatefulSweeper do
 
     active_episode? =
       case previous.state do
-        :ok -> observed > high_water
-        state when state in [:high, :shedding] -> observed > low_water
+        :ok -> effective_observed > high_water
+        state when state in [:high, :shedding] -> effective_observed > low_water
       end
 
     if active_episode? do
       candidates = pressure_candidates(state, fact, now)
-      {state, _estimated, banked} = shed_to_low_water(state, candidates, observed, low_water)
+
+      {state, _estimated, banked} =
+        shed_to_low_water(state, candidates, effective_observed, low_water)
 
       next_pressure =
         cond do
@@ -874,9 +943,6 @@ defmodule Embervm.StatefulSweeper do
           guests_banked: Enum.reverse(banked)
       }
 
-      # The estimate is deliberately local to this cycle. NodeCapacity remains the
-      # authoritative observed value recorded above; the estimate only prevents
-      # admitting more banks than the low-water target requires in one pass.
       put_pressure_entry(state, id, pressure_transition(id, entry, next_pressure))
     else
       entry = %{
@@ -888,6 +954,17 @@ defmodule Embervm.StatefulSweeper do
 
       put_pressure_entry(state, id, pressure_transition(id, entry, :ok))
     end
+  end
+
+  defp in_flight_pressure_mem_mib(state, brick_id) do
+    Enum.reduce(state.banking, 0, fn
+      {_instance_id, %{brick_id: ^brick_id, mem_mib: mem_mib}}, total
+      when is_number(mem_mib) and mem_mib > 0 ->
+        total + mem_mib
+
+      _, total ->
+        total
+    end)
   end
 
   defp pressure_transition(_brick_id, %{state: state} = entry, state), do: entry
@@ -916,7 +993,7 @@ defmodule Embervm.StatefulSweeper do
             {:cont, {next, max(estimated - candidate.mem_mib, 0), [candidate.guest_id | banked]}}
 
           {:error, next} ->
-            {:cont, {next, estimated, banked}}
+            {:halt, {next, estimated, banked}}
         end
       end
     end)
@@ -924,7 +1001,7 @@ defmodule Embervm.StatefulSweeper do
 
   defp pressure_candidates(state, fact, now) do
     (stateful_pressure_candidates(state, fact, now) ++
-       session_pressure_candidates(state, fact))
+       session_pressure_candidates(state, fact, now))
     |> Enum.sort_by(fn candidate -> {candidate.last_active_at, candidate.guest_id} end)
   end
 
@@ -946,7 +1023,8 @@ defmodule Embervm.StatefulSweeper do
               guest_id: instance.instance_id,
               instance: instance,
               mem_mib: mem_mib,
-              last_active_at: last_active_at(instance)
+              last_active_at: last_active_at(instance),
+              brick_id: brick_id(fact)
             }
           ]
 
@@ -956,13 +1034,14 @@ defmodule Embervm.StatefulSweeper do
     end)
   end
 
-  defp session_pressure_candidates(state, fact) do
+  defp session_pressure_candidates(state, fact, now) do
     live_session_ids = inventory_ids(fact, :session_vms, :session_id)
 
     state
     |> safe_session_all()
     |> Enum.filter(&(&1.state == :running))
     |> Enum.filter(&guest_owned_by_brick?(&1, fact, live_session_ids, :session_id))
+    |> Enum.filter(&(now - last_active_at(&1) >= state.session_pressure_idle_floor_ms))
     |> Enum.flat_map(fn session ->
       case pressure_guest_config(state, session.workload, :session) do
         {:ok, mem_mib} ->
@@ -972,7 +1051,8 @@ defmodule Embervm.StatefulSweeper do
               guest_id: session.session_id,
               session_id: session.session_id,
               mem_mib: mem_mib,
-              last_active_at: last_active_at(session)
+              last_active_at: last_active_at(session),
+              brick_id: brick_id(fact)
             }
           ]
 
@@ -1034,15 +1114,10 @@ defmodule Embervm.StatefulSweeper do
     positive_number?(Map.get(cfg, :idle_bank_seconds))
   end
 
-  defp banking_enabled?(%{session: cfg} = entry, :session) when is_map(cfg) do
-    positive_number?(Map.get(cfg, :idle_bank_seconds)) and
-      memory_banking_enabled?(Map.get(entry, :persistence))
-  end
+  defp banking_enabled?(%{session: cfg}, :session) when is_map(cfg),
+    do: positive_number?(Map.get(cfg, :idle_bank_seconds))
 
   defp banking_enabled?(_entry, _class), do: false
-
-  defp memory_banking_enabled?(%{memory: false}), do: false
-  defp memory_banking_enabled?(_persistence), do: true
 
   defp last_active_at(guest) do
     Map.get(guest, :last_active_at) || Map.get(guest, :last_invoke_at) ||
@@ -1057,8 +1132,9 @@ defmodule Embervm.StatefulSweeper do
     _, _ -> []
   end
 
-  defp pressure_bank_candidate(state, %{kind: :stateful, instance: instance}) do
-    next = begin_bank(state, instance, state.clock.())
+  defp pressure_bank_candidate(state, %{kind: :stateful, instance: instance} = candidate) do
+    pressure_meta = Map.take(candidate, [:brick_id, :mem_mib])
+    next = begin_bank(state, instance, state.clock.(), pressure_meta)
 
     if Map.has_key?(next.banking, instance.instance_id) do
       {:ok, next}
@@ -1185,26 +1261,30 @@ defmodule Embervm.StatefulSweeper do
   # Begin the bank: unpublish (serving -> banking, ETS-only), republish so the
   # activator installs atomically, RECHECK the freshest cx_active reading, and
   # either abort (a connection raced in) or proceed to StopStateful(BANK).
-  defp begin_bank(state, instance, _now) do
+  defp begin_bank(state, instance, now, banking_meta \\ %{}) do
     Tracer.with_span "embervm.stateful.drain",
                      %{attributes: %{"ember.workload" => instance.workload, "ember.instance_id" => instance.instance_id}} do
-      begin_bank_body(state, instance)
+      begin_bank_body(state, instance, now, banking_meta)
     end
   end
 
-  defp begin_bank_body(state, instance) do
-    case StatefulStore.unpublish(state.store, instance.instance_id, :bank) do
-      {:ok, _} ->
-        Embervm.EndpointPublisher.publish(state.publisher)
-        recheck_and_bank(state, instance)
+  defp begin_bank_body(state, instance, now, banking_meta) do
+    if not draining_workload?(state, instance.workload) and bank_at_cap?(state, instance.node_id) do
+      state
+    else
+      case StatefulStore.unpublish(state.store, instance.instance_id, :bank) do
+        {:ok, _} ->
+          Embervm.EndpointPublisher.publish(state.publisher)
+          recheck_and_bank(state, instance, now, banking_meta)
 
-      {:error, reason} ->
-        Logger.warning("embervm stateful: bank-drain unpublish failed",
-          instance_id: instance.instance_id,
-          reason: inspect(reason)
-        )
+        {:error, reason} ->
+          Logger.warning("embervm stateful: bank-drain unpublish failed",
+            instance_id: instance.instance_id,
+            reason: inspect(reason)
+          )
 
-        state
+          state
+      end
     end
   end
 
@@ -1219,7 +1299,7 @@ defmodule Embervm.StatefulSweeper do
   # window is narrow); the freshly re-scraped reading also updates
   # current_stats so the max-lifetime pass later in this same tick sees it
   # too. Otherwise admit the bank (per-node cap) and spawn the worker.
-  defp recheck_and_bank(state, instance) do
+  defp recheck_and_bank(state, instance, now, banking_meta) do
     {state, fresh?} = refresh_current_stats(state, instance.node_id)
 
     cond do
@@ -1228,7 +1308,7 @@ defmodule Embervm.StatefulSweeper do
       # evacuating state. The parked caller re-wakes against the new noded, and
       # decide_resolve forces COMMIT for this workload.
       draining_workload?(state, instance.workload) ->
-        admit_bank(state, instance)
+        admit_bank(state, instance, banking_meta)
 
       # A FRESH reading shows a connection raced in: abort for everyone.
       connection_raced_in?(state, instance) ->
@@ -1244,16 +1324,14 @@ defmodule Embervm.StatefulSweeper do
         abort_bank(state, instance, :recheck_scrape_failed)
 
       bank_at_cap?(state, instance.node_id) ->
-        # Deferred: abort back to serving and let the next tick's idle
-        # confirmation re-drive the bank once a slot is free. This costs one
-        # extra idle-confirmation cycle under sustained cap pressure, the same
-        # trade serving's `admit_bank` defers via a short timer, adapted to
-        # stateful's synchronous-within-a-tick shape (there is no drain timer
-        # to re-arm here).
+        # Backstop for a slot that disappeared after the pre-unpublish check.
+        # Republish immediately and arm backoff so a racing capacity change does
+        # not flap the endpoint on every sweep tick.
         abort_bank(state, instance, :bank_at_cap)
+        |> arm_bank_backoff(instance.workload, now)
 
       true ->
-        admit_bank(state, instance)
+        admit_bank(state, instance, banking_meta)
     end
   end
 
@@ -1333,9 +1411,15 @@ defmodule Embervm.StatefulSweeper do
   # Admit the bank: reserve the node slot and spawn the StopStateful(BANK)
   # worker. The durable stateful_banked op lands in finish_bank, AFTER the
   # daemon returns (the crash-consistent order).
-  defp admit_bank(state, instance) do
+  defp admit_bank(state, instance, banking_meta) do
+    banking_entry = %{
+      workload: instance.workload,
+      brick_id: Map.get(banking_meta, :brick_id),
+      mem_mib: Map.get(banking_meta, :mem_mib)
+    }
+
     state = incr_bank_inflight(state, instance.node_id)
-    state = %{state | banking: Map.put(state.banking, instance.instance_id, instance.workload)}
+    state = %{state | banking: Map.put(state.banking, instance.instance_id, banking_entry)}
     spawn_bank_worker(state, instance)
     state
   end
