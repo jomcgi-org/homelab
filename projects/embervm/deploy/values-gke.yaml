@@ -40,7 +40,11 @@ bricks:
   desiredReplicas:
     2gi: 1
     4gi: 1
-    8gi: 0
+    # claude-runtime sessions (luna/terra/sol codex lane) are memMib 4096 and
+    # fit NOTHING smaller: 4gi usable is 3840, so with 8gi off every session
+    # create was denied :no_capacity (2026-09-01). One 8gi brick (usable 7936)
+    # hosts one live session; autoscale headroom adds a second for concurrency.
+    8gi: 1
     16gi: 0
   nodeFloors: []
   autoscale:
@@ -48,7 +52,7 @@ bricks:
       16gi: 0
     maxReplicas:
       4gi: 2
-      8gi: 0
+      8gi: 2
       16gi: 0
 # GKE node names are not known before provisioning. An empty list keeps the
 # fleet-freshness guard closed.
