@@ -47,17 +47,40 @@ describe("composer prewarm", () => {
       body: JSON.stringify({ session_id: 42 }),
     });
 
-    vi.advanceTimersByTime(15_000);
+    vi.advanceTimersByTime(5_000);
+    type(textarea, "he");
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+    // The original interval still fires at t=15s. Input only resets the
+    // 30-second stop deadline; it does not restart the interval.
+    vi.advanceTimersByTime(10_000);
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
 
-    vi.advanceTimersByTime(15_000);
+    vi.advanceTimersByTime(5_000);
+    type(textarea, "hel");
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+    // The latest input moved the stop deadline to t=50s, so the interval is
+    // still live at t=30s and t=45s.
+    vi.advanceTimersByTime(10_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+
+    vi.advanceTimersByTime(5_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+
+    vi.advanceTimersByTime(10_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+
+    // At t=50s the stop timer clears the interval. Its next t=60s tick and all
+    // later ticks must remain suppressed.
+    vi.advanceTimersByTime(5_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+
+    vi.advanceTimersByTime(10_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
 
     vi.advanceTimersByTime(30_000);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
-
-    type(textarea, "he");
-    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
   });
 
   test("does not post for the new-session composer", async () => {
