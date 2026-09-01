@@ -125,7 +125,7 @@ vars == <<
     instState, epoch, destroyingHistory, vmAlive, brickAlive, ownerReport,
     destroyConfirmed, absenceAge, attachOwner, registryVM, writers,
     wakeRequested, wakeSucceeded, bankBackoff, checkpointFailures
->>
+    >>
 
 Init ==
     /\ instState = [w \in Workloads |-> "serving"]
@@ -161,7 +161,7 @@ FSMEdge ==
             epoch, vmAlive, brickAlive, ownerReport, absenceAge, attachOwner,
             registryVM, writers, wakeRequested, wakeSucceeded, bankBackoff,
             checkpointFailures
-        >>
+            >>
 
 BeginCheckpoint(w) ==
     /\ ~ExploreFSM
@@ -172,7 +172,7 @@ BeginCheckpoint(w) ==
         epoch, destroyingHistory, vmAlive, brickAlive, ownerReport,
         destroyConfirmed, absenceAge, attachOwner, registryVM, writers,
         wakeRequested, wakeSucceeded, bankBackoff, checkpointFailures
-    >>
+        >>
 
 CheckpointFails(w) ==
     /\ ~ExploreFSM
@@ -185,7 +185,7 @@ CheckpointFails(w) ==
         epoch, destroyingHistory, vmAlive, brickAlive, ownerReport,
         destroyConfirmed, absenceAge, attachOwner, registryVM, writers,
         wakeRequested, wakeSucceeded
-    >>
+        >>
 
 CheckpointSucceeds(w) ==
     /\ ~ExploreFSM
@@ -195,7 +195,7 @@ CheckpointSucceeds(w) ==
         epoch, destroyingHistory, vmAlive, brickAlive, ownerReport,
         destroyConfirmed, absenceAge, attachOwner, registryVM, writers,
         wakeRequested, wakeSucceeded, bankBackoff, checkpointFailures
-    >>
+        >>
 
 CommitCheckpoint(w) ==
     /\ ~ExploreFSM
@@ -209,7 +209,7 @@ CommitCheckpoint(w) ==
     /\ UNCHANGED <<
         epoch, destroyingHistory, brickAlive, ownerReport, destroyConfirmed,
         absenceAge, wakeRequested, wakeSucceeded, checkpointFailures
-    >>
+        >>
 
 AbortCheckpoint(w) ==
     /\ ~ExploreFSM
@@ -220,7 +220,7 @@ AbortCheckpoint(w) ==
         epoch, destroyingHistory, vmAlive, brickAlive, ownerReport,
         destroyConfirmed, absenceAge, attachOwner, registryVM, writers,
         wakeRequested, wakeSucceeded, checkpointFailures
-    >>
+        >>
 
 RequestDestroy(w) ==
     /\ instState[w] \in (LiveStates \cup {"banked"})
@@ -232,7 +232,7 @@ RequestDestroy(w) ==
         epoch, vmAlive, brickAlive, ownerReport, destroyConfirmed, attachOwner,
         registryVM, writers, wakeRequested, wakeSucceeded, bankBackoff,
         checkpointFailures
-    >>
+        >>
 
 CrashVM(w) ==
     /\ vmAlive[w]
@@ -243,7 +243,7 @@ CrashVM(w) ==
         instState, epoch, destroyingHistory, brickAlive, destroyConfirmed,
         absenceAge, attachOwner, registryVM, wakeRequested, wakeSucceeded,
         bankBackoff, checkpointFailures
-    >>
+        >>
 
 CrashBrick(w) ==
     /\ brickAlive[w]
@@ -256,7 +256,7 @@ CrashBrick(w) ==
     /\ UNCHANGED <<
         instState, epoch, destroyingHistory, destroyConfirmed, absenceAge,
         wakeRequested, wakeSucceeded, bankBackoff, checkpointFailures
-    >>
+        >>
 
 LoseOwnerReport(w) ==
     /\ ~vmAlive[w]
@@ -266,19 +266,23 @@ LoseOwnerReport(w) ==
         instState, epoch, destroyingHistory, vmAlive, brickAlive,
         destroyConfirmed, absenceAge, attachOwner, registryVM, writers,
         wakeRequested, wakeSucceeded, bankBackoff, checkpointFailures
-    >>
+        >>
 
 OwnerReportsAbsent(w) ==
+    \* The owner's periodic report notices the VM is gone. This moves ONLY the
+    \* report: the brick's in-memory registry does NOT clear itself when the
+    \* report goes absent (2026-09-01 incident b was exactly a dead VM held in
+    \* the registry while wakes were refused), so the registry clear belongs
+    \* solely to ValidateRegistry, the gated fix.
     /\ brickAlive[w]
     /\ ~vmAlive[w]
     /\ ownerReport[w] # "absent"
     /\ ownerReport' = [ownerReport EXCEPT ![w] = "absent"]
-    /\ registryVM' = [registryVM EXCEPT ![w] = NULL]
     /\ UNCHANGED <<
         instState, epoch, destroyingHistory, vmAlive, brickAlive,
-        destroyConfirmed, absenceAge, attachOwner, writers, wakeRequested,
-        wakeSucceeded, bankBackoff, checkpointFailures
-    >>
+        destroyConfirmed, absenceAge, attachOwner, registryVM, writers,
+        wakeRequested, wakeSucceeded, bankBackoff, checkpointFailures
+        >>
 
 Sweep(w) ==
     /\ \/ /\ instState[w] = "destroying"
@@ -297,7 +301,7 @@ Sweep(w) ==
         instState, epoch, destroyingHistory, vmAlive, brickAlive, ownerReport,
         destroyConfirmed, attachOwner, registryVM, writers, wakeRequested,
         wakeSucceeded, checkpointFailures
-    >>
+        >>
 
 RedriveDestroy(w) ==
     /\ instState[w] = "destroying"
@@ -321,7 +325,7 @@ RedriveDestroy(w) ==
     /\ UNCHANGED <<
         epoch, destroyingHistory, brickAlive, ownerReport, absenceAge,
         wakeRequested, wakeSucceeded, bankBackoff, checkpointFailures
-    >>
+        >>
 
 ValidateRegistry(w) ==
     /\ RegistryValidationEnabled
@@ -332,7 +336,7 @@ ValidateRegistry(w) ==
         instState, epoch, destroyingHistory, vmAlive, brickAlive, ownerReport,
         destroyConfirmed, absenceAge, attachOwner, writers, wakeRequested,
         wakeSucceeded, bankBackoff, checkpointFailures
-    >>
+        >>
 
 ReleaseAttach(w) ==
     /\ instState[w] \in TerminalStates
@@ -343,7 +347,7 @@ ReleaseAttach(w) ==
         instState, epoch, destroyingHistory, vmAlive, brickAlive, ownerReport,
         destroyConfirmed, absenceAge, registryVM, writers, wakeRequested,
         wakeSucceeded, bankBackoff, checkpointFailures
-    >>
+        >>
 
 Wake(w) ==
     /\ instState[w] \in TerminalStates
@@ -390,6 +394,11 @@ FairSpec ==
     /\ \A w \in Workloads:
         /\ SF_vars(RequestDestroy(w))
         /\ WF_vars(Sweep(w))
+        \* A live brick's periodic report eventually notices a dead VM; without
+        \* this fairness TLC stutters at destroying with a stale "present"
+        \* report (a bank kills the VM but nothing forces the report to move)
+        \* and EventuallyTerminal fails on a lasso the real system cannot take.
+        /\ WF_vars(OwnerReportsAbsent(w))
         /\ SF_vars(RedriveDestroy(w))
         /\ WF_vars(ValidateRegistry(w))
         /\ WF_vars(ReleaseAttach(w))
