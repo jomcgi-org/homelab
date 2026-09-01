@@ -1483,7 +1483,7 @@ def test_prewarm_unbound_session_is_noop(client, session, monkeypatch):
     assert calls == []
 
 
-def test_prewarm_repeats_only_after_ttl(client, session, monkeypatch):
+def test_prewarm_repeats_only_after_10s_ttl(client, session, monkeypatch):
     row = _session(
         session,
         "prewarm-ttl",
@@ -1503,7 +1503,7 @@ def test_prewarm_repeats_only_after_ttl(client, session, monkeypatch):
     )
 
     assert client.post(f"/api/agents/sessions/{row.id}/prewarm").status_code == 204
-    now[0] += agent_router._PREWARM_TTL - 0.1
+    now[0] += 9.9
     assert client.post(f"/api/agents/sessions/{row.id}/prewarm").status_code == 204
     now[0] += 0.1
     assert client.post(f"/api/agents/sessions/{row.id}/prewarm").status_code == 204

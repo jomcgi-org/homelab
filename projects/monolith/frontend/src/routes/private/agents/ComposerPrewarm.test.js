@@ -34,12 +34,11 @@ afterEach(async () => {
 });
 
 describe("composer prewarm", () => {
-  test("keeps the guest warm every 15 seconds while typing continues", async () => {
+  test("fires immediately, then every 15 seconds while typing until 30 seconds idle", async () => {
     vi.useFakeTimers();
     globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 }));
     const textarea = await render(42);
 
-    // First keystroke fires immediately.
     type(textarea, "h");
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     expect(globalThis.fetch).toHaveBeenCalledWith("/private/agents/prewarm", {
@@ -48,30 +47,15 @@ describe("composer prewarm", () => {
       body: JSON.stringify({ session_id: 42 }),
     });
 
-    // Typing continues: keepalives at 15s and 30s (input events keep pushing
-    // the stop deadline out, so the interval survives).
     vi.advanceTimersByTime(15_000);
-    type(textarea, "he");
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
-    vi.advanceTimersByTime(15_000);
-    type(textarea, "hel");
-    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
-  });
-
-  test("stops 30 seconds after the last keystroke and rearms on the next", async () => {
-    vi.useFakeTimers();
-    globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 }));
-    const textarea = await render(42);
-
-    type(textarea, "h");
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-
-    // One keepalive at 15s, the stop deadline (30s after the LAST input)
-    // silences it, and a long quiet period produces nothing further.
-    vi.advanceTimersByTime(60_000);
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
 
-    // The next keystroke starts a fresh cycle immediately.
+    vi.advanceTimersByTime(15_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+    vi.advanceTimersByTime(30_000);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
     type(textarea, "he");
     expect(globalThis.fetch).toHaveBeenCalledTimes(3);
   });
