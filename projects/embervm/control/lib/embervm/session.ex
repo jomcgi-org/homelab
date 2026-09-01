@@ -72,10 +72,10 @@ defmodule Embervm.Session do
   idle-banks; only expiry/destroy/relight-cycle ends it).
 
   `pressure_bank/1` uses the same ownership boundary for a StatefulSweeper
-  request. The synchronous call checks both the worker and FIFO inside this
-  process before asking SessionManager to admit the bank, closing the race in
-  which an external observer could see an idle session just before an invoke
-  entered its queue. The workload's idle-bank disable applies to pressure too.
+  request. Mailbox ordering means an invoke already delivered to this process is
+  handled before a later pressure-bank request. It does not guarantee whether a
+  later invoke will arrive. The workload's idle-bank disable applies to pressure
+  too.
 
   All timers use `Process.send_after` with an injectable `idle_bank_ms`, and tests
   drive `:maybe_bank` directly for determinism.

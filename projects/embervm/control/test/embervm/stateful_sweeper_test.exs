@@ -283,6 +283,8 @@ defmodule Embervm.StatefulSweeperTest do
         high_water_fraction: Keyword.get(opts, :high_water_fraction, 0.85),
         low_water_fraction: Keyword.get(opts, :low_water_fraction, 0.70),
         pressure_idle_floor_ms: Keyword.get(opts, :pressure_idle_floor_ms, 5_000),
+        session_pressure_idle_floor_ms:
+          Keyword.get(opts, :session_pressure_idle_floor_ms, 60_000),
         sweep_interval_ms: 0
       ]
 
@@ -464,6 +466,42 @@ defmodule Embervm.StatefulSweeperTest do
 
   defp live_session_vm(session_id, vm_id, workload) do
     %{session_id: session_id, vm_id: vm_id, workload: workload}
+  end
+
+  defp register_session_ids(registry, session_ids) do
+    parent = self()
+
+    Enum.map(session_ids, fn session_id ->
+      pid =
+        spawn_link(fn ->
+          {:ok, _} = Registry.register(registry, session_id, nil)
+          send(parent, {:pressure_session_registered, session_id, self()})
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      receive do
+        {:pressure_session_registered, ^session_id, ^pid} -> pid
+      after
+        1_000 -> raise "pressure session registry setup timed out"
+      end
+    end)
+  end
+
+  defp stop_registered_sessions(pids), do: Enum.each(pids, &send(&1, :stop))
+
+  defp pressure_session_row(session_id, workload, last_active_at) do
+    %{
+      session_id: session_id,
+      workload: workload,
+      state: :running,
+      node_id: "node-4",
+      vm_id: "vm-#{session_id}",
+      last_invoke_at: last_active_at,
+      updated_at: last_active_at
+    }
   end
 
   # Create a serving (published) instance directly.
@@ -1664,6 +1702,187 @@ defmodule Embervm.StatefulSweeperTest do
   end
 
   describe "brick memory-pressure banking" do
+    test "invalid_low_ge_high_logs_and_disables" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          ctx = start_stack(low_water_fraction: 0.85, high_water_fraction: 0.85)
+          state = :sys.get_state(ctx.sweeper)
+
+          assert Process.alive?(ctx.sweeper)
+          assert state.pressure_banking_enabled == false
+          assert state.low_water_fraction == 0.70
+          assert state.high_water_fraction == 0.85
+        end)
+
+      assert log =~ "invalid pressure banking configuration"
+      assert log =~ "low_water_fraction must be less than high_water_fraction"
+      assert log =~ "low_water_fraction=0.85 high_water_fraction=0.85"
+    end
+
+    test "invalid_high_gt_1_logs_and_disables" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          ctx = start_stack(high_water_fraction: 85.0)
+          state = :sys.get_state(ctx.sweeper)
+
+          assert Process.alive?(ctx.sweeper)
+          assert state.pressure_banking_enabled == false
+          assert state.low_water_fraction == 0.70
+          assert state.high_water_fraction == 0.85
+        end)
+
+      assert log =~ "invalid pressure banking configuration"
+      assert log =~ "high_water_fraction must be a number at most 1"
+      assert log =~ "high_water_fraction=85.0"
+    end
+
+    test "negative_floor_logs_and_disables" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          ctx = start_stack(pressure_idle_floor_ms: -1)
+          state = :sys.get_state(ctx.sweeper)
+
+          assert Process.alive?(ctx.sweeper)
+          assert state.pressure_banking_enabled == false
+          assert state.pressure_idle_floor_ms == 5_000
+          assert state.session_pressure_idle_floor_ms == 60_000
+        end)
+
+      assert log =~ "invalid pressure banking configuration"
+      assert log =~ "pressure_idle_floor_ms must be a non-negative integer"
+      assert log =~ "pressure_idle_floor_ms=-1"
+    end
+
+    test "cap_refused_candidate_is_never_unpublished" do
+      ctx = start_stack(bank_concurrency: 1)
+      stateful_workload(ctx, "wl-cap", 5400, %{mem_mib: 300})
+      serving_instance(ctx, "sf-cap", "wl-cap", "vm-cap", "10.98.0.5")
+      advance(ctx.clock_agent, 10_000)
+      brick_id = pressure_brick(ctx, 900, [live_stateful_vm("vm-cap", "wl-cap")])
+      set_scrape(ctx, reading("state-5400", 0, 1))
+
+      :sys.replace_state(ctx.sweeper, fn state ->
+        %{state | bank_inflight: %{"node-4" => 1}}
+      end)
+
+      assert FakePublisher.count(ctx.pub) == 0
+      assert :ok = StatefulSweeper.sweep(ctx.sweeper)
+
+      assert {:ok, instance} = StatefulStore.get(ctx.store, "sf-cap")
+      assert instance.state == :serving
+      assert instance.ip == "10.98.0.5"
+      assert FakePublisher.count(ctx.pub) == 0
+      assert stop_calls(ctx) == []
+      assert :sys.get_state(ctx.sweeper).pressure_by_brick[brick_id].guests_banked == []
+    end
+
+    test "one_refusal_halts_shed_tick" do
+      ctx = start_stack(bank_concurrency: 2)
+      parent = self()
+      registry = String.to_atom("refusal_session_registry_#{System.unique_integer([:positive])}")
+      {:ok, _registry} = Registry.start_link(keys: :unique, name: registry)
+      registered = register_session_ids(registry, ["sess-refused"])
+
+      {:ok, session_store} =
+        FakeSessionStore.start_link([
+          pressure_session_row("sess-refused", "wl-session-refused", 1_000)
+        ])
+
+      session_workload(ctx, "wl-session-refused", %{mem_mib: 100})
+      stateful_workload(ctx, "wl-stateful-next", 5400, %{mem_mib: 100})
+      serving_instance(ctx, "sf-next", "wl-stateful-next", "vm-next", "10.98.0.5")
+      advance(ctx.clock_agent, 100_000)
+
+      brick_id =
+        pressure_brick(
+          ctx,
+          900,
+          [live_stateful_vm("vm-next", "wl-stateful-next")],
+          [live_session_vm("sess-refused", "vm-sess-refused", "wl-session-refused")]
+        )
+
+      set_scrape(ctx, reading("state-5400", 0, 1))
+
+      :sys.replace_state(ctx.sweeper, fn state ->
+        %{
+          state
+          | session_store: session_store,
+            session_registry: registry,
+            session_pressure_bank_fun: fn _pid ->
+              send(parent, :first_pressure_candidate_refused)
+              {:error, :refused}
+            end
+        }
+      end)
+
+      assert :ok = StatefulSweeper.sweep(ctx.sweeper)
+      assert_receive :first_pressure_candidate_refused
+      assert {:ok, %{state: :serving}} = StatefulStore.get(ctx.store, "sf-next")
+      assert FakePublisher.count(ctx.pub) == 0
+      assert stop_calls(ctx) == []
+      assert :sys.get_state(ctx.sweeper).pressure_by_brick[brick_id].guests_banked == []
+
+      stop_registered_sessions(registered)
+    end
+
+    test "one_bank_in_flight_closing_gap_prevents_next_bank" do
+      ctx = start_stack(bank_concurrency: 2)
+      parent = self()
+      stateful_workload(ctx, "wl-a", 5400, %{mem_mib: 200})
+      stateful_workload(ctx, "wl-b", 5401, %{mem_mib: 200})
+      serving_instance(ctx, "sf-a", "wl-a", "vm-a", "10.98.0.5")
+      serving_instance(ctx, "sf-b", "wl-b", "vm-b", "10.98.0.6")
+      advance(ctx.clock_agent, 10_000)
+
+      brick_id =
+        pressure_brick(ctx, 900, [
+          live_stateful_vm("vm-a", "wl-a"),
+          live_stateful_vm("vm-b", "wl-b")
+        ])
+
+      set_scrape(
+        ctx,
+        {:ok, %{"state-5400" => %{active: 0, total: 1}, "state-5401" => %{active: 0, total: 1}}}
+      )
+
+      :sys.replace_state(ctx.sweeper, fn state ->
+        %{
+          state
+          | stop_stateful_fun: fn _channel, request ->
+              send(parent, {:pressure_bank_blocked, self(), request.vm_id})
+
+              receive do
+                :finish_pressure_bank ->
+                  {:ok,
+                   %StopStatefulResponse{
+                     snapshot_ref: "snap-#{request.vm_id}",
+                     size_bytes: 4_096,
+                     generation: 1
+                   }}
+              end
+            end
+        }
+      end)
+
+      assert :ok = StatefulSweeper.sweep(ctx.sweeper)
+      assert_receive {:pressure_bank_blocked, worker, "vm-a"}
+
+      state = :sys.get_state(ctx.sweeper)
+      assert state.banking["sf-a"].brick_id == brick_id
+      assert state.banking["sf-a"].mem_mib == 200
+
+      assert :ok = StatefulSweeper.sweep(ctx.sweeper)
+      refute_receive {:pressure_bank_blocked, _worker, "vm-b"}, 0
+      assert {:ok, %{state: :serving}} = StatefulStore.get(ctx.store, "sf-b")
+      assert :sys.get_state(ctx.sweeper).pressure_by_brick[brick_id].guests_banked == []
+
+      send(worker, :finish_pressure_bank)
+
+      wait_until(ctx, fn ->
+        match?({:ok, %{state: :banked}}, StatefulStore.get(ctx.store, "sf-a"))
+      end)
+    end
+
     test "above high water admits stateful guests in LRU order" do
       ctx = start_stack(bank_concurrency: 2)
       stateful_workload(ctx, "wl-old", 5400, %{mem_mib: 150})
@@ -1960,48 +2179,42 @@ defmodule Embervm.StatefulSweeperTest do
       assert stop_calls(ctx) == []
     end
 
-    test "a session workload with memory banking disabled is skipped" do
+    test "a session workload with persistence memory=false is still a pressure candidate" do
       ctx = start_stack()
       parent = self()
-      registry = String.to_atom("disabled_session_registry_#{System.unique_integer([:positive])}")
+
+      registry =
+        String.to_atom("memory_false_session_registry_#{System.unique_integer([:positive])}")
+
       {:ok, _registry} = Registry.start_link(keys: :unique, name: registry)
-
-      registered =
-        spawn_link(fn ->
-          {:ok, _} = Registry.register(registry, "sess-no-memory-bank", nil)
-          send(parent, :disabled_session_registered)
-
-          receive do
-            :stop -> :ok
-          end
-        end)
-
-      assert_receive :disabled_session_registered
+      registered = register_session_ids(registry, ["sess-memory-false"])
 
       {:ok, session_store} =
         FakeSessionStore.start_link([
           %{
-            session_id: "sess-no-memory-bank",
-            workload: "wl-no-memory-bank",
+            session_id: "sess-memory-false",
+            workload: "wl-memory-false",
             state: :running,
             node_id: "node-4",
-            vm_id: "vm-no-memory-bank",
+            vm_id: "vm-memory-false",
             last_invoke_at: 1_000,
             updated_at: 1_000
           }
         ])
 
-      session_workload(ctx, "wl-no-memory-bank", %{
+      session_workload(ctx, "wl-memory-false", %{
         mem_mib: 300,
         persistence: %{memory: false, filesystem: %{enabled: true, size_bytes: 1_000}}
       })
+
+      advance(ctx.clock_agent, 60_001)
 
       brick_id =
         pressure_brick(
           ctx,
           900,
           [],
-          [live_session_vm("sess-no-memory-bank", "vm-no-memory-bank", "wl-no-memory-bank")]
+          [live_session_vm("sess-memory-false", "vm-memory-false", "wl-memory-false")]
         )
 
       :sys.replace_state(ctx.sweeper, fn state ->
@@ -2010,21 +2223,124 @@ defmodule Embervm.StatefulSweeperTest do
           | session_store: session_store,
             session_registry: registry,
             session_pressure_bank_fun: fn _pid ->
-              send(parent, :disabled_session_pressure_bank_called)
+              send(parent, :memory_false_session_pressure_bank_called)
               :ok
             end
         }
       end)
 
-      {:ok, entry} = WorkloadCatalog.fetch(ctx.cat_table, "wl-no-memory-bank")
+      {:ok, entry} = WorkloadCatalog.fetch(ctx.cat_table, "wl-memory-false")
       assert entry.persistence.memory == false
       assert entry.session.idle_bank_seconds > 0
 
       assert :ok = StatefulSweeper.sweep(ctx.sweeper)
 
+      assert_receive :memory_false_session_pressure_bank_called
+      assert StatefulSweeper.pressure_state(ctx.sweeper, brick_id) == :shedding
+
+      assert :sys.get_state(ctx.sweeper).pressure_by_brick[brick_id].guests_banked == [
+               "sess-memory-false"
+             ]
+
+      stop_registered_sessions(registered)
+    end
+
+    test "a session active within the idle floor is not a pressure candidate" do
+      ctx = start_stack()
+      parent = self()
+      registry = String.to_atom("active_session_registry_#{System.unique_integer([:positive])}")
+      {:ok, _registry} = Registry.start_link(keys: :unique, name: registry)
+      registered = register_session_ids(registry, ["sess-active"])
+      advance(ctx.clock_agent, 90_000)
+
+      {:ok, session_store} =
+        FakeSessionStore.start_link([
+          pressure_session_row("sess-active", "wl-active-session", 40_001)
+        ])
+
+      session_workload(ctx, "wl-active-session", %{mem_mib: 300})
+
+      brick_id =
+        pressure_brick(
+          ctx,
+          900,
+          [],
+          [live_session_vm("sess-active", "vm-sess-active", "wl-active-session")]
+        )
+
+      :sys.replace_state(ctx.sweeper, fn state ->
+        %{
+          state
+          | session_store: session_store,
+            session_registry: registry,
+            session_pressure_bank_fun: fn _pid ->
+              send(parent, :active_session_pressure_bank_called)
+              :ok
+            end
+        }
+      end)
+
+      assert :ok = StatefulSweeper.sweep(ctx.sweeper)
+
       assert StatefulSweeper.pressure_state(ctx.sweeper, brick_id) == :high
-      refute_receive :disabled_session_pressure_bank_called, 0
-      send(registered, :stop)
+      assert :sys.get_state(ctx.sweeper).pressure_by_brick[brick_id].guests_banked == []
+      refute_receive :active_session_pressure_bank_called, 0
+      stop_registered_sessions(registered)
+    end
+
+    test "sessions idle beyond the floor are candidates, ordered by LRU" do
+      ctx = start_stack()
+      registry = String.to_atom("idle_session_registry_#{System.unique_integer([:positive])}")
+      {:ok, _registry} = Registry.start_link(keys: :unique, name: registry)
+      registered = register_session_ids(registry, ["sess-old", "sess-recent"])
+      advance(ctx.clock_agent, 90_000)
+
+      {:ok, session_store} =
+        FakeSessionStore.start_link([
+          pressure_session_row("sess-recent", "wl-session-recent", 20_000),
+          pressure_session_row("sess-old", "wl-session-old", 10_000)
+        ])
+
+      session_workload(ctx, "wl-session-old", %{mem_mib: 100})
+      session_workload(ctx, "wl-session-recent", %{mem_mib: 100})
+
+      brick_id =
+        pressure_brick(
+          ctx,
+          900,
+          [],
+          [
+            live_session_vm("sess-old", "vm-sess-old", "wl-session-old"),
+            live_session_vm("sess-recent", "vm-sess-recent", "wl-session-recent")
+          ]
+        )
+
+      {:ok, banked} = Agent.start_link(fn -> [] end)
+
+      :sys.replace_state(ctx.sweeper, fn state ->
+        %{
+          state
+          | session_store: session_store,
+            session_registry: registry,
+            session_pressure_bank_fun: fn pid ->
+              [session_id] = Registry.keys(registry, pid)
+              Agent.update(banked, &[session_id | &1])
+              :ok
+            end
+        }
+      end)
+
+      assert :ok = StatefulSweeper.sweep(ctx.sweeper)
+
+      assert Agent.get(banked, &Enum.reverse(&1)) == ["sess-old", "sess-recent"]
+      assert StatefulSweeper.pressure_state(ctx.sweeper, brick_id) == :shedding
+
+      assert :sys.get_state(ctx.sweeper).pressure_by_brick[brick_id].guests_banked == [
+               "sess-old",
+               "sess-recent"
+             ]
+
+      stop_registered_sessions(registered)
     end
 
     test "the emergency flag disables pressure banking and keeps state ok" do

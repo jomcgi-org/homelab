@@ -1024,11 +1024,14 @@ statefulSweeper:
   sweepIntervalMs: ""
   wakeMax: ""
   pressureBanking:
-    # Emergency disable for resident-memory shedding. Ordinary idle banking is
-    # unaffected.
-    enabled: true
+    # Lane lands off and is armed by a later values-only change after live verification.
+    # Cross-brick stateful relight is currently broken (#5502) and every extra bank
+    # is another exposure to it.
+    enabled: false
     highWaterFraction: 0.85
     lowWaterFraction: 0.70
+    idleFloorMs: 5000
+    sessionPressureIdleFloorMs: 60000
 
 # gRPC connection sweep gate for orphaned channels. Empty means off: the
 # sweeper only logs what it would clean up and leaves connections untouched.

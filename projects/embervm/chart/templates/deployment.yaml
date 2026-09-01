@@ -436,6 +436,10 @@ spec:
               value: {{ .Values.statefulSweeper.pressureBanking.highWaterFraction | quote }}
             - name: EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION
               value: {{ .Values.statefulSweeper.pressureBanking.lowWaterFraction | quote }}
+            - name: EMBERVM_STATEFUL_PRESSURE_IDLE_FLOOR_MS
+              value: {{ .Values.statefulSweeper.pressureBanking.idleFloorMs | quote }}
+            - name: EMBERVM_STATEFUL_SESSION_PRESSURE_IDLE_FLOOR_MS
+              value: {{ .Values.statefulSweeper.pressureBanking.sessionPressureIdleFloorMs | quote }}
             {{- if .Values.grpcConnectionSweeper.enabled }}
             # gRPC connection sweep gate (default off, dry-run logging only). "1" or "true"
             # arms destructive orphaned connection termination.

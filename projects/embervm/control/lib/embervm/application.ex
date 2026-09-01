@@ -1384,7 +1384,10 @@ defmodule Embervm.Application do
       lifetime_drain_max_ms: int_env_or_nil("EMBERVM_STATEFUL_LIFETIME_DRAIN_MAX_MS"),
       pressure_banking_enabled: boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", true),
       high_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_HIGH_WATER_FRACTION", 0.85),
-      low_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION", 0.70)
+      low_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION", 0.70),
+      pressure_idle_floor_ms: int_env_or_nil("EMBERVM_STATEFUL_PRESSURE_IDLE_FLOOR_MS"),
+      session_pressure_idle_floor_ms:
+        int_env_or_nil("EMBERVM_STATEFUL_SESSION_PRESSURE_IDLE_FLOOR_MS")
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end
