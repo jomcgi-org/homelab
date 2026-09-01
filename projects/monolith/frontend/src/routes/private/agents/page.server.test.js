@@ -20,7 +20,7 @@ describe("agents /private/agents load", () => {
   it("passes sessions and the model catalogue through untouched", async () => {
     const sessions = [{ id: 1 }];
     const catalog = {
-      models: [{ name: "qwen", family: "pi" }],
+      models: [{ name: "luna", family: "codex" }],
     };
     const fetchMock = vi.fn(async (url) =>
       jsonResponse(String(url).includes("models") ? catalog : sessions),

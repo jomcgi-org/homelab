@@ -194,7 +194,7 @@ export const RUN_LEXICON = {
     launcherQuestion: "What should {model} do?",
     launcherPlaceholder:
       "Describe the task. One session, or a run with a review gate.",
-    drainHeading: "qwen drain",
+    drainHeading: "luna drain",
     drainRunning: "running",
     drainIdle: "idle",
     drainQueued: "{count} queued",

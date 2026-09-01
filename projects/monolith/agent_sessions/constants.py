@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-# This session node key is deliberately independent of configurable DRAINER_JOB_KIND.
+# Keep this legacy node key aligned with the registered routine-job kind so
+# in-flight and historical drain sessions remain correlated after the Luna
+# runtime switch.
 DRAINER_NODE_KEY = "qwen-drain"
 
-# Synthetic sessions are persisted for health debugging but are not operator
-# work, so console queries use this origin marker to keep them out of the UI.
+# Retired synthetic sessions are not operator work, so console queries keep
+# using their origin marker and original prompt to hide existing database rows.
 SYNTHETIC_SESSION_PREFIX = "synthetic:"
-QWEN_SYNTHETIC_PROMPT = "Reply with exactly: qwen synthetic ok"
+LEGACY_QWEN_SYNTHETIC_PROMPT = "Reply with exactly: qwen synthetic ok"
 
 # Terminal reasons that mean the turn ended normally. The claude lane reports
 # "completed" or "end_turn"; the pi lane passes the model's raw stopReason

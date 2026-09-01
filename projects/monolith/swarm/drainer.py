@@ -15,7 +15,7 @@ from swarm.tracing import set_attributes, tracer
 
 logger = logging.getLogger(__name__)
 
-CLAIM_HOLDER = "qwen-drainer"
+CLAIM_HOLDER = "luna-drainer"
 CLAIM_TTL_MARGIN_SECONDS = 300
 SPAN_SUMMARY_MAX_CHARS = 200
 SUMMARY_MAX_CHARS = 2000
@@ -90,7 +90,7 @@ def notify_drainer_failure(name: str, error: str) -> None:
 
     with tracer.start_as_current_span("drain.notify_failure") as span:
         set_attributes(span, {"drain.job_name": name})
-        asyncio.run(notify(f"qwen drainer job {name} failed: {error}", level="warn"))
+        asyncio.run(notify(f"Luna drainer job {name} failed: {error}", level="warn"))
 
 
 @DBOS.step()
@@ -123,7 +123,7 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                 row = _load_session_row(session_id)
         except Exception:  # noqa: BLE001 - cleanup failure must not stop the cycle
             logger.warning(
-                "qwen drainer failed to load session %s (%s) for cleanup",
+                "Luna drainer failed to load session %s (%s) for cleanup",
                 session_id,
                 local_session_id,
                 exc_info=True,
@@ -146,7 +146,7 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                 session.commit()
         except Exception:  # noqa: BLE001 - still attempt the VM cleanup below
             logger.warning(
-                "qwen drainer failed to clear pending turn for session %s",
+                "Luna drainer failed to clear pending turn for session %s",
                 resolved_session_id,
                 exc_info=True,
             )
@@ -164,7 +164,7 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
             return True
         except Exception:  # noqa: BLE001 - cleanup failure must not strand the queue
             logger.warning(
-                "qwen drainer failed to destroy session %s (ember %s)",
+                "Luna drainer failed to destroy session %s (ember %s)",
                 resolved_session_id,
                 ember_session_id,
                 exc_info=True,
@@ -312,7 +312,7 @@ def drain_cycle() -> dict:
                     session_id = start_agent_session(
                         local_session_id,
                         prompt,
-                        "qwen",
+                        "luna",
                         repo,
                         branch,
                         workflow_id,
@@ -339,7 +339,7 @@ def drain_cycle() -> dict:
                         notify_drainer_failure(name, error)
                     except Exception:  # noqa: BLE001 - notification is best effort
                         logger.warning(
-                            "qwen drainer failure notification failed for job %s",
+                            "Luna drainer failure notification failed for job %s",
                             name,
                             exc_info=True,
                         )

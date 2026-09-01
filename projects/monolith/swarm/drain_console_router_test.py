@@ -250,7 +250,7 @@ def test_job_detail_unknown_404(monkeypatch):
 
 
 def test_requeue_refuses_live_lock(monkeypatch):
-    live = _job(locked_by="qwen-drainer", locked_at=NOW - timedelta(seconds=30))
+    live = _job(locked_by="luna-drainer", locked_at=NOW - timedelta(seconds=30))
     _patch_common(monkeypatch, [live])
 
     response = _client().post("/api/agents/drain/jobs/qd-a/requeue")

@@ -23,7 +23,10 @@ from agent_sessions import (
     voice_ui,
 )
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
-from agent_sessions.constants import QWEN_SYNTHETIC_PROMPT, SYNTHETIC_SESSION_PREFIX
+from agent_sessions.constants import (
+    LEGACY_QWEN_SYNTHETIC_PROMPT,
+    SYNTHETIC_SESSION_PREFIX,
+)
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
     _append_rationale_trailer,
@@ -133,7 +136,7 @@ def _aggregate_statement(status: str | None = None, session_id: int | None = Non
             (func.coalesce(AgentSession.model, "") != "qwen")
             | (
                 func.coalesce(first_turn_prompt, first_pending_prompt, "")
-                != QWEN_SYNTHETIC_PROMPT
+                != LEGACY_QWEN_SYNTHETIC_PROMPT
             ),
         )
     if status is not None:
@@ -325,8 +328,7 @@ def list_offered_models() -> dict:
     wires from agents.values. The frontend has no built-in list: an empty
     catalogue renders an empty picker rather than a bundled fallback, so a
     misconfigured env is visible instead of silently masked. Entries carry
-    name and family; family is the display hint that lets the picker label
-    the free in-cluster (pi) lane. No auth dependency and no cluster reads,
+    name and family for presentation. No auth dependency and no cluster reads,
     matching GET /sessions next to which it ships.
     """
     return {
@@ -462,12 +464,10 @@ async def _lane_sessions(workload: str) -> list:
 
 async def _refresh_cp_state() -> None:
     # EVERY lane, not just the claude runtime. list_sessions is workload
-    # scoped, and since qwen sessions moved to pi-runtime a single-lane poll
-    # would leave them out of the published map entirely. The console reads an
-    # absent session_id as "off" (frontend status.js vmState), so a live qwen
-    # guest would render "vm off" and "waking vm" for its whole turn. On
-    # monolith-dev that is total, because the configured model list restricts
-    # the picker to qwen alone.
+    # scoped, so a single-lane poll would leave persisted qwen sessions out of
+    # the published map entirely. The console reads an absent session_id as
+    # "off" (frontend status.js vmState), so a live legacy guest would render
+    # "vm off" and "waking vm" for its whole turn.
     #
     # Aggregating here does NOT contradict list_sessions defaulting to one
     # lane: that default serves the operator tool, where the per-workload

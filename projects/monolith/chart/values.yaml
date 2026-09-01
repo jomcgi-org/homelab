@@ -91,16 +91,16 @@ progress:
 # typo is visible rather than masked. Adding a model to the offer is a values
 # edit here once it exists in SUPPORTED_MODELS.
 agents:
-  # Current production selection: every supported model, listed explicitly so
-  # prod renders unchanged and stays unchanged when code adds a model later.
-  models: "luna,terra,sol,opus,sonnet,fable,qwen"
+  # Current production selection, listed explicitly so new supported models do
+  # not appear in the console or Discord command without a values change.
+  models: "luna,terra,sol,opus,sonnet,fable"
   drainer:
     # Master kill switch. The CronWorkflow stays unsuspended and safely gets a
     # disabled response until a follow-up production values PR turns this on,
     # following the values-versus-template rollout rule.
     enabled: false
-    # Jobs are deliberately serial so one qwen lane remains free for chat and
-    # health probes. This only bounds how much backlog one tick may consume;
+    # Jobs are deliberately serial so background work does not consume the
+    # whole Luna lane. This only bounds how much backlog one tick may consume;
     # 15 makes a deep queue drain continuously (one cycle keeps claiming until
     # the queue is empty or the bound is hit) instead of idling between ticks.
     maxJobsPerCycle: 15
@@ -111,20 +111,15 @@ agents:
     # the queue drains, and a REAL stall keeps it latched with no completions
     # moving.
     stallThresholdSeconds: 2700
+    # Keep claiming the legacy kind because routine jobs already registered in
+    # production carry it. The kind selects rows only; the drainer launches
+    # those jobs with the Luna model on the Codex runtime.
     jobKind: "qwen-drain"
     repo: "jomcgi-org/homelab"
     branch: "main"
-    # Thinking on for every drain job unless the job's payload says otherwise.
-    # The pi lane defaults to thinking off because it was built for small
-    # one-shot tasks, but drain jobs are multi-step repo audits, and with no
-    # reasoning trace qwen degenerates into repeating one identical tool call
-    # until the context window fills. In the A/B test, session 613 (off) made
-    # 461 tool calls with no answer, session 615 (on) made 8 tool calls with a
-    # correct answer, and session 620 (on) made 12 tool calls with a correct
-    # answer. A second prompt reproduced it: 242 calls to failure off, 7 calls
-    # to a correct answer on. The tradeoff is real, since jobs
-    # that already succeed do so in well under a minute with thinking off, so
-    # this stays tunable rather than hardcoded.
+    # High reasoning for every Luna drain job unless the payload overrides it.
+    # These jobs are usually multi-step repo audits, so reasoning stays tunable
+    # per job rather than being hardcoded in the drainer.
     reasoning: true
 
 # Off-pod batch-job execution via Argo CronWorkflows.
@@ -880,48 +875,6 @@ jobs:
       env:
         # The in-cluster API service the trigger POSTs; injected here (not baked
         # in code) so a release rename cannot silently break the DNS name.
-        MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
-      resources:
-        requests:
-          cpu: 100m
-          memory: 256Mi
-        limits:
-          memory: 256Mi
-
-    # The qwen session synthetic is deliberately separate from the original
-    # demo probes so its hourly cadence does not turn a local-model VM test
-    # into a five-minute workload.
-    #
-    # ARMED 2026-08-16, once the gate below was satisfied by a live run against
-    # production, driven with the monolith pod's own ServiceAccount so it went
-    # through the real principal:
-    #
-    #   POST /v1/workloads/pi-runtime/sessions   201 in 0.1s
-    #   POST /v1/sessions/{id}/invoke            200 in 1.8s
-    #        result "qwen synthetic ok", terminal_reason "stop",
-    #        usage 522 in / 27 out (a real llama.cpp round trip)
-    #   DELETE /v1/sessions/{id}                 202
-    #
-    # That is a completed turn, a non-empty result, and a destroyed session,
-    # which is exactly what the gate asked for. Arming was also gated on qwen
-    # actually routing to pi-runtime, which landed in the same session.
-    - name: ember-qwen-session-synthetic
-      args: ["ember-qwen-synthetic-trigger"]
-      # Offset from the */5 demo probe on purpose: both endpoints share one
-      # in-flight guard in synthetic_router.py, so a trigger at :00 lands while
-      # the 5-minute probe is running and returns {"skipped": true}, which the
-      # job reports as Succeeded while recording nothing (every hourly run from
-      # arming until 2026-08-22 did exactly that; the only recorded result was
-      # an off-schedule trigger at 14:03).
-      schedule: "2 * * * *"
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 300
-      # Original gate, kept for the record: "Joe arms this after watching the
-      # first green live run. That run must show a completed, non-empty qwen
-      # turn and a destroyed EmberVM session." Landing a prober you have not
-      # watched succeed is how #4074 paged on its own gaps.
-      suspend: false
-      env:
         MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
       resources:
         requests:

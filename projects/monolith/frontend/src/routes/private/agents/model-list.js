@@ -21,11 +21,9 @@ export function modelName(entry) {
   return typeof entry === "string" ? entry : entry.name;
 }
 
-// Display hint: the pi family runs in-cluster on the free llama.cpp lane, so
-// the picker labels it "(local)". Every other family renders as the bare
-// name; the endpoint carries no presentation beyond family.
+// Model labels use the canonical name returned by the backend.
 export function modelLabel(entry) {
   const name = modelName(entry);
   if (!name) return "";
-  return entry.family === "pi" ? `${name} (local)` : name;
+  return name;
 }

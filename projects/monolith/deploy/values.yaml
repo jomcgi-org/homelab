@@ -249,11 +249,12 @@ goosecracker:
 swarm:
   enabled: true
 
-# Arms the qwen work-queue drainer (ADR agents/061, #5301): the agent-drain
-# CronWorkflow tick stops no-opping and drain_cycle starts claiming due
-# qwen-drain routine jobs. Serial by design; all other knobs stay on chart
-# defaults. Suspending the CronWorkflow or reverting this line are the two
-# kill switches.
+# Arms the Luna work-queue drainer: the agent-drain CronWorkflow tick stops
+# no-opping and drain_cycle starts claiming due legacy qwen-drain routine jobs.
+# The legacy kind is retained so registered rows remain claimable, while the
+# fresh sessions run on Luna. Serial by design; all other knobs stay on chart
+# defaults. Suspending the CronWorkflow or reverting this line are the two kill
+# switches.
 agents:
   drainer:
     enabled: true

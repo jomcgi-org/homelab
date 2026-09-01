@@ -1,4 +1,4 @@
-"""Server-owned composition for the qwen drain console.
+"""Server-owned composition for the Luna drain console.
 
 Like swarm/view.py, this module knows nothing about FastAPI or the database.
 The router reduces routine_jobs rows, DBOS system-table rows, and agent
@@ -35,7 +35,7 @@ from agent_sessions.constants import DRAINER_NODE_KEY
 QUIET_AFTER_SECONDS = 120
 WEDGED_AFTER_SECONDS = 600
 
-# The session key format the drainer mints: <workflow_id>:qwen-drain:<job>.
+# The session key retains the legacy kind: <workflow_id>:qwen-drain:<job>.
 _SESSION_KEY_MARKER = f":{DRAINER_NODE_KEY}:"
 
 PROMPT_HEAD_CHARS = 160

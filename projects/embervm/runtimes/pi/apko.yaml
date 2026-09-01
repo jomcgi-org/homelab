@@ -14,9 +14,9 @@
 # image runs at 256 MiB (chart piRuntimeWorkload), so a banked session snapshot
 # is 256 MiB rather than 4 GiB.
 #
-# The named consumer is the */5 synthetic probe (monolith
-# ember_public/synthetic_probe.py probe_qwen), which cold-boots a guest every
-# five minutes forever to run one trivial turn.
+# This image remains available for persisted or explicitly requested qwen
+# sessions. Production no longer offers qwen in the agent model catalogue, and
+# the queue drainer and EmberVM session synthetics no longer use this runtime.
 #
 # THE PACKAGE SET IS DELIBERATELY IDENTICAL to ../claude/apko.yaml, and the
 # slimness comes ENTIRELY from omitting the claude and codex tars in BUILD. That

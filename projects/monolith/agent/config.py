@@ -61,15 +61,8 @@ def load_drainer_settings() -> DrainerSettings:
         job_kind=os.environ.get("DRAINER_JOB_KIND", "qwen-drain"),
         repo=os.environ.get("DRAINER_REPO", GITHUB_REPO),
         branch=os.environ.get("DRAINER_BRANCH", "main"),
-        # Defaults to true, unlike every other reasoning default in the repo.
-        # Drain jobs are multi-step repo audits, and with thinking off qwen
-        # degenerates into repeating one identical tool call until the context
-        # window fills. Measured on the same mono-doc-architecture prompt:
-        # thinking off took 461 tool calls and 118790 input tokens to end at
-        # stopReason length with no answer, while thinking on answered
-        # correctly in 8 and 12 calls on two runs, using about 27000 tokens.
-        # The cost is real on easy jobs, which finish in well under a minute
-        # with thinking off, so this is tunable rather than hardcoded.
+        # Drain jobs are usually multi-step repo audits, so Luna uses high
+        # reasoning by default while each job can still opt out in its payload.
         reasoning=os.environ.get("DRAINER_REASONING", "true").lower() == "true",
     )
 

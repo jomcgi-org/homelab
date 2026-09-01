@@ -13,17 +13,14 @@
 # switch below already stops every side effect those features would produce,
 # while leaving their routes and migrations identical to prod.
 #
-# MODELS ARE THE ONE DELIBERATE EXCEPTION, and this paragraph used to promise
-# the opposite. Dev points every model at the in-cluster Qwen so that
-# exercising it costs nothing: the point of dev is running synthetics and
-# poking at behaviour without spending on a metered or subscription provider.
-# This is a values choice, not a guard. Nothing rejects a paid model here, so
-# a NEW model-consuming feature has to be pointed at the free lane in this
-# file too, or dev will quietly inherit production's provider. Since #4859
-# that includes what dev OFFERS: the console picker and Discord /agent list
-# are served from agents.models below, so the offered catalogue is
-# deliberately env-scoped even though routes, templates and migrations stay
-# identical to prod.
+# MODELS ARE THE ONE DELIBERATE EXCEPTION. Dev points non-agent LLM pipelines
+# at the in-cluster Qwen so exercising them costs nothing. Agent sessions and
+# swarm use Luna, matching the production Codex lane. This is a values choice,
+# not a guard. A new model-consuming feature must be routed deliberately in
+# this file or dev will quietly inherit production's provider. Since #4859 the
+# console picker and Discord /agent list are served from agents.models below,
+# so the offered catalogue is env-scoped even though routes, templates and
+# migrations stay identical to prod.
 
 backend:
   # THE side-effect mute. One switch covers all five leader singletons (Discord
@@ -191,16 +188,14 @@ jobs:
 
 agents:
   # What dev OFFERS in the console picker and the Discord /agent command
-  # (GET /api/agents/models, issue #4859): qwen alone. Dev routes only the
-  # free in-cluster lane (see the model paragraphs below), so offering the
-  # paid providers here would be UI dishonesty, not a capability.
-  models: "qwen"
+  # (GET /api/agents/models, issue #4859): Luna alone, matching the Codex lane
+  # used by agent sessions and background work.
+  models: "luna"
 
-# EVERY MODEL IN DEV POINTS AT THE IN-CLUSTER QWEN.
+# NON-AGENT LLM PIPELINES IN DEV POINT AT THE IN-CLUSTER QWEN.
 #
-# Three separate settings reach a provider from this deployment, and each one
-# is metered or subscription-funded in production. Dev exists to be poked at
-# cheaply, so all three go to inference.inference.svc.cluster.local, which is
+# The non-agent settings below are metered in production. Dev exists to be
+# poked at cheaply, so they use inference.inference.svc.cluster.local, which is
 # the homelab's own GPU and costs nothing per token.
 #
 # The list is not self-maintaining. A new model-consuming feature lands with
@@ -236,7 +231,7 @@ grimoire:
   extractModel: "qwen3.6-27b"
   extractBaseUrl: "http://inference.inference.svc.cluster.local:8080/v1/chat/completions"
 
-# Swarm run lane. luna is Codex-billed and opus is subscription-billed.
+# Swarm run lane. Both roles use the Luna Codex lane in dev.
 #
 # Also inert today, for a different reason again: leaderSingletons above keeps
 # DBOS from launching, so every run endpoint 503s in dev and no implementer is
@@ -248,5 +243,5 @@ grimoire:
 # reading. Dev is not gating a real merge, so the floor buys nothing and a
 # subscription-billed reviewer on a throwaway run buys less.
 swarm:
-  implementerModel: "qwen"
-  reviewerModel: "qwen"
+  implementerModel: "luna"
+  reviewerModel: "luna"

@@ -11,7 +11,10 @@ from sqlalchemy import func, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from agent_sessions.constants import QWEN_SYNTHETIC_PROMPT, SYNTHETIC_SESSION_PREFIX
+from agent_sessions.constants import (
+    LEGACY_QWEN_SYNTHETIC_PROMPT,
+    SYNTHETIC_SESSION_PREFIX,
+)
 from agent_sessions.models import (
     AgentSession,
     AgentTurn,
@@ -476,7 +479,7 @@ def lexical_search(session: Session, query_text: str, limit: int = 20) -> list[d
             "q": query_text,
             "limit": limit,
             "synthetic_prefix": f"{SYNTHETIC_SESSION_PREFIX}%",
-            "qwen_synthetic_prompt": QWEN_SYNTHETIC_PROMPT,
+            "qwen_synthetic_prompt": LEGACY_QWEN_SYNTHETIC_PROMPT,
         },
     )
     keys = (

@@ -50,15 +50,9 @@ def ember_synthetic_trigger() -> None:
     _post_internal("/internal/ember/synthetic-probe", "ember-synthetic-trigger")
 
 
-@app.command("ember-qwen-synthetic-trigger")
-def ember_qwen_synthetic_trigger() -> None:
-    """Trigger the qwen session synthetic in the monolith API pod."""
-    _post_internal("/internal/ember/qwen-session-probe", "ember-qwen-synthetic-trigger")
-
-
 @app.command("agent-drain-trigger")
 def agent_drain_trigger() -> None:
-    """Trigger one asynchronous qwen work-queue drain cycle."""
+    """Trigger one asynchronous Luna work-queue drain cycle."""
     _post_internal("/internal/agent/drain", "agent-drain-trigger", timeout=90)
 
 

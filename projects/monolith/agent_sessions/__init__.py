@@ -2,11 +2,10 @@
 
 import os
 
-# Every model a caller may name, ordered by family (codex, claude, pi). This is
-# the single source for selectable models: the Discord /agent choice list and
-# GET /api/agents/models are built from it, so a model added here appears
-# everywhere without a second edit and nothing can disagree about what
-# model_family accepts.
+# Every model the user-facing picker may offer, ordered by family. This is the
+# single source for selectable models: the Discord /agent choice list and GET
+# /api/agents/models are built from it. The runtime still recognizes qwen for
+# persisted sessions and explicit compatibility calls, but it is not offered.
 #
 # Deliberately no FIRST-PARTY imports in this module. chat.bot reads
 # SUPPORTED_MODELS at import time to build its slash-command choices, and any
@@ -14,7 +13,7 @@ import os
 # dep onto every target that imports chat.bot without one (see the drift test
 # in chat/bot_on_message_test.py). The stdlib os import below is safe: it ships
 # with every interpreter.
-SUPPORTED_MODELS = ("luna", "terra", "sol", "opus", "sonnet", "fable", "qwen")
+SUPPORTED_MODELS = ("luna", "terra", "sol", "opus", "sonnet", "fable")
 
 # Per-env allowlist narrowing what the console picker and the Discord /agent
 # command OFFER (issue #4859). Comma-separated names; empty or unset means
@@ -61,11 +60,9 @@ def model_family(model: str | None) -> str:
 # guest, because the egress lane for an unrecognised workload is simply never
 # armed.
 #
-# The other half of the same contract: BOTH workload CRs must stay enabled.
-# piRuntimeWorkload.enabled defaults to FALSE in the embervm chart (prod and
-# dev values both set it true), and /api/health now depends on this lane
-# because probe_qwen runs through it. Disabling or renaming that CR makes every
-# qwen create 404, latches ember_synthetic_probe, and takes health red.
+# The other half of the same contract: the pi workload must stay enabled while
+# persisted or explicitly requested qwen sessions remain supported. Production
+# no longer offers qwen in its model catalogue, and background work uses Luna.
 #
 # There is deliberately no workload_for_family() helper here. The live decision
 # is transport._workload_for, which consults the env-resolved

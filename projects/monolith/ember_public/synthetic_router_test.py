@@ -94,25 +94,6 @@ def test_in_flight_flag_is_cleared_after_a_run(app, recorded):
     assert set(client.post("/internal/ember/synthetic-probe").json()) == set(DEMOS)
 
 
-def test_qwen_probe_endpoint_runs_and_records(app, monkeypatch):
-    recorded = {}
-
-    async def probe_qwen():
-        return {"ok": True, "detail": "completed, destroyed", "latency_ms": 1}
-
-    async def record(demo, result):
-        recorded[demo] = result
-
-    monkeypatch.setattr("ember_public.synthetic_probe.probe_qwen", probe_qwen)
-    monkeypatch.setattr("ember_public.synthetic_probe.record", record)
-
-    response = TestClient(app).post("/internal/ember/qwen-session-probe")
-
-    assert response.status_code == 200
-    assert response.json()["qwen"]["ok"] is True
-    assert recorded["qwen"]["detail"] == "completed, destroyed"
-
-
 def test_record_failure_propagates(app, monkeypatch):
     """A failed write must surface, so the job fails rather than going blind."""
     for demo in DEMOS:

@@ -1,4 +1,4 @@
-// Server-side proxy for the qwen drain lane strip. The browser never reaches
+// Server-side proxy for the Luna drain lane strip. The browser never reaches
 // the FastAPI backend directly (see hooks.server.js), so this mirrors
 // data/+server.js: fetch against API_BASE and relay the JSON.
 const API_BASE = process.env.API_BASE;

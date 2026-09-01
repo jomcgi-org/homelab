@@ -16,7 +16,10 @@ from agent_sessions import mcp
 from agent_sessions import transport
 import agent_sessions.router as agent_router
 from agent_sessions.codex_login import codex_login_gate
-from agent_sessions.constants import QWEN_SYNTHETIC_PROMPT, SYNTHETIC_SESSION_PREFIX
+from agent_sessions.constants import (
+    LEGACY_QWEN_SYNTHETIC_PROMPT,
+    SYNTHETIC_SESSION_PREFIX,
+)
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.router import router
 from core.db import get_session
@@ -234,13 +237,13 @@ def test_list_sessions_excludes_qwen_synthetics(client, session):
             AgentTurn(
                 session_id=completed.id,
                 seq=1,
-                prompt=QWEN_SYNTHETIC_PROMPT,
+                prompt=LEGACY_QWEN_SYNTHETIC_PROMPT,
                 result_text="qwen synthetic ok",
             ),
             PendingMessage(
                 session_id=pending.id,
                 seq=1,
-                message_text=QWEN_SYNTHETIC_PROMPT,
+                message_text=LEGACY_QWEN_SYNTHETIC_PROMPT,
                 model="qwen",
             ),
             AgentTurn(
@@ -252,7 +255,7 @@ def test_list_sessions_excludes_qwen_synthetics(client, session):
             AgentTurn(
                 session_id=same_prompt_other_model.id,
                 seq=1,
-                prompt=QWEN_SYNTHETIC_PROMPT,
+                prompt=LEGACY_QWEN_SYNTHETIC_PROMPT,
                 result_text="done",
             ),
         ]
@@ -277,15 +280,15 @@ def test_models_endpoint_offers_everything_when_env_unset(client, monkeypatch):
 
     assert [entry["name"] for entry in body["models"]] == list(SUPPORTED_MODELS)
     for entry in body["models"]:
-        assert entry["family"] in {"codex", "claude", "pi"}
+        assert entry["family"] in {"codex", "claude"}
 
 
 def test_models_endpoint_narrows_to_configured_list(client, monkeypatch):
     """AGENT_MODELS narrows the catalogue; entries keep name and family."""
-    monkeypatch.setenv("AGENT_MODELS", "qwen")
+    monkeypatch.setenv("AGENT_MODELS", "luna")
     body = client.get("/api/agents/models").json()
 
-    assert body == {"models": [{"name": "qwen", "family": "pi"}]}
+    assert body == {"models": [{"name": "luna", "family": "codex"}]}
 
 
 def test_models_endpoint_ignores_unknown_names_and_blank_parts(client, monkeypatch):
@@ -294,7 +297,7 @@ def test_models_endpoint_ignores_unknown_names_and_blank_parts(client, monkeypat
     monkeypatch.setenv("AGENT_MODELS", " qwen ,, luna, not-a-model ")
     body = client.get("/api/agents/models").json()
 
-    assert [entry["name"] for entry in body["models"]] == ["luna", "qwen"]
+    assert [entry["name"] for entry in body["models"]] == ["luna"]
 
 
 def test_models_endpoint_empty_value_means_all(client, monkeypatch):
@@ -657,9 +660,8 @@ def test_refresh_cp_state_polls_every_lane(client, monkeypatch):
 
     list_sessions is workload scoped, so a single-lane poll leaves qwen
     sessions out of the published map. The console reads an absent session_id
-    as "off" (frontend status.js vmState), so a live qwen guest would render
-    "vm off" for its whole turn, and on monolith-dev that is every session
-    because the configured model list restricts the picker to qwen.
+    as "off" (frontend status.js vmState), so a live legacy qwen guest would
+    render "vm off" for its whole turn.
     """
     lanes = []
 

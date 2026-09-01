@@ -1,7 +1,7 @@
 """Operations over ``claude_agent.routine_jobs``, delegated work for cloud Routines.
 
 These functions back the ``monolith-agent-*-routine-job`` MCP tools and the
-in-cluster qwen drainer. Unlike ``scheduler.api``'s ``scheduled_jobs``, these
+in-cluster Luna drainer. Unlike ``scheduler.api``'s ``scheduled_jobs``, these
 rows use explicit SKIP LOCKED claims so either consumer can safely lease work.
 Completing a one-shot row clears ``next_run_at``; ``trigger_job`` explicitly
 re-arms it by setting ``next_run_at = now()``.
