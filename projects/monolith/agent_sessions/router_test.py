@@ -1445,9 +1445,12 @@ def test_prewarm_bound_session_wakes_once(client, session, monkeypatch):
     row = _session(
         session,
         "prewarm-bound",
+        status="completed",
+        voice_summary="existing summary",
         ember_session_id="ember-1",
         ember_session_token="token-1",
     )
+    original_last_turn_at = row.last_turn_at
     calls = []
 
     async def fake_prewarm(ember_session_id, ember_session_token):
@@ -1463,6 +1466,12 @@ def test_prewarm_bound_session_wakes_once(client, session, monkeypatch):
     assert response.status_code == 204
     assert response.content == b""
     assert calls == [("ember-1", "token-1")]
+    session.expire_all()
+    unchanged = session.get(AgentSession, row.id)
+    assert unchanged.status == "completed"
+    assert unchanged.voice_summary == "existing summary"
+    assert unchanged.last_turn_at == original_last_turn_at
+    assert store.get_turns(session, row.id) == []
 
 
 def test_prewarm_unbound_session_is_noop(client, session, monkeypatch):
