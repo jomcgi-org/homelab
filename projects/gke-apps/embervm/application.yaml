@@ -26,6 +26,17 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: embervm
+  ignoreDifferences:
+    # The BrickController owns each brick Deployment's replica count; the chart
+    # value is only the count at FIRST create. Without this entry selfHeal
+    # reverted every demand-driven scale-up back to the git floor (216 auto-heal
+    # syncs on 2026-08-31), killing the scaled-up bricks and every guest in them
+    # each cycle. Mirrors the home app (projects/embervm/deploy/application.yaml),
+    # which carries the full history of this rule.
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
   syncPolicy:
     automated:
       prune: true
