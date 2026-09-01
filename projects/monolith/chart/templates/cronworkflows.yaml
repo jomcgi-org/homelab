@@ -58,6 +58,18 @@ spec:
     # Most jobs use the shared executor SA; a job needing extra cluster access
     # (e.g. stats_rollup reading node/pod counts) sets its own least-privilege SA.
     serviceAccountName: {{ .serviceAccountName | default "argo-workflow" }}
+    # Batch filler tier (ADR embervm/039): job pods tolerate the ember guest
+    # node taint so the scheduler can soak its idle headroom, and they run at
+    # homelab-disposable (-1000), which ranks BELOW the bricks (-9) so under
+    # memory pressure the kubelet evicts fillers before guests. -1000 also
+    # sits below the cluster autoscaler's expendable cutoff, which is CORRECT
+    # here: a batch pod should queue for capacity, never summon a Spot node.
+    podPriorityClassName: homelab-disposable
+    tolerations:
+      - key: embervm.jomcgi.dev/node
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
     {{- if .activeDeadlineSeconds }}
     activeDeadlineSeconds: {{ .activeDeadlineSeconds }}
     {{- end }}
