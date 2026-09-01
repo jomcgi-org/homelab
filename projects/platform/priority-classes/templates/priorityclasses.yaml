@@ -34,3 +34,23 @@ description: >-
   Disposable, resumable workloads (Firecracker agent microVMs per ADRs 019/021)
   whose state is never load-bearing. Lowest priority: the designated victim
   under coincident-peak memory pressure. See ADR platform/010.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: homelab-preemptible
+value: -9
+globalDefault: false
+# Never preempts other pods, same as disposable. The value sits just above the
+# cluster autoscaler's expendable-pods cutoff (-10): pods below the cutoff are
+# invisible to scale-up, which is how a Pending 8gi brick sat 34 minutes on a
+# full node with pool headroom on 2026-09-01 while the autoscaler logged
+# nothing, not even a noScaleUp reason. Preemptible workloads still rank below
+# every default-priority tenant, so they stay first-evicted under pressure and
+# first-consolidated on scale-down; they are just allowed to summon a node.
+preemptionPolicy: Never
+description: >-
+  Evict-first workloads that are nevertheless allowed to trigger cluster
+  autoscaler scale-up (value above the -10 expendable cutoff). For capacity
+  carriers like EmberVM bricks: disposable in placement, load-bearing in
+  aggregate. See ADR platform/010 and issue 5505.

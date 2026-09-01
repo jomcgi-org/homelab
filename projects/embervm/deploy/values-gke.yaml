@@ -21,6 +21,12 @@ noded:
   # hardening.
   networkPolicy:
     enabled: false
+  # Bricks stay evict-first but must be able to summon a node: at the chart
+  # default homelab-disposable (-1000) they sit below the cluster autoscaler's
+  # expendable cutoff (-10), so a Pending brick NEVER triggers scale-up (the
+  # 2026-09-01 silent 34-minute Pending 8gi). See the class definition in
+  # projects/platform/priority-classes.
+  priorityClassName: homelab-preemptible
 
 # Broker on, its CiliumNetworkPolicy off (no Cilium CRDs on the hub; same
 # trade as noded.networkPolicy above). Without the broker the codex-cluster
