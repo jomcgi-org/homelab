@@ -13,10 +13,12 @@ spec:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: embervm
       # This pin is a deliberate bootstrap floor. Write-back does NOT maintain gke-apps pins.
-      # 0.49.31 carries the CP combined Finch trust store (#5500) and the
-      # registry's 0.49.29 tag is STALE pre-gate content (see #5507), do not
-      # pin it. Verify a fresh pin by pulling the tag and grepping the change.
-      targetRevision: 0.52.0
+      # Verify a fresh pin by pulling the tag and grepping the change: the registry
+      # has served STALE pre-gate content under a fresh-looking tag before (#5507).
+      # 0.54.3 verified by pulling the chart: it carries the pressure-banking lane
+      # landed OFF (statefulSweeper.pressureBanking.enabled false) and a control
+      # image built from ecf7cb308, the merge that closed #5535.
+      targetRevision: 0.54.3
       helm:
         releaseName: embervm
         valueFiles:
