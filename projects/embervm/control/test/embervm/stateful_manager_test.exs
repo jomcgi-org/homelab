@@ -14,9 +14,9 @@ defmodule Embervm.StatefulManagerTest do
   """
   use ExUnit.Case, async: true
 
-  alias Embervm.{NodeCapacity, StatefulManager, StatefulStore, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, NodeRegistry, StatefulManager, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.StartStatefulResponse
+  alias Embervm.Node.V1.{NodeStatus, StartStatefulResponse, StatefulVm}
 
   defmodule FakePublisher do
     use GenServer
@@ -199,6 +199,45 @@ defmodule Embervm.StatefulManagerTest do
       volumes: Keyword.get(opts, :volumes, []),
       store_reachable: Keyword.get(opts, :store_reachable, false)
     })
+  end
+
+  # Replace the helper-owned empty capacity table with a real NodeRegistry-owned
+  # table. Registration opens a deliberately blocked fake WatchNode stream, and
+  # each test injects NodeStatus explicitly so no wall-clock sleep decides when
+  # the capacity fact appears.
+  defp register_grace_node(ctx, clock) do
+    true = :ets.delete(ctx.cap_table)
+
+    {:ok, registry} =
+      NodeRegistry.start_link(
+        name: nil,
+        table: ctx.cap_table,
+        nodes: [],
+        watch_startup: false,
+        registry_resync_ms: 0,
+        clock: clock,
+        connect_fun: fn _address -> {:ok, :grace_channel} end,
+        watch_fun: fn _channel, _node_id, _emit ->
+          receive do: (:never -> {:ok, :closed})
+        end,
+        sync_registry_fun: fn _channel, _node_id, _request -> :ok end,
+        disconnect_fun: fn :grace_channel -> :ok end,
+        channel_updater_fun: fn _instance_id, _address -> :ok end,
+        channel_remover_fun: fn _instance_id -> :ok end,
+        base_builder_updater_fun: fn _update -> :ok end,
+        reassign_fun: fn _node_id -> :ok end
+      )
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(registry) end)
+
+    :ok =
+      NodeRegistry.register(registry, %{
+        "node" => "node-4",
+        "pod_uid" => "grace-pod",
+        "address" => "10.0.0.4:9090"
+      })
+
+    {registry, "node-4/grace-pod"}
   end
 
   # -- wake round-trip ---------------------------------------------------------
@@ -970,6 +1009,153 @@ defmodule Embervm.StatefulManagerTest do
     assert adopted.state == :serving
     assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{ip: "10.88.0.9", port: 5432}
     assert Agent.get(ctx.starts, & &1) == 0
+  end
+
+  describe "boot-relative endpoint grace" do
+    test "a serving stateful instance within the grace window never loses its endpoint" do
+      {:ok, now} = Agent.start_link(fn -> 0 end)
+      clock = fn -> Agent.get(now, & &1) end
+      ctx = start_stack(clock: clock)
+
+      {:ok, _} =
+        StatefulStore.start(ctx.store, %{
+          instance_id: "stf-grace-live",
+          tenant: "homelab",
+          principal: "test",
+          workload: "wl-grace",
+          node_id: "node-4",
+          vm_id: "vm-grace-live",
+          generation: 1
+        })
+
+      {:ok, _} = StatefulStore.publish(ctx.store, "stf-grace-live", "10.88.0.9", 5432, :started)
+      endpoint = %{ip: "10.88.0.9", port: 5432}
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+
+      {registry, instance_id} = register_grace_node(ctx, clock)
+
+      # The capacity table is empty until the first NodeStatus. Reconcile several
+      # times during that ordinary deploy gap and prove the optimistic rebuilt
+      # endpoint never flickers out before the shared 90-second bound.
+      for elapsed_ms <- [30_000, 60_000, 89_999] do
+        Agent.update(now, fn _ -> elapsed_ms end)
+        :ok = StatefulManager.reconcile(ctx.mgr)
+        assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+      end
+
+      :ok =
+        NodeRegistry.inject_status(registry, instance_id, %NodeStatus{
+          node_id: "node-4",
+          stateful_vms: [
+            %StatefulVm{
+              vm_id: "vm-grace-live",
+              workload: "wl-grace",
+              ip: "10.88.0.9",
+              port: 5432,
+              healthy: true,
+              generation: 1
+            }
+          ]
+        })
+
+      # Reconcile while still inside grace so adoption converts the optimistic
+      # endpoint into fresh node truth before the deadline.
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+
+      # Once adopted, the endpoint remains published after the boot-relative
+      # grace because its owner has reported at least once.
+      Agent.update(now, fn _ -> 90_001 end)
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+    end
+
+    test "a stateful instance whose node never reports loses its endpoint after grace expires" do
+      {:ok, now} = Agent.start_link(fn -> 0 end)
+      clock = fn -> Agent.get(now, & &1) end
+      ctx = start_stack(clock: clock)
+
+      {:ok, _} =
+        StatefulStore.start(ctx.store, %{
+          instance_id: "stf-grace-silent",
+          tenant: "homelab",
+          principal: "test",
+          workload: "wl-grace",
+          node_id: "node-4",
+          vm_id: "vm-grace-silent",
+          generation: 1
+        })
+
+      {:ok, _} = StatefulStore.publish(ctx.store, "stf-grace-silent", "10.88.0.9", 5432, :started)
+      endpoint = %{ip: "10.88.0.9", port: 5432}
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+
+      {_registry, _instance_id} = register_grace_node(ctx, clock)
+
+      # Registration alone contributes no NodeCapacity row. The durable serving
+      # endpoint remains optimistic through the final millisecond of grace.
+      Agent.update(now, fn _ -> 89_999 end)
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+
+      # The node still has never reported. Once the boot-relative bound expires,
+      # reconcile clears health and the public endpoint fact disappears.
+      Agent.update(now, fn _ -> 90_001 end)
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == nil
+    end
+
+    test "a node that reported once is never withdrawn even if later silent" do
+      {:ok, now} = Agent.start_link(fn -> 0 end)
+      clock = fn -> Agent.get(now, & &1) end
+      ctx = start_stack(clock: clock)
+
+      {:ok, _} =
+        StatefulStore.start(ctx.store, %{
+          instance_id: "stf-grace-seen",
+          tenant: "homelab",
+          principal: "test",
+          workload: "wl-grace",
+          node_id: "node-4",
+          vm_id: "vm-grace-seen",
+          generation: 1
+        })
+
+      {:ok, _} = StatefulStore.publish(ctx.store, "stf-grace-seen", "10.88.0.9", 5432, :started)
+      endpoint = %{ip: "10.88.0.9", port: 5432}
+      {registry, instance_id} = register_grace_node(ctx, clock)
+
+      :ok =
+        NodeRegistry.inject_status(registry, instance_id, %NodeStatus{
+          node_id: "node-4",
+          stateful_vms: [
+            %StatefulVm{
+              vm_id: "vm-grace-seen",
+              workload: "wl-grace",
+              ip: "10.88.0.9",
+              port: 5432,
+              healthy: true,
+              generation: 1
+            }
+          ]
+        })
+
+      assert {:ok, %{node_id: "node-4"}} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+      assert MapSet.member?(:sys.get_state(ctx.mgr).seen_reporting_nodes, "node-4")
+
+      NodeCapacity.drop(ctx.cap_table, {"node-4", "grace-pod"})
+      assert NodeCapacity.fetch(ctx.cap_table, "node-4") == :error
+
+      Agent.update(now, fn _ -> 90_001 end)
+
+      for _ <- 1..3 do
+        :ok = StatefulManager.reconcile(ctx.mgr)
+      end
+
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+    end
   end
 
   test "adoption leaves a fresh :banking instance untouched when its VM is still live" do

@@ -544,20 +544,6 @@ defmodule Embervm.StatefulStoreTest do
 
   # -- boot rebuild equivalence ----------------------------------------------
 
-  test "rebuild keeps a serving projection unpublished until its node reports", %{path: path} do
-    {op_log, store} = start_pair(path)
-
-    {:ok, _} = start_instance(store, instance_id: "sf-stale", workload: "wl-stale", generation: 0)
-    {:ok, _} = StatefulStore.publish(store, "sf-stale", "10.0.0.9", 5432, :started)
-    assert StatefulStore.published_endpoint(store, "wl-stale") == %{ip: "10.0.0.9", port: 5432}
-
-    {:ok, rebuilt_store} =
-      StatefulStore.start_link(op_log: op_log, name: nil, clock: sequential_clock())
-
-    assert {:ok, %{state: :serving, healthy: false}} = StatefulStore.get(rebuilt_store, "sf-stale")
-    assert StatefulStore.published_endpoint(rebuilt_store, "wl-stale") == nil
-  end
-
   test "a fresh store rebuilt from the projection matches the pre-restart facts", %{path: path} do
     {op_log, store} = start_pair(path)
 
@@ -572,10 +558,9 @@ defmodule Embervm.StatefulStoreTest do
     # Restart: a NEW store over the SAME op-log rebuilds from the durable projection.
     {:ok, store2} = StatefulStore.start_link(op_log: op_log, name: nil, clock: sequential_clock())
 
-    # Durable lifecycle facts rebuild identically, but health is a lossy node fact:
-    # the endpoint stays out until StatefulManager adopts a fresh NodeStatus.
-    assert {:ok, %{state: :serving, healthy: false}} = StatefulStore.get(store2, "sf-a")
-    assert StatefulStore.published_endpoint(store2, "wl-a") == nil
+    # The serving wl-a endpoint is byte-identical after rebuild (healthy assumed for
+    # a rebuilt serving row, so it re-enters the fan-out with the same fact).
+    assert StatefulStore.published_endpoint(store2, "wl-a") == %{ip: "10.0.0.1", port: 8080}
 
     # The banked wl-b instance rebuilt as banked with its stamped bundle generation.
     assert StatefulStore.counts(store2) == %{

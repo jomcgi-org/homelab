@@ -166,6 +166,12 @@ defmodule Embervm.StatefulManager do
   @default_wake_max 10
   @default_wake_window_ms 60_000
 
+  # Keep this equal to NodeRegistry's @expire_after_ms (90_000). A rebuilt
+  # serving row is deliberately optimistic so a control-plane deploy does not
+  # create an endpoint blip while noded reconnects, but that optimism must have
+  # the same finite bound as the registry's registration-lapse policy.
+  @resident_health_grace_ms 90_000
+
   # A 2x bound on the StopStateful checkpoint worst case: a fresh atomic bank
   # owns its row until the bank completion records the bundle facts.
   @bank_ownership_bound_ms 120_000
@@ -284,13 +290,22 @@ defmodule Embervm.StatefulManager do
   def init(opts) do
     op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     op_log = Keyword.get(opts, :op_log, op_log_mod)
+    clock = Keyword.get(opts, :clock, &default_clock/0)
 
     state = %{
       store: Keyword.get(opts, :store, StatefulStore),
       publisher: Keyword.get(opts, :publisher, EndpointPublisher),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
-      clock: Keyword.get(opts, :clock, &default_clock/0),
+      clock: clock,
+      # The grace is control-plane-boot-relative, not first-reconcile-relative.
+      # Capturing it in init prevents an empty capacity table from extending the
+      # optimistic rebuild indefinitely when periodic reconcile starts late.
+      booted_at_ms: clock.(),
+      # Node names that have contributed capacity at least once since this
+      # manager booted. A later capacity retraction is handled by registry
+      # liveness, not by the durable-only endpoint grace.
+      seen_reporting_nodes: MapSet.new(),
       id_fun: Keyword.get(opts, :id_fun, nil),
       tenant: Keyword.get(opts, :tenant, "homelab"),
       # Daemon stateful-verb seams (injected for tests; production dials the
@@ -1930,6 +1945,17 @@ defmodule Embervm.StatefulManager do
   # ServingManager.do_reconcile/1; see the moduledoc's adoption section.
   defp do_reconcile(state) do
     facts = NodeCapacity.all(state.capacity_table)
+
+    reporting_nodes =
+      facts
+      |> Enum.map(&Map.get(&1, :node_id))
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    state = %{
+      state
+      | seen_reporting_nodes: MapSet.union(state.seen_reporting_nodes, reporting_nodes)
+    }
     live_vms = index_stateful_vms(facts)
     bundles = index_stateful_bundles(facts)
     bundles_by_workload = index_stateful_bundles_by_workload(facts)
@@ -1954,6 +1980,13 @@ defmodule Embervm.StatefulManager do
 
     _ = StatefulStore.eager_evict_broken_pairs(state.store)
 
+    # A store rebuild republishes a durable :serving row optimistically to avoid
+    # a deploy-time endpoint gap. If its owner never contributes a NodeCapacity
+    # fact, bound that optimism from CP boot and withdraw only the lossy health
+    # bit. The durable lifecycle stays :serving so a later NodeStatus can adopt
+    # the guest and restore the endpoint without manufacturing a new lifecycle.
+    state = withdraw_unreported_resident_health(state)
+
     state =
       if state.node_confirmed_destroy do
         state
@@ -1966,6 +1999,37 @@ defmodule Embervm.StatefulManager do
     EndpointPublisher.publish(state.publisher)
 
     auto_wake_ready_workloads(state, facts)
+  end
+
+  defp withdraw_unreported_resident_health(state) do
+    elapsed_ms = state.clock.() - state.booted_at_ms
+
+    if elapsed_ms >= @resident_health_grace_ms do
+      StatefulStore.all(state.store)
+      |> Enum.filter(fn instance ->
+        instance.state == :serving and instance.healthy and
+          not MapSet.member?(state.seen_reporting_nodes, instance.node_id)
+      end)
+      |> Enum.each(fn instance ->
+        # Missing capacity is the expected never-reported case, and set_health/3
+        # is best-effort because the row can disappear between this scan and the
+        # call. Either result leaves reconcile live and the next pass convergent.
+        case StatefulStore.set_health(state.store, instance.instance_id, false) do
+          {:ok, _updated} ->
+            Logger.warning("embervm stateful endpoint withdrawn after node-report grace",
+              instance_id: instance.instance_id,
+              workload: instance.workload,
+              node_id: instance.node_id,
+              elapsed_ms: elapsed_ms
+            )
+
+          :error ->
+            :ok
+        end
+      end)
+    end
+
+    state
   end
 
   # A destroying instance is re-driven only while its owner reports. If the owner

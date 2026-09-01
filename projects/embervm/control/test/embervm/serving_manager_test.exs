@@ -12,9 +12,9 @@ defmodule Embervm.ServingManagerTest do
   # gate into other async modules' gate-off assertions and flake CI.
   use ExUnit.Case, async: false
 
-  alias Embervm.{NodeCapacity, ServingManager, ServingStore, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, NodeRegistry, ServingManager, ServingStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{StartServingResponse, StopServingResponse}
+  alias Embervm.Node.V1.{NodeStatus, ServingVm, StartServingResponse, StopServingResponse}
 
   # A no-op publisher (a GenServer that counts publish/1 casts) so the manager's
   # EndpointPublisher.publish call has a live target without a real sidecar.
@@ -131,6 +131,45 @@ defmodule Embervm.ServingManagerTest do
       serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
       store_reachable: Keyword.get(opts, :store_reachable, false)
     })
+  end
+
+  # Give these grace tests the production capacity writer rather than inserting
+  # a hand-built NodeCapacity row. The fake watch remains blocked until teardown;
+  # NodeStatus is injected synchronously so the manager clock alone controls the
+  # before-grace and after-grace observations.
+  defp register_grace_node(ctx, clock) do
+    true = :ets.delete(ctx.cap_table)
+
+    {:ok, registry} =
+      NodeRegistry.start_link(
+        name: nil,
+        table: ctx.cap_table,
+        nodes: [],
+        watch_startup: false,
+        registry_resync_ms: 0,
+        clock: clock,
+        connect_fun: fn _address -> {:ok, :grace_channel} end,
+        watch_fun: fn _channel, _node_id, _emit ->
+          receive do: (:never -> {:ok, :closed})
+        end,
+        sync_registry_fun: fn _channel, _node_id, _request -> :ok end,
+        disconnect_fun: fn :grace_channel -> :ok end,
+        channel_updater_fun: fn _instance_id, _address -> :ok end,
+        channel_remover_fun: fn _instance_id -> :ok end,
+        base_builder_updater_fun: fn _update -> :ok end,
+        reassign_fun: fn _node_id -> :ok end
+      )
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(registry) end)
+
+    :ok =
+      NodeRegistry.register(registry, %{
+        "node" => "node-4",
+        "pod_uid" => "grace-pod",
+        "address" => "10.0.0.4:9090"
+      })
+
+    {registry, "node-4/grace-pod"}
   end
 
   defp req, do: %{method: "GET", path: "/og-image", headers: %{}, body: ""}
@@ -319,6 +358,160 @@ defmodule Embervm.ServingManagerTest do
     assert ServingStore.published_endpoints(ctx.store, "wl-a") == [%{ip: "10.99.0.9", port: 8080}]
     # No StartServing was issued (the VM was never touched).
     assert Agent.get(ctx.starts, & &1) == 0
+  end
+
+  describe "boot-relative endpoint grace" do
+    test "a serving instance within the grace window never loses its endpoint" do
+      {:ok, now} = Agent.start_link(fn -> 0 end)
+      clock = fn -> Agent.get(now, & &1) end
+      ctx = start_stack(clock: clock)
+
+      {:ok, _} =
+        ServingStore.start(ctx.store, %{
+          instance_id: "srv-grace-live",
+          tenant: "homelab",
+          principal: "test",
+          workload: "wl-grace",
+          node_id: "node-4",
+          vm_id: "vm-grace-live",
+          ip: "10.99.0.9",
+          port: 8080,
+          base_snapshot_ref: "base:grace",
+          base_digest: "sha256:grace"
+        })
+
+      {:ok, _} = ServingStore.publish(ctx.store, "srv-grace-live", "10.99.0.9", 8080, :started)
+      endpoints = [%{ip: "10.99.0.9", port: 8080}]
+      assert ServingStore.published_endpoints(ctx.store, "wl-grace") == endpoints
+
+      {registry, instance_id} = register_grace_node(ctx, clock)
+
+      # No capacity exists until the brick's first NodeStatus. Repeated reconcile
+      # passes during the normal deploy gap must preserve the optimistic endpoint
+      # all the way through the last millisecond of the shared grace window.
+      for elapsed_ms <- [30_000, 60_000, 89_999] do
+        Agent.update(now, fn _ -> elapsed_ms end)
+        :ok = ServingManager.reconcile(ctx.mgr)
+        assert ServingStore.published_endpoints(ctx.store, "wl-grace") == endpoints
+      end
+
+      :ok =
+        NodeRegistry.inject_status(registry, instance_id, %NodeStatus{
+          node_id: "node-4",
+          serving_vms: [
+            %ServingVm{
+              vm_id: "vm-grace-live",
+              workload: "wl-grace",
+              ip: "10.99.0.9",
+              port: 8080,
+              healthy: true
+            }
+          ]
+        })
+
+      # Reconcile at the same pre-deadline instant so the fresh NodeStatus is
+      # adopted before the manager's boot-relative grace closes.
+      :ok = ServingManager.reconcile(ctx.mgr)
+      assert ServingStore.published_endpoints(ctx.store, "wl-grace") == endpoints
+
+      # Once adopted from node truth, the endpoint remains valid after the
+      # deadline because its owner has reported at least once.
+      Agent.update(now, fn _ -> 90_001 end)
+      :ok = ServingManager.reconcile(ctx.mgr)
+      assert ServingStore.published_endpoints(ctx.store, "wl-grace") == endpoints
+    end
+
+    test "a serving instance whose node never reports loses its endpoint after grace expires" do
+      {:ok, now} = Agent.start_link(fn -> 0 end)
+      clock = fn -> Agent.get(now, & &1) end
+      ctx = start_stack(clock: clock)
+
+      {:ok, _} =
+        ServingStore.start(ctx.store, %{
+          instance_id: "srv-grace-silent",
+          tenant: "homelab",
+          principal: "test",
+          workload: "wl-grace",
+          node_id: "node-4",
+          vm_id: "vm-grace-silent",
+          ip: "10.99.0.9",
+          port: 8080,
+          base_snapshot_ref: "base:grace",
+          base_digest: "sha256:grace"
+        })
+
+      {:ok, _} = ServingStore.publish(ctx.store, "srv-grace-silent", "10.99.0.9", 8080, :started)
+      endpoints = [%{ip: "10.99.0.9", port: 8080}]
+      assert ServingStore.published_endpoints(ctx.store, "wl-grace") == endpoints
+
+      {_registry, _instance_id} = register_grace_node(ctx, clock)
+
+      # Registration is not a capacity fact. Keep the last durable publication
+      # through grace minus one millisecond while the node remains silent.
+      Agent.update(now, fn _ -> 89_999 end)
+      :ok = ServingManager.reconcile(ctx.mgr)
+      assert ServingStore.published_endpoints(ctx.store, "wl-grace") == endpoints
+
+      # After the boot-relative bound, the still-empty capacity table withdraws
+      # only endpoint health; the manager and durable lifecycle remain intact.
+      Agent.update(now, fn _ -> 90_001 end)
+      :ok = ServingManager.reconcile(ctx.mgr)
+      assert ServingStore.published_endpoints(ctx.store, "wl-grace") == []
+    end
+
+    test "a node that reported once is never withdrawn even if later silent" do
+      {:ok, now} = Agent.start_link(fn -> 0 end)
+      clock = fn -> Agent.get(now, & &1) end
+      ctx = start_stack(clock: clock)
+
+      {:ok, _} =
+        ServingStore.start(ctx.store, %{
+          instance_id: "srv-grace-seen",
+          tenant: "homelab",
+          principal: "test",
+          workload: "wl-grace",
+          node_id: "node-4",
+          vm_id: "vm-grace-seen",
+          ip: "10.99.0.9",
+          port: 8080,
+          base_snapshot_ref: "base:grace",
+          base_digest: "sha256:grace"
+        })
+
+      {:ok, _} = ServingStore.publish(ctx.store, "srv-grace-seen", "10.99.0.9", 8080, :started)
+      endpoints = [%{ip: "10.99.0.9", port: 8080}]
+      {registry, instance_id} = register_grace_node(ctx, clock)
+
+      :ok =
+        NodeRegistry.inject_status(registry, instance_id, %NodeStatus{
+          node_id: "node-4",
+          serving_vms: [
+            %ServingVm{
+              vm_id: "vm-grace-seen",
+              workload: "wl-grace",
+              ip: "10.99.0.9",
+              port: 8080,
+              healthy: true
+            }
+          ]
+        })
+
+      assert {:ok, %{node_id: "node-4"}} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+      :ok = ServingManager.reconcile(ctx.mgr)
+      assert ServingStore.published_endpoints(ctx.store, "wl-grace") == endpoints
+      assert MapSet.member?(:sys.get_state(ctx.mgr).seen_reporting_nodes, "node-4")
+
+      NodeCapacity.drop(ctx.cap_table, {"node-4", "grace-pod"})
+      assert NodeCapacity.fetch(ctx.cap_table, "node-4") == :error
+
+      Agent.update(now, fn _ -> 90_001 end)
+
+      for _ <- 1..3 do
+        :ok = ServingManager.reconcile(ctx.mgr)
+      end
+
+      assert ServingStore.published_endpoints(ctx.store, "wl-grace") == endpoints
+    end
   end
 
   test "adoption SKIPS a :destroying instance even though the node still reports its live VM" do
