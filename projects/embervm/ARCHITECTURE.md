@@ -627,11 +627,35 @@ On a fixed fleet a Pending brick **is** the fleet-full signal: the
 controller flags `:fleet_full`, the dispatcher refuses placement (503), and
 a human is paged, rather than overcommitting.
 
-**Built**: every brick and the serving relay run the cluster's disposable
-priority class, so guests are the first to yield under node memory
-pressure; QoS is Burstable (memory request==limit, CPU request-only);
-per-workload arbitration happens only
-in CP dispatch.
+**Built**: every brick and the serving relay run a disposable-shaped
+priority class (`homelab-disposable`, or `homelab-preemptible` on GKE, see
+below), so guests are the first to yield under node memory pressure;
+per-workload arbitration happens only in CP dispatch. QoS is Burstable:
+CPU carries no limit (request-only, sized as a CFS fair-share weight rather
+than a reservation), and memory requests are moving to ~75% of limit on
+GKE (PR #5519, not yet merged) since Firecracker guest RAM is
+demand-faulted and a brick's resident set runs far under its configured
+ceiling; the limit itself is untouched and still sets `usable_mib`, so no
+guest's admitted capacity changes (ADR embervm/039).
+
+**Decided direction** (ADR embervm/039, from the 2026-09-01 capacity
+incidents): overcommit blast radius is a ladder, guest (Firecracker jailer
+per-VM cgroup, `memory.oom.group`) before brick (kubelet eviction of the
+lowest-priority pod) before node; a brick sheds its least-recently-active
+idle guests via existing bank paths once its observed memory crosses a
+high-water fraction of its limit, with hysteresis back to a low-water mark
+before shedding stops; and unsatisfiable demand (no class fits, or class
+and pool headroom are both exhausted) becomes one signaled capacity
+condition on `/health` and Workload status, held with hysteresis, rather
+than a retry at request frequency. `homelab-preemptible` (-9, platform
+chart) replaces `homelab-disposable` (-1000) on GKE bricks specifically so
+a Pending brick stays visible to the cluster autoscaler's scale-up (above
+its -10 expendable-pods cutoff) while remaining first-evicted; this
+reopens, and only partially answers, the mass-VM-death preemption concern
+ADR embervm/016 raised against below-default brick priority (scheduler
+preemption deletes rather than drains). The Firecracker jailer that backs
+the guest rung of the ladder is **Planned** (#5520; section 10 has the
+containment detail).
 
 **Decided direction**: PriorityClass ranking of brick
 pools by lane with sacrificial balloon bricks for burst headroom, and
@@ -887,9 +911,13 @@ embervm/032).
   principal-bound lineage; no cluster credential in guests; Envoy-only
   serving ingress; bound dial-home registration identity.
 - **Accepted risk**: privileged noded with /dev/kvm; external-allow guest
-  egress via the broker; taint optional.
-- **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade; granular
-  containment.
+  egress via the broker; taint optional; CPU side-channel between
+  co-resident tenant guests on the same brick, unmapped (#5255).
+- **Decided direction** (ADR embervm/039, #5520): adopt the Firecracker
+  jailer for per-VM chroot, uid/gid drop, cgroup, and PID namespace
+  containment, closing the gap where noded execs firecracker directly as
+  root today with none of it.
+- **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade.
 
 EmberVM evaluates itself against the threat model published by
 [agent-substrate/substrate](https://github.com/agent-substrate/substrate/blob/main/docs/threat-model.md),
