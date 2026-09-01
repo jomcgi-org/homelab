@@ -61,21 +61,29 @@ cd "$work"
 # pcal.trans rewrites the .tla in place between the BEGIN/END TRANSLATION
 # markers. Re-run it on a throwaway copy and diff against the committed spec: a
 # difference means someone edited the PlusCal algorithm without re-translating.
-cp "$spec_name" "trans_check.tla"
-if ! "$java" -cp "$jar" pcal.trans -nocfg "trans_check.tla" >trans.log 2>&1; then
-	echo "pcal.trans failed on $spec_name:" >&2
-	cat trans.log >&2
-	exit 1
+# Pure TLA+ modules carry no algorithm block; pcal.trans hard-errors on them
+# ("Beginning of algorithm string --algorithm not found"), so the freshness
+# gate only applies to specs that actually contain PlusCal (stateful.tla is
+# the first pure-TLA+ spec in the suite).
+if ! grep -qE -- '--(fair +)?algorithm' "$spec_name"; then
+	echo "no PlusCal block in $spec_name; skipping translation freshness check" >&2
+else
+	cp "$spec_name" "trans_check.tla"
+	if ! "$java" -cp "$jar" pcal.trans -nocfg "trans_check.tla" >trans.log 2>&1; then
+		echo "pcal.trans failed on $spec_name:" >&2
+		cat trans.log >&2
+		exit 1
+	fi
+	if ! diff -u "$spec_name" "trans_check.tla" >trans.diff; then
+		echo "STALE PLUSCAL TRANSLATION in $spec_name:" >&2
+		echo "The committed TLA+ translation does not match what pcal.trans produces" >&2
+		echo "from the PlusCal block. Run 'java -cp tla2tools.jar pcal.trans $spec_name'" >&2
+		echo "and commit the result. Diff (committed vs freshly translated):" >&2
+		cat trans.diff >&2
+		exit 1
+	fi
+	rm -f "trans_check.tla"
 fi
-if ! diff -u "$spec_name" "trans_check.tla" >trans.diff; then
-	echo "STALE PLUSCAL TRANSLATION in $spec_name:" >&2
-	echo "The committed TLA+ translation does not match what pcal.trans produces" >&2
-	echo "from the PlusCal block. Run 'java -cp tla2tools.jar pcal.trans $spec_name'" >&2
-	echo "and commit the result. Diff (committed vs freshly translated):" >&2
-	cat trans.diff >&2
-	exit 1
-fi
-rm -f "trans_check.tla"
 
 # --- Model check ------------------------------------------------------------
 # -Dtlc2.TLC.stopAfter=600 bounds wall time (seconds) so a runaway check cannot
