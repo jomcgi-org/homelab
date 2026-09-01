@@ -1619,42 +1619,53 @@ bricks:
     # BrickController cannot scale it either. Production lists no 1gi desired
     # replicas, so this adds an empty Deployment and no pods. The dev
     # environment opts in by listing it.
+    # Brick requests are deliberately BELOW limits, a scoped exception to the
+    # repo's req==limits memory convention. Firecracker guest RAM is
+    # demand-faulted: a brick's resident set is the sum of pages its guests
+    # have touched, typically far under the pool ceiling (live bricks idle at
+    # 10-35Mi against multi-Gi pools, 2026-09-01). Requests size the
+    # SCHEDULING commitment at ~75% of the ceiling so nodes pack on realistic
+    # residency; limits still carry the guest-admission ceiling (usable_mib
+    # derives from limits, so guest capacity is unchanged). Coincident-peak
+    # overcommit resolves by kubelet eviction of the lowest-priority pods,
+    # which bricks are by design (homelab-preemptible, guests banked and
+    # resumable); per-guest OOM containment via the jailer narrows that blast
+    # radius from brick to guest. CPU requests are pure CFS weights (bricks
+    # have no CPU limit): they guarantee a floor under contention and cap
+    # nothing, so they are sized for fair-share, not for peak.
     - name: 1gi
       resources:
         requests:
-          # Same as 2gi. A guest still pays full boot cost regardless of its
-          # memory footprint, so starving CPU would slow the very lifecycle
-          # transitions this class exists to produce.
-          cpu: "1"
-          memory: 1Gi
+          cpu: 500m
+          memory: 768Mi
         limits:
           memory: 1Gi
     - name: 2gi
       resources:
         requests:
-          cpu: "1"
-          memory: 2Gi
+          cpu: 500m
+          memory: 1536Mi
         limits:
           memory: 2Gi
     - name: 4gi
       resources:
         requests:
-          cpu: "2"
-          memory: 4Gi
+          cpu: "1"
+          memory: 3Gi
         limits:
           memory: 4Gi
     - name: 8gi
       resources:
         requests:
-          cpu: "2"
-          memory: 8Gi
+          cpu: "1"
+          memory: 6Gi
         limits:
           memory: 8Gi
     - name: 16gi
       resources:
         requests:
           cpu: "2"
-          memory: 16Gi
+          memory: 12Gi
         limits:
           memory: 16Gi
   # Per-node brick FLOOR guarantees (brick-capacity PR-3): a list of
