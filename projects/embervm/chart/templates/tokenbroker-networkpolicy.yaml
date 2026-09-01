@@ -1,4 +1,8 @@
-{{- if .Values.tokenBroker.enabled }}
+{{- /* networkPolicy.enabled gates ONLY this CiliumNetworkPolicy so clusters
+without Cilium CRDs (the GKE hub) can run the broker at all; disabling it
+drops the broker's ingress/egress scoping, the same trade the noded policy
+gate makes in values-gke.yaml. Default stays true (home unchanged). */}}
+{{- if and .Values.tokenBroker.enabled .Values.tokenBroker.networkPolicy.enabled }}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
