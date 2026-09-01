@@ -73,3 +73,15 @@ scratchPrep:
 # the big classes are capped off, including the chart default 16gi warm floor
 # (a home policy for the scratch-k8s composite). Revisit the session-class
 # ceiling and group-spread when the qwen lane revives (#5459, #5461).
+
+# Stateful relight is broken on the hub: a bundle banked on one brick can be
+# relit on a sibling brick (four bricks share the node and its scratch tree, a
+# layout home never had), and the resumed guest never answers on its pinned tap
+# IP ("stateful guest not ready over tap"). With the chart's 1-second idle bank
+# the demo parked after every probe and re-rolled that broken relight
+# constantly, so the public exhibit cycled failed -> cold boot all night
+# (2026-09-01). Ten minutes keeps the instance hot between probes so relight
+# is a rare path until the defect is fixed; revert to the chart default when
+# it is.
+demoPostgres:
+  idleBankSeconds: 600
