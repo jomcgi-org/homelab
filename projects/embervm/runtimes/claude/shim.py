@@ -2194,24 +2194,34 @@ class ClaudeProcess:
                     # Check if this legacy session must respawn due to workspace change.
                     if not _transcript_exists(self.workspace, session_id):
                         legacy_workspace = os.path.dirname(self.workspace)
-                        if _transcript_exists(legacy_workspace, session_id):
-                            # Close parked CLI and respawn with legacy cwd to restore state.
-                            self._close_process(kill=False)
-                            try:
-                                self._spawn(
-                                    session_id,
-                                    first_message=message,
-                                    model=model,
-                                    system_prompt=system_prompt,
-                                )
-                            except Exception:
-                                if parked_adoption and not session_was_bound:
-                                    self.session_id = None
-                                raise
-                            process = self.process
-                            message_sent = True
-                            parked_adoption = False
-                            cli_ready_path = "remediation_respawn"
+                        # A transcript in the legacy dir means respawn with the
+                        # legacy cwd to restore state. NO transcript anywhere
+                        # means a FRESH session adopting a parked prewarm CLI,
+                        # and that CLI's spawn-time state (CODEX_HOME, config)
+                        # can predate the session workspace volume now mounted
+                        # under it: on the GKE hub every first turn failed
+                        # "-32600: failed to load configuration" because the
+                        # prewarm .codex did not exist on the swapped-in
+                        # volume (2026-09-01). Either way the parked CLI is
+                        # unusable as-is, so close it and respawn against the
+                        # CURRENT workspace; a cold spawn is ~250ms against a
+                        # 1-5s API leg.
+                        self._close_process(kill=False)
+                        try:
+                            self._spawn(
+                                session_id,
+                                first_message=message,
+                                model=model,
+                                system_prompt=system_prompt,
+                            )
+                        except Exception:
+                            if parked_adoption and not session_was_bound:
+                                self.session_id = None
+                            raise
+                        process = self.process
+                        message_sent = True
+                        parked_adoption = False
+                        cli_ready_path = "remediation_respawn"
                     if parked_adoption:
                         self.session_id = session_id
                         cli_ready_path = "adopt"
