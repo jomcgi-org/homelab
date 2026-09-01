@@ -69,4 +69,25 @@ defmodule Embervm.LogFormatterTest do
       assert Map.get(decoded, Atom.to_string(key)) == value
     end
   end
+
+  test "preserves StatefulSweeper pressure transition fields in structured JSON" do
+    metadata = %{brick_id: "node-4/pod-a", from: :high, to: :shedding}
+
+    line =
+      Embervm.LogFormatter.format(
+        %{
+          level: :info,
+          msg: {:string, "embervm stateful: pressure state change"},
+          meta: metadata
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+
+    assert decoded["brick_id"] == "node-4/pod-a"
+    assert decoded["from"] == "high"
+    assert decoded["to"] == "shedding"
+  end
 end

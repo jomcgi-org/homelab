@@ -1023,6 +1023,12 @@ demoPostgres:
 statefulSweeper:
   sweepIntervalMs: ""
   wakeMax: ""
+  pressureBanking:
+    # Emergency disable for resident-memory shedding. Ordinary idle banking is
+    # unaffected.
+    enabled: true
+    highWaterFraction: 0.85
+    lowWaterFraction: 0.70
 
 # gRPC connection sweep gate for orphaned channels. Empty means off: the
 # sweeper only logs what it would clean up and leaves connections untouched.

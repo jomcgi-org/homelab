@@ -115,6 +115,28 @@ defmodule Embervm.StatefulSweeper do
   here too means the hygiene runs on the sweep cadence even between
   reconciles.
 
+  ## pressure banking: brick memory hysteresis
+
+  The ordinary idle window optimizes steady-state cost. A second pass protects
+  the brick budget when observed guest memory (`mem_budget_mib -
+  mem_headroom_mib` from `Embervm.NodeCapacity`) rises above a high-water
+  fraction. It orders idle session and stateful guests on that exact brick by
+  their last activity and asks their existing lifecycle owner to bank them until
+  the estimated working set reaches the low-water fraction. The gap between the
+  two marks keeps a brick that just recovered from immediately entering another
+  shedding episode.
+
+  Pressure never invents a second bank path. Sessions atomically confirm that
+  their invoke worker and queue are empty in `Embervm.Session`; stateful guests
+  require a fresh zero-active-connection reading, honor the bank retry backoff,
+  and enter `begin_bank/3`, including ADR embervm/008 checkpoint and resolve
+  handling. A missing memory budget, missing activity signal, disabled workload
+  bank setting, or unknown guest footprint makes that guest ineligible.
+
+  Each brick keeps `:ok`, `:high`, or `:shedding` state. Only transitions are
+  logged. `pressure_state/2` exposes the current signal to capacity consumers
+  without adding another process or timer.
+
   ## no stale-base lineage GC (unlike serving)
 
   `Embervm.ServingSweeper` carries a `sweep_stale_lineage` pass that evicts a
@@ -140,7 +162,16 @@ defmodule Embervm.StatefulSweeper do
 
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{NodeCapacity, StatefulManager, StatefulState, StatefulStore, WorkloadCatalog}
+  alias Embervm.{
+    NodeCapacity,
+    Session,
+    SessionStore,
+    StatefulManager,
+    StatefulState,
+    StatefulStore,
+    WorkloadCatalog
+  }
+
   alias Embervm.OpLog.Op
 
   alias Embervm.Node.V1.{
@@ -190,6 +221,10 @@ defmodule Embervm.StatefulSweeper do
   @bank_backoff_base_ms 1_000
   @bank_backoff_cap_ms 30_000
 
+  @default_pressure_high_water_fraction 0.85
+  @default_pressure_low_water_fraction 0.70
+  @default_pressure_idle_floor_ms 5_000
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -201,15 +236,21 @@ defmodule Embervm.StatefulSweeper do
   end
 
   @doc """
-  Runs one full sweep synchronously (scrape + stateful_stats + idle-bank +
-  recheck-and-bank + lifetime GC + banked-TTL GC + eager broken-pair eviction)
-  and returns after it completes. Tests drive the economics deterministically
-  through this (with an injected clock + stats seam) instead of waiting on the
-  timer.
+  Runs one full sweep synchronously (scrape + stateful_stats + pressure-bank +
+  idle-bank + recheck-and-bank + lifetime GC + banked-TTL GC + eager
+  broken-pair eviction) and returns after it completes. Tests drive the
+  economics deterministically through this (with an injected clock + stats
+  seam) instead of waiting on the timer.
   """
   @spec sweep(GenServer.server()) :: :ok
   def sweep(server \\ __MODULE__) do
     GenServer.call(server, :sweep, :infinity)
+  end
+
+  @doc "Returns the current memory-pressure state for `brick_id`."
+  @spec pressure_state(GenServer.server(), String.t()) :: :ok | :high | :shedding
+  def pressure_state(server \\ __MODULE__, brick_id) do
+    GenServer.call(server, {:pressure_state, brick_id})
   end
 
   @doc """
@@ -235,11 +276,12 @@ defmodule Embervm.StatefulSweeper do
   def init(opts) do
     op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     op_log = Keyword.get(opts, :op_log, op_log_mod)
+    capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
     state = %{
       store: Keyword.get(opts, :store, StatefulStore),
       publisher: Keyword.get(opts, :publisher, Embervm.EndpointPublisher),
-      capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
+      capacity_table: capacity_table,
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
       op_log: op_log,
       # The backend module dispatched below, threaded alongside :op_log (the
@@ -315,6 +357,47 @@ defmodule Embervm.StatefulSweeper do
       bank_backoff: %{},
       bank_backoff_base_ms: Keyword.get(opts, :bank_backoff_base_ms, @bank_backoff_base_ms),
       bank_backoff_cap_ms: Keyword.get(opts, :bank_backoff_cap_ms, @bank_backoff_cap_ms),
+      # Memory-pressure banking shares this process's tick. NodeCapacity remains
+      # the sole sensor and the existing session/stateful owners remain the sole
+      # bank executors. Tests inject every external lookup and action below.
+      pressure_banking_enabled:
+        Keyword.get(
+          opts,
+          :pressure_banking_enabled,
+          Application.get_env(:embervm, :stateful_pressure_banking_enabled, true)
+        ),
+      high_water_fraction:
+        Keyword.get(
+          opts,
+          :high_water_fraction,
+          Application.get_env(
+            :embervm,
+            :stateful_pressure_high_water_fraction,
+            @default_pressure_high_water_fraction
+          )
+        ),
+      low_water_fraction:
+        Keyword.get(
+          opts,
+          :low_water_fraction,
+          Application.get_env(
+            :embervm,
+            :stateful_pressure_low_water_fraction,
+            @default_pressure_low_water_fraction
+          )
+        ),
+      pressure_idle_floor_ms:
+        Keyword.get(opts, :pressure_idle_floor_ms, @default_pressure_idle_floor_ms),
+      pressure_facts_fun:
+        Keyword.get(opts, :pressure_facts_fun, fn -> NodeCapacity.all(capacity_table) end),
+      session_store: Keyword.get(opts, :session_store, SessionStore),
+      session_registry: Keyword.get(opts, :session_registry, Embervm.SessionRegistry),
+      session_pressure_bank_fun:
+        Keyword.get(opts, :session_pressure_bank_fun, &Session.pressure_bank/1),
+      # brick_id -> %{state, observed_mem_mib, class_limit_mib,
+      # guests_banked}. guests_banked is the set admitted in the latest tick,
+      # retained for query/debug inspection without emitting per-tick logs.
+      pressure_by_brick: %{},
       propagation_settle_ms: Keyword.get(opts, :propagation_settle_ms, @default_propagation_settle_ms),
       lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, @default_lifetime_drain_max_ms),
       # workload -> the wall-clock ms the workload was first observed idle
@@ -353,6 +436,8 @@ defmodule Embervm.StatefulSweeper do
       sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, 0)
     }
 
+    validate_pressure_config!(state)
+
     if state.sweep_interval_ms > 0 do
       schedule(:sweep, state.sweep_interval_ms)
     end
@@ -376,6 +461,11 @@ defmodule Embervm.StatefulSweeper do
   @impl true
   def handle_call(:sweep, _from, state) do
     {:reply, :ok, do_sweep(state)}
+  end
+
+  def handle_call({:pressure_state, brick_id}, _from, state) do
+    pressure = get_in(state, [:pressure_by_brick, brick_id, :state]) || :ok
+    {:reply, pressure, state}
   end
 
   def handle_call({:drain_node, node_id}, _from, state) do
@@ -421,10 +511,12 @@ defmodule Embervm.StatefulSweeper do
   # -- the sweep -------------------------------------------------------------
 
   # One tick: (1) scrape every stateful-capable node's L4 listener stats,
-  # append stateful_stats + touch activity; (2) idle-bank: unpublish + recheck
-  # + StopStateful(BANK) for instances confirmed idle past idleBankSeconds;
-  # (3) max-lifetime expiry (drain-then-destroy, capped patience); (4)
-  # banked-TTL GC; (5) eager broken-pair eviction.
+  # append stateful_stats + touch activity; (2) pressure-bank LRU idle guests on
+  # bricks above their high-water mark until the estimated working set reaches
+  # low water; (3) ordinary idle-bank: unpublish + recheck + StopStateful(BANK)
+  # for instances confirmed idle past idleBankSeconds; (4) max-lifetime expiry
+  # (drain-then-destroy, capped patience); (5) banked-TTL GC; (6) eager
+  # broken-pair eviction.
   defp do_sweep(state) do
     now = state.clock.()
 
@@ -433,6 +525,7 @@ defmodule Embervm.StatefulSweeper do
     Tracer.with_span "embervm.stateful.stats_sweep", %{attributes: %{"ember.tenant" => state.tenant}} do
       state
       |> scrape_and_record(now)
+      |> pressure_sweep(now)
       |> idle_bank_pass(now)
       |> sweep_lifetime(now)
       |> sweep_banked_ttl(now)
@@ -662,6 +755,341 @@ defmodule Embervm.StatefulSweeper do
     |> Enum.each(fn instance ->
       _ = StatefulStore.touch_active(state.store, instance.instance_id, now)
     end)
+  end
+
+  # -- brick memory-pressure banking ----------------------------------------
+
+  defp validate_pressure_config!(state) do
+    high = state.high_water_fraction
+    low = state.low_water_fraction
+
+    unless is_number(low) and is_number(high) and low >= 0 and high <= 1 and low < high do
+      raise ArgumentError,
+            "pressure water fractions must satisfy 0 <= low < high <= 1, got low=#{inspect(low)} high=#{inspect(high)}"
+    end
+
+    unless is_integer(state.pressure_idle_floor_ms) and state.pressure_idle_floor_ms >= 0 do
+      raise ArgumentError, "pressure_idle_floor_ms must be a non-negative integer"
+    end
+
+    :ok
+  end
+
+  defp pressure_sweep(%{pressure_banking_enabled: false} = state, _now) do
+    pressure_by_brick =
+      Map.new(state.pressure_by_brick, fn {brick_id, entry} ->
+        entry = pressure_transition(brick_id, entry, :ok)
+        {brick_id, %{entry | guests_banked: []}}
+      end)
+
+    %{state | pressure_by_brick: pressure_by_brick}
+  end
+
+  defp pressure_sweep(state, now) do
+    facts = pressure_facts(state)
+    active_ids = facts |> Enum.map(&brick_id/1) |> MapSet.new()
+
+    state =
+      Enum.reduce(facts, state, fn fact, acc ->
+        pressure_sweep_brick(acc, fact, now)
+      end)
+
+    pressure_by_brick =
+      Enum.reduce(state.pressure_by_brick, %{}, fn {brick_id, entry}, acc ->
+        if MapSet.member?(active_ids, brick_id) do
+          Map.put(acc, brick_id, entry)
+        else
+          _ = pressure_transition(brick_id, entry, :ok)
+          acc
+        end
+      end)
+
+    %{state | pressure_by_brick: pressure_by_brick}
+  end
+
+  defp pressure_facts(state) do
+    state.pressure_facts_fun.()
+    |> Enum.filter(&pressure_fact?/1)
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
+  end
+
+  defp pressure_fact?(fact) when is_map(fact) do
+    is_binary(brick_id(fact)) and brick_id(fact) != "" and
+      positive_number?(Map.get(fact, :mem_budget_mib)) and
+      is_number(Map.get(fact, :mem_headroom_mib))
+  end
+
+  defp pressure_fact?(_fact), do: false
+
+  defp positive_number?(value), do: is_number(value) and value > 0
+
+  # instance_id is the brick identity under co-location. Legacy/static facts do
+  # not carry it, in which case node_id is the only possible identity.
+  defp brick_id(fact) do
+    case Map.get(fact, :instance_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> Map.get(fact, :node_id) || Map.get(fact, :configured_id) || ""
+    end
+  end
+
+  defp pressure_sweep_brick(state, fact, now) do
+    id = brick_id(fact)
+    limit = Map.fetch!(fact, :mem_budget_mib)
+    observed = max(limit - Map.fetch!(fact, :mem_headroom_mib), 0)
+    high_water = limit * state.high_water_fraction
+    low_water = limit * state.low_water_fraction
+
+    previous =
+      Map.get(state.pressure_by_brick, id, %{
+        state: :ok,
+        observed_mem_mib: observed,
+        class_limit_mib: limit,
+        guests_banked: []
+      })
+
+    active_episode? =
+      case previous.state do
+        :ok -> observed > high_water
+        state when state in [:high, :shedding] -> observed > low_water
+      end
+
+    if active_episode? do
+      candidates = pressure_candidates(state, fact, now)
+      {state, _estimated, banked} = shed_to_low_water(state, candidates, observed, low_water)
+
+      next_pressure =
+        cond do
+          previous.state == :shedding -> :shedding
+          banked != [] -> :shedding
+          true -> :high
+        end
+
+      entry = %{
+        previous
+        | observed_mem_mib: observed,
+          class_limit_mib: limit,
+          guests_banked: Enum.reverse(banked)
+      }
+
+      # The estimate is deliberately local to this cycle. NodeCapacity remains the
+      # authoritative observed value recorded above; the estimate only prevents
+      # admitting more banks than the low-water target requires in one pass.
+      put_pressure_entry(state, id, pressure_transition(id, entry, next_pressure))
+    else
+      entry = %{
+        previous
+        | observed_mem_mib: observed,
+          class_limit_mib: limit,
+          guests_banked: []
+      }
+
+      put_pressure_entry(state, id, pressure_transition(id, entry, :ok))
+    end
+  end
+
+  defp pressure_transition(_brick_id, %{state: state} = entry, state), do: entry
+
+  defp pressure_transition(brick_id, %{state: from} = entry, to) do
+    Logger.info("embervm stateful: pressure state change",
+      brick_id: brick_id,
+      from: from,
+      to: to
+    )
+
+    %{entry | state: to}
+  end
+
+  defp put_pressure_entry(state, brick_id, entry) do
+    %{state | pressure_by_brick: Map.put(state.pressure_by_brick, brick_id, entry)}
+  end
+
+  defp shed_to_low_water(state, candidates, observed, low_water) do
+    Enum.reduce_while(candidates, {state, observed, []}, fn candidate, {acc, estimated, banked} ->
+      if estimated <= low_water do
+        {:halt, {acc, estimated, banked}}
+      else
+        case pressure_bank_candidate(acc, candidate) do
+          {:ok, next} ->
+            {:cont, {next, max(estimated - candidate.mem_mib, 0), [candidate.guest_id | banked]}}
+
+          {:error, next} ->
+            {:cont, {next, estimated, banked}}
+        end
+      end
+    end)
+  end
+
+  defp pressure_candidates(state, fact, now) do
+    (stateful_pressure_candidates(state, fact, now) ++
+       session_pressure_candidates(state, fact))
+    |> Enum.sort_by(fn candidate -> {candidate.last_active_at, candidate.guest_id} end)
+  end
+
+  defp stateful_pressure_candidates(state, fact, now) do
+    live_vm_ids = inventory_ids(fact, :stateful_vms, :vm_id)
+
+    StatefulStore.all(state.store)
+    |> Enum.filter(&(&1.state == :serving))
+    |> Enum.filter(&guest_owned_by_brick?(&1, fact, live_vm_ids, :vm_id))
+    |> Enum.reject(&Map.has_key?(state.banking, &1.instance_id))
+    |> Enum.reject(&bank_backed_off?(state, &1.workload, now))
+    |> Enum.filter(&stateful_pressure_idle?(state, &1, now))
+    |> Enum.flat_map(fn instance ->
+      case pressure_guest_config(state, instance.workload, :stateful) do
+        {:ok, mem_mib} ->
+          [
+            %{
+              kind: :stateful,
+              guest_id: instance.instance_id,
+              instance: instance,
+              mem_mib: mem_mib,
+              last_active_at: last_active_at(instance)
+            }
+          ]
+
+        :error ->
+          []
+      end
+    end)
+  end
+
+  defp session_pressure_candidates(state, fact) do
+    live_session_ids = inventory_ids(fact, :session_vms, :session_id)
+
+    state
+    |> safe_session_all()
+    |> Enum.filter(&(&1.state == :running))
+    |> Enum.filter(&guest_owned_by_brick?(&1, fact, live_session_ids, :session_id))
+    |> Enum.flat_map(fn session ->
+      case pressure_guest_config(state, session.workload, :session) do
+        {:ok, mem_mib} ->
+          [
+            %{
+              kind: :session,
+              guest_id: session.session_id,
+              session_id: session.session_id,
+              mem_mib: mem_mib,
+              last_active_at: last_active_at(session)
+            }
+          ]
+
+        :error ->
+          []
+      end
+    end)
+  end
+
+  defp inventory_ids(fact, inventory_key, id_key) do
+    fact
+    |> Map.get(inventory_key, [])
+    |> Enum.map(&Map.get(&1, id_key))
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> MapSet.new()
+  end
+
+  defp guest_owned_by_brick?(guest, fact, live_ids, guest_id_key) do
+    if Map.get(fact, :instance_id) in [nil, ""] do
+      Map.get(guest, :node_id) == Map.get(fact, :node_id)
+    else
+      MapSet.member?(live_ids, Map.get(guest, guest_id_key))
+    end
+  end
+
+  defp stateful_pressure_idle?(state, instance, now) do
+    last_active = last_active_at(instance)
+
+    now - last_active >= state.pressure_idle_floor_ms and
+      fresh_zero_connections?(state, instance)
+  end
+
+  defp fresh_zero_connections?(state, instance) do
+    with {:ok, entry} <- Map.fetch(state.current_stats, instance.node_id),
+         {:ok, cfg} <- stateful_cfg(state, instance.workload),
+         {:ok, %{active: 0}} <- Map.fetch(entry, stat_prefix(cfg.listen_port)) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp pressure_guest_config(state, workload, class) do
+    with {:ok, entry} <- WorkloadCatalog.fetch(state.catalog_table, workload),
+         ^class <- class_atom(Map.get(entry, :class)),
+         true <- banking_enabled?(entry, class),
+         mem_mib when is_integer(mem_mib) and mem_mib > 0 <- Map.get(entry, :mem_mib) do
+      {:ok, mem_mib}
+    else
+      _ -> :error
+    end
+  end
+
+  defp class_atom("stateful"), do: :stateful
+  defp class_atom("session"), do: :session
+  defp class_atom(_), do: nil
+
+  defp banking_enabled?(%{stateful: cfg}, :stateful) when is_map(cfg) do
+    positive_number?(Map.get(cfg, :idle_bank_seconds))
+  end
+
+  defp banking_enabled?(%{session: cfg} = entry, :session) when is_map(cfg) do
+    positive_number?(Map.get(cfg, :idle_bank_seconds)) and
+      memory_banking_enabled?(Map.get(entry, :persistence))
+  end
+
+  defp banking_enabled?(_entry, _class), do: false
+
+  defp memory_banking_enabled?(%{memory: false}), do: false
+  defp memory_banking_enabled?(_persistence), do: true
+
+  defp last_active_at(guest) do
+    Map.get(guest, :last_active_at) || Map.get(guest, :last_invoke_at) ||
+      Map.get(guest, :updated_at) || Map.get(guest, :created_at) || 0
+  end
+
+  defp safe_session_all(state) do
+    SessionStore.all(state.session_store)
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
+  end
+
+  defp pressure_bank_candidate(state, %{kind: :stateful, instance: instance}) do
+    next = begin_bank(state, instance, state.clock.())
+
+    if Map.has_key?(next.banking, instance.instance_id) do
+      {:ok, next}
+    else
+      {:error, next}
+    end
+  end
+
+  defp pressure_bank_candidate(state, %{kind: :session, session_id: session_id}) do
+    with [{pid, _value}] <- safe_registry_lookup(state.session_registry, session_id),
+         :ok <- safe_session_pressure_bank(state.session_pressure_bank_fun, pid) do
+      {:ok, state}
+    else
+      _ -> {:error, state}
+    end
+  end
+
+  defp safe_registry_lookup(registry, session_id) do
+    Registry.lookup(registry, session_id)
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
+  end
+
+  defp safe_session_pressure_bank(fun, pid) do
+    fun.(pid)
+  rescue
+    _ -> {:error, :pressure_bank_raised}
+  catch
+    _, _ -> {:error, :pressure_bank_raised}
   end
 
   # -- idle-bank pass ---------------------------------------------------------
